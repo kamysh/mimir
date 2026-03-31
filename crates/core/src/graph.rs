@@ -59,13 +59,13 @@ pub struct Pattern {
 }
 
 impl Pattern {
-    pub fn new(situation: String, approach: String) -> Result<Self> {
+    pub fn new(situation: String, approach: String, success_rate: f64) -> Result<Self> {
         Ok(Self {
             id: Uuid::new_v4(),
             situation,
             approach,
             activation_count: 0,
-            success_rate: Probability::new(0.5)?,
+            success_rate: Probability::new(success_rate)?,
             created_at: Utc::now(),
         })
     }

@@ -42,9 +42,10 @@ impl InferenceEngine {
         Probability::new(result.clamp(0.0, 1.0))
     }
 
-    /// Check if two beliefs actively contradict: both have probability > 0.5
+    /// Check if two beliefs actively contradict: P(X) + P(Y) > 1.0 + ε
     pub fn is_contradicting(&self, belief_a: &Belief, belief_b: &Belief) -> bool {
-        belief_a.probability.value() > 0.5 && belief_b.probability.value() > 0.5
+        const EPSILON: f64 = 0.0;
+        belief_a.probability.value() + belief_b.probability.value() > 1.0 + EPSILON
     }
 
     /// BFS propagation: given a seed belief whose probability changed,
@@ -140,22 +141,22 @@ impl InferenceEngine {
         result
     }
 
-    /// Compute decayed probabilities for all beliefs.
-    /// Returns Vec<(Uuid, Probability)> of beliefs whose probability actually changed.
-    /// Uses decay_factor = 0.99 (configurable default: ~1% per day).
+    /// Compute decayed confidence values for all beliefs.
+    /// Returns Vec<(Uuid, Probability)> of beliefs whose confidence actually changed.
+    /// decay_factor is configurable; default is 0.99 (~1% per day).
     pub fn decay_all(
         &self,
         beliefs: &[Belief],
         now: chrono::DateTime<chrono::Utc>,
+        decay_factor: f64,
     ) -> Result<Vec<(Uuid, Probability)>> {
-        const DECAY_FACTOR: f64 = 0.99;
         let mut result = Vec::new();
         for belief in beliefs {
             let days = (now - belief.last_activated_at).num_seconds() as f64 / 86400.0;
             let days = days.max(0.0);
-            let decayed = self.apply_decay(belief.probability, days, DECAY_FACTOR)?;
+            let decayed = self.apply_decay(belief.confidence, days, decay_factor)?;
             // Only report if the value actually changed (using a tiny epsilon)
-            if (decayed.value() - belief.probability.value()).abs() > f64::EPSILON {
+            if (decayed.value() - belief.confidence.value()).abs() > f64::EPSILON {
                 result.push((belief.id, decayed));
             }
         }
@@ -231,8 +232,9 @@ mod tests {
     #[test]
     fn test_is_contradicting_one_low() {
         let engine = InferenceEngine::new();
+        // 0.8 + 0.1 = 0.9 ≤ 1.0 → not contradicting
         let a = Belief::new("claim A".to_string(), 0.8, 0.9).unwrap();
-        let b = Belief::new("claim B".to_string(), 0.3, 0.8).unwrap();
+        let b = Belief::new("claim B".to_string(), 0.1, 0.8).unwrap();
         assert!(!engine.is_contradicting(&a, &b));
     }
 }

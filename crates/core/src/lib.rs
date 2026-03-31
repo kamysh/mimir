@@ -43,8 +43,7 @@ impl AiMemService {
         approach: &str,
         success_rate: f64,
     ) -> Result<Pattern> {
-        let mut pattern = Pattern::new(situation.to_string(), approach.to_string())?;
-        pattern.success_rate = Probability::new(success_rate)?;
+        let pattern = Pattern::new(situation.to_string(), approach.to_string(), success_rate)?;
         self.store.insert_pattern(&pattern).await?;
         Ok(pattern)
     }
@@ -111,8 +110,8 @@ impl AiMemService {
         Ok(updates)
     }
 
-    /// Detect active contradictions in the graph.
-    pub async fn detect_contradictions(&self) -> Result<Vec<(Uuid, Uuid)>> {
+    /// Get active contradictions in the graph.
+    pub async fn get_contradictions(&self) -> Result<Vec<(Uuid, Uuid)>> {
         let pairs = self.store.get_contradiction_pairs().await?;
         if pairs.is_empty() {
             return Ok(vec![]);
@@ -128,13 +127,15 @@ impl AiMemService {
     }
 
     /// Apply time decay to all beliefs, write updates.
-    pub async fn decay_beliefs(&self) -> Result<usize> {
+    /// decay_factor defaults to 0.99 (~1% per day) if not provided.
+    pub async fn decay_beliefs(&self, decay_factor: Option<f64>) -> Result<usize> {
+        let factor = decay_factor.unwrap_or(0.99);
         let beliefs = self.store.get_all_beliefs_for_decay().await?;
         let now = chrono::Utc::now();
-        let updates = self.inference.decay_all(&beliefs, now)?;
+        let updates = self.inference.decay_all(&beliefs, now, factor)?;
         let count = updates.len();
-        for (id, prob) in updates {
-            self.store.update_belief_probability(id, prob).await?;
+        for (id, conf) in updates {
+            self.store.update_belief_confidence(id, conf).await?;
         }
         Ok(count)
     }

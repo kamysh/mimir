@@ -80,6 +80,8 @@ All `probability` and `confidence` fields are bounded in [0, 1]. The Rust API re
 
 Non-monotonicity holds: there is no operation that prevents this cascade. A sufficiently strong defeater with high P(N) can collapse P(Y) to near zero regardless of prior support.
 
+**CAUSES edges** — during defeasible propagation, `CAUSES` edges receive the same support boost as `SUPPORTS` edges: `P(Y) ← P(Y) + (1 − P(Y)) × w × P(X)`. The only difference between `SUPPORTS` and `CAUSES` is semantic (structural causal vs. evidential support); the propagation formula is identical.
+
 **Contradiction reconciliation** — when two contradicting beliefs X, Y have P(X) + P(Y) > 1.0 + ε:
 
 1. The inference engine reports the contradiction to the caller (does not silently resolve).
@@ -130,13 +132,18 @@ ai-mem/
 | Tool | Args | Effect |
 |------|------|--------|
 | `insert_belief` | `content, probability, confidence` | Add Belief node |
-| `insert_pattern` | `situation, approach` | Add Pattern node |
+| `insert_pattern` | `situation, approach, success_rate` | Add Pattern node |
 | `record_support` | `from_id, to_id, weight` | Add SUPPORTS edge + propagate |
 | `record_defeat` | `from_id, to_id, weight` | Add DEFEATS edge + propagate cascade |
-| `record_contradiction` | `id_a, id_b` | Add CONTRADICTS pair |
-| `query_relevant` | `context: Text, limit: u32` | Hybrid graph+semantic retrieval |
+| `record_contradiction` | `id_a, id_b, weight?` (default 1.0) | Add CONTRADICTS pair |
+| `query_relevant` | `context: Text, limit: u32` | Hybrid text+graph retrieval: matches beliefs by content substring, then expands to graph-adjacent beliefs reachable via SUPPORTS/CAUSES. Results ordered by probability descending. Vector/semantic search is a planned Phase 2 enhancement. |
 | `get_contradictions` | — | List currently unresolved contradictions |
-| `decay_all` | — | Apply confidence decay (called at session start) |
+| `decay_all` | `decay_factor?` (default 0.99) | Apply confidence decay (called at session start) |
+| `get_belief` | `id: string` | Fetch a belief by UUID |
+| `list_beliefs` | — | List all beliefs |
+| `list_patterns` | — | List all patterns |
+| `propagate_from` | `id: string` | Manually trigger defeat propagation from a seed belief |
+| `update_confidence` | `id: string, confidence: number` | Update the confidence of a belief |
 
 ## Testing
 

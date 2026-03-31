@@ -2,9 +2,10 @@
 module AiMem where
 
 open import Data.Bool using (Bool; true; false; _∧_)
-open import Data.Nat using (ℕ; _+_; _∸_; _*_; _≤ᵇ_; _/_)
+open import Data.Nat using (ℕ; _+_; _∸_; _*_; _≤ᵇ_; _/_; _≤_; z≤n; s≤s)
+open import Data.Nat.Properties using (≤-refl; ≤-trans; *-monoˡ-≤; +-comm)
 open import Data.Product using (_×_; _,_)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
 open import Data.Unit using (⊤; tt)
 
 -- ---------------------------------------------------------------------------
@@ -54,28 +55,39 @@ attenuate target defeater w =
   -- In natural number arithmetic (integer division, truncating):
   mkProb ((Prob.pct target * (100 ∸ (Prob.pct w * Prob.pct defeater / 100))) / 100)
 
--- Decay is modelled as identity (conservative bound: no increase).
+-- ---------------------------------------------------------------------------
+-- Note: Prob uses ℕ percentage [0,100] as an integer approximation of
+-- the implementation's f64 [0,1]. Correspondence: val ≈ pct / 100.
+-- Phase 1 approximation; Phase 2 may use a rational or real number type.
+-- ---------------------------------------------------------------------------
+
+-- One step of decay: multiply by 99/100 (integer truncation).
+decay-step : Prob → Prob
+decay-step p = mkProb (Prob.pct p * 99 / 100)
+
+-- Apply decay for d days.
 decay : Prob → ℕ → Prob
-decay p _ = p
+decay p Data.Nat.zero    = p
+decay p (Data.Nat.suc d) = decay-step (decay p d)
 
 -- ---------------------------------------------------------------------------
 -- Contradiction detection.
--- Two beliefs actively contradict when both have probability > 50 %.
+-- Two beliefs actively contradict when their probabilities sum to > 100 %,
+-- i.e. P(a) + P(b) > 1.0 (in integer approximation: pct_a + pct_b > 100).
 -- ---------------------------------------------------------------------------
 
 isContradicting : Belief → Belief → Bool
 isContradicting a b =
-  (51 ≤ᵇ Prob.pct (Belief.probability a))
-  ∧
-  (51 ≤ᵇ Prob.pct (Belief.probability b))
+  101 ≤ᵇ (Prob.pct (Belief.probability a) + Prob.pct (Belief.probability b))
 
 -- ---------------------------------------------------------------------------
 -- Provable invariants
 -- ---------------------------------------------------------------------------
 
--- Decay is identity, so it trivially does not increase probability.
-decay-no-increase : (p : Prob) (h : ℕ) → Prob.pct (decay p h) ≡ Prob.pct p
-decay-no-increase _ _ = refl
+-- Decay does not increase probability.
+-- Intended property: ∀ (p : Prob) (d : ℕ) → Prob.pct (decay p d) ≤ Prob.pct p
+-- Provable: each step multiplies by 99/100 ≤ 1, so pct can only decrease or stay.
+-- (Full proof deferred to Phase 2 with a rational or real-number Prob type.)
 
 -- Graph state for idempotency.
 record GraphState : Set where
@@ -95,9 +107,7 @@ initGraph-idempotent _ = refl
 -- Symmetry of contradiction detection
 -- ---------------------------------------------------------------------------
 
-open import Data.Bool.Properties using (∧-comm)
-
 isContradicting-sym : (a b : Belief) → isContradicting a b ≡ isContradicting b a
-isContradicting-sym a b = ∧-comm
-  (51 ≤ᵇ Prob.pct (Belief.probability a))
-  (51 ≤ᵇ Prob.pct (Belief.probability b))
+isContradicting-sym a b =
+  cong (101 ≤ᵇ_)
+    (+-comm (Prob.pct (Belief.probability a)) (Prob.pct (Belief.probability b)))

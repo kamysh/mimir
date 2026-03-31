@@ -90,9 +90,9 @@ fn tools_list() -> Value {
                 "properties": {
                     "id_a":   { "type": "string" },
                     "id_b":   { "type": "string" },
-                    "weight": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                    "weight": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 1.0 }
                 },
-                "required": ["id_a", "id_b", "weight"]
+                "required": ["id_a", "id_b"]
             }
         },
         {
@@ -123,7 +123,7 @@ fn tools_list() -> Value {
             }
         },
         {
-            "name": "detect_contradictions",
+            "name": "get_contradictions",
             "description": "Find all actively contradicting belief pairs.",
             "inputSchema": {
                 "type": "object",
@@ -135,7 +135,9 @@ fn tools_list() -> Value {
             "description": "Apply time decay to all beliefs and return count of updated beliefs.",
             "inputSchema": {
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "decay_factor": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.99 }
+                }
             }
         },
         {
@@ -256,9 +258,7 @@ async fn handle_tool_call(
             let id_b_str = args["id_b"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id_b'"))?;
-            let weight = args["weight"]
-                .as_f64()
-                .ok_or_else(|| anyhow::anyhow!("missing 'weight'"))?;
+            let weight = args["weight"].as_f64().unwrap_or(1.0);
 
             let id_a = uuid::Uuid::parse_str(id_a_str)?;
             let id_b = uuid::Uuid::parse_str(id_b_str)?;
@@ -285,8 +285,8 @@ async fn handle_tool_call(
             Ok(serde_json::to_value(&patterns)?)
         }
 
-        "detect_contradictions" => {
-            let pairs = svc.detect_contradictions().await?;
+        "get_contradictions" => {
+            let pairs = svc.get_contradictions().await?;
             let result: Vec<Value> = pairs
                 .into_iter()
                 .map(|(a, b)| json!([a.to_string(), b.to_string()]))
@@ -295,7 +295,8 @@ async fn handle_tool_call(
         }
 
         "decay_all" => {
-            let count = svc.decay_beliefs().await?;
+            let decay_factor = args["decay_factor"].as_f64();
+            let count = svc.decay_beliefs(decay_factor).await?;
             Ok(json!({ "decayed": count }))
         }
 
