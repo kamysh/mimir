@@ -1,0 +1,17 @@
+[package]
+name = "ai-mem-mcp"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ai-mem-mcp"
+path = "src/main.rs"
+
+[dependencies]
+ai-mem-core = { path = "../core" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
