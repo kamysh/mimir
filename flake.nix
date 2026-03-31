@@ -65,7 +65,14 @@
           ];
 
           shellHook = ''
-            export AI_MEM_DSN="''${AI_MEM_DSN:-postgresql://ai_mem@localhost/ai_mem}"
+            if [[ -z "''${AI_MEM_DSN:-}" ]]; then
+              _pass="$(grep "^localhost:5450:ai_mem:ai_mem:" "$HOME/.pgpass" 2>/dev/null | cut -d: -f5 || true)"
+              if [[ -n "$_pass" ]]; then
+                export AI_MEM_DSN="postgresql://ai_mem:$_pass@localhost:5450/ai_mem"
+              else
+                export AI_MEM_DSN="postgresql://ai_mem@localhost:5450/ai_mem"
+              fi
+            fi
 
             echo "ai-mem dev shell"
             echo "  Rust:  $(rustc --version)"

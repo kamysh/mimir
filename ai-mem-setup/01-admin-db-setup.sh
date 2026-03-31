@@ -71,8 +71,13 @@ echo "==> Resetting search_path to default (set explicitly in application connec
 "${PSQL_ADMIN[@]}" -c "ALTER DATABASE \"${DBNAME}\" RESET search_path;"
 
 echo "==> Creating AGE graph '${DBNAME}' (idempotent)"
-graph_exists="$("${PSQL_DB[@]}" -tAc "SELECT 1 FROM ag_catalog.ag_graph WHERE name = '${DBNAME}'")"
-if [[ -z "$graph_exists" ]]; then
+# Check that both the catalog entry AND the actual schema exist.
+# A prior partial run may have written to ag_catalog.ag_graph but failed to
+# create the schema — in that case we must drop the stale catalog row and recreate.
+schema_exists="$("${PSQL_DB[@]}" -tAc "SELECT 1 FROM information_schema.schemata WHERE schema_name = '${DBNAME}'")"
+if [[ -z "$schema_exists" ]]; then
+  # Remove any stale catalog entry so create_graph can proceed cleanly.
+  "${PSQL_DB[@]}" -c "DELETE FROM ag_catalog.ag_graph WHERE name = '${DBNAME}';" 2>/dev/null || true
   "${PSQL_DB[@]}" -c "SELECT ag_catalog.create_graph('${DBNAME}');"
 fi
 
@@ -81,13 +86,14 @@ echo "==> Transferring AGE graph schema ownership to '${DBUSER}'"
 # That schema and its internal label tables are owned by the calling admin user.
 # The application user needs to own them so AGE can create new vertex/edge label tables
 # when it encounters new node/relationship labels at runtime.
-"${PSQL_ADMIN[@]}" -c "ALTER SCHEMA \"${DBNAME}\" OWNER TO \"${DBUSER}\";"
+# All of these operate on schemas/tables inside the ai_mem database — use PSQL_DB.
+"${PSQL_DB[@]}" -c "ALTER SCHEMA \"${DBNAME}\" OWNER TO \"${DBUSER}\";"
 "${PSQL_DB[@]}" -c "ALTER TABLE \"${DBNAME}\".\"_ag_label_vertex\" OWNER TO \"${DBUSER}\";"
 "${PSQL_DB[@]}" -c "ALTER TABLE \"${DBNAME}\".\"_ag_label_edge\" OWNER TO \"${DBUSER}\";"
 # Grant default privileges in graph schema so future AGE-created label tables are accessible
-"${PSQL_ADMIN[@]}" -c "GRANT USAGE, CREATE ON SCHEMA \"${DBNAME}\" TO \"${DBUSER}\";"
-"${PSQL_ADMIN[@]}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA \"${DBNAME}\" GRANT ALL ON TABLES TO \"${DBUSER}\";"
-"${PSQL_ADMIN[@]}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA \"${DBNAME}\" GRANT ALL ON SEQUENCES TO \"${DBUSER}\";"
+"${PSQL_DB[@]}" -c "GRANT USAGE, CREATE ON SCHEMA \"${DBNAME}\" TO \"${DBUSER}\";"
+"${PSQL_DB[@]}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA \"${DBNAME}\" GRANT ALL ON TABLES TO \"${DBUSER}\";"
+"${PSQL_DB[@]}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA \"${DBNAME}\" GRANT ALL ON SEQUENCES TO \"${DBUSER}\";"
 
 echo "==> Forcing reconnect for existing '${DBUSER}' sessions"
 "${PSQL_DB[@]}" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename='${DBUSER}' AND pid <> pg_backend_pid();"
