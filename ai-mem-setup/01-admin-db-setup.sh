@@ -3,12 +3,14 @@ set -euo pipefail
 
 # Admin setup for ai-mem Postgres.
 # Connects via docker exec — the container must be running.
-# Generates a password if not supplied, sets it on the role, and writes ~/.pgpass.
+#
+# Reads the ai_mem role password from ~/.pgpass (entry for DBHOST:DBPORT:DBNAME:DBUSER).
+# Add the entry before running this script:
+#   localhost:5450:ai_mem:ai_mem:<password>
 #
 # Examples:
 #   ./01-admin-db-setup.sh
 #   DOCKER_CONTAINER=my-postgres ./01-admin-db-setup.sh
-#   DBPASS=secret ./01-admin-db-setup.sh   # use specific password
 
 DOCKER_CONTAINER="${DOCKER_CONTAINER:-postgres-ai}"
 ADMIN_USER="${ADMIN_USER:-postgres}"
@@ -17,15 +19,18 @@ DBHOST="${DBHOST:-localhost}"
 DBPORT="${DBPORT:-5450}"
 DBNAME="${DBNAME:-ai_mem}"
 DBUSER="${DBUSER:-ai_mem}"
-DBPASS="${DBPASS:-}"
 
 PSQL_ADMIN=(docker exec "$DOCKER_CONTAINER" psql -U "$ADMIN_USER" -d "$ADMIN_DB" -v ON_ERROR_STOP=1)
 PSQL_DB=(   docker exec "$DOCKER_CONTAINER" psql -U "$ADMIN_USER" -d "$DBNAME"   -v ON_ERROR_STOP=1)
 
-# Generate password if not provided
+echo "==> Reading password for '${DBUSER}' from ~/.pgpass"
+PGPASS_FILE="${HOME}/.pgpass"
+DBPASS="$(grep "^${DBHOST}:${DBPORT}:${DBNAME}:${DBUSER}:" "$PGPASS_FILE" 2>/dev/null | cut -d: -f5 || true)"
 if [[ -z "${DBPASS}" ]]; then
-  DBPASS="$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)"
-  echo "==> Generated password for '${DBUSER}'"
+  echo "ERROR: No ~/.pgpass entry for ${DBHOST}:${DBPORT}:${DBNAME}:${DBUSER}"
+  echo "Add one first:"
+  echo "  echo '${DBHOST}:${DBPORT}:${DBNAME}:${DBUSER}:<password>' >> ~/.pgpass && chmod 0600 ~/.pgpass"
+  exit 1
 fi
 
 echo "==> Ensuring role '${DBUSER}' exists"
@@ -36,16 +41,6 @@ fi
 
 echo "==> Setting password for role '${DBUSER}'"
 "${PSQL_ADMIN[@]}" -c "ALTER ROLE \"${DBUSER}\" PASSWORD '${DBPASS}';"
-
-echo "==> Updating ~/.pgpass"
-PGPASS_FILE="${HOME}/.pgpass"
-touch "$PGPASS_FILE"
-chmod 0600 "$PGPASS_FILE"
-# Remove any existing entry for this host:port:db:user, then append the new one
-grep -v "^${DBHOST}:${DBPORT}:${DBNAME}:${DBUSER}:" "$PGPASS_FILE" > "${PGPASS_FILE}.tmp" || true
-echo "${DBHOST}:${DBPORT}:${DBNAME}:${DBUSER}:${DBPASS}" >> "${PGPASS_FILE}.tmp"
-mv "${PGPASS_FILE}.tmp" "$PGPASS_FILE"
-chmod 0600 "$PGPASS_FILE"
 
 echo "==> Ensuring database '${DBNAME}' exists"
 db_exists="$("${PSQL_ADMIN[@]}" -tAc "SELECT 1 FROM pg_database WHERE datname='${DBNAME}'")"
