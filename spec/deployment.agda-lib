@@ -1,0 +1,3 @@
+name: ai-mem-spec
+depend: standard-library
+include: .
