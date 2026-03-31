@@ -60,11 +60,24 @@ echo "==> Resetting search_path to default (set explicitly in application connec
 "${PSQL_ADMIN[@]}" -c "ALTER ROLE \"${DBUSER}\" RESET search_path;"
 "${PSQL_ADMIN[@]}" -c "ALTER DATABASE \"${DBNAME}\" RESET search_path;"
 
-echo "==> Creating AGE graph 'ai_mem' (idempotent)"
-graph_exists="$("${PSQL_DB[@]}" -tAc "SELECT 1 FROM ag_catalog.ag_graph WHERE name = 'ai_mem'")"
+echo "==> Creating AGE graph '${DBNAME}' (idempotent)"
+graph_exists="$("${PSQL_DB[@]}" -tAc "SELECT 1 FROM ag_catalog.ag_graph WHERE name = '${DBNAME}'")"
 if [[ -z "$graph_exists" ]]; then
-  "${PSQL_DB[@]}" -c "SELECT ag_catalog.create_graph('ai_mem');"
+  "${PSQL_DB[@]}" -c "SELECT ag_catalog.create_graph('${DBNAME}');"
 fi
+
+echo "==> Transferring AGE graph schema ownership to '${DBUSER}'"
+# AGE create_graph creates a PostgreSQL schema named after the graph (same as $DBNAME here).
+# That schema and its internal label tables are owned by the calling admin user.
+# The application user needs to own them so AGE can create new vertex/edge label tables
+# when it encounters new node/relationship labels at runtime.
+"${PSQL_ADMIN[@]}" -c "ALTER SCHEMA \"${DBNAME}\" OWNER TO \"${DBUSER}\";"
+"${PSQL_DB[@]}" -c "ALTER TABLE \"${DBNAME}\".\"_ag_label_vertex\" OWNER TO \"${DBUSER}\";"
+"${PSQL_DB[@]}" -c "ALTER TABLE \"${DBNAME}\".\"_ag_label_edge\" OWNER TO \"${DBUSER}\";"
+# Grant default privileges in graph schema so future AGE-created label tables are accessible
+"${PSQL_ADMIN[@]}" -c "GRANT USAGE, CREATE ON SCHEMA \"${DBNAME}\" TO \"${DBUSER}\";"
+"${PSQL_ADMIN[@]}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA \"${DBNAME}\" GRANT ALL ON TABLES TO \"${DBUSER}\";"
+"${PSQL_ADMIN[@]}" -c "ALTER DEFAULT PRIVILEGES IN SCHEMA \"${DBNAME}\" GRANT ALL ON SEQUENCES TO \"${DBUSER}\";"
 
 echo "==> Forcing reconnect for existing '${DBUSER}' sessions"
 "${PSQL_DB[@]}" -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename='${DBUSER}' AND pid <> pg_backend_pid();"
