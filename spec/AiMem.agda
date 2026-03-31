@@ -5,6 +5,7 @@ open import Data.Bool using (Bool; true; false; _∧_; _∨_; if_then_else_)
 open import Data.Nat using (ℕ; _+_; _∸_; _*_; _≤ᵇ_; _/_; _≤_; z≤n; s≤s)
 open import Data.Nat.Properties using (≤-refl; ≤-trans; *-monoˡ-≤; +-comm)
 open import Data.Product using (_×_; _,_)
+open import Data.String using (String)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
 open import Data.Unit using (⊤; tt)
 
@@ -32,12 +33,17 @@ data EdgeLabel : Set where
   CONTRADICTS : EdgeLabel
 
 -- A belief node in the graph.
+-- Timestamps are modelled as ℕ (Unix seconds).  The implementation uses
+-- chrono::DateTime<Utc>; the correspondence is exact up to representation.
 record Belief : Set where
   constructor mkBelief
   field
-    id          : NodeId
-    probability : Prob
-    confidence  : Prob
+    id                : NodeId
+    content           : String   -- text of the belief claim
+    probability       : Prob
+    confidence        : Prob
+    createdAt         : ℕ        -- Unix timestamp (seconds)
+    lastActivatedAt   : ℕ        -- Unix timestamp (seconds); drives decay
 
 -- ---------------------------------------------------------------------------
 -- Defeat attenuation
@@ -173,12 +179,21 @@ canManageRoles (mkConn app-user  _) = false
 canInstallExtension : Connection → Bool
 canInstallExtension = canManageRoles
 
--- GRANT on objects / ALTER SCHEMA OWNER / ALTER TABLE OWNER
--- for objects in database `target`:
--- requires superuser connected to `target`.
-canActInDb : Connection → Database → Bool
-canActInDb (mkConn superuser d) target = d db≡ target
-canActInDb (mkConn app-user  _) _      = false
+-- GRANT … ON DATABASE: a database-object operation.
+-- A superuser can issue this from ANY connected database — the database
+-- being granted is named in the statement, not implied by the connection.
+-- (This is distinct from schema-level DDL which IS connection-scoped.)
+canGrantOnDatabase : Connection → Bool
+canGrantOnDatabase (mkConn superuser _) = true
+canGrantOnDatabase (mkConn app-user  _) = false
+
+-- ALTER SCHEMA … OWNER TO / GRANT on schema objects / ALTER TABLE … OWNER TO:
+-- these are database-scoped DDL.  The superuser must be CONNECTED TO the
+-- database that contains the schema; connecting to any other database makes
+-- the schema invisible ("schema does not exist").
+canAlterSchemaIn : Connection → Database → Bool
+canAlterSchemaIn (mkConn superuser d) target = d db≡ target
+canAlterSchemaIn (mkConn app-user  _) _      = false
 
 -- ag_catalog.cypher() runtime queries: app-user connected to ai_mem.
 canRunCypher : Connection → Bool
@@ -189,23 +204,31 @@ canRunCypher _                            = false
 -- Core permission theorems
 -- ---------------------------------------------------------------------------
 
+-- GRANT ALL PRIVILEGES ON DATABASE works from psqlAdmin (postgres db) — ✓
+-- because canGrantOnDatabase only requires superuser, not same-database.
+admin-can-grant-on-database : canGrantOnDatabase psqlAdmin ≡ true
+admin-can-grant-on-database = refl
+
 -- THE BUG: psqlAdmin (connected to db-postgres) cannot alter a schema
 -- that lives in db-ai-mem.
-alter-schema-wrong-db : canActInDb psqlAdmin db-ai-mem ≡ false
+alter-schema-wrong-db : canAlterSchemaIn psqlAdmin db-ai-mem ≡ false
 alter-schema-wrong-db = refl
 
 -- THE FIX: psqlDb (connected to db-ai-mem) can.
-alter-schema-correct-db : canActInDb psqlDb db-ai-mem ≡ true
+alter-schema-correct-db : canAlterSchemaIn psqlDb db-ai-mem ≡ true
 alter-schema-correct-db = refl
 
 -- App-user has no administrative capabilities.
-app-cannot-manage-roles     : canManageRoles     appConn ≡ false
-app-cannot-manage-roles     = refl
+app-cannot-manage-roles      : canManageRoles      appConn ≡ false
+app-cannot-manage-roles      = refl
 
 app-cannot-install-extension : canInstallExtension appConn ≡ false
 app-cannot-install-extension = refl
 
-app-cannot-alter-schema : canActInDb appConn db-ai-mem ≡ false
+app-cannot-grant-on-database : canGrantOnDatabase  appConn ≡ false
+app-cannot-grant-on-database = refl
+
+app-cannot-alter-schema : canAlterSchemaIn appConn db-ai-mem ≡ false
 app-cannot-alter-schema = refl
 
 -- Only the app-user can issue Cypher queries at runtime.
@@ -238,11 +261,13 @@ record GrantState : Set where
     publicSchemaCrud : Bool   -- GRANT USAGE, CREATE ON SCHEMA public
     agCatalogUsage   : Bool   -- GRANT USAGE ON SCHEMA ag_catalog
     agCatalogExecute : Bool   -- GRANT EXECUTE ON ALL FUNCTIONS IN ag_catalog
+    agCatalogTables  : Bool   -- GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN ag_catalog
 
 allGrants : GrantState → Bool
 allGrants g =
-  GrantState.dbPrivileges g ∧ GrantState.publicSchemaCrud g ∧
-  GrantState.agCatalogUsage g ∧ GrantState.agCatalogExecute g
+  GrantState.dbPrivileges     g ∧ GrantState.publicSchemaCrud g ∧
+  GrantState.agCatalogUsage   g ∧ GrantState.agCatalogExecute g ∧
+  GrantState.agCatalogTables  g
 
 -- AGE graph schema state.
 -- create_graph() creates the PostgreSQL schema; ownership must then be
@@ -294,7 +319,7 @@ adminSetupWith : Bool → DbSetupState → DbSetupState
 adminSetupWith false s = s
 adminSetupWith true  _ = mkDbSetup true true true true
                            (mkExt true true true true)
-                           (mkGrants true true true true)
+                           (mkGrants true true true true true)
                            (mkAgeGraph true true true true)
 
 adminSetup : DbSetupState → DbSetupState
