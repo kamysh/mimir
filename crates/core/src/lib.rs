@@ -51,6 +51,7 @@ impl AiMemService {
 
     /// Add an edge between two beliefs. Validates both exist.
     /// For CONTRADICTS, inserts bidirectionally.
+    /// For DEFEATS, inserts the edge then triggers defeat propagation from from_id.
     pub async fn add_edge(
         &self,
         from_id: Uuid,
@@ -60,11 +61,15 @@ impl AiMemService {
     ) -> Result<()> {
         let w = Probability::new(weight)?;
         if edge_type == EdgeType::Contradicts {
-            self.store.insert_contradicts(from_id, to_id, w).await
+            self.store.insert_contradicts(from_id, to_id, w).await?;
         } else {
             let edge = graph::Edge::new(from_id, to_id, edge_type, weight)?;
-            self.store.insert_edge(&edge).await
+            self.store.insert_edge(&edge).await?;
+            if edge_type == EdgeType::Defeats {
+                self.propagate_from(from_id).await?;
+            }
         }
+        Ok(())
     }
 
     /// Get a belief by ID.
@@ -83,16 +88,23 @@ impl AiMemService {
     }
 
     /// Run defeat propagation from a seed belief ID.
-    /// Finds downstream beliefs, applies attenuate/boost, writes updated probabilities.
-    /// NOTE: for Task 7, edges parameter is empty ([]); full implementation in Task 9/11.
+    /// Loads the downstream subgraph and all edges among it, applies attenuate/boost,
+    /// and writes updated probabilities back to the store.
     pub async fn propagate_from(&self, seed_id: Uuid) -> Result<Vec<(Uuid, Probability)>> {
         let seed = match self.store.get_belief(seed_id).await? {
             Some(b) => b,
             None => anyhow::bail!("belief {} not found", seed_id),
         };
         let downstream = self.store.get_downstream_beliefs(seed_id).await?;
-        let updates = self.inference.propagate_defeat(&seed, &downstream, &[])?;
 
+        // Collect all IDs in the subgraph (seed + downstream)
+        let mut ids: Vec<Uuid> = downstream.iter().map(|b| b.id).collect();
+        ids.push(seed_id);
+
+        // Load edges among the subgraph
+        let edges = self.store.get_edges_among(&ids).await?;
+
+        let updates = self.inference.propagate_defeat(&seed, &downstream, &edges)?;
         for (id, prob) in &updates {
             self.store.update_belief_probability(*id, *prob).await?;
         }
@@ -127,21 +139,48 @@ impl AiMemService {
         Ok(count)
     }
 
-    /// Simple text search: returns beliefs whose content contains the query (case-insensitive).
-    /// Results ordered by probability descending.
-    pub async fn query_relevant(&self, query: &str) -> Result<Vec<Belief>> {
+    /// Hybrid retrieval: returns beliefs matching the query by content (case-insensitive),
+    /// plus beliefs reachable from matched beliefs via SUPPORTS/CAUSES edges.
+    /// Results are deduplicated and sorted by probability descending.
+    /// limit=0 means no limit.
+    pub async fn query_relevant(&self, query: &str, limit: usize) -> Result<Vec<Belief>> {
         let all = self.store.list_beliefs().await?;
         let q = query.to_lowercase();
+
+        // Direct text matches
         let mut matched: Vec<Belief> = all
-            .into_iter()
+            .iter()
             .filter(|b| b.content.to_lowercase().contains(&q))
+            .cloned()
             .collect();
+
+        // Expand via graph: add beliefs reachable from matched ones
+        let matched_ids: Vec<Uuid> = matched.iter().map(|b| b.id).collect();
+        for id in matched_ids {
+            let downstream = self.store.get_downstream_beliefs(id).await?;
+            for b in downstream {
+                if !matched.iter().any(|m| m.id == b.id) {
+                    matched.push(b);
+                }
+            }
+        }
+
         matched.sort_by(|a, b| {
             b.probability
                 .value()
                 .partial_cmp(&a.probability.value())
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+
+        if limit > 0 {
+            matched.truncate(limit);
+        }
         Ok(matched)
+    }
+
+    /// Update the confidence value of a belief.
+    pub async fn update_confidence(&self, id: Uuid, confidence: f64) -> Result<()> {
+        let c = Probability::new(confidence)?;
+        self.store.update_belief_confidence(id, c).await
     }
 }

@@ -3,7 +3,7 @@ use chrono::DateTime;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::graph::{Belief, Edge, Pattern, Probability};
+use crate::graph::{Belief, Edge, EdgeType, Pattern, Probability};
 
 // ---------------------------------------------------------------------------
 // Helper: escape single-quoted strings for AGE Cypher interpolation
@@ -369,6 +369,52 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#;
             pairs.push((from_id, to_id));
         }
         Ok(pairs)
+    }
+
+    /// Returns all edges (from_id, to_id, label, weight) between any two beliefs
+    /// in the provided set of IDs. Used to load the subgraph for propagation.
+    pub async fn get_edges_among(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Uuid, EdgeType, Probability)>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Build a Cypher list literal: ['id1', 'id2', ...]
+        let id_list = ids
+            .iter()
+            .map(|id| format!("'{}'", id))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!(
+            r#"SELECT from_id::text, to_id::text, label::text, weight::text
+FROM ag_catalog.cypher('ai_mem', $$
+  MATCH (a:Belief)-[r]->(b:Belief)
+  WHERE a.id IN [{id_list}]
+  AND   b.id IN [{id_list}]
+  RETURN a.id, b.id, type(r), r.weight
+$$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agtype, weight ag_catalog.agtype)"#
+        );
+
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let mut edges = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let from_raw: String = row.try_get("from_id")?;
+            let to_raw: String = row.try_get("to_id")?;
+            let label_raw: String = row.try_get("label")?;
+            let weight_raw: String = row.try_get("weight")?;
+
+            let from_id = Uuid::parse_str(&from_raw)?;
+            let to_id = Uuid::parse_str(&to_raw)?;
+            let edge_type = EdgeType::from_str(&label_raw)?;
+            let weight: f64 = weight_raw.parse()?;
+            let probability = Probability::new(weight)?;
+
+            edges.push((from_id, to_id, edge_type, probability));
+        }
+        Ok(edges)
     }
 
     /// Returns all Belief nodes reachable from `start_id` via SUPPORTS or CAUSES edges.

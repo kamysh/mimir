@@ -35,10 +35,10 @@ impl InferenceEngine {
     }
 
     /// Apply time decay to a single probability value.
-    /// P_new = P × e^(-λ × hours_since_activation), λ = 0.01
-    pub fn apply_decay(&self, prob: Probability, hours_since_activation: f64) -> Result<Probability> {
-        const LAMBDA: f64 = 0.01;
-        let result = prob.value() * (-LAMBDA * hours_since_activation).exp();
+    /// P_new = P × decay_factor^days_since_activation
+    /// decay_factor ∈ (0, 1]: a value of 0.99 means ~1% decay per day.
+    pub fn apply_decay(&self, prob: Probability, days_since_activation: f64, decay_factor: f64) -> Result<Probability> {
+        let result = prob.value() * decay_factor.powf(days_since_activation);
         Probability::new(result.clamp(0.0, 1.0))
     }
 
@@ -142,16 +142,18 @@ impl InferenceEngine {
 
     /// Compute decayed probabilities for all beliefs.
     /// Returns Vec<(Uuid, Probability)> of beliefs whose probability actually changed.
+    /// Uses decay_factor = 0.99 (configurable default: ~1% per day).
     pub fn decay_all(
         &self,
         beliefs: &[Belief],
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Vec<(Uuid, Probability)>> {
+        const DECAY_FACTOR: f64 = 0.99;
         let mut result = Vec::new();
         for belief in beliefs {
-            let hours = (now - belief.last_activated_at).num_seconds() as f64 / 3600.0;
-            let hours = hours.max(0.0);
-            let decayed = self.apply_decay(belief.probability, hours)?;
+            let days = (now - belief.last_activated_at).num_seconds() as f64 / 86400.0;
+            let days = days.max(0.0);
+            let decayed = self.apply_decay(belief.probability, days, DECAY_FACTOR)?;
             // Only report if the value actually changed (using a tiny epsilon)
             if (decayed.value() - belief.probability.value()).abs() > f64::EPSILON {
                 result.push((belief.id, decayed));
@@ -199,13 +201,23 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_decay_zero_hours() {
+    fn test_apply_decay_zero_days() {
         let engine = InferenceEngine::new();
-        // decay with 0 hours → e^0 = 1.0 → probability unchanged
+        // decay with 0 days → decay_factor^0 = 1.0 → probability unchanged
         let p = prob(0.75);
-        let result = engine.apply_decay(p, 0.0).unwrap();
+        let result = engine.apply_decay(p, 0.0, 0.99).unwrap();
         let diff = (result.value() - 0.75).abs();
         assert!(diff < 1e-9, "expected 0.75 but got {}", result.value());
+    }
+
+    #[test]
+    fn test_apply_decay_one_day() {
+        let engine = InferenceEngine::new();
+        // decay with 1 day, factor 0.99 → 0.75 × 0.99 = 0.7425
+        let p = prob(0.75);
+        let result = engine.apply_decay(p, 1.0, 0.99).unwrap();
+        let diff = (result.value() - 0.7425).abs();
+        assert!(diff < 1e-9, "expected 0.7425 but got {}", result.value());
     }
 
     #[test]

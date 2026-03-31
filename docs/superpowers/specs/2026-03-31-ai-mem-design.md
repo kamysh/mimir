@@ -49,7 +49,7 @@ Claude Code session
 | Type | Key fields |
 |------|-----------|
 | `Belief` | `id: UUID`, `content: Text`, `probability: f64 ∈ [0,1]`, `confidence: f64 ∈ [0,1]`, `created_at: Timestamp`, `last_activated_at: Timestamp` |
-| `Pattern` | `id: UUID`, `situation: Text`, `approach: Text`, `activation_count: u32`, `success_rate: f64 ∈ [0,1]` |
+| `Pattern` | `id: UUID`, `situation: Text`, `approach: Text`, `activation_count: u32`, `success_rate: f64 ∈ [0,1]`, `created_at: DateTime<Utc>` |
 
 ### Edge types (all carry `weight: f64 ∈ [0,1]`)
 
@@ -73,9 +73,10 @@ All `probability` and `confidence` fields are bounded in [0, 1]. The Rust API re
 **Defeasible propagation** — when a `DEFEATS(N → Y, weight w)` edge is inserted:
 
 1. Load the subgraph reachable from Y via `SUPPORTS` and `CAUSES` edges.
-2. Apply defeat: `P(Y) ← P(Y) × (1 - w × P(N))` — N's probability attenuates Y's.
-3. Propagate downstream: for each node Z reachable from Y, recompute P(Z) based on its incoming `SUPPORTS`/`DEFEATS` edges.
-4. Write updated scores back to AGE.
+2. Apply defeat attenuation: `P(Y) ← P(Y) × (1 - w × P(N))` — N's probability attenuates Y's.
+3. Apply support boost for SUPPORTS edges: `P(Y) ← P(Y) + (1 − P(Y)) × w × P(X)`   [SUPPORTS: X supports Y with weight w]
+4. Propagate downstream: for each node Z reachable from Y, recompute P(Z) based on its incoming `SUPPORTS`/`DEFEATS` edges.
+5. Write updated scores back to AGE.
 
 Non-monotonicity holds: there is no operation that prevents this cascade. A sufficiently strong defeater with high P(N) can collapse P(Y) to near zero regardless of prior support.
 

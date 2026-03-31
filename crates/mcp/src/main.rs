@@ -31,7 +31,7 @@ fn err_response(id: &Value, code: i64, message: &str) -> Value {
 fn tools_list() -> Value {
     json!([
         {
-            "name": "add_belief",
+            "name": "insert_belief",
             "description": "Add a new belief to the graph.",
             "inputSchema": {
                 "type": "object",
@@ -44,30 +44,55 @@ fn tools_list() -> Value {
             }
         },
         {
-            "name": "add_pattern",
+            "name": "insert_pattern",
             "description": "Add a new pattern to the graph.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "situation":   { "type": "string" },
-                    "approach":    { "type": "string" },
+                    "situation":    { "type": "string" },
+                    "approach":     { "type": "string" },
                     "success_rate": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                 },
                 "required": ["situation", "approach", "success_rate"]
             }
         },
         {
-            "name": "add_edge",
-            "description": "Add an edge between two beliefs.",
+            "name": "record_support",
+            "description": "Add a SUPPORTS edge from one belief to another.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "from_id":   { "type": "string" },
-                    "to_id":     { "type": "string" },
-                    "edge_type": { "type": "string", "enum": ["Supports", "Defeats", "Causes", "Contradicts"] },
-                    "weight":    { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                    "from_id": { "type": "string" },
+                    "to_id":   { "type": "string" },
+                    "weight":  { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                 },
-                "required": ["from_id", "to_id", "edge_type", "weight"]
+                "required": ["from_id", "to_id", "weight"]
+            }
+        },
+        {
+            "name": "record_defeat",
+            "description": "Add a DEFEATS edge and trigger defeat propagation cascade.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from_id": { "type": "string" },
+                    "to_id":   { "type": "string" },
+                    "weight":  { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                },
+                "required": ["from_id", "to_id", "weight"]
+            }
+        },
+        {
+            "name": "record_contradiction",
+            "description": "Add a bidirectional CONTRADICTS relationship between two beliefs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id_a":   { "type": "string" },
+                    "id_b":   { "type": "string" },
+                    "weight": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                },
+                "required": ["id_a", "id_b", "weight"]
             }
         },
         {
@@ -106,7 +131,7 @@ fn tools_list() -> Value {
             }
         },
         {
-            "name": "decay_beliefs",
+            "name": "decay_all",
             "description": "Apply time decay to all beliefs and return count of updated beliefs.",
             "inputSchema": {
                 "type": "object",
@@ -115,13 +140,14 @@ fn tools_list() -> Value {
         },
         {
             "name": "query_relevant",
-            "description": "Search beliefs by content substring, ordered by probability descending.",
+            "description": "Hybrid retrieval: text match + graph-proximity expansion, ordered by probability.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string" }
+                    "context": { "type": "string" },
+                    "limit":   { "type": "integer", "minimum": 0, "default": 0 }
                 },
-                "required": ["query"]
+                "required": ["context"]
             }
         },
         {
@@ -133,6 +159,18 @@ fn tools_list() -> Value {
                     "id": { "type": "string" }
                 },
                 "required": ["id"]
+            }
+        },
+        {
+            "name": "update_confidence",
+            "description": "Update the confidence value of a belief.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id":         { "type": "string" },
+                    "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                },
+                "required": ["id", "confidence"]
             }
         }
     ])
@@ -148,7 +186,7 @@ async fn handle_tool_call(
     args: &Value,
 ) -> Result<Value> {
     match name {
-        "add_belief" => {
+        "insert_belief" => {
             let content = args["content"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'content'"))?;
@@ -162,7 +200,7 @@ async fn handle_tool_call(
             Ok(serde_json::to_value(&belief)?)
         }
 
-        "add_pattern" => {
+        "insert_pattern" => {
             let situation = args["situation"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'situation'"))?;
@@ -176,25 +214,55 @@ async fn handle_tool_call(
             Ok(serde_json::to_value(&pattern)?)
         }
 
-        "add_edge" => {
+        "record_support" => {
             let from_str = args["from_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
             let to_str = args["to_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'to_id'"))?;
-            let edge_type_str = args["edge_type"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'edge_type'"))?;
             let weight = args["weight"]
                 .as_f64()
                 .ok_or_else(|| anyhow::anyhow!("missing 'weight'"))?;
 
             let from_id = uuid::Uuid::parse_str(from_str)?;
             let to_id = uuid::Uuid::parse_str(to_str)?;
-            let edge_type = parse_edge_type(edge_type_str)?;
+            svc.add_edge(from_id, to_id, EdgeType::Supports, weight).await?;
+            Ok(json!({ "ok": true }))
+        }
 
-            svc.add_edge(from_id, to_id, edge_type, weight).await?;
+        "record_defeat" => {
+            let from_str = args["from_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
+            let to_str = args["to_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'to_id'"))?;
+            let weight = args["weight"]
+                .as_f64()
+                .ok_or_else(|| anyhow::anyhow!("missing 'weight'"))?;
+
+            let from_id = uuid::Uuid::parse_str(from_str)?;
+            let to_id = uuid::Uuid::parse_str(to_str)?;
+            // Propagation happens automatically inside add_edge for EdgeType::Defeats
+            svc.add_edge(from_id, to_id, EdgeType::Defeats, weight).await?;
+            Ok(json!({ "ok": true }))
+        }
+
+        "record_contradiction" => {
+            let id_a_str = args["id_a"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'id_a'"))?;
+            let id_b_str = args["id_b"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'id_b'"))?;
+            let weight = args["weight"]
+                .as_f64()
+                .ok_or_else(|| anyhow::anyhow!("missing 'weight'"))?;
+
+            let id_a = uuid::Uuid::parse_str(id_a_str)?;
+            let id_b = uuid::Uuid::parse_str(id_b_str)?;
+            svc.add_edge(id_a, id_b, EdgeType::Contradicts, weight).await?;
             Ok(json!({ "ok": true }))
         }
 
@@ -226,16 +294,17 @@ async fn handle_tool_call(
             Ok(json!(result))
         }
 
-        "decay_beliefs" => {
+        "decay_all" => {
             let count = svc.decay_beliefs().await?;
             Ok(json!({ "decayed": count }))
         }
 
         "query_relevant" => {
-            let query = args["query"]
+            let query = args["context"]
                 .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'query'"))?;
-            let beliefs = svc.query_relevant(query).await?;
+                .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
+            let limit = args["limit"].as_u64().unwrap_or(0) as usize;
+            let beliefs = svc.query_relevant(query, limit).await?;
             Ok(serde_json::to_value(&beliefs)?)
         }
 
@@ -254,17 +323,19 @@ async fn handle_tool_call(
             Ok(json!(result))
         }
 
-        other => anyhow::bail!("unknown tool: {}", other),
-    }
-}
+        "update_confidence" => {
+            let id_str = args["id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
+            let confidence = args["confidence"]
+                .as_f64()
+                .ok_or_else(|| anyhow::anyhow!("missing 'confidence'"))?;
+            let id = uuid::Uuid::parse_str(id_str)?;
+            svc.update_confidence(id, confidence).await?;
+            Ok(json!({ "ok": true }))
+        }
 
-fn parse_edge_type(s: &str) -> Result<EdgeType> {
-    match s {
-        "Supports" => Ok(EdgeType::Supports),
-        "Defeats" => Ok(EdgeType::Defeats),
-        "Causes" => Ok(EdgeType::Causes),
-        "Contradicts" => Ok(EdgeType::Contradicts),
-        other => anyhow::bail!("unknown edge_type: {}", other),
+        other => anyhow::bail!("unknown tool: {}", other),
     }
 }
 

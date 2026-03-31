@@ -88,6 +88,16 @@ impl EdgeType {
             Self::Contradicts => "CONTRADICTS",
         }
     }
+
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "SUPPORTS" => Ok(Self::Supports),
+            "DEFEATS" => Ok(Self::Defeats),
+            "CAUSES" => Ok(Self::Causes),
+            "CONTRADICTS" => Ok(Self::Contradicts),
+            other => bail!("unknown edge type: {}", other),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
