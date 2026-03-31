@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 fn dsn() -> String {
     std::env::var("AI_MEM_DSN")
-        .unwrap_or_else(|_| "postgresql://ai_mem:ai_mem@localhost:5450/ai_mem".to_string())
+        .unwrap_or_else(|_| "postgresql://ai_mem@localhost:5450/ai_mem".to_string())
 }
 
 #[tokio::test]
