@@ -12,6 +12,17 @@ use graph::{Belief, EdgeType, Pattern, Probability};
 use inference::InferenceEngine;
 use store::AgeStore;
 
+pub struct MimirStats {
+    pub beliefs:    usize,
+    pub patterns:   usize,
+    pub supports:   usize,
+    pub defeats:    usize,
+    pub causes:     usize,
+    /// Raw directed-edge count.  CONTRADICTS is stored bidirectionally,
+    /// so logical pairs = contradicts / 2.
+    pub contradicts: usize,
+}
+
 pub struct MimirService {
     store: AgeStore,
     inference: InferenceEngine,
@@ -19,9 +30,9 @@ pub struct MimirService {
 
 impl MimirService {
     pub async fn connect(cfg: &DatabaseConfig) -> Result<Self> {
-        let pool = db::connect(cfg).await?;
+        let conn = db::connect(cfg).await?;
         Ok(Self {
-            store: AgeStore::new(pool, cfg.dbname.clone()).await?,
+            store: AgeStore::new(conn, cfg.dbname.clone()).await?,
             inference: InferenceEngine::new(),
         })
     }
@@ -217,6 +228,14 @@ impl MimirService {
             matched.truncate(limit);
         }
         Ok(matched)
+    }
+
+    /// Collect graph statistics.
+    pub async fn stats(&self) -> Result<MimirStats> {
+        let beliefs  = self.store.count_beliefs().await?;
+        let patterns = self.store.count_patterns().await?;
+        let (supports, defeats, causes, contradicts) = self.store.count_edges().await?;
+        Ok(MimirStats { beliefs, patterns, supports, defeats, causes, contradicts })
     }
 
     /// Update the confidence value of a belief.

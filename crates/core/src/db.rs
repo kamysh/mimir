@@ -1,8 +1,9 @@
 use anyhow::Result;
 use sqlx::{
-    postgres::{PgConnectOptions, PgPoolOptions, PgSslMode},
-    PgPool,
+    postgres::{PgConnectOptions, PgSslMode},
+    ConnectOptions, PgConnection,
 };
+use std::str::FromStr;
 
 use crate::config::{DatabaseConfig, SslMode};
 
@@ -10,11 +11,29 @@ use crate::config::{DatabaseConfig, SslMode};
 // ag_catalog second: AGE operators resolve correctly.
 const SEARCH_PATH: &str = "public,ag_catalog";
 
-fn apply_search_path(opts: PgConnectOptions) -> PgConnectOptions {
-    opts.options([("search_path", SEARCH_PATH)])
+/// Build a postgres:// URL from config fields with all components properly
+/// percent-encoded.  The URL contains no password so that sqlx applies
+/// ~/.pgpass lookup after the final host/port/user/database values are set —
+/// the same behaviour as psql.  Using PgConnectOptions::new() + builder is
+/// intentionally avoided: new() runs apply_pgpass() at construction time with
+/// OS-default values before any builder fields are applied.
+fn pg_url(cfg: &DatabaseConfig) -> Result<String> {
+    let mut url = url::Url::parse("postgres://placeholder/placeholder")
+        .expect("static URL is valid");
+    url.set_username(&cfg.user)
+        .map_err(|()| anyhow::anyhow!("invalid postgres username: {:?}", cfg.user))?;
+    url.set_host(Some(&cfg.host))
+        .map_err(|e| anyhow::anyhow!("invalid postgres host {:?}: {e}", cfg.host))?;
+    url.set_port(Some(cfg.port))
+        .map_err(|()| anyhow::anyhow!("invalid postgres port: {}", cfg.port))?;
+    url.path_segments_mut()
+        .map_err(|()| anyhow::anyhow!("cannot build URL path"))?
+        .clear()
+        .push(&cfg.dbname);
+    Ok(url.to_string())
 }
 
-pub async fn connect(cfg: &DatabaseConfig) -> Result<PgPool> {
+pub async fn connect(cfg: &DatabaseConfig) -> Result<PgConnection> {
     let ssl_mode = match cfg.ssl_mode {
         SslMode::Disable    => PgSslMode::Disable,
         SslMode::Allow      => PgSslMode::Allow,
@@ -24,17 +43,9 @@ pub async fn connect(cfg: &DatabaseConfig) -> Result<PgPool> {
         SslMode::VerifyFull => PgSslMode::VerifyFull,
     };
 
-    // statement_cache_capacity = 0 disables prepared statements, which is
-    // required for PgBouncer transaction pooling mode.
-    let statement_cache = if cfg.pgbouncer { 0 } else { 1024 };
-
-    let mut opts = PgConnectOptions::new()
-        .host(&cfg.host)
-        .port(cfg.port)
-        .database(&cfg.dbname)
-        .username(&cfg.user)
+    let mut opts = PgConnectOptions::from_str(&pg_url(cfg)?)?
         .ssl_mode(ssl_mode)
-        .statement_cache_capacity(statement_cache);
+        .options([("search_path", SEARCH_PATH)]);
 
     if let Some(ref path) = cfg.ssl_root_cert {
         opts = opts.ssl_root_cert(path);
@@ -46,9 +57,5 @@ pub async fn connect(cfg: &DatabaseConfig) -> Result<PgPool> {
         opts = opts.ssl_client_key(path);
     }
 
-    let pool = PgPoolOptions::new()
-        .max_connections(cfg.max_connections)
-        .connect_with(apply_search_path(opts))
-        .await?;
-    Ok(pool)
+    Ok(opts.connect().await?)
 }
