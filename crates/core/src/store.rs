@@ -1,7 +1,6 @@
 use anyhow::{bail, Result};
 use chrono::DateTime;
-use sqlx::{PgConnection, Row};
-use tokio::sync::Mutex;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::graph::{Belief, Edge, EdgeType, Pattern, Probability};
@@ -113,14 +112,14 @@ const PATTERN_RETURN_COLUMNS: &str = r#"AS (
 // ---------------------------------------------------------------------------
 
 pub struct AgeStore {
-    conn: Mutex<PgConnection>,
+    pool: PgPool,
     /// AGE graph name — equals the PostgreSQL database name from config.
     graph_name: String,
 }
 
 impl AgeStore {
-    pub async fn new(conn: PgConnection, graph_name: String) -> Result<Self> {
-        let store = Self { conn: Mutex::new(conn), graph_name };
+    pub async fn new(pool: PgPool, graph_name: String) -> Result<Self> {
+        let store = Self { pool, graph_name };
         store.ensure_labels().await?;
         Ok(store)
     }
@@ -137,14 +136,14 @@ impl AgeStore {
                 "DO $$ BEGIN PERFORM ag_catalog.create_vlabel('{g}', '{label}'); \
                  EXCEPTION WHEN others THEN NULL; END $$"
             );
-            sqlx::query(&sql).execute(&mut *self.conn.lock().await).await?;
+            sqlx::query(&sql).execute(&self.pool).await?;
         }
         for label in ELABELS {
             let sql = format!(
                 "DO $$ BEGIN PERFORM ag_catalog.create_elabel('{g}', '{label}'); \
                  EXCEPTION WHEN others THEN NULL; END $$"
             );
-            sqlx::query(&sql).execute(&mut *self.conn.lock().await).await?;
+            sqlx::query(&sql).execute(&self.pool).await?;
         }
         Ok(())
     }
@@ -180,7 +179,7 @@ impl AgeStore {
 $$) AS (id ag_catalog.agtype)"#
         );
 
-        sqlx::query(&sql).execute(&mut *self.conn.lock().await).await?;
+        sqlx::query(&sql).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -201,7 +200,7 @@ $$) AS (id ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        sqlx::query(&sql).fetch_all(&self.pool).await?;
         Ok(true)
     }
 
@@ -218,7 +217,7 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN n.id
 $$) AS (id ag_catalog.agtype)"#
         );
-        let rows = sqlx::query(&count_sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&count_sql).fetch_all(&self.pool).await?;
         let count = rows.len();
         if count == 0 {
             return Ok(0);
@@ -230,7 +229,7 @@ $$) AS (id ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        sqlx::query(&delete_sql).fetch_all(&mut *self.conn.lock().await).await?;
+        sqlx::query(&delete_sql).fetch_all(&self.pool).await?;
         Ok(count)
     }
 
@@ -252,7 +251,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         if rows.is_empty() {
             return Ok(None);
         }
@@ -274,7 +273,7 @@ $$) {BELIEF_RETURN_COLUMNS}"#
   RETURN n.id
 $$) AS (id ag_catalog.agtype)"#
         );
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         if rows.is_empty() {
             bail!("belief {} not found", id);
         }
@@ -292,7 +291,7 @@ $$) AS (id ag_catalog.agtype)"#
   RETURN n.id
 $$) AS (id ag_catalog.agtype)"#
         );
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         if rows.is_empty() {
             bail!("belief {} not found", id);
         }
@@ -316,7 +315,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
             beliefs.push(belief_from_row(row)?);
@@ -348,7 +347,7 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN count(*) AS n
 $$) AS (n ag_catalog.agtype)"#
         );
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         if rows.is_empty() {
             return Ok(0);
         }
@@ -376,7 +375,7 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN count(*) AS n
 $$) AS (n ag_catalog.agtype)"#
         );
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         if rows.is_empty() {
             return Ok(0);
         }
@@ -411,7 +410,7 @@ $$) AS (n ag_catalog.agtype)"#
 $$) AS (id ag_catalog.agtype)"#
         );
 
-        sqlx::query(&sql).execute(&mut *self.conn.lock().await).await?;
+        sqlx::query(&sql).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -432,7 +431,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {PATTERN_RETURN_COLUMNS}"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         if rows.is_empty() {
             return Ok(None);
         }
@@ -454,7 +453,7 @@ $$) {PATTERN_RETURN_COLUMNS}"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        sqlx::query(&sql).fetch_all(&self.pool).await?;
         Ok(true)
     }
 
@@ -474,7 +473,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {PATTERN_RETURN_COLUMNS}"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         let mut patterns = Vec::with_capacity(rows.len());
         for row in &rows {
             patterns.push(pattern_from_row(row)?);
@@ -502,7 +501,7 @@ $$) {PATTERN_RETURN_COLUMNS}"#
 $$) AS (weight ag_catalog.agtype)"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         if rows.is_empty() {
             bail!(
                 "insert_edge: one or both beliefs not found (from={}, to={})",
@@ -534,7 +533,7 @@ $$) AS (weight ag_catalog.agtype)"#
 $$) AS (weight ag_catalog.agtype)"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         if rows.is_empty() {
             bail!(
                 "insert_contradicts: one or both beliefs not found (from={}, to={})",
@@ -560,7 +559,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         let mut pairs = Vec::with_capacity(rows.len());
         for row in &rows {
             let from_raw: String = row.try_get("from_id")?;
@@ -600,7 +599,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agtype, weight ag_catalog.agtype)"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         let mut edges = Vec::with_capacity(rows.len());
         for row in &rows {
             let from_raw: String = row.try_get("from_id")?;
@@ -646,7 +645,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&mut *self.conn.lock().await).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
             beliefs.push(belief_from_row(row)?);

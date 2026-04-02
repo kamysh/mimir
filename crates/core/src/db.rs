@@ -1,7 +1,7 @@
 use anyhow::Result;
 use sqlx::{
-    postgres::{PgConnectOptions, PgSslMode},
-    ConnectOptions, PgConnection,
+    postgres::{PgConnectOptions, PgPoolOptions, PgSslMode},
+    PgPool,
 };
 use std::str::FromStr;
 
@@ -33,7 +33,7 @@ fn pg_url(cfg: &DatabaseConfig) -> Result<String> {
     Ok(url.to_string())
 }
 
-pub async fn connect(cfg: &DatabaseConfig) -> Result<PgConnection> {
+pub async fn connect(cfg: &DatabaseConfig) -> Result<PgPool> {
     let ssl_mode = match cfg.ssl_mode {
         SslMode::Disable    => PgSslMode::Disable,
         SslMode::Allow      => PgSslMode::Allow,
@@ -43,8 +43,11 @@ pub async fn connect(cfg: &DatabaseConfig) -> Result<PgConnection> {
         SslMode::VerifyFull => PgSslMode::VerifyFull,
     };
 
+    let statement_cache = if cfg.pgbouncer { 0 } else { 1024 };
+
     let mut opts = PgConnectOptions::from_str(&pg_url(cfg)?)?
         .ssl_mode(ssl_mode)
+        .statement_cache_capacity(statement_cache)
         .options([("search_path", SEARCH_PATH)]);
 
     if let Some(ref path) = cfg.ssl_root_cert {
@@ -57,5 +60,9 @@ pub async fn connect(cfg: &DatabaseConfig) -> Result<PgConnection> {
         opts = opts.ssl_client_key(path);
     }
 
-    Ok(opts.connect().await?)
+    let pool = PgPoolOptions::new()
+        .max_connections(cfg.max_connections)
+        .connect_with(opts)
+        .await?;
+    Ok(pool)
 }

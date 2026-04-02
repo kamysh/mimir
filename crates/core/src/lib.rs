@@ -30,9 +30,9 @@ pub struct MimirService {
 
 impl MimirService {
     pub async fn connect(cfg: &DatabaseConfig) -> Result<Self> {
-        let conn = db::connect(cfg).await?;
+        let pool = db::connect(cfg).await?;
         Ok(Self {
-            store: AgeStore::new(conn, cfg.dbname.clone()).await?,
+            store: AgeStore::new(pool, cfg.dbname.clone()).await?,
             inference: InferenceEngine::new(),
         })
     }
