@@ -1,5 +1,5 @@
 {
-  description = "ai-mem: persistent belief graph MCP server for Claude Code";
+  description = "mimir: persistent belief graph MCP server for Claude Code";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -23,24 +23,25 @@
         # agda.withPackages wraps the binary and registers stdlib automatically
         agdaWithStdlib = pkgs.agda.withPackages (ps: [ ps.standard-library ]);
 
-        ai-mem = pkgs.rustPlatform.buildRustPackage {
-          pname = "ai-mem";
+        mimir = pkgs.rustPlatform.buildRustPackage {
+          pname = "mimir";
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
           buildInputs = [ pkgs.openssl ];
+          doCheck = false; # integration tests require a live PostgreSQL connection
         };
 
       in
       {
         packages = {
-          default = ai-mem;
-          ai-mem = ai-mem;
+          default = mimir;
+          mimir = mimir;
         };
 
         devShells.default = pkgs.mkShell {
-          name = "ai-mem-dev";
+          name = "mimir-dev";
 
           packages = [
             # Rust
@@ -65,14 +66,9 @@
           ];
 
           shellHook = ''
-            if [[ -z "''${AI_MEM_DSN:-}" ]]; then
-              export AI_MEM_DSN="postgresql://ai_mem@localhost:5450/ai_mem"
-            fi
-
-            echo "ai-mem dev shell"
+            echo "mimir dev shell"
             echo "  Rust:  $(rustc --version)"
             echo "  Agda:  $(agda --version)"
-            echo "  AI_MEM_DSN=$AI_MEM_DSN"
           '';
 
           PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";

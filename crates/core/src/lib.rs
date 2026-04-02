@@ -1,3 +1,4 @@
+pub mod config;
 pub mod db;
 pub mod graph;
 pub mod inference;
@@ -6,20 +7,21 @@ pub mod store;
 use anyhow::Result;
 use uuid::Uuid;
 
+use config::DatabaseConfig;
 use graph::{Belief, EdgeType, Pattern, Probability};
 use inference::InferenceEngine;
 use store::AgeStore;
 
-pub struct AiMemService {
+pub struct MimirService {
     store: AgeStore,
     inference: InferenceEngine,
 }
 
-impl AiMemService {
-    pub async fn connect(dsn: &str) -> Result<Self> {
-        let pool = db::connect(dsn).await?;
+impl MimirService {
+    pub async fn connect(cfg: &DatabaseConfig) -> Result<Self> {
+        let pool = db::connect(cfg).await?;
         Ok(Self {
-            store: AgeStore::new(pool),
+            store: AgeStore::new(pool, cfg.dbname.clone()).await?,
             inference: InferenceEngine::new(),
         })
     }
@@ -34,6 +36,44 @@ impl AiMemService {
         let belief = Belief::new(content.to_string(), probability, confidence)?;
         self.store.insert_belief(&belief).await?;
         Ok(belief)
+    }
+
+    /// Add a new belief scoped to a project.
+    pub async fn add_belief_in_project(
+        &self,
+        content: &str,
+        probability: f64,
+        confidence: f64,
+        project: &str,
+    ) -> Result<Belief> {
+        let belief = Belief::new_in_project(
+            content.to_string(),
+            probability,
+            confidence,
+            project.to_string(),
+        )?;
+        self.store.insert_belief(&belief).await?;
+        Ok(belief)
+    }
+
+    /// Delete a belief and all its edges by ID. Returns true if found.
+    pub async fn delete_belief(&self, id: Uuid) -> Result<bool> {
+        self.store.delete_belief(id).await
+    }
+
+    /// Delete all beliefs tagged with the given project. Returns count deleted.
+    pub async fn delete_project(&self, project: &str) -> Result<usize> {
+        self.store.delete_project(project).await
+    }
+
+    /// Get a pattern by ID.
+    pub async fn get_pattern(&self, id: Uuid) -> Result<Option<Pattern>> {
+        self.store.get_pattern(id).await
+    }
+
+    /// Delete a pattern and all its edges by ID. Returns true if found.
+    pub async fn delete_pattern(&self, id: Uuid) -> Result<bool> {
+        self.store.delete_pattern(id).await
     }
 
     /// Add a new pattern.

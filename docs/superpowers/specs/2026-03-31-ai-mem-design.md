@@ -1,4 +1,4 @@
-# ai-mem Design Spec
+# mimir Design Spec
 *2026-03-31*
 
 ## What We're Building
@@ -24,11 +24,11 @@ Claude Code session
       │
       │ MCP tools (insert-belief, query-relevant, record-defeat, ...)
       ▼
- ai-mem-mcp  (MCP server, stdio)
+ mimir-mcp  (MCP server, stdio)
       │
       │ typed Rust API
       ▼
- ai-mem-core  (Rust library)
+ mimir-core  (Rust library)
       │  loads subgraph, runs inference, writes back scores
       ▼
  PostgreSQL + AGE  (same postgres-ai container)
@@ -38,9 +38,9 @@ Claude Code session
 
 **AGE** owns the graph topology: which nodes exist, which edges connect them, what the current probability and weight values are. It is the durable, queryable memory substrate.
 
-**ai-mem-core** owns computation: it loads the relevant subgraph into Rust data structures, runs defeasible propagation, and writes updated scores back. No inference logic in Cypher.
+**mimir-core** owns computation: it loads the relevant subgraph into Rust data structures, runs defeasible propagation, and writes updated scores back. No inference logic in Cypher.
 
-**ai-mem-mcp** is a thin MCP server that translates Claude's tool calls into ai-mem-core API calls.
+**mimir-mcp** is a thin MCP server that translates Claude's tool calls into mimir-core API calls.
 
 ## Graph Model
 
@@ -68,7 +68,7 @@ Claude Code session
 
 All `probability` and `confidence` fields are bounded in [0, 1]. The Rust API returns `Err` on any value outside this range. The Agda spec states this as a type bound.
 
-## Inference Engine (ai-mem-core)
+## Inference Engine (mimir-core)
 
 **Defeasible propagation** — when a `DEFEATS(N → Y, weight w)` edge is inserted:
 
@@ -105,11 +105,11 @@ The spec grows stricter as the implementation matures. Phase 1 is executable doc
 ## Components
 
 ```
-ai-mem/
+mimir/
 ├── spec/               # Agda spec
-│   └── AiMem.agda
+│   └── Mimir.agda
 ├── crates/
-│   ├── core/           # ai-mem-core: typed API + inference engine
+│   ├── core/           # mimir-core: typed API + inference engine
 │   │   ├── src/
 │   │   │   ├── lib.rs
 │   │   │   ├── graph.rs      # Rust graph types (Belief, Pattern, Edge)
@@ -117,14 +117,14 @@ ai-mem/
 │   │   │   ├── inference.rs  # defeasible propagation, decay
 │   │   │   └── db.rs         # connection pool setup
 │   │   └── Cargo.toml
-│   └── mcp/            # ai-mem-mcp: MCP server (stdio)
+│   └── mcp/            # mimir-mcp: MCP server (stdio)
 │       ├── src/
 │       │   └── main.rs
 │       └── Cargo.toml
-├── ai-mem-setup/
+├── mimir-setup/
 │   └── 01-setup.sh     # AGE graph init (docker exec, like muninn)
 ├── Cargo.toml          # workspace
-└── muninn.toml         # (if ai-mem itself gets indexed by muninn)
+└── muninn.toml         # (if mimir itself gets indexed by muninn)
 ```
 
 ## MCP Tools (Phase 1)

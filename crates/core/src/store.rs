@@ -10,7 +10,9 @@ use crate::graph::{Belief, Edge, EdgeType, Pattern, Probability};
 // ---------------------------------------------------------------------------
 
 fn esc(s: &str) -> String {
-    s.replace('\'', "''")
+    // Inside AGE dollar-quoted Cypher strings, openCypher uses backslash escaping.
+    // Escape backslashes first, then single quotes.
+    s.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
 // ---------------------------------------------------------------------------
@@ -31,6 +33,8 @@ fn belief_from_row(row: &sqlx::postgres::PgRow) -> Result<Belief> {
     let confidence_str: String = row.try_get("confidence")?;
     let created_at_str: String = row.try_get("created_at")?;
     let last_activated_str: String = row.try_get("last_activated_at")?;
+    // project is optional — existing beliefs without it return SQL NULL
+    let project: Option<String> = row.try_get("project").unwrap_or(None);
 
     let id = Uuid::parse_str(&id_str)?;
     let probability: f64 = probability_str.parse()?;
@@ -47,6 +51,7 @@ fn belief_from_row(row: &sqlx::postgres::PgRow) -> Result<Belief> {
         confidence: Probability::new(confidence)?,
         created_at,
         last_activated_at,
+        project,
     })
 }
 
@@ -88,7 +93,8 @@ const BELIEF_RETURN_COLUMNS: &str = r#"AS (
   probability    text,
   confidence     text,
   created_at     text,
-  last_activated_at text
+  last_activated_at text,
+  project        text
 )"#;
 
 /// SQL fragment for returning all Pattern scalar properties cast to TEXT.
@@ -107,11 +113,39 @@ const PATTERN_RETURN_COLUMNS: &str = r#"AS (
 
 pub struct AgeStore {
     pool: PgPool,
+    /// AGE graph name — equals the PostgreSQL database name from config.
+    graph_name: String,
 }
 
 impl AgeStore {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub async fn new(pool: PgPool, graph_name: String) -> Result<Self> {
+        let store = Self { pool, graph_name };
+        store.ensure_labels().await?;
+        Ok(store)
+    }
+
+    /// Pre-create all vertex and edge labels so concurrent callers never race
+    /// on lazy label creation. Uses DO blocks with EXCEPTION to be idempotent.
+    async fn ensure_labels(&self) -> Result<()> {
+        const VLABELS: &[&str] = &["Belief", "Pattern"];
+        const ELABELS: &[&str] = &["SUPPORTS", "DEFEATS", "CAUSES", "CONTRADICTS"];
+        let g = &self.graph_name;
+
+        for label in VLABELS {
+            let sql = format!(
+                "DO $$ BEGIN PERFORM ag_catalog.create_vlabel('{g}', '{label}'); \
+                 EXCEPTION WHEN others THEN NULL; END $$"
+            );
+            sqlx::query(&sql).execute(&self.pool).await?;
+        }
+        for label in ELABELS {
+            let sql = format!(
+                "DO $$ BEGIN PERFORM ag_catalog.create_elabel('{g}', '{label}'); \
+                 EXCEPTION WHEN others THEN NULL; END $$"
+            );
+            sqlx::query(&sql).execute(&self.pool).await?;
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -119,22 +153,27 @@ impl AgeStore {
     // -----------------------------------------------------------------------
 
     pub async fn insert_belief(&self, belief: &Belief) -> Result<()> {
+        let g = &self.graph_name;
         let id = belief.id.to_string();
         let content = esc(&belief.content);
         let probability = belief.probability.value();
         let confidence = belief.confidence.value();
         let created_at = esc(&belief.created_at.to_rfc3339());
         let last_activated_at = esc(&belief.last_activated_at.to_rfc3339());
+        let project_prop = match &belief.project {
+            Some(p) => format!(", project: '{}'", esc(p)),
+            None => String::new(),
+        };
 
         let sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('ai_mem', $$
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   CREATE (n:Belief {{
     id: '{id}',
     content: '{content}',
     probability: {probability},
     confidence: {confidence},
     created_at: '{created_at}',
-    last_activated_at: '{last_activated_at}'
+    last_activated_at: '{last_activated_at}'{project_prop}
   }})
   RETURN n.id
 $$) AS (id ag_catalog.agtype)"#
@@ -144,7 +183,58 @@ $$) AS (id ag_catalog.agtype)"#
         Ok(())
     }
 
+    /// Delete a belief and all its edges by ID. Returns true if found and deleted.
+    pub async fn delete_belief(&self, id: Uuid) -> Result<bool> {
+        let g = &self.graph_name;
+        let id_str = id.to_string();
+        // First check existence to give a meaningful return value.
+        // AGE does not support RETURN after DETACH DELETE reliably.
+        let exists = self.get_belief(id).await?.is_some();
+        if !exists {
+            return Ok(false);
+        }
+        let sql = format!(
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
+  MATCH (n:Belief {{id: '{id_str}'}})
+  DETACH DELETE n
+  RETURN 1
+$$) AS (ok ag_catalog.agtype)"#
+        );
+        sqlx::query(&sql).fetch_all(&self.pool).await?;
+        Ok(true)
+    }
+
+    /// Delete all beliefs (and their edges) tagged with the given project.
+    /// Returns the number of beliefs deleted.
+    pub async fn delete_project(&self, project: &str) -> Result<usize> {
+        let g = &self.graph_name;
+        let project_esc = esc(project);
+        // Count first so we can return a meaningful number.
+        let count_sql = format!(
+            r#"SELECT id::text
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (n:Belief {{project: '{project_esc}'}})
+  RETURN n.id
+$$) AS (id ag_catalog.agtype)"#
+        );
+        let rows = sqlx::query(&count_sql).fetch_all(&self.pool).await?;
+        let count = rows.len();
+        if count == 0 {
+            return Ok(0);
+        }
+        let delete_sql = format!(
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
+  MATCH (n:Belief {{project: '{project_esc}'}})
+  DETACH DELETE n
+  RETURN 1
+$$) AS (ok ag_catalog.agtype)"#
+        );
+        sqlx::query(&delete_sql).fetch_all(&self.pool).await?;
+        Ok(count)
+    }
+
     pub async fn get_belief(&self, id: Uuid) -> Result<Option<Belief>> {
+        let g = &self.graph_name;
         let id_str = id.to_string();
         let sql = format!(
             r#"SELECT
@@ -153,10 +243,11 @@ $$) AS (id ag_catalog.agtype)"#
   probability::text,
   confidence::text,
   created_at::text,
-  last_activated_at::text
-FROM ag_catalog.cypher('ai_mem', $$
+  last_activated_at::text,
+  project::text
+FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{id: '{id_str}'}})
-  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at
+  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
@@ -172,10 +263,11 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         id: Uuid,
         probability: Probability,
     ) -> Result<()> {
+        let g = &self.graph_name;
         let id_str = id.to_string();
         let p = probability.value();
         let sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('ai_mem', $$
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{id: '{id_str}'}})
   SET n.probability = {p}
   RETURN n.id
@@ -189,10 +281,11 @@ $$) AS (id ag_catalog.agtype)"#
     }
 
     pub async fn update_belief_confidence(&self, id: Uuid, confidence: Probability) -> Result<()> {
+        let g = &self.graph_name;
         let id_str = id.to_string();
         let c = confidence.value();
         let sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('ai_mem', $$
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{id: '{id_str}'}})
   SET n.confidence = {c}
   RETURN n.id
@@ -206,6 +299,7 @@ $$) AS (id ag_catalog.agtype)"#
     }
 
     pub async fn list_beliefs(&self) -> Result<Vec<Belief>> {
+        let g = &self.graph_name;
         let sql = format!(
             r#"SELECT
   id::text,
@@ -213,10 +307,11 @@ $$) AS (id ag_catalog.agtype)"#
   probability::text,
   confidence::text,
   created_at::text,
-  last_activated_at::text
-FROM ag_catalog.cypher('ai_mem', $$
+  last_activated_at::text,
+  project::text
+FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at
+  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
@@ -238,6 +333,7 @@ $$) {BELIEF_RETURN_COLUMNS}"#
     // -----------------------------------------------------------------------
 
     pub async fn insert_pattern(&self, pattern: &Pattern) -> Result<()> {
+        let g = &self.graph_name;
         let id = pattern.id.to_string();
         let situation = esc(&pattern.situation);
         let approach = esc(&pattern.approach);
@@ -246,7 +342,7 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         let created_at = esc(&pattern.created_at.to_rfc3339());
 
         let sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('ai_mem', $$
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   CREATE (p:Pattern {{
     id: '{id}',
     situation: '{situation}',
@@ -263,7 +359,9 @@ $$) AS (id ag_catalog.agtype)"#
         Ok(())
     }
 
-    pub async fn list_patterns(&self) -> Result<Vec<Pattern>> {
+    pub async fn get_pattern(&self, id: Uuid) -> Result<Option<Pattern>> {
+        let g = &self.graph_name;
+        let id_str = id.to_string();
         let sql = format!(
             r#"SELECT
   id::text,
@@ -272,7 +370,49 @@ $$) AS (id ag_catalog.agtype)"#
   activation_count::text,
   success_rate::text,
   created_at::text
-FROM ag_catalog.cypher('ai_mem', $$
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (p:Pattern {{id: '{id_str}'}})
+  RETURN p.id, p.situation, p.approach, p.activation_count, p.success_rate, p.created_at
+$$) {PATTERN_RETURN_COLUMNS}"#
+        );
+
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(pattern_from_row(&rows[0])?))
+    }
+
+    /// Delete a pattern and all its edges by ID. Returns true if found and deleted.
+    pub async fn delete_pattern(&self, id: Uuid) -> Result<bool> {
+        let g = &self.graph_name;
+        let id_str = id.to_string();
+        let exists = self.get_pattern(id).await?.is_some();
+        if !exists {
+            return Ok(false);
+        }
+        let sql = format!(
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
+  MATCH (p:Pattern {{id: '{id_str}'}})
+  DETACH DELETE p
+  RETURN 1
+$$) AS (ok ag_catalog.agtype)"#
+        );
+        sqlx::query(&sql).fetch_all(&self.pool).await?;
+        Ok(true)
+    }
+
+    pub async fn list_patterns(&self) -> Result<Vec<Pattern>> {
+        let g = &self.graph_name;
+        let sql = format!(
+            r#"SELECT
+  id::text,
+  situation::text,
+  approach::text,
+  activation_count::text,
+  success_rate::text,
+  created_at::text
+FROM ag_catalog.cypher('{g}', $$
   MATCH (p:Pattern)
   RETURN p.id, p.situation, p.approach, p.activation_count, p.success_rate, p.created_at
 $$) {PATTERN_RETURN_COLUMNS}"#
@@ -291,6 +431,7 @@ $$) {PATTERN_RETURN_COLUMNS}"#
     // -----------------------------------------------------------------------
 
     pub async fn insert_edge(&self, edge: &Edge) -> Result<()> {
+        let g = &self.graph_name;
         let from_id = edge.from_id.to_string();
         let to_id = edge.to_id.to_string();
         let label = edge.edge_type.as_str();
@@ -298,7 +439,7 @@ $$) {PATTERN_RETURN_COLUMNS}"#
 
         // Dynamic label in Cypher requires string interpolation.
         let sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('ai_mem', $$
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (a:Belief {{id: '{from_id}'}}), (b:Belief {{id: '{to_id}'}})
   CREATE (a)-[r:{label} {{weight: {weight}}}]->(b)
   RETURN r.weight
@@ -323,12 +464,13 @@ $$) AS (weight ag_catalog.agtype)"#
         to_id: Uuid,
         weight: Probability,
     ) -> Result<()> {
+        let g = &self.graph_name;
         let a = from_id.to_string();
         let b = to_id.to_string();
         let w = weight.value();
 
         let sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('ai_mem', $$
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (a:Belief {{id: '{a}'}}), (b:Belief {{id: '{b}'}})
   CREATE (a)-[r1:CONTRADICTS {{weight: {w}}}]->(b)
   CREATE (b)-[r2:CONTRADICTS {{weight: {w}}}]->(a)
@@ -353,13 +495,16 @@ $$) AS (weight ag_catalog.agtype)"#
 
     /// Returns all (from_id, to_id) pairs connected by a CONTRADICTS edge.
     pub async fn get_contradiction_pairs(&self) -> Result<Vec<(Uuid, Uuid)>> {
-        let sql = r#"SELECT from_id::text, to_id::text
-FROM ag_catalog.cypher('ai_mem', $$
+        let g = &self.graph_name;
+        let sql = format!(
+            r#"SELECT from_id::text, to_id::text
+FROM ag_catalog.cypher('{g}', $$
   MATCH (a:Belief)-[:CONTRADICTS]->(b:Belief)
   RETURN a.id, b.id
-$$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#;
+$$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
+        );
 
-        let rows = sqlx::query(sql).fetch_all(&self.pool).await?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         let mut pairs = Vec::with_capacity(rows.len());
         for row in &rows {
             let from_raw: String = row.try_get("from_id")?;
@@ -381,6 +526,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#;
             return Ok(vec![]);
         }
 
+        let g = &self.graph_name;
         // Build a Cypher list literal: ['id1', 'id2', ...]
         let id_list = ids
             .iter()
@@ -390,7 +536,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#;
 
         let sql = format!(
             r#"SELECT from_id::text, to_id::text, label::text, weight::text
-FROM ag_catalog.cypher('ai_mem', $$
+FROM ag_catalog.cypher('{g}', $$
   MATCH (a:Belief)-[r]->(b:Belief)
   WHERE a.id IN [{id_list}]
   AND   b.id IN [{id_list}]
@@ -422,6 +568,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
     /// AGE 1.x does not support the `[:A|B]` relationship-type OR syntax, so we use
     /// two separate MATCH clauses combined with UNION inside the Cypher block.
     pub async fn get_downstream_beliefs(&self, start_id: Uuid) -> Result<Vec<Belief>> {
+        let g = &self.graph_name;
         let id_str = start_id.to_string();
 
         // Two-query UNION approach: SUPPORTS paths + CAUSES paths.
@@ -432,13 +579,14 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
   probability::text,
   confidence::text,
   created_at::text,
-  last_activated_at::text
-FROM ag_catalog.cypher('ai_mem', $$
+  last_activated_at::text,
+  project::text
+FROM ag_catalog.cypher('{g}', $$
   MATCH (s:Belief {{id: '{id_str}'}})-[:SUPPORTS*1..10]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at
+  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at, n.project
   UNION
   MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES*1..10]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at
+  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 

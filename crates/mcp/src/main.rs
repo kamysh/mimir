@@ -3,9 +3,10 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::error;
 
-use ai_mem_core::{
+use mimir_core::{
+    config::Config,
     graph::EdgeType,
-    AiMemService,
+    MimirService,
 };
 
 // ---------------------------------------------------------------------------
@@ -38,9 +39,43 @@ fn tools_list() -> Value {
                 "properties": {
                     "content":     { "type": "string" },
                     "probability": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
-                    "confidence":  { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                    "confidence":  { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                    "project":     { "type": "string", "description": "Optional project scope. Beliefs in a project can be bulk-deleted with delete_project when the project is done." }
                 },
                 "required": ["content", "probability", "confidence"]
+            }
+        },
+        {
+            "name": "delete_belief",
+            "description": "Delete a belief and all its edges by ID. Returns {\"deleted\": true} if found, {\"deleted\": false} if not found.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "delete_project",
+            "description": "Delete all beliefs tagged with a project name, along with their edges. Use this to forget project-specific knowledge when a project is complete.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string" }
+                },
+                "required": ["project"]
+            }
+        },
+        {
+            "name": "delete_pattern",
+            "description": "Delete a pattern and all its edges by ID. Returns {\"deleted\": true} if found, {\"deleted\": false} if not found.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" }
+                },
+                "required": ["id"]
             }
         },
         {
@@ -183,7 +218,7 @@ fn tools_list() -> Value {
 // ---------------------------------------------------------------------------
 
 async fn handle_tool_call(
-    svc: &AiMemService,
+    svc: &MimirService,
     name: &str,
     args: &Value,
 ) -> Result<Value> {
@@ -198,8 +233,37 @@ async fn handle_tool_call(
             let confidence = args["confidence"]
                 .as_f64()
                 .ok_or_else(|| anyhow::anyhow!("missing 'confidence'"))?;
-            let belief = svc.add_belief(content, probability, confidence).await?;
+            let belief = match args["project"].as_str() {
+                Some(project) => svc.add_belief_in_project(content, probability, confidence, project).await?,
+                None => svc.add_belief(content, probability, confidence).await?,
+            };
             Ok(serde_json::to_value(&belief)?)
+        }
+
+        "delete_belief" => {
+            let id_str = args["id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
+            let id = uuid::Uuid::parse_str(id_str)?;
+            let deleted = svc.delete_belief(id).await?;
+            Ok(json!({ "deleted": deleted }))
+        }
+
+        "delete_project" => {
+            let project = args["project"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'project'"))?;
+            let count = svc.delete_project(project).await?;
+            Ok(json!({ "deleted": count }))
+        }
+
+        "delete_pattern" => {
+            let id_str = args["id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
+            let id = uuid::Uuid::parse_str(id_str)?;
+            let deleted = svc.delete_pattern(id).await?;
+            Ok(json!({ "deleted": deleted }))
         }
 
         "insert_pattern" => {
@@ -355,17 +419,17 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    // Read DSN from environment.
-    let dsn = match std::env::var("AI_MEM_DSN") {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("error: AI_MEM_DSN environment variable is not set");
+    // Read config from ~/.config/mimir/config.toml.
+    let db_cfg = match Config::load() {
+        Ok(cfg) => cfg.database,
+        Err(e) => {
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     };
 
     // Connect to database.
-    let svc = AiMemService::connect(&dsn).await?;
+    let svc = MimirService::connect(&db_cfg).await?;
 
     // Async I/O on stdin/stdout.
     let stdin = tokio::io::stdin();
@@ -416,7 +480,7 @@ async fn main() -> Result<()> {
                 json!({
                     "protocolVersion": "2024-11-05",
                     "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "ai-mem", "version": "0.1.0" }
+                    "serverInfo": { "name": "mimir", "version": "0.1.0" }
                 }),
             ),
 

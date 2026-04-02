@@ -1,0 +1,12 @@
+[package]
+name = "mimir"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mimir"
+path = "src/main.rs"
+
+[dependencies]
+mimir-core = { path = "../core" }
+anyhow = "1"

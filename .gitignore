@@ -1,4 +1,6 @@
 /target
 **/*.rs.bk
+.envrc
+.mcp.json
 .envspec/_build/
 spec/_build/
