@@ -4,3 +4,4 @@
 .mcp.json
 .envspec/_build/
 spec/_build/
+/.muninn.toml
