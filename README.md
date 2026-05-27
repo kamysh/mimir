@@ -171,6 +171,49 @@ claude mcp add --scope user mimir ~/.local/bin/mimir-mcp
 
 Restart Claude Code. The mimir tools will appear in its tools panel.
 
+### Step 6: Install the skill and hooks (recommended)
+
+The skill teaches Claude Code *how* to use the belief graph — when to read from it, when to write back, and how to calibrate probabilities. The hooks ensure it fires automatically on every session and message.
+
+**Skill:**
+
+```bash
+mkdir -p ~/.claude/skills/mimir
+cp skill/SKILL.md ~/.claude/skills/mimir/SKILL.md
+```
+
+**Hooks** — merge the following into `~/.claude/settings.json` under the top-level `"hooks"` key (create the key if it doesn't exist; append to existing arrays if you already have hooks for these events):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'mcp__mimir tools are available. Invoke the mimir skill now to load the belief graph loop protocol for this session.'"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Before acting: query mimir for relevant rules (mcp__mimir__query_relevant). Do this BEFORE reading files or writing code.'"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Restart Claude Code for the hooks to take effect.
+
 ## MCP tools
 
 | Tool | What it does |
