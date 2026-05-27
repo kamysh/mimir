@@ -152,44 +152,8 @@ pub struct AgeStore {
 }
 
 impl AgeStore {
-    pub async fn new(pool: PgPool, graph_name: String) -> Result<Self> {
-        let store = Self { pool, graph_name };
-        store.ensure_labels().await?;
-        Ok(store)
-    }
-
-    /// Pre-create all vertex and edge labels so concurrent callers never race
-    /// on lazy label creation. Uses DO blocks with EXCEPTION to be idempotent.
-    async fn ensure_labels(&self) -> Result<()> {
-        const VLABELS: &[&str] = &["Belief", "Pattern", "DocumentChunk"];
-        const ELABELS: &[&str] = &["SUPPORTS", "DEFEATS", "CAUSES", "CONTRADICTS", "CONTAINS"];
-        let g = &self.graph_name;
-
-        for label in VLABELS {
-            let sql = format!(
-                "DO $$ BEGIN PERFORM ag_catalog.create_vlabel('{g}', '{label}'); \
-                 EXCEPTION WHEN others THEN NULL; END $$"
-            );
-            sqlx::query(&sql).execute(&self.pool).await?;
-        }
-        for label in ELABELS {
-            let sql = format!(
-                "DO $$ BEGIN PERFORM ag_catalog.create_elabel('{g}', '{label}'); \
-                 EXCEPTION WHEN others THEN NULL; END $$"
-            );
-            sqlx::query(&sql).execute(&self.pool).await?;
-        }
-        // chunk_embeddings lives in public schema (agtype cannot store vector type).
-        // Unconstrained `vector` column: no HNSW index, sequential cosine scan.
-        // Suitable for small datasets (hundreds of chunks). Add index once
-        // the model dimension is stable and the dataset grows.
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS public.chunk_embeddings \
-             (chunk_id UUID PRIMARY KEY, embedding vector)"
-        )
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+    pub fn new(pool: PgPool, graph_name: String) -> Self {
+        Self { pool, graph_name }
     }
 
     // -----------------------------------------------------------------------
