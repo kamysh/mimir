@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            artifact: linux-amd64
+          - runner: ubuntu-24.04-arm
+            artifact: linux-arm64
+          - runner: macos-latest
+            artifact: darwin-arm64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v14
+        with:
+          flakehub: false
+
+      - name: Build
+        run: nix build .#mimir-static
+
+      - name: Package
+        run: |
+          tar -czf mimir-${{ matrix.artifact }}.tar.gz \
+            -C result/bin \
+            mimir mimir-mcp
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mimir-${{ matrix.artifact }}
+          path: mimir-${{ matrix.artifact }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            mimir-linux-amd64/mimir-linux-amd64.tar.gz
+            mimir-linux-arm64/mimir-linux-arm64.tar.gz
+            mimir-darwin-arm64/mimir-darwin-arm64.tar.gz

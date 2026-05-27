@@ -1,93 +1,185 @@
-# Mimir
+# mimir
 
-Persistent belief graph MCP server for Claude Code. Mimir stores beliefs, patterns, and the relationships between them (supports, defeats, contradicts) across sessions, letting Claude reason about its own knowledge over time.
+> *Mimir* (Old Norse: "memory") — the wisest of all beings, keeper of the well of wisdom at the root of Yggdrasil.
 
-Named after the Norse figure whose well holds all wisdom — consulted at great cost, returned with understanding.
+Persistent belief graph for [Claude Code](https://claude.ai/code). Mimir stores beliefs, patterns, and the typed relationships between them across sessions, letting Claude reason about its own knowledge over time.
 
 ## What it does
 
 Claude Code connects to Mimir via MCP and can:
-- Record beliefs and patterns with probability and confidence scores
-- Link beliefs via typed edges (SUPPORTS, DEFEATS, CAUSES, CONTRADICTS)
-- Query relevant beliefs for the current context
-- Propagate defeat cascades through the graph
+
+- Record beliefs with probability and confidence scores
+- Link beliefs via typed edges — SUPPORTS, DEFEATS, CAUSES, CONTRADICTS
+- Run defeat propagation cascades through the graph
 - Decay belief confidence over time
+- Index markdown documents and run semantic search over them (RAG)
 
-## Prerequisites
-
-- **Nix** with flakes enabled
-- **Docker** running a PostgreSQL image with the [Apache AGE](https://age.apache.org/) extension
-- **direnv** (recommended — loads `.envrc` automatically)
-
-## Configuration
-
-All configuration lives in `.envrc` at the project root. This file is gitignored — create it from the template:
-
-```bash
-cat > .envrc <<'EOF'
-export DBHOST=<postgres host>
-export DBPORT=<postgres port>
-export DBNAME=mimir
-export DBUSER=mimir
-export DOCKER_CONTAINER=<docker container name running postgres>
-EOF
-direnv allow
-```
-
-Then add a password entry to `~/.pgpass` so the admin setup script can authenticate:
-
-```bash
-echo "${DBHOST}:${DBPORT}:${DBNAME}:${DBUSER}:<password>" >> ~/.pgpass
-chmod 0600 ~/.pgpass
-```
+Everything runs locally. No data leaves your machine unless you choose a cloud embedding backend (Voyage AI or OpenAI) for document search — and even then only short text chunks are sent, never the full document.
 
 ## Installation
 
-```bash
-./install.sh
-```
-
-This will:
-1. Create the `mimir` PostgreSQL role and database
-2. Install required extensions (AGE, pgvector, uuid-ossp, pgcrypto)
-3. Configure permissions and create the AGE graph
-4. Build the `mimir-mcp` binary
-5. Write `.mcp.json` so Claude Code finds the server
-
-Restart Claude Code after installation.
-
-### Options
-
-```
-./install.sh [--dbhost HOST] [--dbport PORT] [--dbname DB] [--dbuser USER]
-             [--docker CONTAINER] [--force]
-```
-
-CLI args override `.envrc` values. `--force` overwrites `~/.config/mimir/config.toml` if it already exists.
-
-### Rebuilding the binary
-
-If you update the source, delete the binary and re-run the installer:
+### Step 1: Start the database
 
 ```bash
-rm target/release/mimir-mcp
-./install.sh
+docker run -d \
+  --name postgres-ai \
+  --restart always \
+  -p 127.0.0.1:5432:5432 \
+  -v mimir_data:/var/lib/postgresql/data \
+  kamysh/postgres-ai:latest
 ```
 
-Or build directly:
+This image has pgvector, Apache AGE, uuid-ossp, and pgcrypto pre-installed. No extension setup required.
+
+<details>
+<summary>Docker Compose alternative</summary>
+
+```yaml
+services:
+  postgres:
+    image: kamysh/postgres-ai:latest
+    container_name: postgres-ai
+    restart: always
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - mimir_data:/var/lib/postgresql/data
+
+volumes:
+  mimir_data:
+```
 
 ```bash
-nix develop --command cargo build --release -p mimir-mcp
+docker compose up -d
 ```
+
+</details>
+
+### Step 2: Create the database and user
+
+Add your chosen password to `~/.pgpass`:
+
+```
+# ~/.pgpass — format: hostname:port:database:username:password
+localhost:5432:mimir:mimir:yourpassword
+```
+
+```bash
+chmod 600 ~/.pgpass
+```
+
+Run the setup script (creates the role, database, extensions, and AGE graph):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/main/mimir-setup/create-db-user.sh \
+  | bash
+```
+
+Or clone the repo and run it locally:
+
+```bash
+bash mimir-setup/create-db-user.sh
+```
+
+Verify the connection:
+
+```bash
+psql -h localhost -U mimir -d mimir -c '\conninfo'
+```
+
+### Step 3: Download mimir
+
+Download the archive for your platform from the [latest release](https://github.com/kamysh/mimir/releases/latest):
+
+| Platform | File |
+|---|---|
+| Linux x86_64 | `mimir-linux-amd64.tar.gz` |
+| Linux ARM64 | `mimir-linux-arm64.tar.gz` |
+| macOS Apple Silicon | `mimir-darwin-arm64.tar.gz` |
+
+```bash
+# Linux x86_64
+curl -L https://github.com/kamysh/mimir/releases/latest/download/mimir-linux-amd64.tar.gz \
+  | tar -xz -C ~/.local/bin
+
+# Linux ARM64
+curl -L https://github.com/kamysh/mimir/releases/latest/download/mimir-linux-arm64.tar.gz \
+  | tar -xz -C ~/.local/bin
+
+# macOS Apple Silicon
+curl -L https://github.com/kamysh/mimir/releases/latest/download/mimir-darwin-arm64.tar.gz \
+  | tar -xz -C ~/.local/bin
+```
+
+```bash
+chmod +x ~/.local/bin/mimir ~/.local/bin/mimir-mcp
+```
+
+**macOS only** — remove the quarantine flag added to browser downloads (not needed with `curl`):
+
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/mimir ~/.local/bin/mimir-mcp
+```
+
+Make sure `~/.local/bin` is on your `PATH`. If `mimir --help` does not work, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc file and reload it.
+
+### Step 4: Configure mimir
+
+```bash
+mimir init
+```
+
+This creates `~/.config/mimir/config.toml` and opens it in `$EDITOR`. Fill in the database section:
+
+```toml
+[database]
+host   = "localhost"
+port   = 5432
+dbname = "mimir"
+user   = "mimir"      # the role you created in Step 2
+```
+
+Password comes from `~/.pgpass` — never from the config file.
+
+**Document search (optional):** To use `load_document` and `query_document`, add an `[embeddings]` section. Three backends are available:
+
+```toml
+# Local — no API key, works offline, downloads ~120 MB on first use
+[embeddings]
+backend = "local"
+
+# Voyage AI — best quality, requires api_key from voyageai.com
+# [embeddings]
+# backend = "voyage"
+# model   = "voyage-3-lite"
+# api_key = "pa-..."
+
+# OpenAI — requires api_key from platform.openai.com
+# [embeddings]
+# backend = "openai"
+# model   = "text-embedding-3-small"
+# api_key = "sk-..."
+```
+
+Save and close the editor.
+
+### Step 5: Connect Claude Code
+
+```bash
+claude mcp add --scope user mimir ~/.local/bin/mimir-mcp
+```
+
+Restart Claude Code. The mimir tools will appear in its tools panel.
 
 ## MCP tools
 
-Once installed, Claude Code has access to these tools:
-
-| Tool | Description |
-|------|-------------|
+| Tool | What it does |
+|---|---|
 | `insert_belief` | Add a belief with `content`, `probability` [0,1], `confidence` [0,1] |
+| `delete_belief` | Remove a belief and all its edges by `id` |
 | `insert_pattern` | Add a pattern with `situation`, `approach`, `success_rate` [0,1] |
+| `delete_pattern` | Remove a pattern by `id` |
+| `delete_project` | Remove all beliefs and document chunks tagged with a `project` |
 | `record_support` | Add a SUPPORTS edge from `from_id` to `to_id` with `weight` |
 | `record_defeat` | Add a DEFEATS edge and trigger defeat propagation cascade |
 | `record_contradiction` | Add a bidirectional CONTRADICTS relation between `id_a` and `id_b` |
@@ -97,27 +189,48 @@ Once installed, Claude Code has access to these tools:
 | `get_contradictions` | Find all actively contradicting belief pairs |
 | `query_relevant` | Hybrid retrieval: text match + graph expansion, ordered by probability |
 | `propagate_from` | Run defeat propagation from a seed belief `id` |
-| `update_confidence` | Update the confidence value of a belief |
+| `update_confidence` | Update the `confidence` value of a belief |
 | `decay_all` | Apply time decay to all beliefs (`decay_factor` defaults to 0.99) |
+| `load_document` | Parse a markdown file into chunks, embed, and index for semantic search |
+| `query_document` | Semantic search over indexed document chunks |
+| `clear_document` | Remove all chunks and embeddings for a document `path` |
 
-## Running integration tests
+## CLI reference
+
+| Command | What it does |
+|---|---|
+| `mimir init` | Create `~/.config/mimir/config.toml` and open it in `$EDITOR` |
+| `mimir stats` | Print belief, pattern, and edge counts |
+| `mimir list [--project NAME] [--limit N]` | List beliefs, sorted by probability |
+| `mimir patterns [--limit N]` | List patterns, sorted by success rate |
+| `mimir query TEXT [--limit N]` | Hybrid search: text match + graph expansion |
+| `mimir delete UUID` | Delete a belief and all its edges |
+| `mimir forget PROJECT` | Delete all beliefs and document chunks for a project |
+| `mimir decay [--factor 0.99]` | Apply time decay to all belief confidences |
+| `mimir contradictions` | List active contradictions in the graph |
+| `mimir load PATH [--project NAME]` | Index a markdown file for semantic search |
+| `mimir query-doc CONTEXT [--project NAME] [--limit N]` | Semantic search over chunks |
+| `mimir clear-doc PATH` | Remove all chunks and embeddings for a document |
+
+## Building from source
+
+Requires [Nix](https://nixos.org/download) with flakes enabled.
 
 ```bash
-nix develop --command cargo test -p mimir-core --test store_integration
+# Enter the dev shell
+nix develop
+
+# Build (dynamic)
+cargo build --release -p mimir-mcp
+cargo build --release -p mimir-cli
+
+# Build static binary (single self-contained executable)
+nix build .#mimir-static    # result/bin/mimir-mcp and result/bin/mimir
+
+# Install from source into Nix profile and register with Claude Code
+./install.sh
 ```
 
-`MIMIR_DSN` must be set (the `nix develop` shell constructs it from `.envrc` values).
+## License
 
-## Project structure
-
-```
-mimir-setup/
-  01-admin-db-setup.sh   # Creates DB, role, extensions, AGE graph (run as admin once)
-  02-user-setup.sh       # Builds binary, writes .mcp.json (run per user)
-install.sh               # Orchestrates both setup steps
-crates/
-  core/                  # mimir-core: graph types, AGE store, inference engine
-  mcp/                   # mimir-mcp: MCP server (stdio JSON-RPC)
-spec/
-  Mimir.agda             # Formal spec (Agda, --safe mode)
-```
+Apache License 2.0 — see [LICENSE](LICENSE).
