@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Create a role, database, and AGE graph for mimir on a postgres-ai Docker container.
+# Create a role and database for mimir on a postgres-ai Docker container.
 #
 # Password is read from ~/.pgpass — add an entry before running:
 #   localhost:5432:mimir:mimir:<password>
+#
+# The AGE graph, vertex/edge labels, and chunk_embeddings table are created
+# automatically by mimir on first startup via embedded migrations.
 #
 # Usage:
 #   ./create-db-user.sh
@@ -59,7 +62,6 @@ if [[ -z "$PASSWORD" ]]; then
 fi
 
 PSQL_ADMIN=(docker exec -i "$CONTAINER" psql -U postgres -v ON_ERROR_STOP=1)
-PSQL_DB=(   docker exec -i "$CONTAINER" psql -U postgres -d "$DBNAME" -v ON_ERROR_STOP=1)
 
 echo "==> Creating role '${DBUSER}' and database '${DBNAME}'..."
 
@@ -82,7 +84,7 @@ SQL
 
 echo "==> Installing extensions in '${DBNAME}'..."
 
-"${PSQL_DB[@]}" <<SQL
+"${PSQL_ADMIN[@]}" -d "${DBNAME}" <<SQL
 CREATE EXTENSION IF NOT EXISTS age;
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -91,7 +93,7 @@ SQL
 
 echo "==> Granting schema and ag_catalog privileges..."
 
-"${PSQL_DB[@]}" <<SQL
+"${PSQL_ADMIN[@]}" -d "${DBNAME}" <<SQL
 GRANT USAGE, CREATE ON SCHEMA public TO "${DBUSER}";
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES    TO "${DBUSER}";
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO "${DBUSER}";
@@ -99,19 +101,6 @@ GRANT USAGE                                          ON SCHEMA ag_catalog TO "${
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES   IN SCHEMA ag_catalog TO "${DBUSER}";
 GRANT EXECUTE ON ALL FUNCTIONS                       IN SCHEMA ag_catalog TO "${DBUSER}";
 GRANT USAGE   ON ALL SEQUENCES                       IN SCHEMA ag_catalog TO "${DBUSER}";
-SQL
-
-echo "==> Creating AGE graph '${DBNAME}'..."
-
-"${PSQL_DB[@]}" <<SQL
-SELECT ag_catalog.create_graph('${DBNAME}')
-WHERE NOT EXISTS (
-    SELECT 1 FROM ag_catalog.ag_graph WHERE name = '${DBNAME}'
-);
-ALTER SCHEMA "${DBNAME}" OWNER TO "${DBUSER}";
-GRANT USAGE, CREATE ON SCHEMA "${DBNAME}" TO "${DBUSER}";
-ALTER DEFAULT PRIVILEGES IN SCHEMA "${DBNAME}" GRANT ALL ON TABLES    TO "${DBUSER}";
-ALTER DEFAULT PRIVILEGES IN SCHEMA "${DBNAME}" GRANT ALL ON SEQUENCES TO "${DBUSER}";
 SQL
 
 echo "==> Done."
