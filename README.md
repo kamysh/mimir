@@ -18,6 +18,52 @@ Everything runs locally. No data leaves your machine unless you choose a cloud e
 
 ## Installation
 
+### What a complete install consists of
+
+Mimir has three required pieces. Skipping any one leaves an install that looks finished but fails:
+
+1. A **PostgreSQL container** (or your own DB) holding the belief graph and document index.
+2. **Two binaries** on `PATH` — `mimir` (CLI) and `mimir-mcp` (the MCP server).
+3. The `mimir-mcp` server **registered with Claude Code**. Without this, Claude Code has no tools to call.
+
+There is no daemon to start. The MCP server is spawned by Claude Code on demand; the database schema (including the AGE graph) is created automatically by mimir's embedded migrations on first run.
+
+Step 6 at the end of this guide is a one-block verification that all three pieces are in place. Run it before declaring the install complete.
+
+### Conventions used in this guide
+
+This guide uses the following defaults. If you change any of them, change them everywhere they appear:
+
+| Setting | Default | Used in |
+|---|---|---|
+| PostgreSQL port | `5432` | `docker run`, `~/.pgpass`, `config.toml` |
+| Container name | `postgres-ai` | `docker run`, all `docker exec` calls |
+| Docker volume | `mimir_data` | `docker run` |
+| Database name | `mimir` | setup script, `~/.pgpass`, `config.toml` |
+| Database user | `mimir` | setup script, `~/.pgpass`, `config.toml` |
+
+On macOS, avoid ports `5000` (AirPlay Receiver) and `6000` (X11) if you change the port.
+
+### Preflight check
+
+Run these before you start. Each line should print `OK`:
+
+```bash
+docker info >/dev/null 2>&1 && echo OK                                            # Docker daemon running
+! lsof -nP -iTCP:5432 -sTCP:LISTEN 2>/dev/null | grep -q . && echo OK              # port 5432 free
+! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx postgres-ai && echo OK # container name free
+echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin" && echo OK                # PATH includes ~/.local/bin
+command -v claude >/dev/null && echo OK                                            # Claude Code CLI installed
+```
+
+If any line fails:
+
+- **Docker not running** → start Docker Desktop (or your runtime), then re-check.
+- **Port 5432 in use** → either stop the conflicting service or pick a different port. If you change the port, update *everything* in this guide that mentions `5432`.
+- **Container name `postgres-ai` in use** → either reuse the existing container (if it's a postgres-ai instance from another tool, like muninn) or pick a new name. Do not delete the existing container without checking what it holds.
+- **`~/.local/bin` not on PATH** → add `export PATH="$HOME/.local/bin:$PATH"` to your shell's rc file and reload it.
+- **`claude` CLI missing** → install [Claude Code](https://claude.ai/code) before continuing; Step 5 needs it.
+
 ### Step 1: Start the database
 
 ```bash
@@ -29,7 +75,7 @@ docker run -d \
   kamysh/postgres-ai:latest
 ```
 
-This image has pgvector, Apache AGE, uuid-ossp, and pgcrypto pre-installed. No extension setup required.
+This image has pgvector, Apache AGE, uuid-ossp, and pgcrypto pre-installed, and sets `search_path = ag_catalog, "$user", public` cluster-wide (mimir relies on this — see Troubleshooting if you use a different image).
 
 <details>
 <summary>Docker Compose alternative</summary>
@@ -55,6 +101,12 @@ docker compose up -d
 
 </details>
 
+**Verify:**
+
+```bash
+docker exec postgres-ai psql -U postgres -c 'SELECT 1' >/dev/null && echo OK
+```
+
 ### Step 2: Create the database and user
 
 Add your chosen password to `~/.pgpass`:
@@ -68,7 +120,7 @@ localhost:5432:mimir:mimir:yourpassword
 chmod 600 ~/.pgpass
 ```
 
-Run the setup script (creates the role, database, extensions, and AGE graph):
+Run the setup script (creates the role, database, extensions, and grants):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/main/mimir-setup/create-db-user.sh \
@@ -81,13 +133,17 @@ Or clone the repo and run it locally:
 bash mimir-setup/create-db-user.sh
 ```
 
-Verify the connection:
+The AGE graph itself is **not** created by this script — mimir's migrations create it on first invocation in Step 4.
+
+**Verify the connection:**
 
 ```bash
-psql -h localhost -U mimir -d mimir -c '\conninfo'
+psql -h localhost -U mimir -d mimir -c '\conninfo' >/dev/null && echo OK
 ```
 
-### Step 3: Download mimir
+### Step 3: Install the mimir binaries
+
+This step installs the two mimir binaries to `~/.local/bin`. It is one of three pieces — see Step 5 for the MCP server registration.
 
 Download the archive for your platform from the [latest release](https://github.com/kamysh/mimir/releases/latest):
 
@@ -96,6 +152,8 @@ Download the archive for your platform from the [latest release](https://github.
 | Linux x86_64 | `mimir-linux-amd64.tar.gz` |
 | Linux ARM64 | `mimir-linux-arm64.tar.gz` |
 | macOS Apple Silicon | `mimir-darwin-arm64.tar.gz` |
+
+(Intel Macs are not built; see "Building from source" below.)
 
 ```bash
 # Linux x86_64
@@ -115,13 +173,19 @@ curl -L https://github.com/kamysh/mimir/releases/latest/download/mimir-darwin-ar
 chmod +x ~/.local/bin/mimir ~/.local/bin/mimir-mcp
 ```
 
-**macOS only** — remove the quarantine flag added to browser downloads (not needed with `curl`):
+**macOS only — quarantine flag.** macOS adds a quarantine attribute to files downloaded via a *browser*, which blocks them from running. If you downloaded the archive with a browser, remove it:
 
 ```bash
 xattr -d com.apple.quarantine ~/.local/bin/mimir ~/.local/bin/mimir-mcp
 ```
 
-Make sure `~/.local/bin` is on your `PATH`. If `mimir --help` does not work, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc file and reload it.
+`curl` downloads do **not** set this attribute, so the command above is unnecessary if you used the `curl` snippet. (It will print "Permission denied" or "no such xattr" — that's expected, not a problem.)
+
+**Verify:**
+
+```bash
+mimir --help >/dev/null && echo OK
+```
 
 ### Step 4: Configure mimir
 
@@ -163,15 +227,45 @@ backend = "local"
 
 Save and close the editor.
 
+**Verify** — the first `mimir stats` triggers the schema migrations, including creating the AGE graph. Expect a one-second pause on this first run:
+
+```bash
+mimir stats >/dev/null && echo OK
+```
+
 ### Step 5: Connect Claude Code
 
 ```bash
 claude mcp add --scope user mimir ~/.local/bin/mimir-mcp
 ```
 
+Use `--scope user` (not `--scope project`) — mimir is a system-wide tool, not project-local.
+
 Restart Claude Code. The mimir tools will appear in its tools panel.
 
-### Step 6: Install the skill and hooks (recommended)
+**Verify:**
+
+```bash
+claude mcp list 2>&1 | grep -E '^mimir:.*Connected' && echo OK
+```
+
+### Step 6: Verify the install
+
+Before relying on mimir, confirm all three pieces are in place. Each line should print `OK`:
+
+```bash
+mimir stats >/dev/null                                                            && echo OK  # 1. CLI talks to DB
+docker ps --filter "name=^postgres-ai$" --format '{{.Names}}' | grep -qx postgres-ai && echo OK  # 2. DB container running
+command -v mimir-mcp >/dev/null                                                    && echo OK  # 3. MCP binary on PATH
+psql -h localhost -U mimir -d mimir \
+  -c "SELECT 1 FROM ag_catalog.ag_graph WHERE name='mimir'" -tA 2>/dev/null \
+  | grep -q 1                                                                      && echo OK  # 4. AGE graph created by migrations
+claude mcp list 2>&1 | grep -qE '^mimir:.*Connected'                               && echo OK  # 5. MCP wired up to Claude Code
+```
+
+Five `OK`s = good to go. The most common silent failure is line 4: if it's missing, the migrations haven't run yet (run `mimir stats` once) or the role lacks `search_path = ag_catalog, …` — see Troubleshooting.
+
+### Step 7: Install the skill and hooks (recommended)
 
 The skill teaches Claude Code *how* to use the belief graph — when to read from it, when to write back, and how to calibrate probabilities. The hooks ensure it fires automatically on every session and message.
 
@@ -182,7 +276,7 @@ mkdir -p ~/.claude/skills/mimir
 cp skill/SKILL.md ~/.claude/skills/mimir/SKILL.md
 ```
 
-**Hooks** — merge the following into `~/.claude/settings.json` under the top-level `"hooks"` key (create the key if it doesn't exist; append to existing arrays if you already have hooks for these events):
+**Hooks** — merge the following into `~/.claude/settings.json` under the top-level `"hooks"` key (create the key if it doesn't exist; append to existing arrays if you already have hooks for these events). Do **not** blindly overwrite `~/.claude/settings.json` — you almost certainly have other settings in it.
 
 ```json
 {
@@ -219,6 +313,35 @@ The `UserPromptSubmit` hook references both mimir and [muninn](https://github.co
 ```
 
 Restart Claude Code for the hooks to take effect.
+
+### Sharing the database with muninn
+
+If you also use [muninn](https://github.com/kamysh/muninn), the two tools can share **one** `postgres-ai` container — just create separate roles and databases. The `kamysh/postgres-ai` image is designed for this: pgvector, AGE, and the support extensions are cluster-wide, and the cluster-default `search_path` works for both tools. In that case, run only one `docker run` from Step 1, and run each tool's setup script against the shared container.
+
+### Troubleshooting
+
+A few failure modes are common enough to call out explicitly:
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `error returned from database: graph "mimir" does not exist` | Migrations haven't run yet — mimir creates the graph on first invocation, not the setup script. | Run any mimir command, e.g. `mimir stats`. The migration will create the graph. |
+| `error returned from database: permission denied for table _ag_label_vertex` | `search_path` is missing `ag_catalog`. The `kamysh/postgres-ai` image sets this cluster-wide; a custom postgres does not. | As the postgres superuser: `ALTER DATABASE mimir SET search_path = ag_catalog, "$user", public;` then reconnect. |
+| `Cannot connect to the Docker daemon` | Docker Desktop / runtime not running. | Start it. |
+| `docker run` fails with "container name in use" | Another container is already named `postgres-ai` (e.g. from muninn). | Either reuse it — see "Sharing the database with muninn" above — or pick a different name. Do not delete the existing container without checking what's in it. |
+| `bind: address already in use` on port 5432 | Another postgres or app is using 5432. | Pick a different port. Update `docker run -p`, `~/.pgpass`, the setup script's `--port` flag, and `~/.config/mimir/config.toml` together. |
+| `~/.pgpass` ignored, prompts for password | Wrong file permissions. | `chmod 600 ~/.pgpass`. PostgreSQL silently ignores `~/.pgpass` if it is world- or group-readable. |
+| `xattr: Permission denied` on macOS | The file does not have a quarantine flag (curl-downloaded). | Skip the `xattr` step. The binaries run fine without it. |
+| MCP shows `Failed to connect` instead of `Connected` | `mimir-mcp` is crashing on startup, usually due to a DB / config error. | Run `mimir-mcp` directly in a shell; the error goes to stderr. Common causes: wrong port in `config.toml`, password mismatch with `~/.pgpass`, embeddings block missing a required `model` field. |
+| `load_document` or `query_document` returns `embeddings not configured` | `[embeddings]` block missing from `config.toml`. | Add an `[embeddings]` block (see Step 4). The belief-graph tools work without it; only document search needs it. |
+
+If something is broken in a way not listed here, file an [issue](https://github.com/kamysh/mimir/issues) with the output of:
+
+```bash
+mimir --version
+mimir stats 2>&1
+claude mcp list 2>&1 | grep mimir
+docker ps --filter name=postgres-ai
+```
 
 ## MCP tools
 
