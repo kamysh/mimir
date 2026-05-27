@@ -75,6 +75,41 @@ enum Command {
 
     /// List active contradictions in the graph.
     Contradictions,
+
+    /// Parse a markdown file into chunks, embed, and index for semantic search.
+    ///
+    /// Requires [embeddings] in config.toml.
+    /// Re-indexing the same path replaces existing chunks.
+    Load {
+        /// Path to the markdown file to index.
+        path: String,
+
+        /// Tag all chunks with this project (optional).
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+
+    /// Semantic search over indexed document chunks.
+    ///
+    /// Requires [embeddings] in config.toml.
+    QueryDoc {
+        /// Query text to embed and search.
+        context: String,
+
+        /// Restrict search to chunks tagged with this project.
+        #[arg(long, short)]
+        project: Option<String>,
+
+        /// Maximum number of results (0 = no limit).
+        #[arg(long, short, default_value_t = 5)]
+        limit: usize,
+    },
+
+    /// Remove all chunks and embeddings for a document path.
+    ClearDoc {
+        /// Path of the document to remove.
+        path: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +130,9 @@ async fn main() -> Result<()> {
         Command::Forget { project } => cmd_forget(&project).await?,
         Command::Decay { factor } => cmd_decay(factor).await?,
         Command::Contradictions => cmd_contradictions().await?,
+        Command::Load { path, project } => cmd_load(&path, project.as_deref()).await?,
+        Command::QueryDoc { context, project, limit } => cmd_query_doc(&context, project.as_deref(), limit).await?,
+        Command::ClearDoc { path } => cmd_clear_doc(&path).await?,
     }
 
     Ok(())
@@ -315,6 +353,56 @@ async fn cmd_decay(factor: f64) -> Result<()> {
     let svc = connect().await?;
     let count = svc.decay_beliefs(Some(factor)).await?;
     println!("decayed {}  [factor: {:.3}]", count, factor);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// mimir load
+// ---------------------------------------------------------------------------
+
+async fn cmd_load(path: &str, project: Option<&str>) -> Result<()> {
+    let svc = connect().await?;
+    let count = svc.load_document(path, project).await?;
+    let proj_note = project.map(|p| format!("  [project: {}]", p)).unwrap_or_default();
+    println!("loaded {} chunk(s)  {}{}", count, path, proj_note);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// mimir query-doc
+// ---------------------------------------------------------------------------
+
+async fn cmd_query_doc(context: &str, project: Option<&str>, limit: usize) -> Result<()> {
+    let svc = connect().await?;
+    let results = svc.query_document(context, project, limit).await?;
+
+    if results.is_empty() {
+        println!("(no results)");
+        return Ok(());
+    }
+
+    for r in &results {
+        let section = if r.section_path.is_empty() {
+            String::new()
+        } else {
+            format!("  § {}", r.section_path.join(" > "))
+        };
+        println!("{}{}", r.document_path, section);
+        println!("  {}", trunc(&r.content, 120));
+        println!();
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// mimir clear-doc
+// ---------------------------------------------------------------------------
+
+async fn cmd_clear_doc(path: &str) -> Result<()> {
+    let svc = connect().await?;
+    let count = svc.clear_document(path).await?;
+    println!("cleared {}  {}", count, path);
     Ok(())
 }
 
