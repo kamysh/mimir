@@ -18,6 +18,8 @@ Everything runs locally. No data leaves your machine unless you choose a cloud e
 
 ## Installation
 
+> **Installing mimir as an AI coding agent?** See [AGENTS.md](AGENTS.md) — it's the same procedure, but framed for automation: explicit variables, verify-after-each-step, state detection for idempotent reruns, and an anti-patterns list.
+
 ### Step 1: Start the database
 
 ```bash
