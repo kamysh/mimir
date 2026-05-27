@@ -1,5 +1,23 @@
 use serde::{Deserialize, Serialize};
 
+// ── Embedding config ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum EmbeddingBackend {
+    Voyage,
+    #[serde(rename = "openai")]
+    OpenAi,
+    Local,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EmbeddingsConfig {
+    pub backend: EmbeddingBackend,
+    pub model: String,
+    pub api_key: String,
+}
+
 // ── SSL mode ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -60,6 +78,9 @@ fn default_max_connections() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub database: DatabaseConfig,
+    /// Optional — required for load_document and query_document.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embeddings: Option<EmbeddingsConfig>,
 }
 
 impl Config {
@@ -154,4 +175,19 @@ user   = "mimir"       # PostgreSQL role used by mimir at runtime
 # decrease if the PostgreSQL server has a low max_connections limit.
 #
 # max_connections = 10
+
+# ── Embeddings (required for load_document / query_document) ──────────────────
+# Without this section, the document RAG tools are disabled.
+#
+# backend: voyage | openai | local
+# model:   voyage-3-lite | voyage-code-3 | text-embedding-3-small | …
+# api_key: obtain from voyageai.com or platform.openai.com; never commit this file.
+#
+# All load_document calls must use the same model — mixing models produces
+# incorrect similarity rankings and requires a full re-index to fix.
+#
+# [embeddings]
+# backend = "voyage"
+# model   = "voyage-3-lite"
+# api_key = "pa-..."
 "#;

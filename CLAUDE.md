@@ -1,0 +1,84 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+Mimir is a persistent belief graph MCP server for Claude Code. It stores beliefs, patterns, and typed edges (SUPPORTS, DEFEATS, CAUSES, CONTRADICTS) in PostgreSQL via the Apache AGE graph extension, and exposes them to Claude via stdio JSON-RPC (MCP protocol).
+
+## Commands
+
+All commands assume you're in a Nix dev shell. Enter it with `nix develop` (direnv does this automatically if `.envrc` is allowed).
+
+```bash
+# Build
+cargo build --release -p mimir-mcp
+cargo build --release -p mimir-cli
+
+# Check (fast, no codegen)
+cargo check
+
+# Unit tests (no DB required)
+cargo test -p mimir-core
+
+# Run a single test module or function
+cargo test -p mimir-core graph::tests
+cargo test -p mimir-core inference::tests::test_attenuate_by_defeat
+
+# Integration tests (require live PostgreSQL + MIMIR_DSN)
+cargo test -p mimir-core --test store_integration
+
+# Lint
+cargo clippy
+
+# Verify Agda spec type-checks
+cd spec && agda Mimir.agda
+
+# CLI (after `mimir init` writes ~/.config/mimir/config.toml)
+mimir stats
+mimir list [--project NAME] [--limit N]
+mimir query TEXT [--limit N]
+mimir delete UUID
+mimir forget PROJECT
+mimir decay [--factor 0.99]
+mimir contradictions
+mimir patterns [--limit N]
+
+# Full install (DB setup + binary build + .mcp.json registration)
+./install.sh
+```
+
+## Architecture
+
+**Cargo workspace**: `crates/core` (`mimir-core`), `crates/mcp` (`mimir-mcp`), `crates/cli` (`mimir-cli`).
+
+**Core layer** (`crates/core/src/`):
+- `graph.rs` — domain types: `Belief`, `Pattern`, `Edge`, `EdgeType`, `Probability` (validated `[0,1]` newtype). All construction is fallible.
+- `store.rs` — `AgeStore`: all graph DB operations. Queries are Cypher strings interpolated into `ag_catalog.cypher(...)` SQL calls.
+- `inference.rs` — `InferenceEngine`: pure computation only (no I/O). Defeat attenuation formula: `P(target) × (1 − weight × P(defeater))`. Support boost: `P + (1−P) × weight × P(supporter)`.
+- `lib.rs` — `MimirService`: composes `AgeStore` + `InferenceEngine`. This is the public API surface.
+- `config.rs` — `Config` / `DatabaseConfig`, loaded from `~/.config/mimir/config.toml`. Passwords come from `~/.pgpass`, never from config.
+
+**MCP server** (`crates/mcp/src/main.rs`): single-file stdio JSON-RPC loop. Reads one JSON line → dispatches to `MimirService` → writes one JSON line. Tracing goes to stderr only.
+
+**CLI** (`crates/cli/src/main.rs`): clap-based; thin wrappers around `MimirService`. Shares config loading with MCP.
+
+## AGE / Cypher quirks
+
+AGE 1.x does not support parameterized queries — all values are string-interpolated into Cypher. The `esc()` helper in `store.rs` escapes backslashes then single quotes for safe interpolation. Always use `esc()` for string values.
+
+AGE scalar properties can't be extracted by casting a whole vertex/edge to `TEXT`. Instead, return individual properties (e.g., `RETURN n.id, n.content, …`) and cast each to `text` via the column alias declaration. See `BELIEF_RETURN_COLUMNS` / `PATTERN_RETURN_COLUMNS` constants in `store.rs`.
+
+CONTRADICTS edges are stored bidirectionally (two directed edges per logical pair). The `count_edges` method returns the raw directed count; `MimirStats.contradicts / 2` gives logical pairs.
+
+AGE 1.x does not support `[:A|B]` relationship-type OR syntax. Use UNION inside the Cypher block instead (see `get_downstream_beliefs`).
+
+## Formal spec
+
+`spec/Mimir.agda` and its submodules (`Types`, `Inference`, `Setup`, `Graph`) are compiled with `--safe` mode. The spec is Agda-only; no Haskell runtime is involved. Run `agda Mimir.agda` inside `spec/` to typecheck.
+
+## Configuration and environment
+
+`.envrc` (gitignored) sets `DBHOST`, `DBPORT`, `DBNAME`, `DBUSER`, `DOCKER_CONTAINER`. direnv loads it automatically. Integration tests construct `MIMIR_DSN` from these vars inside the Nix shell.
+
+The MCP server and CLI read `~/.config/mimir/config.toml` at startup; `mimir init` writes a commented template and opens `$EDITOR`.

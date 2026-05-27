@@ -1,5 +1,7 @@
 pub mod config;
 pub mod db;
+pub mod documents;
+pub mod embed;
 pub mod graph;
 pub mod inference;
 pub mod store;
@@ -7,7 +9,9 @@ pub mod store;
 use anyhow::Result;
 use uuid::Uuid;
 
-use config::DatabaseConfig;
+use config::Config;
+use documents::{QueryResult, parse_markdown};
+use embed::EmbeddingClient;
 use graph::{Belief, EdgeType, Pattern, Probability};
 use inference::InferenceEngine;
 use store::AgeStore;
@@ -26,14 +30,21 @@ pub struct MimirStats {
 pub struct MimirService {
     store: AgeStore,
     inference: InferenceEngine,
+    embeddings: Option<EmbeddingClient>,
 }
 
 impl MimirService {
-    pub async fn connect(cfg: &DatabaseConfig) -> Result<Self> {
-        let pool = db::connect(cfg).await?;
+    pub async fn connect(cfg: &Config) -> Result<Self> {
+        let pool = db::connect(&cfg.database).await?;
+        let embeddings = cfg
+            .embeddings
+            .clone()
+            .map(EmbeddingClient::new)
+            .transpose()?;
         Ok(Self {
-            store: AgeStore::new(pool, cfg.dbname.clone()).await?,
+            store: AgeStore::new(pool, cfg.database.dbname.clone()).await?,
             inference: InferenceEngine::new(),
+            embeddings,
         })
     }
 
@@ -72,9 +83,16 @@ impl MimirService {
         self.store.delete_belief(id).await
     }
 
-    /// Delete all beliefs tagged with the given project. Returns count deleted.
+    /// Delete all beliefs and DocumentChunks tagged with the given project.
+    /// Returns the combined count of vertices removed.
     pub async fn delete_project(&self, project: &str) -> Result<usize> {
-        self.store.delete_project(project).await
+        let belief_count = self.store.delete_project(project).await?;
+        // Also clear document chunks tagged with this project.
+        let chunk_ids = self.store.get_chunk_ids_by_project(project).await?;
+        let chunk_count = chunk_ids.len();
+        self.store.delete_document_chunks(&chunk_ids).await?;
+        self.store.delete_chunk_embeddings(&chunk_ids).await?;
+        Ok(belief_count + chunk_count)
     }
 
     /// Get a pattern by ID.
@@ -228,6 +246,110 @@ impl MimirService {
             matched.truncate(limit);
         }
         Ok(matched)
+    }
+
+    // -----------------------------------------------------------------------
+    // Document RAG
+    // -----------------------------------------------------------------------
+
+    /// Parse a markdown file into chunks, embed each one, and store in AGE +
+    /// chunk_embeddings.  Replaces any existing chunks for the same path.
+    /// Returns the number of chunks loaded.
+    pub async fn load_document(
+        &self,
+        path: &str,
+        project: Option<&str>,
+    ) -> Result<usize> {
+        let embedder = self
+            .embeddings
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("embeddings not configured — add [embeddings] to config.toml"))?;
+
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("cannot read {}: {}", path, e))?;
+
+        // Replace-on-reload: clear existing chunks for this path first.
+        let old_ids = self.store.get_chunk_ids_for_document(path).await?;
+        self.store.delete_document_chunks(&old_ids).await?;
+        self.store.delete_chunk_embeddings(&old_ids).await?;
+
+        let chunks = parse_markdown(&text, path, project);
+        let count = chunks.len();
+
+        // Embed all chunks in one batch call where possible.
+        let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+        let embeddings = embedder.embed_batch(&texts).await?;
+
+        for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
+            self.store.insert_document_chunk(chunk).await?;
+            self.store.insert_chunk_embedding(chunk.id, embedding).await?;
+        }
+        Ok(count)
+    }
+
+    /// Remove all chunks (and their embeddings) for the given document path.
+    /// Returns the number of chunks cleared. Returns 0 if never loaded.
+    pub async fn clear_document(&self, path: &str) -> Result<usize> {
+        let ids = self.store.get_chunk_ids_for_document(path).await?;
+        let count = ids.len();
+        self.store.delete_document_chunks(&ids).await?;
+        self.store.delete_chunk_embeddings(&ids).await?;
+        Ok(count)
+    }
+
+    /// Semantic search over loaded document chunks.
+    /// Embeds `context`, queries chunk_embeddings by cosine distance, fetches
+    /// matching DocumentChunk vertices from AGE, enriches with parent content.
+    /// limit=0 means no limit.
+    pub async fn query_document(
+        &self,
+        context: &str,
+        project: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<QueryResult>> {
+        let embedder = self
+            .embeddings
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("embeddings not configured — add [embeddings] to config.toml"))?;
+
+        let query_vec = embedder.embed(context).await?;
+
+        let filter_ids: Option<Vec<Uuid>> = match project {
+            None => None,
+            Some(proj) => Some(self.store.get_chunk_ids_by_project(proj).await?),
+        };
+
+        let chunk_ids = self
+            .store
+            .query_chunks_by_vector(
+                &query_vec,
+                limit,
+                filter_ids.as_deref(),
+            )
+            .await?;
+
+        let mut results = Vec::with_capacity(chunk_ids.len());
+        for id in chunk_ids {
+            let Some(chunk) = self.store.get_chunk_by_id(id).await? else {
+                continue;
+            };
+            let parent_content = match chunk.parent_id {
+                None => None,
+                Some(pid) => self
+                    .store
+                    .get_chunk_by_id(pid)
+                    .await?
+                    .map(|p| p.content),
+            };
+            results.push(QueryResult {
+                id: chunk.id.to_string(),
+                document_path: chunk.document_path,
+                section_path: chunk.section_path,
+                content: chunk.content,
+                parent_content,
+            });
+        }
+        Ok(results)
     }
 
     /// Collect graph statistics.

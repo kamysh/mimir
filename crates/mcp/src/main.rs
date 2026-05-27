@@ -209,6 +209,42 @@ fn tools_list() -> Value {
                 },
                 "required": ["id", "confidence"]
             }
+        },
+        {
+            "name": "load_document",
+            "description": "Parse a markdown file into heading-bounded chunks, embed each chunk, and index them for semantic search. Replaces existing chunks for the same path on reload. Requires [embeddings] in config.toml.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path":    { "type": "string", "description": "Absolute or repo-relative path to the markdown file." },
+                    "project": { "type": "string", "description": "Optional project tag. Chunks tagged with a project can be bulk-deleted via delete_project." }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "query_document",
+            "description": "Semantic search over indexed document chunks. Embeds the query context and returns the most similar chunks ordered by cosine similarity. Requires [embeddings] in config.toml.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "context": { "type": "string", "description": "Query text to embed and search." },
+                    "project": { "type": "string", "description": "Restrict search to chunks tagged with this project." },
+                    "limit":   { "type": "integer", "minimum": 0, "default": 5, "description": "Maximum results (0 = no limit)." }
+                },
+                "required": ["context"]
+            }
+        },
+        {
+            "name": "clear_document",
+            "description": "Remove all chunks and embeddings for a given document path. Returns {\"cleared\": N}. No-op if the path was never loaded.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" }
+                },
+                "required": ["path"]
+            }
         }
     ])
 }
@@ -400,6 +436,33 @@ async fn handle_tool_call(
             Ok(json!({ "ok": true }))
         }
 
+        "load_document" => {
+            let path = args["path"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
+            let project = args["project"].as_str();
+            let count = svc.load_document(path, project).await?;
+            Ok(json!({ "loaded": count }))
+        }
+
+        "query_document" => {
+            let context = args["context"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
+            let project = args["project"].as_str();
+            let limit = args["limit"].as_u64().unwrap_or(5) as usize;
+            let results = svc.query_document(context, project, limit).await?;
+            Ok(serde_json::to_value(&results)?)
+        }
+
+        "clear_document" => {
+            let path = args["path"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
+            let count = svc.clear_document(path).await?;
+            Ok(json!({ "cleared": count }))
+        }
+
         other => anyhow::bail!("unknown tool: {}", other),
     }
 }
@@ -420,16 +483,16 @@ async fn main() -> Result<()> {
         .init();
 
     // Read config from ~/.config/mimir/config.toml.
-    let db_cfg = match Config::load() {
-        Ok(cfg) => cfg.database,
+    let cfg = match Config::load() {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
     };
 
-    // Connect to database.
-    let svc = MimirService::connect(&db_cfg).await?;
+    // Connect to database (and embedding client if configured).
+    let svc = MimirService::connect(&cfg).await?;
 
     // Async I/O on stdin/stdout.
     let stdin = tokio::io::stdin();
@@ -464,6 +527,7 @@ async fn main() -> Result<()> {
             }
         };
 
+        let is_notification = request.get("id").is_none();
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let method = request
             .get("method")
@@ -506,10 +570,12 @@ async fn main() -> Result<()> {
             }
         };
 
-        let mut out = response.to_string();
-        out.push('\n');
-        stdout.write_all(out.as_bytes()).await?;
-        stdout.flush().await?;
+        if !is_notification {
+            let mut out = response.to_string();
+            out.push('\n');
+            stdout.write_all(out.as_bytes()).await?;
+            stdout.flush().await?;
+        }
     }
 
     Ok(())

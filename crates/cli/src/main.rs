@@ -105,10 +105,9 @@ async fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn connect() -> Result<MimirService> {
-    let db_cfg = Config::load()
-        .map_err(|e| anyhow::anyhow!("{e}\nRun `mimir init` to create a config file."))?
-        .database;
-    MimirService::connect(&db_cfg).await
+    let cfg = Config::load()
+        .map_err(|e| anyhow::anyhow!("{e}\nRun `mimir init` to create a config file."))?;
+    MimirService::connect(&cfg).await
 }
 
 fn trunc(s: &str, max: usize) -> String {

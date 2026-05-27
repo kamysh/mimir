@@ -3,6 +3,8 @@ use chrono::DateTime;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
+use crate::documents::DocumentChunk;
+use crate::embed::vec_literal;
 use crate::graph::{Belief, Edge, EdgeType, Pattern, Probability};
 
 // ---------------------------------------------------------------------------
@@ -82,6 +84,28 @@ fn pattern_from_row(row: &sqlx::postgres::PgRow) -> Result<Pattern> {
     })
 }
 
+/// Decode a `DocumentChunk` from a sqlx row with columns:
+///   id TEXT, document_path TEXT, section_path TEXT (agtype list as JSON),
+///   content TEXT, parent_id TEXT, project TEXT
+fn chunk_from_row(row: &sqlx::postgres::PgRow) -> Result<DocumentChunk> {
+    let id_str: String = row.try_get("id")?;
+    let document_path: String = row.try_get("document_path")?;
+    let section_path_str: String = row.try_get("section_path")?;
+    let content: String = row.try_get("content")?;
+    let parent_id_str: Option<String> = row.try_get("parent_id").unwrap_or(None);
+    let project: Option<String> = row.try_get("project").unwrap_or(None);
+
+    let id = Uuid::parse_str(&id_str)?;
+    // AGE lists cast to text as JSON arrays: ["H1","H2"] or []
+    let section_path: Vec<String> =
+        serde_json::from_str(&section_path_str).unwrap_or_default();
+    let parent_id = parent_id_str
+        .as_deref()
+        .and_then(|s| Uuid::parse_str(s).ok());
+
+    Ok(DocumentChunk { id, document_path, section_path, content, parent_id, project })
+}
+
 // ---------------------------------------------------------------------------
 // AGE query helpers
 // ---------------------------------------------------------------------------
@@ -107,6 +131,16 @@ const PATTERN_RETURN_COLUMNS: &str = r#"AS (
   created_at       text
 )"#;
 
+/// SQL fragment for returning all DocumentChunk scalar properties cast to TEXT.
+const CHUNK_RETURN_COLUMNS: &str = r#"AS (
+  id            text,
+  document_path text,
+  section_path  text,
+  content       text,
+  parent_id     text,
+  project       text
+)"#;
+
 // ---------------------------------------------------------------------------
 // AgeStore
 // ---------------------------------------------------------------------------
@@ -127,8 +161,8 @@ impl AgeStore {
     /// Pre-create all vertex and edge labels so concurrent callers never race
     /// on lazy label creation. Uses DO blocks with EXCEPTION to be idempotent.
     async fn ensure_labels(&self) -> Result<()> {
-        const VLABELS: &[&str] = &["Belief", "Pattern"];
-        const ELABELS: &[&str] = &["SUPPORTS", "DEFEATS", "CAUSES", "CONTRADICTS"];
+        const VLABELS: &[&str] = &["Belief", "Pattern", "DocumentChunk"];
+        const ELABELS: &[&str] = &["SUPPORTS", "DEFEATS", "CAUSES", "CONTRADICTS", "CONTAINS"];
         let g = &self.graph_name;
 
         for label in VLABELS {
@@ -145,6 +179,16 @@ impl AgeStore {
             );
             sqlx::query(&sql).execute(&self.pool).await?;
         }
+        // chunk_embeddings lives in public schema (agtype cannot store vector type).
+        // Unconstrained `vector` column: no HNSW index, sequential cosine scan.
+        // Suitable for small datasets (hundreds of chunks). Add index once
+        // the model dimension is stable and the dataset grows.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS public.chunk_embeddings \
+             (chunk_id UUID PRIMARY KEY, embedding vector)"
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -616,6 +660,226 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
             edges.push((from_id, to_id, edge_type, probability));
         }
         Ok(edges)
+    }
+
+    // -----------------------------------------------------------------------
+    // Documents
+    // -----------------------------------------------------------------------
+
+    /// Insert a DocumentChunk vertex into AGE.
+    /// If the chunk has a parent_id, also inserts a CONTAINS edge from parent→child.
+    pub async fn insert_document_chunk(&self, chunk: &DocumentChunk) -> Result<()> {
+        let g = &self.graph_name;
+        let id = chunk.id.to_string();
+        let doc_path = esc(&chunk.document_path);
+        let content = esc(&chunk.content);
+
+        // Build sectionPath as a Cypher list literal: ['h1', 'h2'] or []
+        let section_path_lit = {
+            let inner: Vec<String> = chunk
+                .section_path
+                .iter()
+                .map(|s| format!("'{}'", esc(s)))
+                .collect();
+            format!("[{}]", inner.join(", "))
+        };
+
+        let parent_prop = match chunk.parent_id {
+            Some(p) => format!(", parentId: '{}'", p),
+            None => String::new(),
+        };
+        let project_prop = match &chunk.project {
+            Some(p) => format!(", project: '{}'", esc(p)),
+            None => String::new(),
+        };
+
+        let sql = format!(
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
+  CREATE (c:DocumentChunk {{
+    id: '{id}',
+    documentPath: '{doc_path}',
+    sectionPath: {section_path_lit},
+    content: '{content}'{parent_prop}{project_prop}
+  }})
+  RETURN c.id
+$$) AS (id ag_catalog.agtype)"#
+        );
+        sqlx::query(&sql).execute(&self.pool).await?;
+
+        // Insert CONTAINS edge from parent → child when parent exists.
+        if let Some(parent_id) = chunk.parent_id {
+            let pid = parent_id.to_string();
+            let edge_sql = format!(
+                r#"SELECT * FROM ag_catalog.cypher('{g}', $$
+  MATCH (p:DocumentChunk {{id: '{pid}'}}), (c:DocumentChunk {{id: '{id}'}})
+  CREATE (p)-[:CONTAINS]->(c)
+  RETURN 1
+$$) AS (ok ag_catalog.agtype)"#
+            );
+            sqlx::query(&edge_sql).fetch_all(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    /// Insert one row into public.chunk_embeddings.
+    pub async fn insert_chunk_embedding(&self, chunk_id: Uuid, embedding: &[f32]) -> Result<()> {
+        let vec_str = vec_literal(embedding);
+        sqlx::query(
+            "INSERT INTO public.chunk_embeddings (chunk_id, embedding) \
+             VALUES ($1, $2::vector) \
+             ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding",
+        )
+        .bind(chunk_id)
+        .bind(&vec_str)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Return chunk IDs for a given document path (used by clear_document).
+    pub async fn get_chunk_ids_for_document(&self, path: &str) -> Result<Vec<Uuid>> {
+        let g = &self.graph_name;
+        let path_esc = esc(path);
+        let sql = format!(
+            r#"SELECT id::text
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (c:DocumentChunk {{documentPath: '{path_esc}'}})
+  RETURN c.id
+$$) AS (id ag_catalog.agtype)"#
+        );
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|r| {
+                let s: String = r.try_get("id")?;
+                Ok(Uuid::parse_str(&s)?)
+            })
+            .collect()
+    }
+
+    /// Return chunk IDs tagged with a project (used by delete_project extension).
+    pub async fn get_chunk_ids_by_project(&self, project: &str) -> Result<Vec<Uuid>> {
+        let g = &self.graph_name;
+        let proj_esc = esc(project);
+        let sql = format!(
+            r#"SELECT id::text
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (c:DocumentChunk {{project: '{proj_esc}'}})
+  RETURN c.id
+$$) AS (id ag_catalog.agtype)"#
+        );
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|r| {
+                let s: String = r.try_get("id")?;
+                Ok(Uuid::parse_str(&s)?)
+            })
+            .collect()
+    }
+
+    /// DETACH DELETE DocumentChunk vertices by IDs. No-op if ids is empty.
+    pub async fn delete_document_chunks(&self, ids: &[Uuid]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let g = &self.graph_name;
+        let id_list = ids
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
+  MATCH (c:DocumentChunk) WHERE c.id IN [{id_list}]
+  DETACH DELETE c
+  RETURN 1
+$$) AS (ok ag_catalog.agtype)"#
+        );
+        sqlx::query(&sql).fetch_all(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Delete embedding rows for the given chunk IDs.
+    pub async fn delete_chunk_embeddings(&self, ids: &[Uuid]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        sqlx::query(
+            "DELETE FROM public.chunk_embeddings WHERE chunk_id = ANY($1)",
+        )
+        .bind(ids)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Cosine nearest-neighbour search over chunk_embeddings.
+    /// If filter_ids is Some, only those chunk IDs are considered.
+    /// limit=0 means no limit.
+    pub async fn query_chunks_by_vector(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+        filter_ids: Option<&[Uuid]>,
+    ) -> Result<Vec<Uuid>> {
+        let vec_str = vec_literal(query_vec);
+        let limit_clause = if limit > 0 {
+            format!("LIMIT {limit}")
+        } else {
+            String::new()
+        };
+
+        let sql = match filter_ids {
+            None => format!(
+                "SELECT chunk_id::text FROM public.chunk_embeddings \
+                 ORDER BY embedding <=> '{vec_str}'::vector {limit_clause}"
+            ),
+            Some(ids) => {
+                // Use a subquery to filter by chunk IDs.
+                // parameterized bind for the UUID array, string-interpolated for the vector.
+                let id_list = ids
+                    .iter()
+                    .map(|id| format!("'{id}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "SELECT chunk_id::text FROM public.chunk_embeddings \
+                     WHERE chunk_id IN ({id_list}) \
+                     ORDER BY embedding <=> '{vec_str}'::vector {limit_clause}"
+                )
+            }
+        };
+
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|r| {
+                let s: String = r.try_get("chunk_id")?;
+                Ok(Uuid::parse_str(&s)?)
+            })
+            .collect()
+    }
+
+    /// Fetch a single DocumentChunk by ID.
+    pub async fn get_chunk_by_id(&self, id: Uuid) -> Result<Option<DocumentChunk>> {
+        let g = &self.graph_name;
+        let id_str = id.to_string();
+        let sql = format!(
+            r#"SELECT
+  id::text,
+  documentPath::text         AS document_path,
+  sectionPath::text          AS section_path,
+  content::text,
+  parentId::text             AS parent_id,
+  project::text
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (c:DocumentChunk {{id: '{id_str}'}})
+  RETURN c.id, c.documentPath, c.sectionPath, c.content, c.parentId, c.project
+$$) {CHUNK_RETURN_COLUMNS}"#
+        );
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(chunk_from_row(&rows[0])?))
     }
 
     /// Returns all Belief nodes reachable from `start_id` via SUPPORTS or CAUSES edges.
