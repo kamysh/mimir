@@ -203,13 +203,19 @@ cp skill/SKILL.md ~/.claude/skills/mimir/SKILL.md
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'Before acting: query mimir for relevant rules (mcp__mimir__query_relevant). Do this BEFORE reading files or writing code.'"
+            "command": "echo 'Before acting: query mimir for relevant rules (mcp__mimir__query_relevant), query muninn for relevant code knowledge (mcp__muninn__search_hybrid). Do this BEFORE reading files or writing code.'"
           }
         ]
       }
     ]
   }
 }
+```
+
+The `UserPromptSubmit` hook references both mimir and [muninn](https://github.com/kamysh/muninn) — a companion semantic code-knowledge store. If you are not using muninn, replace the hook command with:
+
+```
+"echo 'Before acting: query mimir for relevant rules (mcp__mimir__query_relevant). Do this BEFORE reading files or writing code.'"
 ```
 
 Restart Claude Code for the hooks to take effect.
