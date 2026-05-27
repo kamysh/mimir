@@ -14,8 +14,18 @@ pub enum EmbeddingBackend {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EmbeddingsConfig {
     pub backend: EmbeddingBackend,
+    /// Used by Voyage and OpenAI backends. Ignored for local.
+    #[serde(default)]
     pub model: String,
-    pub api_key: String,
+    /// Required for Voyage and OpenAI. Not needed for local.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Local backend: batch size for embedding calls (0 = no limit).
+    #[serde(default)]
+    pub batch_size: usize,
+    /// Local backend: directory to cache downloaded model files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_dir: Option<String>,
 }
 
 // ── SSL mode ───────────────────────────────────────────────────────────────
@@ -179,12 +189,25 @@ user   = "mimir"       # PostgreSQL role used by mimir at runtime
 # ── Embeddings (required for load_document / query_document) ──────────────────
 # Without this section, the document RAG tools are disabled.
 #
-# backend: voyage | openai | local
-# model:   voyage-3-lite | voyage-code-3 | text-embedding-3-small | …
-# api_key: obtain from voyageai.com or platform.openai.com; never commit this file.
+# Three backends are available:
 #
-# All load_document calls must use the same model — mixing models produces
-# incorrect similarity rankings and requires a full re-index to fix.
+#   local  — BGE-Base-EN-v1.5 (768 dims) via fastembed + ONNX Runtime.
+#            No API key required. Model (~120 MB) is downloaded from HuggingFace
+#            on first use and cached locally. Fully offline after that.
+#
+#   voyage — Voyage AI API (1024 dims for voyage-3-lite, etc.)
+#            Requires api_key from voyageai.com. Never commit this file.
+#
+#   openai — OpenAI Embeddings API (1536 dims for text-embedding-3-small, etc.)
+#            Requires api_key from platform.openai.com. Never commit this file.
+#
+# All load_document calls must use the same backend/model — mixing models
+# produces incorrect similarity rankings and requires a full re-index to fix.
+#
+# [embeddings]
+# backend = "local"
+#
+# --- or ---
 #
 # [embeddings]
 # backend = "voyage"

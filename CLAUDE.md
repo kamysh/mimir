@@ -11,9 +11,15 @@ Mimir is a persistent belief graph MCP server for Claude Code. It stores beliefs
 All commands assume you're in a Nix dev shell. Enter it with `nix develop` (direnv does this automatically if `.envrc` is allowed).
 
 ```bash
-# Build
+# Build (dynamic, glibc)
 cargo build --release -p mimir-mcp
 cargo build --release -p mimir-cli
+
+# Build static binary (musl, no external deps) — via Nix
+nix build .#mimir-static        # result/bin/mimir-mcp and result/bin/mimir
+
+# Build static binary manually inside devShell (requires musl linker on PATH)
+cargo build --release --target x86_64-unknown-linux-musl
 
 # Check (fast, no codegen)
 cargo check

@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use config::Config;
 use documents::{QueryResult, parse_markdown};
-use embed::EmbeddingClient;
+use embed::{EmbeddingProvider, make_backend};
 use graph::{Belief, EdgeType, Pattern, Probability};
 use inference::InferenceEngine;
 use store::AgeStore;
@@ -30,17 +30,13 @@ pub struct MimirStats {
 pub struct MimirService {
     store: AgeStore,
     inference: InferenceEngine,
-    embeddings: Option<EmbeddingClient>,
+    embeddings: Option<Box<dyn EmbeddingProvider>>,
 }
 
 impl MimirService {
     pub async fn connect(cfg: &Config) -> Result<Self> {
         let pool = db::connect(&cfg.database).await?;
-        let embeddings = cfg
-            .embeddings
-            .clone()
-            .map(EmbeddingClient::new)
-            .transpose()?;
+        let embeddings = cfg.embeddings.as_ref().map(make_backend);
         Ok(Self {
             store: AgeStore::new(pool, cfg.database.dbname.clone()).await?,
             inference: InferenceEngine::new(),
@@ -277,8 +273,8 @@ impl MimirService {
         let count = chunks.len();
 
         // Embed all chunks in one batch call where possible.
-        let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-        let embeddings = embedder.embed_batch(&texts).await?;
+        let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
+        let embeddings = embedder.embed(&texts).await?;
 
         for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
             self.store.insert_document_chunk(chunk).await?;
@@ -312,7 +308,12 @@ impl MimirService {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("embeddings not configured — add [embeddings] to config.toml"))?;
 
-        let query_vec = embedder.embed(context).await?;
+        let mut vecs = embedder.embed(&[context.to_string()]).await?;
+        let query_vec = if vecs.is_empty() {
+            anyhow::bail!("empty embedding response");
+        } else {
+            vecs.swap_remove(0)
+        };
 
         let filter_ids: Option<Vec<Uuid>> = match project {
             None => None,
