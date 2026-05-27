@@ -50,6 +50,11 @@ mimir decay [--factor 0.99]
 mimir contradictions
 mimir patterns [--limit N]
 
+# Document RAG (requires [embeddings] in config.toml)
+mimir load PATH [--project NAME]          # parse, embed, and index a markdown file
+mimir query-doc CONTEXT [--project NAME] [--limit N]  # semantic search over chunks
+mimir clear-doc PATH                      # remove all chunks for a document
+
 # Full install (DB setup + binary build + .mcp.json registration)
 ./install.sh
 ```
@@ -64,6 +69,9 @@ mimir patterns [--limit N]
 - `inference.rs` — `InferenceEngine`: pure computation only (no I/O). Defeat attenuation formula: `P(target) × (1 − weight × P(defeater))`. Support boost: `P + (1−P) × weight × P(supporter)`.
 - `lib.rs` — `MimirService`: composes `AgeStore` + `InferenceEngine`. This is the public API surface.
 - `config.rs` — `Config` / `DatabaseConfig`, loaded from `~/.config/mimir/config.toml`. Passwords come from `~/.pgpass`, never from config.
+- `documents.rs` — `DocumentChunk`, `QueryResult`, `parse_markdown`. Splits markdown into heading-bounded chunks with pre-assigned UUIDs for parent tracking.
+- `embed.rs` — `EmbeddingProvider` trait + `VoyageBackend`, `OpenAiBackend`, `LocalBackend` (fastembed + BGE-Base-EN-v1.5 via ONNX Runtime). `make_backend()` is the factory. `vec_literal()` formats `Vec<f32>` for pgvector SQL interpolation.
+- Document chunks are stored as `DocumentChunk` vertices in AGE + CONTAINS edges; embeddings live in `public.chunk_embeddings` (pgvector). The two-store split is required because AGE's `agtype` cannot hold a `vector` value.
 
 **MCP server** (`crates/mcp/src/main.rs`): single-file stdio JSON-RPC loop. Reads one JSON line → dispatches to `MimirService` → writes one JSON line. Tracing goes to stderr only.
 
