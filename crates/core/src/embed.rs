@@ -1,9 +1,10 @@
-use anyhow::Result;
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use anyhow::{Context, Result};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use tokenizers::Tokenizer;
+use tract_onnx::prelude::*;
 
 use crate::config::{EmbeddingBackend, EmbeddingsConfig};
 
@@ -100,17 +101,22 @@ impl EmbeddingProvider for OpenAiBackend {
 }
 
 // ---------------------------------------------------------------------------
-// Local (fastembed + ONNX Runtime)
+// Local (tract ONNX + HuggingFace tokenizers)
 // ---------------------------------------------------------------------------
 
-const LOCAL_MODEL: EmbeddingModel = EmbeddingModel::BGEBaseENV15;
+const HF_MODEL_ID: &str = "BAAI/bge-base-en-v1.5";
+const MAX_SEQ_LEN: usize = 512;
 pub const LOCAL_DIM: usize = 768;
 
+type TractPlan = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
+
+struct EmbedState {
+    tokenizer: Tokenizer,
+    model: Mutex<TractPlan>,
+}
+
 pub struct LocalBackend {
-    // Outer Mutex serialises first-time init (only one thread calls try_new,
-    // which may download ~120 MB on first use). Inner Arc<Mutex<>> is shared
-    // across embed() calls after init.
-    model: Mutex<Option<Arc<Mutex<TextEmbedding>>>>,
+    state: Mutex<Option<Arc<EmbedState>>>,
     batch_size: Option<usize>,
     cache_dir: Option<PathBuf>,
 }
@@ -122,32 +128,52 @@ impl LocalBackend {
             let t = p.trim().to_string();
             if t.is_empty() { None } else { Some(PathBuf::from(t)) }
         });
-        Self { model: Mutex::new(None), batch_size, cache_dir }
+        Self { state: Mutex::new(None), batch_size, cache_dir }
     }
 
-    fn init_model(&self) -> Result<Arc<Mutex<TextEmbedding>>> {
-        let mut guard = self.model
+    fn ensure_loaded(&self) -> Result<Arc<EmbedState>> {
+        let mut guard = self.state
             .lock()
-            .map_err(|_| anyhow::anyhow!("local model init mutex poisoned"))?;
-        if let Some(ref m) = *guard {
-            return Ok(Arc::clone(m));
+            .map_err(|_| anyhow::anyhow!("embed state mutex poisoned"))?;
+        if let Some(ref s) = *guard {
+            return Ok(Arc::clone(s));
         }
-        let show_progress = std::env::var("MIMIR_LOCAL_SHOW_PROGRESS")
-            .map(|v| !v.eq_ignore_ascii_case("false") && v != "0")
-            .unwrap_or(true);
-        tracing::info!(
-            "initialising local embedding model (BGE-Base-EN-v1.5, 768 dims){}",
-            if show_progress { " — downloading on first use, please wait" } else { "" }
-        );
-        let mut options = InitOptions::new(LOCAL_MODEL)
-            .with_show_download_progress(show_progress);
-        if let Some(ref dir) = self.cache_dir {
-            options = options.with_cache_dir(dir.clone());
-        }
-        let model = Arc::new(Mutex::new(TextEmbedding::try_new(options)?));
-        *guard = Some(Arc::clone(&model));
-        Ok(model)
+        let state = Arc::new(load_embed_state(self.cache_dir.as_deref())?);
+        *guard = Some(Arc::clone(&state));
+        Ok(state)
     }
+}
+
+fn load_embed_state(cache_dir: Option<&std::path::Path>) -> Result<EmbedState> {
+    tracing::info!("initialising local embedding model ({HF_MODEL_ID}, {LOCAL_DIM} dims) — downloading on first use if not cached");
+
+    let api = {
+        let mut b = hf_hub::api::sync::ApiBuilder::new();
+        if let Some(dir) = cache_dir {
+            b = b.with_cache_dir(dir.to_path_buf());
+        }
+        b.build().context("creating HuggingFace API client")?
+    };
+
+    let repo = api.model(HF_MODEL_ID.to_string());
+
+    let tokenizer_path = repo.get("tokenizer.json")
+        .context("downloading tokenizer.json")?;
+    let model_path = repo.get("onnx/model.onnx")
+        .context("downloading onnx/model.onnx")?;
+
+    let tokenizer = Tokenizer::from_file(&tokenizer_path)
+        .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
+
+    let model = tract_onnx::onnx()
+        .model_for_path(&model_path)
+        .context("loading ONNX model")?
+        .into_optimized()
+        .context("optimizing ONNX model")?
+        .into_runnable()
+        .context("making model runnable")?;
+
+    Ok(EmbedState { tokenizer, model: Mutex::new(model) })
 }
 
 impl EmbeddingProvider for LocalBackend {
@@ -161,17 +187,91 @@ impl EmbeddingProvider for LocalBackend {
             if texts.is_empty() {
                 return Ok(vec![]);
             }
-            let model = self.init_model()?;
+            let state = self.ensure_loaded()?;
             tokio::task::spawn_blocking(move || {
-                let mut guard = model
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("local embedder mutex poisoned"))?;
-                guard.embed(&texts, batch_size).map_err(anyhow::Error::from)
+                embed_with_state(&state, &texts, batch_size)
             })
             .await
-            .map_err(|e| anyhow::anyhow!("local embeddings task failed: {}", e))?
+            .map_err(|e| anyhow::anyhow!("local embeddings task failed: {e}"))?
         })
     }
+}
+
+fn embed_with_state(
+    state: &EmbedState,
+    texts: &[String],
+    batch_size: Option<usize>,
+) -> Result<Vec<Vec<f32>>> {
+    let chunk_size = batch_size.unwrap_or(texts.len()).max(1);
+    let mut all_embeddings = Vec::with_capacity(texts.len());
+
+    for chunk in texts.chunks(chunk_size) {
+        let mut encodings = state.tokenizer
+            .encode_batch(chunk.to_vec(), true)
+            .map_err(|e| anyhow::anyhow!("tokenizer encode_batch: {e}"))?;
+
+        // Pad all sequences in the chunk to the same length, capped at MAX_SEQ_LEN.
+        let seq_len = encodings.iter()
+            .map(|e| e.get_ids().len())
+            .max()
+            .unwrap_or(0)
+            .min(MAX_SEQ_LEN);
+        let batch = chunk.len();
+
+        let mut input_ids = vec![0i64; batch * seq_len];
+        let mut attention_mask = vec![0i64; batch * seq_len];
+        let mut token_type_ids = vec![0i64; batch * seq_len];
+
+        for (b, enc) in encodings.iter_mut().enumerate() {
+            let ids = enc.get_ids();
+            let masks = enc.get_attention_mask();
+            let types = enc.get_type_ids();
+            let len = ids.len().min(seq_len);
+            for s in 0..len {
+                input_ids[b * seq_len + s] = ids[s] as i64;
+                attention_mask[b * seq_len + s] = masks[s] as i64;
+                token_type_ids[b * seq_len + s] = types[s] as i64;
+            }
+        }
+
+        let ids_t: Tensor = tract_ndarray::Array2::from_shape_vec(
+            (batch, seq_len), input_ids,
+        )?.into();
+        let mask_t: Tensor = tract_ndarray::Array2::from_shape_vec(
+            (batch, seq_len), attention_mask.clone(),
+        )?.into();
+        let types_t: Tensor = tract_ndarray::Array2::from_shape_vec(
+            (batch, seq_len), token_type_ids,
+        )?.into();
+
+        let outputs = state.model
+            .lock()
+            .map_err(|_| anyhow::anyhow!("model mutex poisoned"))?
+            .run(tvec![ids_t.into(), mask_t.into(), types_t.into()])
+            .context("running ONNX model")?;
+
+        // last_hidden_state: [batch, seq, 768]
+        let hidden = outputs[0].to_array_view::<f32>()
+            .context("extracting model output")?;
+
+        for b in 0..batch {
+            let mut emb = vec![0f32; LOCAL_DIM];
+            let mut count = 0f32;
+            for s in 0..seq_len {
+                if attention_mask[b * seq_len + s] > 0 {
+                    for d in 0..LOCAL_DIM {
+                        emb[d] += hidden[[b, s, d]];
+                    }
+                    count += 1.0;
+                }
+            }
+            if count > 0.0 {
+                for v in &mut emb { *v /= count; }
+            }
+            all_embeddings.push(emb);
+        }
+    }
+    Ok(all_embeddings)
 }
 
 // ---------------------------------------------------------------------------
@@ -197,8 +297,6 @@ pub fn make_backend(cfg: &EmbeddingsConfig) -> Box<dyn EmbeddingProvider> {
 
 // ---------------------------------------------------------------------------
 // Vector literal for pgvector SQL interpolation.
-// Produces `[f1,f2,...]` — safe to string-interpolate since f32::to_string
-// only produces digits, dots, `-`, `e`, `inf`, `nan` (no SQL metacharacters).
 // ---------------------------------------------------------------------------
 
 pub fn vec_literal(v: &[f32]) -> String {
