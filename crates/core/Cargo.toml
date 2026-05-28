@@ -15,15 +15,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-fastembed = { version = "5.13", default-features = false, features = [
-  "hf-hub",
-  "hf-hub-rustls-tls",
-  "ort-download-binaries-rustls-tls",
-] }
-# Direct pin on fastembed's transitive ort-sys dep — see workspace Cargo.toml
-# for the rationale. The crate itself isn't used in mimir-core code; the
-# direct dep is solely to force the resolver to pick the pinned version.
-ort-sys = { workspace = true }
+tract-onnx = "0.21"
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+hf-hub = { version = "0.3", features = ["online"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
