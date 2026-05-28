@@ -1,3 +1,16 @@
 [workspace]
 members = ["crates/core", "crates/mcp", "crates/cli"]
 resolver = "2"
+
+[workspace.dependencies]
+# Pin ort-sys to the exact version whose ABI matches the Pyke prebuilt
+# pinned in flake.nix (pykeVersion = "1.24.2" → rc.12 ABI). Declared
+# here as a workspace dep and pulled into crates/core directly so
+# Cargo's resolver enforces the exact version — fastembed's loose
+# `ort-sys = "2.0.0-rc"` bound otherwise lets `cargo update` bump it
+# silently. The binary then links the old-ABI libonnxruntime.a but
+# calls Ort_GetApi(NEWER_VERSION) at runtime, gets null, and panics
+# with "Failed to initialize ORT API". Bumping requires editing both
+# this pin AND flake.nix's pykeVersion in lockstep — drift is visible
+# in code review.
+ort-sys = "=2.0.0-rc.12"

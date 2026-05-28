@@ -20,6 +20,10 @@ fastembed = { version = "5.13", default-features = false, features = [
   "hf-hub-rustls-tls",
   "ort-download-binaries-rustls-tls",
 ] }
+# Direct pin on fastembed's transitive ort-sys dep — see workspace Cargo.toml
+# for the rationale. The crate itself isn't used in mimir-core code; the
+# direct dep is solely to force the resolver to pick the pinned version.
+ort-sys = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
