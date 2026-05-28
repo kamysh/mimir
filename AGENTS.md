@@ -37,16 +37,29 @@ embedded migrations.
 
 ## Variables
 
-Bind these once at the start. Re-use them in every command.
+**Before doing anything else, ask the user for these values:**
 
-| Variable | Default | Notes |
-|---|---|---|
-| `PORT` | `5432` | Pick another if 5432 is in use. On macOS, also check 5000 (AirPlay) and 6000 (X11). |
-| `CONTAINER` | `postgres-ai` | Must not collide with an existing container. |
-| `VOLUME` | `mimir_data` | Docker volume for the postgres data dir. If installing alongside muninn, pick a different volume name **or** share one container — see "Companion tool" at the end. |
-| `DB_USER` | `mimir` | |
-| `DB_NAME` | `mimir` | |
-| `EMBEDDING_BACKEND` | `local` | `local` (no API key, downloads ~120 MB) \| `voyage` \| `openai`. Required only for `load_document` / `query_document`; can be omitted entirely if you only need the belief graph. |
+1. **Docker container name** — the local name for the postgres-ai container
+   (e.g. `local-postgres-ai`). Check `docker ps -a` and suggest a name that
+   doesn't collide. The Docker image is always `kamysh/postgres-ai`.
+2. **Port** — the host port to expose PostgreSQL on (default `5432`; check
+   `lsof -nP -iTCP -sTCP:LISTEN` for conflicts).
+3. **DB user** — the PostgreSQL role to create for mimir (default `mimir`).
+4. **DB name** — the database to create (default `mimir`; usually matches the user).
+
+If mimir is being installed alongside muninn (see "Companion tool" at the end),
+also confirm whether they share one container or use separate ones.
+
+Bind the answers as shell variables once, then re-use in every command below:
+
+| Variable | Notes |
+|---|---|
+| `PORT` | Host port. Avoid 5000 (AirPlay on macOS), 6000 (X11), and anything in use. |
+| `CONTAINER` | Local container name. Must not collide with an existing container. Image: `kamysh/postgres-ai`. |
+| `VOLUME` | Docker volume for the postgres data dir (e.g. `mimir_data`). If sharing a container with muninn, use the same volume. |
+| `DB_USER` | PostgreSQL role for mimir. |
+| `DB_NAME` | Database for mimir. |
+| `EMBEDDING_BACKEND` | `local` (no API key, downloads ~120 MB) \| `voyage` \| `openai`. Required only for `load_document` / `query_document`; omit the `[embeddings]` section entirely if you only need the belief graph. |
 
 ## Preflight (must all pass)
 
@@ -140,6 +153,7 @@ psql -h localhost -p "$PORT" -U "$DB_USER" -d "$DB_NAME" -c '\conninfo' >/dev/nu
 mkdir -p "$HOME/.local/bin"
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)  TARBALL=mimir-darwin-arm64.tar.gz ;;
+  Darwin-x86_64) TARBALL=mimir-darwin-amd64.tar.gz ;;
   Linux-x86_64)  TARBALL=mimir-linux-amd64.tar.gz ;;
   Linux-aarch64) TARBALL=mimir-linux-arm64.tar.gz ;;
   *) echo "Unsupported platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
@@ -149,8 +163,7 @@ curl -fsSL "https://github.com/kamysh/mimir/releases/latest/download/${TARBALL}"
 chmod +x "$HOME/.local/bin/mimir" "$HOME/.local/bin/mimir-mcp"
 ```
 
-(Releases ship only `darwin-arm64` for macOS. Apple Silicon only;
-Intel Macs need to build from source.)
+(Releases ship `darwin-arm64` for Apple Silicon and `darwin-amd64` for Intel Macs.)
 
 Do **not** run `xattr -d com.apple.quarantine` on these files. The
 quarantine flag is only set on browser downloads — `curl` does not
