@@ -42,10 +42,13 @@ embedded migrations.
 1. **Docker container name** — the local name for the postgres-ai container
    (e.g. `local-postgres-ai`). Check `docker ps -a` and suggest a name that
    doesn't collide. The Docker image is always `kamysh/postgres-ai`.
-2. **Port** — the host port to expose PostgreSQL on (default `5432`; check
+2. **Docker volume name** — the named volume for postgres data
+   (e.g. `local-postgres-ai-data`). If sharing a container with muninn, confirm
+   the existing volume name rather than inventing one.
+3. **Port** — the host port to expose PostgreSQL on (default `5432`; check
    `lsof -nP -iTCP -sTCP:LISTEN` for conflicts).
-3. **DB user** — the PostgreSQL role to create for mimir (default `mimir`).
-4. **DB name** — the database to create (default `mimir`; usually matches the user).
+4. **DB user** — the PostgreSQL role to create for mimir (default `mimir`).
+5. **DB name** — the database to create (default `mimir`; usually matches the user).
 
 If mimir is being installed alongside muninn (see "Companion tool" at the end),
 also confirm whether they share one container or use separate ones.
@@ -177,11 +180,18 @@ mimir --help >/dev/null && echo OK
 
 ## Step 4 — Write config (do **not** run `mimir init`)
 
-`mimir init` opens `$EDITOR` and blocks. Write the file directly:
+`mimir init` opens `$EDITOR` and blocks. Check for an existing config first —
+if one is present, read it and confirm the values match your variables before
+proceeding. Do **not** overwrite a config you did not author without user confirmation.
 
 ```sh
-mkdir -p "$HOME/.config/mimir"
-cat > "$HOME/.config/mimir/config.toml" <<EOF
+if [ -f "$HOME/.config/mimir/config.toml" ]; then
+  echo "Config already exists:"
+  cat "$HOME/.config/mimir/config.toml"
+  # Verify port=$PORT, user=$DB_USER, dbname=$DB_NAME match. If yes, skip to verify.
+else
+  mkdir -p "$HOME/.config/mimir"
+  cat > "$HOME/.config/mimir/config.toml" <<EOF
 [database]
 host   = "localhost"
 port   = ${PORT}
@@ -191,6 +201,7 @@ user   = "${DB_USER}"
 [embeddings]
 backend = "${EMBEDDING_BACKEND}"
 EOF
+fi
 ```
 
 If `EMBEDDING_BACKEND` is `voyage` or `openai`, append model + key
@@ -340,6 +351,9 @@ claude mcp list 2>&1 | grep -qE '^mimir:.*Connected'                    && echo 
 - **Do not invent API keys** for `voyage`/`openai` embedding
   backends. Ask the user, or default `EMBEDDING_BACKEND=local`, or
   omit `[embeddings]` entirely if document search is not needed.
+- **Do not overwrite existing config files** (`~/.config/mimir/config.toml`)
+  without reading them first. An existing config may have valid settings — check
+  before clobbering. See Step 4.
 - **Do not assume the AGE graph exists immediately after Step 2.**
   The setup script creates the role, database, extensions, and
   grants — but the AGE graph itself is created by mimir's own
