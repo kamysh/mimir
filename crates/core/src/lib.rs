@@ -16,6 +16,27 @@ use graph::{Belief, EdgeType, Pattern, Probability};
 use inference::InferenceEngine;
 use store::AgeStore;
 
+/// Reciprocal Rank Fusion merge of multiple ranked Uuid lists.
+/// Each list contributes `1 / (K + rank)` (rank is 0-based) to each contained
+/// id's score; ids are deduplicated and returned sorted by total score
+/// descending. K = 60 is the standard RRF constant. Used by `query_relevant`
+/// to combine the token-overlap and vector-cosine rankings into one relevance
+/// ranking before graph expansion and the probability-desc sort.
+fn rrf_merge_ids(lists: &[Vec<Uuid>]) -> Vec<Uuid> {
+    use std::collections::HashMap;
+    const K: f32 = 60.0;
+    let mut scores: HashMap<Uuid, f32> = HashMap::new();
+    for list in lists {
+        for (rank, id) in list.iter().enumerate() {
+            let rrf = 1.0 / (K + rank as f32);
+            *scores.entry(*id).or_insert(0.0) += rrf;
+        }
+    }
+    let mut ranked: Vec<(Uuid, f32)> = scores.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.into_iter().map(|(id, _)| id).collect()
+}
+
 pub struct MimirStats {
     pub beliefs:    usize,
     pub patterns:   usize,
@@ -54,6 +75,7 @@ impl MimirService {
     ) -> Result<Belief> {
         let belief = Belief::new(content.to_string(), probability, confidence)?;
         self.store.insert_belief(&belief).await?;
+        self.embed_and_store_belief(&belief).await?;
         Ok(belief)
     }
 
@@ -72,7 +94,30 @@ impl MimirService {
             project.to_string(),
         )?;
         self.store.insert_belief(&belief).await?;
+        self.embed_and_store_belief(&belief).await?;
         Ok(belief)
+    }
+
+    /// Embed a belief's content and upsert the vector into `belief_embeddings`
+    /// when an embedding backend is configured. No-op when `[embeddings]` is
+    /// absent (the vector half of `query_relevant` simply degrades to empty).
+    /// Called by `add_belief` / `add_belief_in_project` and by the `reembed`
+    /// CLI to backfill existing beliefs.
+    pub async fn embed_and_store_belief(&self, belief: &Belief) -> Result<()> {
+        if let Some(embedder) = &self.embeddings {
+            let mut vecs = embedder.embed(&[belief.content.clone()]).await?;
+            if let Some(v) = vecs.pop() {
+                self.store.insert_belief_embedding(belief.id, &v).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Belief IDs that already have a vector stored in `belief_embeddings`.
+    /// Used by the `reembed` CLI to skip beliefs whose vectors are already
+    /// populated (idempotent backfill).
+    pub async fn list_embedded_belief_ids(&self) -> Result<Vec<Uuid>> {
+        self.store.list_embedded_belief_ids().await
     }
 
     /// Delete a belief and all its edges by ID. Returns true if found.
@@ -206,22 +251,100 @@ impl MimirService {
         Ok(count)
     }
 
-    /// Hybrid retrieval: returns beliefs matching the query by content (case-insensitive),
-    /// plus beliefs reachable from matched beliefs via SUPPORTS/CAUSES edges.
-    /// Results are deduplicated and sorted by probability descending.
-    /// limit=0 means no limit.
+    /// Hybrid retrieval. Selection is the RRF-merged union of (a) token/keyword
+    /// matches (beliefs whose lowercased content contains at least one
+    /// whitespace-split query term, ranked by distinct-term match count) and
+    /// (b) vector cosine top-k over `belief_embeddings` (when an embedding
+    /// backend is configured; empty otherwise). The seed set is then expanded
+    /// along SUPPORTS/CAUSES edges and sorted by probability descending. The
+    /// output order is probability-desc; the RRF score governs only which
+    /// beliefs seed the result. Spec: `Mimir.Graph` (query_relevant section).
+    /// `limit = 0` means no limit.
     pub async fn query_relevant(&self, query: &str, limit: usize) -> Result<Vec<Belief>> {
         let all = self.store.list_beliefs().await?;
-        let q = query.to_lowercase();
+        if all.is_empty() {
+            return Ok(vec![]);
+        }
 
-        // Direct text matches
-        let mut matched: Vec<Belief> = all
+        // ── Token list: beliefs whose lowercased content contains at least one
+        //    query term, ranked by distinct-term match count desc (tiebreak:
+        //    probability desc).
+        let q_lower = query.to_lowercase();
+        let terms: Vec<String> = q_lower
+            .split_whitespace()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        let token_ranked: Vec<Uuid> = if terms.is_empty() {
+            Vec::new()
+        } else {
+            let mut scored: Vec<(usize, &Belief)> = all
+                .iter()
+                .filter_map(|b| {
+                    let content_lower = b.content.to_lowercase();
+                    let hits = terms
+                        .iter()
+                        .filter(|t| content_lower.contains(t.as_str()))
+                        .count();
+                    if hits > 0 {
+                        Some((hits, b))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            scored.sort_by(|a, b| {
+                b.0.cmp(&a.0).then_with(|| {
+                    b.1.probability
+                        .value()
+                        .partial_cmp(&a.1.probability.value())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+            });
+            scored.into_iter().map(|(_, b)| b.id).collect()
+        };
+
+        // ── Vector list: cosine top-k over belief_embeddings, when an
+        //    embedding backend is configured. The pool is intentionally larger
+        //    than `limit`; RRF + the probability sort + truncate decide the
+        //    final cut. If the embedder itself fails (model unavailable,
+        //    network error, etc.) we degrade to token-only with a warning
+        //    rather than failing the whole query — partial recall beats none.
+        let vector_ranked: Vec<Uuid> = if let Some(embedder) = &self.embeddings {
+            let pool_size = if limit > 0 { (limit * 4).max(20) } else { 50 };
+            match embedder.embed(&[query.to_string()]).await {
+                Ok(mut vecs) => match vecs.pop() {
+                    Some(qv) => self.store.query_beliefs_by_vector(&qv, pool_size).await?,
+                    None => Vec::new(),
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "embedder failed for query — falling back to token-only retrieval. \
+                         Verify [embeddings] config and that the model is reachable."
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        // ── RRF merge → relevance-ranked, deduplicated seed IDs.
+        let seed_ids = rrf_merge_ids(&[token_ranked, vector_ranked]);
+        if seed_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // ── Materialise beliefs in seed order from the already-loaded list.
+        let by_id: std::collections::HashMap<Uuid, &Belief> =
+            all.iter().map(|b| (b.id, b)).collect();
+        let mut matched: Vec<Belief> = seed_ids
             .iter()
-            .filter(|b| b.content.to_lowercase().contains(&q))
-            .cloned()
+            .filter_map(|id| by_id.get(id).map(|&b| b.clone()))
             .collect();
 
-        // Expand via graph: add beliefs reachable from matched ones
+        // ── Graph expansion: SUPPORTS/CAUSES reachable beliefs (unchanged).
         let matched_ids: Vec<Uuid> = matched.iter().map(|b| b.id).collect();
         for id in matched_ids {
             let downstream = self.store.get_downstream_beliefs(id).await?;
@@ -232,6 +355,8 @@ impl MimirService {
             }
         }
 
+        // ── Sort by probability descending and truncate (unchanged invariants;
+        //    see Mimir.Graph proofs).
         matched.sort_by(|a, b| {
             b.probability
                 .value()

@@ -209,6 +209,7 @@ $$) AS (id ag_catalog.agtype)"#
 $$) AS (ok ag_catalog.agtype)"#
         );
         sqlx::query(&sql).fetch_all(&self.pool).await?;
+        self.delete_belief_embeddings(&[id]).await?;
         Ok(true)
     }
 
@@ -230,6 +231,13 @@ $$) AS (id ag_catalog.agtype)"#
         if count == 0 {
             return Ok(0);
         }
+        let ids: Vec<Uuid> = rows
+            .iter()
+            .filter_map(|r| {
+                let s: String = r.try_get("id").ok()?;
+                Uuid::parse_str(&s).ok()
+            })
+            .collect();
         let delete_sql = format!(
             r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{project: '{project_esc}'}})
@@ -238,6 +246,7 @@ $$) AS (id ag_catalog.agtype)"#
 $$) AS (ok ag_catalog.agtype)"#
         );
         sqlx::query(&delete_sql).fetch_all(&self.pool).await?;
+        self.delete_belief_embeddings(&ids).await?;
         Ok(count)
     }
 
@@ -817,6 +826,81 @@ $$) AS (ok ag_catalog.agtype)"#
         rows.iter()
             .map(|r| {
                 let s: String = r.try_get("chunk_id")?;
+                Ok(Uuid::parse_str(&s)?)
+            })
+            .collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Belief embeddings (vector half of hybrid query_relevant)
+    // -----------------------------------------------------------------------
+
+    /// Insert or replace the embedding for a belief.
+    pub async fn insert_belief_embedding(
+        &self,
+        belief_id: Uuid,
+        embedding: &[f32],
+    ) -> Result<()> {
+        let vec_str = vec_literal(embedding);
+        sqlx::query(
+            "INSERT INTO public.belief_embeddings (belief_id, embedding) \
+             VALUES ($1, $2::vector) \
+             ON CONFLICT (belief_id) DO UPDATE SET embedding = EXCLUDED.embedding",
+        )
+        .bind(belief_id)
+        .bind(&vec_str)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete embedding rows for the given belief IDs. No-op if `ids` is empty.
+    pub async fn delete_belief_embeddings(&self, ids: &[Uuid]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        sqlx::query("DELETE FROM public.belief_embeddings WHERE belief_id = ANY($1)")
+            .bind(ids)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Cosine nearest-neighbour search over belief_embeddings.
+    /// Returns belief IDs ordered by ascending cosine distance (most similar first).
+    /// limit=0 means no limit.
+    pub async fn query_beliefs_by_vector(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+    ) -> Result<Vec<Uuid>> {
+        let vec_str = vec_literal(query_vec);
+        let limit_clause = if limit > 0 {
+            format!("LIMIT {limit}")
+        } else {
+            String::new()
+        };
+        let sql = format!(
+            "SELECT belief_id::text FROM public.belief_embeddings \
+             ORDER BY embedding <=> '{vec_str}'::vector {limit_clause}"
+        );
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|r| {
+                let s: String = r.try_get("belief_id")?;
+                Ok(Uuid::parse_str(&s)?)
+            })
+            .collect()
+    }
+
+    /// Belief IDs that already have an embedding row (used by `reembed` to skip).
+    pub async fn list_embedded_belief_ids(&self) -> Result<Vec<Uuid>> {
+        let rows = sqlx::query("SELECT belief_id::text FROM public.belief_embeddings")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter()
+            .map(|r| {
+                let s: String = r.try_get("belief_id")?;
                 Ok(Uuid::parse_str(&s)?)
             })
             .collect()

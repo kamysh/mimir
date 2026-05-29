@@ -14,10 +14,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 tract-onnx = "0.21"
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
-hf-hub = { version = "0.3", features = ["online"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

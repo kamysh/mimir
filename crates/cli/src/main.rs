@@ -110,6 +110,15 @@ enum Command {
         /// Path of the document to remove.
         path: String,
     },
+
+    /// Backfill `belief_embeddings` for any beliefs missing a vector.
+    ///
+    /// Idempotent — beliefs whose embeddings are already stored are skipped.
+    /// New beliefs added via `insert_belief` get their vectors automatically
+    /// going forward; this command is for one-time backfill of beliefs that
+    /// existed before the embedding pipeline was wired in.
+    /// Requires [embeddings] in config.toml.
+    Reembed,
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +142,7 @@ async fn main() -> Result<()> {
         Command::Load { path, project } => cmd_load(&path, project.as_deref()).await?,
         Command::QueryDoc { context, project, limit } => cmd_query_doc(&context, project.as_deref(), limit).await?,
         Command::ClearDoc { path } => cmd_clear_doc(&path).await?,
+        Command::Reembed => cmd_reembed().await?,
     }
 
     Ok(())
@@ -441,5 +451,52 @@ async fn cmd_contradictions() -> Result<()> {
         println!("  [{}]  ⟺  [{}]", ca, cb);
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// reembed — backfill belief_embeddings
+// ---------------------------------------------------------------------------
+
+async fn cmd_reembed() -> Result<()> {
+    // Re-load config to check whether [embeddings] is configured. The
+    // service's `embed_and_store_belief` is a silent no-op when it isn't —
+    // for backfill we want to fail loudly with an actionable message instead.
+    let cfg = Config::load()
+        .map_err(|e| anyhow::anyhow!("{e}\nRun `mimir init` to create a config file."))?;
+    if cfg.embeddings.is_none() {
+        anyhow::bail!(
+            "no [embeddings] in config.toml — cannot embed beliefs. Add an \
+             [embeddings] section (backend = \"local\" / \"voyage\" / \"openai\") \
+             and re-run."
+        );
+    }
+    let svc = MimirService::connect(&cfg).await?;
+
+    let beliefs = svc.list_beliefs().await?;
+    if beliefs.is_empty() {
+        println!("no beliefs to embed.");
+        return Ok(());
+    }
+
+    let embedded_ids: std::collections::HashSet<uuid::Uuid> =
+        svc.list_embedded_belief_ids().await?.into_iter().collect();
+
+    let mut embedded = 0_usize;
+    let mut skipped = 0_usize;
+    for belief in &beliefs {
+        if embedded_ids.contains(&belief.id) {
+            skipped += 1;
+            continue;
+        }
+        svc.embed_and_store_belief(belief).await?;
+        embedded += 1;
+        println!("  embedded {}  {}", belief.id, trunc(&belief.content, 60));
+    }
+
+    println!(
+        "\nembedded {embedded} belief{}; skipped {skipped} that already had vectors.",
+        if embedded == 1 { "" } else { "s" }
+    );
     Ok(())
 }
