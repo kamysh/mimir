@@ -355,10 +355,26 @@ update-confidence-preserves-probability b c = refl
 -- ---------------------------------------------------------------------------
 -- query_relevant — hybrid retrieval invariants
 -- Rust (MimirService::query_relevant):
---   1. Text match: case-insensitive substring of content.
---   2. Graph expansion: SUPPORTS/CAUSES reachable beliefs added.
---   3. Sort: by probability descending (partial_cmp, Equal on NaN).
---   4. Limit: if limit > 0, truncate to `limit` results.
+--   1. Candidate selection (HYBRID): the deduplicated union of
+--        (a) token/keyword matches — beliefs whose lowercased content contains
+--            at least one whitespace-split query term, ranked by distinct-term
+--            match count, and
+--        (b) vector matches — cosine top-k over public.belief_embeddings, when
+--            an embedding backend is configured,
+--      merged by Reciprocal Rank Fusion (RRF, k=60) into a relevance-ranked
+--      seed set. With no embedding backend, (b) is empty and selection degrades
+--      to the token half. (This REPLACES the old whole-query substring match,
+--      which required the entire query string to appear verbatim inside one
+--      belief — so any multi-word natural-language query returned nothing.)
+--   2. Graph expansion: SUPPORTS/CAUSES reachable beliefs added (unchanged).
+--   3. Sort: by probability descending (partial_cmp, Equal on NaN) (unchanged).
+--   4. Limit: if limit > 0, truncate to `limit` results (unchanged).
+--
+-- The RRF / cosine ranking governs only SELECTION (which beliefs seed the
+-- result set); the OUTPUT order stays probability-descending. Cosine similarity
+-- and RRF scores are not modelled in --safe Agda (same stance as query_document
+-- in Mimir.Documents) — they affect membership, not the proved ordering. Hence
+-- the sorted-by-probability and |results| ≤ limit proofs below are UNAFFECTED.
 --
 -- MCP INTERFACE NOTE: the MCP tool input parameter is named "context" (not
 -- "query") — the dispatch maps args["context"] to the service's `query: &str`.

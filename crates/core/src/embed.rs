@@ -144,23 +144,76 @@ impl LocalBackend {
     }
 }
 
+/// Resolve the on-disk cache root for the model files. Uses the supplied
+/// `cache_dir` if any, otherwise `$HOME/.cache/mimir/models`.
+fn local_model_root(cache_dir: Option<&std::path::Path>) -> Result<std::path::PathBuf> {
+    if let Some(p) = cache_dir {
+        return Ok(p.to_path_buf());
+    }
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| anyhow::anyhow!("HOME is not set; cannot locate cache directory"))?;
+    Ok(std::path::PathBuf::from(home).join(".cache/mimir/models"))
+}
+
+/// Download `url` to `dest` if `dest` does not already exist. Writes to a
+/// `.part` sibling first and renames on success so an interrupted download
+/// never leaves a half-written file in place.
+///
+/// We use `reqwest::blocking` directly instead of `hf-hub` because hf-hub 0.3.2
+/// has a redirect bug: when the CDN sends a relative `Location` header it
+/// passes that string straight into `ureq::Agent::get()`, which fails with
+/// `Bad URL: relative URL without a base`. `reqwest`'s redirect policy resolves
+/// relative `Location` against the prior request's URL the way the HTTP spec
+/// expects.
+fn ensure_cached(url: &str, dest: &std::path::Path) -> Result<()> {
+    if dest.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    tracing::info!(url, dest = %dest.display(), "downloading model file");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .context("building HTTP client")?;
+    let bytes = client
+        .get(url)
+        .send()
+        .with_context(|| format!("GET {url}"))?
+        .error_for_status()
+        .with_context(|| format!("HTTP error for {url}"))?
+        .bytes()
+        .with_context(|| format!("reading body of {url}"))?;
+    let tmp = dest.with_extension("part");
+    std::fs::write(&tmp, &bytes)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, dest)
+        .with_context(|| format!("renaming to {}", dest.display()))?;
+    Ok(())
+}
+
 fn load_embed_state(cache_dir: Option<&std::path::Path>) -> Result<EmbedState> {
     tracing::info!("initialising local embedding model ({HF_MODEL_ID}, {LOCAL_DIM} dims) — downloading on first use if not cached");
 
-    let api = {
-        let mut b = hf_hub::api::sync::ApiBuilder::new();
-        if let Some(dir) = cache_dir {
-            b = b.with_cache_dir(dir.to_path_buf());
-        }
-        b.build().context("creating HuggingFace API client")?
-    };
+    // Cache layout: <root>/<model-id-with-/-replaced-by-->/{tokenizer.json, onnx/model.onnx}.
+    let root = local_model_root(cache_dir)?;
+    let model_dir = root.join(HF_MODEL_ID.replace('/', "--"));
+    let tokenizer_path = model_dir.join("tokenizer.json");
+    let model_path = model_dir.join("onnx/model.onnx");
 
-    let repo = api.model(HF_MODEL_ID.to_string());
-
-    let tokenizer_path = repo.get("tokenizer.json")
-        .context("downloading tokenizer.json")?;
-    let model_path = repo.get("onnx/model.onnx")
-        .context("downloading onnx/model.onnx")?;
+    ensure_cached(
+        &format!("https://huggingface.co/{HF_MODEL_ID}/resolve/main/tokenizer.json"),
+        &tokenizer_path,
+    )
+    .context("downloading tokenizer.json")?;
+    ensure_cached(
+        &format!("https://huggingface.co/{HF_MODEL_ID}/resolve/main/onnx/model.onnx"),
+        &model_path,
+    )
+    .context("downloading onnx/model.onnx")?;
 
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
