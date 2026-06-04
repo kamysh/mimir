@@ -31,7 +31,7 @@ async fn store() -> AgeStore {
     let cfg = test_db_config();
     let graph_name = cfg.dbname.clone();
     let pool = db::connect(&cfg).await.expect("connect");
-    AgeStore::new(pool, graph_name).await.expect("ensure_labels")
+    AgeStore::new(pool, graph_name)
 }
 
 // ---------------------------------------------------------------------------

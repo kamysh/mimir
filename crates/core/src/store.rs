@@ -913,10 +913,10 @@ $$) AS (ok ag_catalog.agtype)"#
         let sql = format!(
             r#"SELECT
   id::text,
-  documentPath::text         AS document_path,
-  sectionPath::text          AS section_path,
+  document_path,
+  section_path,
   content::text,
-  parentId::text             AS parent_id,
+  parent_id,
   project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (c:DocumentChunk {{id: '{id_str}'}})

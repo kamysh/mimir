@@ -54,7 +54,7 @@
         # Shared attrs for both packages
         commonAttrs = {
           pname = "mimir";
-          version = "0.2.0";
+          version = "0.2.1";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           doCheck = false; # integration tests require a live PostgreSQL connection
@@ -105,6 +105,9 @@
             pkgs.just
             pkgs.git
           ];
+
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.openssl ];
 
           shellHook = ''
             echo "mimir dev shell"
