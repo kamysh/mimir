@@ -21,7 +21,7 @@ Follow this file instead.
 
 ## What a complete install consists of
 
-Mimir has three required pieces. Skipping any one yields a state that
+Mimir has four required pieces. Skipping any one yields a state that
 looks installed but fails:
 
 1. A **PostgreSQL container** (or your own DB) holding the belief
@@ -30,6 +30,12 @@ looks installed but fails:
    MCP server).
 3. The `mimir-mcp` server **registered with Claude Code**. Without
    it, Claude Code has no tools to call.
+4. The **skill** and **Claude Code hooks** wired together. The MCP
+   tools alone leave Claude with no trigger to query mimir — the
+   skill's body (`skill/SKILL.md`) assumes a `UserPromptSubmit` hook
+   fires before each message, and a `SessionStart` hook is what loads
+   the skill into a fresh session. Without the hooks the documented
+   loop never starts.
 
 There is **no daemon** to start. The MCP server is spawned by Claude
 Code on demand, and the database schema is created on first run via
@@ -99,6 +105,13 @@ command -v mimir && command -v mimir-mcp >/dev/null
 
 # Step 5 — MCP registered with Claude Code
 claude mcp list 2>&1 | grep -E '^mimir:.*Connected' >/dev/null
+
+# Step 6 — skill + hooks installed for Claude Code
+[ -f "$HOME/.claude/skills/mimir/SKILL.md" ] \
+  && jq -e 'any(.hooks.UserPromptSubmit[]?.hooks[]?; .command | test("mcp__mimir__query_relevant"))' \
+       "$HOME/.claude/settings.json" >/dev/null \
+  && jq -e 'any(.hooks.SessionStart[]?.hooks[]?;      .command | test("mimir skill"))' \
+       "$HOME/.claude/settings.json" >/dev/null
 ```
 
 ## Step 1 — Start postgres
@@ -242,14 +255,21 @@ claude mcp list 2>&1 | grep -E '^mimir:.*Connected' && echo OK
 If status is anything other than `Connected`, the MCP server is
 crashing on startup. Run `mimir-mcp` directly to see stderr.
 
-## Step 6 — (Optional) Install the skill and hooks
+## Step 6 — Install the skill and Claude Code hooks
 
-Strongly recommended for actual use — without them, Claude Code has
-mimir's tools available but no guidance on when to query them or
-write back to them.
+The skill at `~/.claude/skills/mimir/SKILL.md` teaches Claude Code how
+to drive mimir's belief graph — when to insert vs update, how to query
+before each turn, when to record contradictions. The skill on its own
+is not enough: its body assumes a `UserPromptSubmit` hook reminds
+Claude to query before each message, and the `SessionStart` hook is
+what loads the skill into a fresh or compacted session. Install all
+three pieces together.
 
-The skill file is in this repo at `skill/SKILL.md`. If you have a
-local clone, copy from there; otherwise fetch from the raw URL:
+### 6a — Drop the skill file in place
+
+The canonical source is `skill/SKILL.md` in this repo. Download it
+straight from `main` so the installed file is byte-identical to the
+source — re-running the command later overwrites any drift.
 
 ```sh
 mkdir -p "$HOME/.claude/skills/mimir"
@@ -257,54 +277,59 @@ curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/main/skill/SKILL.md \
   -o "$HOME/.claude/skills/mimir/SKILL.md"
 ```
 
-Merge the following into `~/.claude/settings.json` under the top-level
-`"hooks"` key. **Do not blindly overwrite the file** — read the
-existing contents first, parse as JSON, merge the `hooks` block,
-write back. If existing hook arrays already exist for these events,
-append to them.
+### 6b — Wire the SessionStart and UserPromptSubmit hooks
 
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'mcp__mimir tools are available. Invoke the mimir skill now to load the belief graph loop protocol for this session.'"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'Before acting: query mimir for relevant rules (mcp__mimir__query_relevant), query muninn for relevant code knowledge (mcp__muninn__search_hybrid). Do this BEFORE reading files or writing code.'"
-          }
-        ]
-      }
-    ]
-  }
-}
+Merge two hook entries into `~/.claude/settings.json` with `jq`. The
+merge is idempotent: each hook is keyed by a unique substring of its
+command (`mcp__mimir__query_relevant` for the prompt hook, `mimir
+skill` for the session hook), and re-running the block is a no-op once
+both are installed. Other entries (e.g. muninn's own hooks installed
+from [muninn's AGENTS.md](https://github.com/kamysh/muninn/blob/main/AGENTS.md))
+are preserved untouched as separate array elements.
+
+```sh
+SETTINGS="$HOME/.claude/settings.json"
+mkdir -p "$(dirname "$SETTINGS")"
+[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+
+PROMPT_CMD='echo "Before acting: query mimir for relevant rules (mcp__mimir__query_relevant). Do this BEFORE reading files or writing code."'
+SESSION_CMD='echo "mcp__mimir tools are available. Invoke the mimir skill now to load the belief graph loop protocol for this session."'
+
+tmp=$(mktemp)
+jq --arg p "$PROMPT_CMD" --arg s "$SESSION_CMD" '
+  .hooks //= {}
+  | .hooks.UserPromptSubmit //= []
+  | .hooks.SessionStart      //= []
+  | (if any(.hooks.UserPromptSubmit[]?.hooks[]?; .command == $p) then .
+     else .hooks.UserPromptSubmit += [{matcher: "", hooks: [{type: "command", command: $p}]}]
+     end)
+  | (if any(.hooks.SessionStart[]?.hooks[]?;      .command == $s) then .
+     else .hooks.SessionStart      += [{hooks: [{type: "command", command: $s}]}]
+     end)
+' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+chmod 600 "$SETTINGS"
 ```
 
-If [muninn](https://github.com/kamysh/muninn) is **not** installed,
-drop the `mcp__muninn__search_hybrid` reference from the
-`UserPromptSubmit` command:
+Restart Claude Code (close and reopen any active sessions) for the
+hooks to take effect — they fire on session start and on each user
+message, neither of which Claude can trigger retroactively.
 
+**Verify** (skill file matches `main`, both hooks present):
+```sh
+[ -f "$HOME/.claude/skills/mimir/SKILL.md" ] && echo OK
+local=$(shasum -a 256 "$HOME/.claude/skills/mimir/SKILL.md" | cut -d' ' -f1)
+remote=$(curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/main/skill/SKILL.md \
+         | shasum -a 256 | cut -d' ' -f1)
+[ "$local" = "$remote" ] && echo OK
+jq -e 'any(.hooks.UserPromptSubmit[]?.hooks[]?; .command | test("mcp__mimir__query_relevant"))' \
+  "$HOME/.claude/settings.json" >/dev/null && echo OK
+jq -e 'any(.hooks.SessionStart[]?.hooks[]?;      .command | test("mimir skill"))' \
+  "$HOME/.claude/settings.json" >/dev/null && echo OK
 ```
-"echo 'Before acting: query mimir for relevant rules (mcp__mimir__query_relevant). Do this BEFORE reading files or writing code.'"
-```
-
-Hooks take effect on the **next** Claude Code session, not the
-current one.
 
 ## Final verification gate
 
-All five lines must print `OK`. If any fails, fix that step before
+All eight lines must print `OK`. If any fails, fix that step before
 declaring the install complete.
 
 ```sh
@@ -316,6 +341,11 @@ psql -h localhost -p "$PORT" -U "$DB_USER" -d "$DB_NAME" \
   -c "SELECT 1 FROM ag_catalog.ag_graph WHERE name='${DB_NAME}'" \
   -tA 2>/dev/null | grep -q 1                                           && echo OK  # 4
 claude mcp list 2>&1 | grep -qE '^mimir:.*Connected'                    && echo OK  # 5
+[ -f "$HOME/.claude/skills/mimir/SKILL.md" ]                            && echo OK  # 6
+jq -e 'any(.hooks.UserPromptSubmit[]?.hooks[]?; .command | test("mcp__mimir__query_relevant"))' \
+  "$HOME/.claude/settings.json" >/dev/null                              && echo OK  # 7
+jq -e 'any(.hooks.SessionStart[]?.hooks[]?;      .command | test("mimir skill"))' \
+  "$HOME/.claude/settings.json" >/dev/null                              && echo OK  # 8
 ```
 
 ## Known errors → fixes
