@@ -119,6 +119,30 @@ enum Command {
     /// existed before the embedding pipeline was wired in.
     /// Requires [embeddings] in config.toml.
     Reembed,
+
+    /// Handle Claude Code hook events — read JSON from stdin, inject relevant
+    /// beliefs into the response. Always exits 0; never blocks a tool call.
+    Hook {
+        #[command(subcommand)]
+        event: HookEvent,
+    },
+}
+
+/// Claude Code hook event variants.
+#[derive(Subcommand)]
+enum HookEvent {
+    /// UserPromptSubmit hook — inject beliefs relevant to the user's prompt.
+    ///
+    /// Reads {"prompt": "..."} from stdin, prints matching beliefs as plain
+    /// text to stdout. Claude Code injects stdout into the conversation
+    /// context for this hook event.
+    Prompt,
+
+    /// PreToolUse hook — inject beliefs relevant to the file or command.
+    ///
+    /// Reads {"tool_input": {"file_path"|"path"|"command": "..."}} from stdin,
+    /// prints a JSON object with hookSpecificOutput.additionalContext to stdout.
+    Pretooluse,
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +167,8 @@ async fn main() -> Result<()> {
         Command::QueryDoc { context, project, limit } => cmd_query_doc(&context, project.as_deref(), limit).await?,
         Command::ClearDoc { path } => cmd_clear_doc(&path).await?,
         Command::Reembed => cmd_reembed().await?,
+        // Hooks must never exit non-zero — discard any error silently.
+        Command::Hook { event } => { let _ = cmd_hook(event).await; }
     }
 
     Ok(())
@@ -498,5 +524,102 @@ async fn cmd_reembed() -> Result<()> {
         "\nembedded {embedded} belief{}; skipped {skipped} that already had vectors.",
         if embedded == 1 { "" } else { "s" }
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// mimir hook prompt / pretooluse
+// ---------------------------------------------------------------------------
+
+async fn cmd_hook(event: HookEvent) -> Result<()> {
+    match event {
+        HookEvent::Prompt => cmd_hook_prompt().await,
+        HookEvent::Pretooluse => cmd_hook_pretooluse().await,
+    }
+}
+
+async fn cmd_hook_prompt() -> Result<()> {
+    use std::io::Read;
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+
+    let v: serde_json::Value = serde_json::from_str(&input)?;
+    let prompt = v["prompt"].as_str().unwrap_or("").trim().to_string();
+    if prompt.is_empty() {
+        return Ok(());
+    }
+
+    let svc = connect().await?;
+    let beliefs = svc.query_relevant(&trunc(&prompt, 500), 5).await?;
+    if beliefs.is_empty() {
+        return Ok(());
+    }
+
+    println!("[mimir priors — treat as priors, comply-or-override per the mimir skill]");
+    for b in &beliefs {
+        let proj = b.project.as_deref()
+            .map(|p| format!("  [{}]", p))
+            .unwrap_or_default();
+        println!(
+            "{}  p={:.3}  c={:.3}  {}{}",
+            b.id,
+            b.probability.value(),
+            b.confidence.value(),
+            trunc(&b.content, 70),
+            proj,
+        );
+    }
+
+    Ok(())
+}
+
+async fn cmd_hook_pretooluse() -> Result<()> {
+    use std::io::Read;
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+
+    let v: serde_json::Value = serde_json::from_str(&input)?;
+    let ti = &v["tool_input"];
+    let query_raw = ti["file_path"]
+        .as_str()
+        .or_else(|| ti["path"].as_str())
+        .or_else(|| ti["command"].as_str())
+        .unwrap_or("")
+        .trim();
+    if query_raw.is_empty() {
+        return Ok(());
+    }
+
+    let svc = connect().await?;
+    let beliefs = svc.query_relevant(&trunc(query_raw, 200), 3).await?;
+    if beliefs.is_empty() {
+        return Ok(());
+    }
+
+    let mut lines = String::from(
+        "mimir priors relevant to this action (treat as priors; comply-or-override per the mimir skill):\n",
+    );
+    for b in &beliefs {
+        let proj = b.project.as_deref()
+            .map(|p| format!("  [{}]", p))
+            .unwrap_or_default();
+        lines.push_str(&format!(
+            "{}  p={:.3}  c={:.3}  {}{}\n",
+            b.id,
+            b.probability.value(),
+            b.confidence.value(),
+            trunc(&b.content, 70),
+            proj,
+        ));
+    }
+
+    let out = serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": lines.trim_end_matches('\n')
+        }
+    });
+    println!("{}", out);
+
     Ok(())
 }
