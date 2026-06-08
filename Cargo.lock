@@ -1454,18 +1454,19 @@ dependencies = [
 
 [[package]]
 name = "mimir"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
  "mimir-core",
+ "serde_json",
  "tokio",
  "uuid",
 ]
 
 [[package]]
 name = "mimir-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1485,7 +1486,7 @@ dependencies = [
 
 [[package]]
 name = "mimir-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "mimir-core",

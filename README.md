@@ -269,16 +269,16 @@ Five `OK`s = good to go. The most common silent failure is line 4: if it's missi
 
 ### Step 7: Install the skill and hooks (recommended)
 
-The skill teaches Claude Code *how* to use the belief graph — when to read from it, when to write back, and how to calibrate probabilities. The hooks ensure it fires automatically on every session and message.
+The skill teaches Claude Code *how* to use the belief graph — when to read from it, when to write back, and how to calibrate probabilities. The hooks ensure beliefs are surfaced automatically on every session and before every file edit.
 
-**Skill:**
+**Skill** — copy it to the skills directory (or `install.sh` does this for you):
 
 ```bash
 mkdir -p ~/.claude/skills/mimir
 cp skill/SKILL.md ~/.claude/skills/mimir/SKILL.md
 ```
 
-**Hooks** — merge the following into `~/.claude/settings.json` under the top-level `"hooks"` key (create the key if it doesn't exist; append to existing arrays if you already have hooks for these events). Do **not** blindly overwrite `~/.claude/settings.json` — you almost certainly have other settings in it.
+**Wire the hooks** — merge the following into `~/.claude/settings.json` under the top-level `"hooks"` key. Do **not** blindly overwrite the file — append to existing arrays if you already have hooks for these events.
 
 ```json
 {
@@ -288,18 +288,28 @@ cp skill/SKILL.md ~/.claude/skills/mimir/SKILL.md
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'mcp__mimir tools are available. Invoke the mimir skill now to load the belief graph loop protocol for this session.'"
+            "command": "echo 'mcp__mimir tools are available. Invoke the mimir skill now: load the read+write belief-graph protocol (consult before >2-step exploration, errors, or approach choices; write back what recurs).'"
           }
         ]
       }
     ],
     "UserPromptSubmit": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'Before acting: query mimir for relevant rules (mcp__mimir__query_relevant), query muninn for relevant code knowledge (mcp__muninn__search_hybrid). Do this BEFORE reading files or writing code.'"
+            "command": "mimir hook prompt"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mimir hook pretooluse"
           }
         ]
       }
@@ -308,11 +318,7 @@ cp skill/SKILL.md ~/.claude/skills/mimir/SKILL.md
 }
 ```
 
-The `UserPromptSubmit` hook references both mimir and [muninn](https://github.com/kamysh/muninn) — a companion semantic code-knowledge store. If you are not using muninn, replace the hook command with:
-
-```
-"echo 'Before acting: query mimir for relevant rules (mcp__mimir__query_relevant). Do this BEFORE reading files or writing code.'"
-```
+`mimir hook prompt` reads the hook JSON from stdin, queries the belief graph on the prompt text, and prints matching beliefs as plain text. `mimir hook pretooluse` does the same for the file path or command, emitting `additionalContext` JSON. Both are built into the `mimir` binary — no shell scripts or extra dependencies needed.
 
 Restart Claude Code for the hooks to take effect.
 

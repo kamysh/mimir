@@ -27,7 +27,7 @@ mkdir -p "${HOME}/.claude/hooks"
 cp "${PROJECT_DIR}/hooks/mimir-prompt.sh" "${HOME}/.claude/hooks/mimir-prompt.sh"
 cp "${PROJECT_DIR}/hooks/mimir-pretooluse.sh" "${HOME}/.claude/hooks/mimir-pretooluse.sh"
 chmod +x "${HOME}/.claude/hooks/mimir-prompt.sh" "${HOME}/.claude/hooks/mimir-pretooluse.sh"
-echo "  Hooks installed. Wire them into ~/.claude/settings.json — see hooks/README or docs/hooks.md."
+echo "  Hooks installed. Wire them into ~/.claude/settings.json — see Step 7 in README.md."
 
 echo ""
 echo "Done. Next steps:"
