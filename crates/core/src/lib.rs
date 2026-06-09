@@ -19,10 +19,11 @@ use store::AgeStore;
 /// Reciprocal Rank Fusion merge of multiple ranked Uuid lists.
 /// Each list contributes `1 / (K + rank)` (rank is 0-based) to each contained
 /// id's score; ids are deduplicated and returned sorted by total score
-/// descending. K = 60 is the standard RRF constant. Used by `query_relevant`
-/// to combine the token-overlap and vector-cosine rankings into one relevance
-/// ranking before graph expansion and the probability-desc sort.
-fn rrf_merge_ids(lists: &[Vec<Uuid>]) -> Vec<Uuid> {
+/// descending together with their RRF scores. K = 60 is the standard RRF
+/// constant. Used by `query_relevant` to combine token-overlap and
+/// vector-cosine rankings; the scores are preserved for the final combined
+/// sort (`rrf_score × probability`).
+fn rrf_merge_ids(lists: &[Vec<Uuid>]) -> Vec<(Uuid, f32)> {
     use std::collections::HashMap;
     const K: f32 = 60.0;
     let mut scores: HashMap<Uuid, f32> = HashMap::new();
@@ -34,7 +35,7 @@ fn rrf_merge_ids(lists: &[Vec<Uuid>]) -> Vec<Uuid> {
     }
     let mut ranked: Vec<(Uuid, f32)> = scores.into_iter().collect();
     ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    ranked.into_iter().map(|(id, _)| id).collect()
+    ranked
 }
 
 pub struct MimirStats {
@@ -330,18 +331,22 @@ impl MimirService {
             Vec::new()
         };
 
-        // ── RRF merge → relevance-ranked, deduplicated seed IDs.
-        let seed_ids = rrf_merge_ids(&[token_ranked, vector_ranked]);
-        if seed_ids.is_empty() {
+        // ── RRF merge → relevance-ranked, deduplicated seed IDs with scores.
+        let seed_scored = rrf_merge_ids(&[token_ranked, vector_ranked]);
+        if seed_scored.is_empty() {
             return Ok(vec![]);
         }
+
+        // ── Build a score map so scores survive graph expansion.
+        let rrf_scores: std::collections::HashMap<Uuid, f32> =
+            seed_scored.iter().cloned().collect();
 
         // ── Materialise beliefs in seed order from the already-loaded list.
         let by_id: std::collections::HashMap<Uuid, &Belief> =
             all.iter().map(|b| (b.id, b)).collect();
-        let mut matched: Vec<Belief> = seed_ids
+        let mut matched: Vec<Belief> = seed_scored
             .iter()
-            .filter_map(|id| by_id.get(id).map(|&b| b.clone()))
+            .filter_map(|(id, _)| by_id.get(id).map(|&b| b.clone()))
             .collect();
 
         // ── Graph expansion: SUPPORTS/CAUSES reachable beliefs (unchanged).
@@ -355,13 +360,17 @@ impl MimirService {
             }
         }
 
-        // ── Sort by probability descending and truncate (unchanged invariants;
-        //    see Mimir.Graph proofs).
+        // ── Sort by rrf_score × probability descending.
+        //    Direct text/vector matches (rrf_score > 0) always outrank beliefs
+        //    that entered only through graph expansion (rrf_score = 0),
+        //    regardless of probability. Within each tier, higher probability
+        //    wins. See Mimir.Graph spec (query_relevant section).
         matched.sort_by(|a, b| {
-            b.probability
-                .value()
-                .partial_cmp(&a.probability.value())
-                .unwrap_or(std::cmp::Ordering::Equal)
+            let sa = rrf_scores.get(&a.id).copied().unwrap_or(0.0)
+                * a.probability.value() as f32;
+            let sb = rrf_scores.get(&b.id).copied().unwrap_or(0.0)
+                * b.probability.value() as f32;
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
 
         if limit > 0 {
