@@ -367,25 +367,28 @@ update-confidence-preserves-probability b c = refl
 --      which required the entire query string to appear verbatim inside one
 --      belief — so any multi-word natural-language query returned nothing.)
 --   2. Graph expansion: SUPPORTS/CAUSES reachable beliefs added (unchanged).
---   3. Sort: by probability descending (partial_cmp, Equal on NaN) (unchanged).
+--   3. Sort: by `combined_score = rrf_score × probability` descending.
+--      Beliefs that matched directly (token or vector) have rrf_score > 0 and
+--      always outrank graph-expansion-only beliefs (rrf_score = 0). Within
+--      each tier, higher probability wins.
 --   4. Limit: if limit > 0, truncate to `limit` results (unchanged).
 --
--- The RRF / cosine ranking governs only SELECTION (which beliefs seed the
--- result set); the OUTPUT order stays probability-descending. Cosine similarity
--- and RRF scores are not modelled in --safe Agda (same stance as query_document
--- in Mimir.Documents) — they affect membership, not the proved ordering. Hence
--- the sorted-by-probability and |results| ≤ limit proofs below are UNAFFECTED.
+-- RRF and cosine scores are runtime floats not modelled in --safe Agda (same
+-- stance as query_document in Mimir.Documents). The proved invariants below
+-- therefore cover only the structural properties that can be stated without
+-- those scores.
 --
 -- MCP INTERFACE NOTE: the MCP tool input parameter is named "context" (not
 -- "query") — the dispatch maps args["context"] to the service's `query: &str`.
 -- The service method is MimirService::query_relevant(query, limit).
 -- The parameter rename exists only at the MCP layer; internally it is "query".
 --
--- Key invariants (both proved below):
---   a. Results are sorted by probability descending
---      (proved via IsSortedByProb + sort-by-prob-sorted).
---   b. If limit > 0, |results| ≤ limit
---      (proved via take-length).
+-- Key invariants:
+--   a. Results are sorted by `rrf_score × probability` descending.
+--      rrf_scores are not modelled in Agda; this invariant is stated but not
+--      formally proved here. The `IsSortedByProb` / `sort-by-prob-sorted`
+--      infrastructure below is retained as a general utility.
+--   b. If limit > 0, |results| ≤ limit  (proved via take-length).
 -- ---------------------------------------------------------------------------
 
 -- Limit bound: take n never produces more than n elements.
