@@ -96,3 +96,23 @@ AGE 1.x does not support `[:A|B]` relationship-type OR syntax. Use UNION inside 
 `.envrc` (gitignored) sets `DBHOST`, `DBPORT`, `DBNAME`, `DBUSER`, `DOCKER_CONTAINER`. direnv loads it automatically. Integration tests construct `MIMIR_DSN` from these vars inside the Nix shell.
 
 The MCP server and CLI read `~/.config/mimir/config.toml` at startup; `mimir init` writes a commented template and opens `$EDITOR`.
+
+## Using mimir (the belief graph) while working here
+
+This repo dogfoods mimir: carry what past sessions learned across compaction and new
+sessions. Relevant beliefs are injected automatically by the session hooks — you do
+not need to query mimir at startup.
+
+- **Reading**: treat an injected belief with **p ≥ 0.8 as the default action** — follow
+  it unless you have concrete evidence it is wrong *in this case*; if you override one,
+  say why in a single line. Beliefs with p < 0.8 are hints, not orders. For a specific
+  mid-task question ("did we decide X?"), pull with `query_relevant` before re-deriving.
+- **Writing**: after finding something durable, non-obvious, and project-specific (a
+  gotcha, a decision + rationale, a constraint that cost exploration), record it with
+  `insert_belief` — one claim per belief. `probability` = how true; `confidence` = how
+  sure (verified fact ≈ 0.95/0.9; hypothesis ≈ 0.7/0.5). Link only real relations
+  (`record_support` / `record_cause` / `record_defeat` / `record_contradiction`). Do
+  not store ephemeral state, secrets, or anything obvious from the code (code locations
+  belong in muninn).
+- **Cost discipline**: do not query or write on trivial tasks — a query that won't
+  change what you do is wasted context.
