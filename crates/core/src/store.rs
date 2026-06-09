@@ -964,4 +964,36 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         }
         Ok(beliefs)
     }
+
+    /// Beliefs reachable from `start_id` along CAUSES edges only — the causal
+    /// descendants, i.e. the candidate set for an intervention `do(start = v)`.
+    /// Mirrors `get_downstream_beliefs` but keeps only the causal branch
+    /// (no SUPPORTS UNION), since an intervention propagates along causal
+    /// edges alone. Excludes the seed itself (the `*1..10` path has length ≥ 1).
+    pub async fn get_causal_downstream_beliefs(&self, start_id: Uuid) -> Result<Vec<Belief>> {
+        let g = &self.graph_name;
+        let id_str = start_id.to_string();
+
+        let sql = format!(
+            r#"SELECT
+  id::text,
+  content::text,
+  probability::text,
+  confidence::text,
+  created_at::text,
+  last_activated_at::text,
+  project::text
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES*1..10]->(n:Belief)
+  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at, n.project
+$$) {BELIEF_RETURN_COLUMNS}"#
+        );
+
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let mut beliefs = Vec::with_capacity(rows.len());
+        for row in &rows {
+            beliefs.push(belief_from_row(row)?);
+        }
+        Ok(beliefs)
+    }
 }

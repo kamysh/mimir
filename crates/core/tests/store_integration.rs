@@ -1,8 +1,9 @@
 use mimir_core::{
-    config::DatabaseConfig,
+    config::{Config, DatabaseConfig},
     db,
     graph::{Belief, Edge, EdgeType, Pattern, Probability},
     store::AgeStore,
+    MimirService,
 };
 use uuid::Uuid;
 
@@ -381,4 +382,59 @@ async fn test_get_downstream_multi_hop() {
     let downstream = s.get_downstream_beliefs(b1.id).await.unwrap();
     assert!(downstream.iter().any(|b| b.id == b2.id));
     assert!(downstream.iter().any(|b| b.id == b3.id));
+}
+
+// ---------------------------------------------------------------------------
+// query_intervention (do-operator) — read-only counterfactual
+// ---------------------------------------------------------------------------
+
+async fn service() -> MimirService {
+    let cfg = Config { database: test_db_config(), embeddings: None };
+    MimirService::connect(&cfg).await.expect("connect service")
+}
+
+// Acceptance criterion: query_intervention computes a projection but writes
+// NOTHING back to the store. Graph T -CAUSES-> B; do(T = 1.0) projects a new
+// value for B, but B's stored probability is unchanged after the call.
+#[tokio::test]
+async fn test_intervention_is_read_only() {
+    let s = store().await;
+    let svc = service().await;
+
+    let t = Belief::new(format!("do-T-{}", Uuid::new_v4()), 0.4, 0.9).unwrap();
+    let b = Belief::new(format!("do-B-{}", Uuid::new_v4()), 0.4, 0.9).unwrap();
+    s.insert_belief(&t).await.unwrap();
+    s.insert_belief(&b).await.unwrap();
+    s.insert_edge(&Edge::new(t.id, b.id, EdgeType::Causes, 0.5).unwrap()).await.unwrap();
+
+    let b_before = s.get_belief(b.id).await.unwrap().unwrap().probability.value();
+
+    let updates = svc.query_intervention(t.id, 1.0).await.unwrap();
+    // B is a causal descendant and must be projected: boost(0.4, 1.0, 0.5) = 0.7.
+    let projected = updates.iter().find(|(id, _)| *id == b.id).map(|(_, p)| p.value());
+    assert!(projected.is_some(), "B should appear in the projection");
+    assert!((projected.unwrap() - 0.7).abs() < 1e-9, "got {:?}", projected);
+
+    // The decisive check: the store row for B is UNCHANGED (no writeback).
+    let b_after = s.get_belief(b.id).await.unwrap().unwrap().probability.value();
+    assert!((b_after - b_before).abs() < 1e-12,
+        "query_intervention must not mutate the store: {} -> {}", b_before, b_after);
+    assert!((b_after - 0.4).abs() < 1e-9, "B should still be its stored 0.4");
+}
+
+// Acceptance criterion: validation. A value outside [0,1] is rejected (the
+// Probability::new guard fires before any store access).
+#[tokio::test]
+async fn test_intervention_rejects_out_of_range_value() {
+    let svc = service().await;
+    let r = svc.query_intervention(Uuid::new_v4(), 1.5).await;
+    assert!(r.is_err(), "value > 1.0 must be rejected");
+}
+
+// Acceptance criterion: an unknown target id is an error (not a silent empty).
+#[tokio::test]
+async fn test_intervention_unknown_target_errors() {
+    let svc = service().await;
+    let r = svc.query_intervention(Uuid::new_v4(), 0.5).await;
+    assert!(r.is_err(), "unknown target belief must error");
 }

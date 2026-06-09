@@ -120,6 +120,18 @@ enum Command {
     /// Requires [embeddings] in config.toml.
     Reembed,
 
+    /// Counterfactual query: P(downstream | do(belief = value)).
+    ///
+    /// Severs the target belief's incoming edges and propagates the clamped
+    /// value along CAUSES edges only. READ-ONLY — prints the projected
+    /// probabilities of causal descendants; does NOT modify the graph.
+    Intervene {
+        /// UUID of the belief to intervene on (clamp).
+        id: String,
+        /// The value to clamp it to, in [0.0, 1.0].
+        value: f64,
+    },
+
     /// Handle Claude Code hook events — read JSON from stdin, inject relevant
     /// beliefs into the response. Always exits 0; never blocks a tool call.
     Hook {
@@ -167,6 +179,7 @@ async fn main() -> Result<()> {
         Command::QueryDoc { context, project, limit } => cmd_query_doc(&context, project.as_deref(), limit).await?,
         Command::ClearDoc { path } => cmd_clear_doc(&path).await?,
         Command::Reembed => cmd_reembed().await?,
+        Command::Intervene { id, value } => cmd_intervene(&id, value).await?,
         // Hooks must never exit non-zero — discard any error silently.
         Command::Hook { event } => { let _ = cmd_hook(event).await; }
     }
@@ -346,6 +359,36 @@ async fn cmd_query(text: &str, limit: usize) -> Result<()> {
             trunc(&b.content, 70),
             proj,
         );
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// mimir intervene — counterfactual do(belief = value), read-only
+// ---------------------------------------------------------------------------
+
+async fn cmd_intervene(id: &str, value: f64) -> Result<()> {
+    let target = id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| anyhow::anyhow!("invalid UUID: {}", id))?;
+
+    let svc = connect().await?;
+    let updates = svc.query_intervention(target, value).await?;
+
+    if updates.is_empty() {
+        println!("(no causal descendants affected)");
+        return Ok(());
+    }
+
+    for (uid, prob) in &updates {
+        // Fetch content for a readable line; fall back to the bare id.
+        let content = svc
+            .get_belief(*uid)
+            .await?
+            .map(|b| trunc(&b.content, 70))
+            .unwrap_or_default();
+        println!("{}  p_proj={:.3}  {}", uid, prob.value(), content);
     }
 
     Ok(())

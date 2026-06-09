@@ -199,6 +199,18 @@ fn tools_list() -> Value {
             }
         },
         {
+            "name": "query_intervention",
+            "description": "Counterfactual query P(downstream | do(target = value)). Severs the target's incoming edges and propagates along CAUSES edges only. READ-ONLY: returns projected probabilities for causal descendants; does NOT modify the graph. Use for 'if I change X, what downstream is affected?' — distinct from query_relevant (evidential association) and propagate_from (which mutates).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id":    { "type": "string" },
+                    "value": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                },
+                "required": ["id", "value"]
+            }
+        },
+        {
             "name": "update_confidence",
             "description": "Update the confidence value of a belief.",
             "inputSchema": {
@@ -419,6 +431,24 @@ async fn handle_tool_call(
                 .into_iter()
                 .map(|(uid, prob)| {
                     json!({ "id": uid.to_string(), "new_probability": prob.value() })
+                })
+                .collect();
+            Ok(json!(result))
+        }
+
+        "query_intervention" => {
+            let id_str = args["id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
+            let value = args["value"]
+                .as_f64()
+                .ok_or_else(|| anyhow::anyhow!("missing 'value'"))?;
+            let id = uuid::Uuid::parse_str(id_str)?;
+            let updates = svc.query_intervention(id, value).await?;
+            let result: Vec<Value> = updates
+                .into_iter()
+                .map(|(uid, prob)| {
+                    json!({ "id": uid.to_string(), "projected_probability": prob.value() })
                 })
                 .collect();
             Ok(json!(result))
