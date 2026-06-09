@@ -105,6 +105,19 @@ fn tools_list() -> Value {
             }
         },
         {
+            "name": "record_cause",
+            "description": "Add a CAUSES edge from one belief to another (from_id causes to_id). Causal edges are what query_intervention traverses for counterfactual do(...) queries; unlike record_defeat this does NOT trigger propagation.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from_id": { "type": "string" },
+                    "to_id":   { "type": "string" },
+                    "weight":  { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                },
+                "required": ["from_id", "to_id", "weight"]
+            }
+        },
+        {
             "name": "record_defeat",
             "description": "Add a DEFEATS edge and trigger defeat propagation cascade.",
             "inputSchema": {
@@ -342,6 +355,23 @@ async fn handle_tool_call(
             let from_id = uuid::Uuid::parse_str(from_str)?;
             let to_id = uuid::Uuid::parse_str(to_str)?;
             svc.add_edge(from_id, to_id, EdgeType::Supports, weight).await?;
+            Ok(json!({ "ok": true }))
+        }
+
+        "record_cause" => {
+            let from_str = args["from_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
+            let to_str = args["to_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'to_id'"))?;
+            let weight = args["weight"]
+                .as_f64()
+                .ok_or_else(|| anyhow::anyhow!("missing 'weight'"))?;
+
+            let from_id = uuid::Uuid::parse_str(from_str)?;
+            let to_id = uuid::Uuid::parse_str(to_str)?;
+            svc.add_edge(from_id, to_id, EdgeType::Causes, weight).await?;
             Ok(json!({ "ok": true }))
         }
 

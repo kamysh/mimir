@@ -318,15 +318,17 @@ propagate-seed-probability-unchanged :
 propagate-seed-probability-unchanged _ = refl
 
 -- ---------------------------------------------------------------------------
--- CAUSES edge gap in the MCP interface
--- CAUSES participates in BFS propagation (boost_by_support, same as SUPPORTS)
--- and in graph-expansion queries (get_downstream_beliefs follows CAUSES edges
--- up to depth 10).  However, there is NO `record_causes` MCP tool — the MCP
--- layer exposes only:
+-- CAUSES edges in the MCP interface
+-- CAUSES participates in BFS propagation (boost_by_support, same as SUPPORTS),
+-- in graph-expansion queries (get_downstream_beliefs follows CAUSES edges up to
+-- depth 10), and is the ONLY label query_intervention traverses (do-operator).
+-- The MCP layer exposes one record tool per edge label:
 --   record_support       → SUPPORTS
---   record_defeat        → DEFEATS (+ auto-propagate)
+--   record_cause         → CAUSES      (no auto-propagate; traversed by do(...))
+--   record_defeat        → DEFEATS     (+ auto-propagate)
 --   record_contradiction → CONTRADICTS (bidirectional)
--- CAUSES edges can only be inserted via the internal MimirService API.
+-- All four dispatch to MimirService::add_edge; only DEFEATS triggers
+-- propagate_from (autoPropagate above).
 -- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------

@@ -361,6 +361,7 @@ docker ps --filter name=postgres-ai
 | `delete_pattern` | Remove a pattern by `id` |
 | `delete_project` | Remove all beliefs and document chunks tagged with a `project` |
 | `record_support` | Add a SUPPORTS edge from `from_id` to `to_id` with `weight` |
+| `record_cause` | Add a CAUSES edge from `from_id` to `to_id` with `weight` (traversed by `query_intervention`; no auto-propagation) |
 | `record_defeat` | Add a DEFEATS edge and trigger defeat propagation cascade |
 | `record_contradiction` | Add a bidirectional CONTRADICTS relation between `id_a` and `id_b` |
 | `get_belief` | Get a belief by `id` |
