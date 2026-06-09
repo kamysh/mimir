@@ -555,7 +555,7 @@ async fn cmd_hook_prompt() -> Result<()> {
         return Ok(());
     }
 
-    println!("[mimir priors — treat as priors, comply-or-override per the mimir skill]");
+    println!("[Prior knowledge from past sessions — apply directly, do not rediscover empirically:]");
     for b in &beliefs {
         let proj = b.project.as_deref()
             .map(|p| format!("  [{}]", p))
@@ -565,7 +565,7 @@ async fn cmd_hook_prompt() -> Result<()> {
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            trunc(&b.content, 70),
+            b.content,
             proj,
         );
     }
@@ -597,7 +597,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
     }
 
     let mut lines = String::from(
-        "mimir priors relevant to this action (treat as priors; comply-or-override per the mimir skill):\n",
+        "Prior knowledge relevant to this action — apply directly:\n",
     );
     for b in &beliefs {
         let proj = b.project.as_deref()
@@ -608,7 +608,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            trunc(&b.content, 70),
+            trunc(&b.content, 200),
             proj,
         ));
     }
