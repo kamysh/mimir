@@ -369,6 +369,7 @@ docker ps --filter name=postgres-ai
 | `get_contradictions` | Find all actively contradicting belief pairs |
 | `query_relevant` | Hybrid retrieval: text match + graph expansion, ordered by probability |
 | `propagate_from` | Run defeat propagation from a seed belief `id` |
+| `query_intervention` | Counterfactual `P(downstream \| do(id = value))`: severs the target's incoming edges, propagates along CAUSES only. Read-only — returns `projected_probability` for causal descendants; never mutates |
 | `update_confidence` | Update the `confidence` value of a belief |
 | `decay_all` | Apply time decay to all beliefs (`decay_factor` defaults to 0.99) |
 | `load_document` | Parse a markdown file into chunks, embed, and index for semantic search |
@@ -384,6 +385,7 @@ docker ps --filter name=postgres-ai
 | `mimir list [--project NAME] [--limit N]` | List beliefs, sorted by probability |
 | `mimir patterns [--limit N]` | List patterns, sorted by success rate |
 | `mimir query TEXT [--limit N]` | Hybrid search: text match + graph expansion |
+| `mimir intervene UUID VALUE` | Counterfactual `do(belief = VALUE)`: read-only projection of causal descendants |
 | `mimir delete UUID` | Delete a belief and all its edges |
 | `mimir forget PROJECT` | Delete all beliefs and document chunks for a project |
 | `mimir decay [--factor 0.99]` | Apply time decay to all belief confidences |

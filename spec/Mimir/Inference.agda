@@ -2,10 +2,12 @@
 module Mimir.Inference where
 
 open import Mimir.Types
-open import Data.Bool            using (Bool; true; false)
-open import Data.Nat             using (ℕ; _+_; _∸_; _*_; _/_; _≤_; _≤ᵇ_; z≤n; s≤s)
+open import Data.Bool            using (Bool; true; false; _∧_; not)
+open import Data.Nat             using (ℕ; _+_; _∸_; _*_; _/_; _≤_; _≤ᵇ_; _≡ᵇ_; z≤n; s≤s)
 open import Data.Nat.Properties  using (≤-refl; ≤-trans; ≤-reflexive; *-monoˡ-≤; *-comm; +-comm; m≤m+n; m∸n≤m)
 open import Data.Nat.DivMod      using (m*n/n≡m; /-monoˡ-≤)
+open import Data.List            using (List; []; _∷_)
+open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; cong; trans)
 
 -- ---------------------------------------------------------------------------
@@ -194,3 +196,90 @@ attenuate-≤ target defeater w =
 --
 -- CONTRADICTS: skipped during propagation (inference.rs line: `EdgeType::Contradicts => continue`).
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- The do-operator (Phase 1): interventional semantics for CAUSES edges
+--
+-- Rust: InferenceEngine::intervene(target, value, downstream, edges) performs
+-- Pearl's graph mutilation —
+--   edges.filter(|&(_from, to, et, _w)| to != target_id && et == Causes)
+-- — then propagates forward along the surgical edge set. The structural
+-- content of mutilation is: NO surviving edge points into the intervened node
+-- (its value is independent of its former parents). That is the lemma proved
+-- below. RRF/cosine and the numeric BFS are runtime concerns not modelled in
+-- --safe Agda; here we model only the edge-set surgery and its key property.
+-- ---------------------------------------------------------------------------
+
+-- Boolean equality on node identifiers (compares the underlying ℕ uid).
+nodeEqᵇ : NodeId → NodeId → Bool
+nodeEqᵇ a b = NodeId.uid a ≡ᵇ NodeId.uid b
+
+-- Whether an edge label is CAUSES (the only label an intervention follows).
+isCausesᵇ : EdgeLabel → Bool
+isCausesᵇ SUPPORTS    = false
+isCausesᵇ DEFEATS     = false
+isCausesᵇ CAUSES      = true
+isCausesᵇ CONTRADICTS = false
+
+-- A directed, labelled, weighted edge between two belief nodes.
+record Edge : Set where
+  constructor mkEdge
+  field
+    fromId : NodeId
+    toId   : NodeId
+    label  : EdgeLabel
+    weight : Prob
+
+-- Keep an edge under do(t = …) iff it is a CAUSES edge AND does not point
+-- into the intervened node t. Mirrors the Rust filter predicate exactly:
+--   to != target_id && et == Causes
+keepForIntervention : NodeId → Edge → Bool
+keepForIntervention t e = isCausesᵇ (Edge.label e) ∧ not (nodeEqᵇ (Edge.toId e) t)
+
+-- Graph surgery: the surviving edge set after intervening on t.
+surgical : NodeId → List Edge → List Edge
+surgical t []       = []
+surgical t (e ∷ es) with keepForIntervention t e
+... | true  = e ∷ surgical t es
+... | false = surgical t es
+
+-- Boolean helper lemmas.
+private
+  ∧-elimʳ : ∀ (a b : Bool) → (a ∧ b) ≡ true → b ≡ true
+  ∧-elimʳ true  b eq = eq
+  ∧-elimʳ false b ()
+
+  not-true→false : ∀ (x : Bool) → not x ≡ true → x ≡ false
+  not-true→false false _  = refl
+  not-true→false true  ()
+
+-- INTERVENE-IGNORES-PARENTS: after surgery on t, no surviving edge points into
+-- t. Equivalently, every edge in `surgical t es` has `toId ≢ t` (its boolean
+-- equality test is false). This is the formal content of graph mutilation —
+-- the intervened node's value is independent of its former parents.
+surgical-ignores-parents :
+  ∀ (t : NodeId) (es : List Edge) →
+  All (λ e → nodeEqᵇ (Edge.toId e) t ≡ false) (surgical t es)
+surgical-ignores-parents t []       = []
+surgical-ignores-parents t (e ∷ es) with keepForIntervention t e in eq
+... | true  =
+  not-true→false (nodeEqᵇ (Edge.toId e) t)
+    (∧-elimʳ (isCausesᵇ (Edge.label e)) (not (nodeEqᵇ (Edge.toId e) t)) eq)
+  ∷ surgical-ignores-parents t es
+... | false = surgical-ignores-parents t es
+
+-- Corollary: every surviving edge is a CAUSES edge — non-causal (evidential)
+-- paths are cut, which is what distinguishes intervention from observation.
+surgical-only-causes :
+  ∀ (t : NodeId) (es : List Edge) →
+  All (λ e → isCausesᵇ (Edge.label e) ≡ true) (surgical t es)
+surgical-only-causes t []       = []
+surgical-only-causes t (e ∷ es) with keepForIntervention t e in eq
+... | true  =
+  ∧-elimˡ (isCausesᵇ (Edge.label e)) (not (nodeEqᵇ (Edge.toId e) t)) eq
+  ∷ surgical-only-causes t es
+  where
+    ∧-elimˡ : ∀ (a b : Bool) → (a ∧ b) ≡ true → a ≡ true
+    ∧-elimˡ true  b _  = refl
+    ∧-elimˡ false b ()
+... | false = surgical-only-causes t es

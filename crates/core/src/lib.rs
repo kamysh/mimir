@@ -222,6 +222,28 @@ impl MimirService {
         Ok(updates)
     }
 
+    /// Counterfactual projection P(· | do(target = value)). Read-only: computes
+    /// and returns projected probabilities for the causal descendants of
+    /// `target`; does NOT write to the store. Contrast `propagate_from`, which
+    /// mutates. The do-operator severs `target`'s incoming edges and propagates
+    /// along CAUSES edges only (see `InferenceEngine::intervene`).
+    pub async fn query_intervention(
+        &self,
+        target_id: Uuid,
+        value: f64,
+    ) -> Result<Vec<(Uuid, Probability)>> {
+        let value = Probability::new(value)?;
+        if self.store.get_belief(target_id).await?.is_none() {
+            anyhow::bail!("belief {} not found", target_id);
+        }
+        let downstream = self.store.get_causal_downstream_beliefs(target_id).await?;
+        let mut ids: Vec<Uuid> = downstream.iter().map(|b| b.id).collect();
+        ids.push(target_id);
+        let edges = self.store.get_edges_among(&ids).await?;
+        // No writeback — this is a hypothetical projection.
+        self.inference.intervene(target_id, value, &downstream, &edges)
+    }
+
     /// Get active contradictions in the graph.
     pub async fn get_contradictions(&self) -> Result<Vec<(Uuid, Uuid)>> {
         let pairs = self.store.get_contradiction_pairs().await?;

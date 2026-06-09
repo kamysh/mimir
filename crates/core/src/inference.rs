@@ -58,13 +58,57 @@ impl InferenceEngine {
         downstream: &[Belief],
         edges: &[(Uuid, Uuid, EdgeType, Probability)],
     ) -> Result<Vec<(Uuid, Probability)>> {
+        self.propagate_core(seed.id, seed.probability, downstream, edges)
+    }
+
+    /// Counterfactual projection P(· | do(target = value)). Pearl's do-operator
+    /// as graph surgery: delete every edge INTO `target_id` (sever its parents),
+    /// keep only CAUSES edges (cut the evidential/correlational paths an
+    /// intervention must ignore), clamp the target to `value`, and propagate
+    /// forward along the surgical edge set.
+    ///
+    /// Pure and read-only — returns projected downstream probabilities; writes
+    /// nothing. Contrast `propagate_defeat`, whose caller (`propagate_from`)
+    /// persists the result. At the MCP layer the result key is
+    /// `projected_probability`, reinforcing that nothing was written.
+    ///
+    /// Phase 1 limitation: the shared `propagate_core` is still a single-pass
+    /// BFS, so a cycle in the causal subgraph yields an order-dependent result.
+    /// Phase 2 (log-odds fixpoint) fixes this for both functions at once.
+    pub fn intervene(
+        &self,
+        target_id: Uuid,
+        value: Probability,
+        downstream: &[Belief],
+        edges: &[(Uuid, Uuid, EdgeType, Probability)],
+    ) -> Result<Vec<(Uuid, Probability)>> {
+        // Graph mutilation: drop edges into the target, keep CAUSES only.
+        let surgical: Vec<(Uuid, Uuid, EdgeType, Probability)> = edges
+            .iter()
+            .copied()
+            .filter(|&(_from, to, et, _w)| to != target_id && et == EdgeType::Causes)
+            .collect();
+        self.propagate_core(target_id, value, downstream, &surgical)
+    }
+
+    /// Shared BFS propagation core. `seed_id`/`seed_prob` is the changed (or
+    /// clamped) node; `edges` is the edge set to follow, already filtered by the
+    /// caller (`propagate_defeat` passes every edge; `intervene` passes only the
+    /// surgical CAUSES set). Pure; never writes to the store.
+    fn propagate_core(
+        &self,
+        seed_id: Uuid,
+        seed_prob: Probability,
+        downstream: &[Belief],
+        edges: &[(Uuid, Uuid, EdgeType, Probability)],
+    ) -> Result<Vec<(Uuid, Probability)>> {
         if downstream.is_empty() {
             return Ok(vec![]);
         }
 
         // Build lookup maps
         let mut belief_map: HashMap<Uuid, Probability> = HashMap::new();
-        belief_map.insert(seed.id, seed.probability);
+        belief_map.insert(seed_id, seed_prob);
         for b in downstream {
             belief_map.insert(b.id, b.probability);
         }
@@ -79,14 +123,14 @@ impl InferenceEngine {
 
         // BFS from seed
         let mut queue: VecDeque<Uuid> = VecDeque::new();
-        queue.push_back(seed.id);
+        queue.push_back(seed_id);
         let mut visited: HashSet<Uuid> = HashSet::new();
-        visited.insert(seed.id);
+        visited.insert(seed_id);
 
         let mut updated: HashMap<Uuid, Probability> = HashMap::new();
 
         while let Some(current_id) = queue.pop_front() {
-            let current_prob = *belief_map.get(&current_id).unwrap_or(&seed.probability);
+            let current_prob = *belief_map.get(&current_id).unwrap_or(&seed_prob);
 
             if let Some(neighbors) = adj.get(&current_id) {
                 for &(to_id, etype, weight) in neighbors {
@@ -370,6 +414,89 @@ mod tests {
         // 0.3 + (1-0.3) × 0.5 × 0.8 = 0.3 + 0.28 = 0.58
         assert!(new_prob.is_some());
         assert!(new_prob.unwrap() > 0.3);
+    }
+
+    // ------------------------------------------------------------------
+    // intervene (do-operator) — unit tests
+    // ------------------------------------------------------------------
+
+    // Test 1: surgery severs incoming edges to the target. Graph
+    // A -CAUSES-> T -CAUSES-> B. do(T = v) must update B via T only, and be
+    // completely unaffected by A's probability or the A→T edge.
+    #[test]
+    fn test_intervene_ignores_incoming_edges_to_target() {
+        let t = Belief::new("T".to_string(), 0.2, 0.9).unwrap();
+        let b = Belief::new("B".to_string(), 0.3, 0.9).unwrap();
+        let a_lo = Belief::new("A".to_string(), 0.1, 0.9).unwrap();
+        let a_hi = Belief::new("A".to_string(), 0.99, 0.9).unwrap();
+        let w = Probability::new(0.5).unwrap();
+        let clamp = Probability::new(1.0).unwrap();
+        let downstream = vec![b.clone()];
+
+        // Vary A's probability and keep the A→T edge present; B's projection
+        // must be identical because do(T) deletes the edge into T.
+        let edges_lo = vec![
+            (a_lo.id, t.id, EdgeType::Causes, w),
+            (t.id, b.id, EdgeType::Causes, w),
+        ];
+        let edges_hi = vec![
+            (a_hi.id, t.id, EdgeType::Causes, w),
+            (t.id, b.id, EdgeType::Causes, w),
+        ];
+
+        let lo = engine().intervene(t.id, clamp, &downstream, &edges_lo).unwrap();
+        let hi = engine().intervene(t.id, clamp, &downstream, &edges_hi).unwrap();
+
+        let b_lo = lo.iter().find(|(id, _)| *id == b.id).map(|(_, p)| p.value());
+        let b_hi = hi.iter().find(|(id, _)| *id == b.id).map(|(_, p)| p.value());
+        assert!(b_lo.is_some(), "B should be updated through T");
+        assert_eq!(b_lo, b_hi, "B's projection must not depend on A (parent of T)");
+        // B = boost(0.3, 1.0, 0.5) = 0.3 + 0.7 × 0.5 × 1.0 = 0.65
+        assert!((b_lo.unwrap() - 0.65).abs() < 1e-9);
+    }
+
+    // Test 2: only CAUSES edges are followed. Graph T -SUPPORTS-> B.
+    // do(T = v) drops the SUPPORTS edge, so B is unchanged. This fails if
+    // someone collapses Causes back into the Supports arm.
+    #[test]
+    fn test_intervene_follows_only_causes_edges() {
+        let t = Belief::new("T".to_string(), 0.2, 0.9).unwrap();
+        let b = Belief::new("B".to_string(), 0.3, 0.9).unwrap();
+        let w = Probability::new(0.9).unwrap();
+        let clamp = Probability::new(1.0).unwrap();
+        let downstream = vec![b.clone()];
+        let edges = vec![(t.id, b.id, EdgeType::Supports, w)];
+
+        let updates = engine().intervene(t.id, clamp, &downstream, &edges).unwrap();
+        assert!(
+            updates.iter().all(|(id, _)| *id != b.id),
+            "SUPPORTS edge must not propagate under an intervention"
+        );
+    }
+
+    // Test 3 (canonical confounder example): fork C -CAUSES-> T, C -CAUSES-> B.
+    // T and B are evidentially associated through C, but T does not cause B.
+    // do(T = v) — "forcing T" — must tell us nothing about B: the surgical set
+    // keeps C→B (target ≠ T) but drops C→T (target = T), and BFS starts from T,
+    // which has no outgoing surgical edge → B is never reached.
+    #[test]
+    fn test_intervene_confounder_does_not_reach_associated_node() {
+        let c = Belief::new("C".to_string(), 0.9, 0.9).unwrap();
+        let t = Belief::new("T".to_string(), 0.4, 0.9).unwrap();
+        let b = Belief::new("B".to_string(), 0.4, 0.9).unwrap();
+        let w = Probability::new(0.8).unwrap();
+        let clamp = Probability::new(1.0).unwrap();
+        let downstream = vec![b.clone()];
+        let edges = vec![
+            (c.id, t.id, EdgeType::Causes, w),
+            (c.id, b.id, EdgeType::Causes, w),
+        ];
+
+        let updates = engine().intervene(t.id, clamp, &downstream, &edges).unwrap();
+        assert!(
+            updates.iter().all(|(id, _)| *id != b.id),
+            "do(T) must not affect B when their only link is a common cause C"
+        );
     }
 
     // ------------------------------------------------------------------
