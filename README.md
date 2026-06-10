@@ -376,6 +376,9 @@ docker ps --filter name=postgres-ai
 | `load_document` | Parse a markdown file into chunks, embed, and index for semantic search |
 | `query_document` | Semantic search over indexed document chunks |
 | `clear_document` | Remove all chunks and embeddings for a document `path` |
+| `add_evidence` | Ground a belief in a document passage: GROUNDS edge from a `chunk_id` to a `belief_id` (`weight` default 1.0). Provenance only — never affects belief inference |
+| `get_evidence` | List the document passages grounding a `belief_id`, strongest first |
+| `query_relevant` (`include_evidence: true`) | Each returned belief also carries an `evidence[]` array of its top-`evidence_per_belief` grounding passages |
 
 ## CLI reference
 
@@ -385,8 +388,10 @@ docker ps --filter name=postgres-ai
 | `mimir stats` | Print belief, pattern, and edge counts |
 | `mimir list [--project NAME] [--limit N]` | List beliefs, sorted by probability |
 | `mimir patterns [--limit N]` | List patterns, sorted by success rate |
-| `mimir query TEXT [--limit N]` | Hybrid search: text match + graph expansion |
+| `mimir query TEXT [--limit N] [--evidence]` | Hybrid search; `--evidence` also prints each belief's grounding passages |
 | `mimir intervene UUID VALUE` | Counterfactual `do(belief = VALUE)`: read-only projection of causal descendants |
+| `mimir evidence add CHUNK_ID BELIEF_ID [--weight W]` | Ground a belief in a document chunk (GROUNDS edge) |
+| `mimir evidence list BELIEF_ID` | List the passages grounding a belief |
 | `mimir delete UUID` | Delete a belief and all its edges |
 | `mimir forget PROJECT` | Delete all beliefs and document chunks for a project |
 | `mimir decay [--factor 0.99]` | Apply time decay to all belief confidences |

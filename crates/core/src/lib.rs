@@ -49,6 +49,24 @@ pub struct MimirStats {
     pub contradicts: usize,
 }
 
+/// A grounding passage: the document chunk backing a belief, with its strength.
+#[derive(Debug, Clone)]
+pub struct EvidenceRef {
+    pub chunk_id: Uuid,
+    pub document_path: String,
+    pub section_path: Vec<String>,
+    /// The chunk's content, trimmed.
+    pub snippet: String,
+    pub weight: f64,
+}
+
+/// A belief together with the document passages that ground it (Phase 4 C-core).
+#[derive(Debug, Clone)]
+pub struct GroundedBelief {
+    pub belief: Belief,
+    pub evidence: Vec<EvidenceRef>,
+}
+
 pub struct MimirService {
     store: AgeStore,
     inference: InferenceEngine,
@@ -508,6 +526,109 @@ impl MimirService {
             });
         }
         Ok(results)
+    }
+
+    // -----------------------------------------------------------------------
+    // Evidence edges (Phase 4 C-core): documents grounding beliefs
+    // -----------------------------------------------------------------------
+
+    /// Attach a document chunk to a belief as grounding evidence (GROUNDS edge).
+    /// Purely additive provenance — does not touch belief↔belief inference.
+    pub async fn add_evidence(&self, belief_id: Uuid, chunk_id: Uuid, weight: f64) -> Result<()> {
+        self.store
+            .insert_evidence(chunk_id, belief_id, Probability::new(weight)?)
+            .await
+    }
+
+    /// Remove a specific grounding edge.
+    pub async fn delete_evidence(&self, belief_id: Uuid, chunk_id: Uuid) -> Result<()> {
+        self.store.delete_evidence(chunk_id, belief_id).await
+    }
+
+    /// The grounding passages for a single belief, strongest first.
+    /// `limit = 0` means no cap.
+    pub async fn evidence_for_belief(
+        &self,
+        belief_id: Uuid,
+        limit: usize,
+    ) -> Result<Vec<EvidenceRef>> {
+        let mut ev = self.store.get_evidence_for_beliefs(&[belief_id]).await?;
+        ev.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        if limit > 0 {
+            ev.truncate(limit);
+        }
+        let mut out = Vec::with_capacity(ev.len());
+        for (_belief, chunk_id, weight) in ev {
+            if let Some(c) = self.store.get_chunk_by_id(chunk_id).await? {
+                out.push(EvidenceRef {
+                    chunk_id,
+                    document_path: c.document_path,
+                    section_path: c.section_path,
+                    snippet: c.content.trim().to_string(),
+                    weight,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// `query_relevant`, enriched with the top-k grounding passages per belief.
+    /// `query_relevant` itself is unchanged (backward compatible); this is purely
+    /// additive. `evidence_per_belief = 0` means no cap.
+    pub async fn query_relevant_grounded(
+        &self,
+        query: &str,
+        limit: usize,
+        evidence_per_belief: usize,
+    ) -> Result<Vec<GroundedBelief>> {
+        let beliefs = self.query_relevant(query, limit).await?;
+        if beliefs.is_empty() {
+            return Ok(vec![]);
+        }
+        let ids: Vec<Uuid> = beliefs.iter().map(|b| b.id).collect();
+        let ev = self.store.get_evidence_for_beliefs(&ids).await?;
+
+        // Group (chunk_id, weight) by belief_id.
+        let mut by_belief: std::collections::HashMap<Uuid, Vec<(Uuid, f64)>> =
+            std::collections::HashMap::new();
+        for (belief_id, chunk_id, weight) in ev {
+            by_belief.entry(belief_id).or_default().push((chunk_id, weight));
+        }
+
+        // Cache chunk lookups so a chunk grounding several beliefs is fetched once.
+        let mut chunk_cache: std::collections::HashMap<Uuid, Option<EvidenceRef>> =
+            std::collections::HashMap::new();
+
+        let mut out = Vec::with_capacity(beliefs.len());
+        for belief in beliefs {
+            let mut refs: Vec<EvidenceRef> = Vec::new();
+            if let Some(entries) = by_belief.get(&belief.id) {
+                let mut entries = entries.clone();
+                // Strongest grounding first.
+                entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                if evidence_per_belief > 0 {
+                    entries.truncate(evidence_per_belief);
+                }
+                for (chunk_id, weight) in entries {
+                    if !chunk_cache.contains_key(&chunk_id) {
+                        let r = self.store.get_chunk_by_id(chunk_id).await?.map(|c| EvidenceRef {
+                            chunk_id,
+                            document_path: c.document_path,
+                            section_path: c.section_path,
+                            snippet: c.content.trim().to_string(),
+                            weight,
+                        });
+                        chunk_cache.insert(chunk_id, r);
+                    }
+                    if let Some(base) = chunk_cache.get(&chunk_id).and_then(|o| o.clone()) {
+                        // Reuse the cached chunk metadata but keep this edge's weight.
+                        refs.push(EvidenceRef { weight, ..base });
+                    }
+                }
+            }
+            out.push(GroundedBelief { belief, evidence: refs });
+        }
+        Ok(out)
     }
 
     /// Collect graph statistics.

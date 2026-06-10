@@ -1,6 +1,7 @@
 use mimir_core::{
     config::{Config, DatabaseConfig},
     db,
+    documents::DocumentChunk,
     graph::{Belief, Edge, EdgeType, Pattern, Probability},
     store::AgeStore,
     MimirService,
@@ -437,4 +438,107 @@ async fn test_intervention_unknown_target_errors() {
     let svc = service().await;
     let r = svc.query_intervention(Uuid::new_v4(), 0.5).await;
     assert!(r.is_err(), "unknown target belief must error");
+}
+
+// ---------------------------------------------------------------------------
+// Evidence edges (Phase 4 C-core) — grounding + non-interference
+// ---------------------------------------------------------------------------
+
+fn sorted_updates(mut v: Vec<(Uuid, Probability)>) -> Vec<(Uuid, f64)> {
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v.into_iter().map(|(id, p)| (id, p.value())).collect()
+}
+
+// THE LOAD-BEARING TEST: the executable form of the non-interference theorem.
+// Seed a belief graph, capture propagate_from output, reset, overlay GROUNDS
+// edges + a DocumentChunk, and assert propagate_from output is bit-identical.
+#[tokio::test]
+async fn test_evidence_does_not_perturb_propagation() {
+    let s = store().await;
+    let svc = service().await;
+
+    let a = Belief::new(format!("grnd-A-{}", Uuid::new_v4()), 0.8, 0.9).unwrap();
+    let b = Belief::new(format!("grnd-B-{}", Uuid::new_v4()), 0.3, 0.8).unwrap();
+    s.insert_belief(&a).await.unwrap();
+    s.insert_belief(&b).await.unwrap();
+    s.insert_edge(&Edge::new(a.id, b.id, EdgeType::Supports, 0.5).unwrap()).await.unwrap();
+
+    // Baseline: propagate (this writes b), capture the result.
+    let baseline = svc.propagate_from(a.id).await.unwrap();
+    // Reset b to its original probability so the second run starts identically.
+    s.update_belief_probability(b.id, Probability::new(0.3).unwrap()).await.unwrap();
+
+    // Overlay: a DocumentChunk grounding BOTH beliefs.
+    let chunk = DocumentChunk::new(
+        "evidence-doc.md".to_string(),
+        vec![],
+        "a grounding passage for the non-interference test".to_string(),
+        None,
+        None,
+    );
+    s.insert_document_chunk(&chunk).await.unwrap();
+    svc.add_evidence(b.id, chunk.id, 0.9).await.unwrap();
+    svc.add_evidence(a.id, chunk.id, 0.5).await.unwrap();
+
+    // Re-run propagation over the overlaid graph.
+    let rerun = svc.propagate_from(a.id).await.unwrap();
+
+    assert_eq!(
+        sorted_updates(baseline),
+        sorted_updates(rerun),
+        "GROUNDS overlay must not change propagation output"
+    );
+}
+
+// add_evidence creates a GROUNDS edge; query_relevant_grounded returns the
+// belief with its grounding passage.
+#[tokio::test]
+async fn test_add_and_query_grounded() {
+    let s = store().await;
+    let svc = service().await;
+
+    let token = format!("zqxgrounded{}", Uuid::new_v4().simple());
+    let b = Belief::new(format!("a belief about {}", token), 0.7, 0.8).unwrap();
+    s.insert_belief(&b).await.unwrap();
+    let chunk = DocumentChunk::new(
+        "src.md".to_string(),
+        vec!["Section One".to_string()],
+        "the passage that grounds the belief".to_string(),
+        None,
+        None,
+    );
+    s.insert_document_chunk(&chunk).await.unwrap();
+    svc.add_evidence(b.id, chunk.id, 0.8).await.unwrap();
+
+    let grounded = svc.query_relevant_grounded(&token, 10, 3).await.unwrap();
+    let gb = grounded.iter().find(|g| g.belief.id == b.id)
+        .expect("belief should be retrieved by its unique token");
+    assert_eq!(gb.evidence.len(), 1, "one grounding passage expected");
+    let e = &gb.evidence[0];
+    assert!(e.snippet.contains("grounds the belief"));
+    assert!((e.weight - 0.8).abs() < 1e-9);
+    assert_eq!(e.section_path, vec!["Section One".to_string()]);
+}
+
+// delete_belief leaves no dangling GROUNDS edge (DETACH DELETE).
+#[tokio::test]
+async fn test_delete_belief_removes_grounds_edge() {
+    let s = store().await;
+    let svc = service().await;
+
+    let b = Belief::new(format!("grnd-del-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
+    s.insert_belief(&b).await.unwrap();
+    let chunk = DocumentChunk::new(
+        "d.md".to_string(), vec![], "passage".to_string(), None, None,
+    );
+    s.insert_document_chunk(&chunk).await.unwrap();
+    svc.add_evidence(b.id, chunk.id, 1.0).await.unwrap();
+
+    assert_eq!(s.get_evidence_for_beliefs(&[b.id]).await.unwrap().len(), 1);
+    assert!(svc.delete_belief(b.id).await.unwrap());
+    assert_eq!(
+        s.get_evidence_for_beliefs(&[b.id]).await.unwrap().len(),
+        0,
+        "deleting the belief must remove its GROUNDS edges"
+    );
 }
