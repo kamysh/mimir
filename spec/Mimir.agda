@@ -13,3 +13,4 @@ open import Mimir.Inference public
 open import Mimir.Setup     public
 open import Mimir.Graph     public
 open import Mimir.Documents public
+open import Mimir.Evidence  public

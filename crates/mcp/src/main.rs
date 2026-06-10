@@ -190,14 +190,40 @@ fn tools_list() -> Value {
         },
         {
             "name": "query_relevant",
-            "description": "Hybrid retrieval: text match + graph-proximity expansion, ordered by probability.",
+            "description": "Hybrid retrieval: text match + graph-proximity expansion, ordered by probability. Set include_evidence=true to also return, per belief, the document passages that ground it (with weights).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "context": { "type": "string" },
-                    "limit":   { "type": "integer", "minimum": 0, "default": 0 }
+                    "context":          { "type": "string" },
+                    "limit":            { "type": "integer", "minimum": 0, "default": 0 },
+                    "include_evidence":   { "type": "boolean", "default": false },
+                    "evidence_per_belief":{ "type": "integer", "minimum": 0, "default": 3 }
                 },
                 "required": ["context"]
+            }
+        },
+        {
+            "name": "add_evidence",
+            "description": "Ground a belief in a document passage: create a GROUNDS edge from a DocumentChunk to a Belief. Read-only w.r.t. belief inference — purely provenance. Get chunk_id from query_document results.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "belief_id": { "type": "string" },
+                    "chunk_id":  { "type": "string" },
+                    "weight":    { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 1.0 }
+                },
+                "required": ["belief_id", "chunk_id"]
+            }
+        },
+        {
+            "name": "get_evidence",
+            "description": "Return the document passages grounding a belief (its GROUNDS edges), strongest first.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "belief_id": { "type": "string" }
+                },
+                "required": ["belief_id"]
             }
         },
         {
@@ -447,8 +473,75 @@ async fn handle_tool_call(
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
             let limit = args["limit"].as_u64().unwrap_or(0) as usize;
-            let beliefs = svc.query_relevant(query, limit).await?;
-            Ok(serde_json::to_value(&beliefs)?)
+            let include_evidence = args["include_evidence"].as_bool().unwrap_or(false);
+            if !include_evidence {
+                let beliefs = svc.query_relevant(query, limit).await?;
+                return Ok(serde_json::to_value(&beliefs)?);
+            }
+            let per = args["evidence_per_belief"].as_u64().unwrap_or(3) as usize;
+            let grounded = svc.query_relevant_grounded(query, limit, per).await?;
+            let result: Vec<Value> = grounded
+                .into_iter()
+                .map(|gb| {
+                    let mut belief_json = serde_json::to_value(&gb.belief).unwrap_or(json!({}));
+                    let evidence: Vec<Value> = gb
+                        .evidence
+                        .into_iter()
+                        .map(|e| {
+                            json!({
+                                "chunk_id":      e.chunk_id.to_string(),
+                                "document_path": e.document_path,
+                                "section_path":  e.section_path,
+                                "snippet":       e.snippet,
+                                "weight":        e.weight,
+                            })
+                        })
+                        .collect();
+                    if let Value::Object(ref mut map) = belief_json {
+                        map.insert("evidence".to_string(), json!(evidence));
+                    }
+                    belief_json
+                })
+                .collect();
+            Ok(json!(result))
+        }
+
+        "add_evidence" => {
+            let belief_str = args["belief_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'belief_id'"))?;
+            let chunk_str = args["chunk_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'chunk_id'"))?;
+            let weight = args["weight"].as_f64().unwrap_or(1.0);
+            let belief_id = uuid::Uuid::parse_str(belief_str)?;
+            let chunk_id = uuid::Uuid::parse_str(chunk_str)?;
+            svc.add_evidence(belief_id, chunk_id, weight).await?;
+            Ok(json!({ "ok": true }))
+        }
+
+        "get_evidence" => {
+            let belief_str = args["belief_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing 'belief_id'"))?;
+            let belief_id = uuid::Uuid::parse_str(belief_str)?;
+            // query_relevant_grounded with a degenerate query would re-rank; instead
+            // pull evidence directly for this one belief via the grounded path on an
+            // exact id is overkill — use the store accessor through a tiny helper.
+            let grounded = svc.evidence_for_belief(belief_id, 0).await?;
+            let result: Vec<Value> = grounded
+                .into_iter()
+                .map(|e| {
+                    json!({
+                        "chunk_id":      e.chunk_id.to_string(),
+                        "document_path": e.document_path,
+                        "section_path":  e.section_path,
+                        "snippet":       e.snippet,
+                        "weight":        e.weight,
+                    })
+                })
+                .collect();
+            Ok(json!(result))
         }
 
         "propagate_from" => {

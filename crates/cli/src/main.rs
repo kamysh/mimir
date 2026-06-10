@@ -52,7 +52,15 @@ enum Command {
         /// Maximum number of results (0 = no limit).
         #[arg(long, short, default_value_t = 10)]
         limit: usize,
+
+        /// Also show the document passages that ground each belief.
+        #[arg(long)]
+        evidence: bool,
     },
+
+    /// Manage evidence (document passages that ground a belief).
+    #[command(subcommand)]
+    Evidence(EvidenceCmd),
 
     /// Delete a belief (and all its edges) by UUID.
     Delete {
@@ -157,6 +165,26 @@ enum HookEvent {
     Pretooluse,
 }
 
+/// Evidence (GROUNDS edges) subcommands.
+#[derive(Subcommand)]
+enum EvidenceCmd {
+    /// Ground a belief in a document chunk: add a GROUNDS edge.
+    Add {
+        /// UUID of the document chunk (from `mimir query-doc` output).
+        chunk_id: String,
+        /// UUID of the belief to ground.
+        belief_id: String,
+        /// Grounding strength in [0.0, 1.0].
+        #[arg(long, default_value_t = 1.0)]
+        weight: f64,
+    },
+    /// List the document passages grounding a belief.
+    List {
+        /// UUID of the belief.
+        belief_id: String,
+    },
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -170,7 +198,8 @@ async fn main() -> Result<()> {
         Command::Stats => cmd_stats().await?,
         Command::List { project, limit } => cmd_list(project, limit).await?,
         Command::Patterns { limit } => cmd_patterns(limit).await?,
-        Command::Query { text, limit } => cmd_query(&text, limit).await?,
+        Command::Query { text, limit, evidence } => cmd_query(&text, limit, evidence).await?,
+        Command::Evidence(cmd) => cmd_evidence(cmd).await?,
         Command::Delete { id } => cmd_delete(&id).await?,
         Command::Forget { project } => cmd_forget(&project).await?,
         Command::Decay { factor } => cmd_decay(factor).await?,
@@ -336,10 +365,41 @@ async fn cmd_patterns(limit: usize) -> Result<()> {
 // mimir query
 // ---------------------------------------------------------------------------
 
-async fn cmd_query(text: &str, limit: usize) -> Result<()> {
+async fn cmd_query(text: &str, limit: usize, evidence: bool) -> Result<()> {
     let svc = connect().await?;
-    let beliefs = svc.query_relevant(text, limit).await?;
 
+    if evidence {
+        let grounded = svc.query_relevant_grounded(text, limit, 3).await?;
+        if grounded.is_empty() {
+            println!("(no results)");
+            return Ok(());
+        }
+        for gb in &grounded {
+            let b = &gb.belief;
+            let proj = b.project.as_deref().map(|p| format!("  [{}]", p)).unwrap_or_default();
+            println!(
+                "{}  p={:.3}  c={:.3}  {}{}",
+                b.id, b.probability.value(), b.confidence.value(), trunc(&b.content, 70), proj,
+            );
+            for e in &gb.evidence {
+                let section = if e.section_path.is_empty() {
+                    String::new()
+                } else {
+                    format!(" § {}", e.section_path.join(" > "))
+                };
+                println!(
+                    "    ↳ w={:.2}  {}{}",
+                    e.weight,
+                    e.document_path,
+                    section,
+                );
+                println!("        {}", trunc(&e.snippet, 100));
+            }
+        }
+        return Ok(());
+    }
+
+    let beliefs = svc.query_relevant(text, limit).await?;
     if beliefs.is_empty() {
         println!("(no results)");
         return Ok(());
@@ -361,6 +421,46 @@ async fn cmd_query(text: &str, limit: usize) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// mimir evidence add / list
+// ---------------------------------------------------------------------------
+
+async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
+    let svc = connect().await?;
+    match cmd {
+        EvidenceCmd::Add { chunk_id, belief_id, weight } => {
+            let chunk = chunk_id
+                .parse::<uuid::Uuid>()
+                .map_err(|_| anyhow::anyhow!("invalid chunk UUID: {}", chunk_id))?;
+            let belief = belief_id
+                .parse::<uuid::Uuid>()
+                .map_err(|_| anyhow::anyhow!("invalid belief UUID: {}", belief_id))?;
+            svc.add_evidence(belief, chunk, weight).await?;
+            println!("grounded {} ← {}  (w={:.2})", belief, chunk, weight);
+        }
+        EvidenceCmd::List { belief_id } => {
+            let belief = belief_id
+                .parse::<uuid::Uuid>()
+                .map_err(|_| anyhow::anyhow!("invalid belief UUID: {}", belief_id))?;
+            let refs = svc.evidence_for_belief(belief, 0).await?;
+            if refs.is_empty() {
+                println!("(no evidence)");
+                return Ok(());
+            }
+            for e in &refs {
+                let section = if e.section_path.is_empty() {
+                    String::new()
+                } else {
+                    format!(" § {}", e.section_path.join(" > "))
+                };
+                println!("{}  w={:.2}  {}{}", e.chunk_id, e.weight, e.document_path, section);
+                println!("    {}", trunc(&e.snippet, 100));
+            }
+        }
+    }
     Ok(())
 }
 

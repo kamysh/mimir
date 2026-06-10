@@ -930,6 +930,96 @@ $$) {CHUNK_RETURN_COLUMNS}"#
         Ok(Some(chunk_from_row(&rows[0])?))
     }
 
+    // -----------------------------------------------------------------------
+    // Evidence edges (GROUNDS): DocumentChunk → Belief
+    //
+    // GROUNDS originates at a DocumentChunk and is NEVER matched by belief
+    // traversal (get_downstream_beliefs / get_edges_among match (:Belief)->
+    // (:Belief) only), so it cannot affect inference. Non-interference is
+    // structural — see Mimir.Evidence (propagate-evidence-invariant).
+    // -----------------------------------------------------------------------
+
+    /// Create a GROUNDS edge from a DocumentChunk to a Belief.
+    /// Errors if either endpoint is missing (the MATCH yields no rows).
+    pub async fn insert_evidence(
+        &self,
+        chunk_id: Uuid,
+        belief_id: Uuid,
+        weight: Probability,
+    ) -> Result<()> {
+        let g = &self.graph_name;
+        let c = chunk_id.to_string();
+        let b = belief_id.to_string();
+        let w = weight.value();
+        let sql = format!(
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
+  MATCH (c:DocumentChunk {{id: '{c}'}}), (b:Belief {{id: '{b}'}})
+  CREATE (c)-[r:GROUNDS {{weight: {w}}}]->(b)
+  RETURN r.weight
+$$) AS (weight ag_catalog.agtype)"#
+        );
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        if rows.is_empty() {
+            bail!(
+                "insert_evidence: chunk or belief not found (chunk={}, belief={})",
+                c, b
+            );
+        }
+        Ok(())
+    }
+
+    /// For a set of beliefs, return their grounding as (belief_id, chunk_id, weight).
+    pub async fn get_evidence_for_beliefs(
+        &self,
+        belief_ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Uuid, f64)>> {
+        if belief_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let g = &self.graph_name;
+        let id_list = belief_ids
+            .iter()
+            .map(|i| format!("'{}'", i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            r#"SELECT belief_id::text, chunk_id::text, weight::text
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (c:DocumentChunk)-[r:GROUNDS]->(b:Belief)
+  WHERE b.id IN [{id_list}]
+  RETURN b.id, c.id, r.weight
+$$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catalog.agtype)"#
+        );
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let belief_raw: String = row.try_get("belief_id")?;
+            let chunk_raw: String = row.try_get("chunk_id")?;
+            let weight_raw: String = row.try_get("weight")?;
+            let belief_id = Uuid::parse_str(&belief_raw)?;
+            let chunk_id = Uuid::parse_str(&chunk_raw)?;
+            let weight: f64 = weight_raw.parse()?;
+            out.push((belief_id, chunk_id, weight));
+        }
+        Ok(out)
+    }
+
+    /// Remove a specific GROUNDS edge. (Edges are also GC'd automatically by the
+    /// DETACH DELETE on either endpoint; this is for explicit unlink.)
+    pub async fn delete_evidence(&self, chunk_id: Uuid, belief_id: Uuid) -> Result<()> {
+        let g = &self.graph_name;
+        let c = chunk_id.to_string();
+        let b = belief_id.to_string();
+        let sql = format!(
+            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
+  MATCH (c:DocumentChunk {{id: '{c}'}})-[r:GROUNDS]->(b:Belief {{id: '{b}'}})
+  DELETE r
+$$) AS (v ag_catalog.agtype)"#
+        );
+        sqlx::query(&sql).execute(&self.pool).await?;
+        Ok(())
+    }
+
     /// Returns all Belief nodes reachable from `start_id` via SUPPORTS or CAUSES edges.
     ///
     /// AGE 1.x does not support the `[:A|B]` relationship-type OR syntax, so we use

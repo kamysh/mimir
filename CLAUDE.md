@@ -89,7 +89,7 @@ AGE 1.x does not support `[:A|B]` relationship-type OR syntax. Use UNION inside 
 
 ## Formal spec
 
-`spec/Mimir.agda` and its submodules (`Types`, `Inference`, `Setup`, `Graph`) are compiled with `--safe` mode. The spec is Agda-only; no Haskell runtime is involved. Run `agda Mimir.agda` inside `spec/` to typecheck.
+`spec/Mimir.agda` and its submodules (`Types`, `Inference`, `Setup`, `Graph`, `Documents`, `Evidence`) are compiled with `--safe` mode. The spec is Agda-only; no Haskell runtime is involved. Run `agda Mimir.agda` inside `spec/` to typecheck. `Inference` proves the do-operator's `intervene-ignores-parents`; `Evidence` proves `propagate-evidence-invariant` (GROUNDS edges never perturb belief inference).
 
 ## Configuration and environment
 
