@@ -8,6 +8,8 @@ open import Data.Nat.Properties  using (≤-refl; ≤-trans; ≤-total; ≤ᵇ-r
 open import Data.String          using (String; _≟_)
 open import Data.Maybe           using (Maybe; just; nothing)
 open import Data.List            using (List; _∷_; []; length; take)
+open import Data.List.Membership.Propositional using (_∈_)
+open import Data.List.Relation.Unary.Any using () renaming (here to any-here)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; subst)
 open import Relation.Nullary     using (does; ¬_; Reflects; ofʸ; ofⁿ)
 open import Data.Sum             using (_⊎_; inj₁; inj₂)
@@ -272,22 +274,90 @@ insertBelief-length :
 insertBelief-length _ _ = refl
 
 -- ---------------------------------------------------------------------------
--- Graph traversal depth and seed-exclusion invariants
--- get_downstream_beliefs (store.rs) uses [:SUPPORTS*1..10] and [:CAUSES*1..10]:
---   • depth is capped at 10 hops — beliefs more than 10 steps away are ignored.
---   • the seed belief itself is NOT included in the downstream set.
--- Both properties apply wherever get_downstream_beliefs is called:
--- propagate_from, query_relevant.
+-- PROPAGATION SCOPE (Phase 3 revision).
+--
+-- The propagation graph is the set of edge labels that carry evidence between
+-- beliefs: SUPPORTS, CAUSES, and DEFEATS.  CONTRADICTS is NOT a propagation
+-- edge (it is detected, never propagated — Mimir.Inference skips it).
+--
+-- A propagation from a seed recomputes the COMPLETE transitive closure of the
+-- seed under propagation edges — UNBOUNDED (no depth cap) — and traversing
+-- DEFEATS as well as SUPPORTS/CAUSES.  This replaces the old design where
+-- get_downstream_beliefs followed only [:SUPPORTS*1..10] ∪ [:CAUSES*1..10]:
+--   • DEFEATS was not traversed, so S →DEFEATS→ T left T's posterior UNCHANGED
+--     unless T was independently SUPPORTS/CAUSES-reachable (the defeat was inert
+--     for the most common case);
+--   • the 10-hop cap excluded deep descendants, which — once propagation
+--     re-derives a node from its complete incoming edges — would be read as
+--     stale "external" parents.
+-- Recomputing the full closure under all three labels fixes both: every node
+-- whose posterior the seed can affect is in the recompute set, so the only
+-- genuine "external" parent of an in-set node is one NOT reachable from the
+-- seed at all (its mean truly does not move this propagation).
 --
 -- propagate_from SEED-EXISTENCE PRECONDITION (lib.rs):
 --   The service first calls `get_belief(seed_id)` and bails!() if None.
---   Calling propagate_from with a non-existent seed ID is an error —
---   unlike get_downstream_beliefs which silently returns [] for an
---   unknown start_id (no node matches the MATCH clause → no rows).
 -- ---------------------------------------------------------------------------
 
-bfsDepthBound : ℕ
-bfsDepthBound = 10
+-- Which edge labels define the propagation graph.
+propagates : EdgeLabel → Bool
+propagates SUPPORTS    = true
+propagates CAUSES      = true
+propagates DEFEATS     = true
+propagates CONTRADICTS = false
+
+-- DEFEATS is a propagation edge (the fix: a defeat reaches its target).
+defeats-propagates : propagates DEFEATS ≡ true
+defeats-propagates = refl
+
+-- CONTRADICTS is not (it is detected, not propagated).
+contradicts-does-not-propagate : propagates CONTRADICTS ≡ false
+contradicts-does-not-propagate = refl
+
+-- A directed propagation edge between two beliefs (label restricted to a
+-- propagation label by `propagates`).
+record PropEdge : Set where
+  constructor mkPropEdge
+  field
+    src    : NodeId
+    dst    : NodeId
+    plabel : EdgeLabel
+
+open PropEdge
+
+-- Reachability of a node from a seed via propagation edges — the UNBOUNDED
+-- transitive closure (no depth limit). `Reaches g seed n` means n is the seed
+-- itself or is the dst of a propagation edge whose src is already reached.
+data Reaches (g : List PropEdge) (seed : NodeId) : NodeId → Set where
+  here  : Reaches g seed seed
+  step  : ∀ {to} (e : PropEdge)
+        → e ∈ g                       -- the edge is in the graph
+        → dst e ≡ to
+        → propagates (plabel e) ≡ true
+        → Reaches g seed (src e)      -- src already reached
+        → Reaches g seed to           -- ⇒ dst reached
+
+-- CLOSURE (the core requirement): if a node is reached and a propagation edge
+-- leaves it, the edge's target is also reached — for EVERY propagation label,
+-- DEFEATS included.  So the recompute set is closed; no affected node is left
+-- out of the recompute set.
+reaches-closed :
+  ∀ (g : List PropEdge) (seed : NodeId) (e : PropEdge)
+  → e ∈ g
+  → propagates (plabel e) ≡ true
+  → Reaches g seed (src e)
+  → Reaches g seed (dst e)
+reaches-closed g seed e mem pl r = step e mem refl pl r
+
+-- WITNESS (the regression fixed): a bare S →DEFEATS→ T reaches T. In the old
+-- design T was excluded (DEFEATS untraversed) and its posterior never moved;
+-- here T is provably in the recompute set, so the defeat lowers it.
+defeat-target-is-reached :
+  ∀ (s t : NodeId) →
+  let e = mkPropEdge s t DEFEATS
+  in Reaches (e ∷ []) s t
+defeat-target-is-reached s t =
+  step (mkPropEdge s t DEFEATS) (any-here refl) refl refl here
 
 -- ---------------------------------------------------------------------------
 -- PHASE 3 — RETIRED SCALAR SETTERS.
