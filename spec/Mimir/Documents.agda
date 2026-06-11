@@ -273,11 +273,12 @@ queryDocument-limit-bound (Data.Nat.suc n) (_ ∷ cs) = s≤s (queryDocument-lim
 -- branches on limit before calling take.
 
 -- ---------------------------------------------------------------------------
--- DocumentLabelState — extends GraphState (Setup.agda).
--- AgeStore::ensure_labels is extended to also idempotently create:
+-- DocumentLabelState — the label/table provisioning the document overlay needs.
+-- Startup idempotently ensures the document machinery exists alongside the
+-- belief graph:
 --   vertex label  "DocumentChunk"
 --   edge label    "CONTAINS"
--- and to create the chunk_embeddings table + HNSW index if absent.
+-- and the chunk_embeddings table + its ANN index, created if absent.
 -- ---------------------------------------------------------------------------
 
 record DocumentLabelState : Set where

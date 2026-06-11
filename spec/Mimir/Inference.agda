@@ -151,6 +151,11 @@ decay-f-≤ p (Data.Nat.suc d) f f≤100 =
   ≤-trans (decay-f-step-≤ (decay-f p d f) f f≤100) (decay-f-≤ p d f f≤100)
 
 -- ---------------------------------------------------------------------------
+-- PHASE 3 NOTE: `decay-confidence` below models the PRE-Phase-3 scalar decay
+-- (decay the confidence scalar only). Under Phase 3, decay instead pulls the
+-- Beta counts (α,β) toward (1,1), moving BOTH the mean and the strength — see
+-- Mimir.Beta (decay-target-mean-is-½). `decay-f` is kept as the legacy model.
+-- ---------------------------------------------------------------------------
 -- decay_all — the Rust inference engine decays the `confidence` field
 -- (not `probability`) of every belief.  Correspondingly the spec applies
 -- decay-f to Belief.confidence.
@@ -181,21 +186,14 @@ decay-confidence b days factor = decay-f (Belief.confidence b) days factor
 -- The JSON key is "decayed" (not "count" or "updated").
 
 -- ---------------------------------------------------------------------------
--- Single-step propagation edge invariants (per-edge monotonicity).
--- Phase 2 NOTE: these per-edge guarantees do NOT by themselves give a
--- well-defined global propagation result.  The old single-pass BFS mutated a
--- node once per incoming edge in traversal order, so a node with multiple
--- parents / on a re-convergent path was order-dependent.  Phase 2 replaces that
--- with a per-node aggregate — a SINGLE product over all incoming edges (below),
--- iterated to a fixpoint.  What the spec proves about that aggregate: (i) each
--- per-edge step is monotone (attenuate-≤ / boost-never-decreases), and (ii) the
--- combined multi-edge factor is order-independent (combineFactor-↭, and hence
--- combineDefeats-order-independent / combineSupports-order-independent).
--- Fixpoint CONVERGENCE of the iteration is an operational property bounded by
--- MAX_ITERS in inference.rs; it is NOT proved in Agda.  (This replaces the
--- earlier, incorrect claim that "correctness of the full BFS follows by
--- induction over the downstream list" — per-edge monotonicity does not give a
--- well-defined global result.)
+-- Single-step edge primitives (per-edge monotonicity).
+-- PHASE 3 NOTE: `attenuate` / `boost` are standalone single-edge primitives.
+-- They no longer drive propagation — Phase 3 replaced the Phase-2 noisy-OR /
+-- noisy-AND combine with Bayesian conjugate accumulation in Beta (α,β) space,
+-- modelled in Mimir.Beta: accumulate-↭ (order-independence, sum form),
+-- support-mono / defeat-anti (mean monotonicity), and recompute-idempotent. The
+-- lemmas below remain valid for the Rust `attenuate_by_defeat` /
+-- `boost_by_support` primitives (still present, exercised by their own tests).
 --
 -- DEFEATS: attenuate(target, defeater, w) ≤ target
 attenuate-≤ : ∀ (target defeater w : Prob) →
@@ -212,125 +210,12 @@ attenuate-≤ target defeater w =
 -- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------
--- Phase 2 — order-independent multi-edge aggregation
---
--- A node's incoming edges of one kind are modelled as a list of (sourceProb,
--- weight) pairs.  The combined effect is a SINGLE product of per-edge factors
--- (matching Rust's noisy-AND ∏(1 − w·src) for defeats, and the noisy-OR
--- 1 − ∏(1 − w·src) for supports), applied to the base in one shot.  Because the
--- aggregate is a product, permuting the edge list cannot change it — exactly the
--- property the old order-dependent BFS lacked.  Modelling it as a single product
--- (rather than a fold of per-edge truncating divisions) is essential: in the ℕ%
--- model `((b·f₁/100)·f₂/100)` need not equal `((b·f₂/100)·f₁/100)`, but the
--- product ∏fᵢ is exactly commutative.
+-- (The Phase-2 noisy-OR / noisy-AND multi-edge combine that used to live here
+-- has been removed. Phase 3 replaced it with Bayesian conjugate accumulation,
+-- modelled in Mimir.Beta — see `accumulate-↭` there for the order-independence
+-- property this section used to prove, and `support-mono` / `defeat-anti` for
+-- the mean monotonicity.)
 -- ---------------------------------------------------------------------------
-
--- Per-edge factor (100 − w·src/100): the complement (1 − w·src) shared by the
--- defeat noisy-AND and the support noisy-OR.  `e = (sourceProb , weight)`.
-edgeFactor : (Prob × Prob) → ℕ
-edgeFactor (src , w) = 100 ∸ (Prob.pct w * Prob.pct src / 100)
-
--- Combined factor: the product of per-edge factors over all incoming edges.
-combineFactor : List (Prob × Prob) → ℕ
-combineFactor []       = 1
-combineFactor (e ∷ es) = edgeFactor e * combineFactor es
-
--- Swap two factors inside a product: a·(b·c) ≡ b·(a·c).
-private
-  *-swap : ∀ (a b c : ℕ) → a * (b * c) ≡ b * (a * c)
-  *-swap a b c =
-    trans (sym (*-assoc a b c))
-      (trans (cong (_* c) (*-comm a b)) (*-assoc b a c))
-
--- ORDER-INDEPENDENCE (the core Phase-2 theorem): the combined factor is
--- invariant under ANY permutation of the incoming-edge list.  Proved by
--- induction on the permutation witness; the swap case is pure commutativity.
-combineFactor-↭ :
-  ∀ {xs ys} → xs P.↭ ys → combineFactor xs ≡ combineFactor ys
-combineFactor-↭ P.refl         = refl
-combineFactor-↭ (P.prep x p)   = cong (edgeFactor x *_) (combineFactor-↭ p)
-combineFactor-↭ (P.swap {xs} {ys} x y p) =
-  trans (cong (λ z → edgeFactor x * (edgeFactor y * z)) (combineFactor-↭ p))
-        (*-swap (edgeFactor x) (edgeFactor y) (combineFactor ys))
-combineFactor-↭ (P.trans p q)  = trans (combineFactor-↭ p) (combineFactor-↭ q)
-
--- Division by 100^n.  100^n is always positive (m^n≢0), but instance search
--- cannot solve the exponent under the stuck `100 ^_`, so we package the
--- division with its NonZero witness supplied EXPLICITLY for a rigid n.
-infixl 7 _/pow_
-_/pow_ : ℕ → ℕ → ℕ
-m /pow n = _/_ m (100 ^ n) ⦃ m^n≢0 100 n ⦄
-
--- The aggregate results, applied to a base probability in one shot.
--- Defeat (noisy-AND):  base × ∏fᵢ / 100^n.
--- Support (noisy-OR):  100 − (100 − base) × ∏fᵢ / 100^n.
-combineDefeats : Prob → List (Prob × Prob) → Prob
-combineDefeats base es =
-  mkProb ((Prob.pct base * combineFactor es) /pow length es)
-
-combineSupports : Prob → List (Prob × Prob) → Prob
-combineSupports base es =
-  mkProb (100 ∸ (((100 ∸ Prob.pct base) * combineFactor es) /pow length es))
-
--- Both aggregate results inherit order-independence: they depend on the edge
--- list only through `combineFactor` (permutation-invariant) and `length`
--- (permutation-invariant, ↭-length).
-combineDefeats-order-independent :
-  ∀ (base : Prob) {xs ys} → xs P.↭ ys → combineDefeats base xs ≡ combineDefeats base ys
-combineDefeats-order-independent base p =
-  cong mkProb
-    (cong₂ (λ prd len → (Prob.pct base * prd) /pow len)
-           (combineFactor-↭ p) (↭-length p))
-
-combineSupports-order-independent :
-  ∀ (base : Prob) {xs ys} → xs P.↭ ys → combineSupports base xs ≡ combineSupports base ys
-combineSupports-order-independent base p =
-  cong mkProb
-    (cong₂ (λ prd len → 100 ∸ (((100 ∸ Prob.pct base) * prd) /pow len))
-           (combineFactor-↭ p) (↭-length p))
-
--- Factor bounds (used by the aggregated monotonicity below): every per-edge
--- factor is ≤ 100, hence the product is ≤ 100^n.
-edgeFactor≤100 : ∀ (e : Prob × Prob) → edgeFactor e ≤ 100
-edgeFactor≤100 (src , w) = m∸n≤m 100 (Prob.pct w * Prob.pct src / 100)
-
-combineFactor≤pow : ∀ (es : List (Prob × Prob)) → combineFactor es ≤ 100 ^ length es
-combineFactor≤pow []       = ≤-refl
-combineFactor≤pow (e ∷ es) = *-mono-≤ (edgeFactor≤100 e) (combineFactor≤pow es)
-
--- General division bound: (m·k) /100^n ≤ m whenever k ≤ 100^n.
--- Generalises the existing `m*k/100≤m` from divisor 100 to divisor 100^n.
-private
-  m*k/pow≤m : ∀ (m k n : ℕ) → k ≤ 100 ^ n → (m * k) /pow n ≤ m
-  m*k/pow≤m m k n k≤d =
-    ≤-trans (≤-reflexive (cong (_/pow n) (*-comm m k)))
-      (≤-trans (/-monoˡ-≤ (100 ^ n) ⦃ m^n≢0 100 n ⦄ (*-monoˡ-≤ m k≤d))
-        (≤-reflexive
-          (trans (cong (_/pow n) (sym (*-comm m (100 ^ n))))
-                 (m*n/n≡m m (100 ^ n) ⦃ m^n≢0 100 n ⦄))))
-
--- AGGREGATED MONOTONICITY (the per-edge attenuate-≤ / boost-never-decreases,
--- now in one-shot multi-edge form).
---
--- Defeats only: the aggregate never increases the base (unconditional).
-combineDefeats-≤ :
-  ∀ (base : Prob) (es : List (Prob × Prob)) →
-  Prob.pct (combineDefeats base es) ≤ Prob.pct base
-combineDefeats-≤ base es =
-  m*k/pow≤m (Prob.pct base) (combineFactor es) (length es) (combineFactor≤pow es)
-
--- Supports only: the aggregate never decreases the base.  Needs the Prob
--- invariant pct base ≤ 100 (stated externally on Prob) as an explicit
--- hypothesis, since the noisy-OR is written in complement form 100 ∸ (…).
-combineSupports-≥ :
-  ∀ (base : Prob) (es : List (Prob × Prob)) → Prob.pct base ≤ 100 →
-  Prob.pct base ≤ Prob.pct (combineSupports base es)
-combineSupports-≥ base es base≤100 =
-  ≤-trans
-    (≤-reflexive (sym (m∸[m∸n]≡n base≤100)))
-    (∸-monoʳ-≤ 100
-      (m*k/pow≤m (100 ∸ Prob.pct base) (combineFactor es) (length es)
-                 (combineFactor≤pow es)))
 
 -- ---------------------------------------------------------------------------
 -- The do-operator (Phase 1): interventional semantics for CAUSES edges
