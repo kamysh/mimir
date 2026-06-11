@@ -1,0 +1,15 @@
+# mimir-eval SANDBOX login profile (pinned PATH).
+#
+# This is mounted as the sandboxed HOME's profile so that even when the actor's
+# Bash tool sources a login shell, PATH is pinned WITHOUT any mimir directory.
+# It is the §3.3 pure-shell fallback layer kept as defense-in-depth ON TOP of the
+# bwrap namespace sandbox; under bwrap the binary is already tmpfs-masked, so
+# this only matters if someone runs the fallback launcher.
+#
+# sandbox._materialise_profile() substitutes the resolved pinned PATH and config
+# dir for the bracketed tokens below when it writes the per-run copy of this
+# profile into the sandbox HOME (and asserts no token survives).
+export PATH="@PINNED_PATH@"
+export CLAUDE_CONFIG_DIR="@CLAUDE_CONFIG_DIR@"
+# Make the dead mimir DSN authoritative for any stray binary.
+export MIMIR_CONFIG="$HOME/.config/mimir/config.toml"

@@ -1,0 +1,4 @@
+[
+  {"name": "Read", "input": {"file_path": "embedder.py"}},
+  {"name": "Write", "input": {"file_path": "index.py", "content": "from embedder import embed\n# do NOT edit embedder.py; respect its 64-word cap by chunking upstream\nwords = open(\"doc.txt\").read().split()\nchunks = [words[i:i+64] for i in range(0, len(words), 64)]\nvecs = [embed(\" \".join(c)) for c in chunks]\nprint(f\"embedded {len(vecs)} chunks\")\n"}}
+]
