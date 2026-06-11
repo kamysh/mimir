@@ -1,0 +1,20 @@
+# mimir-eval SANDBOX config — DEAD DB (defense in depth).
+#
+# This file is mounted read-only over ~/.config/mimir/config.toml INSIDE the
+# isolation sandbox. It points mimir's only DSN source at an address that
+# cannot resolve to the live graph:
+#   - port 1 is the reserved tcpmux port; nothing listens there
+#   - the sandbox also runs with --unshare-net, so even localhost is dead
+#   - and ~/.local/bin (where the `mimir` binary lives) is tmpfs-masked, so the
+#     binary is not even present on disk inside the sandbox.
+#
+# Any ONE of those three is sufficient to make the live graph unreachable; this
+# file is the third, belt-and-suspenders layer. mimir reads its DSN ONLY from
+# this file (verified: `mimir --help` exposes no DSN flag), so a stray binary
+# reached by some other path still has no live graph to talk to.
+[database]
+host   = "127.0.0.1"
+port   = 1
+dbname = "mimir_eval_dead"
+user   = "nobody"
+ssl_mode = "disable"

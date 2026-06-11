@@ -1,0 +1,25 @@
+{
+  "claude_bin": "claude",
+  "mimir_bin": "mimir",
+  "mimir_mcp_bin": "mimir-mcp",
+  "mimir_src": "/home/kamysh/Work/balovstvo/mimir",
+
+  "model": null,
+  "arms": ["control", "static", "mimir"],
+  "trials": 12,
+  "min_n_per_arm": 30,
+  "max_turns": 40,
+  "timeout_seconds": 600,
+
+  "tasks_dir": "tasks",
+  "out_dir": "runs",
+
+  "allowed_tools": "Bash,Read,Edit,Write,Glob,Grep",
+  "skip_permissions": true,
+  "strict_mcp_isolation": true,
+
+  "mimir_query_limit": 5,
+  "with_distractors": false,
+
+  "_comment": "model=null uses your Claude Code default. strict_mcp_isolation passes --strict-mcp-config with an empty --mcp-config so ambient mimir does not leak into control/static. 'arms' is the DEFAULT subset run; the full registry also has 'grounded' (Phase 4 evidence-grounded retrieval) and 'mimir_sys' (top-1 clean), opt in via --arms. 'mimir_agentic' is de-scoped (not registered). See README 'Seams' before first run."
+}

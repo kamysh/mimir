@@ -1,0 +1,6 @@
+{
+  "_doc": "Self-check metadata (harness/task_check.py §4.3). NOT shipped to the actor.",
+  "contract_kind": "trap_avoidance",
+  "_contract_kind_doc": "Not an opaque-token task. The fix (chunk into <=64 words upstream) is derivable from embedder.py's readable cap; the belief's value is steering the fix to the RIGHT layer (do NOT edit embedder.py). The decisive metric is TRAP rate (wrong-layer edit), not solve rate. The opacity probe is skipped; control-fails is asserted against the NAIVE wrong-layer state (naive.sh) via verify.sh's layer check.",
+  "naive_fails": "naive.sh"
+}

@@ -1,0 +1,6 @@
+{
+  "_doc": "Self-check metadata (harness/task_check.py §4.3). NOT shipped to the actor.",
+  "contract_kind": "trap_avoidance",
+  "_contract_kind_doc": "Not an opaque-token task. The correct fix (render_v2 -> render_v3 when bumping to 3.0.0) IS derivable by reading the fixture sources; the belief's value is FOREKNOWLEDGE that 3.0.0 is ABI-breaking, so the agent migrates in the same change instead of taking the naive bump-then-AttributeError detour. The decisive metric is TRAP rate (did it take the detour), not solve rate. The opacity probe is therefore skipped; control-fails is asserted against the NAIVE state (naive.sh), not the pristine state.",
+  "naive_fails": "naive.sh"
+}

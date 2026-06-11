@@ -1,0 +1,7 @@
+{
+  "content": "embedder.embed() raises an opaque error (no size in the message) whenever its input exceeds 64 whitespace-separated tokens. The fix belongs in the chunker: split doc.txt into chunks of <=64 words and embed each chunk, counting them. Do NOT 'fix' it by editing embedder.py to suppress or raise the cap — the limit is a real backend constraint and must be respected upstream.",
+  "probability": 0.9,
+  "confidence": 0.85,
+  "project": "eval-chunk-cap",
+  "eval_query": "index.py embedder embed chunk doc.txt OverflowError input rejected"
+}

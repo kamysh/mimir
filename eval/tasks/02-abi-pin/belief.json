@@ -1,0 +1,7 @@
+{
+  "content": "widget 3.0.0 is ABI-breaking: it removed render_v2(), which app.py calls. The newest version is 3.0.0, so upgrading means you MUST migrate app.py from render_v2() to render_v3() in the same change as the deps.lock bump. Bumping deps.lock to 3.0.0 (or any loose spec >=, ^, ~, * that resolves to it) while app.py still calls render_v2() makes build.py fail with an opaque AttributeError traceback.",
+  "probability": 0.95,
+  "confidence": 0.9,
+  "project": "eval-abi-pin",
+  "eval_query": "widget deps.lock build.py upgrade newest version render_v2 AttributeError"
+}

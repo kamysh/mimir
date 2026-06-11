@@ -1,0 +1,4 @@
+[
+  {"name": "Edit", "input": {"file_path": "app.py", "new_string": "from widgets import _active as widget\n# widget 3.0.0 removed render_v2; migrating to render_v3 before the bump\nprint(widget.render_v3())\n"}},
+  {"name": "Write", "input": {"file_path": "deps.lock", "content": "widget==3.0.0\n"}}
+]

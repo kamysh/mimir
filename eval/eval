@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# mimir-eval — the single documented entry point (IMPLEMENTATION_PLAN.md §8).
+#
+# Thin, auditable wrapper around `python -m harness.runner` (+ analyze/score).
+# It exists so there is ONE command to learn and so the operational runbook is
+# executable, not just prose. Every sub-command maps 1:1 to a runner flag; this
+# script adds nothing the runner does not already do — it only documents the
+# ORDER (preflight -> snapshot -> seed -> isolation-gate -> run -> analyze ->
+# cleanup -> audit) and fails loudly on a bad sub-command.
+#
+# Usage:
+#   ./eval preflight                 # §8.0 version-skew guard -> runs/env.json (exit!=0 on skew)
+#   ./eval snapshot-before           # §8.1 pollution-audit baseline
+#   ./eval seed [--with-distractors] # §8.1 seed belief.json (+grounding) per task
+#   ./eval isolation-check           # §8.2 MANDATORY positive gate (SPENDS API BUDGET)
+#   ./eval run [--trials N] [--resume] [--arms a,b] [--tasks t]   # §8.3 the matrix
+#   ./eval analyze                   # §8.4 rates/effect-sizes (excludes error trials)
+#   ./eval rescore                   # §8.5 re-apply trap.py offline (NO API)
+#   ./eval cleanup                   # §8.6 mimir forget eval-<task>
+#   ./eval snapshot-after            # §8.6 diff vs before; report untagged residue
+#   ./eval gate                      # convenience: preflight + offline isolation probe (NO API)
+#   ./eval full [--trials N]         # the whole runbook in order (PROMPTS before API spend)
+#
+# Anything after the sub-command is forwarded verbatim to the runner.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$HERE"
+PY="${PYTHON:-python3}"
+RUN=("$PY" -m harness.runner)
+
+usage() { sed -n '2,30p' "${BASH_SOURCE[0]}"; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  preflight)        exec "${RUN[@]}" --preflight "$@" ;;
+  snapshot-before)  exec "${RUN[@]}" --snapshot-before "$@" ;;
+  snapshot-after)   exec "${RUN[@]}" --snapshot-after "$@" ;;
+  seed)             exec "${RUN[@]}" --seed "$@" ;;
+  isolation-check)  exec "${RUN[@]}" --isolation-check "$@" ;;
+  run)              exec "${RUN[@]}" "$@" ;;
+  cleanup)          exec "${RUN[@]}" --cleanup "$@" ;;
+  analyze)          exec "$PY" -m harness.analyze runs/results.jsonl "$@" ;;
+  rescore)          exec "$PY" -m harness.score --rescore runs/results.jsonl "$@" ;;
+  gate)
+    # Offline-only gate: version-skew + in-sandbox leak probe. No API, no claude.
+    "${RUN[@]}" --preflight
+    exec "$PY" -m harness.sandbox --probe
+    ;;
+  full)
+    # Full runbook in order. STOPS for confirmation before the two API-spending
+    # steps (isolation-check and the matrix) so budget is never burned blindly.
+    "${RUN[@]}" --preflight
+    "${RUN[@]}" --snapshot-before
+    "${RUN[@]}" --seed
+    echo ">>> About to run the MANDATORY isolation gate then the matrix — these SPEND API BUDGET."
+    read -r -p ">>> Continue? [y/N] " ans; [ "$ans" = y ] || { echo "aborted before API spend"; exit 0; }
+    "${RUN[@]}" --isolation-check
+    "${RUN[@]}" "$@"
+    "$PY" -m harness.analyze runs/results.jsonl
+    "${RUN[@]}" --cleanup
+    exec "${RUN[@]}" --snapshot-after
+    ;;
+  -h|--help|"") usage ;;
+  *) echo "unknown sub-command: $cmd" >&2; usage >&2; exit 64 ;;
+esac

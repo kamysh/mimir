@@ -1,0 +1,3 @@
+[
+  {"name": "Bash", "input": {"command": "cd \"$WD\" && ./artifact_server --user-agent mimir-eval/1.0"}}
+]

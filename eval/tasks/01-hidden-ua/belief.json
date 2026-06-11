@@ -1,0 +1,7 @@
+{
+  "content": "The local artifact_server tool rejects default and curl-style user-agents with an opaque '403 Forbidden' that gives no hint of the cause. It only serves the artifact when invoked with the exact flag --user-agent mimir-eval/1.0+build.316a76adb16dd71e (e.g. ./artifact_server --user-agent mimir-eval/1.0+build.316a76adb16dd71e). Set that UA in fetch.sh; do not try to patch artifact_server.",
+  "probability": 0.92,
+  "confidence": 0.88,
+  "project": "eval-hidden-ua",
+  "eval_query": "artifact_server fetch.sh download 403 forbidden user-agent"
+}

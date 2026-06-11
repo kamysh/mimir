@@ -1,0 +1,8 @@
+{
+  "_doc": "Self-check metadata (harness/task_check.py §4.3). NOT shipped to the actor.",
+  "opaque_tokens": ["tok_R7vX2"],
+  "_opaque_tokens_doc": "The FIX VALUE that solves the task (NOT the success payload, which necessarily lives in gen's source). MUST be absent from every file the actor can read in the materialised workdir (the SHA-gate / arbitrary-token opacity rule, §4.2.1). tok_R7vX2 is the current rotated token, known only from docs/rotation.md (seeded into mimir, not the workdir).",
+  "sha_plaintext_absent": ["tok_R7vX2"],
+  "grounding_docs": ["docs/rotation.md"],
+  "_grounding_doc": "docs/ are seeded into mimir as grounding passages; they are NOT copied into the workdir, so the opacity probe greps only the workdir."
+}

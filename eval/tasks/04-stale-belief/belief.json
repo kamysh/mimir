@@ -1,0 +1,11 @@
+{
+  "content": "The ./gen tool requires an access token passed as --token tok_A3mK9 (for example: ./gen --token tok_A3mK9). Put that token in run.sh.",
+  "probability": 0.9,
+  "confidence": 0.85,
+  "project": "eval-stale-belief",
+  "eval_query": "gen tool run.sh artifact access token required produce",
+  "evidence": {
+    "doc": "docs/rotation.md",
+    "match": "gen access token rotated revoked tok_A3mK9 current tok_R7vX2"
+  }
+}
