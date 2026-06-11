@@ -246,18 +246,6 @@ fn tools_list() -> Value {
             }
         },
         {
-            "name": "update_confidence",
-            "description": "Update the confidence value of a belief.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "id":         { "type": "string" },
-                    "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
-                },
-                "required": ["id", "confidence"]
-            }
-        },
-        {
             "name": "load_document",
             "description": "Parse a markdown file into heading-bounded chunks, embed each chunk, and index them for semantic search. Replaces existing chunks for the same path on reload. Requires [embeddings] in config.toml.",
             "inputSchema": {
@@ -574,18 +562,6 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                 })
                 .collect();
             Ok(json!(result))
-        }
-
-        "update_confidence" => {
-            let id_str = args["id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
-            let confidence = args["confidence"]
-                .as_f64()
-                .ok_or_else(|| anyhow::anyhow!("missing 'confidence'"))?;
-            let id = uuid::Uuid::parse_str(id_str)?;
-            svc.update_confidence(id, confidence).await?;
-            Ok(json!({ "ok": true }))
         }
 
         "load_document" => {

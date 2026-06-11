@@ -233,10 +233,16 @@ impl MimirService {
         let updates = self
             .inference
             .propagate_defeat(&seed, &downstream, &edges)?;
-        for (id, prob) in &updates {
-            self.store.update_belief_probability(*id, *prob).await?;
+        // Persist the durable Beta posterior (spec: store-load-round-trip);
+        // probability/confidence are refreshed from (α,β) by update_belief_beta.
+        let mut out = Vec::with_capacity(updates.len());
+        for (id, (alpha, beta)) in updates {
+            self.store.update_belief_beta(id, alpha, beta).await?;
+            let s = alpha + beta;
+            let m = if s > 0.0 { (alpha / s).clamp(0.0, 1.0) } else { 0.5 };
+            out.push((id, Probability::new(m)?));
         }
-        Ok(updates)
+        Ok(out)
     }
 
     /// Counterfactual projection P(· | do(target = value)). Read-only: computes
@@ -286,8 +292,9 @@ impl MimirService {
         let now = chrono::Utc::now();
         let updates = self.inference.decay_all(&beliefs, now, factor)?;
         let count = updates.len();
-        for (id, conf) in updates {
-            self.store.update_belief_confidence(id, conf).await?;
+        // Persist decayed Beta state (spec: betaDecay toward (1,1)).
+        for (id, (alpha, beta)) in updates {
+            self.store.update_belief_beta(id, alpha, beta).await?;
         }
         Ok(count)
     }
@@ -684,11 +691,5 @@ impl MimirService {
             causes,
             contradicts,
         })
-    }
-
-    /// Update the confidence value of a belief.
-    pub async fn update_confidence(&self, id: Uuid, confidence: f64) -> Result<()> {
-        let c = Probability::new(confidence)?;
-        self.store.update_belief_confidence(id, c).await
     }
 }
