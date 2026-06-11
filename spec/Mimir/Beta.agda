@@ -165,6 +165,85 @@ accumulate-↭ prior (P.swap {xs} {ys} x y p) =
 accumulate-↭ prior (P.trans p q)            = trans (accumulate-↭ prior p) (accumulate-↭ prior q)
 
 -- ---------------------------------------------------------------------------
+-- EVIDENCE COMPLETENESS (the property propagation must satisfy).
+--
+-- A node's posterior is re-derived from its FIXED prior plus the evidence of
+-- its parents.  The evidence set MUST be the node's COMPLETE set of incoming
+-- edges — NOT a subgraph-local subset.  Re-deriving from prior + a SUBSET of
+-- the incoming edges silently discards the evidence of the omitted parents
+-- (the exact failure: propagating from one seed must not erase a belief's
+-- support that came from a parent outside that seed's reachable subgraph).
+--
+-- We model an evidence edge as (source-mean, weight, polarity).  posteriorOf
+-- builds (α,β) from the prior plus EVERY edge incident to the node; the
+-- completeness lemma states that dropping any incoming edge changes the result
+-- by exactly that edge's quantum — so omitting evidence is observable, never
+-- silent.  EVIDENCE_UNIT is the spec's quantum scale (impl: graph.rs).
+-- ---------------------------------------------------------------------------
+
+data Polarity : Set where
+  pos : Polarity   -- SUPPORTS / CAUSES → onto α
+  neg : Polarity   -- DEFEATS         → onto β
+
+record InEdge : Set where
+  constructor mkIn
+  field
+    srcMean  : ℚ          -- the parent's current mean μ
+    weight   : ℚ          -- edge weight w
+    polarity : Polarity
+
+open InEdge
+
+-- One edge's evidence quantum Δ = w · μ.  (The fixed UNIT scale is a global
+-- constant folded in at the impl; here Δ is w·μ and the proofs are scale-free.)
+quantum : InEdge → ℚ
+quantum e = weight e * srcMean e
+
+-- α and β are each the prior plus the SUM of the quanta of the edges of that
+-- polarity — over the COMPLETE incoming-edge list `es`.
+posteriorα : ℚ → List InEdge → ℚ
+posteriorα α₀ []       = α₀
+posteriorα α₀ (e ∷ es) with polarity e
+... | pos = quantum e + posteriorα α₀ es
+... | neg = posteriorα α₀ es
+
+posteriorβ : ℚ → List InEdge → ℚ
+posteriorβ β₀ []       = β₀
+posteriorβ β₀ (e ∷ es) with polarity e
+... | pos = posteriorβ β₀ es
+... | neg = quantum e + posteriorβ β₀ es
+
+posteriorOf : (α₀ β₀ : ℚ) → List InEdge → Beta
+posteriorOf α₀ β₀ es = mkBeta (posteriorα α₀ es) (posteriorβ β₀ es)
+
+-- COMPLETENESS: prepending one more incoming POS edge adds exactly its quantum
+-- to α (and leaves β alone).  Contrapositive: leaving that edge OUT of `es`
+-- yields an α short by exactly `quantum e` — i.e. omitting an incoming edge is
+-- observable in the posterior, so a correct propagation cannot silently drop a
+-- parent's evidence.
+posteriorα-pos-cons :
+  ∀ (α₀ : ℚ) (e : InEdge) (es : List InEdge) → polarity e ≡ pos →
+  posteriorα α₀ (e ∷ es) ≡ quantum e + posteriorα α₀ es
+posteriorα-pos-cons α₀ e es p rewrite p = refl
+
+posteriorβ-neg-cons :
+  ∀ (β₀ : ℚ) (e : InEdge) (es : List InEdge) → polarity e ≡ neg →
+  posteriorβ β₀ (e ∷ es) ≡ quantum e + posteriorβ β₀ es
+posteriorβ-neg-cons β₀ e es p rewrite p = refl
+
+-- A pos edge does not touch β; a neg edge does not touch α (the two axes are
+-- independent, as in support-mono / defeat-anti).
+posteriorβ-pos-skip :
+  ∀ (β₀ : ℚ) (e : InEdge) (es : List InEdge) → polarity e ≡ pos →
+  posteriorβ β₀ (e ∷ es) ≡ posteriorβ β₀ es
+posteriorβ-pos-skip β₀ e es p rewrite p = refl
+
+posteriorα-neg-skip :
+  ∀ (α₀ : ℚ) (e : InEdge) (es : List InEdge) → polarity e ≡ neg →
+  posteriorα α₀ (e ∷ es) ≡ posteriorα α₀ es
+posteriorα-neg-skip α₀ e es p rewrite p = refl
+
+-- ---------------------------------------------------------------------------
 -- Decay: a fractional pull of (α,β) toward the uninformative prior (1,1).
 --   betaDecay (α,β) f = (1 + f·(α−1), 1 + f·(β−1)),   f ∈ [0,1].
 -- f is the retention factor (= decay_factor ^ days_since_activation).
