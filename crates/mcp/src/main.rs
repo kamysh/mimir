@@ -626,6 +626,13 @@ async fn handle_tool_call(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Handle --version / -V before any I/O or DB work, mirroring the CLI's clap
+    // `--version` so both binaries answer the same way.
+    if std::env::args().skip(1).any(|a| a == "--version" || a == "-V") {
+        println!("mimir-mcp {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // Init tracing to stderr (stdout is reserved for JSON-RPC responses).
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -697,7 +704,7 @@ async fn main() -> Result<()> {
                 json!({
                     "protocolVersion": "2024-11-05",
                     "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "mimir", "version": "0.1.0" }
+                    "serverInfo": { "name": "mimir", "version": env!("CARGO_PKG_VERSION") }
                 }),
             ),
 
