@@ -16,26 +16,21 @@ use graph::{Belief, EdgeType, Pattern, Probability};
 use inference::InferenceEngine;
 use store::AgeStore;
 
-/// Reciprocal Rank Fusion merge of multiple ranked Uuid lists.
-/// Each list contributes `1 / (K + rank)` (rank is 0-based) to each contained
-/// id's score; ids are deduplicated and returned sorted by total score
-/// descending together with their RRF scores. K = 60 is the standard RRF
-/// constant. Used by `query_relevant` to combine token-overlap and
-/// vector-cosine rankings; the scores are preserved for the final combined
-/// sort (`rrf_score × probability`).
-fn rrf_merge_ids(lists: &[Vec<Uuid>]) -> Vec<(Uuid, f32)> {
-    use std::collections::HashMap;
+/// Weighted Reciprocal Rank Fusion. Each ranked list contributes
+/// `weight / (K + rank)` (0-based rank, K = 60) to every id it contains; the
+/// per-id contributions sum. Score-agnostic (ranks only), so lists on
+/// incompatible scales — cosine, token-overlap, probability — fuse cleanly, and
+/// the weights set each signal's relative pull. Used by `query_relevant` to
+/// combine the semantic, lexical, and probability-prior rankings.
+fn weighted_rrf(lists: &[(&[Uuid], f32)]) -> std::collections::HashMap<Uuid, f32> {
     const K: f32 = 60.0;
-    let mut scores: HashMap<Uuid, f32> = HashMap::new();
-    for list in lists {
+    let mut scores: std::collections::HashMap<Uuid, f32> = std::collections::HashMap::new();
+    for (list, weight) in lists {
         for (rank, id) in list.iter().enumerate() {
-            let rrf = 1.0 / (K + rank as f32);
-            *scores.entry(*id).or_insert(0.0) += rrf;
+            *scores.entry(*id).or_insert(0.0) += weight / (K + rank as f32);
         }
     }
-    let mut ranked: Vec<(Uuid, f32)> = scores.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    ranked
+    scores
 }
 
 pub struct MimirStats {
@@ -292,15 +287,20 @@ impl MimirService {
         Ok(count)
     }
 
-    /// Hybrid retrieval. Selection is the RRF-merged union of (a) token/keyword
-    /// matches (beliefs whose lowercased content contains at least one
-    /// whitespace-split query term, ranked by distinct-term match count) and
-    /// (b) vector cosine top-k over `belief_embeddings` (when an embedding
-    /// backend is configured; empty otherwise). The seed set is then expanded
-    /// along SUPPORTS/CAUSES edges and sorted by probability descending. The
-    /// output order is probability-desc; the RRF score governs only which
-    /// beliefs seed the result. Spec: `Mimir.Graph` (query_relevant section).
-    /// `limit = 0` means no limit.
+    /// Hybrid retrieval ranked by weighted Reciprocal Rank Fusion.
+    ///
+    /// Candidate selection: the union of (a) token/keyword matches (beliefs whose
+    /// lowercased content contains a query term, ranked by distinct-term match
+    /// count) and (b) vector cosine top-k over `belief_embeddings` (when an
+    /// embedding backend is configured; empty otherwise), expanded along
+    /// SUPPORTS/CAUSES edges.
+    ///
+    /// Final order: weighted RRF over THREE ranked lists — semantic (vector),
+    /// lexical (token), and the belief-probability PRIOR (candidates by
+    /// probability desc). RRF fuses ranks (scale-agnostic); the weights let the
+    /// reliable semantic leg lead while probability remains a real ranking signal
+    /// rather than a tiebreaker or a naked multiply. Spec: `Mimir.Graph`
+    /// (query_relevant section). `limit = 0` means no limit.
     pub async fn query_relevant(&self, query: &str, limit: usize) -> Result<Vec<Belief>> {
         let all = self.store.list_beliefs().await?;
         if all.is_empty() {
@@ -371,22 +371,27 @@ impl MimirService {
             Vec::new()
         };
 
-        // ── RRF merge → relevance-ranked, deduplicated seed IDs with scores.
-        let seed_scored = rrf_merge_ids(&[token_ranked, vector_ranked]);
-        if seed_scored.is_empty() {
+        // ── Candidate seed set: the deduplicated union of the token and vector
+        //    lists (final order is decided later by weighted RRF, so only
+        //    membership matters here). token_ranked / vector_ranked stay owned for
+        //    that fusion.
+        let mut seen = std::collections::HashSet::new();
+        let seed_ids: Vec<Uuid> = token_ranked
+            .iter()
+            .chain(vector_ranked.iter())
+            .copied()
+            .filter(|id| seen.insert(*id))
+            .collect();
+        if seed_ids.is_empty() {
             return Ok(vec![]);
         }
 
-        // ── Build a score map so scores survive graph expansion.
-        let rrf_scores: std::collections::HashMap<Uuid, f32> =
-            seed_scored.iter().cloned().collect();
-
-        // ── Materialise beliefs in seed order from the already-loaded list.
+        // ── Materialise the candidate beliefs from the already-loaded list.
         let by_id: std::collections::HashMap<Uuid, &Belief> =
             all.iter().map(|b| (b.id, b)).collect();
-        let mut matched: Vec<Belief> = seed_scored
+        let mut matched: Vec<Belief> = seed_ids
             .iter()
-            .filter_map(|(id, _)| by_id.get(id).map(|&b| b.clone()))
+            .filter_map(|id| by_id.get(id).map(|&b| b.clone()))
             .collect();
 
         // ── Graph expansion: SUPPORTS/CAUSES reachable beliefs (unchanged).
@@ -400,16 +405,42 @@ impl MimirService {
             }
         }
 
-        // ── Sort by rrf_score × probability descending.
-        //    Direct text/vector matches (rrf_score > 0) always outrank beliefs
-        //    that entered only through graph expansion (rrf_score = 0),
-        //    regardless of probability. Within each tier, higher probability
-        //    wins. See Mimir.Graph spec (query_relevant section).
+        // ── Final ranking: weighted Reciprocal Rank Fusion of THREE ranked lists
+        //    — semantic (vector), lexical (token), and the belief-probability
+        //    PRIOR. RRF is score-agnostic: it fuses RANKS, sidestepping the
+        //    mutually-incompatible cosine / token-count / probability scales
+        //    (Cormack 2009; the standard hybrid-search fusion). Per-list weights
+        //    let the reliable semantic leg lead while the probability prior stays a
+        //    GENUINE ranking signal — a full ranked list, not a tiebreaker and not
+        //    the old unprincipled `rrf_score × probability` (which multiplied a
+        //    rank-reciprocal by a probability and so let a slightly-higher-p but
+        //    irrelevant belief bury a strong semantic match). Folding a static
+        //    quality/prior signal in as a weighted retriever is the documented
+        //    Elastic weighted-RRF approach.
+        // Weights reflect each signal's reliability: the semantic (vector) leg is
+        // the trustworthy relevance signal and leads; the substring token leg is
+        // noisy (it matches common words) so it only supplements; the probability
+        // prior is a gentle nudge — enough to reorder similarly-relevant beliefs,
+        // never enough to lift an irrelevant-but-confident belief over a strong
+        // semantic match (the exact failure of the old `rrf × probability`).
+        const W_VECTOR: f32 = 1.0;
+        const W_TOKEN: f32 = 0.3;
+        const W_PRIOR: f32 = 0.1;
+        // Prior list: the candidate set ranked by probability descending.
+        let prob_of: std::collections::HashMap<Uuid, f64> =
+            matched.iter().map(|b| (b.id, b.probability.value())).collect();
+        let mut prior_ranked: Vec<Uuid> = matched.iter().map(|b| b.id).collect();
+        prior_ranked.sort_by(|a, b| {
+            prob_of[b].partial_cmp(&prob_of[a]).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let fused = weighted_rrf(&[
+            (vector_ranked.as_slice(), W_VECTOR),
+            (token_ranked.as_slice(), W_TOKEN),
+            (prior_ranked.as_slice(), W_PRIOR),
+        ]);
         matched.sort_by(|a, b| {
-            let sa = rrf_scores.get(&a.id).copied().unwrap_or(0.0)
-                * a.probability.value() as f32;
-            let sb = rrf_scores.get(&b.id).copied().unwrap_or(0.0)
-                * b.probability.value() as f32;
+            let sa = fused.get(&a.id).copied().unwrap_or(0.0);
+            let sb = fused.get(&b.id).copied().unwrap_or(0.0);
             sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
 

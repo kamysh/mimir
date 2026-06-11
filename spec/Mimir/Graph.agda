@@ -357,28 +357,32 @@ update-confidence-preserves-probability b c = refl
 -- ---------------------------------------------------------------------------
 -- query_relevant — hybrid retrieval invariants
 -- Rust (MimirService::query_relevant):
---   1. Candidate selection (HYBRID): the deduplicated union of
+--   1. Candidate selection (HYBRID): the deduplicated UNION of
 --        (a) token/keyword matches — beliefs whose lowercased content contains
---            at least one whitespace-split query term, ranked by distinct-term
---            match count, and
+--            at least one whitespace-split query term, and
 --        (b) vector matches — cosine top-k over public.belief_embeddings, when
 --            an embedding backend is configured,
---      merged by Reciprocal Rank Fusion (RRF, k=60) into a relevance-ranked
---      seed set. With no embedding backend, (b) is empty and selection degrades
---      to the token half. (This REPLACES the old whole-query substring match,
---      which required the entire query string to appear verbatim inside one
---      belief — so any multi-word natural-language query returned nothing.)
+--      forms the seed set (membership only; final order is decided in step 3).
+--      With no embedding backend, (b) is empty and selection degrades to the
+--      token half. (This REPLACES the old whole-query substring match, which
+--      required the entire query string to appear verbatim inside one belief —
+--      so any multi-word natural-language query returned nothing.)
 --   2. Graph expansion: SUPPORTS/CAUSES reachable beliefs added (unchanged).
---   3. Sort: by `combined_score = rrf_score × probability` descending.
---      Beliefs that matched directly (token or vector) have rrf_score > 0 and
---      always outrank graph-expansion-only beliefs (rrf_score = 0). Within
---      each tier, higher probability wins.
+--   3. Final order: WEIGHTED Reciprocal Rank Fusion (RRF, k=60) over THREE
+--      ranked lists — vector (semantic, weight 1.0), token (lexical, weight
+--      0.3), and a probability-PRIOR list (candidates by probability desc,
+--      weight 0.1). Each list contributes weight/(k+rank); the per-belief
+--      contributions sum and beliefs are sorted by that fused score descending.
+--      The semantic leg leads (it is the reliable relevance signal); probability
+--      enters as a weighted prior signal — NOT as a multiplier on the rank score
+--      (the old `rrf_score × probability`, which let an irrelevant-but-confident
+--      belief bury a strong semantic match).
 --   4. Limit: if limit > 0, truncate to `limit` results (unchanged).
 --
--- RRF and cosine scores are runtime floats not modelled in --safe Agda (same
--- stance as query_document in Mimir.Documents). The proved invariants below
--- therefore cover only the structural properties that can be stated without
--- those scores.
+-- RRF, cosine, and probability-fused scores are runtime floats not modelled in
+-- --safe Agda (same stance as query_document in Mimir.Documents). The proved
+-- invariants below therefore cover only the structural properties that can be
+-- stated without those scores.
 --
 -- MCP INTERFACE NOTE: the MCP tool input parameter is named "context" (not
 -- "query") — the dispatch maps args["context"] to the service's `query: &str`.
@@ -386,9 +390,9 @@ update-confidence-preserves-probability b c = refl
 -- The parameter rename exists only at the MCP layer; internally it is "query".
 --
 -- Key invariants:
---   a. Results are sorted by `rrf_score × probability` descending.
---      rrf_scores are not modelled in Agda; this invariant is stated but not
---      formally proved here. The `IsSortedByProb` / `sort-by-prob-sorted`
+--   a. Results are ordered by the weighted-RRF fused score descending. RRF is
+--      rank-based and not modelled in --safe Agda; this invariant is stated but
+--      not formally proved here. The `IsSortedByProb` / `sort-by-prob-sorted`
 --      infrastructure below is retained as a general utility.
 --   b. If limit > 0, |results| ≤ limit  (proved via take-length).
 -- ---------------------------------------------------------------------------
