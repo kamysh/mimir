@@ -155,13 +155,14 @@ contradictionWeightDefault = mkProb 100
 -- record_defeat:        weight is REQUIRED  — same pattern.
 -- record_contradiction: weight is OPTIONAL  — dispatch uses unwrap_or(1.0);
 --                       absent weight silently defaults to full conflict.
--- CAUSES:               no MCP tool — weight is always provided via internal API.
+-- record_cause:         weight is REQUIRED  — dispatch uses ok_or_else, same
+--                       pattern as record_support/record_defeat.
 -- ---------------------------------------------------------------------------
 
 edgeWeightRequired : EdgeLabel → Bool
 edgeWeightRequired SUPPORTS    = true
 edgeWeightRequired DEFEATS     = true
-edgeWeightRequired CAUSES      = true   -- no MCP tool; weight always supplied internally
+edgeWeightRequired CAUSES      = true   -- record_cause MCP tool; weight required
 edgeWeightRequired CONTRADICTS = false  -- optional MCP param, defaults to 1.0
 
 edgeWeightRequired-contradiction-optional :
@@ -289,19 +290,22 @@ bfsDepthBound : ℕ
 bfsDepthBound = 10
 
 -- ---------------------------------------------------------------------------
--- propagate_from updates `probability` (not `confidence`) of downstream
--- beliefs.  This is the dual of decay_all / update_confidence which update
--- `confidence` only.  The two fields evolve on independent paths:
---   probability — updated by inference (propagate_from BFS via store.update_belief_probability)
---   confidence  — updated by decay (decay_all) or directly (update_confidence MCP tool)
+-- PHASE 3 — RETIRED SCALAR SETTERS.
+-- Under Phase 3 (Mimir.Beta), a belief's evidence state is the Beta pair (α,β),
+-- and probability = mean = α/(α+β), confidence = strength-derived, are CACHED
+-- views recomputed from (α,β) on load — NOT independently writable scalars.
+-- The legacy field-independent setters `update_belief_probability` and
+-- `update_belief_confidence` are therefore RETIRED: belief evidence state is
+-- written ONLY via the Beta posterior (store update_belief_beta, governed by
+-- Mimir.Beta.store-load-round-trip).  The two former lemmas that modelled the
+-- scalar setters as independent field writes —
+--   • propagate-updates-probability-not-confidence  (update_belief_probability
+--     touched probability only), and
+--   • update-confidence-preserves-probability        (update_confidence left
+--     probability intact)
+-- — described an operation that no longer exists and are removed.  Their truth
+-- was trivial field independence; nothing downstream depended on them.
 -- ---------------------------------------------------------------------------
-
--- Proof: update_belief_probability does not affect confidence.
-propagate-updates-probability-not-confidence :
-  ∀ (b : Belief) (p : Prob) →
-  Belief.confidence b ≡
-    Belief.confidence (record b { probability = p })
-propagate-updates-probability-not-confidence b p = refl
 
 -- Proof: propagate_from never updates the SEED belief's own probability.
 -- Mechanically: propagate_defeat only adds to_id to `updated` when
@@ -332,27 +336,12 @@ propagate-seed-probability-unchanged _ = refl
 -- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------
--- update_confidence
--- In lib.rs: sets Belief.confidence to the given value; probability unchanged.
--- In store.rs (update_belief_confidence): SET n.confidence = c (confidence only).
---
--- Invariant: update_confidence does NOT modify probability.
--- Captured below as a field-independence predicate.
---
--- PARTIALITY: update_belief_confidence (and update_belief_probability) check
--- the AGE result rows and bail!() if empty — i.e., if the belief ID does not
--- exist.  update_confidence is a PARTIAL operation: it fails for unknown IDs.
--- Same pattern as add_edge (see addEdgePrecondition above).
--- update_confidence MCP tool propagates the error as a JSON-RPC error response.
+-- update_confidence / update_belief_probability — RETIRED (Phase 3).
+-- See the "RETIRED SCALAR SETTERS" note above: belief evidence state is written
+-- only via the Beta posterior (update_belief_beta).  The former field-
+-- independence lemma `update-confidence-preserves-probability` is removed with
+-- the operation it modelled.
 -- ---------------------------------------------------------------------------
-
--- After update_confidence, the probability field is unchanged.
--- Modelled as: any function that only updates confidence leaves probability intact.
-update-confidence-preserves-probability :
-  ∀ (b : Belief) (c : Prob) →
-  Belief.probability b ≡
-    Belief.probability (record b { confidence = c })
-update-confidence-preserves-probability b c = refl
 
 -- ---------------------------------------------------------------------------
 -- query_relevant — hybrid retrieval invariants
