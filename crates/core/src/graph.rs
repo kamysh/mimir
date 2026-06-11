@@ -24,12 +24,56 @@ impl Probability {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Beta(α, β) belief representation (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// Prior-mapping constants, documented in one place (see docs/proposals/50).
+/// A belief's evidence state is Beta(α, β): mean = α/(α+β) is the probability,
+/// strength κ = α+β is the (former) confidence as a real pseudo-count.
+pub const KAPPA_MIN: f64 = 2.0;
+pub const KAPPA_MAX: f64 = 200.0;
+/// Evidence quantum: one unit-weight parent observation contributes this much
+/// α (support / causes) or β (defeat). Used by the inference engine.
+pub const EVIDENCE_UNIT: f64 = 4.0;
+
+/// Map (probability, confidence) → Beta prior (α₀, β₀):
+///   κ  = KAPPA_MIN + c·(KAPPA_MAX − KAPPA_MIN)
+///   α₀ = p·κ,  β₀ = (1−p)·κ
+/// α₀+β₀ = κ ≥ KAPPA_MIN > 0 always, so mean = α₀/(α₀+β₀) = p is well-defined
+/// even at p ∈ {0,1} (one count is 0; mean and strength remain exact).
+pub fn prior_from(probability: f64, confidence: f64) -> (f64, f64) {
+    let kappa = KAPPA_MIN + confidence * (KAPPA_MAX - KAPPA_MIN);
+    (probability * kappa, (1.0 - probability) * kappa)
+}
+
+/// Recover (mean, confidence) from a Beta (α, β): mean = α/(α+β);
+/// confidence = (κ − KAPPA_MIN)/(KAPPA_MAX − KAPPA_MIN), clamped to [0,1].
+fn beta_to_pc(alpha: f64, beta: f64) -> (f64, f64) {
+    let s = alpha + beta;
+    let mean = if s > 0.0 {
+        (alpha / s).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    let conf = ((s - KAPPA_MIN) / (KAPPA_MAX - KAPPA_MIN)).clamp(0.0, 1.0);
+    (mean, conf)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Belief {
     pub id: Uuid,
     pub content: String,
+    /// Cached mean = α/(α+β). The (α,β) pair is the source of truth; this is
+    /// kept in sync (via `refresh_cached`) for backward-compatible reads.
     pub probability: Probability,
+    /// Cached confidence derived from strength κ = α+β.
     pub confidence: Probability,
+    /// Posterior Beta counts (source of truth). α₀,β₀ are the fixed prior.
+    pub alpha: f64,
+    pub beta: f64,
+    pub alpha0: f64,
+    pub beta0: f64,
     pub created_at: DateTime<Utc>,
     pub last_activated_at: DateTime<Utc>,
     /// Optional project scope. Beliefs tagged with a project can be bulk-deleted
@@ -40,12 +84,20 @@ pub struct Belief {
 
 impl Belief {
     pub fn new(content: String, probability: f64, confidence: f64) -> Result<Self> {
+        // Validate inputs are in range before mapping to (α₀, β₀).
+        let p = Probability::new(probability)?;
+        let c = Probability::new(confidence)?;
         let now = Utc::now();
+        let (alpha0, beta0) = prior_from(p.value(), c.value());
         Ok(Self {
             id: Uuid::new_v4(),
             content,
-            probability: Probability::new(probability)?,
-            confidence: Probability::new(confidence)?,
+            probability: p,
+            confidence: c,
+            alpha: alpha0,
+            beta: beta0,
+            alpha0,
+            beta0,
             created_at: now,
             last_activated_at: now,
             project: None,
@@ -61,6 +113,60 @@ impl Belief {
         let mut b = Self::new(content, probability, confidence)?;
         b.project = Some(project);
         Ok(b)
+    }
+
+    /// Reconstruct a belief from persisted fields (store / migration). The
+    /// cached probability/confidence are derived from the supplied (α, β).
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_stored(
+        id: Uuid,
+        content: String,
+        alpha: f64,
+        beta: f64,
+        alpha0: f64,
+        beta0: f64,
+        created_at: DateTime<Utc>,
+        last_activated_at: DateTime<Utc>,
+        project: Option<String>,
+    ) -> Result<Self> {
+        let (mean, conf) = beta_to_pc(alpha, beta);
+        Ok(Self {
+            id,
+            content,
+            probability: Probability::new(mean)?,
+            confidence: Probability::new(conf)?,
+            alpha,
+            beta,
+            alpha0,
+            beta0,
+            created_at,
+            last_activated_at,
+            project,
+        })
+    }
+
+    /// Mean α/(α+β) — the value the rest of the system reads as "probability".
+    pub fn mean(&self) -> Probability {
+        let (mean, _) = beta_to_pc(self.alpha, self.beta);
+        Probability::new(mean).expect("mean is clamped to [0,1]")
+    }
+
+    /// Pseudo-count strength κ = α + β.
+    pub fn strength(&self) -> f64 {
+        self.alpha + self.beta
+    }
+
+    /// Confidence recovered from strength κ.
+    pub fn confidence_from_strength(&self) -> Probability {
+        let (_, conf) = beta_to_pc(self.alpha, self.beta);
+        Probability::new(conf).expect("confidence is clamped to [0,1]")
+    }
+
+    /// Refresh the cached probability/confidence from the current (α, β).
+    /// Call after any update to α/β (propagation, decay).
+    pub fn refresh_cached(&mut self) {
+        self.probability = self.mean();
+        self.confidence = self.confidence_from_strength();
     }
 }
 
@@ -144,6 +250,55 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use std::str::FromStr;
+
+    // ------------------------------------------------------------------
+    // Beta(α, β) representation — round-trip & mapping (Phase 3)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn beta_prior_round_trips_p_and_c() {
+        // (p, c) → (α₀, β₀) → mean/strength must recover p exactly and a
+        // monotone function of c. κ = 2 + 0.5·198 = 101.
+        let b = Belief::new("x".to_string(), 0.8, 0.5).unwrap();
+        assert!(
+            (b.mean().value() - 0.8).abs() < 1e-12,
+            "mean {}",
+            b.mean().value()
+        );
+        assert!(
+            (b.strength() - 101.0).abs() < 1e-9,
+            "strength {}",
+            b.strength()
+        );
+        // posterior starts at the prior
+        assert!((b.alpha - b.alpha0).abs() < 1e-12);
+        assert!((b.beta - b.beta0).abs() < 1e-12);
+        assert!((b.alpha0 + b.beta0 - b.strength()).abs() < 1e-9);
+        // confidence recovered from strength
+        assert!((b.confidence_from_strength().value() - 0.5).abs() < 1e-9);
+        // cached fields agree with the (α,β) source of truth
+        assert!((b.probability.value() - b.mean().value()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn beta_strength_monotone_in_confidence() {
+        let lo = Belief::new("y".to_string(), 0.8, 0.1).unwrap();
+        let hi = Belief::new("z".to_string(), 0.8, 0.9).unwrap();
+        assert!(hi.strength() > lo.strength());
+        // both still have mean p = 0.8
+        assert!((lo.mean().value() - 0.8).abs() < 1e-12);
+        assert!((hi.mean().value() - 0.8).abs() < 1e-12);
+    }
+
+    #[test]
+    fn beta_boundary_probabilities_are_exact() {
+        // p ∈ {0, 1}: one count is 0 but α+β = κ > 0, so the mean is exact.
+        let zero = Belief::new("a".to_string(), 0.0, 0.5).unwrap();
+        let one = Belief::new("b".to_string(), 1.0, 0.5).unwrap();
+        assert_eq!(zero.mean().value(), 0.0);
+        assert_eq!(one.mean().value(), 1.0);
+        assert!(zero.strength() > 0.0 && one.strength() > 0.0);
+    }
 
     // ------------------------------------------------------------------
     // Probability — unit tests
