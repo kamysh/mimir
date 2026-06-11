@@ -607,3 +607,62 @@ async fn test_delete_belief_removes_grounds_edge() {
         "deleting the belief must remove its GROUNDS edges"
     );
 }
+
+// REGRESSION (#1, spec Mimir.Beta evidence completeness): a belief's evidence
+// from a parent OUTSIDE the triggering seed's subgraph must NOT be erased when
+// propagation is triggered from a different seed.
+//
+// Graph: X -SUPPORTS-> T  and  Y -SUPPORTS-> T  (X and Y otherwise unconnected).
+// get_downstream_beliefs(Y) reaches T but NOT X, so X is out-of-subgraph when
+// propagating from Y. After propagate_from(Y), T must still carry X's support
+// (its α must reflect BOTH supporters), not be reset to prior + Y only.
+#[tokio::test]
+async fn test_propagate_preserves_out_of_subgraph_evidence() {
+    let s = store().await;
+    let svc = service().await;
+
+    let x = Belief::new(format!("oosX-{}", Uuid::new_v4()), 0.9, 0.5).unwrap();
+    let y = Belief::new(format!("oosY-{}", Uuid::new_v4()), 0.9, 0.5).unwrap();
+    let t = Belief::new(format!("oosT-{}", Uuid::new_v4()), 0.3, 0.5).unwrap();
+    s.insert_belief(&x).await.unwrap();
+    s.insert_belief(&y).await.unwrap();
+    s.insert_belief(&t).await.unwrap();
+    let t_alpha0 = t.alpha;
+
+    svc.add_edge(x.id, t.id, EdgeType::Supports, 1.0)
+        .await
+        .unwrap();
+    svc.add_edge(y.id, t.id, EdgeType::Supports, 1.0)
+        .await
+        .unwrap();
+
+    // Propagate from X → T gains X's support.
+    svc.propagate_from(x.id).await.unwrap();
+    let t_after_x = s.get_belief(t.id).await.unwrap().unwrap().alpha;
+    assert!(
+        t_after_x > t_alpha0 + 1e-9,
+        "X's support must raise T's α: α0={t_alpha0}, after X={t_after_x}"
+    );
+
+    // Propagate from Y. X is OUT of Y's subgraph. With the fix T re-derives from
+    // ALL incoming edges (X external + Y), so X's support is preserved.
+    svc.propagate_from(y.id).await.unwrap();
+    let t_after_y = s.get_belief(t.id).await.unwrap().unwrap().alpha;
+
+    // T must reflect BOTH supporters — α at least the X-only value (the buggy
+    // code reset it to prior + Y only, LOSING X, i.e. t_after_y == t_after_x's
+    // pre-X baseline). With both counted, α ≥ the single-supporter value.
+    assert!(
+        t_after_y >= t_after_x - 1e-9,
+        "out-of-subgraph support (X) was erased: after_X={t_after_x}, after_Y={t_after_y}"
+    );
+    assert!(
+        t_after_y > t_alpha0 + 1e-9,
+        "T must stay above its prior after propagation: α0={t_alpha0}, after_Y={t_after_y}"
+    );
+
+    // cleanup
+    for id in [x.id, y.id, t.id] {
+        let _ = svc.delete_belief(id).await;
+    }
+}

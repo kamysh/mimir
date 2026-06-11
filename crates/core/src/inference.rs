@@ -57,13 +57,18 @@ impl InferenceEngine {
     /// posterior `(α, β)` for all downstream beliefs via conjugate accumulation.
     /// Returns Vec<(Uuid, (α, β))> — the new DURABLE Beta state per affected
     /// belief (spec: Mimir.Beta). Does NOT write to the store — caller persists.
+    /// `edges` must be the COMPLETE incoming-edge set of every downstream node
+    /// (spec: Mimir.Beta.posteriorOf), and `external_means` the stored means of
+    /// any edge source that is NOT in `downstream`/`seed` — so a node's evidence
+    /// from parents outside the seed's subgraph is preserved, not dropped.
     pub fn propagate_defeat(
         &self,
         seed: &Belief,
         downstream: &[Belief],
         edges: &[(Uuid, Uuid, EdgeType, Probability)],
+        external_means: &HashMap<Uuid, f64>,
     ) -> Result<Vec<(Uuid, (f64, f64))>> {
-        self.propagate_core(seed.id, seed.probability, downstream, edges)
+        self.propagate_core(seed.id, seed.probability, downstream, edges, external_means)
     }
 
     /// Counterfactual projection P(· | do(target = value)). Pearl's do-operator
@@ -95,7 +100,11 @@ impl InferenceEngine {
             .filter(|&(_from, to, et, _w)| to != target_id && et == EdgeType::Causes)
             .collect();
         // Read-only projection: map the posterior (α,β) result to projected means.
-        let raw = self.propagate_core(target_id, value, downstream, &surgical)?;
+        // Intervention is a COUNTERFACTUAL under the surgical edge set — it must
+        // NOT blend in real-world evidence, so external_means is empty (only the
+        // surgical CAUSES edges and the clamped target drive the projection).
+        let external_means: HashMap<Uuid, f64> = HashMap::new();
+        let raw = self.propagate_core(target_id, value, downstream, &surgical, &external_means)?;
         let mut out = Vec::with_capacity(raw.len());
         for (id, (alpha, beta)) in raw {
             let s = alpha + beta;
@@ -119,19 +128,23 @@ impl InferenceEngine {
     /// `(α₀, β₀)` plus evidence accumulated from its parents:
     ///   α = α₀ + Σ_{support/causes} w·μ_src·UNIT,
     ///   β = β₀ + Σ_{defeat}        w·μ_src·UNIT,
-    /// and its mean μ = α/(α+β). Because the accumulation is a SUM it is
-    /// order-independent (spec: `Mimir.Beta.accumulate-↭`), and because the
-    /// posterior is re-derived from the prior (never folded into a mutated
-    /// scalar) propagation is idempotent. Iterated to a fixpoint, bounded by
-    /// MAX_ITERS. Pure; never writes to the store. Returns the new posterior
-    /// `(α, β)` per changed node — the DURABLE Beta state the caller persists
-    /// (spec: Mimir.Beta StoredBelief; the mean is recomputed on load).
+    /// and its mean μ = α/(α+β). The evidence set is the node's COMPLETE incoming
+    /// edges (spec: Mimir.Beta.posteriorOf over the whole incoming list) — NOT a
+    /// subgraph-local subset; omitting any incoming edge would silently drop that
+    /// parent's evidence. A parent in the active set uses its RECOMPUTED mean;
+    /// a parent OUTSIDE the active set uses its stored mean, supplied in
+    /// `external_means`. Because the accumulation is a SUM it is order-independent
+    /// (spec: `Mimir.Beta.accumulate-↭`), and because the posterior is re-derived
+    /// from the prior (never folded into a mutated scalar) propagation is
+    /// idempotent. Iterated to a fixpoint, bounded by MAX_ITERS. Pure; never
+    /// writes to the store. Returns the new posterior `(α, β)` per changed node.
     fn propagate_core(
         &self,
         seed_id: Uuid,
         seed_prob: Probability,
         downstream: &[Belief],
         edges: &[(Uuid, Uuid, EdgeType, Probability)],
+        external_means: &HashMap<Uuid, f64>,
     ) -> Result<Vec<(Uuid, (f64, f64))>> {
         if downstream.is_empty() {
             return Ok(vec![]);
@@ -151,11 +164,20 @@ impl InferenceEngine {
         }
 
         // Incoming adjacency keyed by TARGET: target -> [(type, weight, source)].
-        // Only edges whose source is in scope (seed or downstream) contribute.
-        let in_scope = |id: &Uuid| *id == seed_id || prior.contains_key(id);
+        // An edge INTO a downstream node contributes iff its source's mean is
+        // KNOWN: the seed, an in-set node (recomputed), or an out-of-set source
+        // supplied in `external_means`. A source with no known mean contributes
+        // nothing (no phantom default) — this both (a) keeps complete incoming
+        // evidence for real propagation, where `external_means` carries every
+        // out-of-subgraph parent (spec: Mimir.Beta posteriorOf over the whole
+        // incoming list), and (b) lets intervention pass an empty
+        // `external_means` to cut evidential (confounder) paths whose source is
+        // outside the surgical set.
+        let mean_known =
+            |id: &Uuid| *id == seed_id || prior.contains_key(id) || external_means.contains_key(id);
         let mut incoming: HashMap<Uuid, Vec<(EdgeType, f64, Uuid)>> = HashMap::new();
         for &(from, to, etype, weight) in edges {
-            if in_scope(&from) && prior.contains_key(&to) {
+            if prior.contains_key(&to) && mean_known(&from) {
                 incoming
                     .entry(to)
                     .or_default()
@@ -170,18 +192,22 @@ impl InferenceEngine {
             state.insert(b.id, (b.alpha0, b.beta0));
         }
         let seed_mean = seed_prob.value();
-        // Mean of a node: the seed's clamped value, else α/(α+β) of its state.
+        // Mean of a parent: the seed's clamped value; else the RECOMPUTED mean of
+        // an in-set node (from `state`); else the stored mean of an out-of-set
+        // source (from `external_means`); 0.5 only if a source is entirely
+        // unknown (should not happen — every edge source is fetched).
         let mean_of = |state: &HashMap<Uuid, (f64, f64)>, id: &Uuid| -> f64 {
             if *id == seed_id {
                 seed_mean
-            } else {
-                let (a, b) = state[id];
+            } else if let Some(&(a, b)) = state.get(id) {
                 let s = a + b;
                 if s > 0.0 {
                     (a / s).clamp(0.0, 1.0)
                 } else {
                     0.5
                 }
+            } else {
+                *external_means.get(id).unwrap_or(&0.5)
             }
         };
         let mut order: Vec<Uuid> = downstream
@@ -337,6 +363,12 @@ mod tests {
         } else {
             0.5
         }
+    }
+
+    // These tests build self-contained subgraphs where every edge source is in
+    // `downstream`, so there are no out-of-subgraph parents → empty external_means.
+    fn no_external() -> HashMap<Uuid, f64> {
+        HashMap::new()
     }
 
     // ------------------------------------------------------------------
@@ -513,7 +545,9 @@ mod tests {
     #[test]
     fn test_propagate_defeat_empty_downstream() {
         let seed = Belief::new("seed".to_string(), 0.9, 0.9).unwrap();
-        let result = engine().propagate_defeat(&seed, &[], &[]).unwrap();
+        let result = engine()
+            .propagate_defeat(&seed, &[], &[], &no_external())
+            .unwrap();
         assert!(result.is_empty());
     }
 
@@ -526,7 +560,7 @@ mod tests {
         let downstream = vec![target.clone()];
 
         let updates = engine()
-            .propagate_defeat(&seed, &downstream, &edges)
+            .propagate_defeat(&seed, &downstream, &edges, &no_external())
             .unwrap();
         let new_prob = updates
             .iter()
@@ -550,7 +584,7 @@ mod tests {
         let downstream = vec![target.clone()];
 
         let updates = engine()
-            .propagate_defeat(&seed, &downstream, &edges)
+            .propagate_defeat(&seed, &downstream, &edges, &no_external())
             .unwrap();
         let new_prob = updates
             .iter()
@@ -753,8 +787,12 @@ mod tests {
         let mut order2 = order1.clone();
         order2.reverse();
 
-        let r1 = engine().propagate_defeat(&s, &downstream, &order1).unwrap();
-        let r2 = engine().propagate_defeat(&s, &downstream, &order2).unwrap();
+        let r1 = engine()
+            .propagate_defeat(&s, &downstream, &order1, &no_external())
+            .unwrap();
+        let r2 = engine()
+            .propagate_defeat(&s, &downstream, &order2, &no_external())
+            .unwrap();
 
         let val = |r: &[(uuid::Uuid, (f64, f64))], id: uuid::Uuid| {
             r.iter().find(|(i, _)| *i == id).map(|(_, ab)| mean_of(*ab))
@@ -788,7 +826,7 @@ mod tests {
         ];
 
         let r1 = engine()
-            .propagate_defeat(&s, &[a.clone(), b.clone()], &edges)
+            .propagate_defeat(&s, &[a.clone(), b.clone()], &edges, &no_external())
             .unwrap();
 
         // Feed the result back as the new base and propagate again.
@@ -807,7 +845,7 @@ mod tests {
             }
         }
         let r2 = engine()
-            .propagate_defeat(&s, &[a2.clone(), b2.clone()], &edges)
+            .propagate_defeat(&s, &[a2.clone(), b2.clone()], &edges, &no_external())
             .unwrap();
 
         let pa1 = r1
@@ -860,7 +898,12 @@ mod tests {
             (b.id, t.id, EdgeType::Supports, w),
         ];
         let r = engine()
-            .propagate_defeat(&s, &[a.clone(), b.clone(), t.clone()], &edges)
+            .propagate_defeat(
+                &s,
+                &[a.clone(), b.clone(), t.clone()],
+                &edges,
+                &no_external(),
+            )
             .unwrap();
         let tp = r
             .iter()
