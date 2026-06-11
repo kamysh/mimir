@@ -740,6 +740,65 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
         Ok(edges)
     }
 
+    /// Returns ALL propagation edges (SUPPORTS/DEFEATS/CAUSES) pointing INTO any
+    /// belief in `ids` — the source is UNRESTRICTED (may lie outside `ids`).
+    /// This is the complete incoming-edge set each node's posterior must be
+    /// re-derived from (spec Mimir.Beta: posteriorOf over the whole incoming
+    /// list); `get_edges_among` only sees edges whose source is also in the set,
+    /// which silently drops out-of-subgraph evidence. CONTRADICTS is excluded
+    /// (propagation skips it). AGE 1.x has no `[:A|B|C]` syntax, so three MATCH
+    /// arms are UNION'd.
+    pub async fn get_incoming_edges(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Uuid, EdgeType, Probability)>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let g = &self.graph_name;
+        let id_list = ids
+            .iter()
+            .map(|id| format!("'{}'", id))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!(
+            r#"SELECT from_id::text, to_id::text, label::text, weight::text
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (a:Belief)-[r:SUPPORTS]->(b:Belief)
+  WHERE b.id IN [{id_list}]
+  RETURN a.id, b.id, type(r), r.weight
+  UNION
+  MATCH (a:Belief)-[r:DEFEATS]->(b:Belief)
+  WHERE b.id IN [{id_list}]
+  RETURN a.id, b.id, type(r), r.weight
+  UNION
+  MATCH (a:Belief)-[r:CAUSES]->(b:Belief)
+  WHERE b.id IN [{id_list}]
+  RETURN a.id, b.id, type(r), r.weight
+$$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agtype, weight ag_catalog.agtype)"#
+        );
+
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let mut edges = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let from_raw: String = row.try_get("from_id")?;
+            let to_raw: String = row.try_get("to_id")?;
+            let label_raw: String = row.try_get("label")?;
+            let weight_raw: String = row.try_get("weight")?;
+
+            let from_id = Uuid::parse_str(&from_raw)?;
+            let to_id = Uuid::parse_str(&to_raw)?;
+            let edge_type: EdgeType = label_raw.parse()?;
+            let weight: f64 = weight_raw.parse()?;
+            let probability = Probability::new(weight)?;
+
+            edges.push((from_id, to_id, edge_type, probability));
+        }
+        Ok(edges)
+    }
+
     // -----------------------------------------------------------------------
     // Documents
     // -----------------------------------------------------------------------

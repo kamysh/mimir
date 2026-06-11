@@ -227,12 +227,28 @@ impl MimirService {
         let mut ids: Vec<Uuid> = downstream.iter().map(|b| b.id).collect();
         ids.push(seed_id);
 
-        // Load edges among the subgraph
-        let edges = self.store.get_edges_among(&ids).await?;
+        // Load the COMPLETE incoming-edge set of every downstream node (spec:
+        // Mimir.Beta evidence completeness) — sources may lie OUTSIDE the
+        // subgraph. get_edges_among would drop those, silently discarding a
+        // belief's evidence from out-of-subgraph parents.
+        let edges = self.store.get_incoming_edges(&ids).await?;
 
-        let updates = self
-            .inference
-            .propagate_defeat(&seed, &downstream, &edges)?;
+        // For any edge source NOT in the active set (seed or downstream), supply
+        // its stored mean so its evidence still counts, without recomputing it.
+        let in_set: std::collections::HashSet<Uuid> = ids.iter().copied().collect();
+        let mut external_means: std::collections::HashMap<Uuid, f64> =
+            std::collections::HashMap::new();
+        for &(from, _to, _et, _w) in &edges {
+            if !in_set.contains(&from) && !external_means.contains_key(&from) {
+                if let Some(b) = self.store.get_belief(from).await? {
+                    external_means.insert(from, b.probability.value());
+                }
+            }
+        }
+
+        let updates =
+            self.inference
+                .propagate_defeat(&seed, &downstream, &edges, &external_means)?;
         // Persist the durable Beta posterior ATOMICALLY (all-or-nothing, so a
         // propagation never leaves the subgraph half-updated); probability/
         // confidence are refreshed from (α,β) by update_beliefs_beta.
