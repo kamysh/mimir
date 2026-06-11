@@ -233,13 +233,20 @@ impl MimirService {
         let updates = self
             .inference
             .propagate_defeat(&seed, &downstream, &edges)?;
-        // Persist the durable Beta posterior (spec: store-load-round-trip);
-        // probability/confidence are refreshed from (α,β) by update_belief_beta.
+        // Persist the durable Beta posterior ATOMICALLY (all-or-nothing, so a
+        // propagation never leaves the subgraph half-updated); probability/
+        // confidence are refreshed from (α,β) by update_beliefs_beta.
+        let writes: Vec<(Uuid, f64, f64)> =
+            updates.iter().map(|&(id, (a, b))| (id, a, b)).collect();
+        self.store.update_beliefs_beta(&writes).await?;
         let mut out = Vec::with_capacity(updates.len());
         for (id, (alpha, beta)) in updates {
-            self.store.update_belief_beta(id, alpha, beta).await?;
             let s = alpha + beta;
-            let m = if s > 0.0 { (alpha / s).clamp(0.0, 1.0) } else { 0.5 };
+            let m = if s > 0.0 {
+                (alpha / s).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
             out.push((id, Probability::new(m)?));
         }
         Ok(out)
@@ -292,10 +299,13 @@ impl MimirService {
         let now = chrono::Utc::now();
         let updates = self.inference.decay_all(&beliefs, now, factor)?;
         let count = updates.len();
-        // Persist decayed Beta state (spec: betaDecay toward (1,1)).
-        for (id, (alpha, beta)) in updates {
-            self.store.update_belief_beta(id, alpha, beta).await?;
-        }
+        // Persist decayed Beta state (spec: betaDecay toward (1,1)) ATOMICALLY,
+        // so a failed sweep cannot leave some beliefs decayed and others not
+        // (decay is not idempotent in elapsed time — a half-sweep would
+        // double-decay the committed prefix on the next run).
+        let writes: Vec<(Uuid, f64, f64)> =
+            updates.into_iter().map(|(id, (a, b))| (id, a, b)).collect();
+        self.store.update_beliefs_beta(&writes).await?;
         Ok(count)
     }
 

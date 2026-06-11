@@ -107,7 +107,11 @@ async fn test_update_belief_beta_round_trips_mean_and_strength() {
     s.update_belief_beta(b.id, 90.0, 10.0).await.unwrap();
     let got = s.get_belief(b.id).await.unwrap().unwrap();
     // Durable (α,β) persisted (spec store-load-round-trip); mean derived = 0.9.
-    assert!((got.alpha - 90.0).abs() < 1e-6, "α persisted: {}", got.alpha);
+    assert!(
+        (got.alpha - 90.0).abs() < 1e-6,
+        "α persisted: {}",
+        got.alpha
+    );
     assert!((got.beta - 10.0).abs() < 1e-6, "β persisted: {}", got.beta);
     assert!((got.probability.value() - 0.9).abs() < 1e-9);
 }
@@ -450,7 +454,10 @@ async fn test_intervention_is_read_only() {
         .map(|(_, p)| p.value());
     assert!(projected.is_some(), "B should appear in the projection");
     let proj = projected.unwrap();
-    assert!(proj > 0.4, "do(T) must raise B above its 0.4 base, got {proj}");
+    assert!(
+        proj > 0.4,
+        "do(T) must raise B above its 0.4 base, got {proj}"
+    );
     assert!((proj - 0.406_586).abs() < 1e-4, "got {proj}");
 
     // The decisive check: the store row for B is UNCHANGED (no writeback).
