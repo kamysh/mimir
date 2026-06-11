@@ -169,6 +169,31 @@ fn ensure_cached(url: &str, dest: &std::path::Path) -> Result<()> {
     if dest.exists() {
         return Ok(());
     }
+    // `reqwest::blocking` builds (and on drop tears down) its own tokio runtime.
+    // Model files are first fetched lazily from inside `tokio::spawn_blocking`
+    // (embedder / reranker load on first query_relevant), and tearing a runtime
+    // down inside any tokio context panics with "Cannot drop a runtime in a
+    // context where blocking is not allowed". Run the whole blocking download on
+    // a detached OS thread that carries no runtime context, so the teardown is
+    // legal regardless of how we were called.
+    let url = url.to_string();
+    let dest = dest.to_path_buf();
+    std::thread::spawn(move || download_blocking(&url, &dest))
+        .join()
+        .map_err(|_| anyhow::anyhow!("download thread panicked"))?
+}
+
+/// Blocking download of `url` to `dest`. Writes to a `.part` sibling first and
+/// renames on success so an interrupted download never leaves a half-written
+/// file in place. MUST run on a thread with no tokio runtime context (see
+/// `ensure_cached`).
+///
+/// We use `reqwest::blocking` directly instead of `hf-hub` because hf-hub 0.3.2
+/// has a redirect bug: when the CDN sends a relative `Location` header it passes
+/// that string straight into `ureq::Agent::get()`, which fails with `Bad URL:
+/// relative URL without a base`. `reqwest`'s redirect policy resolves relative
+/// `Location` against the prior request's URL the way the HTTP spec expects.
+fn download_blocking(url: &str, dest: &std::path::Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
