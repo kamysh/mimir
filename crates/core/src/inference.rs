@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::graph::{Belief, EdgeType, Probability};
@@ -72,9 +72,10 @@ impl InferenceEngine {
     /// persists the result. At the MCP layer the result key is
     /// `projected_probability`, reinforcing that nothing was written.
     ///
-    /// Phase 1 limitation: the shared `propagate_core` is still a single-pass
-    /// BFS, so a cycle in the causal subgraph yields an order-dependent result.
-    /// Phase 2 (log-odds fixpoint) fixes this for both functions at once.
+    /// As of Phase 2 the shared `propagate_core` is an order-independent
+    /// fixpoint (per-node one-shot aggregation), so cycles and re-convergent
+    /// paths in the causal subgraph yield a well-defined, order-independent
+    /// result for both functions at once.
     pub fn intervene(
         &self,
         target_id: Uuid,
@@ -91,10 +92,14 @@ impl InferenceEngine {
         self.propagate_core(target_id, value, downstream, &surgical)
     }
 
-    /// Shared BFS propagation core. `seed_id`/`seed_prob` is the changed (or
-    /// clamped) node; `edges` is the edge set to follow, already filtered by the
-    /// caller (`propagate_defeat` passes every edge; `intervene` passes only the
-    /// surgical CAUSES set). Pure; never writes to the store.
+    /// Shared fixpoint propagation core. `seed_id`/`seed_prob` is the changed
+    /// (or clamped) node, held fixed; `edges` is the edge set to follow, already
+    /// filtered by the caller (`propagate_defeat` passes every edge; `intervene`
+    /// passes only the surgical CAUSES set). Snapshots every node's probability,
+    /// then iterates to a fixpoint: each node aggregates ALL of its incoming
+    /// edges in one shot (noisy-OR over SUPPORTS/CAUSES, noisy-AND over DEFEATS).
+    /// Because the aggregation is a product it is order-independent. Bounded by
+    /// MAX_ITERS; pure, never writes to the store.
     fn propagate_core(
         &self,
         seed_id: Uuid,
@@ -106,65 +111,96 @@ impl InferenceEngine {
             return Ok(vec![]);
         }
 
-        // Build lookup maps
-        let mut belief_map: HashMap<Uuid, Probability> = HashMap::new();
-        belief_map.insert(seed_id, seed_prob);
+        const MAX_ITERS: usize = 50;
+        const EPS: f64 = 1e-9;
+
+        // Snapshot every node's probability at pass start. Downstream first, then
+        // the seed, so the seed's clamped value always wins and is held fixed.
+        let mut base: HashMap<Uuid, f64> = HashMap::new();
         for b in downstream {
-            belief_map.insert(b.id, b.probability);
+            base.insert(b.id, b.probability.value());
         }
+        base.insert(seed_id, seed_prob.value());
 
-        // Build adjacency: for each belief, which edges go out from it
-        let mut adj: HashMap<Uuid, Vec<(Uuid, EdgeType, Probability)>> = HashMap::new();
+        // Incoming adjacency keyed by TARGET: target -> [(type, weight, source)].
+        // Only edges with both endpoints in the snapshot can contribute.
+        let mut incoming: HashMap<Uuid, Vec<(EdgeType, f64, Uuid)>> = HashMap::new();
         for &(from, to, etype, weight) in edges {
-            adj.entry(from).or_default().push((to, etype, weight));
-        }
-
-        let downstream_ids: HashSet<Uuid> = downstream.iter().map(|b| b.id).collect();
-
-        // BFS from seed
-        let mut queue: VecDeque<Uuid> = VecDeque::new();
-        queue.push_back(seed_id);
-        let mut visited: HashSet<Uuid> = HashSet::new();
-        visited.insert(seed_id);
-
-        let mut updated: HashMap<Uuid, Probability> = HashMap::new();
-
-        while let Some(current_id) = queue.pop_front() {
-            let current_prob = *belief_map.get(&current_id).unwrap_or(&seed_prob);
-
-            if let Some(neighbors) = adj.get(&current_id) {
-                for &(to_id, etype, weight) in neighbors {
-                    let target_prob = match belief_map.get(&to_id) {
-                        Some(&p) => p,
-                        None => continue,
-                    };
-
-                    let new_prob = match etype {
-                        EdgeType::Defeats => {
-                            self.attenuate_by_defeat(target_prob, current_prob, weight)?
-                        }
-                        EdgeType::Supports | EdgeType::Causes => {
-                            self.boost_by_support(target_prob, current_prob, weight)?
-                        }
-                        EdgeType::Contradicts => continue,
-                    };
-
-                    // Update the working probability for downstream propagation
-                    belief_map.insert(to_id, new_prob);
-
-                    if downstream_ids.contains(&to_id) {
-                        updated.insert(to_id, new_prob);
-                    }
-
-                    if !visited.contains(&to_id) {
-                        visited.insert(to_id);
-                        queue.push_back(to_id);
-                    }
-                }
+            if base.contains_key(&from) && base.contains_key(&to) {
+                incoming
+                    .entry(to)
+                    .or_default()
+                    .push((etype, weight.value(), from));
             }
         }
 
-        Ok(updated.into_iter().collect())
+        // Working values, initialised to base. The seed is never swept, so it
+        // stays clamped. Sweep order is the downstream ids sorted, for a
+        // deterministic (but order-independent) traversal.
+        let mut val: HashMap<Uuid, f64> = base.clone();
+        let mut order: Vec<Uuid> = downstream
+            .iter()
+            .map(|b| b.id)
+            .filter(|id| *id != seed_id)
+            .collect();
+        order.sort();
+
+        // Fixpoint iteration. Each node aggregates ALL of its incoming edges in
+        // one shot — noisy-OR over SUPPORTS/CAUSES, noisy-AND over DEFEATS — which
+        // is a product and therefore order-independent, reading the current
+        // values of its parents. On a DAG one sweep is exact; cycles converge.
+        let mut converged = false;
+        for _ in 0..MAX_ITERS {
+            let mut max_delta = 0.0_f64;
+            for &v in &order {
+                let b = base[&v];
+                let mut p = b;
+                if let Some(edges_in) = incoming.get(&v) {
+                    let mut support_complement = 1.0_f64; // ∏ supports (1 − w·src)
+                    let mut defeat_factor = 1.0_f64; //      ∏ defeats  (1 − w·src)
+                    for &(etype, w, src) in edges_in {
+                        let s = val[&src];
+                        match etype {
+                            EdgeType::Supports | EdgeType::Causes => {
+                                support_complement *= 1.0 - w * s;
+                            }
+                            EdgeType::Defeats => {
+                                defeat_factor *= 1.0 - w * s;
+                            }
+                            EdgeType::Contradicts => {} // skipped during propagation
+                        }
+                    }
+                    p = 1.0 - (1.0 - b) * support_complement; // noisy-OR onto base
+                    p *= defeat_factor; //                       noisy-AND attenuation
+                }
+                let p = p.clamp(0.0, 1.0);
+                let delta = (p - val[&v]).abs();
+                if delta > max_delta {
+                    max_delta = delta;
+                }
+                val.insert(v, p);
+            }
+            if max_delta < EPS {
+                converged = true;
+                break;
+            }
+        }
+        if !converged {
+            tracing::warn!(
+                subgraph_size = order.len(),
+                "propagate_core hit MAX_ITERS without converging; returning current values"
+            );
+        }
+
+        // Report only nodes whose value actually moved from base (seed excluded).
+        let mut updated: Vec<(Uuid, Probability)> = Vec::new();
+        for &v in &order {
+            let p = val[&v];
+            if (p - base[&v]).abs() > EPS {
+                updated.push((v, Probability::new(p)?));
+            }
+        }
+        Ok(updated)
     }
 
     /// Find all actively contradicting pairs from the contradiction pairs list.
@@ -556,6 +592,110 @@ mod tests {
         assert_eq!(updates.len(), 1);
         let (_, new_conf) = updates[0];
         assert!(new_conf.value() < b.confidence.value());
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 2 — order-independent, fixpoint propagation
+    // ------------------------------------------------------------------
+
+    // RED: re-convergence order-dependence. Graph S→A, S→T, A→T, T→D (all
+    // SUPPORTS, w=1). T has two parents (S, A) AND a child D. Under the old
+    // single-pass BFS, D was computed from T's value at the moment T was popped
+    // — before A's edge had finished raising T — so permuting the edge slice
+    // changed D (0.838 vs 0.974). A well-defined propagation is independent of
+    // edge order.
+    #[test]
+    fn test_propagate_is_order_independent_on_reconvergent_graph() {
+        let s = Belief::new("S".to_string(), 0.8, 0.9).unwrap();
+        let a = Belief::new("A".to_string(), 0.2, 0.9).unwrap();
+        let t = Belief::new("T".to_string(), 0.1, 0.9).unwrap();
+        let d = Belief::new("D".to_string(), 0.1, 0.9).unwrap();
+        let w = prob(1.0);
+        let downstream = vec![a.clone(), t.clone(), d.clone()];
+
+        let order1 = vec![
+            (s.id, t.id, EdgeType::Supports, w),
+            (s.id, a.id, EdgeType::Supports, w),
+            (a.id, t.id, EdgeType::Supports, w),
+            (t.id, d.id, EdgeType::Supports, w),
+        ];
+        let mut order2 = order1.clone();
+        order2.reverse();
+
+        let r1 = engine().propagate_defeat(&s, &downstream, &order1).unwrap();
+        let r2 = engine().propagate_defeat(&s, &downstream, &order2).unwrap();
+
+        let val = |r: &[(uuid::Uuid, Probability)], id: uuid::Uuid| {
+            r.iter().find(|(i, _)| *i == id).map(|(_, p)| p.value())
+        };
+        assert_eq!(val(&r1, d.id), val(&r2, d.id), "D must not depend on edge order");
+        assert_eq!(val(&r1, t.id), val(&r2, t.id), "T must not depend on edge order");
+    }
+
+    // RED: convergence + stability on a cycle. S→A, A→B, B→A (SUPPORTS). The old
+    // single-pass BFS visited each node once and never reached a fixpoint;
+    // feeding its output back in changed it. A correct propagation converges, so
+    // a second propagation from the converged base is stable.
+    #[test]
+    fn test_propagate_converges_and_is_stable_on_cycle() {
+        let s = Belief::new("S".to_string(), 0.9, 0.9).unwrap();
+        let a = Belief::new("A".to_string(), 0.2, 0.9).unwrap();
+        let b = Belief::new("B".to_string(), 0.2, 0.9).unwrap();
+        let w = prob(1.0);
+        let edges = vec![
+            (s.id, a.id, EdgeType::Supports, w),
+            (a.id, b.id, EdgeType::Supports, w),
+            (b.id, a.id, EdgeType::Supports, w),
+        ];
+
+        let r1 = engine()
+            .propagate_defeat(&s, &[a.clone(), b.clone()], &edges)
+            .unwrap();
+
+        // Feed the result back as the new base and propagate again.
+        let mut a2 = a.clone();
+        let mut b2 = b.clone();
+        for (id, p) in &r1 {
+            if *id == a.id { a2.probability = *p; }
+            if *id == b.id { b2.probability = *p; }
+        }
+        let r2 = engine()
+            .propagate_defeat(&s, &[a2.clone(), b2.clone()], &edges)
+            .unwrap();
+
+        let pa1 = r1.iter().find(|(i, _)| *i == a.id).map(|(_, p)| p.value()).unwrap();
+        let pb1 = r1.iter().find(|(i, _)| *i == b.id).map(|(_, p)| p.value()).unwrap();
+        // After convergence the fixpoint impl reports no change, so fall back to
+        // the (already converged) fed-back value.
+        let pa2 = r2.iter().find(|(i, _)| *i == a.id).map(|(_, p)| p.value())
+            .unwrap_or(a2.probability.value());
+        let pb2 = r2.iter().find(|(i, _)| *i == b.id).map(|(_, p)| p.value())
+            .unwrap_or(b2.probability.value());
+
+        assert!((pa1 - pa2).abs() < 1e-9, "A not stable across calls: {pa1} vs {pa2}");
+        assert!((pb1 - pb2).abs() < 1e-9, "B not stable across calls: {pb1} vs {pb2}");
+    }
+
+    // GUARD: a node with two supporters takes the noisy-OR of them onto its base.
+    // S→A, S→B, A→T, B→T (SUPPORTS, w=1): T = 1−(1−0.1)(1−0.84)(1−0.84) ≈ 0.97696.
+    #[test]
+    fn test_propagate_multi_parent_noisy_or() {
+        let s = Belief::new("S".to_string(), 0.8, 0.9).unwrap();
+        let a = Belief::new("A".to_string(), 0.2, 0.9).unwrap();
+        let b = Belief::new("B".to_string(), 0.2, 0.9).unwrap();
+        let t = Belief::new("T".to_string(), 0.1, 0.9).unwrap();
+        let w = prob(1.0);
+        let edges = vec![
+            (s.id, a.id, EdgeType::Supports, w),
+            (s.id, b.id, EdgeType::Supports, w),
+            (a.id, t.id, EdgeType::Supports, w),
+            (b.id, t.id, EdgeType::Supports, w),
+        ];
+        let r = engine()
+            .propagate_defeat(&s, &[a.clone(), b.clone(), t.clone()], &edges)
+            .unwrap();
+        let tp = r.iter().find(|(i, _)| *i == t.id).map(|(_, p)| p.value()).unwrap();
+        assert!((tp - 0.97696).abs() < 1e-6, "T should be the noisy-OR ≈ 0.97696, got {tp}");
     }
 
     // ------------------------------------------------------------------
