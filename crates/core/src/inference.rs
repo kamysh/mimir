@@ -99,7 +99,11 @@ impl InferenceEngine {
         let mut out = Vec::with_capacity(raw.len());
         for (id, (alpha, beta)) in raw {
             let s = alpha + beta;
-            let m = if s > 0.0 { (alpha / s).clamp(0.0, 1.0) } else { 0.5 };
+            let m = if s > 0.0 {
+                (alpha / s).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
             out.push((id, Probability::new(m)?));
         }
         Ok(out)
@@ -136,13 +140,14 @@ impl InferenceEngine {
         const MAX_ITERS: usize = 50;
         const EPS: f64 = 1e-9;
 
-        // Fixed prior (α₀, β₀) and the base mean (for change detection) per
-        // downstream node. The seed carries no prior — it is clamped at its mean.
+        // Fixed prior (α₀, β₀) and the base posterior (α, β) (for change
+        // detection) per downstream node. The seed carries no prior — it is
+        // clamped at its mean.
         let mut prior: HashMap<Uuid, (f64, f64)> = HashMap::new();
-        let mut base_mean: HashMap<Uuid, f64> = HashMap::new();
+        let mut base: HashMap<Uuid, (f64, f64)> = HashMap::new();
         for b in downstream {
             prior.insert(b.id, (b.alpha0, b.beta0));
-            base_mean.insert(b.id, b.probability.value());
+            base.insert(b.id, (b.alpha, b.beta));
         }
 
         // Incoming adjacency keyed by TARGET: target -> [(type, weight, source)].
@@ -233,13 +238,16 @@ impl InferenceEngine {
             );
         }
 
-        // Report only nodes whose mean actually moved from base (seed excluded);
-        // return the DURABLE posterior (α,β) the caller persists.
+        // Report only nodes whose posterior (α,β) actually moved from base
+        // (seed excluded); return the DURABLE (α,β) the caller persists. We
+        // compare the FULL (α,β), not just the mean, so a change that shifts
+        // strength/confidence without moving the mean (balanced support+defeat)
+        // is still persisted.
         let mut updated: Vec<(Uuid, (f64, f64))> = Vec::new();
         for &v in &order {
             let (a, b) = state[&v];
-            let m = mean_of(&state, &v);
-            if (m - base_mean[&v]).abs() > EPS {
+            let (ba, bb) = base[&v];
+            if (a - ba).abs() > EPS || (b - bb).abs() > EPS {
                 updated.push((v, (a, b)));
             }
         }
@@ -277,6 +285,14 @@ impl InferenceEngine {
         now: chrono::DateTime<chrono::Utc>,
         decay_factor: f64,
     ) -> Result<Vec<(Uuid, (f64, f64))>> {
+        // Spec Mimir.Beta ValidDecayFactor: the retention factor's domain is
+        // [0,1]. An out-of-domain factor anti-decays (f>1 pushes (α,β) AWAY from
+        // (1,1)) or is undefined (f<0 ⇒ NaN for non-integer days), so reject it.
+        if !(0.0..=1.0).contains(&decay_factor) {
+            anyhow::bail!(
+                "decay_factor must be in [0,1] (spec Mimir.Beta ValidDecayFactor), got {decay_factor}"
+            );
+        }
         let mut result = Vec::new();
         for belief in beliefs {
             let days = ((now - belief.last_activated_at).num_seconds() as f64 / 86400.0).max(0.0);

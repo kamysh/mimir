@@ -17,6 +17,19 @@ fn esc(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
+/// Guard: Beta counts (and the scalars derived from them) are interpolated into
+/// Cypher as bare numeric literals, so a non-finite f64 would render as `inf`/
+/// `NaN` — invalid Cypher that fails the query opaquely. The spec models α,β as
+/// rationals (always finite); enforce that here before any write.
+fn ensure_finite(label: &str, values: &[(&str, f64)]) -> Result<()> {
+    for &(field, v) in values {
+        if !v.is_finite() {
+            bail!("{label}: {field} must be finite, got {v}");
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // AGE column-based row decoding
 //
@@ -207,6 +220,15 @@ impl AgeStore {
         let beta = belief.beta;
         let alpha0 = belief.alpha0;
         let beta0 = belief.beta0;
+        ensure_finite(
+            "insert_belief",
+            &[
+                ("alpha", alpha),
+                ("beta", beta),
+                ("alpha0", alpha0),
+                ("beta0", beta0),
+            ],
+        )?;
         let created_at = esc(&belief.created_at.to_rfc3339());
         let last_activated_at = esc(&belief.last_activated_at.to_rfc3339());
         let project_prop = match &belief.project {
@@ -333,9 +355,12 @@ $$) {BELIEF_RETURN_COLUMNS}"#
     /// posterior (store-load-round-trip). The pre-Phase-3 scalar setters
     /// `update_belief_probability` / `update_belief_confidence` are RETIRED
     /// (spec Mimir.Graph: "RETIRED SCALAR SETTERS"); this is their replacement.
-    pub async fn update_belief_beta(&self, id: Uuid, alpha: f64, beta: f64) -> Result<()> {
+    /// Build the SET-Cypher for one Beta write, validating finiteness and
+    /// deriving the cached (mean, confidence) from (α, β).
+    fn update_belief_beta_sql(&self, id: Uuid, alpha: f64, beta: f64) -> Result<String> {
         let g = &self.graph_name;
         let id_str = id.to_string();
+        ensure_finite("update_belief_beta", &[("alpha", alpha), ("beta", beta)])?;
         // Derive the cached (mean, confidence) from (α, β) via the canonical
         // mapping. from_stored is the only public path to beta_to_pc.
         let derived = Belief::from_stored(
@@ -351,17 +376,43 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         )?;
         let mean = derived.probability.value();
         let conf = derived.confidence.value();
-        let sql = format!(
+        Ok(format!(
             r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{id: '{id_str}'}})
   SET n.alpha = {alpha}, n.beta = {beta}, n.probability = {mean}, n.confidence = {conf}
   RETURN n.id
 $$) AS (id ag_catalog.agtype)"#
-        );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
-        if rows.is_empty() {
-            bail!("belief {} not found", id);
+        ))
+    }
+
+    pub async fn update_belief_beta(&self, id: Uuid, alpha: f64, beta: f64) -> Result<()> {
+        self.update_beliefs_beta(&[(id, alpha, beta)]).await
+    }
+
+    /// Persist a batch of Beta posteriors ATOMICALLY: all writes commit in a
+    /// single transaction or none do (spec Mimir.Beta: belief state is written
+    /// only via the Beta posterior; a propagation/decay sweep must not leave the
+    /// graph half-updated). Used by propagate_from and decay_beliefs.
+    pub async fn update_beliefs_beta(&self, updates: &[(Uuid, f64, f64)]) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
         }
+        // Build all statements first so a finiteness/derivation error aborts
+        // before any write is issued.
+        let mut stmts = Vec::with_capacity(updates.len());
+        for &(id, alpha, beta) in updates {
+            stmts.push((id, self.update_belief_beta_sql(id, alpha, beta)?));
+        }
+        let mut tx = self.pool.begin().await?;
+        for (id, sql) in &stmts {
+            let rows = sqlx::query(sql).fetch_all(&mut *tx).await?;
+            if rows.is_empty() {
+                // Belief missing — roll the whole sweep back (tx dropped on early
+                // return without commit).
+                bail!("belief {} not found", id);
+            }
+        }
+        tx.commit().await?;
         Ok(())
     }
 
