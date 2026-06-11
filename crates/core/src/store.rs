@@ -45,15 +45,43 @@ fn belief_from_row(row: &sqlx::postgres::PgRow) -> Result<Belief> {
     let last_activated_at =
         DateTime::parse_from_rfc3339(&last_activated_str)?.with_timezone(&chrono::Utc);
 
-    Ok(Belief {
+    // Beta state: read α/β/α₀/β₀ if present (post-migration 005), else derive
+    // them from the stored (probability, confidence) via the prior mapping.
+    // prior_from is exact, so a pre-migration row loads with mean == probability.
+    let alpha: Option<f64> = row
+        .try_get::<String, _>("alpha")
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let beta: Option<f64> = row
+        .try_get::<String, _>("beta")
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let alpha0: Option<f64> = row
+        .try_get::<String, _>("alpha0")
+        .ok()
+        .and_then(|s| s.parse().ok());
+    let beta0: Option<f64> = row
+        .try_get::<String, _>("beta0")
+        .ok()
+        .and_then(|s| s.parse().ok());
+
+    let (derived_a0, derived_b0) = crate::graph::prior_from(probability, confidence);
+    let alpha0 = alpha0.unwrap_or(derived_a0);
+    let beta0 = beta0.unwrap_or(derived_b0);
+    let alpha = alpha.unwrap_or(alpha0);
+    let beta = beta.unwrap_or(beta0);
+
+    Belief::from_stored(
         id,
         content,
-        probability: Probability::new(probability)?,
-        confidence: Probability::new(confidence)?,
+        alpha,
+        beta,
+        alpha0,
+        beta0,
         created_at,
         last_activated_at,
         project,
-    })
+    )
 }
 
 /// Decode a `Pattern` from a sqlx row with columns:

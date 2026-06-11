@@ -97,14 +97,22 @@ impl InferenceEngine {
         self.propagate_core(target_id, value, downstream, &surgical)
     }
 
-    /// Shared fixpoint propagation core. `seed_id`/`seed_prob` is the changed
-    /// (or clamped) node, held fixed; `edges` is the edge set to follow, already
-    /// filtered by the caller (`propagate_defeat` passes every edge; `intervene`
-    /// passes only the surgical CAUSES set). Snapshots every node's probability,
-    /// then iterates to a fixpoint: each node aggregates ALL of its incoming
-    /// edges in one shot (noisy-OR over SUPPORTS/CAUSES, noisy-AND over DEFEATS).
-    /// Because the aggregation is a product it is order-independent. Bounded by
-    /// MAX_ITERS; pure, never writes to the store.
+    /// Shared fixpoint propagation core (Phase 3: Bayesian conjugate
+    /// accumulation in Beta `(α, β)` space). `seed_id`/`seed_prob` is the changed
+    /// (or clamped) node, held fixed at mean `seed_prob`; `edges` is the edge set
+    /// to follow, already filtered by the caller (`propagate_defeat` passes every
+    /// edge; `intervene` passes only the surgical CAUSES set).
+    ///
+    /// Each downstream node's posterior is re-derived from its FIXED prior
+    /// `(α₀, β₀)` plus evidence accumulated from its parents:
+    ///   α = α₀ + Σ_{support/causes} w·μ_src·UNIT,
+    ///   β = β₀ + Σ_{defeat}        w·μ_src·UNIT,
+    /// and its mean μ = α/(α+β). Because the accumulation is a SUM it is
+    /// order-independent (spec: `Mimir.Beta.accumulate-↭`), and because the
+    /// posterior is re-derived from the prior (never folded into a mutated
+    /// scalar) propagation is idempotent. Iterated to a fixpoint, bounded by
+    /// MAX_ITERS. Pure; never writes to the store. Returns the new MEAN per
+    /// changed node (the caller persists either the mean or the full `(α, β)`).
     fn propagate_core(
         &self,
         seed_id: Uuid,
@@ -119,19 +127,21 @@ impl InferenceEngine {
         const MAX_ITERS: usize = 50;
         const EPS: f64 = 1e-9;
 
-        // Snapshot every node's probability at pass start. Downstream first, then
-        // the seed, so the seed's clamped value always wins and is held fixed.
-        let mut base: HashMap<Uuid, f64> = HashMap::new();
+        // Fixed prior (α₀, β₀) and the base mean (for change detection) per
+        // downstream node. The seed carries no prior — it is clamped at its mean.
+        let mut prior: HashMap<Uuid, (f64, f64)> = HashMap::new();
+        let mut base_mean: HashMap<Uuid, f64> = HashMap::new();
         for b in downstream {
-            base.insert(b.id, b.probability.value());
+            prior.insert(b.id, (b.alpha0, b.beta0));
+            base_mean.insert(b.id, b.probability.value());
         }
-        base.insert(seed_id, seed_prob.value());
 
         // Incoming adjacency keyed by TARGET: target -> [(type, weight, source)].
-        // Only edges with both endpoints in the snapshot can contribute.
+        // Only edges whose source is in scope (seed or downstream) contribute.
+        let in_scope = |id: &Uuid| *id == seed_id || prior.contains_key(id);
         let mut incoming: HashMap<Uuid, Vec<(EdgeType, f64, Uuid)>> = HashMap::new();
         for &(from, to, etype, weight) in edges {
-            if base.contains_key(&from) && base.contains_key(&to) {
+            if in_scope(&from) && prior.contains_key(&to) {
                 incoming
                     .entry(to)
                     .or_default()
@@ -139,10 +149,12 @@ impl InferenceEngine {
             }
         }
 
-        // Working values, initialised to base. The seed is never swept, so it
-        // stays clamped. Sweep order is the downstream ids sorted, for a
-        // deterministic (but order-independent) traversal.
-        let mut val: HashMap<Uuid, f64> = base.clone();
+        // Working mean per node; the seed stays clamped at seed_prob.
+        let mut mean: HashMap<Uuid, f64> = HashMap::new();
+        mean.insert(seed_id, seed_prob.value());
+        for b in downstream {
+            mean.insert(b.id, b.probability.value());
+        }
         let mut order: Vec<Uuid> = downstream
             .iter()
             .map(|b| b.id)
@@ -150,40 +162,38 @@ impl InferenceEngine {
             .collect();
         order.sort();
 
-        // Fixpoint iteration. Each node aggregates ALL of its incoming edges in
-        // one shot — noisy-OR over SUPPORTS/CAUSES, noisy-AND over DEFEATS — which
-        // is a product and therefore order-independent, reading the current
-        // values of its parents. On a DAG one sweep is exact; cycles converge.
+        // Fixpoint: each node re-derives (α,β) from its prior plus the summed
+        // per-parent evidence, reading the current parent means. Sum ⇒
+        // order-independent; re-derived ⇒ idempotent. DAG: one sweep is exact;
+        // cycles converge.
         let mut converged = false;
         for _ in 0..MAX_ITERS {
             let mut max_delta = 0.0_f64;
             for &v in &order {
-                let b = base[&v];
-                let mut p = b;
+                let (a0, b0) = prior[&v];
+                let mut alpha = a0;
+                let mut beta = b0;
                 if let Some(edges_in) = incoming.get(&v) {
-                    let mut support_complement = 1.0_f64; // ∏ supports (1 − w·src)
-                    let mut defeat_factor = 1.0_f64; //      ∏ defeats  (1 − w·src)
                     for &(etype, w, src) in edges_in {
-                        let s = val[&src];
+                        let delta = w * mean[&src] * crate::graph::EVIDENCE_UNIT;
                         match etype {
-                            EdgeType::Supports | EdgeType::Causes => {
-                                support_complement *= 1.0 - w * s;
-                            }
-                            EdgeType::Defeats => {
-                                defeat_factor *= 1.0 - w * s;
-                            }
+                            EdgeType::Supports | EdgeType::Causes => alpha += delta,
+                            EdgeType::Defeats => beta += delta,
                             EdgeType::Contradicts => {} // skipped during propagation
                         }
                     }
-                    p = 1.0 - (1.0 - b) * support_complement; // noisy-OR onto base
-                    p *= defeat_factor; //                       noisy-AND attenuation
                 }
-                let p = p.clamp(0.0, 1.0);
-                let delta = (p - val[&v]).abs();
+                let s = alpha + beta;
+                let m = if s > 0.0 {
+                    (alpha / s).clamp(0.0, 1.0)
+                } else {
+                    0.5
+                };
+                let delta = (m - mean[&v]).abs();
                 if delta > max_delta {
                     max_delta = delta;
                 }
-                val.insert(v, p);
+                mean.insert(v, m);
             }
             if max_delta < EPS {
                 converged = true;
@@ -197,12 +207,12 @@ impl InferenceEngine {
             );
         }
 
-        // Report only nodes whose value actually moved from base (seed excluded).
+        // Report only nodes whose mean actually moved from base (seed excluded).
         let mut updated: Vec<(Uuid, Probability)> = Vec::new();
         for &v in &order {
-            let p = val[&v];
-            if (p - base[&v]).abs() > EPS {
-                updated.push((v, Probability::new(p)?));
+            let m = mean[&v];
+            if (m - base_mean[&v]).abs() > EPS {
+                updated.push((v, Probability::new(m)?));
             }
         }
         Ok(updated)
@@ -462,9 +472,13 @@ mod tests {
             .iter()
             .find(|(id, _)| *id == target.id)
             .map(|(_, p)| p.value());
-        // 0.7 × (1 - 1.0 × 0.8) = 0.7 × 0.2 = 0.14
+        // Conjugate Beta: target prior (p=0.7,c=0.8) ⇒ κ=160.4, (α₀,β₀)=(112.28,48.12).
+        // Defeat from seed (μ=0.8, w=1): β += w·μ·UNIT = 3.2 ⇒ mean 112.28/163.6 ≈ 0.68631.
+        // The strong prior moves only slightly per evidence unit, but it DECREASES.
         assert!(new_prob.is_some());
-        assert!((new_prob.unwrap() - 0.14).abs() < 1e-9);
+        let m = new_prob.unwrap();
+        assert!(m < 0.7, "defeat must decrease the mean, got {m}");
+        assert!((m - 0.686_308).abs() < 1e-4, "got {m}");
     }
 
     #[test]
@@ -535,8 +549,9 @@ mod tests {
             b_lo, b_hi,
             "B's projection must not depend on A (parent of T)"
         );
-        // B = boost(0.3, 1.0, 0.5) = 0.3 + 0.7 × 0.5 × 1.0 = 0.65
-        assert!((b_lo.unwrap() - 0.65).abs() < 1e-9);
+        // Conjugate Beta: B prior (p=0.3,c=0.9) ⇒ κ=180.2, (α₀,β₀)=(54.06,126.14).
+        // do(T=1.0) feeds CAUSES w=0.5: α += w·μ_T·UNIT = 2.0 ⇒ mean 56.06/182.2 ≈ 0.30763.
+        assert!((b_lo.unwrap() - 0.307_629).abs() < 1e-4);
     }
 
     // Test 2: only CAUSES edges are followed. Graph T -SUPPORTS-> B.
@@ -758,10 +773,11 @@ mod tests {
         );
     }
 
-    // GUARD: a node with two supporters takes the noisy-OR of them onto its base.
-    // S→A, S→B, A→T, B→T (SUPPORTS, w=1): T = 1−(1−0.1)(1−0.84)(1−0.84) ≈ 0.97696.
+    // A node with two supporters accumulates conjugate evidence from both.
+    // S→A, S→B, A→T, B→T (SUPPORTS, w=1). Strong priors (c=0.9 ⇒ κ=180.2) move the
+    // mean only modestly, but T rises above its base 0.1.
     #[test]
-    fn test_propagate_multi_parent_noisy_or() {
+    fn test_propagate_multi_parent_conjugate() {
         let s = Belief::new("S".to_string(), 0.8, 0.9).unwrap();
         let a = Belief::new("A".to_string(), 0.2, 0.9).unwrap();
         let b = Belief::new("B".to_string(), 0.2, 0.9).unwrap();
@@ -782,9 +798,10 @@ mod tests {
             .map(|(_, p)| p.value())
             .unwrap();
         assert!(
-            (tp - 0.97696).abs() < 1e-6,
-            "T should be the noisy-OR ≈ 0.97696, got {tp}"
+            tp > 0.1,
+            "two supporters must raise T above base 0.1, got {tp}"
         );
+        assert!((tp - 0.1085).abs() < 2e-3, "got {tp}");
     }
 
     // ------------------------------------------------------------------
