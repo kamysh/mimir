@@ -1179,15 +1179,23 @@ $$) AS (v ag_catalog.agtype)"#
         Ok(())
     }
 
-    /// Returns all Belief nodes reachable from `start_id` via SUPPORTS or CAUSES edges.
+    /// Returns all Belief nodes reachable from `start_id` via PROPAGATION edges
+    /// (SUPPORTS, CAUSES, or DEFEATS) — the propagation recompute set.
     ///
-    /// AGE 1.x does not support the `[:A|B]` relationship-type OR syntax, so we use
-    /// two separate MATCH clauses combined with UNION inside the Cypher block.
+    /// Spec Mimir.Graph (propagation scope): the set is the UNBOUNDED transitive
+    /// closure under SUPPORTS ∪ CAUSES ∪ DEFEATS (`Reaches` / `reaches-closed`),
+    /// so a bare S→DEFEATS→T reaches T (`defeat-target-is-reached`) and no
+    /// affected descendant is excluded by a depth cap. CONTRADICTS is excluded
+    /// (it is detected, never propagated).
+    ///
+    /// AGE 1.x has no `[:A|B|C]` relationship-type OR syntax, so three MATCH
+    /// clauses are UNION'd; `*1..` is the unbounded variable-length path (length
+    /// ≥ 1, so the seed itself is excluded; AGE's VLE does not revisit a node
+    /// within one path, so cycles terminate).
     pub async fn get_downstream_beliefs(&self, start_id: Uuid) -> Result<Vec<Belief>> {
         let g = &self.graph_name;
         let id_str = start_id.to_string();
 
-        // Two-query UNION approach: SUPPORTS paths + CAUSES paths.
         let sql = format!(
             r#"SELECT
   id::text,
@@ -1202,10 +1210,13 @@ $$) AS (v ag_catalog.agtype)"#
   last_activated_at::text,
   project::text
 FROM ag_catalog.cypher('{g}', $$
-  MATCH (s:Belief {{id: '{id_str}'}})-[:SUPPORTS*1..10]->(n:Belief)
+  MATCH (s:Belief {{id: '{id_str}'}})-[:SUPPORTS*1..]->(n:Belief)
   RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
   UNION
-  MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES*1..10]->(n:Belief)
+  MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES*1..]->(n:Belief)
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
+  UNION
+  MATCH (s:Belief {{id: '{id_str}'}})-[:DEFEATS*1..]->(n:Belief)
   RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
