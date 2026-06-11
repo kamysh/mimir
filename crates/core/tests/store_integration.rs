@@ -666,3 +666,43 @@ async fn test_propagate_preserves_out_of_subgraph_evidence() {
         let _ = svc.delete_belief(id).await;
     }
 }
+
+// REGRESSION (spec Mimir.Graph propagation scope / defeat-target-is-reached):
+// a bare S -DEFEATS-> T (T otherwise unconnected) must LOWER T's mean. Before
+// the propagation-scope fix, get_downstream_beliefs followed only SUPPORTS/CAUSES,
+// so T was never in the recompute set and the defeat was inert.
+#[tokio::test]
+async fn test_bare_defeat_lowers_target() {
+    let s = store().await;
+    let svc = service().await;
+
+    let seed = Belief::new(format!("defS-{}", Uuid::new_v4()), 0.9, 0.9).unwrap();
+    let t = Belief::new(format!("defT-{}", Uuid::new_v4()), 0.6, 0.5).unwrap();
+    s.insert_belief(&seed).await.unwrap();
+    s.insert_belief(&t).await.unwrap();
+    let t_beta0 = t.beta;
+    let t_mean0 = t.probability.value();
+
+    // add_edge(DEFEATS) auto-triggers propagate_from(seed). T is reachable from
+    // seed ONLY via this DEFEATS edge — the previously-inert case.
+    svc.add_edge(seed.id, t.id, EdgeType::Defeats, 1.0)
+        .await
+        .unwrap();
+
+    let got = s.get_belief(t.id).await.unwrap().unwrap();
+    // Defeat adds to β (spec defeat-anti): β grew, mean dropped below its base.
+    assert!(
+        got.beta > t_beta0 + 1e-9,
+        "defeat must raise T's β: β0={t_beta0}, after={}",
+        got.beta
+    );
+    assert!(
+        got.probability.value() < t_mean0 - 1e-9,
+        "defeat must lower T's mean: m0={t_mean0}, after={}",
+        got.probability.value()
+    );
+
+    for id in [seed.id, t.id] {
+        let _ = svc.delete_belief(id).await;
+    }
+}
