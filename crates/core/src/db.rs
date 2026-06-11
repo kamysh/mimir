@@ -18,8 +18,8 @@ const SEARCH_PATH: &str = "public,ag_catalog";
 /// intentionally avoided: new() runs apply_pgpass() at construction time with
 /// OS-default values before any builder fields are applied.
 fn pg_url(cfg: &DatabaseConfig) -> Result<String> {
-    let mut url = url::Url::parse("postgres://placeholder/placeholder")
-        .expect("static URL is valid");
+    let mut url =
+        url::Url::parse("postgres://placeholder/placeholder").expect("static URL is valid");
     url.set_username(&cfg.user)
         .map_err(|()| anyhow::anyhow!("invalid postgres username: {:?}", cfg.user))?;
     url.set_host(Some(&cfg.host))
@@ -35,11 +35,11 @@ fn pg_url(cfg: &DatabaseConfig) -> Result<String> {
 
 pub async fn connect(cfg: &DatabaseConfig) -> Result<PgPool> {
     let ssl_mode = match cfg.ssl_mode {
-        SslMode::Disable    => PgSslMode::Disable,
-        SslMode::Allow      => PgSslMode::Allow,
-        SslMode::Prefer     => PgSslMode::Prefer,
-        SslMode::Require    => PgSslMode::Require,
-        SslMode::VerifyCa   => PgSslMode::VerifyCa,
+        SslMode::Disable => PgSslMode::Disable,
+        SslMode::Allow => PgSslMode::Allow,
+        SslMode::Prefer => PgSslMode::Prefer,
+        SslMode::Require => PgSslMode::Require,
+        SslMode::VerifyCa => PgSslMode::VerifyCa,
         SslMode::VerifyFull => PgSslMode::VerifyFull,
     };
 

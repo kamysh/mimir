@@ -10,8 +10,8 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use config::Config;
-use documents::{QueryResult, parse_markdown};
-use embed::{EmbeddingProvider, make_backend};
+use documents::{parse_markdown, QueryResult};
+use embed::{make_backend, EmbeddingProvider};
 use graph::{Belief, EdgeType, Pattern, Probability};
 use inference::InferenceEngine;
 use store::AgeStore;
@@ -34,11 +34,11 @@ fn weighted_rrf(lists: &[(&[Uuid], f32)]) -> std::collections::HashMap<Uuid, f32
 }
 
 pub struct MimirStats {
-    pub beliefs:    usize,
-    pub patterns:   usize,
-    pub supports:   usize,
-    pub defeats:    usize,
-    pub causes:     usize,
+    pub beliefs: usize,
+    pub patterns: usize,
+    pub supports: usize,
+    pub defeats: usize,
+    pub causes: usize,
     /// Raw directed-edge count.  CONTRADICTS is stored bidirectionally,
     /// so logical pairs = contradicts / 2.
     pub contradicts: usize,
@@ -119,7 +119,9 @@ impl MimirService {
     /// CLI to backfill existing beliefs.
     pub async fn embed_and_store_belief(&self, belief: &Belief) -> Result<()> {
         if let Some(embedder) = &self.embeddings {
-            let mut vecs = embedder.embed(&[belief.content.clone()]).await?;
+            let mut vecs = embedder
+                .embed(std::slice::from_ref(&belief.content))
+                .await?;
             if let Some(v) = vecs.pop() {
                 self.store.insert_belief_embedding(belief.id, &v).await?;
             }
@@ -228,7 +230,9 @@ impl MimirService {
         // Load edges among the subgraph
         let edges = self.store.get_edges_among(&ids).await?;
 
-        let updates = self.inference.propagate_defeat(&seed, &downstream, &edges)?;
+        let updates = self
+            .inference
+            .propagate_defeat(&seed, &downstream, &edges)?;
         for (id, prob) in &updates {
             self.store.update_belief_probability(*id, *prob).await?;
         }
@@ -254,7 +258,8 @@ impl MimirService {
         ids.push(target_id);
         let edges = self.store.get_edges_among(&ids).await?;
         // No writeback — this is a hypothetical projection.
-        self.inference.intervene(target_id, value, &downstream, &edges)
+        self.inference
+            .intervene(target_id, value, &downstream, &edges)
     }
 
     /// Get active contradictions in the graph.
@@ -427,11 +432,15 @@ impl MimirService {
         const W_TOKEN: f32 = 0.3;
         const W_PRIOR: f32 = 0.1;
         // Prior list: the candidate set ranked by probability descending.
-        let prob_of: std::collections::HashMap<Uuid, f64> =
-            matched.iter().map(|b| (b.id, b.probability.value())).collect();
+        let prob_of: std::collections::HashMap<Uuid, f64> = matched
+            .iter()
+            .map(|b| (b.id, b.probability.value()))
+            .collect();
         let mut prior_ranked: Vec<Uuid> = matched.iter().map(|b| b.id).collect();
         prior_ranked.sort_by(|a, b| {
-            prob_of[b].partial_cmp(&prob_of[a]).unwrap_or(std::cmp::Ordering::Equal)
+            prob_of[b]
+                .partial_cmp(&prob_of[a])
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         let fused = weighted_rrf(&[
             (vector_ranked.as_slice(), W_VECTOR),
@@ -457,15 +466,10 @@ impl MimirService {
     /// Parse a markdown file into chunks, embed each one, and store in AGE +
     /// chunk_embeddings.  Replaces any existing chunks for the same path.
     /// Returns the number of chunks loaded.
-    pub async fn load_document(
-        &self,
-        path: &str,
-        project: Option<&str>,
-    ) -> Result<usize> {
-        let embedder = self
-            .embeddings
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("embeddings not configured — add [embeddings] to config.toml"))?;
+    pub async fn load_document(&self, path: &str, project: Option<&str>) -> Result<usize> {
+        let embedder = self.embeddings.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("embeddings not configured — add [embeddings] to config.toml")
+        })?;
 
         let text = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("cannot read {}: {}", path, e))?;
@@ -484,7 +488,9 @@ impl MimirService {
 
         for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
             self.store.insert_document_chunk(chunk).await?;
-            self.store.insert_chunk_embedding(chunk.id, embedding).await?;
+            self.store
+                .insert_chunk_embedding(chunk.id, embedding)
+                .await?;
         }
         Ok(count)
     }
@@ -509,10 +515,9 @@ impl MimirService {
         project: Option<&str>,
         limit: usize,
     ) -> Result<Vec<QueryResult>> {
-        let embedder = self
-            .embeddings
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("embeddings not configured — add [embeddings] to config.toml"))?;
+        let embedder = self.embeddings.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("embeddings not configured — add [embeddings] to config.toml")
+        })?;
 
         let mut vecs = embedder.embed(&[context.to_string()]).await?;
         let query_vec = if vecs.is_empty() {
@@ -528,11 +533,7 @@ impl MimirService {
 
         let chunk_ids = self
             .store
-            .query_chunks_by_vector(
-                &query_vec,
-                limit,
-                filter_ids.as_deref(),
-            )
+            .query_chunks_by_vector(&query_vec, limit, filter_ids.as_deref())
             .await?;
 
         let mut results = Vec::with_capacity(chunk_ids.len());
@@ -542,11 +543,7 @@ impl MimirService {
             };
             let parent_content = match chunk.parent_id {
                 None => None,
-                Some(pid) => self
-                    .store
-                    .get_chunk_by_id(pid)
-                    .await?
-                    .map(|p| p.content),
+                Some(pid) => self.store.get_chunk_by_id(pid).await?.map(|p| p.content),
             };
             results.push(QueryResult {
                 id: chunk.id.to_string(),
@@ -623,7 +620,10 @@ impl MimirService {
         let mut by_belief: std::collections::HashMap<Uuid, Vec<(Uuid, f64)>> =
             std::collections::HashMap::new();
         for (belief_id, chunk_id, weight) in ev {
-            by_belief.entry(belief_id).or_default().push((chunk_id, weight));
+            by_belief
+                .entry(belief_id)
+                .or_default()
+                .push((chunk_id, weight));
         }
 
         // Cache chunk lookups so a chunk grounding several beliefs is fetched once.
@@ -641,15 +641,21 @@ impl MimirService {
                     entries.truncate(evidence_per_belief);
                 }
                 for (chunk_id, weight) in entries {
-                    if !chunk_cache.contains_key(&chunk_id) {
-                        let r = self.store.get_chunk_by_id(chunk_id).await?.map(|c| EvidenceRef {
-                            chunk_id,
-                            document_path: c.document_path,
-                            section_path: c.section_path,
-                            snippet: c.content.trim().to_string(),
-                            weight,
-                        });
-                        chunk_cache.insert(chunk_id, r);
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        chunk_cache.entry(chunk_id)
+                    {
+                        let r = self
+                            .store
+                            .get_chunk_by_id(chunk_id)
+                            .await?
+                            .map(|c| EvidenceRef {
+                                chunk_id,
+                                document_path: c.document_path,
+                                section_path: c.section_path,
+                                snippet: c.content.trim().to_string(),
+                                weight,
+                            });
+                        e.insert(r);
                     }
                     if let Some(base) = chunk_cache.get(&chunk_id).and_then(|o| o.clone()) {
                         // Reuse the cached chunk metadata but keep this edge's weight.
@@ -657,17 +663,27 @@ impl MimirService {
                     }
                 }
             }
-            out.push(GroundedBelief { belief, evidence: refs });
+            out.push(GroundedBelief {
+                belief,
+                evidence: refs,
+            });
         }
         Ok(out)
     }
 
     /// Collect graph statistics.
     pub async fn stats(&self) -> Result<MimirStats> {
-        let beliefs  = self.store.count_beliefs().await?;
+        let beliefs = self.store.count_beliefs().await?;
         let patterns = self.store.count_patterns().await?;
         let (supports, defeats, causes, contradicts) = self.store.count_edges().await?;
-        Ok(MimirStats { beliefs, patterns, supports, defeats, causes, contradicts })
+        Ok(MimirStats {
+            beliefs,
+            patterns,
+            supports,
+            defeats,
+            causes,
+            contradicts,
+        })
     }
 
     /// Update the confidence value of a belief.

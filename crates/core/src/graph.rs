@@ -104,8 +104,12 @@ impl EdgeType {
             Self::Contradicts => "CONTRADICTS",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+impl std::str::FromStr for EdgeType {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
         match s {
             "SUPPORTS" => Ok(Self::Supports),
             "DEFEATS" => Ok(Self::Defeats),
@@ -139,6 +143,7 @@ impl Edge {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::str::FromStr;
 
     // ------------------------------------------------------------------
     // Probability — unit tests
@@ -233,7 +238,10 @@ mod tests {
 
     #[test]
     fn edge_type_contradicts_roundtrip() {
-        assert_eq!(EdgeType::from_str("CONTRADICTS").unwrap(), EdgeType::Contradicts);
+        assert_eq!(
+            EdgeType::from_str("CONTRADICTS").unwrap(),
+            EdgeType::Contradicts
+        );
         assert_eq!(EdgeType::Contradicts.as_str(), "CONTRADICTS");
     }
 

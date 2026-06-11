@@ -37,7 +37,12 @@ impl InferenceEngine {
     /// Apply time decay to a single probability value.
     /// P_new = P × decay_factor^days_since_activation
     /// decay_factor ∈ (0, 1]: a value of 0.99 means ~1% decay per day.
-    pub fn apply_decay(&self, prob: Probability, days_since_activation: f64, decay_factor: f64) -> Result<Probability> {
+    pub fn apply_decay(
+        &self,
+        prob: Probability,
+        days_since_activation: f64,
+        decay_factor: f64,
+    ) -> Result<Probability> {
         let result = prob.value() * decay_factor.powf(days_since_activation);
         Probability::new(result.clamp(0.0, 1.0))
     }
@@ -271,34 +276,44 @@ mod tests {
     #[test]
     fn test_attenuate_by_defeat() {
         // P=0.8, defeater=0.5, w=1.0 → 0.8 × (1 - 1.0 × 0.5) = 0.4
-        let r = engine().attenuate_by_defeat(prob(0.8), prob(0.5), prob(1.0)).unwrap();
+        let r = engine()
+            .attenuate_by_defeat(prob(0.8), prob(0.5), prob(1.0))
+            .unwrap();
         assert!((r.value() - 0.4).abs() < 1e-9, "got {}", r.value());
     }
 
     #[test]
     fn test_attenuate_weight_zero_is_identity() {
         // weight=0 → no defeat effect
-        let r = engine().attenuate_by_defeat(prob(0.7), prob(0.9), prob(0.0)).unwrap();
+        let r = engine()
+            .attenuate_by_defeat(prob(0.7), prob(0.9), prob(0.0))
+            .unwrap();
         assert!((r.value() - 0.7).abs() < 1e-12);
     }
 
     #[test]
     fn test_attenuate_defeater_zero_is_identity() {
         // defeater prob=0 → no effect regardless of weight
-        let r = engine().attenuate_by_defeat(prob(0.7), prob(0.0), prob(1.0)).unwrap();
+        let r = engine()
+            .attenuate_by_defeat(prob(0.7), prob(0.0), prob(1.0))
+            .unwrap();
         assert!((r.value() - 0.7).abs() < 1e-12);
     }
 
     #[test]
     fn test_attenuate_full_defeat() {
         // defeater=1, weight=1 → target × (1 - 1) = 0
-        let r = engine().attenuate_by_defeat(prob(0.8), prob(1.0), prob(1.0)).unwrap();
+        let r = engine()
+            .attenuate_by_defeat(prob(0.8), prob(1.0), prob(1.0))
+            .unwrap();
         assert!((r.value() - 0.0).abs() < 1e-12);
     }
 
     #[test]
     fn test_attenuate_never_increases_concrete() {
-        let r = engine().attenuate_by_defeat(prob(0.6), prob(0.4), prob(0.5)).unwrap();
+        let r = engine()
+            .attenuate_by_defeat(prob(0.6), prob(0.4), prob(0.5))
+            .unwrap();
         // 0.6 × (1 - 0.5 × 0.4) = 0.6 × 0.8 = 0.48
         assert!(r.value() <= 0.6 + 1e-12);
         assert!((r.value() - 0.48).abs() < 1e-9);
@@ -311,32 +326,42 @@ mod tests {
     #[test]
     fn test_boost_by_support() {
         // P=0.3, supporter=0.8, w=0.5 → 0.3 + 0.7 × 0.5 × 0.8 = 0.58
-        let r = engine().boost_by_support(prob(0.3), prob(0.8), prob(0.5)).unwrap();
+        let r = engine()
+            .boost_by_support(prob(0.3), prob(0.8), prob(0.5))
+            .unwrap();
         assert!((r.value() - 0.58).abs() < 1e-9, "got {}", r.value());
     }
 
     #[test]
     fn test_boost_weight_zero_is_identity() {
-        let r = engine().boost_by_support(prob(0.4), prob(0.9), prob(0.0)).unwrap();
+        let r = engine()
+            .boost_by_support(prob(0.4), prob(0.9), prob(0.0))
+            .unwrap();
         assert!((r.value() - 0.4).abs() < 1e-12);
     }
 
     #[test]
     fn test_boost_supporter_zero_is_identity() {
-        let r = engine().boost_by_support(prob(0.4), prob(0.0), prob(1.0)).unwrap();
+        let r = engine()
+            .boost_by_support(prob(0.4), prob(0.0), prob(1.0))
+            .unwrap();
         assert!((r.value() - 0.4).abs() < 1e-12);
     }
 
     #[test]
     fn test_boost_target_at_one_stays_one() {
         // target=1.0: 1 + (1-1) × w × s = 1
-        let r = engine().boost_by_support(prob(1.0), prob(0.9), prob(0.9)).unwrap();
+        let r = engine()
+            .boost_by_support(prob(1.0), prob(0.9), prob(0.9))
+            .unwrap();
         assert!((r.value() - 1.0).abs() < 1e-12);
     }
 
     #[test]
     fn test_boost_never_decreases_concrete() {
-        let r = engine().boost_by_support(prob(0.5), prob(0.6), prob(0.7)).unwrap();
+        let r = engine()
+            .boost_by_support(prob(0.5), prob(0.6), prob(0.7))
+            .unwrap();
         assert!(r.value() >= 0.5 - 1e-12);
     }
 
@@ -430,8 +455,13 @@ mod tests {
         let edges = vec![(seed.id, target.id, EdgeType::Defeats, w)];
         let downstream = vec![target.clone()];
 
-        let updates = engine().propagate_defeat(&seed, &downstream, &edges).unwrap();
-        let new_prob = updates.iter().find(|(id, _)| *id == target.id).map(|(_, p)| p.value());
+        let updates = engine()
+            .propagate_defeat(&seed, &downstream, &edges)
+            .unwrap();
+        let new_prob = updates
+            .iter()
+            .find(|(id, _)| *id == target.id)
+            .map(|(_, p)| p.value());
         // 0.7 × (1 - 1.0 × 0.8) = 0.7 × 0.2 = 0.14
         assert!(new_prob.is_some());
         assert!((new_prob.unwrap() - 0.14).abs() < 1e-9);
@@ -445,8 +475,13 @@ mod tests {
         let edges = vec![(seed.id, target.id, EdgeType::Supports, w)];
         let downstream = vec![target.clone()];
 
-        let updates = engine().propagate_defeat(&seed, &downstream, &edges).unwrap();
-        let new_prob = updates.iter().find(|(id, _)| *id == target.id).map(|(_, p)| p.value());
+        let updates = engine()
+            .propagate_defeat(&seed, &downstream, &edges)
+            .unwrap();
+        let new_prob = updates
+            .iter()
+            .find(|(id, _)| *id == target.id)
+            .map(|(_, p)| p.value());
         // 0.3 + (1-0.3) × 0.5 × 0.8 = 0.3 + 0.28 = 0.58
         assert!(new_prob.is_some());
         assert!(new_prob.unwrap() > 0.3);
@@ -480,13 +515,26 @@ mod tests {
             (t.id, b.id, EdgeType::Causes, w),
         ];
 
-        let lo = engine().intervene(t.id, clamp, &downstream, &edges_lo).unwrap();
-        let hi = engine().intervene(t.id, clamp, &downstream, &edges_hi).unwrap();
+        let lo = engine()
+            .intervene(t.id, clamp, &downstream, &edges_lo)
+            .unwrap();
+        let hi = engine()
+            .intervene(t.id, clamp, &downstream, &edges_hi)
+            .unwrap();
 
-        let b_lo = lo.iter().find(|(id, _)| *id == b.id).map(|(_, p)| p.value());
-        let b_hi = hi.iter().find(|(id, _)| *id == b.id).map(|(_, p)| p.value());
+        let b_lo = lo
+            .iter()
+            .find(|(id, _)| *id == b.id)
+            .map(|(_, p)| p.value());
+        let b_hi = hi
+            .iter()
+            .find(|(id, _)| *id == b.id)
+            .map(|(_, p)| p.value());
         assert!(b_lo.is_some(), "B should be updated through T");
-        assert_eq!(b_lo, b_hi, "B's projection must not depend on A (parent of T)");
+        assert_eq!(
+            b_lo, b_hi,
+            "B's projection must not depend on A (parent of T)"
+        );
         // B = boost(0.3, 1.0, 0.5) = 0.3 + 0.7 × 0.5 × 1.0 = 0.65
         assert!((b_lo.unwrap() - 0.65).abs() < 1e-9);
     }
@@ -503,7 +551,9 @@ mod tests {
         let downstream = vec![b.clone()];
         let edges = vec![(t.id, b.id, EdgeType::Supports, w)];
 
-        let updates = engine().intervene(t.id, clamp, &downstream, &edges).unwrap();
+        let updates = engine()
+            .intervene(t.id, clamp, &downstream, &edges)
+            .unwrap();
         assert!(
             updates.iter().all(|(id, _)| *id != b.id),
             "SUPPORTS edge must not propagate under an intervention"
@@ -528,7 +578,9 @@ mod tests {
             (c.id, b.id, EdgeType::Causes, w),
         ];
 
-        let updates = engine().intervene(t.id, clamp, &downstream, &edges).unwrap();
+        let updates = engine()
+            .intervene(t.id, clamp, &downstream, &edges)
+            .unwrap();
         assert!(
             updates.iter().all(|(id, _)| *id != b.id),
             "do(T) must not affect B when their only link is a common cause C"
@@ -550,8 +602,7 @@ mod tests {
         let a = Belief::new("A".to_string(), 0.3, 0.5).unwrap();
         let b = Belief::new("B".to_string(), 0.4, 0.5).unwrap();
         // 0.3 + 0.4 = 0.7 ≤ 1.0 → not contradicting
-        let beliefs: HashMap<uuid::Uuid, &Belief> =
-            [(a.id, &a), (b.id, &b)].into_iter().collect();
+        let beliefs: HashMap<uuid::Uuid, &Belief> = [(a.id, &a), (b.id, &b)].into_iter().collect();
         let pairs = vec![(a.id, b.id)];
         let result = engine().detect_active_contradictions(&beliefs, &pairs);
         assert!(result.is_empty());
@@ -562,8 +613,7 @@ mod tests {
         let a = Belief::new("A".to_string(), 0.8, 0.9).unwrap();
         let b = Belief::new("B".to_string(), 0.7, 0.9).unwrap();
         // 0.8 + 0.7 = 1.5 > 1.0
-        let beliefs: HashMap<uuid::Uuid, &Belief> =
-            [(a.id, &a), (b.id, &b)].into_iter().collect();
+        let beliefs: HashMap<uuid::Uuid, &Belief> = [(a.id, &a), (b.id, &b)].into_iter().collect();
         let pairs = vec![(a.id, b.id)];
         let result = engine().detect_active_contradictions(&beliefs, &pairs);
         assert_eq!(result.len(), 1);
@@ -586,7 +636,7 @@ mod tests {
     fn test_decay_all_old_belief_decays() {
         let mut b = Belief::new("old".to_string(), 0.9, 0.9).unwrap();
         // Wind back last_activated_at by 100 days
-        b.last_activated_at = b.last_activated_at - chrono::Duration::days(100);
+        b.last_activated_at -= chrono::Duration::days(100);
         let now = chrono::Utc::now();
         let updates = engine().decay_all(&[b.clone()], now, 0.99).unwrap();
         assert_eq!(updates.len(), 1);
@@ -628,8 +678,16 @@ mod tests {
         let val = |r: &[(uuid::Uuid, Probability)], id: uuid::Uuid| {
             r.iter().find(|(i, _)| *i == id).map(|(_, p)| p.value())
         };
-        assert_eq!(val(&r1, d.id), val(&r2, d.id), "D must not depend on edge order");
-        assert_eq!(val(&r1, t.id), val(&r2, t.id), "T must not depend on edge order");
+        assert_eq!(
+            val(&r1, d.id),
+            val(&r2, d.id),
+            "D must not depend on edge order"
+        );
+        assert_eq!(
+            val(&r1, t.id),
+            val(&r2, t.id),
+            "T must not depend on edge order"
+        );
     }
 
     // RED: convergence + stability on a cycle. S→A, A→B, B→A (SUPPORTS). The old
@@ -656,24 +714,48 @@ mod tests {
         let mut a2 = a.clone();
         let mut b2 = b.clone();
         for (id, p) in &r1 {
-            if *id == a.id { a2.probability = *p; }
-            if *id == b.id { b2.probability = *p; }
+            if *id == a.id {
+                a2.probability = *p;
+            }
+            if *id == b.id {
+                b2.probability = *p;
+            }
         }
         let r2 = engine()
             .propagate_defeat(&s, &[a2.clone(), b2.clone()], &edges)
             .unwrap();
 
-        let pa1 = r1.iter().find(|(i, _)| *i == a.id).map(|(_, p)| p.value()).unwrap();
-        let pb1 = r1.iter().find(|(i, _)| *i == b.id).map(|(_, p)| p.value()).unwrap();
+        let pa1 = r1
+            .iter()
+            .find(|(i, _)| *i == a.id)
+            .map(|(_, p)| p.value())
+            .unwrap();
+        let pb1 = r1
+            .iter()
+            .find(|(i, _)| *i == b.id)
+            .map(|(_, p)| p.value())
+            .unwrap();
         // After convergence the fixpoint impl reports no change, so fall back to
         // the (already converged) fed-back value.
-        let pa2 = r2.iter().find(|(i, _)| *i == a.id).map(|(_, p)| p.value())
+        let pa2 = r2
+            .iter()
+            .find(|(i, _)| *i == a.id)
+            .map(|(_, p)| p.value())
             .unwrap_or(a2.probability.value());
-        let pb2 = r2.iter().find(|(i, _)| *i == b.id).map(|(_, p)| p.value())
+        let pb2 = r2
+            .iter()
+            .find(|(i, _)| *i == b.id)
+            .map(|(_, p)| p.value())
             .unwrap_or(b2.probability.value());
 
-        assert!((pa1 - pa2).abs() < 1e-9, "A not stable across calls: {pa1} vs {pa2}");
-        assert!((pb1 - pb2).abs() < 1e-9, "B not stable across calls: {pb1} vs {pb2}");
+        assert!(
+            (pa1 - pa2).abs() < 1e-9,
+            "A not stable across calls: {pa1} vs {pa2}"
+        );
+        assert!(
+            (pb1 - pb2).abs() < 1e-9,
+            "B not stable across calls: {pb1} vs {pb2}"
+        );
     }
 
     // GUARD: a node with two supporters takes the noisy-OR of them onto its base.
@@ -694,8 +776,15 @@ mod tests {
         let r = engine()
             .propagate_defeat(&s, &[a.clone(), b.clone(), t.clone()], &edges)
             .unwrap();
-        let tp = r.iter().find(|(i, _)| *i == t.id).map(|(_, p)| p.value()).unwrap();
-        assert!((tp - 0.97696).abs() < 1e-6, "T should be the noisy-OR ≈ 0.97696, got {tp}");
+        let tp = r
+            .iter()
+            .find(|(i, _)| *i == t.id)
+            .map(|(_, p)| p.value())
+            .unwrap();
+        assert!(
+            (tp - 0.97696).abs() < 1e-6,
+            "T should be the noisy-OR ≈ 0.97696, got {tp}"
+        );
     }
 
     // ------------------------------------------------------------------

@@ -198,19 +198,29 @@ async fn main() -> Result<()> {
         Command::Stats => cmd_stats().await?,
         Command::List { project, limit } => cmd_list(project, limit).await?,
         Command::Patterns { limit } => cmd_patterns(limit).await?,
-        Command::Query { text, limit, evidence } => cmd_query(&text, limit, evidence).await?,
+        Command::Query {
+            text,
+            limit,
+            evidence,
+        } => cmd_query(&text, limit, evidence).await?,
         Command::Evidence(cmd) => cmd_evidence(cmd).await?,
         Command::Delete { id } => cmd_delete(&id).await?,
         Command::Forget { project } => cmd_forget(&project).await?,
         Command::Decay { factor } => cmd_decay(factor).await?,
         Command::Contradictions => cmd_contradictions().await?,
         Command::Load { path, project } => cmd_load(&path, project.as_deref()).await?,
-        Command::QueryDoc { context, project, limit } => cmd_query_doc(&context, project.as_deref(), limit).await?,
+        Command::QueryDoc {
+            context,
+            project,
+            limit,
+        } => cmd_query_doc(&context, project.as_deref(), limit).await?,
         Command::ClearDoc { path } => cmd_clear_doc(&path).await?,
         Command::Reembed => cmd_reembed().await?,
         Command::Intervene { id, value } => cmd_intervene(&id, value).await?,
         // Hooks must never exit non-zero — discard any error silently.
-        Command::Hook { event } => { let _ = cmd_hook(event).await; }
+        Command::Hook { event } => {
+            let _ = cmd_hook(event).await;
+        }
     }
 
     Ok(())
@@ -231,7 +241,11 @@ fn trunc(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        let end: usize = s.char_indices().nth(max - 1).map(|(i, _)| i).unwrap_or(s.len());
+        let end: usize = s
+            .char_indices()
+            .nth(max - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
         format!("{}…", &s[..end])
     }
 }
@@ -376,10 +390,18 @@ async fn cmd_query(text: &str, limit: usize, evidence: bool) -> Result<()> {
         }
         for gb in &grounded {
             let b = &gb.belief;
-            let proj = b.project.as_deref().map(|p| format!("  [{}]", p)).unwrap_or_default();
+            let proj = b
+                .project
+                .as_deref()
+                .map(|p| format!("  [{}]", p))
+                .unwrap_or_default();
             println!(
                 "{}  p={:.3}  c={:.3}  {}{}",
-                b.id, b.probability.value(), b.confidence.value(), trunc(&b.content, 70), proj,
+                b.id,
+                b.probability.value(),
+                b.confidence.value(),
+                trunc(&b.content, 70),
+                proj,
             );
             for e in &gb.evidence {
                 let section = if e.section_path.is_empty() {
@@ -387,12 +409,7 @@ async fn cmd_query(text: &str, limit: usize, evidence: bool) -> Result<()> {
                 } else {
                     format!(" § {}", e.section_path.join(" > "))
                 };
-                println!(
-                    "    ↳ w={:.2}  {}{}",
-                    e.weight,
-                    e.document_path,
-                    section,
-                );
+                println!("    ↳ w={:.2}  {}{}", e.weight, e.document_path, section,);
                 println!("        {}", trunc(&e.snippet, 100));
             }
         }
@@ -431,7 +448,11 @@ async fn cmd_query(text: &str, limit: usize, evidence: bool) -> Result<()> {
 async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
     let svc = connect().await?;
     match cmd {
-        EvidenceCmd::Add { chunk_id, belief_id, weight } => {
+        EvidenceCmd::Add {
+            chunk_id,
+            belief_id,
+            weight,
+        } => {
             let chunk = chunk_id
                 .parse::<uuid::Uuid>()
                 .map_err(|_| anyhow::anyhow!("invalid chunk UUID: {}", chunk_id))?;
@@ -456,7 +477,10 @@ async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
                 } else {
                     format!(" § {}", e.section_path.join(" > "))
                 };
-                println!("{}  w={:.2}  {}{}", e.chunk_id, e.weight, e.document_path, section);
+                println!(
+                    "{}  w={:.2}  {}{}",
+                    e.chunk_id, e.weight, e.document_path, section
+                );
                 println!("    {}", trunc(&e.snippet, 100));
             }
         }
@@ -542,7 +566,9 @@ async fn cmd_decay(factor: f64) -> Result<()> {
 async fn cmd_load(path: &str, project: Option<&str>) -> Result<()> {
     let svc = connect().await?;
     let count = svc.load_document(path, project).await?;
-    let proj_note = project.map(|p| format!("  [project: {}]", p)).unwrap_or_default();
+    let proj_note = project
+        .map(|p| format!("  [project: {}]", p))
+        .unwrap_or_default();
     println!("loaded {} chunk(s)  {}{}", count, path, proj_note);
     Ok(())
 }
@@ -615,8 +641,14 @@ async fn cmd_contradictions() -> Result<()> {
     for (a, b) in &deduped {
         let ba = svc.get_belief(*a).await?;
         let bb = svc.get_belief(*b).await?;
-        let ca = ba.as_ref().map(|b| trunc(&b.content, 50)).unwrap_or_else(|| a.to_string());
-        let cb = bb.as_ref().map(|b| trunc(&b.content, 50)).unwrap_or_else(|| b.to_string());
+        let ca = ba
+            .as_ref()
+            .map(|b| trunc(&b.content, 50))
+            .unwrap_or_else(|| a.to_string());
+        let cb = bb
+            .as_ref()
+            .map(|b| trunc(&b.content, 50))
+            .unwrap_or_else(|| b.to_string());
         println!("  [{}]  ⟺  [{}]", ca, cb);
     }
 
@@ -698,9 +730,13 @@ async fn cmd_hook_prompt() -> Result<()> {
         return Ok(());
     }
 
-    println!("[Prior knowledge from past sessions — apply directly, do not rediscover empirically:]");
+    println!(
+        "[Prior knowledge from past sessions — apply directly, do not rediscover empirically:]"
+    );
     for b in &beliefs {
-        let proj = b.project.as_deref()
+        let proj = b
+            .project
+            .as_deref()
             .map(|p| format!("  [{}]", p))
             .unwrap_or_default();
         println!(
@@ -739,11 +775,11 @@ async fn cmd_hook_pretooluse() -> Result<()> {
         return Ok(());
     }
 
-    let mut lines = String::from(
-        "Prior knowledge relevant to this action — apply directly:\n",
-    );
+    let mut lines = String::from("Prior knowledge relevant to this action — apply directly:\n");
     for b in &beliefs {
-        let proj = b.project.as_deref()
+        let proj = b
+            .project
+            .as_deref()
             .map(|p| format!("  [{}]", p))
             .unwrap_or_default();
         lines.push_str(&format!(

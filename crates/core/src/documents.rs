@@ -46,7 +46,14 @@ impl DocumentChunk {
         parent_id: Option<Uuid>,
         project: Option<String>,
     ) -> Self {
-        Self { id, document_path, section_path, content, parent_id, project }
+        Self {
+            id,
+            document_path,
+            section_path,
+            content,
+            parent_id,
+            project,
+        }
     }
 }
 
@@ -121,7 +128,7 @@ pub fn parse_markdown(
                 flush!();
 
                 // Pop stack entries at depth >= this heading's depth.
-                while stack.last().map_or(false, |f| f.0 >= depth) {
+                while stack.last().is_some_and(|f| f.0 >= depth) {
                     stack.pop();
                 }
 
