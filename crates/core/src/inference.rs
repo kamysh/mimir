@@ -53,16 +53,16 @@ impl InferenceEngine {
         belief_a.probability.value() + belief_b.probability.value() > 1.0 + EPSILON
     }
 
-    /// BFS propagation: given a seed belief whose probability changed,
-    /// compute updated probabilities for all downstream beliefs.
-    /// Returns Vec<(Uuid, Probability)> — the new probability for each affected belief.
-    /// Does NOT write to the store — caller does that.
+    /// Propagation: given a seed belief whose mean changed, compute the updated
+    /// posterior `(α, β)` for all downstream beliefs via conjugate accumulation.
+    /// Returns Vec<(Uuid, (α, β))> — the new DURABLE Beta state per affected
+    /// belief (spec: Mimir.Beta). Does NOT write to the store — caller persists.
     pub fn propagate_defeat(
         &self,
         seed: &Belief,
         downstream: &[Belief],
         edges: &[(Uuid, Uuid, EdgeType, Probability)],
-    ) -> Result<Vec<(Uuid, Probability)>> {
+    ) -> Result<Vec<(Uuid, (f64, f64))>> {
         self.propagate_core(seed.id, seed.probability, downstream, edges)
     }
 
@@ -94,7 +94,15 @@ impl InferenceEngine {
             .copied()
             .filter(|&(_from, to, et, _w)| to != target_id && et == EdgeType::Causes)
             .collect();
-        self.propagate_core(target_id, value, downstream, &surgical)
+        // Read-only projection: map the posterior (α,β) result to projected means.
+        let raw = self.propagate_core(target_id, value, downstream, &surgical)?;
+        let mut out = Vec::with_capacity(raw.len());
+        for (id, (alpha, beta)) in raw {
+            let s = alpha + beta;
+            let m = if s > 0.0 { (alpha / s).clamp(0.0, 1.0) } else { 0.5 };
+            out.push((id, Probability::new(m)?));
+        }
+        Ok(out)
     }
 
     /// Shared fixpoint propagation core (Phase 3: Bayesian conjugate
@@ -111,15 +119,16 @@ impl InferenceEngine {
     /// order-independent (spec: `Mimir.Beta.accumulate-↭`), and because the
     /// posterior is re-derived from the prior (never folded into a mutated
     /// scalar) propagation is idempotent. Iterated to a fixpoint, bounded by
-    /// MAX_ITERS. Pure; never writes to the store. Returns the new MEAN per
-    /// changed node (the caller persists either the mean or the full `(α, β)`).
+    /// MAX_ITERS. Pure; never writes to the store. Returns the new posterior
+    /// `(α, β)` per changed node — the DURABLE Beta state the caller persists
+    /// (spec: Mimir.Beta StoredBelief; the mean is recomputed on load).
     fn propagate_core(
         &self,
         seed_id: Uuid,
         seed_prob: Probability,
         downstream: &[Belief],
         edges: &[(Uuid, Uuid, EdgeType, Probability)],
-    ) -> Result<Vec<(Uuid, Probability)>> {
+    ) -> Result<Vec<(Uuid, (f64, f64))>> {
         if downstream.is_empty() {
             return Ok(vec![]);
         }
@@ -149,12 +158,27 @@ impl InferenceEngine {
             }
         }
 
-        // Working mean per node; the seed stays clamped at seed_prob.
-        let mut mean: HashMap<Uuid, f64> = HashMap::new();
-        mean.insert(seed_id, seed_prob.value());
+        // Working Beta state (α,β) per node; the seed has no (α,β) — it is held
+        // clamped at seed_prob, read only as a parent mean.
+        let mut state: HashMap<Uuid, (f64, f64)> = HashMap::new();
         for b in downstream {
-            mean.insert(b.id, b.probability.value());
+            state.insert(b.id, (b.alpha0, b.beta0));
         }
+        let seed_mean = seed_prob.value();
+        // Mean of a node: the seed's clamped value, else α/(α+β) of its state.
+        let mean_of = |state: &HashMap<Uuid, (f64, f64)>, id: &Uuid| -> f64 {
+            if *id == seed_id {
+                seed_mean
+            } else {
+                let (a, b) = state[id];
+                let s = a + b;
+                if s > 0.0 {
+                    (a / s).clamp(0.0, 1.0)
+                } else {
+                    0.5
+                }
+            }
+        };
         let mut order: Vec<Uuid> = downstream
             .iter()
             .map(|b| b.id)
@@ -162,10 +186,11 @@ impl InferenceEngine {
             .collect();
         order.sort();
 
-        // Fixpoint: each node re-derives (α,β) from its prior plus the summed
-        // per-parent evidence, reading the current parent means. Sum ⇒
-        // order-independent; re-derived ⇒ idempotent. DAG: one sweep is exact;
-        // cycles converge.
+        // Fixpoint: each node re-derives (α,β) from its FIXED prior plus the
+        // summed per-parent evidence, reading current parent means. Sum ⇒
+        // order-independent (spec accumulate-↭); re-derived from prior ⇒
+        // idempotent (spec recompute-idempotent). DAG: one sweep exact; cycles
+        // converge.
         let mut converged = false;
         for _ in 0..MAX_ITERS {
             let mut max_delta = 0.0_f64;
@@ -175,7 +200,7 @@ impl InferenceEngine {
                 let mut beta = b0;
                 if let Some(edges_in) = incoming.get(&v) {
                     for &(etype, w, src) in edges_in {
-                        let delta = w * mean[&src] * crate::graph::EVIDENCE_UNIT;
+                        let delta = w * mean_of(&state, &src) * crate::graph::EVIDENCE_UNIT;
                         match etype {
                             EdgeType::Supports | EdgeType::Causes => alpha += delta,
                             EdgeType::Defeats => beta += delta,
@@ -183,17 +208,18 @@ impl InferenceEngine {
                         }
                     }
                 }
-                let s = alpha + beta;
-                let m = if s > 0.0 {
-                    (alpha / s).clamp(0.0, 1.0)
+                let old_m = mean_of(&state, &v);
+                let new_s = alpha + beta;
+                let new_m = if new_s > 0.0 {
+                    (alpha / new_s).clamp(0.0, 1.0)
                 } else {
                     0.5
                 };
-                let delta = (m - mean[&v]).abs();
+                let delta = (new_m - old_m).abs();
                 if delta > max_delta {
                     max_delta = delta;
                 }
-                mean.insert(v, m);
+                state.insert(v, (alpha, beta));
             }
             if max_delta < EPS {
                 converged = true;
@@ -207,12 +233,14 @@ impl InferenceEngine {
             );
         }
 
-        // Report only nodes whose mean actually moved from base (seed excluded).
-        let mut updated: Vec<(Uuid, Probability)> = Vec::new();
+        // Report only nodes whose mean actually moved from base (seed excluded);
+        // return the DURABLE posterior (α,β) the caller persists.
+        let mut updated: Vec<(Uuid, (f64, f64))> = Vec::new();
         for &v in &order {
-            let m = mean[&v];
+            let (a, b) = state[&v];
+            let m = mean_of(&state, &v);
             if (m - base_mean[&v]).abs() > EPS {
-                updated.push((v, Probability::new(m)?));
+                updated.push((v, (a, b)));
             }
         }
         Ok(updated)
@@ -236,23 +264,29 @@ impl InferenceEngine {
         result
     }
 
-    /// Compute decayed confidence values for all beliefs.
-    /// Returns Vec<(Uuid, Probability)> of beliefs whose confidence actually changed.
-    /// decay_factor is configurable; default is 0.99 (~1% per day).
+    /// Decay every belief's Beta state toward the uninformative prior (1,1):
+    ///   (α, β) ← (1, 1) + f·((α, β) − (1, 1)),   f = decay_factor^days.
+    /// This is the spec's `betaDecay` (Mimir.Beta): f=1 leaves (α,β) unchanged,
+    /// f=0 collapses to (1,1) whose mean is ½. Aging evidence pulls the mean
+    /// toward ½ AND the strength toward 2 — so confidence finally feeds back into
+    /// probability, unlike the retired scalar decay. Returns the new (α,β) for
+    /// beliefs whose state actually changed. decay_factor default 0.99.
     pub fn decay_all(
         &self,
         beliefs: &[Belief],
         now: chrono::DateTime<chrono::Utc>,
         decay_factor: f64,
-    ) -> Result<Vec<(Uuid, Probability)>> {
+    ) -> Result<Vec<(Uuid, (f64, f64))>> {
         let mut result = Vec::new();
         for belief in beliefs {
-            let days = (now - belief.last_activated_at).num_seconds() as f64 / 86400.0;
-            let days = days.max(0.0);
-            let decayed = self.apply_decay(belief.confidence, days, decay_factor)?;
-            // Only report if the value actually changed (using a tiny epsilon)
-            if (decayed.value() - belief.confidence.value()).abs() > f64::EPSILON {
-                result.push((belief.id, decayed));
+            let days = ((now - belief.last_activated_at).num_seconds() as f64 / 86400.0).max(0.0);
+            let f = decay_factor.powf(days);
+            let alpha = 1.0 + f * (belief.alpha - 1.0);
+            let beta = 1.0 + f * (belief.beta - 1.0);
+            if (alpha - belief.alpha).abs() > f64::EPSILON
+                || (beta - belief.beta).abs() > f64::EPSILON
+            {
+                result.push((belief.id, (alpha, beta)));
             }
         }
         Ok(result)
@@ -277,6 +311,16 @@ mod tests {
 
     fn engine() -> InferenceEngine {
         InferenceEngine::new()
+    }
+
+    // Mean of a Beta (α, β) result from propagate_defeat/propagate_core.
+    fn mean_of(ab: (f64, f64)) -> f64 {
+        let (a, b) = ab;
+        if a + b > 0.0 {
+            a / (a + b)
+        } else {
+            0.5
+        }
     }
 
     // ------------------------------------------------------------------
@@ -471,7 +515,7 @@ mod tests {
         let new_prob = updates
             .iter()
             .find(|(id, _)| *id == target.id)
-            .map(|(_, p)| p.value());
+            .map(|(_, ab)| mean_of(*ab));
         // Conjugate Beta: target prior (p=0.7,c=0.8) ⇒ κ=160.4, (α₀,β₀)=(112.28,48.12).
         // Defeat from seed (μ=0.8, w=1): β += w·μ·UNIT = 3.2 ⇒ mean 112.28/163.6 ≈ 0.68631.
         // The strong prior moves only slightly per evidence unit, but it DECREASES.
@@ -495,7 +539,7 @@ mod tests {
         let new_prob = updates
             .iter()
             .find(|(id, _)| *id == target.id)
-            .map(|(_, p)| p.value());
+            .map(|(_, ab)| mean_of(*ab));
         // 0.3 + (1-0.3) × 0.5 × 0.8 = 0.3 + 0.28 = 0.58
         assert!(new_prob.is_some());
         assert!(new_prob.unwrap() > 0.3);
@@ -655,8 +699,14 @@ mod tests {
         let now = chrono::Utc::now();
         let updates = engine().decay_all(&[b.clone()], now, 0.99).unwrap();
         assert_eq!(updates.len(), 1);
-        let (_, new_conf) = updates[0];
-        assert!(new_conf.value() < b.confidence.value());
+        let (_, (na, nb)) = updates[0];
+        // betaDecay pulls (α,β) toward (1,1): strength shrinks; mean drifts to ½.
+        assert!(na + nb < b.strength(), "strength must shrink toward 2");
+        let new_mean = na / (na + nb);
+        assert!(
+            new_mean < 0.9 && new_mean > 0.5,
+            "mean drifts toward ½: {new_mean}"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -690,8 +740,8 @@ mod tests {
         let r1 = engine().propagate_defeat(&s, &downstream, &order1).unwrap();
         let r2 = engine().propagate_defeat(&s, &downstream, &order2).unwrap();
 
-        let val = |r: &[(uuid::Uuid, Probability)], id: uuid::Uuid| {
-            r.iter().find(|(i, _)| *i == id).map(|(_, p)| p.value())
+        let val = |r: &[(uuid::Uuid, (f64, f64))], id: uuid::Uuid| {
+            r.iter().find(|(i, _)| *i == id).map(|(_, ab)| mean_of(*ab))
         };
         assert_eq!(
             val(&r1, d.id),
@@ -728,12 +778,16 @@ mod tests {
         // Feed the result back as the new base and propagate again.
         let mut a2 = a.clone();
         let mut b2 = b.clone();
-        for (id, p) in &r1 {
-            if *id == a.id {
-                a2.probability = *p;
+        for &(id, (alpha, beta)) in &r1 {
+            if id == a.id {
+                a2.alpha = alpha;
+                a2.beta = beta;
+                a2.refresh_cached();
             }
-            if *id == b.id {
-                b2.probability = *p;
+            if id == b.id {
+                b2.alpha = alpha;
+                b2.beta = beta;
+                b2.refresh_cached();
             }
         }
         let r2 = engine()
@@ -743,24 +797,24 @@ mod tests {
         let pa1 = r1
             .iter()
             .find(|(i, _)| *i == a.id)
-            .map(|(_, p)| p.value())
+            .map(|(_, ab)| mean_of(*ab))
             .unwrap();
         let pb1 = r1
             .iter()
             .find(|(i, _)| *i == b.id)
-            .map(|(_, p)| p.value())
+            .map(|(_, ab)| mean_of(*ab))
             .unwrap();
         // After convergence the fixpoint impl reports no change, so fall back to
         // the (already converged) fed-back value.
         let pa2 = r2
             .iter()
             .find(|(i, _)| *i == a.id)
-            .map(|(_, p)| p.value())
+            .map(|(_, ab)| mean_of(*ab))
             .unwrap_or(a2.probability.value());
         let pb2 = r2
             .iter()
             .find(|(i, _)| *i == b.id)
-            .map(|(_, p)| p.value())
+            .map(|(_, ab)| mean_of(*ab))
             .unwrap_or(b2.probability.value());
 
         assert!(
@@ -795,7 +849,7 @@ mod tests {
         let tp = r
             .iter()
             .find(|(i, _)| *i == t.id)
-            .map(|(_, p)| p.value())
+            .map(|(_, ab)| mean_of(*ab))
             .unwrap();
         assert!(
             tp > 0.1,

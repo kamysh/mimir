@@ -148,6 +148,10 @@ const BELIEF_RETURN_COLUMNS: &str = r#"AS (
   content        text,
   probability    text,
   confidence     text,
+  alpha          text,
+  beta           text,
+  alpha0         text,
+  beta0          text,
   created_at     text,
   last_activated_at text,
   project        text
@@ -198,6 +202,11 @@ impl AgeStore {
         let content = esc(&belief.content);
         let probability = belief.probability.value();
         let confidence = belief.confidence.value();
+        // Durable Beta state (spec: Mimir.Beta StoredBelief / store-load-round-trip).
+        let alpha = belief.alpha;
+        let beta = belief.beta;
+        let alpha0 = belief.alpha0;
+        let beta0 = belief.beta0;
         let created_at = esc(&belief.created_at.to_rfc3339());
         let last_activated_at = esc(&belief.last_activated_at.to_rfc3339());
         let project_prop = match &belief.project {
@@ -212,6 +221,10 @@ impl AgeStore {
     content: '{content}',
     probability: {probability},
     confidence: {confidence},
+    alpha: {alpha},
+    beta: {beta},
+    alpha0: {alpha0},
+    beta0: {beta0},
     created_at: '{created_at}',
     last_activated_at: '{last_activated_at}'{project_prop}
   }})
@@ -291,12 +304,16 @@ $$) AS (ok ag_catalog.agtype)"#
   content::text,
   probability::text,
   confidence::text,
+  alpha::text,
+  beta::text,
+  alpha0::text,
+  beta0::text,
   created_at::text,
   last_activated_at::text,
   project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{id: '{id_str}'}})
-  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
@@ -307,36 +324,37 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         Ok(Some(belief_from_row(&rows[0])?))
     }
 
-    pub async fn update_belief_probability(
-        &self,
-        id: Uuid,
-        probability: Probability,
-    ) -> Result<()> {
+    /// Persist a Phase-3 Beta posterior `(alpha, beta)` and refresh the cached
+    /// scalars derived from it (probability = mean = α/(α+β), confidence =
+    /// strength-derived). The Beta pair is the durable source of truth; the
+    /// scalars are kept in sync so legacy readers stay correct.
+    ///
+    /// Spec: Mimir.Beta — belief evidence state is written ONLY via the Beta
+    /// posterior (store-load-round-trip). The pre-Phase-3 scalar setters
+    /// `update_belief_probability` / `update_belief_confidence` are RETIRED
+    /// (spec Mimir.Graph: "RETIRED SCALAR SETTERS"); this is their replacement.
+    pub async fn update_belief_beta(&self, id: Uuid, alpha: f64, beta: f64) -> Result<()> {
         let g = &self.graph_name;
         let id_str = id.to_string();
-        let p = probability.value();
+        // Derive the cached (mean, confidence) from (α, β) via the canonical
+        // mapping. from_stored is the only public path to beta_to_pc.
+        let derived = Belief::from_stored(
+            id,
+            String::new(),
+            alpha,
+            beta,
+            alpha,
+            beta,
+            chrono::Utc::now(),
+            chrono::Utc::now(),
+            None,
+        )?;
+        let mean = derived.probability.value();
+        let conf = derived.confidence.value();
         let sql = format!(
             r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{id: '{id_str}'}})
-  SET n.probability = {p}
-  RETURN n.id
-$$) AS (id ag_catalog.agtype)"#
-        );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
-        if rows.is_empty() {
-            bail!("belief {} not found", id);
-        }
-        Ok(())
-    }
-
-    pub async fn update_belief_confidence(&self, id: Uuid, confidence: Probability) -> Result<()> {
-        let g = &self.graph_name;
-        let id_str = id.to_string();
-        let c = confidence.value();
-        let sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
-  MATCH (n:Belief {{id: '{id_str}'}})
-  SET n.confidence = {c}
+  SET n.alpha = {alpha}, n.beta = {beta}, n.probability = {mean}, n.confidence = {conf}
   RETURN n.id
 $$) AS (id ag_catalog.agtype)"#
         );
@@ -355,12 +373,16 @@ $$) AS (id ag_catalog.agtype)"#
   content::text,
   probability::text,
   confidence::text,
+  alpha::text,
+  beta::text,
+  alpha0::text,
+  beta0::text,
   created_at::text,
   last_activated_at::text,
   project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
@@ -1062,15 +1084,19 @@ $$) AS (v ag_catalog.agtype)"#
   content::text,
   probability::text,
   confidence::text,
+  alpha::text,
+  beta::text,
+  alpha0::text,
+  beta0::text,
   created_at::text,
   last_activated_at::text,
   project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (s:Belief {{id: '{id_str}'}})-[:SUPPORTS*1..10]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
   UNION
   MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES*1..10]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
@@ -1097,12 +1123,16 @@ $$) {BELIEF_RETURN_COLUMNS}"#
   content::text,
   probability::text,
   confidence::text,
+  alpha::text,
+  beta::text,
+  alpha0::text,
+  beta0::text,
   created_at::text,
   last_activated_at::text,
   project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES*1..10]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.created_at, n.last_activated_at, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 

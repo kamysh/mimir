@@ -93,28 +93,23 @@ async fn test_list_beliefs_multiple() {
     let _ = ids; // suppress unused warning
 }
 
-#[tokio::test]
-async fn test_update_belief_probability() {
-    let s = store().await;
-    let b = Belief::new(format!("upd-prob-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
-    s.insert_belief(&b).await.unwrap();
-    s.update_belief_probability(b.id, Probability::new(0.9).unwrap())
-        .await
-        .unwrap();
-    let got = s.get_belief(b.id).await.unwrap().unwrap();
-    assert!((got.probability.value() - 0.9).abs() < 1e-9);
-}
+// Phase 3 (spec Mimir.Graph: RETIRED SCALAR SETTERS): the old field-independent
+// setters update_belief_probability / update_belief_confidence are retired —
+// belief state is written only via the Beta posterior (update_belief_beta), so
+// the tests that asserted the old scalar contract are removed.
 
 #[tokio::test]
-async fn test_update_belief_confidence() {
+async fn test_update_belief_beta_round_trips_mean_and_strength() {
     let s = store().await;
-    let b = Belief::new(format!("upd-conf-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
+    let b = Belief::new(format!("upd-beta-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
     s.insert_belief(&b).await.unwrap();
-    s.update_belief_confidence(b.id, Probability::new(0.2).unwrap())
-        .await
-        .unwrap();
+    // A strong support posterior: mean 0.9 at strength 100 ⇒ (α,β)=(90,10).
+    s.update_belief_beta(b.id, 90.0, 10.0).await.unwrap();
     let got = s.get_belief(b.id).await.unwrap().unwrap();
-    assert!((got.confidence.value() - 0.2).abs() < 1e-9);
+    // Durable (α,β) persisted (spec store-load-round-trip); mean derived = 0.9.
+    assert!((got.alpha - 90.0).abs() < 1e-6, "α persisted: {}", got.alpha);
+    assert!((got.beta - 10.0).abs() < 1e-6, "β persisted: {}", got.beta);
+    assert!((got.probability.value() - 0.9).abs() < 1e-9);
 }
 
 #[tokio::test]
@@ -446,17 +441,17 @@ async fn test_intervention_is_read_only() {
         .value();
 
     let updates = svc.query_intervention(t.id, 1.0).await.unwrap();
-    // B is a causal descendant and must be projected: boost(0.4, 1.0, 0.5) = 0.7.
+    // B is a causal descendant and must be projected. Conjugate Beta (spec
+    // Mimir.Beta): B prior (p=0.4,c=0.9) ⇒ κ=180.2, α₀=72.08. do(T=1.0) feeds a
+    // CAUSES edge w=0.5: α += w·μ_T·UNIT = 2.0 ⇒ mean 74.08/182.2 ≈ 0.40659.
     let projected = updates
         .iter()
         .find(|(id, _)| *id == b.id)
         .map(|(_, p)| p.value());
     assert!(projected.is_some(), "B should appear in the projection");
-    assert!(
-        (projected.unwrap() - 0.7).abs() < 1e-9,
-        "got {:?}",
-        projected
-    );
+    let proj = projected.unwrap();
+    assert!(proj > 0.4, "do(T) must raise B above its 0.4 base, got {proj}");
+    assert!((proj - 0.406_586).abs() < 1e-4, "got {proj}");
 
     // The decisive check: the store row for B is UNCHANGED (no writeback).
     let b_after = s
@@ -522,10 +517,8 @@ async fn test_evidence_does_not_perturb_propagation() {
 
     // Baseline: propagate (this writes b), capture the result.
     let baseline = svc.propagate_from(a.id).await.unwrap();
-    // Reset b to its original probability so the second run starts identically.
-    s.update_belief_probability(b.id, Probability::new(0.3).unwrap())
-        .await
-        .unwrap();
+    // Reset b to its original Beta state so the second run starts identically.
+    s.update_belief_beta(b.id, b.alpha, b.beta).await.unwrap();
 
     // Overlay: a DocumentChunk grounding BOTH beliefs.
     let chunk = DocumentChunk::new(
