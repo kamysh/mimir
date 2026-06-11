@@ -12,11 +12,11 @@ use crate::config::{EmbeddingBackend, EmbeddingsConfig};
 // Trait
 // ---------------------------------------------------------------------------
 
+/// Boxed, sendable future returned by [`EmbeddingProvider::embed`].
+pub type EmbedFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>;
+
 pub trait EmbeddingProvider: Send + Sync {
-    fn embed<'a>(
-        &'a self,
-        texts: &'a [String],
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>;
+    fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a>;
 }
 
 // ---------------------------------------------------------------------------
@@ -31,22 +31,24 @@ pub struct VoyageBackend {
 
 impl VoyageBackend {
     fn new(api_key: String, model: String) -> Self {
-        Self { api_key, model, http: reqwest::Client::new() }
+        Self {
+            api_key,
+            model,
+            http: reqwest::Client::new(),
+        }
     }
 }
 
 impl EmbeddingProvider for VoyageBackend {
-    fn embed<'a>(
-        &'a self,
-        texts: &'a [String],
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>> {
+    fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a> {
         Box::pin(async move {
             let body = serde_json::json!({
                 "input": texts,
                 "model": self.model,
                 "input_type": "document"
             });
-            let resp: serde_json::Value = self.http
+            let resp: serde_json::Value = self
+                .http
                 .post("https://api.voyageai.com/v1/embeddings")
                 .bearer_auth(&self.api_key)
                 .json(&body)
@@ -72,21 +74,23 @@ pub struct OpenAiBackend {
 
 impl OpenAiBackend {
     fn new(api_key: String, model: String) -> Self {
-        Self { api_key, model, http: reqwest::Client::new() }
+        Self {
+            api_key,
+            model,
+            http: reqwest::Client::new(),
+        }
     }
 }
 
 impl EmbeddingProvider for OpenAiBackend {
-    fn embed<'a>(
-        &'a self,
-        texts: &'a [String],
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>> {
+    fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a> {
         Box::pin(async move {
             let body = serde_json::json!({
                 "input": texts,
                 "model": self.model
             });
-            let resp: serde_json::Value = self.http
+            let resp: serde_json::Value = self
+                .http
                 .post("https://api.openai.com/v1/embeddings")
                 .bearer_auth(&self.api_key)
                 .json(&body)
@@ -123,16 +127,29 @@ pub struct LocalBackend {
 
 impl LocalBackend {
     fn new(batch_size: usize, cache_dir: Option<String>) -> Self {
-        let batch_size = if batch_size == 0 { None } else { Some(batch_size) };
+        let batch_size = if batch_size == 0 {
+            None
+        } else {
+            Some(batch_size)
+        };
         let cache_dir = cache_dir.and_then(|p| {
             let t = p.trim().to_string();
-            if t.is_empty() { None } else { Some(PathBuf::from(t)) }
+            if t.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(t))
+            }
         });
-        Self { state: Mutex::new(None), batch_size, cache_dir }
+        Self {
+            state: Mutex::new(None),
+            batch_size,
+            cache_dir,
+        }
     }
 
     fn ensure_loaded(&self) -> Result<Arc<EmbedState>> {
-        let mut guard = self.state
+        let mut guard = self
+            .state
             .lock()
             .map_err(|_| anyhow::anyhow!("embed state mutex poisoned"))?;
         if let Some(ref s) = *guard {
@@ -213,10 +230,8 @@ fn download_blocking(url: &str, dest: &std::path::Path) -> Result<()> {
         .bytes()
         .with_context(|| format!("reading body of {url}"))?;
     let tmp = dest.with_extension("part");
-    std::fs::write(&tmp, &bytes)
-        .with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, dest)
-        .with_context(|| format!("renaming to {}", dest.display()))?;
+    std::fs::write(&tmp, &bytes).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, dest).with_context(|| format!("renaming to {}", dest.display()))?;
     Ok(())
 }
 
@@ -251,14 +266,14 @@ fn load_embed_state(cache_dir: Option<&std::path::Path>) -> Result<EmbedState> {
         .into_runnable()
         .context("making model runnable")?;
 
-    Ok(EmbedState { tokenizer, model: Mutex::new(model) })
+    Ok(EmbedState {
+        tokenizer,
+        model: Mutex::new(model),
+    })
 }
 
 impl EmbeddingProvider for LocalBackend {
-    fn embed<'a>(
-        &'a self,
-        texts: &'a [String],
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>> {
+    fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a> {
         let texts = texts.to_vec();
         let batch_size = self.batch_size;
         Box::pin(async move {
@@ -266,11 +281,9 @@ impl EmbeddingProvider for LocalBackend {
                 return Ok(vec![]);
             }
             let state = self.ensure_loaded()?;
-            tokio::task::spawn_blocking(move || {
-                embed_with_state(&state, &texts, batch_size)
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("local embeddings task failed: {e}"))?
+            tokio::task::spawn_blocking(move || embed_with_state(&state, &texts, batch_size))
+                .await
+                .map_err(|e| anyhow::anyhow!("local embeddings task failed: {e}"))?
         })
     }
 }
@@ -284,12 +297,14 @@ fn embed_with_state(
     let mut all_embeddings = Vec::with_capacity(texts.len());
 
     for chunk in texts.chunks(chunk_size) {
-        let mut encodings = state.tokenizer
+        let mut encodings = state
+            .tokenizer
             .encode_batch(chunk.to_vec(), true)
             .map_err(|e| anyhow::anyhow!("tokenizer encode_batch: {e}"))?;
 
         // Pad all sequences in the chunk to the same length, capped at MAX_SEQ_LEN.
-        let seq_len = encodings.iter()
+        let seq_len = encodings
+            .iter()
             .map(|e| e.get_ids().len())
             .max()
             .unwrap_or(0)
@@ -312,24 +327,23 @@ fn embed_with_state(
             }
         }
 
-        let ids_t: Tensor = tract_ndarray::Array2::from_shape_vec(
-            (batch, seq_len), input_ids,
-        )?.into();
-        let mask_t: Tensor = tract_ndarray::Array2::from_shape_vec(
-            (batch, seq_len), attention_mask.clone(),
-        )?.into();
-        let types_t: Tensor = tract_ndarray::Array2::from_shape_vec(
-            (batch, seq_len), token_type_ids,
-        )?.into();
+        let ids_t: Tensor =
+            tract_ndarray::Array2::from_shape_vec((batch, seq_len), input_ids)?.into();
+        let mask_t: Tensor =
+            tract_ndarray::Array2::from_shape_vec((batch, seq_len), attention_mask.clone())?.into();
+        let types_t: Tensor =
+            tract_ndarray::Array2::from_shape_vec((batch, seq_len), token_type_ids)?.into();
 
-        let outputs = state.model
+        let outputs = state
+            .model
             .lock()
             .map_err(|_| anyhow::anyhow!("model mutex poisoned"))?
             .run(tvec![ids_t.into(), mask_t.into(), types_t.into()])
             .context("running ONNX model")?;
 
         // last_hidden_state: [batch, seq, 768]
-        let hidden = outputs[0].to_array_view::<f32>()
+        let hidden = outputs[0]
+            .to_array_view::<f32>()
             .context("extracting model output")?;
 
         for b in 0..batch {
@@ -344,7 +358,9 @@ fn embed_with_state(
                 }
             }
             if count > 0.0 {
-                for v in &mut emb { *v /= count; }
+                for v in &mut emb {
+                    *v /= count;
+                }
             }
             all_embeddings.push(emb);
         }
@@ -366,10 +382,9 @@ pub fn make_backend(cfg: &EmbeddingsConfig) -> Box<dyn EmbeddingProvider> {
             cfg.api_key.clone().unwrap_or_default(),
             cfg.model.clone(),
         )),
-        EmbeddingBackend::Local => Box::new(LocalBackend::new(
-            cfg.batch_size,
-            cfg.cache_dir.clone(),
-        )),
+        EmbeddingBackend::Local => {
+            Box::new(LocalBackend::new(cfg.batch_size, cfg.cache_dir.clone()))
+        }
     }
 }
 

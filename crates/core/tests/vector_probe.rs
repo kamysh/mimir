@@ -30,7 +30,10 @@ fn local_embeddings() -> EmbeddingsConfig {
 fn test_db_config() -> DatabaseConfig {
     DatabaseConfig {
         host: std::env::var("MIMIR_HOST").expect("MIMIR_HOST"),
-        port: std::env::var("MIMIR_PORT").expect("MIMIR_PORT").parse().unwrap(),
+        port: std::env::var("MIMIR_PORT")
+            .expect("MIMIR_PORT")
+            .parse()
+            .unwrap(),
         dbname: std::env::var("MIMIR_DBNAME").expect("MIMIR_DBNAME"),
         user: std::env::var("MIMIR_USER").expect("MIMIR_USER"),
         ssl_mode: SslMode::default(),
@@ -60,18 +63,28 @@ async fn vector_leg_ranking() {
         .iter()
         .find(|b| b.content.contains("mimir-eval/1.0"))
         .expect("seeded eval-hidden-ua belief present");
-    println!("\nN beliefs = {n}; target = {} (p={:.2})", target.id, target.probability.value());
+    println!(
+        "\nN beliefs = {n}; target = {} (p={:.2})",
+        target.id,
+        target.probability.value()
+    );
 
     let embedder = make_backend(&local_embeddings());
 
-    for (label, q) in [("VERBOSE_PROMPT", VERBOSE_PROMPT), ("EVAL_QUERY", EVAL_QUERY)] {
+    for (label, q) in [
+        ("VERBOSE_PROMPT", VERBOSE_PROMPT),
+        ("EVAL_QUERY", EVAL_QUERY),
+    ] {
         let qv = embedder
             .embed(&[q.to_string()])
             .await
             .expect("embed")
             .pop()
             .expect("one vector");
-        let ranked = store.query_beliefs_by_vector(&qv, 0).await.expect("vector query");
+        let ranked = store
+            .query_beliefs_by_vector(&qv, 0)
+            .await
+            .expect("vector query");
         let rank = ranked.iter().position(|id| *id == target.id);
         println!("\n===== {label} =====");
         match rank {
@@ -83,7 +96,13 @@ async fn vector_leg_ranking() {
             if let Some(b) = all.iter().find(|b| b.id == *id) {
                 let mark = if b.id == target.id { " <== TARGET" } else { "" };
                 let c: String = b.content.chars().take(80).collect();
-                println!("  {:>2}. p={:.2} {}{}", i + 1, b.probability.value(), c, mark);
+                println!(
+                    "  {:>2}. p={:.2} {}{}",
+                    i + 1,
+                    b.probability.value(),
+                    c,
+                    mark
+                );
             }
         }
     }
@@ -97,23 +116,41 @@ async fn vector_leg_ranking() {
 #[tokio::test]
 #[ignore]
 async fn full_query_relevant_ranking() {
-    let cfg = Config { database: test_db_config(), embeddings: Some(local_embeddings()) };
+    let cfg = Config {
+        database: test_db_config(),
+        embeddings: Some(local_embeddings()),
+    };
     let svc = MimirService::connect(&cfg).await.expect("connect");
 
-    for (label, q) in [("VERBOSE_PROMPT", VERBOSE_PROMPT), ("EVAL_QUERY", EVAL_QUERY)] {
+    for (label, q) in [
+        ("VERBOSE_PROMPT", VERBOSE_PROMPT),
+        ("EVAL_QUERY", EVAL_QUERY),
+    ] {
         let t0 = std::time::Instant::now();
         let res = svc.query_relevant(q, 10).await.expect("query_relevant");
         let elapsed = t0.elapsed();
-        let rank = res.iter().position(|b| b.content.contains("mimir-eval/1.0"));
+        let rank = res
+            .iter()
+            .position(|b| b.content.contains("mimir-eval/1.0"));
         println!("\n===== full query_relevant: {label}  ({elapsed:?}) =====");
         match rank {
             Some(i) => println!("target rank = {} / {} returned", i + 1, res.len()),
             None => println!("target NOT in top {} returned", res.len()),
         }
         for (i, b) in res.iter().enumerate() {
-            let mark = if b.content.contains("mimir-eval/1.0") { " <== TARGET" } else { "" };
+            let mark = if b.content.contains("mimir-eval/1.0") {
+                " <== TARGET"
+            } else {
+                ""
+            };
             let c: String = b.content.chars().take(80).collect();
-            println!("  {:>2}. p={:.2} {}{}", i + 1, b.probability.value(), c, mark);
+            println!(
+                "  {:>2}. p={:.2} {}{}",
+                i + 1,
+                b.probability.value(),
+                c,
+                mark
+            );
         }
     }
 }

@@ -10,21 +10,19 @@ use uuid::Uuid;
 
 fn test_db_config() -> DatabaseConfig {
     DatabaseConfig {
-        host:   std::env::var("MIMIR_HOST")
-                    .expect("MIMIR_HOST must be set to run integration tests"),
-        port:   std::env::var("MIMIR_PORT")
-                    .expect("MIMIR_PORT must be set to run integration tests")
-                    .parse()
-                    .expect("MIMIR_PORT must be a valid port number"),
+        host: std::env::var("MIMIR_HOST").expect("MIMIR_HOST must be set to run integration tests"),
+        port: std::env::var("MIMIR_PORT")
+            .expect("MIMIR_PORT must be set to run integration tests")
+            .parse()
+            .expect("MIMIR_PORT must be a valid port number"),
         dbname: std::env::var("MIMIR_DBNAME")
-                    .expect("MIMIR_DBNAME must be set to run integration tests"),
-        user:   std::env::var("MIMIR_USER")
-                    .expect("MIMIR_USER must be set to run integration tests"),
-        ssl_mode:       mimir_core::config::SslMode::default(),
-        ssl_root_cert:  None,
+            .expect("MIMIR_DBNAME must be set to run integration tests"),
+        user: std::env::var("MIMIR_USER").expect("MIMIR_USER must be set to run integration tests"),
+        ssl_mode: mimir_core::config::SslMode::default(),
+        ssl_root_cert: None,
         ssl_client_cert: None,
-        ssl_client_key:  None,
-        pgbouncer:       false,
+        ssl_client_key: None,
+        pgbouncer: false,
         max_connections: 10,
     }
 }
@@ -45,7 +43,11 @@ async fn test_insert_and_get_belief() {
     let s = store().await;
     let b = Belief::new(format!("belief-{}", Uuid::new_v4()), 0.75, 0.85).unwrap();
     s.insert_belief(&b).await.expect("insert_belief");
-    let got = s.get_belief(b.id).await.expect("get_belief").expect("should exist");
+    let got = s
+        .get_belief(b.id)
+        .await
+        .expect("get_belief")
+        .expect("should exist");
     assert_eq!(got.id, b.id);
     assert_eq!(got.content, b.content);
     assert!((got.probability.value() - 0.75).abs() < 1e-9);
@@ -96,7 +98,9 @@ async fn test_update_belief_probability() {
     let s = store().await;
     let b = Belief::new(format!("upd-prob-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
     s.insert_belief(&b).await.unwrap();
-    s.update_belief_probability(b.id, Probability::new(0.9).unwrap()).await.unwrap();
+    s.update_belief_probability(b.id, Probability::new(0.9).unwrap())
+        .await
+        .unwrap();
     let got = s.get_belief(b.id).await.unwrap().unwrap();
     assert!((got.probability.value() - 0.9).abs() < 1e-9);
 }
@@ -106,7 +110,9 @@ async fn test_update_belief_confidence() {
     let s = store().await;
     let b = Belief::new(format!("upd-conf-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
     s.insert_belief(&b).await.unwrap();
-    s.update_belief_confidence(b.id, Probability::new(0.2).unwrap()).await.unwrap();
+    s.update_belief_confidence(b.id, Probability::new(0.2).unwrap())
+        .await
+        .unwrap();
     let got = s.get_belief(b.id).await.unwrap().unwrap();
     assert!((got.confidence.value() - 0.2).abs() < 1e-9);
 }
@@ -244,7 +250,9 @@ async fn test_insert_edge_defeats() {
     s.insert_edge(&edge).await.unwrap();
     // Edge stored — verify via get_edges_among
     let edges = s.get_edges_among(&[b1.id, b2.id]).await.unwrap();
-    assert!(edges.iter().any(|(f, t, et, _)| *f == b1.id && *t == b2.id && *et == EdgeType::Defeats));
+    assert!(edges
+        .iter()
+        .any(|(f, t, et, _)| *f == b1.id && *t == b2.id && *et == EdgeType::Defeats));
 }
 
 #[tokio::test]
@@ -294,9 +302,9 @@ async fn test_no_contradiction_without_edge() {
     s.insert_belief(&b1).await.unwrap();
     s.insert_belief(&b2).await.unwrap();
     let pairs = s.get_contradiction_pairs().await.unwrap();
-    let has = pairs.iter().any(|(a, b)| {
-        (*a == b1.id && *b == b2.id) || (*a == b2.id && *b == b1.id)
-    });
+    let has = pairs
+        .iter()
+        .any(|(a, b)| (*a == b1.id && *b == b2.id) || (*a == b2.id && *b == b1.id));
     assert!(!has);
 }
 
@@ -313,12 +321,20 @@ async fn test_get_edges_among_two_edges() {
     s.insert_belief(&b1).await.unwrap();
     s.insert_belief(&b2).await.unwrap();
     s.insert_belief(&b3).await.unwrap();
-    s.insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap()).await.unwrap();
-    s.insert_edge(&Edge::new(b2.id, b3.id, EdgeType::Causes, 0.7).unwrap()).await.unwrap();
+    s.insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap())
+        .await
+        .unwrap();
+    s.insert_edge(&Edge::new(b2.id, b3.id, EdgeType::Causes, 0.7).unwrap())
+        .await
+        .unwrap();
 
     let edges = s.get_edges_among(&[b1.id, b2.id, b3.id]).await.unwrap();
-    assert!(edges.iter().any(|(f, t, et, _)| *f == b1.id && *t == b2.id && *et == EdgeType::Supports));
-    assert!(edges.iter().any(|(f, t, et, _)| *f == b2.id && *t == b3.id && *et == EdgeType::Causes));
+    assert!(edges
+        .iter()
+        .any(|(f, t, et, _)| *f == b1.id && *t == b2.id && *et == EdgeType::Supports));
+    assert!(edges
+        .iter()
+        .any(|(f, t, et, _)| *f == b2.id && *t == b3.id && *et == EdgeType::Causes));
 }
 
 #[tokio::test]
@@ -337,7 +353,9 @@ async fn test_get_edges_among_excludes_outside_set() {
     s.insert_belief(&b1).await.unwrap();
     s.insert_belief(&b2).await.unwrap();
     s.insert_belief(&b3).await.unwrap();
-    s.insert_edge(&Edge::new(b1.id, b3.id, EdgeType::Supports, 0.9).unwrap()).await.unwrap();
+    s.insert_edge(&Edge::new(b1.id, b3.id, EdgeType::Supports, 0.9).unwrap())
+        .await
+        .unwrap();
 
     // Only ask about b1 and b2 — the b1→b3 edge should not appear
     let edges = s.get_edges_among(&[b1.id, b2.id]).await.unwrap();
@@ -355,7 +373,9 @@ async fn test_get_downstream_via_causes() {
     let b2 = Belief::new(format!("dn-effect-{}", Uuid::new_v4()), 0.6, 0.7).unwrap();
     s.insert_belief(&b1).await.unwrap();
     s.insert_belief(&b2).await.unwrap();
-    s.insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Causes, 0.8).unwrap()).await.unwrap();
+    s.insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Causes, 0.8).unwrap())
+        .await
+        .unwrap();
     let downstream = s.get_downstream_beliefs(b1.id).await.unwrap();
     assert!(downstream.iter().any(|b| b.id == b2.id));
 }
@@ -378,8 +398,12 @@ async fn test_get_downstream_multi_hop() {
     s.insert_belief(&b1).await.unwrap();
     s.insert_belief(&b2).await.unwrap();
     s.insert_belief(&b3).await.unwrap();
-    s.insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap()).await.unwrap();
-    s.insert_edge(&Edge::new(b2.id, b3.id, EdgeType::Supports, 0.8).unwrap()).await.unwrap();
+    s.insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap())
+        .await
+        .unwrap();
+    s.insert_edge(&Edge::new(b2.id, b3.id, EdgeType::Supports, 0.8).unwrap())
+        .await
+        .unwrap();
     let downstream = s.get_downstream_beliefs(b1.id).await.unwrap();
     assert!(downstream.iter().any(|b| b.id == b2.id));
     assert!(downstream.iter().any(|b| b.id == b3.id));
@@ -390,7 +414,10 @@ async fn test_get_downstream_multi_hop() {
 // ---------------------------------------------------------------------------
 
 async fn service() -> MimirService {
-    let cfg = Config { database: test_db_config(), embeddings: None };
+    let cfg = Config {
+        database: test_db_config(),
+        embeddings: None,
+    };
     MimirService::connect(&cfg).await.expect("connect service")
 }
 
@@ -406,21 +433,49 @@ async fn test_intervention_is_read_only() {
     let b = Belief::new(format!("do-B-{}", Uuid::new_v4()), 0.4, 0.9).unwrap();
     s.insert_belief(&t).await.unwrap();
     s.insert_belief(&b).await.unwrap();
-    s.insert_edge(&Edge::new(t.id, b.id, EdgeType::Causes, 0.5).unwrap()).await.unwrap();
+    s.insert_edge(&Edge::new(t.id, b.id, EdgeType::Causes, 0.5).unwrap())
+        .await
+        .unwrap();
 
-    let b_before = s.get_belief(b.id).await.unwrap().unwrap().probability.value();
+    let b_before = s
+        .get_belief(b.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .probability
+        .value();
 
     let updates = svc.query_intervention(t.id, 1.0).await.unwrap();
     // B is a causal descendant and must be projected: boost(0.4, 1.0, 0.5) = 0.7.
-    let projected = updates.iter().find(|(id, _)| *id == b.id).map(|(_, p)| p.value());
+    let projected = updates
+        .iter()
+        .find(|(id, _)| *id == b.id)
+        .map(|(_, p)| p.value());
     assert!(projected.is_some(), "B should appear in the projection");
-    assert!((projected.unwrap() - 0.7).abs() < 1e-9, "got {:?}", projected);
+    assert!(
+        (projected.unwrap() - 0.7).abs() < 1e-9,
+        "got {:?}",
+        projected
+    );
 
     // The decisive check: the store row for B is UNCHANGED (no writeback).
-    let b_after = s.get_belief(b.id).await.unwrap().unwrap().probability.value();
-    assert!((b_after - b_before).abs() < 1e-12,
-        "query_intervention must not mutate the store: {} -> {}", b_before, b_after);
-    assert!((b_after - 0.4).abs() < 1e-9, "B should still be its stored 0.4");
+    let b_after = s
+        .get_belief(b.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .probability
+        .value();
+    assert!(
+        (b_after - b_before).abs() < 1e-12,
+        "query_intervention must not mutate the store: {} -> {}",
+        b_before,
+        b_after
+    );
+    assert!(
+        (b_after - 0.4).abs() < 1e-9,
+        "B should still be its stored 0.4"
+    );
 }
 
 // Acceptance criterion: validation. A value outside [0,1] is rejected (the
@@ -445,7 +500,7 @@ async fn test_intervention_unknown_target_errors() {
 // ---------------------------------------------------------------------------
 
 fn sorted_updates(mut v: Vec<(Uuid, Probability)>) -> Vec<(Uuid, f64)> {
-    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v.sort_by_key(|a| a.0);
     v.into_iter().map(|(id, p)| (id, p.value())).collect()
 }
 
@@ -461,12 +516,16 @@ async fn test_evidence_does_not_perturb_propagation() {
     let b = Belief::new(format!("grnd-B-{}", Uuid::new_v4()), 0.3, 0.8).unwrap();
     s.insert_belief(&a).await.unwrap();
     s.insert_belief(&b).await.unwrap();
-    s.insert_edge(&Edge::new(a.id, b.id, EdgeType::Supports, 0.5).unwrap()).await.unwrap();
+    s.insert_edge(&Edge::new(a.id, b.id, EdgeType::Supports, 0.5).unwrap())
+        .await
+        .unwrap();
 
     // Baseline: propagate (this writes b), capture the result.
     let baseline = svc.propagate_from(a.id).await.unwrap();
     // Reset b to its original probability so the second run starts identically.
-    s.update_belief_probability(b.id, Probability::new(0.3).unwrap()).await.unwrap();
+    s.update_belief_probability(b.id, Probability::new(0.3).unwrap())
+        .await
+        .unwrap();
 
     // Overlay: a DocumentChunk grounding BOTH beliefs.
     let chunk = DocumentChunk::new(
@@ -511,7 +570,9 @@ async fn test_add_and_query_grounded() {
     svc.add_evidence(b.id, chunk.id, 0.8).await.unwrap();
 
     let grounded = svc.query_relevant_grounded(&token, 10, 3).await.unwrap();
-    let gb = grounded.iter().find(|g| g.belief.id == b.id)
+    let gb = grounded
+        .iter()
+        .find(|g| g.belief.id == b.id)
         .expect("belief should be retrieved by its unique token");
     assert_eq!(gb.evidence.len(), 1, "one grounding passage expected");
     let e = &gb.evidence[0];
@@ -529,7 +590,11 @@ async fn test_delete_belief_removes_grounds_edge() {
     let b = Belief::new(format!("grnd-del-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
     s.insert_belief(&b).await.unwrap();
     let chunk = DocumentChunk::new(
-        "d.md".to_string(), vec![], "passage".to_string(), None, None,
+        "d.md".to_string(),
+        vec![],
+        "passage".to_string(),
+        None,
+        None,
     );
     s.insert_document_chunk(&chunk).await.unwrap();
     svc.add_evidence(b.id, chunk.id, 1.0).await.unwrap();

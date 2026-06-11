@@ -41,8 +41,7 @@ fn belief_from_row(row: &sqlx::postgres::PgRow) -> Result<Belief> {
     let id = Uuid::parse_str(&id_str)?;
     let probability: f64 = probability_str.parse()?;
     let confidence: f64 = confidence_str.parse()?;
-    let created_at =
-        DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&chrono::Utc);
+    let created_at = DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&chrono::Utc);
     let last_activated_at =
         DateTime::parse_from_rfc3339(&last_activated_str)?.with_timezone(&chrono::Utc);
 
@@ -71,8 +70,7 @@ fn pattern_from_row(row: &sqlx::postgres::PgRow) -> Result<Pattern> {
     let id = Uuid::parse_str(&id_str)?;
     let activation_count: u32 = activation_count_str.parse()?;
     let success_rate: f64 = success_rate_str.parse()?;
-    let created_at =
-        DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&chrono::Utc);
+    let created_at = DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&chrono::Utc);
 
     Ok(Pattern {
         id,
@@ -97,13 +95,19 @@ fn chunk_from_row(row: &sqlx::postgres::PgRow) -> Result<DocumentChunk> {
 
     let id = Uuid::parse_str(&id_str)?;
     // AGE lists cast to text as JSON arrays: ["H1","H2"] or []
-    let section_path: Vec<String> =
-        serde_json::from_str(&section_path_str).unwrap_or_default();
+    let section_path: Vec<String> = serde_json::from_str(&section_path_str).unwrap_or_default();
     let parent_id = parent_id_str
         .as_deref()
         .and_then(|s| Uuid::parse_str(s).ok());
 
-    Ok(DocumentChunk { id, document_path, section_path, content, parent_id, project })
+    Ok(DocumentChunk {
+        id,
+        document_path,
+        section_path,
+        content,
+        parent_id,
+        project,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -376,9 +380,9 @@ $$) AS (n ag_catalog.agtype)"#
     /// CONTRADICTS edges are stored bidirectionally, so the returned value is
     /// the raw directed-edge count (logical pairs × 2).
     pub async fn count_edges(&self) -> Result<(usize, usize, usize, usize)> {
-        let supports    = self.count_edges_by_label("SUPPORTS").await?;
-        let defeats     = self.count_edges_by_label("DEFEATS").await?;
-        let causes      = self.count_edges_by_label("CAUSES").await?;
+        let supports = self.count_edges_by_label("SUPPORTS").await?;
+        let defeats = self.count_edges_by_label("DEFEATS").await?;
+        let causes = self.count_edges_by_label("CAUSES").await?;
         let contradicts = self.count_edges_by_label("CONTRADICTS").await?;
         Ok((supports, defeats, causes, contradicts))
     }
@@ -626,7 +630,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
 
             let from_id = Uuid::parse_str(&from_raw)?;
             let to_id = Uuid::parse_str(&to_raw)?;
-            let edge_type = EdgeType::from_str(&label_raw)?;
+            let edge_type: EdgeType = label_raw.parse()?;
             let weight: f64 = weight_raw.parse()?;
             let probability = Probability::new(weight)?;
 
@@ -776,12 +780,10 @@ $$) AS (ok ag_catalog.agtype)"#
         if ids.is_empty() {
             return Ok(());
         }
-        sqlx::query(
-            "DELETE FROM public.chunk_embeddings WHERE chunk_id = ANY($1)",
-        )
-        .bind(ids)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("DELETE FROM public.chunk_embeddings WHERE chunk_id = ANY($1)")
+            .bind(ids)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -836,11 +838,7 @@ $$) AS (ok ag_catalog.agtype)"#
     // -----------------------------------------------------------------------
 
     /// Insert or replace the embedding for a belief.
-    pub async fn insert_belief_embedding(
-        &self,
-        belief_id: Uuid,
-        embedding: &[f32],
-    ) -> Result<()> {
+    pub async fn insert_belief_embedding(&self, belief_id: Uuid, embedding: &[f32]) -> Result<()> {
         let vec_str = vec_literal(embedding);
         sqlx::query(
             "INSERT INTO public.belief_embeddings (belief_id, embedding) \
@@ -962,7 +960,8 @@ $$) AS (weight ag_catalog.agtype)"#
         if rows.is_empty() {
             bail!(
                 "insert_evidence: chunk or belief not found (chunk={}, belief={})",
-                c, b
+                c,
+                b
             );
         }
         Ok(())

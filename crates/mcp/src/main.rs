@@ -3,11 +3,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::error;
 
-use mimir_core::{
-    config::Config,
-    graph::EdgeType,
-    MimirService,
-};
+use mimir_core::{config::Config, graph::EdgeType, MimirService};
 
 // ---------------------------------------------------------------------------
 // JSON-RPC helpers
@@ -304,11 +300,7 @@ fn tools_list() -> Value {
 // Tool dispatch
 // ---------------------------------------------------------------------------
 
-async fn handle_tool_call(
-    svc: &MimirService,
-    name: &str,
-    args: &Value,
-) -> Result<Value> {
+async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Result<Value> {
     match name {
         "insert_belief" => {
             let content = args["content"]
@@ -321,7 +313,10 @@ async fn handle_tool_call(
                 .as_f64()
                 .ok_or_else(|| anyhow::anyhow!("missing 'confidence'"))?;
             let belief = match args["project"].as_str() {
-                Some(project) => svc.add_belief_in_project(content, probability, confidence, project).await?,
+                Some(project) => {
+                    svc.add_belief_in_project(content, probability, confidence, project)
+                        .await?
+                }
                 None => svc.add_belief(content, probability, confidence).await?,
             };
             Ok(serde_json::to_value(&belief)?)
@@ -380,7 +375,8 @@ async fn handle_tool_call(
 
             let from_id = uuid::Uuid::parse_str(from_str)?;
             let to_id = uuid::Uuid::parse_str(to_str)?;
-            svc.add_edge(from_id, to_id, EdgeType::Supports, weight).await?;
+            svc.add_edge(from_id, to_id, EdgeType::Supports, weight)
+                .await?;
             Ok(json!({ "ok": true }))
         }
 
@@ -397,7 +393,8 @@ async fn handle_tool_call(
 
             let from_id = uuid::Uuid::parse_str(from_str)?;
             let to_id = uuid::Uuid::parse_str(to_str)?;
-            svc.add_edge(from_id, to_id, EdgeType::Causes, weight).await?;
+            svc.add_edge(from_id, to_id, EdgeType::Causes, weight)
+                .await?;
             Ok(json!({ "ok": true }))
         }
 
@@ -415,7 +412,8 @@ async fn handle_tool_call(
             let from_id = uuid::Uuid::parse_str(from_str)?;
             let to_id = uuid::Uuid::parse_str(to_str)?;
             // Propagation happens automatically inside add_edge for EdgeType::Defeats
-            svc.add_edge(from_id, to_id, EdgeType::Defeats, weight).await?;
+            svc.add_edge(from_id, to_id, EdgeType::Defeats, weight)
+                .await?;
             Ok(json!({ "ok": true }))
         }
 
@@ -430,7 +428,8 @@ async fn handle_tool_call(
 
             let id_a = uuid::Uuid::parse_str(id_a_str)?;
             let id_b = uuid::Uuid::parse_str(id_b_str)?;
-            svc.add_edge(id_a, id_b, EdgeType::Contradicts, weight).await?;
+            svc.add_edge(id_a, id_b, EdgeType::Contradicts, weight)
+                .await?;
             Ok(json!({ "ok": true }))
         }
 
@@ -552,9 +551,9 @@ async fn handle_tool_call(
             let updates = svc.propagate_from(id).await?;
             let result: Vec<Value> = updates
                 .into_iter()
-                .map(|(uid, prob)| {
-                    json!({ "id": uid.to_string(), "new_probability": prob.value() })
-                })
+                .map(
+                    |(uid, prob)| json!({ "id": uid.to_string(), "new_probability": prob.value() }),
+                )
                 .collect();
             Ok(json!(result))
         }
@@ -628,7 +627,10 @@ async fn handle_tool_call(
 async fn main() -> Result<()> {
     // Handle --version / -V before any I/O or DB work, mirroring the CLI's clap
     // `--version` so both binaries answer the same way.
-    if std::env::args().skip(1).any(|a| a == "--version" || a == "-V") {
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == "--version" || a == "-V")
+    {
         println!("mimir-mcp {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
@@ -689,10 +691,7 @@ async fn main() -> Result<()> {
 
         let is_notification = request.get("id").is_none();
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request
-            .get("method")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
         let params = request
             .get("params")
             .cloned()
@@ -711,15 +710,15 @@ async fn main() -> Result<()> {
             "tools/list" => ok_response(&id, json!({ "tools": tools_list() })),
 
             "tools/call" => {
-                let tool_name = params
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let empty_obj = Value::Object(serde_json::Map::new());
                 let arguments = params.get("arguments").unwrap_or(&empty_obj);
 
                 match handle_tool_call(&svc, tool_name, arguments).await {
-                    Ok(result) => ok_response(&id, json!({ "content": [{ "type": "text", "text": result.to_string() }] })),
+                    Ok(result) => ok_response(
+                        &id,
+                        json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
+                    ),
                     Err(e) => err_response(&id, -32000, &e.to_string()),
                 }
             }
