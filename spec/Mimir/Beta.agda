@@ -28,6 +28,7 @@ open import Data.Rational.Properties
          *-distribˡ-+; *-distribʳ-+;
          *-monoˡ-≤-nonNeg; *-monoʳ-≤-nonNeg; +-monoʳ-≤; +-mono-≤;
          +-identityʳ; nonNegative⁻¹; *-zeroˡ; *-identityˡ; +-inverseˡ)
+open import Data.Product using (_×_; _,_)
 open import Data.List using (List; []; _∷_)
 import Data.List.Relation.Binary.Permutation.Propositional as P
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; cong; cong₂; trans)
@@ -174,6 +175,25 @@ accumulate-↭ prior (P.trans p q)            = trans (accumulate-↭ prior p) (
 -- trajectory for intermediate f is operational (a property of the convex
 -- pull) and not proved here; the transformation and both endpoints ARE.
 -- ---------------------------------------------------------------------------
+
+-- The retention factor f is a probability-like quantity: f = decay_factor^days
+-- with decay_factor ∈ [0,1], so f ∈ [0,1].  This is the DOMAIN of betaDecay —
+-- the implementation must reject a decay_factor outside [0,1] (an out-of-domain
+-- f anti-decays, pushing (α,β) AWAY from (1,1), which is not decay).
+ValidDecayFactor : ℚ → Set
+ValidDecayFactor f = (0ℚ ≤ f) × (f ≤ 1ℚ)
+
+-- The two proved endpoints lie in the domain (sanity: the domain is inhabited
+-- exactly where the endpoint lemmas apply).
+0-valid : ValidDecayFactor 0ℚ
+0-valid = ≤-refl , 0≤1
+  where 0≤1 : 0ℚ ≤ 1ℚ
+        0≤1 = nonNegative⁻¹ 1ℚ
+
+1-valid : ValidDecayFactor 1ℚ
+1-valid = 0≤1 , ≤-refl
+  where 0≤1 : 0ℚ ≤ 1ℚ
+        0≤1 = nonNegative⁻¹ 1ℚ
 
 betaDecay : Beta → ℚ → Beta
 betaDecay b f = mkBeta (1ℚ + f * (α b - 1ℚ)) (1ℚ + f * (β b - 1ℚ))
