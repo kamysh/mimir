@@ -126,7 +126,7 @@ This is where READ and WRITE join up:
 
 - New observation **confirms** a surfaced belief → `record_support(obs_id, belief_id, weight)`.
 - New observation **contradicts** one → `record_defeat(obs_id, belief_id, weight)` (cascades to dependents). **Every override you made under the READ discipline lands here.**
-- Two beliefs disagree (`get_contradictions`) → reconcile via `update_confidence` or `record_defeat`.
+- Two beliefs disagree (`get_contradictions`) → reconcile by `record_defeat` on whichever you now distrust (its evidence drops; dependents cascade).
 - You acted on a `CAUSES` belief and the predicted downstream effect did/didn't happen → that's support/defeat on the causal claim specifically.
 
 ### Mechanics — the tool calls
@@ -141,7 +141,7 @@ Full schemas in `mcp__mimir__*`; if you forget a parameter list mid-task, run
   Third field is `success_rate`, not `confidence`.
 - `record_support(obs_id, belief_id, weight)` / `record_defeat(obs_id, belief_id, weight)`.
 
-Others: `get_belief`, `list_beliefs`, `update_confidence`, `delete_belief`,
+Others: `get_belief`, `list_beliefs`, `delete_belief`,
 `get_contradictions`, `propagate_from`, and (Phase 1) `query_intervention`.
 
 ### Calibration
@@ -180,7 +180,7 @@ Writing 2–3 inserts at the end of a multi-step task is the cadence, not overki
 2. Did the user correct me in ways I haven't recorded?
 3. Did I solve something non-obvious a future Claude would re-derive from scratch?
 4. **Did I override or ignore any surfaced belief without recording why?** If so,
-   that's a `record_defeat` or an `update_confidence` I still owe the graph.
+   that's a `record_defeat` I still owe the graph.
 5. Did any tooling quirk surprise me?
 
 If any answer nags, act before closing. That nag is the signal.
