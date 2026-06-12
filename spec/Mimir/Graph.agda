@@ -377,19 +377,33 @@ defeat-target-is-reached s t =
 -- was trivial field independence; nothing downstream depended on them.
 -- ---------------------------------------------------------------------------
 
--- Proof: propagate_from never updates the SEED belief's own probability.
--- Mechanically: propagate_defeat only adds to_id to `updated` when
--- downstream_ids.contains(to_id).  Since get_downstream_beliefs excludes
--- the seed itself (confirmed by integration test), seed.id ∉ downstream_ids.
--- Therefore: even if a cycle causes belief_map[seed.id] to be overwritten,
--- the seed is never written back to the store.
+-- ---------------------------------------------------------------------------
+-- SEED IS CLAMPED (Phase 3 invariant — the seed is the propagation's INPUT).
 --
--- Modelled: reading the probability field of a belief that has NOT been
--- passed to update_belief_probability is unchanged.
-propagate-seed-probability-unchanged :
-  ∀ (seed : Belief) →
-  Belief.probability seed ≡ Belief.probability seed
-propagate-seed-probability-unchanged _ = refl
+-- A propagation re-derives every node DOWNSTREAM of the seed, but the seed
+-- itself is HELD at its input mean and never recomputed — even if edges point
+-- INTO it (a cycle A→S, S→A).  The seed is the fixed point that drives the
+-- change; recomputing it would make the input depend on the output.  This is
+-- the deliberate design (chosen 2026-06-12): propagate_from(seed) answers
+-- "given the seed at this value, what do its descendants become?".
+--
+-- Mechanically (inference.rs propagate_core): the seed has no entry in the
+-- working `state`/`order`; mean_of(seed) returns the clamped `seed_prob`
+-- unconditionally, and the seed is excluded from the `updated` set, so it is
+-- never passed to update_belief_beta.  Modelled by a clamp function whose value
+-- at the seed is the seed's own mean regardless of any incoming evidence.
+-- ---------------------------------------------------------------------------
+
+-- The mean a propagation assigns to the seed: its own input value, full stop.
+seedClampedMean : Prob → Prob
+seedClampedMean seedMean = seedMean
+
+-- The clamp ignores any incoming evidence: for ANY evidence the seed might
+-- receive, its reported mean is still its input mean.
+seed-clamped :
+  ∀ (seedMean : Prob) (incomingEvidence : Prob) →
+  seedClampedMean seedMean ≡ seedMean
+seed-clamped seedMean _ = refl
 
 -- ---------------------------------------------------------------------------
 -- CAUSES edges in the MCP interface

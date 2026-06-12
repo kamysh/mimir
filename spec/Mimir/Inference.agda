@@ -303,3 +303,26 @@ surgical-only-causes t (e ∷ es) with keepForIntervention t e in eq
     ∧-elimˡ true  b _  = refl
     ∧-elimˡ false b ()
 ... | false = surgical-only-causes t es
+
+-- ---------------------------------------------------------------------------
+-- INTERVENE CO-CAUSE COMPLETENESS (the dual of surgical-ignores-parents).
+--
+-- Surgery cuts only edges INTO the target t. A CAUSES edge X→M into a NON-target
+-- node M SURVIVES, EVEN IF X is outside the causal-descendant set of t — X is a
+-- genuine CO-CAUSE of M, and do(t) severs edges into t, never into M (Pearl).
+-- So the intervention projection of M must COUNT X's evidence: the implementation
+-- supplies the stored mean of such out-of-set sources (external_means), exactly
+-- as propagate_from does. A confounder reached only THROUGH t is already handled
+-- — the path that would change X is the one surgery cuts, so X's stored
+-- (observational) mean is the correct do-value for a node not caused by t.
+--
+-- Lemma: a CAUSES edge whose target is not t is kept by surgery. (Contrapositive
+-- of surgical-ignores-parents: those drop edges INTO t; this keeps the rest.)
+-- ---------------------------------------------------------------------------
+keep-causes-into-nontarget :
+  ∀ (t : NodeId) (e : Edge) →
+  isCausesᵇ (Edge.label e) ≡ true →
+  nodeEqᵇ (Edge.toId e) t ≡ false →
+  keepForIntervention t e ≡ true
+keep-causes-into-nontarget t e isC notT
+  rewrite isC | notT = refl
