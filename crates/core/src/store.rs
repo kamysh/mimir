@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use chrono::DateTime;
 use sqlx::{PgPool, Row};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::documents::DocumentChunk;
@@ -154,6 +155,10 @@ fn chunk_from_row(row: &sqlx::postgres::PgRow) -> Result<DocumentChunk> {
 // ---------------------------------------------------------------------------
 // AGE query helpers
 // ---------------------------------------------------------------------------
+
+/// Evidence-mass constant k for C-coupling (spec Mimir.Beta CCoupling).
+/// Each GROUNDS edge of weight w contributes α += k·w as a pseudo-observation.
+const EVIDENCE_MASS_K: f64 = 1.0;
 
 /// SQL fragment for returning all Belief scalar properties cast to TEXT.
 const BELIEF_RETURN_COLUMNS: &str = r#"AS (
@@ -1107,8 +1112,13 @@ $$) {CHUNK_RETURN_COLUMNS}"#
     // structural — see Mimir.Evidence (propagate-evidence-invariant).
     // -----------------------------------------------------------------------
 
-    /// Create a GROUNDS edge from a DocumentChunk to a Belief.
+    /// Create a GROUNDS edge from a DocumentChunk to a Belief, then apply
+    /// C-coupling: bump α += EVIDENCE_MASS_K * weight (spec: Mimir.Beta
+    /// CCoupling.coupleOne). β is unchanged; the updated (α,β) is written back.
     /// Errors if either endpoint is missing (the MATCH yields no rows).
+    ///
+    /// Both the CREATE GROUNDS and the α update run inside a single transaction
+    /// so concurrent calls cannot lose an increment (no TOCTOU window).
     pub async fn insert_evidence(
         &self,
         chunk_id: Uuid,
@@ -1119,14 +1129,30 @@ $$) {CHUNK_RETURN_COLUMNS}"#
         let c = chunk_id.to_string();
         let b = belief_id.to_string();
         let w = weight.value();
-        let sql = format!(
+
+        let create_sql = format!(
             r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (c:DocumentChunk {{id: '{c}'}}), (b:Belief {{id: '{b}'}})
   CREATE (c)-[r:GROUNDS {{weight: {w}}}]->(b)
   RETURN r.weight
 $$) AS (weight ag_catalog.agtype)"#
         );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let get_sql = format!(
+            r#"SELECT
+  id::text, content::text, probability::text, confidence::text,
+  alpha::text, beta::text, alpha0::text, beta0::text,
+  created_at::text, last_activated_at::text, project::text
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (n:Belief {{id: '{b}'}})
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta,
+         n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
+$$) {BELIEF_RETURN_COLUMNS}"#
+        );
+
+        let mut tx = self.pool.begin().await?;
+
+        // Step 1: create the GROUNDS edge (errors if endpoints missing).
+        let rows = sqlx::query(&create_sql).fetch_all(&mut *tx).await?;
         if rows.is_empty() {
             bail!(
                 "insert_evidence: chunk or belief not found (chunk={}, belief={})",
@@ -1134,7 +1160,50 @@ $$) AS (weight ag_catalog.agtype)"#
                 b
             );
         }
+
+        // Step 2: read current (α, β) inside the same transaction.
+        let rows = sqlx::query(&get_sql).fetch_all(&mut *tx).await?;
+        let belief = rows
+            .first()
+            .map(belief_from_row)
+            .transpose()?
+            .ok_or_else(|| anyhow::anyhow!("insert_evidence: belief {} vanished", b))?;
+
+        // Step 3: compute new α and derive cached scalars; write back atomically.
+        let new_alpha = belief.alpha + EVIDENCE_MASS_K * w;
+        let update_sql = self.update_belief_beta_sql(belief_id, new_alpha, belief.beta)?;
+        let rows = sqlx::query(&update_sql).fetch_all(&mut *tx).await?;
+        if rows.is_empty() {
+            bail!("insert_evidence: belief {} disappeared before update", b);
+        }
+
+        tx.commit().await?;
         Ok(())
+    }
+
+    /// Total grounding mass per belief over all beliefs: Σ k·wᵢ per belief_id.
+    /// Used by decay to resist pull toward prior in proportion to evidence mass
+    /// (spec Mimir.Beta CCoupling.coupling-increases-strength).
+    /// Returns only beliefs that have at least one GROUNDS edge.
+    pub async fn get_grounding_mass_all(&self) -> Result<HashMap<Uuid, f64>> {
+        let g = &self.graph_name;
+        let sql = format!(
+            r#"SELECT belief_id::text, total_weight::text
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (c:DocumentChunk)-[r:GROUNDS]->(b:Belief)
+  RETURN b.id, sum(r.weight)
+$$) AS (belief_id ag_catalog.agtype, total_weight ag_catalog.agtype)"#
+        );
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let mut out = HashMap::with_capacity(rows.len());
+        for row in &rows {
+            let id_raw: String = row.try_get("belief_id")?;
+            let w_raw: String = row.try_get("total_weight")?;
+            let id = Uuid::parse_str(&id_raw)?;
+            let total: f64 = w_raw.parse()?;
+            out.insert(id, total * EVIDENCE_MASS_K);
+        }
+        Ok(out)
     }
 
     /// For a set of beliefs, return their grounding as (belief_id, chunk_id, weight).

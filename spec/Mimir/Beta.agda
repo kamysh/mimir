@@ -338,3 +338,62 @@ load (mkStored a b a₀ b₀) = mkBWP (mkBeta a b) (mkBeta a₀ b₀)
 -- Round-trip: loading a stored belief reproduces it exactly.
 store-load-round-trip : ∀ (b : BetaWithPrior) → load (store b) ≡ b
 store-load-round-trip (mkBWP (mkBeta _ _) (mkBeta _ _)) = refl
+
+-- ---------------------------------------------------------------------------
+-- C-coupling (Phase 4, second layer).
+--
+-- A GROUNDS edge of weight w is a pseudo-observation that bumps α by k·w
+-- (evidence-mass constant k : ℚ, k ≥ 0).  β is unchanged.  This is a
+-- principled Bayesian update — exactly the support-mono case with d = k·w.
+--
+-- Three properties are proved:
+--  (1) coupling-increases-mean     : mean does not decrease (from support-mono)
+--  (2) coupling-preserves-β        : β is unchanged (by refl)
+--  (3) coupling-increases-strength : α+β grows, so betaDecay pulls less hard
+--  (4) coupleAll-α                 : iterated coupling accumulates groundingMass
+-- ---------------------------------------------------------------------------
+
+module CCoupling (k : ℚ) where
+
+  -- Apply one pseudo-observation of weight w: α += k·w, β unchanged.
+  coupleOne : ℚ → Beta → Beta
+  coupleOne w b = mkBeta (α b + k * w) (β b)
+
+  -- (1) Coupling never lowers the mean (α ≥ 0, β ≥ 0, k*w ≥ 0 required).
+  coupling-increases-mean :
+    ∀ (b : Beta) (w : ℚ)
+    → .{{NonNegative (α b)}} → .{{NonNegative (β b)}} → .{{NonNegative (k * w)}}
+    → mean≤ b (coupleOne w b)
+  coupling-increases-mean b w = support-mono b (k * w)
+
+  -- (2) β is untouched.
+  coupling-preserves-β : ∀ (b : Beta) (w : ℚ) → β (coupleOne w b) ≡ β b
+  coupling-preserves-β b w = refl
+
+  -- (3) strength (coupleOne w b) ≥ strength b  (when k*w ≥ 0).
+  --     strength b = α b + β b ≤ (α b + k*w) + β b = strength (coupleOne w b).
+  coupling-increases-strength :
+    ∀ (b : Beta) (w : ℚ) → .{{NonNegative (k * w)}}
+    → strength b ≤ strength (coupleOne w b)
+  coupling-increases-strength b w =
+    +-mono-≤ (p≤p+nonNeg (α b) (k * w)) ≤-refl
+
+  -- Total grounding mass for a list of evidence weights: Σᵢ k·wᵢ.
+  groundingMass : List ℚ → ℚ
+  groundingMass []       = 0ℚ
+  groundingMass (w ∷ ws) = k * w + groundingMass ws
+
+  -- Apply all evidence weights, innermost first.
+  coupleAll : List ℚ → Beta → Beta
+  coupleAll []       b = b
+  coupleAll (w ∷ ws) b = coupleOne w (coupleAll ws b)
+
+  -- (4) α after coupleAll ws = original α + groundingMass ws.
+  coupleAll-α :
+    ∀ (ws : List ℚ) (b : Beta) →
+    α (coupleAll ws b) ≡ α b + groundingMass ws
+  coupleAll-α []       b = sym (+-identityʳ (α b))
+  coupleAll-α (w ∷ ws) b =
+    trans (cong (_+ k * w) (coupleAll-α ws b))
+          (trans (+-assoc (α b) (groundingMass ws) (k * w))
+                 (cong (α b +_) (+-comm (groundingMass ws) (k * w))))
