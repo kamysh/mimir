@@ -54,7 +54,7 @@
         # Shared attrs for both packages
         commonAttrs = {
           pname = "mimir";
-          version = "0.5.0";
+          version = "0.6.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           doCheck = false; # integration tests require a live PostgreSQL connection
