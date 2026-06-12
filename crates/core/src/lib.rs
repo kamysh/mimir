@@ -98,8 +98,8 @@ pub struct MimirService {
 
 impl MimirService {
     pub async fn connect(cfg: &Config) -> Result<Self> {
-        let pool = db::connect(&cfg.database).await?;
-        sqlx::migrate!().run(&pool).await?;
+        db::migrate(&cfg.database).await?;
+        let pool = db::connect_pool(&cfg.database).await?;
         let embeddings = cfg.embeddings.as_ref().map(make_backend);
         Ok(Self {
             store: AgeStore::new(pool, cfg.database.dbname.clone()),

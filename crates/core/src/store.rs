@@ -1,7 +1,8 @@
 use anyhow::{bail, Result};
 use chrono::DateTime;
-use sqlx::{PgPool, Row};
+use deadpool_postgres::Pool;
 use std::collections::HashMap;
+use tokio_postgres::Row;
 use uuid::Uuid;
 
 use crate::documents::DocumentChunk;
@@ -39,45 +40,37 @@ fn ensure_finite(label: &str, values: &[(&str, f64)]) -> Result<()> {
 // (strings, numbers) *can* be cast to TEXT via `::text` in the AS-clause.
 // ---------------------------------------------------------------------------
 
-/// Decode a `Belief` from a sqlx row that has columns:
+/// Decode a `Belief` from a tokio-postgres Row with columns:
 ///   id TEXT, content TEXT, probability TEXT, confidence TEXT,
-///   created_at TEXT, last_activated_at TEXT
-fn belief_from_row(row: &sqlx::postgres::PgRow) -> Result<Belief> {
-    let id_str: String = row.try_get("id")?;
-    let content: String = row.try_get("content")?;
-    let probability_str: String = row.try_get("probability")?;
-    let confidence_str: String = row.try_get("confidence")?;
-    let created_at_str: String = row.try_get("created_at")?;
-    let last_activated_str: String = row.try_get("last_activated_at")?;
-    // project is optional — existing beliefs without it return SQL NULL
-    let project: Option<String> = row.try_get("project").unwrap_or(None);
+///   alpha TEXT, beta TEXT, alpha0 TEXT, beta0 TEXT,
+///   created_at TEXT, last_activated_at TEXT, project TEXT
+fn belief_from_row(row: &Row) -> Result<Belief> {
+    let id_str: &str = row.get("id");
+    let content: &str = row.get("content");
+    let probability_str: &str = row.get("probability");
+    let confidence_str: &str = row.get("confidence");
+    let created_at_str: &str = row.get("created_at");
+    let last_activated_str: &str = row.get("last_activated_at");
+    let project: Option<&str> = row.get("project");
 
-    let id = Uuid::parse_str(&id_str)?;
+    let id = Uuid::parse_str(id_str)?;
     let probability: f64 = probability_str.parse()?;
     let confidence: f64 = confidence_str.parse()?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&chrono::Utc);
+    let created_at = DateTime::parse_from_rfc3339(created_at_str)?.with_timezone(&chrono::Utc);
     let last_activated_at =
-        DateTime::parse_from_rfc3339(&last_activated_str)?.with_timezone(&chrono::Utc);
+        DateTime::parse_from_rfc3339(last_activated_str)?.with_timezone(&chrono::Utc);
 
     // Beta state: read α/β/α₀/β₀ if present (post-migration 005), else derive
     // them from the stored (probability, confidence) via the prior mapping.
-    // prior_from is exact, so a pre-migration row loads with mean == probability.
-    let alpha: Option<f64> = row
-        .try_get::<String, _>("alpha")
-        .ok()
-        .and_then(|s| s.parse().ok());
-    let beta: Option<f64> = row
-        .try_get::<String, _>("beta")
-        .ok()
-        .and_then(|s| s.parse().ok());
-    let alpha0: Option<f64> = row
-        .try_get::<String, _>("alpha0")
-        .ok()
-        .and_then(|s| s.parse().ok());
-    let beta0: Option<f64> = row
-        .try_get::<String, _>("beta0")
-        .ok()
-        .and_then(|s| s.parse().ok());
+    let alpha_str: Option<&str> = row.get("alpha");
+    let beta_str: Option<&str> = row.get("beta");
+    let alpha0_str: Option<&str> = row.get("alpha0");
+    let beta0_str: Option<&str> = row.get("beta0");
+
+    let alpha: Option<f64> = alpha_str.and_then(|s| s.parse().ok());
+    let beta: Option<f64> = beta_str.and_then(|s| s.parse().ok());
+    let alpha0: Option<f64> = alpha0_str.and_then(|s| s.parse().ok());
+    let beta0: Option<f64> = beta0_str.and_then(|s| s.parse().ok());
 
     let (derived_a0, derived_b0) = crate::graph::prior_from(probability, confidence);
     let alpha0 = alpha0.unwrap_or(derived_a0);
@@ -87,68 +80,67 @@ fn belief_from_row(row: &sqlx::postgres::PgRow) -> Result<Belief> {
 
     Belief::from_stored(
         id,
-        content,
+        content.to_owned(),
         alpha,
         beta,
         alpha0,
         beta0,
         created_at,
         last_activated_at,
-        project,
+        project.map(str::to_owned),
     )
 }
 
-/// Decode a `Pattern` from a sqlx row with columns:
+/// Decode a `Pattern` from a tokio-postgres Row with columns:
 ///   id TEXT, situation TEXT, approach TEXT, activation_count TEXT,
 ///   success_rate TEXT, created_at TEXT
-fn pattern_from_row(row: &sqlx::postgres::PgRow) -> Result<Pattern> {
-    let id_str: String = row.try_get("id")?;
-    let situation: String = row.try_get("situation")?;
-    let approach: String = row.try_get("approach")?;
-    let activation_count_str: String = row.try_get("activation_count")?;
-    let success_rate_str: String = row.try_get("success_rate")?;
-    let created_at_str: String = row.try_get("created_at")?;
+fn pattern_from_row(row: &Row) -> Result<Pattern> {
+    let id_str: &str = row.get("id");
+    let situation: &str = row.get("situation");
+    let approach: &str = row.get("approach");
+    let activation_count_str: &str = row.get("activation_count");
+    let success_rate_str: &str = row.get("success_rate");
+    let created_at_str: &str = row.get("created_at");
 
-    let id = Uuid::parse_str(&id_str)?;
+    let id = Uuid::parse_str(id_str)?;
     let activation_count: u32 = activation_count_str.parse()?;
     let success_rate: f64 = success_rate_str.parse()?;
-    let created_at = DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&chrono::Utc);
+    let created_at = DateTime::parse_from_rfc3339(created_at_str)?.with_timezone(&chrono::Utc);
 
     Ok(Pattern {
         id,
-        situation,
-        approach,
+        situation: situation.to_owned(),
+        approach: approach.to_owned(),
         activation_count,
         success_rate: Probability::new(success_rate)?,
         created_at,
     })
 }
 
-/// Decode a `DocumentChunk` from a sqlx row with columns:
+/// Decode a `DocumentChunk` from a tokio-postgres Row with columns:
 ///   id TEXT, document_path TEXT, section_path TEXT (agtype list as JSON),
 ///   content TEXT, parent_id TEXT, project TEXT
-fn chunk_from_row(row: &sqlx::postgres::PgRow) -> Result<DocumentChunk> {
-    let id_str: String = row.try_get("id")?;
-    let document_path: String = row.try_get("document_path")?;
-    let section_path_str: String = row.try_get("section_path")?;
-    let content: String = row.try_get("content")?;
-    let parent_id_str: Option<String> = row.try_get("parent_id").unwrap_or(None);
-    let project: Option<String> = row.try_get("project").unwrap_or(None);
+fn chunk_from_row(row: &Row) -> Result<DocumentChunk> {
+    let id_str: &str = row.get("id");
+    let document_path: &str = row.get("document_path");
+    let section_path_str: &str = row.get("section_path");
+    let content: &str = row.get("content");
+    let parent_id_str: Option<&str> = row.get("parent_id");
+    let project: Option<&str> = row.get("project");
 
-    let id = Uuid::parse_str(&id_str)?;
+    let id = Uuid::parse_str(id_str)?;
     // AGE lists cast to text as JSON arrays: ["H1","H2"] or []
-    let section_path: Vec<String> = serde_json::from_str(&section_path_str).unwrap_or_default();
-    let parent_id = parent_id_str
-        .as_deref()
-        .and_then(|s| Uuid::parse_str(s).ok());
+    let section_path: Vec<String> =
+        serde_json::from_str(section_path_str).unwrap_or_default();
+    let parent_id = parent_id_str.and_then(|s| Uuid::parse_str(s).ok());
 
     Ok(DocumentChunk {
         id,
-        document_path,
+        document_path: document_path.to_owned(),
         section_path,
-        content,
+        content: content.to_owned(),
         parent_id,
-        project,
+        project: project.map(str::to_owned),
     })
 }
 
@@ -200,13 +192,13 @@ const CHUNK_RETURN_COLUMNS: &str = r#"AS (
 // ---------------------------------------------------------------------------
 
 pub struct AgeStore {
-    pool: PgPool,
+    pool: Pool,
     /// AGE graph name — equals the PostgreSQL database name from config.
     graph_name: String,
 }
 
 impl AgeStore {
-    pub fn new(pool: PgPool, graph_name: String) -> Self {
+    pub fn new(pool: Pool, graph_name: String) -> Self {
         Self { pool, graph_name }
     }
 
@@ -259,7 +251,8 @@ impl AgeStore {
 $$) AS (id ag_catalog.agtype)"#
         );
 
-        sqlx::query(&sql).execute(&self.pool).await?;
+        let client = self.pool.get().await?;
+        client.execute(&sql, &[]).await?;
         Ok(())
     }
 
@@ -280,7 +273,9 @@ $$) AS (id ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        client.query(&sql, &[]).await?;
+        drop(client);
         self.delete_belief_embeddings(&[id]).await?;
         Ok(true)
     }
@@ -296,9 +291,10 @@ $$) AS (ok ag_catalog.agtype)"#
 FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{project: '{project_esc}'}})
   RETURN n.id
-$$) AS (id ag_catalog.agtype)"#
+$$) AS (id text)"#
         );
-        let rows = sqlx::query(&count_sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&count_sql, &[]).await?;
         let count = rows.len();
         if count == 0 {
             return Ok(0);
@@ -306,8 +302,8 @@ $$) AS (id ag_catalog.agtype)"#
         let ids: Vec<Uuid> = rows
             .iter()
             .filter_map(|r| {
-                let s: String = r.try_get("id").ok()?;
-                Uuid::parse_str(&s).ok()
+                let s: &str = r.get("id");
+                Uuid::parse_str(s).ok()
             })
             .collect();
         let delete_sql = format!(
@@ -317,7 +313,8 @@ $$) AS (id ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        sqlx::query(&delete_sql).fetch_all(&self.pool).await?;
+        client.query(&delete_sql, &[]).await?;
+        drop(client);
         self.delete_belief_embeddings(&ids).await?;
         Ok(count)
     }
@@ -344,7 +341,8 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(None);
         }
@@ -396,12 +394,12 @@ $$) AS (id ag_catalog.agtype)"#
         for &(id, alpha, beta) in updates {
             stmts.push((id, self.update_belief_beta_sql(id, alpha, beta)?));
         }
-        let mut tx = self.pool.begin().await?;
+        let mut client = self.pool.get().await?;
+        let tx = client.transaction().await?;
         for (id, sql) in &stmts {
-            let rows = sqlx::query(sql).fetch_all(&mut *tx).await?;
+            let rows = tx.query(sql, &[]).await?;
             if rows.is_empty() {
-                // Belief missing — roll the whole sweep back (tx dropped on early
-                // return without commit).
+                // Belief missing — roll the whole sweep back.
                 bail!("belief {} not found", id);
             }
         }
@@ -430,7 +428,8 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
             beliefs.push(belief_from_row(row)?);
@@ -462,11 +461,12 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN count(*) AS n
 $$) AS (n ag_catalog.agtype)"#
         );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(0);
         }
-        let s: String = rows[0].try_get("n")?;
+        let s: &str = rows[0].get("n");
         Ok(s.parse()?)
     }
 
@@ -490,11 +490,12 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN count(*) AS n
 $$) AS (n ag_catalog.agtype)"#
         );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(0);
         }
-        let s: String = rows[0].try_get("n")?;
+        let s: &str = rows[0].get("n");
         Ok(s.parse()?)
     }
 
@@ -525,7 +526,8 @@ $$) AS (n ag_catalog.agtype)"#
 $$) AS (id ag_catalog.agtype)"#
         );
 
-        sqlx::query(&sql).execute(&self.pool).await?;
+        let client = self.pool.get().await?;
+        client.execute(&sql, &[]).await?;
         Ok(())
     }
 
@@ -546,7 +548,8 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {PATTERN_RETURN_COLUMNS}"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(None);
         }
@@ -568,7 +571,8 @@ $$) {PATTERN_RETURN_COLUMNS}"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        client.query(&sql, &[]).await?;
         Ok(true)
     }
 
@@ -588,7 +592,8 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {PATTERN_RETURN_COLUMNS}"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         let mut patterns = Vec::with_capacity(rows.len());
         for row in &rows {
             patterns.push(pattern_from_row(row)?);
@@ -616,7 +621,8 @@ $$) {PATTERN_RETURN_COLUMNS}"#
 $$) AS (weight ag_catalog.agtype)"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             bail!(
                 "insert_edge: one or both beliefs not found (from={}, to={})",
@@ -648,7 +654,8 @@ $$) AS (weight ag_catalog.agtype)"#
 $$) AS (weight ag_catalog.agtype)"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             bail!(
                 "insert_contradicts: one or both beliefs not found (from={}, to={})",
@@ -674,14 +681,13 @@ FROM ag_catalog.cypher('{g}', $$
 $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         let mut pairs = Vec::with_capacity(rows.len());
         for row in &rows {
-            let from_raw: String = row.try_get("from_id")?;
-            let to_raw: String = row.try_get("to_id")?;
-            let from_id = Uuid::parse_str(&from_raw)?;
-            let to_id = Uuid::parse_str(&to_raw)?;
-            pairs.push((from_id, to_id));
+            let from_raw: &str = row.get("from_id");
+            let to_raw: &str = row.get("to_id");
+            pairs.push((Uuid::parse_str(from_raw)?, Uuid::parse_str(to_raw)?));
         }
         Ok(pairs)
     }
@@ -714,16 +720,17 @@ FROM ag_catalog.cypher('{g}', $$
 $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agtype, weight ag_catalog.agtype)"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         let mut edges = Vec::with_capacity(rows.len());
         for row in &rows {
-            let from_raw: String = row.try_get("from_id")?;
-            let to_raw: String = row.try_get("to_id")?;
-            let label_raw: String = row.try_get("label")?;
-            let weight_raw: String = row.try_get("weight")?;
+            let from_raw: &str = row.get("from_id");
+            let to_raw: &str = row.get("to_id");
+            let label_raw: &str = row.get("label");
+            let weight_raw: &str = row.get("weight");
 
-            let from_id = Uuid::parse_str(&from_raw)?;
-            let to_id = Uuid::parse_str(&to_raw)?;
+            let from_id = Uuid::parse_str(from_raw)?;
+            let to_id = Uuid::parse_str(to_raw)?;
             let edge_type: EdgeType = label_raw.parse()?;
             let weight: f64 = weight_raw.parse()?;
             let probability = Probability::new(weight)?;
@@ -788,23 +795,22 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
             cau = arm("CAUSES"),
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         let mut edges = Vec::with_capacity(rows.len());
         for row in &rows {
-            let from_id = Uuid::parse_str(&row.try_get::<String, _>("from_id")?)?;
-            let to_id = Uuid::parse_str(&row.try_get::<String, _>("to_id")?)?;
-            let edge_type: EdgeType = row.try_get::<String, _>("label")?.parse()?;
-            let weight: f64 = row.try_get::<String, _>("weight")?.parse()?;
+            let from_id = Uuid::parse_str(row.get::<_, &str>("from_id"))?;
+            let to_id = Uuid::parse_str(row.get::<_, &str>("to_id"))?;
+            let edge_type: EdgeType = row.get::<_, &str>("label").parse()?;
+            let weight: f64 = row.get::<_, &str>("weight").parse()?;
             let probability = Probability::new(weight)?;
             // Source mean from its stored (α, β); fall back to 0.5 (empty-Beta).
             let src_alpha: f64 = row
-                .try_get::<String, _>("src_alpha")
-                .ok()
+                .get::<_, Option<&str>>("src_alpha")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.0);
             let src_beta: f64 = row
-                .try_get::<String, _>("src_beta")
-                .ok()
+                .get::<_, Option<&str>>("src_beta")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0.0);
             let source_mean = crate::graph::beta_mean(src_alpha, src_beta);
@@ -856,7 +862,8 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
   RETURN c.id
 $$) AS (id ag_catalog.agtype)"#
         );
-        sqlx::query(&sql).execute(&self.pool).await?;
+        let client = self.pool.get().await?;
+        client.execute(&sql, &[]).await?;
 
         // Insert CONTAINS edge from parent → child when parent exists.
         if let Some(parent_id) = chunk.parent_id {
@@ -868,7 +875,7 @@ $$) AS (id ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
             );
-            sqlx::query(&edge_sql).fetch_all(&self.pool).await?;
+            client.query(&edge_sql, &[]).await?;
         }
         Ok(())
     }
@@ -876,15 +883,13 @@ $$) AS (ok ag_catalog.agtype)"#
     /// Insert one row into public.chunk_embeddings.
     pub async fn insert_chunk_embedding(&self, chunk_id: Uuid, embedding: &[f32]) -> Result<()> {
         let vec_str = vec_literal(embedding);
-        sqlx::query(
+        let sql = format!(
             "INSERT INTO public.chunk_embeddings (chunk_id, embedding) \
-             VALUES ($1, $2::vector) \
-             ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding",
-        )
-        .bind(chunk_id)
-        .bind(&vec_str)
-        .execute(&self.pool)
-        .await?;
+             VALUES ('{chunk_id}', '{vec_str}'::vector) \
+             ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding"
+        );
+        let client = self.pool.get().await?;
+        client.execute(&sql, &[]).await?;
         Ok(())
     }
 
@@ -899,12 +904,10 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN c.id
 $$) AS (id ag_catalog.agtype)"#
         );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         rows.iter()
-            .map(|r| {
-                let s: String = r.try_get("id")?;
-                Ok(Uuid::parse_str(&s)?)
-            })
+            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("id"))?))
             .collect()
     }
 
@@ -919,12 +922,10 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN c.id
 $$) AS (id ag_catalog.agtype)"#
         );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         rows.iter()
-            .map(|r| {
-                let s: String = r.try_get("id")?;
-                Ok(Uuid::parse_str(&s)?)
-            })
+            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("id"))?))
             .collect()
     }
 
@@ -946,7 +947,8 @@ $$) AS (id ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        client.query(&sql, &[]).await?;
         Ok(())
     }
 
@@ -955,10 +957,16 @@ $$) AS (ok ag_catalog.agtype)"#
         if ids.is_empty() {
             return Ok(());
         }
-        sqlx::query("DELETE FROM public.chunk_embeddings WHERE chunk_id = ANY($1)")
-            .bind(ids)
-            .execute(&self.pool)
-            .await?;
+        let id_list = ids
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "DELETE FROM public.chunk_embeddings WHERE chunk_id IN ({id_list})"
+        );
+        let client = self.pool.get().await?;
+        client.execute(&sql, &[]).await?;
         Ok(())
     }
 
@@ -984,8 +992,6 @@ $$) AS (ok ag_catalog.agtype)"#
                  ORDER BY embedding <=> '{vec_str}'::vector {limit_clause}"
             ),
             Some(ids) => {
-                // Use a subquery to filter by chunk IDs.
-                // parameterized bind for the UUID array, string-interpolated for the vector.
                 let id_list = ids
                     .iter()
                     .map(|id| format!("'{id}'"))
@@ -999,12 +1005,10 @@ $$) AS (ok ag_catalog.agtype)"#
             }
         };
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         rows.iter()
-            .map(|r| {
-                let s: String = r.try_get("chunk_id")?;
-                Ok(Uuid::parse_str(&s)?)
-            })
+            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("chunk_id"))?))
             .collect()
     }
 
@@ -1015,15 +1019,13 @@ $$) AS (ok ag_catalog.agtype)"#
     /// Insert or replace the embedding for a belief.
     pub async fn insert_belief_embedding(&self, belief_id: Uuid, embedding: &[f32]) -> Result<()> {
         let vec_str = vec_literal(embedding);
-        sqlx::query(
+        let sql = format!(
             "INSERT INTO public.belief_embeddings (belief_id, embedding) \
-             VALUES ($1, $2::vector) \
-             ON CONFLICT (belief_id) DO UPDATE SET embedding = EXCLUDED.embedding",
-        )
-        .bind(belief_id)
-        .bind(&vec_str)
-        .execute(&self.pool)
-        .await?;
+             VALUES ('{belief_id}', '{vec_str}'::vector) \
+             ON CONFLICT (belief_id) DO UPDATE SET embedding = EXCLUDED.embedding"
+        );
+        let client = self.pool.get().await?;
+        client.execute(&sql, &[]).await?;
         Ok(())
     }
 
@@ -1032,10 +1034,16 @@ $$) AS (ok ag_catalog.agtype)"#
         if ids.is_empty() {
             return Ok(());
         }
-        sqlx::query("DELETE FROM public.belief_embeddings WHERE belief_id = ANY($1)")
-            .bind(ids)
-            .execute(&self.pool)
-            .await?;
+        let id_list = ids
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "DELETE FROM public.belief_embeddings WHERE belief_id IN ({id_list})"
+        );
+        let client = self.pool.get().await?;
+        client.execute(&sql, &[]).await?;
         Ok(())
     }
 
@@ -1057,25 +1065,21 @@ $$) AS (ok ag_catalog.agtype)"#
             "SELECT belief_id::text FROM public.belief_embeddings \
              ORDER BY embedding <=> '{vec_str}'::vector {limit_clause}"
         );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         rows.iter()
-            .map(|r| {
-                let s: String = r.try_get("belief_id")?;
-                Ok(Uuid::parse_str(&s)?)
-            })
+            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("belief_id"))?))
             .collect()
     }
 
     /// Belief IDs that already have an embedding row (used by `reembed` to skip).
     pub async fn list_embedded_belief_ids(&self) -> Result<Vec<Uuid>> {
-        let rows = sqlx::query("SELECT belief_id::text FROM public.belief_embeddings")
-            .fetch_all(&self.pool)
+        let client = self.pool.get().await?;
+        let rows = client
+            .query("SELECT belief_id::text FROM public.belief_embeddings", &[])
             .await?;
         rows.iter()
-            .map(|r| {
-                let s: String = r.try_get("belief_id")?;
-                Ok(Uuid::parse_str(&s)?)
-            })
+            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("belief_id"))?))
             .collect()
     }
 
@@ -1096,7 +1100,8 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN c.id, c.documentPath, c.sectionPath, c.content, c.parentId, c.project
 $$) {CHUNK_RETURN_COLUMNS}"#
         );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(None);
         }
@@ -1149,10 +1154,11 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let mut tx = self.pool.begin().await?;
+        let mut client = self.pool.get().await?;
+        let tx = client.transaction().await?;
 
         // Step 1: create the GROUNDS edge (errors if endpoints missing).
-        let rows = sqlx::query(&create_sql).fetch_all(&mut *tx).await?;
+        let rows = tx.query(&create_sql, &[]).await?;
         if rows.is_empty() {
             bail!(
                 "insert_evidence: chunk or belief not found (chunk={}, belief={})",
@@ -1162,7 +1168,7 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         }
 
         // Step 2: read current (α, β) inside the same transaction.
-        let rows = sqlx::query(&get_sql).fetch_all(&mut *tx).await?;
+        let rows = tx.query(&get_sql, &[]).await?;
         let belief = rows
             .first()
             .map(belief_from_row)
@@ -1172,7 +1178,7 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         // Step 3: compute new α and derive cached scalars; write back atomically.
         let new_alpha = belief.alpha + EVIDENCE_MASS_K * w;
         let update_sql = self.update_belief_beta_sql(belief_id, new_alpha, belief.beta)?;
-        let rows = sqlx::query(&update_sql).fetch_all(&mut *tx).await?;
+        let rows = tx.query(&update_sql, &[]).await?;
         if rows.is_empty() {
             bail!("insert_evidence: belief {} disappeared before update", b);
         }
@@ -1194,13 +1200,12 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN b.id, sum(r.weight)
 $$) AS (belief_id ag_catalog.agtype, total_weight ag_catalog.agtype)"#
         );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         let mut out = HashMap::with_capacity(rows.len());
         for row in &rows {
-            let id_raw: String = row.try_get("belief_id")?;
-            let w_raw: String = row.try_get("total_weight")?;
-            let id = Uuid::parse_str(&id_raw)?;
-            let total: f64 = w_raw.parse()?;
+            let id = Uuid::parse_str(row.get::<_, &str>("belief_id"))?;
+            let total: f64 = row.get::<_, &str>("total_weight").parse()?;
             out.insert(id, total * EVIDENCE_MASS_K);
         }
         Ok(out)
@@ -1228,15 +1233,13 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN b.id, c.id, r.weight
 $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catalog.agtype)"#
         );
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
-            let belief_raw: String = row.try_get("belief_id")?;
-            let chunk_raw: String = row.try_get("chunk_id")?;
-            let weight_raw: String = row.try_get("weight")?;
-            let belief_id = Uuid::parse_str(&belief_raw)?;
-            let chunk_id = Uuid::parse_str(&chunk_raw)?;
-            let weight: f64 = weight_raw.parse()?;
+            let belief_id = Uuid::parse_str(row.get::<_, &str>("belief_id"))?;
+            let chunk_id = Uuid::parse_str(row.get::<_, &str>("chunk_id"))?;
+            let weight: f64 = row.get::<_, &str>("weight").parse()?;
             out.push((belief_id, chunk_id, weight));
         }
         Ok(out)
@@ -1254,7 +1257,8 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
   DELETE r
 $$) AS (v ag_catalog.agtype)"#
         );
-        sqlx::query(&sql).execute(&self.pool).await?;
+        let client = self.pool.get().await?;
+        client.execute(&sql, &[]).await?;
         Ok(())
     }
 
@@ -1300,7 +1304,8 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
             beliefs.push(belief_from_row(row)?);
@@ -1336,7 +1341,8 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let client = self.pool.get().await?;
+        let rows = client.query(&sql, &[]).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
             beliefs.push(belief_from_row(row)?);

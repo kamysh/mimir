@@ -53,7 +53,7 @@ const EVAL_QUERY: &str = "artifact_server fetch.sh download 403 forbidden user-a
 async fn vector_leg_ranking() {
     let cfg = test_db_config();
     let graph = cfg.dbname.clone();
-    let pool = db::connect(&cfg).await.expect("connect");
+    let pool = db::connect_pool(&cfg).await.expect("connect");
     let store = AgeStore::new(pool, graph);
 
     let all = store.list_beliefs().await.expect("list_beliefs");
