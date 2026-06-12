@@ -501,14 +501,16 @@ async fn test_intervention_unknown_target_errors() {
 // Evidence edges (Phase 4 C-core) — grounding + non-interference
 // ---------------------------------------------------------------------------
 
-fn sorted_updates(mut v: Vec<(Uuid, Probability)>) -> Vec<(Uuid, f64)> {
-    v.sort_by_key(|a| a.0);
-    v.into_iter().map(|(id, p)| (id, p.value())).collect()
-}
-
-// THE LOAD-BEARING TEST: the executable form of the non-interference theorem.
-// Seed a belief graph, capture propagate_from output, reset, overlay GROUNDS
-// edges + a DocumentChunk, and assert propagate_from output is bit-identical.
+// THE LOAD-BEARING TEST: executable form of spec Mimir.Evidence
+// propagate-evidence-invariant: propagate(g) ≡ propagate(g ⊎ overlay).
+//
+// Strategy: capture the propagation result on a bare belief graph (no GROUNDS
+// edges), then add a GROUNDS overlay (C-coupling fires, raising α), then run
+// propagation again. The two result sets must be identical — GROUNDS edges must
+// not enter the belief↔belief inference substrate at all.
+//
+// We use a *separate* belief graph (fresh UUIDs) so this test is independent of
+// the C-coupling test above.
 #[tokio::test]
 async fn test_evidence_does_not_perturb_propagation() {
     let s = store().await;
@@ -522,12 +524,20 @@ async fn test_evidence_does_not_perturb_propagation() {
         .await
         .unwrap();
 
-    // Baseline: propagate (this writes b), capture the result.
-    let baseline = svc.propagate_from(a.id).await.unwrap();
-    // Reset b to its original Beta state so the second run starts identically.
-    s.update_belief_beta(b.id, b.alpha, b.beta).await.unwrap();
+    // Phase 1: propagate on the BARE graph (no evidence overlay yet).
+    let bare_updates = svc.propagate_from(a.id).await.unwrap();
+    assert!(
+        !bare_updates.is_empty(),
+        "bare propagation must produce at least one update"
+    );
+    // Collect (belief_id → new_alpha) from the bare run so we can compare.
+    let bare_map: std::collections::HashMap<uuid::Uuid, f64> = bare_updates
+        .iter()
+        .map(|u| (u.0, u.1.value()))
+        .collect();
 
-    // Overlay: a DocumentChunk grounding BOTH beliefs.
+    // Phase 2: add a GROUNDS overlay — C-coupling intentionally raises α on a
+    // and b. This must NOT affect how propagate_from routes support/defeat edges.
     let chunk = DocumentChunk::new(
         "evidence-doc.md".to_string(),
         vec![],
@@ -539,13 +549,68 @@ async fn test_evidence_does_not_perturb_propagation() {
     svc.add_evidence(b.id, chunk.id, 0.9).await.unwrap();
     svc.add_evidence(a.id, chunk.id, 0.5).await.unwrap();
 
-    // Re-run propagation over the overlaid graph.
-    let rerun = svc.propagate_from(a.id).await.unwrap();
+    // Reset A and B back to their initial (α,β) so both propagation runs start
+    // from identical belief state. We're testing routing (are GROUNDS edges
+    // invisible to the inference traversal?), not that C-coupling is a no-op.
+    s.update_belief_beta(a.id, a.alpha, a.beta).await.unwrap();
+    s.update_belief_beta(b.id, b.alpha, b.beta).await.unwrap();
+
+    // Re-run propagation from a with the GROUNDS overlay present.
+    let overlay_updates = svc.propagate_from(a.id).await.unwrap();
+
+    // The belief→belief inference result must be identical: same set of target
+    // IDs and same computed α values. GROUNDS edges must be invisible to
+    // propagation (non-interference).
+    let overlay_map: std::collections::HashMap<uuid::Uuid, f64> = overlay_updates
+        .iter()
+        .map(|u| (u.0, u.1.value()))
+        .collect();
 
     assert_eq!(
-        sorted_updates(baseline),
-        sorted_updates(rerun),
-        "GROUNDS overlay must not change propagation output"
+        bare_map.keys().collect::<std::collections::HashSet<_>>(),
+        overlay_map.keys().collect::<std::collections::HashSet<_>>(),
+        "propagation must update the same belief IDs with and without GROUNDS overlay"
+    );
+    for (id, &bare_alpha) in &bare_map {
+        let overlay_alpha = overlay_map[id];
+        assert!(
+            (bare_alpha - overlay_alpha).abs() < 1e-12,
+            "belief {id}: bare α={bare_alpha} but overlay α={overlay_alpha}; \
+             GROUNDS edges must not perturb propagation routing"
+        );
+    }
+}
+
+// C-coupling: add_evidence must raise α on the target belief.
+#[tokio::test]
+async fn test_add_evidence_raises_alpha() {
+    let s = store().await;
+    let svc = service().await;
+
+    let b = Belief::new(format!("coupling-{}", Uuid::new_v4()), 0.7, 0.8).unwrap();
+    s.insert_belief(&b).await.unwrap();
+    let alpha_before = b.alpha;
+
+    let chunk = DocumentChunk::new(
+        "coupling-doc.md".to_string(),
+        vec![],
+        "grounding passage for coupling test".to_string(),
+        None,
+        None,
+    );
+    s.insert_document_chunk(&chunk).await.unwrap();
+    svc.add_evidence(b.id, chunk.id, 0.8).await.unwrap();
+
+    let b_after = s.get_belief(b.id).await.unwrap().unwrap();
+    assert!(
+        b_after.alpha > alpha_before,
+        "add_evidence must raise α (C-coupling): before={alpha_before}, after={}",
+        b_after.alpha
+    );
+    assert_eq!(
+        b_after.beta, b.beta,
+        "add_evidence must not change β: before={}, after={}",
+        b.beta, b_after.beta
     );
 }
 

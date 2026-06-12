@@ -301,11 +301,18 @@ impl InferenceEngine {
     /// toward ½ AND the strength toward 2 — so confidence finally feeds back into
     /// probability, unlike the retired scalar decay. Returns the new (α,β) for
     /// beliefs whose state actually changed. decay_factor default 0.99.
+    ///
+    /// C-coupling decay-resistance (spec Mimir.Beta CCoupling.coupling-increases-strength):
+    /// grounded beliefs resist the pull toward (1,1). For a belief with total grounding
+    /// mass M = Σ k·wᵢ, the effective retention factor is:
+    ///   f_eff = 1 - (1 - f) / (1 + M)
+    /// M=0 → f_eff = f (no resistance); M → ∞ → f_eff → 1 (no decay).
     pub fn decay_all(
         &self,
         beliefs: &[Belief],
         now: chrono::DateTime<chrono::Utc>,
         decay_factor: f64,
+        grounding_masses: &HashMap<Uuid, f64>,
     ) -> Result<Vec<(Uuid, (f64, f64))>> {
         // Spec Mimir.Beta ValidDecayFactor: the retention factor's domain is
         // [0,1]. An out-of-domain factor anti-decays (f>1 pushes (α,β) AWAY from
@@ -318,7 +325,10 @@ impl InferenceEngine {
         let mut result = Vec::new();
         for belief in beliefs {
             let days = ((now - belief.last_activated_at).num_seconds() as f64 / 86400.0).max(0.0);
-            let f = decay_factor.powf(days);
+            let base_f = decay_factor.powf(days);
+            // Apply decay-resistance: grounding mass damps the pull toward (1,1).
+            let mass = grounding_masses.get(&belief.id).copied().unwrap_or(0.0);
+            let f = 1.0 - (1.0 - base_f) / (1.0 + mass);
             let alpha = 1.0 + f * (belief.alpha - 1.0);
             let beta = 1.0 + f * (belief.beta - 1.0);
             // RELATIVE threshold (scaled by current strength): f64::EPSILON is
@@ -736,7 +746,7 @@ mod tests {
     fn test_decay_all_recently_activated_no_change() {
         let b = Belief::new("fresh".to_string(), 0.8, 0.9).unwrap();
         let now = b.last_activated_at; // same instant → 0 days
-        let updates = engine().decay_all(&[b], now, 0.99).unwrap();
+        let updates = engine().decay_all(&[b], now, 0.99, &HashMap::new()).unwrap();
         // 0 days of decay → no change → not reported
         assert!(updates.is_empty());
     }
@@ -747,7 +757,7 @@ mod tests {
         // Wind back last_activated_at by 100 days
         b.last_activated_at -= chrono::Duration::days(100);
         let now = chrono::Utc::now();
-        let updates = engine().decay_all(&[b.clone()], now, 0.99).unwrap();
+        let updates = engine().decay_all(&[b.clone()], now, 0.99, &HashMap::new()).unwrap();
         assert_eq!(updates.len(), 1);
         let (_, (na, nb)) = updates[0];
         // betaDecay pulls (α,β) toward (1,1): strength shrinks; mean drifts to ½.

@@ -327,11 +327,14 @@ impl MimirService {
 
     /// Apply time decay to all beliefs, write updates.
     /// decay_factor defaults to 0.99 (~1% per day) if not provided.
+    /// Grounded beliefs resist decay in proportion to their total grounding mass
+    /// (spec Mimir.Beta CCoupling.coupling-increases-strength).
     pub async fn decay_beliefs(&self, decay_factor: Option<f64>) -> Result<usize> {
         let factor = decay_factor.unwrap_or(0.99);
         let beliefs = self.store.get_all_beliefs_for_decay().await?;
+        let grounding_masses = self.store.get_grounding_mass_all().await?;
         let now = chrono::Utc::now();
-        let updates = self.inference.decay_all(&beliefs, now, factor)?;
+        let updates = self.inference.decay_all(&beliefs, now, factor, &grounding_masses)?;
         let count = updates.len();
         // Persist decayed Beta state (spec: betaDecay toward (1,1)) ATOMICALLY,
         // so a failed sweep cannot leave some beliefs decayed and others not
