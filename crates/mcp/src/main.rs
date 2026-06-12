@@ -191,7 +191,7 @@ fn tools_list() -> Value {
                 "type": "object",
                 "properties": {
                     "context":          { "type": "string" },
-                    "limit":            { "type": "integer", "minimum": 0, "default": 0 },
+                    "limit":            { "type": "integer", "minimum": 0, "default": 10 },
                     "include_evidence":   { "type": "boolean", "default": false },
                     "evidence_per_belief":{ "type": "integer", "minimum": 0, "default": 3 }
                 },
@@ -459,7 +459,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             let query = args["context"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
-            let limit = args["limit"].as_u64().unwrap_or(0) as usize;
+            let limit = args["limit"].as_u64().unwrap_or(10) as usize;
             let include_evidence = args["include_evidence"].as_bool().unwrap_or(false);
             if !include_evidence {
                 let beliefs = svc.query_relevant(query, limit).await?;
