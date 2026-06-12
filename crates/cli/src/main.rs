@@ -68,6 +68,12 @@ enum Command {
         id: String,
     },
 
+    /// Delete a pattern by UUID.
+    DeletePattern {
+        /// UUID of the pattern to delete.
+        id: String,
+    },
+
     /// Delete all beliefs tagged with a project.
     Forget {
         /// Project name whose beliefs should be deleted.
@@ -205,6 +211,7 @@ async fn main() -> Result<()> {
         } => cmd_query(&text, limit, evidence).await?,
         Command::Evidence(cmd) => cmd_evidence(cmd).await?,
         Command::Delete { id } => cmd_delete(&id).await?,
+        Command::DeletePattern { id } => cmd_delete_pattern(&id).await?,
         Command::Forget { project } => cmd_forget(&project).await?,
         Command::Decay { factor } => cmd_decay(factor).await?,
         Command::Contradictions => cmd_contradictions().await?,
@@ -529,6 +536,25 @@ async fn cmd_delete(id: &str) -> Result<()> {
 
     let svc = connect().await?;
     if svc.delete_belief(uuid).await? {
+        println!("deleted");
+    } else {
+        println!("not found");
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// mimir delete-pattern
+// ---------------------------------------------------------------------------
+
+async fn cmd_delete_pattern(id: &str) -> Result<()> {
+    let uuid = id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| anyhow::anyhow!("invalid UUID: {}", id))?;
+
+    let svc = connect().await?;
+    if svc.delete_pattern(uuid).await? {
         println!("deleted");
     } else {
         println!("not found");

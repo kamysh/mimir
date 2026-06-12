@@ -1637,7 +1637,7 @@ dependencies = [
 
 [[package]]
 name = "mimir"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "mimir-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "mimir-mcp"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "mimir-core",

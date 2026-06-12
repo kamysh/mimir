@@ -96,7 +96,7 @@ pub async fn connect_pool(cfg: &DatabaseConfig) -> Result<Pool> {
     pg_cfg.port(cfg.port);
     pg_cfg.dbname(&cfg.dbname);
     pg_cfg.user(&cfg.user);
-    pg_cfg.options(&format!("-c search_path={SEARCH_PATH}"));
+    pg_cfg.options(format!("-c search_path={SEARCH_PATH}"));
     if let Some(pw) = pgpass_lookup(&cfg.host, cfg.port, &cfg.dbname, &cfg.user) {
         pg_cfg.password(pw);
     }
