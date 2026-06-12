@@ -86,34 +86,33 @@ impl InferenceEngine {
     /// fixpoint (per-node one-shot aggregation), so cycles and re-convergent
     /// paths in the causal subgraph yield a well-defined, order-independent
     /// result for both functions at once.
+    /// `edges` is the complete incoming-edge set of every causal descendant;
+    /// `external_means` supplies the stored mean of any CAUSES source that is
+    /// outside the descendant set — a genuine CO-CAUSE (spec Mimir.Inference
+    /// keep-causes-into-nontarget): surgery cuts only edges INTO the target, so a
+    /// co-cause X→M survives and must count via X's stored mean. A confounder
+    /// reached only through the target is already handled — surgery cut the path
+    /// that would change X, so its stored (observational) mean is the right
+    /// do-value.
     pub fn intervene(
         &self,
         target_id: Uuid,
         value: Probability,
         downstream: &[Belief],
         edges: &[(Uuid, Uuid, EdgeType, Probability)],
+        external_means: &HashMap<Uuid, f64>,
     ) -> Result<Vec<(Uuid, Probability)>> {
-        // Graph mutilation: drop edges into the target, keep CAUSES only.
+        // Graph mutilation: drop edges INTO the target, keep CAUSES only.
         let surgical: Vec<(Uuid, Uuid, EdgeType, Probability)> = edges
             .iter()
             .copied()
             .filter(|&(_from, to, et, _w)| to != target_id && et == EdgeType::Causes)
             .collect();
         // Read-only projection: map the posterior (α,β) result to projected means.
-        // Intervention is a COUNTERFACTUAL under the surgical edge set — it must
-        // NOT blend in real-world evidence, so external_means is empty (only the
-        // surgical CAUSES edges and the clamped target drive the projection).
-        let external_means: HashMap<Uuid, f64> = HashMap::new();
-        let raw = self.propagate_core(target_id, value, downstream, &surgical, &external_means)?;
+        let raw = self.propagate_core(target_id, value, downstream, &surgical, external_means)?;
         let mut out = Vec::with_capacity(raw.len());
         for (id, (alpha, beta)) in raw {
-            let s = alpha + beta;
-            let m = if s > 0.0 {
-                (alpha / s).clamp(0.0, 1.0)
-            } else {
-                0.5
-            };
-            out.push((id, Probability::new(m)?));
+            out.push((id, Probability::new(crate::graph::beta_mean(alpha, beta))?));
         }
         Ok(out)
     }
@@ -163,21 +162,39 @@ impl InferenceEngine {
             base.insert(b.id, (b.alpha, b.beta));
         }
 
+        // Working Beta state (α,β) per node; the seed has no (α,β) — it is held
+        // clamped at seed_prob (spec Mimir.Graph: seed-clamped), read only as a
+        // parent mean.
+        let mut state: HashMap<Uuid, (f64, f64)> = HashMap::new();
+        for b in downstream {
+            state.insert(b.id, (b.alpha0, b.beta0));
+        }
+        let seed_mean = seed_prob.value();
+        // The mean a propagation reads for a parent `id`, if it is KNOWN:
+        //   • the seed → its clamped input mean;
+        //   • an in-set node → its RECOMPUTED mean (from `state`);
+        //   • an out-of-set source → its stored mean (from `external_means`).
+        // None ⇒ the source's mean is unknown, so the edge carries no evidence.
+        // For real propagation `external_means` holds every out-of-set parent, so
+        // None never occurs (the caller guarantees completeness — spec
+        // Mimir.Beta posteriorOf). For intervention `external_means` is empty, so
+        // an out-of-surgical-set parent with no stored mean is correctly cut.
+        let parent_mean = |state: &HashMap<Uuid, (f64, f64)>, id: &Uuid| -> Option<f64> {
+            if *id == seed_id {
+                Some(seed_mean)
+            } else if let Some(&(a, b)) = state.get(id) {
+                Some(crate::graph::beta_mean(a, b))
+            } else {
+                external_means.get(id).copied()
+            }
+        };
+
         // Incoming adjacency keyed by TARGET: target -> [(type, weight, source)].
-        // An edge INTO a downstream node contributes iff its source's mean is
-        // KNOWN: the seed, an in-set node (recomputed), or an out-of-set source
-        // supplied in `external_means`. A source with no known mean contributes
-        // nothing (no phantom default) — this both (a) keeps complete incoming
-        // evidence for real propagation, where `external_means` carries every
-        // out-of-subgraph parent (spec: Mimir.Beta posteriorOf over the whole
-        // incoming list), and (b) lets intervention pass an empty
-        // `external_means` to cut evidential (confounder) paths whose source is
-        // outside the surgical set.
-        let mean_known =
-            |id: &Uuid| *id == seed_id || prior.contains_key(id) || external_means.contains_key(id);
+        // An edge contributes iff its target is in-set AND its source's mean is
+        // known (parent_mean is Some); an unknown source carries no evidence.
         let mut incoming: HashMap<Uuid, Vec<(EdgeType, f64, Uuid)>> = HashMap::new();
         for &(from, to, etype, weight) in edges {
-            if prior.contains_key(&to) && mean_known(&from) {
+            if prior.contains_key(&to) && parent_mean(&state, &from).is_some() {
                 incoming
                     .entry(to)
                     .or_default()
@@ -185,31 +202,6 @@ impl InferenceEngine {
             }
         }
 
-        // Working Beta state (α,β) per node; the seed has no (α,β) — it is held
-        // clamped at seed_prob, read only as a parent mean.
-        let mut state: HashMap<Uuid, (f64, f64)> = HashMap::new();
-        for b in downstream {
-            state.insert(b.id, (b.alpha0, b.beta0));
-        }
-        let seed_mean = seed_prob.value();
-        // Mean of a parent: the seed's clamped value; else the RECOMPUTED mean of
-        // an in-set node (from `state`); else the stored mean of an out-of-set
-        // source (from `external_means`); 0.5 only if a source is entirely
-        // unknown (should not happen — every edge source is fetched).
-        let mean_of = |state: &HashMap<Uuid, (f64, f64)>, id: &Uuid| -> f64 {
-            if *id == seed_id {
-                seed_mean
-            } else if let Some(&(a, b)) = state.get(id) {
-                let s = a + b;
-                if s > 0.0 {
-                    (a / s).clamp(0.0, 1.0)
-                } else {
-                    0.5
-                }
-            } else {
-                *external_means.get(id).unwrap_or(&0.5)
-            }
-        };
         let mut order: Vec<Uuid> = downstream
             .iter()
             .map(|b| b.id)
@@ -221,17 +213,20 @@ impl InferenceEngine {
         // summed per-parent evidence, reading current parent means. Sum ⇒
         // order-independent (spec accumulate-↭); re-derived from prior ⇒
         // idempotent (spec recompute-idempotent). DAG: one sweep exact; cycles
-        // converge.
+        // converge. Change-detection uses a RELATIVE epsilon (scaled by strength)
+        // so a real fractional move is caught even at high κ.
         let mut converged = false;
         for _ in 0..MAX_ITERS {
-            let mut max_delta = 0.0_f64;
+            let mut max_rel_delta = 0.0_f64;
             for &v in &order {
                 let (a0, b0) = prior[&v];
                 let mut alpha = a0;
                 let mut beta = b0;
                 if let Some(edges_in) = incoming.get(&v) {
                     for &(etype, w, src) in edges_in {
-                        let delta = w * mean_of(&state, &src) * crate::graph::EVIDENCE_UNIT;
+                        // `src` was admitted only when parent_mean is Some.
+                        let mu = parent_mean(&state, &src).unwrap_or(0.5);
+                        let delta = w * mu * crate::graph::EVIDENCE_UNIT;
                         match etype {
                             EdgeType::Supports | EdgeType::Causes => alpha += delta,
                             EdgeType::Defeats => beta += delta,
@@ -239,20 +234,18 @@ impl InferenceEngine {
                         }
                     }
                 }
-                let old_m = mean_of(&state, &v);
-                let new_s = alpha + beta;
-                let new_m = if new_s > 0.0 {
-                    (alpha / new_s).clamp(0.0, 1.0)
-                } else {
-                    0.5
-                };
-                let delta = (new_m - old_m).abs();
-                if delta > max_delta {
-                    max_delta = delta;
+                let (oa, ob) = state[&v];
+                let old_m = crate::graph::beta_mean(oa, ob);
+                let new_m = crate::graph::beta_mean(alpha, beta);
+                // Relative to the mean's [0,1] scale; the mean already normalizes
+                // strength, so its delta is the right convergence signal.
+                let d = (new_m - old_m).abs();
+                if d > max_rel_delta {
+                    max_rel_delta = d;
                 }
                 state.insert(v, (alpha, beta));
             }
-            if max_delta < EPS {
+            if max_rel_delta < EPS {
                 converged = true;
                 break;
             }
@@ -268,12 +261,15 @@ impl InferenceEngine {
         // (seed excluded); return the DURABLE (α,β) the caller persists. We
         // compare the FULL (α,β), not just the mean, so a change that shifts
         // strength/confidence without moving the mean (balanced support+defeat)
-        // is still persisted.
+        // is still persisted. The threshold is RELATIVE to the base strength, so
+        // a real fractional move is caught even when α,β are large (κ up to ~200);
+        // an absolute EPS would be below the ULP at high strength.
         let mut updated: Vec<(Uuid, (f64, f64))> = Vec::new();
         for &v in &order {
             let (a, b) = state[&v];
             let (ba, bb) = base[&v];
-            if (a - ba).abs() > EPS || (b - bb).abs() > EPS {
+            let scale = (ba + bb).max(1.0);
+            if (a - ba).abs() > EPS * scale || (b - bb).abs() > EPS * scale {
                 updated.push((v, (a, b)));
             }
         }
@@ -325,8 +321,12 @@ impl InferenceEngine {
             let f = decay_factor.powf(days);
             let alpha = 1.0 + f * (belief.alpha - 1.0);
             let beta = 1.0 + f * (belief.beta - 1.0);
-            if (alpha - belief.alpha).abs() > f64::EPSILON
-                || (beta - belief.beta).abs() > f64::EPSILON
+            // RELATIVE threshold (scaled by current strength): f64::EPSILON is
+            // far below the ULP of α,β near κ≈200, so an absolute test cannot
+            // resolve a real fractional decay step on a strong belief.
+            let scale = (belief.alpha + belief.beta).max(1.0);
+            if (alpha - belief.alpha).abs() > f64::EPSILON * scale
+                || (beta - belief.beta).abs() > f64::EPSILON * scale
             {
                 result.push((belief.id, (alpha, beta)));
             }
@@ -624,10 +624,10 @@ mod tests {
         ];
 
         let lo = engine()
-            .intervene(t.id, clamp, &downstream, &edges_lo)
+            .intervene(t.id, clamp, &downstream, &edges_lo, &no_external())
             .unwrap();
         let hi = engine()
-            .intervene(t.id, clamp, &downstream, &edges_hi)
+            .intervene(t.id, clamp, &downstream, &edges_hi, &no_external())
             .unwrap();
 
         let b_lo = lo
@@ -661,7 +661,7 @@ mod tests {
         let edges = vec![(t.id, b.id, EdgeType::Supports, w)];
 
         let updates = engine()
-            .intervene(t.id, clamp, &downstream, &edges)
+            .intervene(t.id, clamp, &downstream, &edges, &no_external())
             .unwrap();
         assert!(
             updates.iter().all(|(id, _)| *id != b.id),
@@ -688,7 +688,7 @@ mod tests {
         ];
 
         let updates = engine()
-            .intervene(t.id, clamp, &downstream, &edges)
+            .intervene(t.id, clamp, &downstream, &edges, &no_external())
             .unwrap();
         assert!(
             updates.iter().all(|(id, _)| *id != b.id),

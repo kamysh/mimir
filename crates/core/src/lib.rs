@@ -33,6 +33,34 @@ fn weighted_rrf(lists: &[(&[Uuid], f32)]) -> std::collections::HashMap<Uuid, f32
     scores
 }
 
+/// Drop the source-mean column from `get_incoming_edges` rows, yielding the
+/// `(from, to, EdgeType, weight)` edge tuples the inference engine consumes.
+fn strip_source_means(
+    incoming: &[(Uuid, Uuid, EdgeType, Probability, f64)],
+) -> Vec<(Uuid, Uuid, EdgeType, Probability)> {
+    incoming
+        .iter()
+        .map(|&(from, to, et, w, _mean)| (from, to, et, w))
+        .collect()
+}
+
+/// Build the external-source-mean map from `get_incoming_edges` rows: every edge
+/// source NOT in the active set `ids` maps to its stored mean (carried inline by
+/// the edge query, so no per-source follow-up query is needed).
+fn external_means_from(
+    incoming: &[(Uuid, Uuid, EdgeType, Probability, f64)],
+    ids: &[Uuid],
+) -> std::collections::HashMap<Uuid, f64> {
+    let in_set: std::collections::HashSet<Uuid> = ids.iter().copied().collect();
+    let mut ext = std::collections::HashMap::new();
+    for &(from, _to, _et, _w, source_mean) in incoming {
+        if !in_set.contains(&from) {
+            ext.entry(from).or_insert(source_mean);
+        }
+    }
+    ext
+}
+
 pub struct MimirStats {
     pub beliefs: usize,
     pub patterns: usize,
@@ -229,22 +257,12 @@ impl MimirService {
 
         // Load the COMPLETE incoming-edge set of every downstream node (spec:
         // Mimir.Beta evidence completeness) — sources may lie OUTSIDE the
-        // subgraph. get_edges_among would drop those, silently discarding a
-        // belief's evidence from out-of-subgraph parents.
-        let edges = self.store.get_incoming_edges(&ids).await?;
-
-        // For any edge source NOT in the active set (seed or downstream), supply
-        // its stored mean so its evidence still counts, without recomputing it.
-        let in_set: std::collections::HashSet<Uuid> = ids.iter().copied().collect();
-        let mut external_means: std::collections::HashMap<Uuid, f64> =
-            std::collections::HashMap::new();
-        for &(from, _to, _et, _w) in &edges {
-            if !in_set.contains(&from) && !external_means.contains_key(&from) {
-                if let Some(b) = self.store.get_belief(from).await? {
-                    external_means.insert(from, b.probability.value());
-                }
-            }
-        }
+        // subgraph; get_incoming_edges returns each edge WITH its source's stored
+        // mean, so out-of-subgraph parents count with no per-source follow-up
+        // query.
+        let incoming = self.store.get_incoming_edges(&ids).await?;
+        let edges = strip_source_means(&incoming);
+        let external_means = external_means_from(&incoming, &ids);
 
         let updates =
             self.inference
@@ -257,13 +275,7 @@ impl MimirService {
         self.store.update_beliefs_beta(&writes).await?;
         let mut out = Vec::with_capacity(updates.len());
         for (id, (alpha, beta)) in updates {
-            let s = alpha + beta;
-            let m = if s > 0.0 {
-                (alpha / s).clamp(0.0, 1.0)
-            } else {
-                0.5
-            };
-            out.push((id, Probability::new(m)?));
+            out.push((id, Probability::new(graph::beta_mean(alpha, beta))?));
         }
         Ok(out)
     }
@@ -285,10 +297,16 @@ impl MimirService {
         let downstream = self.store.get_causal_downstream_beliefs(target_id).await?;
         let mut ids: Vec<Uuid> = downstream.iter().map(|b| b.id).collect();
         ids.push(target_id);
-        let edges = self.store.get_edges_among(&ids).await?;
+        // Complete incoming edges of every descendant, with source means — so a
+        // genuine CO-CAUSE outside the descendant set still counts (spec
+        // Mimir.Inference keep-causes-into-nontarget). Surgery (in `intervene`)
+        // then cuts only edges INTO the target.
+        let incoming = self.store.get_incoming_edges(&ids).await?;
+        let edges = strip_source_means(&incoming);
+        let external_means = external_means_from(&incoming, &ids);
         // No writeback — this is a hypothetical projection.
         self.inference
-            .intervene(target_id, value, &downstream, &edges)
+            .intervene(target_id, value, &downstream, &edges, &external_means)
     }
 
     /// Get active contradictions in the graph.

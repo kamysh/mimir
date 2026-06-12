@@ -706,3 +706,53 @@ async fn test_bare_defeat_lowers_target() {
         let _ = svc.delete_belief(id).await;
     }
 }
+
+// REGRESSION (spec Mimir.Inference keep-causes-into-nontarget): under do(T), a
+// CAUSES co-cause X→M where X is OUTSIDE T's causal-descendant set must still
+// count in M's projection (surgery cuts only edges INTO T, never into M).
+// Before the fix, intervene used an empty external_means and dropped X→M.
+#[tokio::test]
+async fn test_intervene_counts_out_of_set_cocause() {
+    let s = store().await;
+    let svc = service().await;
+
+    // T -CAUSES-> M ; X -CAUSES-> M.  X is NOT a causal descendant of T.
+    let t = Belief::new(format!("ccT-{}", Uuid::new_v4()), 0.3, 0.9).unwrap();
+    let m = Belief::new(format!("ccM-{}", Uuid::new_v4()), 0.3, 0.9).unwrap();
+    let x = Belief::new(format!("ccX-{}", Uuid::new_v4()), 0.95, 0.9).unwrap();
+    s.insert_belief(&t).await.unwrap();
+    s.insert_belief(&m).await.unwrap();
+    s.insert_belief(&x).await.unwrap();
+    svc.add_edge(t.id, m.id, EdgeType::Causes, 0.5)
+        .await
+        .unwrap();
+    svc.add_edge(x.id, m.id, EdgeType::Causes, 0.5)
+        .await
+        .unwrap();
+
+    let proj = svc.query_intervention(t.id, 1.0).await.unwrap();
+    let m_with_x = proj
+        .iter()
+        .find(|(id, _)| *id == m.id)
+        .map(|(_, p)| p.value())
+        .expect("M should be projected");
+
+    // Now remove X's edge and re-run: M's projection should be LOWER, proving X's
+    // co-cause contributed in the first run (it was not dropped).
+    svc.delete_belief(x.id).await.unwrap(); // DETACH DELETE removes X→M
+    let proj2 = svc.query_intervention(t.id, 1.0).await.unwrap();
+    let m_without_x = proj2
+        .iter()
+        .find(|(id, _)| *id == m.id)
+        .map(|(_, p)| p.value())
+        .expect("M still projected via T");
+
+    assert!(
+        m_with_x > m_without_x + 1e-9,
+        "out-of-set co-cause X must raise M's projection: with X={m_with_x}, without={m_without_x}"
+    );
+
+    for id in [t.id, m.id] {
+        let _ = svc.delete_belief(id).await;
+    }
+}
