@@ -47,16 +47,23 @@ pub fn prior_from(probability: f64, confidence: f64) -> (f64, f64) {
     (probability * kappa, (1.0 - probability) * kappa)
 }
 
-/// Recover (mean, confidence) from a Beta (α, β): mean = α/(α+β);
-/// confidence = (κ − KAPPA_MIN)/(KAPPA_MAX − KAPPA_MIN), clamped to [0,1].
-fn beta_to_pc(alpha: f64, beta: f64) -> (f64, f64) {
+/// The mean of a Beta (α, β): α/(α+β), clamped to [0,1]; ½ for the empty Beta
+/// (α+β = 0). The single canonical definition — every site that needs a mean
+/// from a bare (α, β) pair (propagation, intervention, persistence) calls this.
+pub fn beta_mean(alpha: f64, beta: f64) -> f64 {
     let s = alpha + beta;
-    let mean = if s > 0.0 {
+    if s > 0.0 {
         (alpha / s).clamp(0.0, 1.0)
     } else {
         0.5
-    };
-    let conf = ((s - KAPPA_MIN) / (KAPPA_MAX - KAPPA_MIN)).clamp(0.0, 1.0);
+    }
+}
+
+/// Recover (mean, confidence) from a Beta (α, β): mean = beta_mean;
+/// confidence = (κ − KAPPA_MIN)/(KAPPA_MAX − KAPPA_MIN), clamped to [0,1].
+pub(crate) fn beta_to_pc(alpha: f64, beta: f64) -> (f64, f64) {
+    let mean = beta_mean(alpha, beta);
+    let conf = ((alpha + beta - KAPPA_MIN) / (KAPPA_MAX - KAPPA_MIN)).clamp(0.0, 1.0);
     (mean, conf)
 }
 

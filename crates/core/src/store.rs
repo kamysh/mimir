@@ -362,20 +362,8 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         let id_str = id.to_string();
         ensure_finite("update_belief_beta", &[("alpha", alpha), ("beta", beta)])?;
         // Derive the cached (mean, confidence) from (α, β) via the canonical
-        // mapping. from_stored is the only public path to beta_to_pc.
-        let derived = Belief::from_stored(
-            id,
-            String::new(),
-            alpha,
-            beta,
-            alpha,
-            beta,
-            chrono::Utc::now(),
-            chrono::Utc::now(),
-            None,
-        )?;
-        let mean = derived.probability.value();
-        let conf = derived.confidence.value();
+        // mapping (spec Mimir.Beta).
+        let (mean, conf) = crate::graph::beta_to_pc(alpha, beta);
         Ok(format!(
             r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{id: '{id_str}'}})
@@ -741,17 +729,24 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
     }
 
     /// Returns ALL propagation edges (SUPPORTS/DEFEATS/CAUSES) pointing INTO any
-    /// belief in `ids` — the source is UNRESTRICTED (may lie outside `ids`).
-    /// This is the complete incoming-edge set each node's posterior must be
-    /// re-derived from (spec Mimir.Beta: posteriorOf over the whole incoming
-    /// list); `get_edges_among` only sees edges whose source is also in the set,
-    /// which silently drops out-of-subgraph evidence. CONTRADICTS is excluded
-    /// (propagation skips it). AGE 1.x has no `[:A|B|C]` syntax, so three MATCH
-    /// arms are UNION'd.
+    /// belief in `ids`, each paired with its SOURCE's stored mean. The source is
+    /// UNRESTRICTED (may lie outside `ids`).
+    ///
+    /// This is the complete incoming-edge set each node's posterior is re-derived
+    /// from (spec Mimir.Beta: posteriorOf over the whole incoming list);
+    /// `get_edges_among` only sees edges whose source is also in the set, which
+    /// silently drops out-of-subgraph evidence. Returning the source mean inline
+    /// (the MATCH already visits node `a`) lets the caller build `external_means`
+    /// with NO per-source follow-up query. CONTRADICTS is excluded (propagation
+    /// skips it). `UNION ALL` (not `UNION`) preserves duplicate parallel edges —
+    /// two identical A→B edges are two evidence quanta, not one. AGE 1.x has no
+    /// `[:A|B|C]` syntax, so three MATCH arms are combined.
+    ///
+    /// Each tuple: (from_id, to_id, edge_type, weight, source_mean).
     pub async fn get_incoming_edges(
         &self,
         ids: &[Uuid],
-    ) -> Result<Vec<(Uuid, Uuid, EdgeType, Probability)>> {
+    ) -> Result<Vec<(Uuid, Uuid, EdgeType, Probability, f64)>> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -763,38 +758,53 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
             .collect::<Vec<_>>()
             .join(", ");
 
+        // Source mean = a.alpha/(a.alpha+a.beta); computed in Cypher so the
+        // caller needs no second fetch. (a.alpha/a.beta are always present
+        // post-migration 005; an absent value casts to NULL and parse falls back
+        // to 0.5, matching beta_mean's empty-Beta convention.)
+        let arm = |label: &str| {
+            format!(
+                "  MATCH (a:Belief)-[r:{label}]->(b:Belief)\n  \
+                 WHERE b.id IN [{id_list}]\n  \
+                 RETURN a.id, b.id, type(r), r.weight, a.alpha, a.beta"
+            )
+        };
         let sql = format!(
-            r#"SELECT from_id::text, to_id::text, label::text, weight::text
+            r#"SELECT from_id::text, to_id::text, label::text, weight::text, src_alpha::text, src_beta::text
 FROM ag_catalog.cypher('{g}', $$
-  MATCH (a:Belief)-[r:SUPPORTS]->(b:Belief)
-  WHERE b.id IN [{id_list}]
-  RETURN a.id, b.id, type(r), r.weight
-  UNION
-  MATCH (a:Belief)-[r:DEFEATS]->(b:Belief)
-  WHERE b.id IN [{id_list}]
-  RETURN a.id, b.id, type(r), r.weight
-  UNION
-  MATCH (a:Belief)-[r:CAUSES]->(b:Belief)
-  WHERE b.id IN [{id_list}]
-  RETURN a.id, b.id, type(r), r.weight
-$$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agtype, weight ag_catalog.agtype)"#
+{sup}
+  UNION ALL
+{def}
+  UNION ALL
+{cau}
+$$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agtype, weight ag_catalog.agtype, src_alpha ag_catalog.agtype, src_beta ag_catalog.agtype)"#,
+            sup = arm("SUPPORTS"),
+            def = arm("DEFEATS"),
+            cau = arm("CAUSES"),
         );
 
         let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
         let mut edges = Vec::with_capacity(rows.len());
         for row in &rows {
-            let from_raw: String = row.try_get("from_id")?;
-            let to_raw: String = row.try_get("to_id")?;
-            let label_raw: String = row.try_get("label")?;
-            let weight_raw: String = row.try_get("weight")?;
-
-            let from_id = Uuid::parse_str(&from_raw)?;
-            let to_id = Uuid::parse_str(&to_raw)?;
-            let edge_type: EdgeType = label_raw.parse()?;
-            let weight: f64 = weight_raw.parse()?;
+            let from_id = Uuid::parse_str(&row.try_get::<String, _>("from_id")?)?;
+            let to_id = Uuid::parse_str(&row.try_get::<String, _>("to_id")?)?;
+            let edge_type: EdgeType = row.try_get::<String, _>("label")?.parse()?;
+            let weight: f64 = row.try_get::<String, _>("weight")?.parse()?;
             let probability = Probability::new(weight)?;
+            // Source mean from its stored (α, β); fall back to 0.5 (empty-Beta).
+            let src_alpha: f64 = row
+                .try_get::<String, _>("src_alpha")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+            let src_beta: f64 = row
+                .try_get::<String, _>("src_beta")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+            let source_mean = crate::graph::beta_mean(src_alpha, src_beta);
 
-            edges.push((from_id, to_id, edge_type, probability));
+            edges.push((from_id, to_id, edge_type, probability, source_mean));
         }
         Ok(edges)
     }
