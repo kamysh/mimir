@@ -56,7 +56,12 @@
           pname = "mimir";
           version = "0.10.0";
           src = ./.;
-          cargoLock.lockFile = ./Cargo.lock;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = {
+              "kryzhen-0.4.0" = "sha256-wQNM9vlFqVQK8cmw7Fr5oBNizqh/c0VS32uUXlFK+Kc=";
+            };
+          };
           doCheck = false; # integration tests require a live PostgreSQL connection
         };
 
