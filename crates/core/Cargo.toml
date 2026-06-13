@@ -1,15 +1,13 @@
 [package]
 name = "mimir-core"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2021"
 
 [dependencies]
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "migrate"] }
+kryzhen = { git = "https://github.com/kamysh/kryzhen", tag = "v0.4.0" }
 tokio-postgres = { version = "0.7.17", features = ["with-uuid-1", "with-chrono-0_4"] }
-deadpool-postgres = "0.14.1"
 native-tls = "0.2.18"
 postgres-native-tls = { version = "0.5.3", features = ["runtime"] }
-url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
