@@ -1,0 +1,40 @@
+{
+  "migrations": [
+    {
+      "version": 1,
+      "sqlx_description": "initial",
+      "kryzhen_name": "initial",
+      "filename": "001_initial.sql",
+      "sqlx_checksum_hex": "b32b083554951360671324cc37658ab19821ac9410b0fea85587c703552112de8247aa5ebb4c977547cc52ff28d6cea0"
+    },
+    {
+      "version": 2,
+      "sqlx_description": "database search path",
+      "kryzhen_name": "database-search-path",
+      "filename": "002_database_search_path.sql",
+      "sqlx_checksum_hex": "62fdb782969bd7ee1b7e8020cf31a100511bd4e1e51454ee3a07fd42e807fab64c79050c3e98c0ebd24b6c944d58a6d5"
+    },
+    {
+      "version": 3,
+      "sqlx_description": "belief embeddings",
+      "kryzhen_name": "belief-embeddings",
+      "filename": "003_belief_embeddings.sql",
+      "sqlx_checksum_hex": "f84105e31c20e461ec35b413dfb40f0a1d4d129888cd1c9f069d3400d99a3c3e748de2478ad7dad0b73ccd1e4ead04e7"
+    },
+    {
+      "version": 4,
+      "sqlx_description": "evidence edges",
+      "kryzhen_name": "evidence-edges",
+      "filename": "004_evidence_edges.sql",
+      "sqlx_checksum_hex": "06c0d0a64d1f2cd46f5dd1b6ffabb610eab235391e0b296420a6f950405f24068c39dc8d565d522433f245b748f257b5"
+    },
+    {
+      "version": 5,
+      "sqlx_description": "beta beliefs",
+      "kryzhen_name": "beta-beliefs",
+      "filename": "005_beta_beliefs.sql",
+      "sqlx_checksum_hex": "66b62513e2a888cd970833e89e07eace8887071186ca2af1969a3945bea8b9be13ce67440051baaaddaf33c8a821a99c"
+    }
+  ],
+  "newly_converted": 0
+}
