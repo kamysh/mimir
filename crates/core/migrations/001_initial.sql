@@ -1,10 +1,6 @@
--- Idempotent initial schema for mimir.
---
--- Extensions (age, vector, uuid-ossp, pgcrypto) are installed by
--- create-db-user.sh with superuser privileges and are not repeated here.
---
--- The AGE graph name equals the PostgreSQL database name.
-
+-- #!migration
+-- name: "initial",
+-- description: "Idempotent initial schema for mimir. Extensions (age, vector, uuid-ossp, pgcrypto) are installed by create-db-user.sh with superuser privileges and are not repeated here. The AGE graph name equals the PostgreSQL database name.";
 -- Create the AGE graph if it doesn't already exist.
 SELECT ag_catalog.create_graph(current_database()::text)
 WHERE NOT EXISTS (

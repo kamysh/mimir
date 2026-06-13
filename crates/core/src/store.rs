@@ -1,8 +1,9 @@
 use anyhow::{bail, Result};
 use chrono::DateTime;
-use deadpool_postgres::Pool;
 use std::collections::HashMap;
-use tokio_postgres::Row;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio_postgres::{Client, Row};
 use uuid::Uuid;
 
 use crate::documents::DocumentChunk;
@@ -130,8 +131,7 @@ fn chunk_from_row(row: &Row) -> Result<DocumentChunk> {
 
     let id = Uuid::parse_str(id_str)?;
     // AGE lists cast to text as JSON arrays: ["H1","H2"] or []
-    let section_path: Vec<String> =
-        serde_json::from_str(section_path_str).unwrap_or_default();
+    let section_path: Vec<String> = serde_json::from_str(section_path_str).unwrap_or_default();
     let parent_id = parent_id_str.and_then(|s| Uuid::parse_str(s).ok());
 
     Ok(DocumentChunk {
@@ -192,14 +192,17 @@ const CHUNK_RETURN_COLUMNS: &str = r#"AS (
 // ---------------------------------------------------------------------------
 
 pub struct AgeStore {
-    pool: Pool,
+    client: Arc<Mutex<Client>>,
     /// AGE graph name — equals the PostgreSQL database name from config.
     graph_name: String,
 }
 
 impl AgeStore {
-    pub fn new(pool: Pool, graph_name: String) -> Self {
-        Self { pool, graph_name }
+    pub fn new(client: Client, graph_name: String) -> Self {
+        Self {
+            client: Arc::new(Mutex::new(client)),
+            graph_name,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -251,7 +254,7 @@ impl AgeStore {
 $$) AS (id ag_catalog.agtype)"#
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         client.execute(&sql, &[]).await?;
         Ok(())
     }
@@ -273,7 +276,7 @@ $$) AS (id ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         client.query(&sql, &[]).await?;
         drop(client);
         self.delete_belief_embeddings(&[id]).await?;
@@ -293,7 +296,7 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN n.id
 $$) AS (id text)"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&count_sql, &[]).await?;
         let count = rows.len();
         if count == 0 {
@@ -341,7 +344,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(None);
@@ -394,7 +397,7 @@ $$) AS (id ag_catalog.agtype)"#
         for &(id, alpha, beta) in updates {
             stmts.push((id, self.update_belief_beta_sql(id, alpha, beta)?));
         }
-        let mut client = self.pool.get().await?;
+        let mut client = self.client.lock().await;
         let tx = client.transaction().await?;
         for (id, sql) in &stmts {
             let rows = tx.query(sql, &[]).await?;
@@ -428,7 +431,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -461,7 +464,7 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN count(*) AS n
 $$) AS (n ag_catalog.agtype)"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(0);
@@ -490,7 +493,7 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN count(*) AS n
 $$) AS (n ag_catalog.agtype)"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(0);
@@ -526,7 +529,7 @@ $$) AS (n ag_catalog.agtype)"#
 $$) AS (id ag_catalog.agtype)"#
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         client.execute(&sql, &[]).await?;
         Ok(())
     }
@@ -548,7 +551,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {PATTERN_RETURN_COLUMNS}"#
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(None);
@@ -571,7 +574,7 @@ $$) {PATTERN_RETURN_COLUMNS}"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         client.query(&sql, &[]).await?;
         Ok(true)
     }
@@ -592,7 +595,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {PATTERN_RETURN_COLUMNS}"#
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut patterns = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -621,7 +624,7 @@ $$) {PATTERN_RETURN_COLUMNS}"#
 $$) AS (weight ag_catalog.agtype)"#
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             bail!(
@@ -654,7 +657,7 @@ $$) AS (weight ag_catalog.agtype)"#
 $$) AS (weight ag_catalog.agtype)"#
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             bail!(
@@ -681,7 +684,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut pairs = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -720,7 +723,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agtype, weight ag_catalog.agtype)"#
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut edges = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -795,7 +798,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
             cau = arm("CAUSES"),
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut edges = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -862,7 +865,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
   RETURN c.id
 $$) AS (id ag_catalog.agtype)"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         client.execute(&sql, &[]).await?;
 
         // Insert CONTAINS edge from parent → child when parent exists.
@@ -888,7 +891,7 @@ $$) AS (ok ag_catalog.agtype)"#
              VALUES ('{chunk_id}', '{vec_str}'::vector) \
              ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding"
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         client.execute(&sql, &[]).await?;
         Ok(())
     }
@@ -904,7 +907,7 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN c.id
 $$) AS (id ag_catalog.agtype)"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         rows.iter()
             .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("id"))?))
@@ -922,7 +925,7 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN c.id
 $$) AS (id ag_catalog.agtype)"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         rows.iter()
             .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("id"))?))
@@ -947,7 +950,7 @@ $$) AS (id ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         client.query(&sql, &[]).await?;
         Ok(())
     }
@@ -962,10 +965,8 @@ $$) AS (ok ag_catalog.agtype)"#
             .map(|id| format!("'{id}'"))
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!(
-            "DELETE FROM public.chunk_embeddings WHERE chunk_id IN ({id_list})"
-        );
-        let client = self.pool.get().await?;
+        let sql = format!("DELETE FROM public.chunk_embeddings WHERE chunk_id IN ({id_list})");
+        let client = self.client.lock().await;
         client.execute(&sql, &[]).await?;
         Ok(())
     }
@@ -1005,7 +1006,7 @@ $$) AS (ok ag_catalog.agtype)"#
             }
         };
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         rows.iter()
             .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("chunk_id"))?))
@@ -1024,7 +1025,7 @@ $$) AS (ok ag_catalog.agtype)"#
              VALUES ('{belief_id}', '{vec_str}'::vector) \
              ON CONFLICT (belief_id) DO UPDATE SET embedding = EXCLUDED.embedding"
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         client.execute(&sql, &[]).await?;
         Ok(())
     }
@@ -1039,10 +1040,8 @@ $$) AS (ok ag_catalog.agtype)"#
             .map(|id| format!("'{id}'"))
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!(
-            "DELETE FROM public.belief_embeddings WHERE belief_id IN ({id_list})"
-        );
-        let client = self.pool.get().await?;
+        let sql = format!("DELETE FROM public.belief_embeddings WHERE belief_id IN ({id_list})");
+        let client = self.client.lock().await;
         client.execute(&sql, &[]).await?;
         Ok(())
     }
@@ -1065,7 +1064,7 @@ $$) AS (ok ag_catalog.agtype)"#
             "SELECT belief_id::text FROM public.belief_embeddings \
              ORDER BY embedding <=> '{vec_str}'::vector {limit_clause}"
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         rows.iter()
             .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("belief_id"))?))
@@ -1074,7 +1073,7 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Belief IDs that already have an embedding row (used by `reembed` to skip).
     pub async fn list_embedded_belief_ids(&self) -> Result<Vec<Uuid>> {
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client
             .query("SELECT belief_id::text FROM public.belief_embeddings", &[])
             .await?;
@@ -1100,7 +1099,7 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN c.id, c.documentPath, c.sectionPath, c.content, c.parentId, c.project
 $$) {CHUNK_RETURN_COLUMNS}"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(None);
@@ -1154,7 +1153,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let mut client = self.pool.get().await?;
+        let mut client = self.client.lock().await;
         let tx = client.transaction().await?;
 
         // Step 1: create the GROUNDS edge (errors if endpoints missing).
@@ -1200,7 +1199,7 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN b.id, sum(r.weight)
 $$) AS (belief_id ag_catalog.agtype, total_weight ag_catalog.agtype)"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut out = HashMap::with_capacity(rows.len());
         for row in &rows {
@@ -1233,7 +1232,7 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN b.id, c.id, r.weight
 $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catalog.agtype)"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -1257,7 +1256,7 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
   DELETE r
 $$) AS (v ag_catalog.agtype)"#
         );
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         client.execute(&sql, &[]).await?;
         Ok(())
     }
@@ -1304,7 +1303,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -1341,7 +1340,7 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let client = self.pool.get().await?;
+        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {

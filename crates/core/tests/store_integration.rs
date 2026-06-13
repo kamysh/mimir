@@ -22,16 +22,14 @@ fn test_db_config() -> DatabaseConfig {
         ssl_root_cert: None,
         ssl_client_cert: None,
         ssl_client_key: None,
-        pgbouncer: false,
-        max_connections: 10,
     }
 }
 
 async fn store() -> AgeStore {
     let cfg = test_db_config();
     let graph_name = cfg.dbname.clone();
-    let pool = db::connect_pool(&cfg).await.expect("connect");
-    AgeStore::new(pool, graph_name)
+    let client = db::connect(&cfg).await.expect("connect");
+    AgeStore::new(client, graph_name)
 }
 
 // ---------------------------------------------------------------------------
@@ -531,10 +529,8 @@ async fn test_evidence_does_not_perturb_propagation() {
         "bare propagation must produce at least one update"
     );
     // Collect (belief_id → new_alpha) from the bare run so we can compare.
-    let bare_map: std::collections::HashMap<uuid::Uuid, f64> = bare_updates
-        .iter()
-        .map(|u| (u.0, u.1.value()))
-        .collect();
+    let bare_map: std::collections::HashMap<uuid::Uuid, f64> =
+        bare_updates.iter().map(|u| (u.0, u.1.value())).collect();
 
     // Phase 2: add a GROUNDS overlay — C-coupling intentionally raises α on a
     // and b. This must NOT affect how propagate_from routes support/defeat edges.
@@ -561,10 +557,8 @@ async fn test_evidence_does_not_perturb_propagation() {
     // The belief→belief inference result must be identical: same set of target
     // IDs and same computed α values. GROUNDS edges must be invisible to
     // propagation (non-interference).
-    let overlay_map: std::collections::HashMap<uuid::Uuid, f64> = overlay_updates
-        .iter()
-        .map(|u| (u.0, u.1.value()))
-        .collect();
+    let overlay_map: std::collections::HashMap<uuid::Uuid, f64> =
+        overlay_updates.iter().map(|u| (u.0, u.1.value())).collect();
 
     assert_eq!(
         bare_map.keys().collect::<std::collections::HashSet<_>>(),

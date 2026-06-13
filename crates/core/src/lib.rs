@@ -99,10 +99,10 @@ pub struct MimirService {
 impl MimirService {
     pub async fn connect(cfg: &Config) -> Result<Self> {
         db::migrate(&cfg.database).await?;
-        let pool = db::connect_pool(&cfg.database).await?;
+        let client = db::connect(&cfg.database).await?;
         let embeddings = cfg.embeddings.as_ref().map(make_backend);
         Ok(Self {
-            store: AgeStore::new(pool, cfg.database.dbname.clone()),
+            store: AgeStore::new(client, cfg.database.dbname.clone()),
             inference: InferenceEngine::new(),
             embeddings,
         })
@@ -334,7 +334,9 @@ impl MimirService {
         let beliefs = self.store.get_all_beliefs_for_decay().await?;
         let grounding_masses = self.store.get_grounding_mass_all().await?;
         let now = chrono::Utc::now();
-        let updates = self.inference.decay_all(&beliefs, now, factor, &grounding_masses)?;
+        let updates = self
+            .inference
+            .decay_all(&beliefs, now, factor, &grounding_masses)?;
         let count = updates.len();
         // Persist decayed Beta state (spec: betaDecay toward (1,1)) ATOMICALLY,
         // so a failed sweep cannot leave some beliefs decayed and others not

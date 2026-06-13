@@ -34,7 +34,6 @@ pub struct EmbeddingsConfig {
 #[serde(rename_all = "kebab-case")]
 pub enum SslMode {
     Disable,
-    Allow,
     #[default]
     Prefer,
     Require,
@@ -65,22 +64,6 @@ pub struct DatabaseConfig {
     /// Path to PEM-encoded client private key (mutual TLS).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssl_client_key: Option<String>,
-
-    // ── PgBouncer (optional) ──────────────────────────────────────────────
-    /// Set to true when connecting through PgBouncer in transaction pooling
-    /// mode. Disables the prepared-statement cache (statement_cache_capacity=0)
-    /// which is incompatible with that mode. Default: false.
-    #[serde(default)]
-    pub pgbouncer: bool,
-
-    // ── Pool (optional) ───────────────────────────────────────────────────
-    /// Maximum number of connections in the pool. Default: 10.
-    #[serde(default = "default_max_connections")]
-    pub max_connections: u32,
-}
-
-fn default_max_connections() -> u32 {
-    10
 }
 
 // ── Global config ──────────────────────────────────────────────────────────
@@ -154,7 +137,6 @@ user   = "mimir"       # PostgreSQL role used by mimir at runtime
 #
 # ssl_mode values:
 #   disable     — never use TLS, even if the server offers it
-#   allow       — try plain text first, fall back to TLS if required
 #   prefer      — try TLS first, fall back to plain text (default)
 #   require     — require TLS, but do not verify the server certificate
 #   verify-ca   — require TLS and verify the server certificate is signed
@@ -168,23 +150,6 @@ user   = "mimir"       # PostgreSQL role used by mimir at runtime
 # Mutual TLS — present a client certificate to the server:
 # ssl_client_cert = "/path/to/client.crt"
 # ssl_client_key  = "/path/to/client.key"
-
-# ── PgBouncer (optional) ──────────────────────────────────────────────────────
-# Set to true when mimir connects through PgBouncer in transaction pooling mode.
-# Transaction pooling mode does not support PostgreSQL prepared statements.
-# Setting this to true disables mimir's prepared-statement cache so that all
-# queries are sent as simple protocol text, which PgBouncer can safely proxy.
-# Leave false (the default) for direct PostgreSQL connections or PgBouncer in
-# session pooling mode.
-#
-# pgbouncer = false
-
-# ── Connection pool (optional) ────────────────────────────────────────────────
-# Maximum number of simultaneous PostgreSQL connections mimir will open.
-# Increase if you see connection-wait latency under heavy concurrent load;
-# decrease if the PostgreSQL server has a low max_connections limit.
-#
-# max_connections = 10
 
 # ── Embeddings (required for load_document / query_document) ──────────────────
 # Without this section, the document RAG tools are disabled.

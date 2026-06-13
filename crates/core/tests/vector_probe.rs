@@ -40,8 +40,6 @@ fn test_db_config() -> DatabaseConfig {
         ssl_root_cert: None,
         ssl_client_cert: None,
         ssl_client_key: None,
-        pgbouncer: false,
-        max_connections: 10,
     }
 }
 
@@ -53,8 +51,8 @@ const EVAL_QUERY: &str = "artifact_server fetch.sh download 403 forbidden user-a
 async fn vector_leg_ranking() {
     let cfg = test_db_config();
     let graph = cfg.dbname.clone();
-    let pool = db::connect_pool(&cfg).await.expect("connect");
-    let store = AgeStore::new(pool, graph);
+    let client = db::connect(&cfg).await.expect("connect");
+    let store = AgeStore::new(client, graph);
 
     let all = store.list_beliefs().await.expect("list_beliefs");
     let n = all.len();

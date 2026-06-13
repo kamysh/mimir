@@ -746,7 +746,9 @@ mod tests {
     fn test_decay_all_recently_activated_no_change() {
         let b = Belief::new("fresh".to_string(), 0.8, 0.9).unwrap();
         let now = b.last_activated_at; // same instant → 0 days
-        let updates = engine().decay_all(&[b], now, 0.99, &HashMap::new()).unwrap();
+        let updates = engine()
+            .decay_all(&[b], now, 0.99, &HashMap::new())
+            .unwrap();
         // 0 days of decay → no change → not reported
         assert!(updates.is_empty());
     }
@@ -757,7 +759,9 @@ mod tests {
         // Wind back last_activated_at by 100 days
         b.last_activated_at -= chrono::Duration::days(100);
         let now = chrono::Utc::now();
-        let updates = engine().decay_all(&[b.clone()], now, 0.99, &HashMap::new()).unwrap();
+        let updates = engine()
+            .decay_all(&[b.clone()], now, 0.99, &HashMap::new())
+            .unwrap();
         assert_eq!(updates.len(), 1);
         let (_, (na, nb)) = updates[0];
         // betaDecay pulls (α,β) toward (1,1): strength shrinks; mean drifts to ½.
