@@ -1,11 +1,33 @@
 use anyhow::Result;
 use postgres_native_tls::MakeTlsConnector;
-use std::path::PathBuf;
 use tokio_postgres::Client;
 
 use crate::config::{DatabaseConfig, SslMode};
 
 const SEARCH_PATH: &str = "public,ag_catalog";
+
+const MIGRATION_001: &str = include_str!("../migrations/001_initial.sql");
+const MIGRATION_002: &str = include_str!("../migrations/002_database_search_path.sql");
+const MIGRATION_003: &str = include_str!("../migrations/003_belief_embeddings.sql");
+const MIGRATION_004: &str = include_str!("../migrations/004_evidence_edges.sql");
+const MIGRATION_005: &str = include_str!("../migrations/005_beta_beliefs.sql");
+const RECEIPT_JSON: &str = include_str!("../migrations/.kryzhen-import-receipt.json");
+
+fn embedded_migrations() -> anyhow::Result<Vec<kryzhen::Migration>> {
+    let sources: &[(&str, &str)] = &[
+        (MIGRATION_001, "001_initial.sql"),
+        (MIGRATION_002, "002_database_search_path.sql"),
+        (MIGRATION_003, "003_belief_embeddings.sql"),
+        (MIGRATION_004, "004_evidence_edges.sql"),
+        (MIGRATION_005, "005_beta_beliefs.sql"),
+    ];
+    let mut all = Vec::new();
+    for (text, label) in sources {
+        let blocks = kryzhen::parser::parse_file(text, label)?;
+        all.extend(kryzhen::file::apply_implicit_deps(blocks));
+    }
+    Ok(all)
+}
 
 /// Read password from ~/.pgpass for (host, port, dbname, user).
 fn pgpass_lookup(host: &str, port: u16, dbname: &str, user: &str) -> Option<String> {
@@ -32,26 +54,16 @@ fn pgpass_lookup(host: &str, port: u16, dbname: &str, user: &str) -> Option<Stri
 
 /// Run kryzhen migrations against the database. Called once at startup.
 ///
-/// If `.kryzhen-import-receipt.json` is present and `_sqlx_migrations` exists
-/// (pre-v0.10 mimir DB), imports the sqlx history into
-/// `mallard.applied_migrations` first. No-op when the receipt is absent (fresh
-/// install) or when `_sqlx_migrations` was already dropped (already imported).
+/// Migrations and the sqlx import receipt are embedded at compile time.
+/// If `_sqlx_migrations` exists (pre-v0.10 mimir DB), imports the sqlx history
+/// into `mallard.applied_migrations` first — idempotent if already done or absent.
 pub async fn migrate(cfg: &DatabaseConfig) -> Result<()> {
-    let migrations_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let migrations = kryzhen::file::load_dir(&migrations_dir)?;
+    let migrations = embedded_migrations()?;
     let mut client = connect(cfg).await?;
-    let receipt_path =
-        migrations_dir.join(kryzhen::sqlx_import::RECEIPT_FILENAME);
-    match kryzhen::sqlx_import::read_receipt(&receipt_path) {
-        Ok(receipt) => {
-            match kryzhen::sqlx_import::import(&client, &receipt, &migrations).await {
-                Ok(_) => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-        Err(kryzhen::sqlx_import::SqlxImportError::NoReceipt { .. }) => {}
-        Err(e) => return Err(e.into()),
-    }
+    let receipt: kryzhen::sqlx_import::Receipt = serde_json::from_str(RECEIPT_JSON)?;
+    kryzhen::sqlx_import::import(&client, &receipt, &migrations)
+        .await
+        .map_err(anyhow::Error::from)?;
     kryzhen::migrate(&mut client, &migrations, false).await?;
     Ok(())
 }
