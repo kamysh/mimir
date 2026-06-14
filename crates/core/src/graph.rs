@@ -185,6 +185,7 @@ pub struct Pattern {
     pub activation_count: u32,
     pub success_rate: Probability,
     pub created_at: DateTime<Utc>,
+    pub project: Option<String>,
 }
 
 impl Pattern {
@@ -196,7 +197,19 @@ impl Pattern {
             activation_count: 0,
             success_rate: Probability::new(success_rate)?,
             created_at: Utc::now(),
+            project: None,
         })
+    }
+
+    pub fn new_in_project(
+        situation: String,
+        approach: String,
+        success_rate: f64,
+        project: String,
+    ) -> Result<Self> {
+        let mut p = Self::new(situation, approach, success_rate)?;
+        p.project = Some(project);
+        Ok(p)
     }
 }
 

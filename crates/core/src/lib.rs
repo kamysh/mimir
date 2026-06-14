@@ -102,7 +102,7 @@ impl MimirService {
         let client = db::connect(&cfg.database).await?;
         let embeddings = cfg.embeddings.as_ref().map(make_backend);
         Ok(Self {
-            store: AgeStore::new(client, cfg.database.dbname.clone()),
+            store: AgeStore::new(client, cfg.database.dbname.clone())?,
             inference: InferenceEngine::new(),
             embeddings,
         })

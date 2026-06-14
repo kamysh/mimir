@@ -25,390 +25,51 @@ fn test_db_config() -> DatabaseConfig {
     }
 }
 
-async fn store() -> AgeStore {
-    let cfg = test_db_config();
-    let graph_name = cfg.dbname.clone();
-    let client = db::connect(&cfg).await.expect("connect");
-    AgeStore::new(client, graph_name)
-}
-
 // ---------------------------------------------------------------------------
-// Belief CRUD
+// Per-test isolated project context.
+//
+// Each test gets a unique project tag ("_test-<uuid>") so parallel tests never
+// interfere with each other's data or cleanup. `TestCtx::cleanup()` deletes
+// only the beliefs and patterns created by that specific test run.
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn test_insert_and_get_belief() {
-    let s = store().await;
-    let b = Belief::new(format!("belief-{}", Uuid::new_v4()), 0.75, 0.85).unwrap();
-    s.insert_belief(&b).await.expect("insert_belief");
-    let got = s
-        .get_belief(b.id)
-        .await
-        .expect("get_belief")
-        .expect("should exist");
-    assert_eq!(got.id, b.id);
-    assert_eq!(got.content, b.content);
-    assert!((got.probability.value() - 0.75).abs() < 1e-9);
-    assert!((got.confidence.value() - 0.85).abs() < 1e-9);
+struct TestCtx {
+    store: AgeStore,
+    project: String,
 }
 
-#[tokio::test]
-async fn test_get_nonexistent_belief_returns_none() {
-    let s = store().await;
-    let result = s.get_belief(Uuid::new_v4()).await.expect("get_belief");
-    assert!(result.is_none());
-}
-
-#[tokio::test]
-async fn test_list_beliefs_contains_inserted() {
-    let s = store().await;
-    let b = Belief::new(format!("list-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
-    s.insert_belief(&b).await.unwrap();
-    let all = s.list_beliefs().await.unwrap();
-    assert!(all.iter().any(|x| x.id == b.id));
-}
-
-#[tokio::test]
-async fn test_list_beliefs_multiple() {
-    let s = store().await;
-    let ids: Vec<Uuid> = (0..5)
-        .map(|i| {
-            let b = Belief::new(format!("multi-{}-{}", i, Uuid::new_v4()), 0.5, 0.5).unwrap();
-            b.id
-        })
-        .collect();
-    // Re-create to get owned beliefs for insertion
-    let mut inserted = Vec::new();
-    for i in 0..5 {
-        let b = Belief::new(format!("multi-{}-{}", i, Uuid::new_v4()), 0.5, 0.5).unwrap();
-        s.insert_belief(&b).await.unwrap();
-        inserted.push(b.id);
+impl TestCtx {
+    async fn new() -> Self {
+        let cfg = test_db_config();
+        let graph_name = cfg.dbname.clone();
+        let client = db::connect(&cfg).await.expect("connect");
+        let store = AgeStore::new(client, graph_name).expect("valid graph_name");
+        let project = format!("_test-{}", Uuid::new_v4().simple());
+        Self { store, project }
     }
-    let all = s.list_beliefs().await.unwrap();
-    for id in &inserted {
-        assert!(all.iter().any(|x| x.id == *id), "missing {}", id);
+
+    fn belief(&self, content: String, p: f64, c: f64) -> Belief {
+        Belief::new_in_project(content, p, c, self.project.clone()).unwrap()
     }
-    let _ = ids; // suppress unused warning
-}
 
-// Phase 3 (spec Mimir.Graph: RETIRED SCALAR SETTERS): the old field-independent
-// setters update_belief_probability / update_belief_confidence are retired —
-// belief state is written only via the Beta posterior (update_belief_beta), so
-// the tests that asserted the old scalar contract are removed.
+    fn pattern(&self, situation: String, approach: String, success_rate: f64) -> Pattern {
+        Pattern::new_in_project(situation, approach, success_rate, self.project.clone()).unwrap()
+    }
 
-#[tokio::test]
-async fn test_update_belief_beta_round_trips_mean_and_strength() {
-    let s = store().await;
-    let b = Belief::new(format!("upd-beta-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
-    s.insert_belief(&b).await.unwrap();
-    // A strong support posterior: mean 0.9 at strength 100 ⇒ (α,β)=(90,10).
-    s.update_belief_beta(b.id, 90.0, 10.0).await.unwrap();
-    let got = s.get_belief(b.id).await.unwrap().unwrap();
-    // Durable (α,β) persisted (spec store-load-round-trip); mean derived = 0.9.
-    assert!(
-        (got.alpha - 90.0).abs() < 1e-6,
-        "α persisted: {}",
-        got.alpha
-    );
-    assert!((got.beta - 10.0).abs() < 1e-6, "β persisted: {}", got.beta);
-    assert!((got.probability.value() - 0.9).abs() < 1e-9);
-}
-
-#[tokio::test]
-async fn test_belief_boundary_probabilities() {
-    let s = store().await;
-    let b = Belief::new(format!("bound-{}", Uuid::new_v4()), 0.0, 1.0).unwrap();
-    s.insert_belief(&b).await.unwrap();
-    let got = s.get_belief(b.id).await.unwrap().unwrap();
-    assert!((got.probability.value() - 0.0).abs() < 1e-9);
-    assert!((got.confidence.value() - 1.0).abs() < 1e-9);
-}
-
-#[tokio::test]
-async fn test_belief_content_with_special_chars() {
-    let s = store().await;
-    // Content with apostrophe — exercises the esc() helper
-    let b = Belief::new(
-        format!("it's a test with 'quotes' and more-{}", Uuid::new_v4()),
-        0.6,
-        0.7,
-    )
-    .unwrap();
-    s.insert_belief(&b).await.unwrap();
-    let got = s.get_belief(b.id).await.unwrap().unwrap();
-    assert_eq!(got.content, b.content);
-}
-
-#[tokio::test]
-async fn test_belief_content_with_unicode() {
-    let s = store().await;
-    let b = Belief::new(
-        format!("信念 belief Überzeugung -{}", Uuid::new_v4()),
-        0.7,
-        0.8,
-    )
-    .unwrap();
-    s.insert_belief(&b).await.unwrap();
-    let got = s.get_belief(b.id).await.unwrap().unwrap();
-    assert_eq!(got.content, b.content);
-}
-
-// ---------------------------------------------------------------------------
-// Pattern CRUD
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_insert_and_list_patterns() {
-    let s = store().await;
-    let p = Pattern::new(
-        format!("situation-{}", Uuid::new_v4()),
-        format!("approach-{}", Uuid::new_v4()),
-        0.8,
-    )
-    .unwrap();
-    s.insert_pattern(&p).await.unwrap();
-    let all = s.list_patterns().await.unwrap();
-    assert!(all.iter().any(|x| x.id == p.id));
-}
-
-#[tokio::test]
-async fn test_list_patterns_multiple() {
-    let s = store().await;
-    let mut inserted = Vec::new();
-    for i in 0..3 {
-        let p = Pattern::new(
-            format!("sit-{}-{}", i, Uuid::new_v4()),
-            format!("app-{}-{}", i, Uuid::new_v4()),
-            0.5 + i as f64 * 0.1,
+    fn chunk(&self, source_path: &str, content: &str) -> DocumentChunk {
+        DocumentChunk::new(
+            source_path.to_string(),
+            vec![],
+            content.to_string(),
+            None,
+            Some(self.project.clone()),
         )
-        .unwrap();
-        s.insert_pattern(&p).await.unwrap();
-        inserted.push(p.id);
     }
-    let all = s.list_patterns().await.unwrap();
-    for id in &inserted {
-        assert!(all.iter().any(|x| x.id == *id));
+
+    async fn cleanup(&self) {
+        let _ = self.store.delete_project(&self.project).await;
     }
 }
-
-#[tokio::test]
-async fn test_pattern_boundary_success_rate() {
-    let s = store().await;
-    let p = Pattern::new(
-        format!("sit-{}", Uuid::new_v4()),
-        "approach".to_string(),
-        1.0,
-    )
-    .unwrap();
-    s.insert_pattern(&p).await.unwrap();
-    let all = s.list_patterns().await.unwrap();
-    let got = all.iter().find(|x| x.id == p.id).unwrap();
-    assert!((got.success_rate.value() - 1.0).abs() < 1e-9);
-}
-
-// ---------------------------------------------------------------------------
-// Edges
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_insert_edge_supports() {
-    let s = store().await;
-    let b1 = Belief::new(format!("cause-{}", Uuid::new_v4()), 0.8, 0.9).unwrap();
-    let b2 = Belief::new(format!("effect-{}", Uuid::new_v4()), 0.7, 0.8).unwrap();
-    s.insert_belief(&b1).await.unwrap();
-    s.insert_belief(&b2).await.unwrap();
-    let edge = Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap();
-    s.insert_edge(&edge).await.unwrap();
-    let downstream = s.get_downstream_beliefs(b1.id).await.unwrap();
-    assert!(downstream.iter().any(|b| b.id == b2.id));
-}
-
-#[tokio::test]
-async fn test_insert_edge_causes() {
-    let s = store().await;
-    let b1 = Belief::new(format!("cause-{}", Uuid::new_v4()), 0.8, 0.9).unwrap();
-    let b2 = Belief::new(format!("effect-{}", Uuid::new_v4()), 0.7, 0.8).unwrap();
-    s.insert_belief(&b1).await.unwrap();
-    s.insert_belief(&b2).await.unwrap();
-    let edge = Edge::new(b1.id, b2.id, EdgeType::Causes, 0.8).unwrap();
-    s.insert_edge(&edge).await.unwrap();
-    let downstream = s.get_downstream_beliefs(b1.id).await.unwrap();
-    assert!(downstream.iter().any(|b| b.id == b2.id));
-}
-
-#[tokio::test]
-async fn test_insert_edge_defeats() {
-    let s = store().await;
-    let b1 = Belief::new(format!("defeater-{}", Uuid::new_v4()), 0.9, 0.9).unwrap();
-    let b2 = Belief::new(format!("defeated-{}", Uuid::new_v4()), 0.8, 0.8).unwrap();
-    s.insert_belief(&b1).await.unwrap();
-    s.insert_belief(&b2).await.unwrap();
-    let edge = Edge::new(b1.id, b2.id, EdgeType::Defeats, 1.0).unwrap();
-    s.insert_edge(&edge).await.unwrap();
-    // Edge stored — verify via get_edges_among
-    let edges = s.get_edges_among(&[b1.id, b2.id]).await.unwrap();
-    assert!(edges
-        .iter()
-        .any(|(f, t, et, _)| *f == b1.id && *t == b2.id && *et == EdgeType::Defeats));
-}
-
-#[tokio::test]
-async fn test_insert_edge_missing_source_fails() {
-    let s = store().await;
-    let b = Belief::new(format!("only-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
-    s.insert_belief(&b).await.unwrap();
-    // from_id is a random UUID that was never inserted
-    let edge = Edge::new(Uuid::new_v4(), b.id, EdgeType::Supports, 0.5).unwrap();
-    let result = s.insert_edge(&edge).await;
-    assert!(result.is_err());
-}
-
-#[tokio::test]
-async fn test_insert_edge_missing_target_fails() {
-    let s = store().await;
-    let b = Belief::new(format!("only-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
-    s.insert_belief(&b).await.unwrap();
-    let edge = Edge::new(b.id, Uuid::new_v4(), EdgeType::Supports, 0.5).unwrap();
-    let result = s.insert_edge(&edge).await;
-    assert!(result.is_err());
-}
-
-// ---------------------------------------------------------------------------
-// Contradictions
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_contradicts_bidirectional() {
-    let s = store().await;
-    let b1 = Belief::new(format!("contra-a-{}", Uuid::new_v4()), 0.6, 0.7).unwrap();
-    let b2 = Belief::new(format!("contra-b-{}", Uuid::new_v4()), 0.4, 0.6).unwrap();
-    s.insert_belief(&b1).await.unwrap();
-    s.insert_belief(&b2).await.unwrap();
-    let w = Probability::new(0.95).unwrap();
-    s.insert_contradicts(b1.id, b2.id, w).await.unwrap();
-    let pairs = s.get_contradiction_pairs().await.unwrap();
-    assert!(pairs.iter().any(|(a, b)| *a == b1.id && *b == b2.id));
-    assert!(pairs.iter().any(|(a, b)| *a == b2.id && *b == b1.id));
-}
-
-#[tokio::test]
-async fn test_no_contradiction_without_edge() {
-    let s = store().await;
-    let b1 = Belief::new(format!("nocont-a-{}", Uuid::new_v4()), 0.6, 0.7).unwrap();
-    let b2 = Belief::new(format!("nocont-b-{}", Uuid::new_v4()), 0.6, 0.7).unwrap();
-    s.insert_belief(&b1).await.unwrap();
-    s.insert_belief(&b2).await.unwrap();
-    let pairs = s.get_contradiction_pairs().await.unwrap();
-    let has = pairs
-        .iter()
-        .any(|(a, b)| (*a == b1.id && *b == b2.id) || (*a == b2.id && *b == b1.id));
-    assert!(!has);
-}
-
-// ---------------------------------------------------------------------------
-// get_edges_among
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_get_edges_among_two_edges() {
-    let s = store().await;
-    let b1 = Belief::new(format!("ea-{}", Uuid::new_v4()), 0.8, 0.9).unwrap();
-    let b2 = Belief::new(format!("eb-{}", Uuid::new_v4()), 0.7, 0.8).unwrap();
-    let b3 = Belief::new(format!("ec-{}", Uuid::new_v4()), 0.6, 0.7).unwrap();
-    s.insert_belief(&b1).await.unwrap();
-    s.insert_belief(&b2).await.unwrap();
-    s.insert_belief(&b3).await.unwrap();
-    s.insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap())
-        .await
-        .unwrap();
-    s.insert_edge(&Edge::new(b2.id, b3.id, EdgeType::Causes, 0.7).unwrap())
-        .await
-        .unwrap();
-
-    let edges = s.get_edges_among(&[b1.id, b2.id, b3.id]).await.unwrap();
-    assert!(edges
-        .iter()
-        .any(|(f, t, et, _)| *f == b1.id && *t == b2.id && *et == EdgeType::Supports));
-    assert!(edges
-        .iter()
-        .any(|(f, t, et, _)| *f == b2.id && *t == b3.id && *et == EdgeType::Causes));
-}
-
-#[tokio::test]
-async fn test_get_edges_among_empty_input() {
-    let s = store().await;
-    let edges = s.get_edges_among(&[]).await.unwrap();
-    assert!(edges.is_empty());
-}
-
-#[tokio::test]
-async fn test_get_edges_among_excludes_outside_set() {
-    let s = store().await;
-    let b1 = Belief::new(format!("excl-a-{}", Uuid::new_v4()), 0.8, 0.9).unwrap();
-    let b2 = Belief::new(format!("excl-b-{}", Uuid::new_v4()), 0.7, 0.8).unwrap();
-    let b3 = Belief::new(format!("excl-c-{}", Uuid::new_v4()), 0.6, 0.7).unwrap();
-    s.insert_belief(&b1).await.unwrap();
-    s.insert_belief(&b2).await.unwrap();
-    s.insert_belief(&b3).await.unwrap();
-    s.insert_edge(&Edge::new(b1.id, b3.id, EdgeType::Supports, 0.9).unwrap())
-        .await
-        .unwrap();
-
-    // Only ask about b1 and b2 — the b1→b3 edge should not appear
-    let edges = s.get_edges_among(&[b1.id, b2.id]).await.unwrap();
-    assert!(!edges.iter().any(|(_, t, _, _)| *t == b3.id));
-}
-
-// ---------------------------------------------------------------------------
-// get_downstream_beliefs
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_get_downstream_via_causes() {
-    let s = store().await;
-    let b1 = Belief::new(format!("dn-cause-{}", Uuid::new_v4()), 0.8, 0.9).unwrap();
-    let b2 = Belief::new(format!("dn-effect-{}", Uuid::new_v4()), 0.6, 0.7).unwrap();
-    s.insert_belief(&b1).await.unwrap();
-    s.insert_belief(&b2).await.unwrap();
-    s.insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Causes, 0.8).unwrap())
-        .await
-        .unwrap();
-    let downstream = s.get_downstream_beliefs(b1.id).await.unwrap();
-    assert!(downstream.iter().any(|b| b.id == b2.id));
-}
-
-#[tokio::test]
-async fn test_get_downstream_no_edges_empty() {
-    let s = store().await;
-    let b = Belief::new(format!("isolated-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
-    s.insert_belief(&b).await.unwrap();
-    let downstream = s.get_downstream_beliefs(b.id).await.unwrap();
-    assert!(!downstream.iter().any(|x| x.id == b.id)); // self not included
-}
-
-#[tokio::test]
-async fn test_get_downstream_multi_hop() {
-    let s = store().await;
-    let b1 = Belief::new(format!("hop1-{}", Uuid::new_v4()), 0.9, 0.9).unwrap();
-    let b2 = Belief::new(format!("hop2-{}", Uuid::new_v4()), 0.8, 0.8).unwrap();
-    let b3 = Belief::new(format!("hop3-{}", Uuid::new_v4()), 0.7, 0.7).unwrap();
-    s.insert_belief(&b1).await.unwrap();
-    s.insert_belief(&b2).await.unwrap();
-    s.insert_belief(&b3).await.unwrap();
-    s.insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap())
-        .await
-        .unwrap();
-    s.insert_edge(&Edge::new(b2.id, b3.id, EdgeType::Supports, 0.8).unwrap())
-        .await
-        .unwrap();
-    let downstream = s.get_downstream_beliefs(b1.id).await.unwrap();
-    assert!(downstream.iter().any(|b| b.id == b2.id));
-    assert!(downstream.iter().any(|b| b.id == b3.id));
-}
-
-// ---------------------------------------------------------------------------
-// query_intervention (do-operator) — read-only counterfactual
-// ---------------------------------------------------------------------------
 
 async fn service() -> MimirService {
     let cfg = Config {
@@ -418,23 +79,448 @@ async fn service() -> MimirService {
     MimirService::connect(&cfg).await.expect("connect service")
 }
 
+// ---------------------------------------------------------------------------
+// Belief CRUD
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_insert_and_get_belief() {
+    let ctx = TestCtx::new().await;
+    let b = ctx.belief(format!("belief-{}", Uuid::new_v4()), 0.75, 0.85);
+    ctx.store.insert_belief(&b).await.expect("insert_belief");
+    let got = ctx
+        .store
+        .get_belief(b.id)
+        .await
+        .expect("get_belief")
+        .expect("should exist");
+    assert_eq!(got.id, b.id);
+    assert_eq!(got.content, b.content);
+    assert!((got.probability.value() - 0.75).abs() < 1e-9);
+    assert!((got.confidence.value() - 0.85).abs() < 1e-9);
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_get_nonexistent_belief_returns_none() {
+    let ctx = TestCtx::new().await;
+    let result = ctx
+        .store
+        .get_belief(Uuid::new_v4())
+        .await
+        .expect("get_belief");
+    assert!(result.is_none());
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_list_beliefs_contains_inserted() {
+    let ctx = TestCtx::new().await;
+    let b = ctx.belief(format!("list-{}", Uuid::new_v4()), 0.5, 0.5);
+    ctx.store.insert_belief(&b).await.unwrap();
+    let all = ctx.store.list_beliefs().await.unwrap();
+    assert!(all.iter().any(|x| x.id == b.id));
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_list_beliefs_multiple() {
+    let ctx = TestCtx::new().await;
+    let mut inserted = Vec::new();
+    for i in 0..5 {
+        let b = ctx.belief(format!("multi-{}-{}", i, Uuid::new_v4()), 0.5, 0.5);
+        ctx.store.insert_belief(&b).await.unwrap();
+        inserted.push(b.id);
+    }
+    let all = ctx.store.list_beliefs().await.unwrap();
+    for id in &inserted {
+        assert!(all.iter().any(|x| x.id == *id), "missing {}", id);
+    }
+    ctx.cleanup().await;
+}
+
+// Phase 3 (spec Mimir.Graph: RETIRED SCALAR SETTERS): the old field-independent
+// setters update_belief_probability / update_belief_confidence are retired —
+// belief state is written only via the Beta posterior (update_belief_beta), so
+// the tests that asserted the old scalar contract are removed.
+
+#[tokio::test]
+async fn test_update_belief_beta_round_trips_mean_and_strength() {
+    let ctx = TestCtx::new().await;
+    let b = ctx.belief(format!("upd-beta-{}", Uuid::new_v4()), 0.5, 0.5);
+    ctx.store.insert_belief(&b).await.unwrap();
+    // A strong support posterior: mean 0.9 at strength 100 ⇒ (α,β)=(90,10).
+    ctx.store
+        .update_belief_beta(b.id, 90.0, 10.0)
+        .await
+        .unwrap();
+    let got = ctx.store.get_belief(b.id).await.unwrap().unwrap();
+    // Durable (α,β) persisted (spec store-load-round-trip); mean derived = 0.9.
+    assert!(
+        (got.alpha - 90.0).abs() < 1e-6,
+        "α persisted: {}",
+        got.alpha
+    );
+    assert!((got.beta - 10.0).abs() < 1e-6, "β persisted: {}", got.beta);
+    assert!((got.probability.value() - 0.9).abs() < 1e-9);
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_belief_boundary_probabilities() {
+    let ctx = TestCtx::new().await;
+    let b = ctx.belief(format!("bound-{}", Uuid::new_v4()), 0.0, 1.0);
+    ctx.store.insert_belief(&b).await.unwrap();
+    let got = ctx.store.get_belief(b.id).await.unwrap().unwrap();
+    assert!((got.probability.value() - 0.0).abs() < 1e-9);
+    assert!((got.confidence.value() - 1.0).abs() < 1e-9);
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_belief_content_with_special_chars() {
+    let ctx = TestCtx::new().await;
+    // Single quotes: exercises sql_esc ('' doubling in EXECUTE argument)
+    let b = ctx.belief(
+        format!("it's a test with 'quotes' and more-{}", Uuid::new_v4()),
+        0.6,
+        0.7,
+    );
+    ctx.store.insert_belief(&b).await.unwrap();
+    let got = ctx.store.get_belief(b.id).await.unwrap().unwrap();
+    assert_eq!(got.content, b.content);
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_belief_content_with_backslash_and_doublequote() {
+    let ctx = TestCtx::new().await;
+    // Backslash + double-quote: exercises json_esc (\ → \\ and " → \")
+    // before sql_esc, which is the two-layer escaping path for AGE PREPARE/EXECUTE.
+    let b = ctx.belief(
+        format!(r#"path\to\"file\" with back\\slash-{}"#, Uuid::new_v4()),
+        0.7,
+        0.8,
+    );
+    ctx.store.insert_belief(&b).await.unwrap();
+    let got = ctx.store.get_belief(b.id).await.unwrap().unwrap();
+    assert_eq!(got.content, b.content);
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_belief_content_with_unicode() {
+    let ctx = TestCtx::new().await;
+    let b = ctx.belief(
+        format!("信念 belief Überzeugung -{}", Uuid::new_v4()),
+        0.7,
+        0.8,
+    );
+    ctx.store.insert_belief(&b).await.unwrap();
+    let got = ctx.store.get_belief(b.id).await.unwrap().unwrap();
+    assert_eq!(got.content, b.content);
+    ctx.cleanup().await;
+}
+
+// ---------------------------------------------------------------------------
+// Pattern CRUD
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_insert_and_list_patterns() {
+    let ctx = TestCtx::new().await;
+    let p = ctx.pattern(
+        format!("situation-{}", Uuid::new_v4()),
+        format!("approach-{}", Uuid::new_v4()),
+        0.8,
+    );
+    ctx.store.insert_pattern(&p).await.unwrap();
+    let all = ctx.store.list_patterns().await.unwrap();
+    assert!(all.iter().any(|x| x.id == p.id));
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_list_patterns_multiple() {
+    let ctx = TestCtx::new().await;
+    let mut inserted = Vec::new();
+    for i in 0..3 {
+        let p = ctx.pattern(
+            format!("sit-{}-{}", i, Uuid::new_v4()),
+            format!("app-{}-{}", i, Uuid::new_v4()),
+            0.5 + i as f64 * 0.1,
+        );
+        ctx.store.insert_pattern(&p).await.unwrap();
+        inserted.push(p.id);
+    }
+    let all = ctx.store.list_patterns().await.unwrap();
+    for id in &inserted {
+        assert!(all.iter().any(|x| x.id == *id));
+    }
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_pattern_boundary_success_rate() {
+    let ctx = TestCtx::new().await;
+    let p = ctx.pattern(
+        format!("sit-{}", Uuid::new_v4()),
+        "approach".to_string(),
+        1.0,
+    );
+    ctx.store.insert_pattern(&p).await.unwrap();
+    let all = ctx.store.list_patterns().await.unwrap();
+    let got = all.iter().find(|x| x.id == p.id).unwrap();
+    assert!((got.success_rate.value() - 1.0).abs() < 1e-9);
+    ctx.cleanup().await;
+}
+
+// ---------------------------------------------------------------------------
+// Edges
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_insert_edge_supports() {
+    let ctx = TestCtx::new().await;
+    let b1 = ctx.belief(format!("cause-{}", Uuid::new_v4()), 0.8, 0.9);
+    let b2 = ctx.belief(format!("effect-{}", Uuid::new_v4()), 0.7, 0.8);
+    ctx.store.insert_belief(&b1).await.unwrap();
+    ctx.store.insert_belief(&b2).await.unwrap();
+    let edge = Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap();
+    ctx.store.insert_edge(&edge).await.unwrap();
+    let downstream = ctx.store.get_downstream_beliefs(b1.id).await.unwrap();
+    assert!(downstream.iter().any(|b| b.id == b2.id));
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_insert_edge_causes() {
+    let ctx = TestCtx::new().await;
+    let b1 = ctx.belief(format!("cause-{}", Uuid::new_v4()), 0.8, 0.9);
+    let b2 = ctx.belief(format!("effect-{}", Uuid::new_v4()), 0.7, 0.8);
+    ctx.store.insert_belief(&b1).await.unwrap();
+    ctx.store.insert_belief(&b2).await.unwrap();
+    let edge = Edge::new(b1.id, b2.id, EdgeType::Causes, 0.8).unwrap();
+    ctx.store.insert_edge(&edge).await.unwrap();
+    let downstream = ctx.store.get_downstream_beliefs(b1.id).await.unwrap();
+    assert!(downstream.iter().any(|b| b.id == b2.id));
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_insert_edge_defeats() {
+    let ctx = TestCtx::new().await;
+    let b1 = ctx.belief(format!("defeater-{}", Uuid::new_v4()), 0.9, 0.9);
+    let b2 = ctx.belief(format!("defeated-{}", Uuid::new_v4()), 0.8, 0.8);
+    ctx.store.insert_belief(&b1).await.unwrap();
+    ctx.store.insert_belief(&b2).await.unwrap();
+    let edge = Edge::new(b1.id, b2.id, EdgeType::Defeats, 1.0).unwrap();
+    ctx.store.insert_edge(&edge).await.unwrap();
+    // Edge stored — verify via get_edges_among
+    let edges = ctx.store.get_edges_among(&[b1.id, b2.id]).await.unwrap();
+    assert!(edges
+        .iter()
+        .any(|(f, t, et, _)| *f == b1.id && *t == b2.id && *et == EdgeType::Defeats));
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_insert_edge_missing_source_fails() {
+    let ctx = TestCtx::new().await;
+    let b = ctx.belief(format!("only-{}", Uuid::new_v4()), 0.5, 0.5);
+    ctx.store.insert_belief(&b).await.unwrap();
+    // from_id is a random UUID that was never inserted
+    let edge = Edge::new(Uuid::new_v4(), b.id, EdgeType::Supports, 0.5).unwrap();
+    let result = ctx.store.insert_edge(&edge).await;
+    assert!(result.is_err());
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_insert_edge_missing_target_fails() {
+    let ctx = TestCtx::new().await;
+    let b = ctx.belief(format!("only-{}", Uuid::new_v4()), 0.5, 0.5);
+    ctx.store.insert_belief(&b).await.unwrap();
+    let edge = Edge::new(b.id, Uuid::new_v4(), EdgeType::Supports, 0.5).unwrap();
+    let result = ctx.store.insert_edge(&edge).await;
+    assert!(result.is_err());
+    ctx.cleanup().await;
+}
+
+// ---------------------------------------------------------------------------
+// Contradictions
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_contradicts_bidirectional() {
+    let ctx = TestCtx::new().await;
+    let b1 = ctx.belief(format!("contra-a-{}", Uuid::new_v4()), 0.6, 0.7);
+    let b2 = ctx.belief(format!("contra-b-{}", Uuid::new_v4()), 0.4, 0.6);
+    ctx.store.insert_belief(&b1).await.unwrap();
+    ctx.store.insert_belief(&b2).await.unwrap();
+    let w = Probability::new(0.95).unwrap();
+    ctx.store.insert_contradicts(b1.id, b2.id, w).await.unwrap();
+    let pairs = ctx.store.get_contradiction_pairs().await.unwrap();
+    assert!(pairs.iter().any(|(a, b)| *a == b1.id && *b == b2.id));
+    assert!(pairs.iter().any(|(a, b)| *a == b2.id && *b == b1.id));
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_no_contradiction_without_edge() {
+    let ctx = TestCtx::new().await;
+    let b1 = ctx.belief(format!("nocont-a-{}", Uuid::new_v4()), 0.6, 0.7);
+    let b2 = ctx.belief(format!("nocont-b-{}", Uuid::new_v4()), 0.6, 0.7);
+    ctx.store.insert_belief(&b1).await.unwrap();
+    ctx.store.insert_belief(&b2).await.unwrap();
+    let pairs = ctx.store.get_contradiction_pairs().await.unwrap();
+    let has = pairs
+        .iter()
+        .any(|(a, b)| (*a == b1.id && *b == b2.id) || (*a == b2.id && *b == b1.id));
+    assert!(!has);
+    ctx.cleanup().await;
+}
+
+// ---------------------------------------------------------------------------
+// get_edges_among
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_edges_among_two_edges() {
+    let ctx = TestCtx::new().await;
+    let b1 = ctx.belief(format!("ea-{}", Uuid::new_v4()), 0.8, 0.9);
+    let b2 = ctx.belief(format!("eb-{}", Uuid::new_v4()), 0.7, 0.8);
+    let b3 = ctx.belief(format!("ec-{}", Uuid::new_v4()), 0.6, 0.7);
+    ctx.store.insert_belief(&b1).await.unwrap();
+    ctx.store.insert_belief(&b2).await.unwrap();
+    ctx.store.insert_belief(&b3).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap())
+        .await
+        .unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(b2.id, b3.id, EdgeType::Causes, 0.7).unwrap())
+        .await
+        .unwrap();
+
+    let edges = ctx
+        .store
+        .get_edges_among(&[b1.id, b2.id, b3.id])
+        .await
+        .unwrap();
+    assert!(edges
+        .iter()
+        .any(|(f, t, et, _)| *f == b1.id && *t == b2.id && *et == EdgeType::Supports));
+    assert!(edges
+        .iter()
+        .any(|(f, t, et, _)| *f == b2.id && *t == b3.id && *et == EdgeType::Causes));
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_get_edges_among_empty_input() {
+    let ctx = TestCtx::new().await;
+    let edges = ctx.store.get_edges_among(&[]).await.unwrap();
+    assert!(edges.is_empty());
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_get_edges_among_excludes_outside_set() {
+    let ctx = TestCtx::new().await;
+    let b1 = ctx.belief(format!("excl-a-{}", Uuid::new_v4()), 0.8, 0.9);
+    let b2 = ctx.belief(format!("excl-b-{}", Uuid::new_v4()), 0.7, 0.8);
+    let b3 = ctx.belief(format!("excl-c-{}", Uuid::new_v4()), 0.6, 0.7);
+    ctx.store.insert_belief(&b1).await.unwrap();
+    ctx.store.insert_belief(&b2).await.unwrap();
+    ctx.store.insert_belief(&b3).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(b1.id, b3.id, EdgeType::Supports, 0.9).unwrap())
+        .await
+        .unwrap();
+
+    // Only ask about b1 and b2 — the b1→b3 edge should not appear
+    let edges = ctx.store.get_edges_among(&[b1.id, b2.id]).await.unwrap();
+    assert!(!edges.iter().any(|(_, t, _, _)| *t == b3.id));
+    ctx.cleanup().await;
+}
+
+// ---------------------------------------------------------------------------
+// get_downstream_beliefs
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_downstream_via_causes() {
+    let ctx = TestCtx::new().await;
+    let b1 = ctx.belief(format!("dn-cause-{}", Uuid::new_v4()), 0.8, 0.9);
+    let b2 = ctx.belief(format!("dn-effect-{}", Uuid::new_v4()), 0.6, 0.7);
+    ctx.store.insert_belief(&b1).await.unwrap();
+    ctx.store.insert_belief(&b2).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Causes, 0.8).unwrap())
+        .await
+        .unwrap();
+    let downstream = ctx.store.get_downstream_beliefs(b1.id).await.unwrap();
+    assert!(downstream.iter().any(|b| b.id == b2.id));
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_get_downstream_no_edges_empty() {
+    let ctx = TestCtx::new().await;
+    let b = ctx.belief(format!("isolated-{}", Uuid::new_v4()), 0.5, 0.5);
+    ctx.store.insert_belief(&b).await.unwrap();
+    let downstream = ctx.store.get_downstream_beliefs(b.id).await.unwrap();
+    assert!(!downstream.iter().any(|x| x.id == b.id)); // self not included
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_get_downstream_multi_hop() {
+    let ctx = TestCtx::new().await;
+    let b1 = ctx.belief(format!("hop1-{}", Uuid::new_v4()), 0.9, 0.9);
+    let b2 = ctx.belief(format!("hop2-{}", Uuid::new_v4()), 0.8, 0.8);
+    let b3 = ctx.belief(format!("hop3-{}", Uuid::new_v4()), 0.7, 0.7);
+    ctx.store.insert_belief(&b1).await.unwrap();
+    ctx.store.insert_belief(&b2).await.unwrap();
+    ctx.store.insert_belief(&b3).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(b1.id, b2.id, EdgeType::Supports, 0.9).unwrap())
+        .await
+        .unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(b2.id, b3.id, EdgeType::Supports, 0.8).unwrap())
+        .await
+        .unwrap();
+    let downstream = ctx.store.get_downstream_beliefs(b1.id).await.unwrap();
+    assert!(downstream.iter().any(|b| b.id == b2.id));
+    assert!(downstream.iter().any(|b| b.id == b3.id));
+    ctx.cleanup().await;
+}
+
+// ---------------------------------------------------------------------------
+// query_intervention (do-operator) — read-only counterfactual
+// ---------------------------------------------------------------------------
+
 // Acceptance criterion: query_intervention computes a projection but writes
 // NOTHING back to the store. Graph T -CAUSES-> B; do(T = 1.0) projects a new
 // value for B, but B's stored probability is unchanged after the call.
 #[tokio::test]
 async fn test_intervention_is_read_only() {
-    let s = store().await;
+    let ctx = TestCtx::new().await;
     let svc = service().await;
 
-    let t = Belief::new(format!("do-T-{}", Uuid::new_v4()), 0.4, 0.9).unwrap();
-    let b = Belief::new(format!("do-B-{}", Uuid::new_v4()), 0.4, 0.9).unwrap();
-    s.insert_belief(&t).await.unwrap();
-    s.insert_belief(&b).await.unwrap();
-    s.insert_edge(&Edge::new(t.id, b.id, EdgeType::Causes, 0.5).unwrap())
+    let t = ctx.belief(format!("do-T-{}", Uuid::new_v4()), 0.4, 0.9);
+    let b = ctx.belief(format!("do-B-{}", Uuid::new_v4()), 0.4, 0.9);
+    ctx.store.insert_belief(&t).await.unwrap();
+    ctx.store.insert_belief(&b).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(t.id, b.id, EdgeType::Causes, 0.5).unwrap())
         .await
         .unwrap();
 
-    let b_before = s
+    let b_before = ctx
+        .store
         .get_belief(b.id)
         .await
         .unwrap()
@@ -459,7 +545,8 @@ async fn test_intervention_is_read_only() {
     assert!((proj - 0.406_586).abs() < 1e-4, "got {proj}");
 
     // The decisive check: the store row for B is UNCHANGED (no writeback).
-    let b_after = s
+    let b_after = ctx
+        .store
         .get_belief(b.id)
         .await
         .unwrap()
@@ -476,6 +563,7 @@ async fn test_intervention_is_read_only() {
         (b_after - 0.4).abs() < 1e-9,
         "B should still be its stored 0.4"
     );
+    ctx.cleanup().await;
 }
 
 // Acceptance criterion: validation. A value outside [0,1] is rejected (the
@@ -511,14 +599,15 @@ async fn test_intervention_unknown_target_errors() {
 // the C-coupling test above.
 #[tokio::test]
 async fn test_evidence_does_not_perturb_propagation() {
-    let s = store().await;
+    let ctx = TestCtx::new().await;
     let svc = service().await;
 
-    let a = Belief::new(format!("grnd-A-{}", Uuid::new_v4()), 0.8, 0.9).unwrap();
-    let b = Belief::new(format!("grnd-B-{}", Uuid::new_v4()), 0.3, 0.8).unwrap();
-    s.insert_belief(&a).await.unwrap();
-    s.insert_belief(&b).await.unwrap();
-    s.insert_edge(&Edge::new(a.id, b.id, EdgeType::Supports, 0.5).unwrap())
+    let a = ctx.belief(format!("grnd-A-{}", Uuid::new_v4()), 0.8, 0.9);
+    let b = ctx.belief(format!("grnd-B-{}", Uuid::new_v4()), 0.3, 0.8);
+    ctx.store.insert_belief(&a).await.unwrap();
+    ctx.store.insert_belief(&b).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(a.id, b.id, EdgeType::Supports, 0.5).unwrap())
         .await
         .unwrap();
 
@@ -534,22 +623,25 @@ async fn test_evidence_does_not_perturb_propagation() {
 
     // Phase 2: add a GROUNDS overlay — C-coupling intentionally raises α on a
     // and b. This must NOT affect how propagate_from routes support/defeat edges.
-    let chunk = DocumentChunk::new(
-        "evidence-doc.md".to_string(),
-        vec![],
-        "a grounding passage for the non-interference test".to_string(),
-        None,
-        None,
+    let chunk = ctx.chunk(
+        "evidence-doc.md",
+        "a grounding passage for the non-interference test",
     );
-    s.insert_document_chunk(&chunk).await.unwrap();
+    ctx.store.insert_document_chunk(&chunk).await.unwrap();
     svc.add_evidence(b.id, chunk.id, 0.9).await.unwrap();
     svc.add_evidence(a.id, chunk.id, 0.5).await.unwrap();
 
     // Reset A and B back to their initial (α,β) so both propagation runs start
     // from identical belief state. We're testing routing (are GROUNDS edges
     // invisible to the inference traversal?), not that C-coupling is a no-op.
-    s.update_belief_beta(a.id, a.alpha, a.beta).await.unwrap();
-    s.update_belief_beta(b.id, b.alpha, b.beta).await.unwrap();
+    ctx.store
+        .update_belief_beta(a.id, a.alpha, a.beta)
+        .await
+        .unwrap();
+    ctx.store
+        .update_belief_beta(b.id, b.alpha, b.beta)
+        .await
+        .unwrap();
 
     // Re-run propagation from a with the GROUNDS overlay present.
     let overlay_updates = svc.propagate_from(a.id).await.unwrap();
@@ -573,29 +665,24 @@ async fn test_evidence_does_not_perturb_propagation() {
              GROUNDS edges must not perturb propagation routing"
         );
     }
+    ctx.cleanup().await;
 }
 
 // C-coupling: add_evidence must raise α on the target belief.
 #[tokio::test]
 async fn test_add_evidence_raises_alpha() {
-    let s = store().await;
+    let ctx = TestCtx::new().await;
     let svc = service().await;
 
-    let b = Belief::new(format!("coupling-{}", Uuid::new_v4()), 0.7, 0.8).unwrap();
-    s.insert_belief(&b).await.unwrap();
+    let b = ctx.belief(format!("coupling-{}", Uuid::new_v4()), 0.7, 0.8);
+    ctx.store.insert_belief(&b).await.unwrap();
     let alpha_before = b.alpha;
 
-    let chunk = DocumentChunk::new(
-        "coupling-doc.md".to_string(),
-        vec![],
-        "grounding passage for coupling test".to_string(),
-        None,
-        None,
-    );
-    s.insert_document_chunk(&chunk).await.unwrap();
+    let chunk = ctx.chunk("coupling-doc.md", "grounding passage for coupling test");
+    ctx.store.insert_document_chunk(&chunk).await.unwrap();
     svc.add_evidence(b.id, chunk.id, 0.8).await.unwrap();
 
-    let b_after = s.get_belief(b.id).await.unwrap().unwrap();
+    let b_after = ctx.store.get_belief(b.id).await.unwrap().unwrap();
     assert!(
         b_after.alpha > alpha_before,
         "add_evidence must raise α (C-coupling): before={alpha_before}, after={}",
@@ -606,26 +693,27 @@ async fn test_add_evidence_raises_alpha() {
         "add_evidence must not change β: before={}, after={}",
         b.beta, b_after.beta
     );
+    ctx.cleanup().await;
 }
 
 // add_evidence creates a GROUNDS edge; query_relevant_grounded returns the
 // belief with its grounding passage.
 #[tokio::test]
 async fn test_add_and_query_grounded() {
-    let s = store().await;
+    let ctx = TestCtx::new().await;
     let svc = service().await;
 
     let token = format!("zqxgrounded{}", Uuid::new_v4().simple());
-    let b = Belief::new(format!("a belief about {}", token), 0.7, 0.8).unwrap();
-    s.insert_belief(&b).await.unwrap();
+    let b = ctx.belief(format!("a belief about {}", token), 0.7, 0.8);
+    ctx.store.insert_belief(&b).await.unwrap();
     let chunk = DocumentChunk::new(
         "src.md".to_string(),
         vec!["Section One".to_string()],
         "the passage that grounds the belief".to_string(),
         None,
-        None,
+        Some(ctx.project.clone()),
     );
-    s.insert_document_chunk(&chunk).await.unwrap();
+    ctx.store.insert_document_chunk(&chunk).await.unwrap();
     svc.add_evidence(b.id, chunk.id, 0.8).await.unwrap();
 
     let grounded = svc.query_relevant_grounded(&token, 10, 3).await.unwrap();
@@ -638,33 +726,40 @@ async fn test_add_and_query_grounded() {
     assert!(e.snippet.contains("grounds the belief"));
     assert!((e.weight - 0.8).abs() < 1e-9);
     assert_eq!(e.section_path, vec!["Section One".to_string()]);
+    ctx.cleanup().await;
 }
 
 // delete_belief leaves no dangling GROUNDS edge (DETACH DELETE).
 #[tokio::test]
 async fn test_delete_belief_removes_grounds_edge() {
-    let s = store().await;
+    let ctx = TestCtx::new().await;
     let svc = service().await;
 
-    let b = Belief::new(format!("grnd-del-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
-    s.insert_belief(&b).await.unwrap();
-    let chunk = DocumentChunk::new(
-        "d.md".to_string(),
-        vec![],
-        "passage".to_string(),
-        None,
-        None,
-    );
-    s.insert_document_chunk(&chunk).await.unwrap();
+    let b = ctx.belief(format!("grnd-del-{}", Uuid::new_v4()), 0.5, 0.5);
+    ctx.store.insert_belief(&b).await.unwrap();
+    let chunk = ctx.chunk("d.md", "passage");
+    ctx.store.insert_document_chunk(&chunk).await.unwrap();
     svc.add_evidence(b.id, chunk.id, 1.0).await.unwrap();
 
-    assert_eq!(s.get_evidence_for_beliefs(&[b.id]).await.unwrap().len(), 1);
+    assert_eq!(
+        ctx.store
+            .get_evidence_for_beliefs(&[b.id])
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(svc.delete_belief(b.id).await.unwrap());
     assert_eq!(
-        s.get_evidence_for_beliefs(&[b.id]).await.unwrap().len(),
+        ctx.store
+            .get_evidence_for_beliefs(&[b.id])
+            .await
+            .unwrap()
+            .len(),
         0,
         "deleting the belief must remove its GROUNDS edges"
     );
+    ctx.cleanup().await;
 }
 
 // REGRESSION (#1, spec Mimir.Beta evidence completeness): a belief's evidence
@@ -677,15 +772,15 @@ async fn test_delete_belief_removes_grounds_edge() {
 // (its α must reflect BOTH supporters), not be reset to prior + Y only.
 #[tokio::test]
 async fn test_propagate_preserves_out_of_subgraph_evidence() {
-    let s = store().await;
+    let ctx = TestCtx::new().await;
     let svc = service().await;
 
-    let x = Belief::new(format!("oosX-{}", Uuid::new_v4()), 0.9, 0.5).unwrap();
-    let y = Belief::new(format!("oosY-{}", Uuid::new_v4()), 0.9, 0.5).unwrap();
-    let t = Belief::new(format!("oosT-{}", Uuid::new_v4()), 0.3, 0.5).unwrap();
-    s.insert_belief(&x).await.unwrap();
-    s.insert_belief(&y).await.unwrap();
-    s.insert_belief(&t).await.unwrap();
+    let x = ctx.belief(format!("oosX-{}", Uuid::new_v4()), 0.9, 0.5);
+    let y = ctx.belief(format!("oosY-{}", Uuid::new_v4()), 0.9, 0.5);
+    let t = ctx.belief(format!("oosT-{}", Uuid::new_v4()), 0.3, 0.5);
+    ctx.store.insert_belief(&x).await.unwrap();
+    ctx.store.insert_belief(&y).await.unwrap();
+    ctx.store.insert_belief(&t).await.unwrap();
     let t_alpha0 = t.alpha;
 
     svc.add_edge(x.id, t.id, EdgeType::Supports, 1.0)
@@ -697,7 +792,7 @@ async fn test_propagate_preserves_out_of_subgraph_evidence() {
 
     // Propagate from X → T gains X's support.
     svc.propagate_from(x.id).await.unwrap();
-    let t_after_x = s.get_belief(t.id).await.unwrap().unwrap().alpha;
+    let t_after_x = ctx.store.get_belief(t.id).await.unwrap().unwrap().alpha;
     assert!(
         t_after_x > t_alpha0 + 1e-9,
         "X's support must raise T's α: α0={t_alpha0}, after X={t_after_x}"
@@ -706,7 +801,7 @@ async fn test_propagate_preserves_out_of_subgraph_evidence() {
     // Propagate from Y. X is OUT of Y's subgraph. With the fix T re-derives from
     // ALL incoming edges (X external + Y), so X's support is preserved.
     svc.propagate_from(y.id).await.unwrap();
-    let t_after_y = s.get_belief(t.id).await.unwrap().unwrap().alpha;
+    let t_after_y = ctx.store.get_belief(t.id).await.unwrap().unwrap().alpha;
 
     // T must reflect BOTH supporters — α at least the X-only value (the buggy
     // code reset it to prior + Y only, LOSING X, i.e. t_after_y == t_after_x's
@@ -719,11 +814,7 @@ async fn test_propagate_preserves_out_of_subgraph_evidence() {
         t_after_y > t_alpha0 + 1e-9,
         "T must stay above its prior after propagation: α0={t_alpha0}, after_Y={t_after_y}"
     );
-
-    // cleanup
-    for id in [x.id, y.id, t.id] {
-        let _ = svc.delete_belief(id).await;
-    }
+    ctx.cleanup().await;
 }
 
 // REGRESSION (spec Mimir.Graph propagation scope / defeat-target-is-reached):
@@ -732,13 +823,13 @@ async fn test_propagate_preserves_out_of_subgraph_evidence() {
 // so T was never in the recompute set and the defeat was inert.
 #[tokio::test]
 async fn test_bare_defeat_lowers_target() {
-    let s = store().await;
+    let ctx = TestCtx::new().await;
     let svc = service().await;
 
-    let seed = Belief::new(format!("defS-{}", Uuid::new_v4()), 0.9, 0.9).unwrap();
-    let t = Belief::new(format!("defT-{}", Uuid::new_v4()), 0.6, 0.5).unwrap();
-    s.insert_belief(&seed).await.unwrap();
-    s.insert_belief(&t).await.unwrap();
+    let seed = ctx.belief(format!("defS-{}", Uuid::new_v4()), 0.9, 0.9);
+    let t = ctx.belief(format!("defT-{}", Uuid::new_v4()), 0.6, 0.5);
+    ctx.store.insert_belief(&seed).await.unwrap();
+    ctx.store.insert_belief(&t).await.unwrap();
     let t_beta0 = t.beta;
     let t_mean0 = t.probability.value();
 
@@ -748,7 +839,7 @@ async fn test_bare_defeat_lowers_target() {
         .await
         .unwrap();
 
-    let got = s.get_belief(t.id).await.unwrap().unwrap();
+    let got = ctx.store.get_belief(t.id).await.unwrap().unwrap();
     // Defeat adds to β (spec defeat-anti): β grew, mean dropped below its base.
     assert!(
         got.beta > t_beta0 + 1e-9,
@@ -760,10 +851,7 @@ async fn test_bare_defeat_lowers_target() {
         "defeat must lower T's mean: m0={t_mean0}, after={}",
         got.probability.value()
     );
-
-    for id in [seed.id, t.id] {
-        let _ = svc.delete_belief(id).await;
-    }
+    ctx.cleanup().await;
 }
 
 // REGRESSION (spec Mimir.Inference keep-causes-into-nontarget): under do(T), a
@@ -772,16 +860,16 @@ async fn test_bare_defeat_lowers_target() {
 // Before the fix, intervene used an empty external_means and dropped X→M.
 #[tokio::test]
 async fn test_intervene_counts_out_of_set_cocause() {
-    let s = store().await;
+    let ctx = TestCtx::new().await;
     let svc = service().await;
 
     // T -CAUSES-> M ; X -CAUSES-> M.  X is NOT a causal descendant of T.
-    let t = Belief::new(format!("ccT-{}", Uuid::new_v4()), 0.3, 0.9).unwrap();
-    let m = Belief::new(format!("ccM-{}", Uuid::new_v4()), 0.3, 0.9).unwrap();
-    let x = Belief::new(format!("ccX-{}", Uuid::new_v4()), 0.95, 0.9).unwrap();
-    s.insert_belief(&t).await.unwrap();
-    s.insert_belief(&m).await.unwrap();
-    s.insert_belief(&x).await.unwrap();
+    let t = ctx.belief(format!("ccT-{}", Uuid::new_v4()), 0.3, 0.9);
+    let m = ctx.belief(format!("ccM-{}", Uuid::new_v4()), 0.3, 0.9);
+    let x = ctx.belief(format!("ccX-{}", Uuid::new_v4()), 0.95, 0.9);
+    ctx.store.insert_belief(&t).await.unwrap();
+    ctx.store.insert_belief(&m).await.unwrap();
+    ctx.store.insert_belief(&x).await.unwrap();
     svc.add_edge(t.id, m.id, EdgeType::Causes, 0.5)
         .await
         .unwrap();
@@ -810,8 +898,5 @@ async fn test_intervene_counts_out_of_set_cocause() {
         m_with_x > m_without_x + 1e-9,
         "out-of-set co-cause X must raise M's projection: with X={m_with_x}, without={m_without_x}"
     );
-
-    for id in [t.id, m.id] {
-        let _ = svc.delete_belief(id).await;
-    }
+    ctx.cleanup().await;
 }

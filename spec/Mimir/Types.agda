@@ -78,3 +78,4 @@ record Pattern : Set where
     activationCount : ℕ         -- intended usage counter; always 0 (no increment API)
     successRate     : Prob       -- empirical success rate; write-once at creation
     createdAt       : ℕ         -- Unix timestamp (seconds); mirrors Belief.createdAt
+    project         : Maybe String -- optional project scope; bulk-deleted by delete_project

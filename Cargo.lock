@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "mimir"
-version = "0.11.3"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1433,13 +1433,14 @@ dependencies = [
 
 [[package]]
 name = "mimir-core"
-version = "0.11.3"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "chrono",
  "include_dir",
  "kryzhen",
  "native-tls",
+ "pgvector",
  "postgres-native-tls",
  "proptest",
  "reqwest",
@@ -1456,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "mimir-mcp"
-version = "0.11.3"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "mimir-core",
@@ -1751,6 +1752,16 @@ checksum = "89815c69d36021a140146f26659a81d6c2afa33d216d736dd4be5381a7362220"
 dependencies = [
  "pest",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "pgvector"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3673cba5b9a124916096a423b806a9f29620972c6c97b08db5f2053e9428b481"
+dependencies = [
+ "bytes",
+ "postgres-types",
 ]
 
 [[package]]
