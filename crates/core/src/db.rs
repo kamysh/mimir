@@ -31,10 +31,27 @@ fn pgpass_lookup(host: &str, port: u16, dbname: &str, user: &str) -> Option<Stri
 }
 
 /// Run kryzhen migrations against the database. Called once at startup.
+///
+/// If `.kryzhen-import-receipt.json` is present and `_sqlx_migrations` exists
+/// (pre-v0.10 mimir DB), imports the sqlx history into
+/// `mallard.applied_migrations` first. No-op when the receipt is absent (fresh
+/// install) or when `_sqlx_migrations` was already dropped (already imported).
 pub async fn migrate(cfg: &DatabaseConfig) -> Result<()> {
     let migrations_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations");
     let migrations = kryzhen::file::load_dir(&migrations_dir)?;
     let mut client = connect(cfg).await?;
+    let receipt_path =
+        migrations_dir.join(kryzhen::sqlx_import::RECEIPT_FILENAME);
+    match kryzhen::sqlx_import::read_receipt(&receipt_path) {
+        Ok(receipt) => {
+            match kryzhen::sqlx_import::import(&client, &receipt, &migrations).await {
+                Ok(_) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(kryzhen::sqlx_import::SqlxImportError::NoReceipt { .. }) => {}
+        Err(e) => return Err(e.into()),
+    }
     kryzhen::migrate(&mut client, &migrations, false).await?;
     Ok(())
 }
