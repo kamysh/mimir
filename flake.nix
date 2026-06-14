@@ -54,12 +54,12 @@
         # Shared attrs for both packages
         commonAttrs = {
           pname = "mimir";
-          version = "0.11.1";
+          version = "0.11.2";
           src = ./.;
           cargoLock = {
             lockFile = ./Cargo.lock;
             outputHashes = {
-              "kryzhen-0.5.0" = "sha256-3MDFQqFZf65x5vZHL6rc9gGvkIIT3K8r80cPVfe3BO4=";
+              "kryzhen-0.6.0" = "sha256-NIUuqvpTZ7S+20MTNZQU3cw9t+I4RmcyVCW/8/cMxO4=";
             };
           };
           doCheck = false; # integration tests require a live PostgreSQL connection
