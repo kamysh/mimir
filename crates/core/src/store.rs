@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use chrono::DateTime;
+use pgvector::Vector;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -7,17 +8,99 @@ use tokio_postgres::{Client, Row};
 use uuid::Uuid;
 
 use crate::documents::DocumentChunk;
-use crate::embed::vec_literal;
 use crate::graph::{Belief, Edge, EdgeType, Pattern, Probability};
 
 // ---------------------------------------------------------------------------
-// Helper: escape single-quoted strings for AGE Cypher interpolation
+// AGE PREPARE/EXECUTE helpers
+//
+// AGE requires the agtype parameter to be a real SQL PREPARE parameter ($1),
+// not a plain literal interpolated into the Cypher string. The only way to
+// achieve this from tokio-postgres is via simple_query (plain text protocol):
+//   PREPARE stmt(agtype) AS SELECT … FROM cypher(…, $1) AS (…);
+//   EXECUTE stmt('<json>');
+//   DEALLOCATE stmt;
+//
+// Escaping layers for the agtype JSON value in EXECUTE stmt('...'):
+//   1. JSON layer: \ → \\, " → \" (standard JSON string escaping)
+//   2. SQL layer:  ' → '' (SQL string literal escaping)
+// Single quotes in the content are fine unescaped in JSON; only SQL-level
+// doubling is needed for them.
 // ---------------------------------------------------------------------------
 
-fn esc(s: &str) -> String {
-    // Inside AGE dollar-quoted Cypher strings, openCypher uses backslash escaping.
-    // Escape backslashes first, then single quotes.
-    s.replace('\\', "\\\\").replace('\'', "\\'")
+/// Escape a string for use as a JSON string value inside an agtype literal.
+/// Step 1 of the two-layer escaping: JSON layer only.
+fn json_esc(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Escape an agtype JSON literal for embedding inside a SQL string literal
+/// (the argument to EXECUTE stmt('...')).
+/// Step 2: SQL-level single-quote doubling of the full agtype string.
+fn sql_esc(agtype_json: &str) -> String {
+    agtype_json.replace('\'', "''")
+}
+
+/// Run PREPARE / EXECUTE / DEALLOCATE for a Cypher write that takes one
+/// agtype parameter, using simple_query (plain-text protocol) so AGE accepts $1.
+/// `stmt_name` must be unique per connection; callers use a UUID-derived name.
+/// `prepare_sql` is the PREPARE statement (without trailing semicolon).
+/// `agtype_json` is the raw JSON object (unescaped); this function applies
+/// the SQL-layer escaping before sending.
+async fn age_execute(
+    client: &Client,
+    stmt_name: &str,
+    prepare_sql: &str,
+    agtype_json: &str,
+) -> Result<()> {
+    // If PREPARE fails we return early — no session state was created, so
+    // DEALLOCATE would error on a non-existent statement. Do NOT move
+    // DEALLOCATE above this line.
+    client.simple_query(prepare_sql).await?;
+    let exec = format!("EXECUTE {}('{}')", stmt_name, sql_esc(agtype_json));
+    let result = client.simple_query(&exec).await;
+    // DEALLOCATE runs unconditionally after EXECUTE, even on EXECUTE failure,
+    // so the session is always left clean.
+    let _ = client
+        .simple_query(&format!("DEALLOCATE {}", stmt_name))
+        .await;
+    result?;
+    Ok(())
+}
+
+/// Closed enum for vertex labels used in `count_vertices`. Using an enum
+/// instead of `&str` makes it impossible to pass arbitrary user input as a
+/// Cypher label.
+enum VertexLabel {
+    Belief,
+    Pattern,
+}
+
+impl VertexLabel {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Belief => "Belief",
+            Self::Pattern => "Pattern",
+        }
+    }
+}
+
+/// Closed enum for edge labels used in `count_edges_by_label`.
+enum EdgeLabel {
+    Supports,
+    Defeats,
+    Causes,
+    Contradicts,
+}
+
+impl EdgeLabel {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Supports => "SUPPORTS",
+            Self::Defeats => "DEFEATS",
+            Self::Causes => "CAUSES",
+            Self::Contradicts => "CONTRADICTS",
+        }
+    }
 }
 
 /// Guard: Beta counts (and the scalars derived from them) are interpolated into
@@ -102,6 +185,7 @@ fn pattern_from_row(row: &Row) -> Result<Pattern> {
     let activation_count_str: &str = row.get("activation_count");
     let success_rate_str: &str = row.get("success_rate");
     let created_at_str: &str = row.get("created_at");
+    let project: Option<&str> = row.get("project");
 
     let id = Uuid::parse_str(id_str)?;
     let activation_count: u32 = activation_count_str.parse()?;
@@ -115,6 +199,7 @@ fn pattern_from_row(row: &Row) -> Result<Pattern> {
         activation_count,
         success_rate: Probability::new(success_rate)?,
         created_at,
+        project: project.map(str::to_owned),
     })
 }
 
@@ -174,7 +259,8 @@ const PATTERN_RETURN_COLUMNS: &str = r#"AS (
   approach         text,
   activation_count text,
   success_rate     text,
-  created_at       text
+  created_at       text,
+  project          text
 )"#;
 
 /// SQL fragment for returning all DocumentChunk scalar properties cast to TEXT.
@@ -198,11 +284,24 @@ pub struct AgeStore {
 }
 
 impl AgeStore {
-    pub fn new(client: Client, graph_name: String) -> Self {
-        Self {
+    /// Construct a new store. `graph_name` must consist solely of ASCII
+    /// alphanumeric characters and underscores — it is interpolated directly
+    /// into SQL strings (as the `cypher('{g}', …)` graph-name argument) and
+    /// cannot be parameterized. The validation here makes that invariant a
+    /// type-level guarantee rather than a config-discipline assumption.
+    pub fn new(client: Client, graph_name: String) -> Result<Self> {
+        anyhow::ensure!(
+            !graph_name.is_empty()
+                && graph_name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "graph_name must be non-empty and contain only ASCII alphanumeric/underscore characters: {:?}",
+            graph_name
+        );
+        Ok(Self {
             client: Arc::new(Mutex::new(client)),
             graph_name,
-        }
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -212,10 +311,8 @@ impl AgeStore {
     pub async fn insert_belief(&self, belief: &Belief) -> Result<()> {
         let g = &self.graph_name;
         let id = belief.id.to_string();
-        let content = esc(&belief.content);
         let probability = belief.probability.value();
         let confidence = belief.confidence.value();
-        // Durable Beta state (spec: Mimir.Beta StoredBelief / store-load-round-trip).
         let alpha = belief.alpha;
         let beta = belief.beta;
         let alpha0 = belief.alpha0;
@@ -229,34 +326,35 @@ impl AgeStore {
                 ("beta0", beta0),
             ],
         )?;
-        let created_at = esc(&belief.created_at.to_rfc3339());
-        let last_activated_at = esc(&belief.last_activated_at.to_rfc3339());
+        let created_at = belief.created_at.to_rfc3339();
+        let last_activated_at = belief.last_activated_at.to_rfc3339();
+
         let project_prop = match &belief.project {
-            Some(p) => format!(", project: '{}'", esc(p)),
+            Some(p) => format!(r#", "project": "{}""#, json_esc(p)),
             None => String::new(),
         };
+        let agtype_json = format!(
+            r#"{{"id": "{id}", "content": "{}", "created_at": "{created_at}", "last_activated_at": "{last_activated_at}"{project_prop}}}"#,
+            json_esc(&belief.content)
+        );
 
-        let sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
-  CREATE (n:Belief {{
-    id: '{id}',
-    content: '{content}',
-    probability: {probability},
-    confidence: {confidence},
-    alpha: {alpha},
-    beta: {beta},
-    alpha0: {alpha0},
-    beta0: {beta0},
-    created_at: '{created_at}',
-    last_activated_at: '{last_activated_at}'{project_prop}
-  }})
-  RETURN n.id
-$$) AS (id ag_catalog.agtype)"#
+        let stmt = format!("age_ins_{}", belief.id.simple());
+        let prepare = format!(
+            "PREPARE {stmt}(agtype) AS SELECT * FROM ag_catalog.cypher('{g}', $$ \
+             CREATE (n:Belief {{id: $id, content: $content, \
+             probability: {probability}, confidence: {confidence}, \
+             alpha: {alpha}, beta: {beta}, alpha0: {alpha0}, beta0: {beta0}, \
+             created_at: $created_at, last_activated_at: $last_activated_at{}}}) \
+             RETURN n.id $$, $1) AS (id ag_catalog.agtype)",
+            if belief.project.is_some() {
+                ", project: $project"
+            } else {
+                ""
+            }
         );
 
         let client = self.client.lock().await;
-        client.execute(&sql, &[]).await?;
-        Ok(())
+        age_execute(&client, &stmt, &prepare, &agtype_json).await
     }
 
     /// Delete a belief and all its edges by ID. Returns true if found and deleted.
@@ -287,36 +385,64 @@ $$) AS (ok ag_catalog.agtype)"#
     /// Returns the number of beliefs deleted.
     pub async fn delete_project(&self, project: &str) -> Result<usize> {
         let g = &self.graph_name;
-        let project_esc = esc(project);
+        let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
+
         // Count first so we can return a meaningful number.
-        let count_sql = format!(
-            r#"SELECT id::text
-FROM ag_catalog.cypher('{g}', $$
-  MATCH (n:Belief {{project: '{project_esc}'}})
-  RETURN n.id
-$$) AS (id text)"#
+        // UUID-derived names avoid collision on connection reuse (PREPARE is session-scoped).
+        let stmt_count = format!("age_delproj_count_{}", Uuid::new_v4().simple());
+        let prepare_count = format!(
+            "PREPARE {stmt_count}(agtype) AS SELECT id::text \
+             FROM ag_catalog.cypher('{g}', $$ \
+             MATCH (n:Belief) WHERE n.project = $project RETURN n.id \
+             $$, $1) AS (id agtype)"
         );
+        let exec_count = format!("EXECUTE {stmt_count}('{}')", sql_esc(&agtype_json));
+
         let client = self.client.lock().await;
-        let rows = client.query(&count_sql, &[]).await?;
-        let count = rows.len();
+        client.simple_query(&prepare_count).await?;
+        let msgs = client.simple_query(&exec_count).await;
+        let _ = client
+            .simple_query(&format!("DEALLOCATE {stmt_count}"))
+            .await;
+        let msgs = msgs?;
+
+        let count = msgs
+            .iter()
+            .filter(|m| matches!(m, tokio_postgres::SimpleQueryMessage::Row(_)))
+            .count();
         if count == 0 {
             return Ok(0);
         }
-        let ids: Vec<Uuid> = rows
+        let ids: Vec<Uuid> = msgs
             .iter()
-            .filter_map(|r| {
-                let s: &str = r.get("id");
-                Uuid::parse_str(s).ok()
+            .filter_map(|m| {
+                if let tokio_postgres::SimpleQueryMessage::Row(row) = m {
+                    row.get(0).and_then(|s| Uuid::parse_str(s).ok())
+                } else {
+                    None
+                }
             })
             .collect();
-        let delete_sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
-  MATCH (n:Belief {{project: '{project_esc}'}})
-  DETACH DELETE n
-  RETURN 1
-$$) AS (ok ag_catalog.agtype)"#
+
+        let stmt_del = format!("age_delproj_del_{}", Uuid::new_v4().simple());
+        let prepare_del = format!(
+            "PREPARE {stmt_del}(agtype) AS SELECT * \
+             FROM ag_catalog.cypher('{g}', $$ \
+             MATCH (n:Belief) WHERE n.project = $project DETACH DELETE n RETURN 1 \
+             $$, $1) AS (ok agtype)"
         );
-        client.query(&delete_sql, &[]).await?;
+        age_execute(&client, &stmt_del, &prepare_del, &agtype_json).await?;
+
+        // Also purge Pattern nodes tagged with the same project.
+        let stmt_pat = format!("age_delproj_pat_{}", Uuid::new_v4().simple());
+        let prepare_pat = format!(
+            "PREPARE {stmt_pat}(agtype) AS SELECT * \
+             FROM ag_catalog.cypher('{g}', $$ \
+             MATCH (p:Pattern) WHERE p.project = $project DETACH DELETE p RETURN 1 \
+             $$, $1) AS (ok agtype)"
+        );
+        age_execute(&client, &stmt_pat, &prepare_pat, &agtype_json).await?;
+
         drop(client);
         self.delete_belief_embeddings(&ids).await?;
         Ok(count)
@@ -447,16 +573,17 @@ $$) {BELIEF_RETURN_COLUMNS}"#
 
     /// Count all Belief vertices. Used by `stats`.
     pub async fn count_beliefs(&self) -> Result<usize> {
-        self.count_vertices("Belief").await
+        self.count_vertices(VertexLabel::Belief).await
     }
 
     /// Count all Pattern vertices. Used by `stats`.
     pub async fn count_patterns(&self) -> Result<usize> {
-        self.count_vertices("Pattern").await
+        self.count_vertices(VertexLabel::Pattern).await
     }
 
-    async fn count_vertices(&self, label: &str) -> Result<usize> {
+    async fn count_vertices(&self, label: VertexLabel) -> Result<usize> {
         let g = &self.graph_name;
+        let label = label.label();
         let sql = format!(
             r#"SELECT n::text
 FROM ag_catalog.cypher('{g}', $$
@@ -477,15 +604,16 @@ $$) AS (n ag_catalog.agtype)"#
     /// CONTRADICTS edges are stored bidirectionally, so the returned value is
     /// the raw directed-edge count (logical pairs × 2).
     pub async fn count_edges(&self) -> Result<(usize, usize, usize, usize)> {
-        let supports = self.count_edges_by_label("SUPPORTS").await?;
-        let defeats = self.count_edges_by_label("DEFEATS").await?;
-        let causes = self.count_edges_by_label("CAUSES").await?;
-        let contradicts = self.count_edges_by_label("CONTRADICTS").await?;
+        let supports = self.count_edges_by_label(EdgeLabel::Supports).await?;
+        let defeats = self.count_edges_by_label(EdgeLabel::Defeats).await?;
+        let causes = self.count_edges_by_label(EdgeLabel::Causes).await?;
+        let contradicts = self.count_edges_by_label(EdgeLabel::Contradicts).await?;
         Ok((supports, defeats, causes, contradicts))
     }
 
-    async fn count_edges_by_label(&self, label: &str) -> Result<usize> {
+    async fn count_edges_by_label(&self, label: EdgeLabel) -> Result<usize> {
         let g = &self.graph_name;
+        let label = label.label();
         let sql = format!(
             r#"SELECT n::text
 FROM ag_catalog.cypher('{g}', $$
@@ -509,29 +637,37 @@ $$) AS (n ag_catalog.agtype)"#
     pub async fn insert_pattern(&self, pattern: &Pattern) -> Result<()> {
         let g = &self.graph_name;
         let id = pattern.id.to_string();
-        let situation = esc(&pattern.situation);
-        let approach = esc(&pattern.approach);
         let activation_count = pattern.activation_count;
         let success_rate = pattern.success_rate.value();
-        let created_at = esc(&pattern.created_at.to_rfc3339());
+        let created_at = pattern.created_at.to_rfc3339();
 
-        let sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
-  CREATE (p:Pattern {{
-    id: '{id}',
-    situation: '{situation}',
-    approach: '{approach}',
-    activation_count: {activation_count},
-    success_rate: {success_rate},
-    created_at: '{created_at}'
-  }})
-  RETURN p.id
-$$) AS (id ag_catalog.agtype)"#
+        let project_prop = match &pattern.project {
+            Some(p) => format!(r#", "project": "{}""#, json_esc(p)),
+            None => String::new(),
+        };
+        let project_cypher = if pattern.project.is_some() {
+            ", project: $project"
+        } else {
+            ""
+        };
+
+        let agtype_json = format!(
+            r#"{{"id": "{id}", "situation": "{}", "approach": "{}", "created_at": "{created_at}"{project_prop}}}"#,
+            json_esc(&pattern.situation),
+            json_esc(&pattern.approach),
+        );
+
+        let stmt = format!("age_ins_pat_{}", pattern.id.simple());
+        let prepare = format!(
+            "PREPARE {stmt}(agtype) AS SELECT * FROM ag_catalog.cypher('{g}', $$ \
+             CREATE (p:Pattern {{id: $id, situation: $situation, approach: $approach, \
+             activation_count: {activation_count}, success_rate: {success_rate}, \
+             created_at: $created_at{project_cypher}}}) \
+             RETURN p.id $$, $1) AS (id ag_catalog.agtype)"
         );
 
         let client = self.client.lock().await;
-        client.execute(&sql, &[]).await?;
-        Ok(())
+        age_execute(&client, &stmt, &prepare, &agtype_json).await
     }
 
     pub async fn get_pattern(&self, id: Uuid) -> Result<Option<Pattern>> {
@@ -544,10 +680,11 @@ $$) AS (id ag_catalog.agtype)"#
   approach::text,
   activation_count::text,
   success_rate::text,
-  created_at::text
+  created_at::text,
+  project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (p:Pattern {{id: '{id_str}'}})
-  RETURN p.id, p.situation, p.approach, p.activation_count, p.success_rate, p.created_at
+  RETURN p.id, p.situation, p.approach, p.activation_count, p.success_rate, p.created_at, p.project
 $$) {PATTERN_RETURN_COLUMNS}"#
         );
 
@@ -588,10 +725,11 @@ $$) AS (ok ag_catalog.agtype)"#
   approach::text,
   activation_count::text,
   success_rate::text,
-  created_at::text
+  created_at::text,
+  project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (p:Pattern)
-  RETURN p.id, p.situation, p.approach, p.activation_count, p.success_rate, p.created_at
+  RETURN p.id, p.situation, p.approach, p.activation_count, p.success_rate, p.created_at, p.project
 $$) {PATTERN_RETURN_COLUMNS}"#
         );
 
@@ -832,41 +970,56 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
     pub async fn insert_document_chunk(&self, chunk: &DocumentChunk) -> Result<()> {
         let g = &self.graph_name;
         let id = chunk.id.to_string();
-        let doc_path = esc(&chunk.document_path);
-        let content = esc(&chunk.content);
 
-        // Build sectionPath as a Cypher list literal: ['h1', 'h2'] or []
-        let section_path_lit = {
+        // sectionPath is a JSON array of strings — valid agtype list.
+        let section_path_json = {
             let inner: Vec<String> = chunk
                 .section_path
                 .iter()
-                .map(|s| format!("'{}'", esc(s)))
+                .map(|s| format!(r#""{}""#, json_esc(s)))
                 .collect();
             format!("[{}]", inner.join(", "))
         };
 
+        // parentId is a UUID ([0-9a-f-] only) — no JSON or SQL escaping needed.
         let parent_prop = match chunk.parent_id {
-            Some(p) => format!(", parentId: '{}'", p),
+            Some(p) => format!(r#", "parentId": "{}""#, p),
             None => String::new(),
         };
         let project_prop = match &chunk.project {
-            Some(p) => format!(", project: '{}'", esc(p)),
+            Some(p) => format!(r#", "project": "{}""#, json_esc(p)),
             None => String::new(),
         };
 
-        let sql = format!(
-            r#"SELECT * FROM ag_catalog.cypher('{g}', $$
-  CREATE (c:DocumentChunk {{
-    id: '{id}',
-    documentPath: '{doc_path}',
-    sectionPath: {section_path_lit},
-    content: '{content}'{parent_prop}{project_prop}
-  }})
-  RETURN c.id
-$$) AS (id ag_catalog.agtype)"#
+        let agtype_json = format!(
+            r#"{{"id": "{id}", "documentPath": "{}", "sectionPath": {section_path_json}, "content": "{}"{parent_prop}{project_prop}}}"#,
+            json_esc(&chunk.document_path),
+            json_esc(&chunk.content),
         );
+
+        let extra_props = format!(
+            "{}{}",
+            if chunk.parent_id.is_some() {
+                ", parentId: $parentId"
+            } else {
+                ""
+            },
+            if chunk.project.is_some() {
+                ", project: $project"
+            } else {
+                ""
+            }
+        );
+        let stmt = format!("age_ins_chunk_{}", chunk.id.simple());
+        let prepare = format!(
+            "PREPARE {stmt}(agtype) AS SELECT * FROM ag_catalog.cypher('{g}', $$ \
+             CREATE (c:DocumentChunk {{id: $id, documentPath: $documentPath, \
+             sectionPath: $sectionPath, content: $content{extra_props}}}) \
+             RETURN c.id $$, $1) AS (id ag_catalog.agtype)"
+        );
+
         let client = self.client.lock().await;
-        client.execute(&sql, &[]).await?;
+        age_execute(&client, &stmt, &prepare, &agtype_json).await?;
 
         // Insert CONTAINS edge from parent → child when parent exists.
         if let Some(parent_id) = chunk.parent_id {
@@ -885,50 +1038,74 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Insert one row into public.chunk_embeddings.
     pub async fn insert_chunk_embedding(&self, chunk_id: Uuid, embedding: &[f32]) -> Result<()> {
-        let vec_str = vec_literal(embedding);
-        let sql = format!(
-            "INSERT INTO public.chunk_embeddings (chunk_id, embedding) \
-             VALUES ('{chunk_id}', '{vec_str}'::vector) \
-             ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding"
-        );
+        let vec = Vector::from(embedding.to_vec());
         let client = self.client.lock().await;
-        client.execute(&sql, &[]).await?;
+        client
+            .execute(
+                "INSERT INTO public.chunk_embeddings (chunk_id, embedding) \
+                 VALUES ($1, $2) \
+                 ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding",
+                &[&chunk_id, &vec],
+            )
+            .await?;
         Ok(())
     }
 
     /// Return chunk IDs for a given document path (used by clear_document).
     pub async fn get_chunk_ids_for_document(&self, path: &str) -> Result<Vec<Uuid>> {
         let g = &self.graph_name;
-        let path_esc = esc(path);
-        let sql = format!(
-            r#"SELECT id::text
-FROM ag_catalog.cypher('{g}', $$
-  MATCH (c:DocumentChunk {{documentPath: '{path_esc}'}})
-  RETURN c.id
-$$) AS (id ag_catalog.agtype)"#
+        let agtype_json = format!(r#"{{"documentPath": "{}"}}"#, json_esc(path));
+        let stmt = format!("age_chunk_ids_by_path_{}", Uuid::new_v4().simple());
+        let prepare = format!(
+            "PREPARE {stmt}(agtype) AS SELECT id::text \
+             FROM ag_catalog.cypher('{g}', $$ \
+             MATCH (c:DocumentChunk) WHERE c.documentPath = $documentPath RETURN c.id \
+             $$, $1) AS (id agtype)"
         );
+        let exec = format!("EXECUTE {stmt}('{}')", sql_esc(&agtype_json));
         let client = self.client.lock().await;
-        let rows = client.query(&sql, &[]).await?;
-        rows.iter()
-            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("id"))?))
+        client.simple_query(&prepare).await?;
+        let msgs = client.simple_query(&exec).await;
+        let _ = client.simple_query(&format!("DEALLOCATE {stmt}")).await;
+        msgs?
+            .iter()
+            .filter_map(|m| {
+                if let tokio_postgres::SimpleQueryMessage::Row(row) = m {
+                    row.get(0).and_then(|s| Uuid::parse_str(s).ok())
+                } else {
+                    None
+                }
+            })
+            .map(Ok)
             .collect()
     }
 
     /// Return chunk IDs tagged with a project (used by delete_project extension).
     pub async fn get_chunk_ids_by_project(&self, project: &str) -> Result<Vec<Uuid>> {
         let g = &self.graph_name;
-        let proj_esc = esc(project);
-        let sql = format!(
-            r#"SELECT id::text
-FROM ag_catalog.cypher('{g}', $$
-  MATCH (c:DocumentChunk {{project: '{proj_esc}'}})
-  RETURN c.id
-$$) AS (id ag_catalog.agtype)"#
+        let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
+        let stmt = format!("age_chunk_ids_by_proj_{}", Uuid::new_v4().simple());
+        let prepare = format!(
+            "PREPARE {stmt}(agtype) AS SELECT id::text \
+             FROM ag_catalog.cypher('{g}', $$ \
+             MATCH (c:DocumentChunk) WHERE c.project = $project RETURN c.id \
+             $$, $1) AS (id agtype)"
         );
+        let exec = format!("EXECUTE {stmt}('{}')", sql_esc(&agtype_json));
         let client = self.client.lock().await;
-        let rows = client.query(&sql, &[]).await?;
-        rows.iter()
-            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("id"))?))
+        client.simple_query(&prepare).await?;
+        let msgs = client.simple_query(&exec).await;
+        let _ = client.simple_query(&format!("DEALLOCATE {stmt}")).await;
+        msgs?
+            .iter()
+            .filter_map(|m| {
+                if let tokio_postgres::SimpleQueryMessage::Row(row) = m {
+                    row.get(0).and_then(|s| Uuid::parse_str(s).ok())
+                } else {
+                    None
+                }
+            })
+            .map(Ok)
             .collect()
     }
 
@@ -960,14 +1137,13 @@ $$) AS (ok ag_catalog.agtype)"#
         if ids.is_empty() {
             return Ok(());
         }
-        let id_list = ids
-            .iter()
-            .map(|id| format!("'{id}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!("DELETE FROM public.chunk_embeddings WHERE chunk_id IN ({id_list})");
         let client = self.client.lock().await;
-        client.execute(&sql, &[]).await?;
+        client
+            .execute(
+                "DELETE FROM public.chunk_embeddings WHERE chunk_id = ANY($1)",
+                &[&ids],
+            )
+            .await?;
         Ok(())
     }
 
@@ -980,34 +1156,31 @@ $$) AS (ok ag_catalog.agtype)"#
         limit: usize,
         filter_ids: Option<&[Uuid]>,
     ) -> Result<Vec<Uuid>> {
-        let vec_str = vec_literal(query_vec);
+        let vec = Vector::from(query_vec.to_vec());
         let limit_clause = if limit > 0 {
             format!("LIMIT {limit}")
         } else {
             String::new()
         };
 
-        let sql = match filter_ids {
-            None => format!(
-                "SELECT chunk_id::text FROM public.chunk_embeddings \
-                 ORDER BY embedding <=> '{vec_str}'::vector {limit_clause}"
-            ),
-            Some(ids) => {
-                let id_list = ids
-                    .iter()
-                    .map(|id| format!("'{id}'"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
+        let client = self.client.lock().await;
+        let rows = match filter_ids {
+            None => {
+                let sql = format!(
                     "SELECT chunk_id::text FROM public.chunk_embeddings \
-                     WHERE chunk_id IN ({id_list}) \
-                     ORDER BY embedding <=> '{vec_str}'::vector {limit_clause}"
-                )
+                     ORDER BY embedding <=> $1 {limit_clause}"
+                );
+                client.query(&sql, &[&vec]).await?
+            }
+            Some(ids) => {
+                let sql = format!(
+                    "SELECT chunk_id::text FROM public.chunk_embeddings \
+                     WHERE chunk_id = ANY($2) \
+                     ORDER BY embedding <=> $1 {limit_clause}"
+                );
+                client.query(&sql, &[&vec, &ids]).await?
             }
         };
-
-        let client = self.client.lock().await;
-        let rows = client.query(&sql, &[]).await?;
         rows.iter()
             .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("chunk_id"))?))
             .collect()
@@ -1019,14 +1192,16 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Insert or replace the embedding for a belief.
     pub async fn insert_belief_embedding(&self, belief_id: Uuid, embedding: &[f32]) -> Result<()> {
-        let vec_str = vec_literal(embedding);
-        let sql = format!(
-            "INSERT INTO public.belief_embeddings (belief_id, embedding) \
-             VALUES ('{belief_id}', '{vec_str}'::vector) \
-             ON CONFLICT (belief_id) DO UPDATE SET embedding = EXCLUDED.embedding"
-        );
+        let vec = Vector::from(embedding.to_vec());
         let client = self.client.lock().await;
-        client.execute(&sql, &[]).await?;
+        client
+            .execute(
+                "INSERT INTO public.belief_embeddings (belief_id, embedding) \
+                 VALUES ($1, $2) \
+                 ON CONFLICT (belief_id) DO UPDATE SET embedding = EXCLUDED.embedding",
+                &[&belief_id, &vec],
+            )
+            .await?;
         Ok(())
     }
 
@@ -1035,14 +1210,13 @@ $$) AS (ok ag_catalog.agtype)"#
         if ids.is_empty() {
             return Ok(());
         }
-        let id_list = ids
-            .iter()
-            .map(|id| format!("'{id}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!("DELETE FROM public.belief_embeddings WHERE belief_id IN ({id_list})");
         let client = self.client.lock().await;
-        client.execute(&sql, &[]).await?;
+        client
+            .execute(
+                "DELETE FROM public.belief_embeddings WHERE belief_id = ANY($1)",
+                &[&ids],
+            )
+            .await?;
         Ok(())
     }
 
@@ -1054,7 +1228,7 @@ $$) AS (ok ag_catalog.agtype)"#
         query_vec: &[f32],
         limit: usize,
     ) -> Result<Vec<Uuid>> {
-        let vec_str = vec_literal(query_vec);
+        let vec = Vector::from(query_vec.to_vec());
         let limit_clause = if limit > 0 {
             format!("LIMIT {limit}")
         } else {
@@ -1062,10 +1236,10 @@ $$) AS (ok ag_catalog.agtype)"#
         };
         let sql = format!(
             "SELECT belief_id::text FROM public.belief_embeddings \
-             ORDER BY embedding <=> '{vec_str}'::vector {limit_clause}"
+             ORDER BY embedding <=> $1 {limit_clause}"
         );
         let client = self.client.lock().await;
-        let rows = client.query(&sql, &[]).await?;
+        let rows = client.query(&sql, &[&vec]).await?;
         rows.iter()
             .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("belief_id"))?))
             .collect()

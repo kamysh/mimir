@@ -389,15 +389,6 @@ pub fn make_backend(cfg: &EmbeddingsConfig) -> Box<dyn EmbeddingProvider> {
 }
 
 // ---------------------------------------------------------------------------
-// Vector literal for pgvector SQL interpolation.
-// ---------------------------------------------------------------------------
-
-pub fn vec_literal(v: &[f32]) -> String {
-    let inner: Vec<String> = v.iter().map(|f| f.to_string()).collect();
-    format!("[{}]", inner.join(","))
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

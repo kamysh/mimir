@@ -1,4 +1,5 @@
 use anyhow::Result;
+use include_dir::{include_dir, Dir};
 use postgres_native_tls::MakeTlsConnector;
 use tokio_postgres::Client;
 
@@ -6,24 +7,22 @@ use crate::config::{DatabaseConfig, SslMode};
 
 const SEARCH_PATH: &str = "public,ag_catalog";
 
-const MIGRATION_001: &str = include_str!("../migrations/001_initial.sql");
-const MIGRATION_002: &str = include_str!("../migrations/002_database_search_path.sql");
-const MIGRATION_003: &str = include_str!("../migrations/003_belief_embeddings.sql");
-const MIGRATION_004: &str = include_str!("../migrations/004_evidence_edges.sql");
-const MIGRATION_005: &str = include_str!("../migrations/005_beta_beliefs.sql");
+static MIGRATIONS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 const RECEIPT_JSON: &str = include_str!("../migrations/.kryzhen-import-receipt.json");
 
 fn embedded_migrations() -> anyhow::Result<Vec<kryzhen::Migration>> {
-    let sources: &[(&str, &str)] = &[
-        (MIGRATION_001, "001_initial.sql"),
-        (MIGRATION_002, "002_database_search_path.sql"),
-        (MIGRATION_003, "003_belief_embeddings.sql"),
-        (MIGRATION_004, "004_evidence_edges.sql"),
-        (MIGRATION_005, "005_beta_beliefs.sql"),
-    ];
+    let mut files: Vec<_> = MIGRATIONS_DIR
+        .files()
+        .filter(|f| f.path().extension().and_then(|e| e.to_str()) == Some("sql"))
+        .collect();
+    files.sort_by_key(|f| f.path());
     let mut all = Vec::new();
-    for (text, label) in sources {
-        let blocks = kryzhen::parser::parse_file(text, label)?;
+    for f in files {
+        let label = f.path().to_string_lossy();
+        let text = f
+            .contents_utf8()
+            .ok_or_else(|| anyhow::anyhow!("migration file is not valid UTF-8: {}", label))?;
+        let blocks = kryzhen::parser::parse_file(text, &label)?;
         all.extend(kryzhen::file::apply_implicit_deps(blocks));
     }
     Ok(all)

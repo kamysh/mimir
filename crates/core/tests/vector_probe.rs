@@ -52,7 +52,7 @@ async fn vector_leg_ranking() {
     let cfg = test_db_config();
     let graph = cfg.dbname.clone();
     let client = db::connect(&cfg).await.expect("connect");
-    let store = AgeStore::new(client, graph);
+    let store = AgeStore::new(client, graph).expect("valid graph_name");
 
     let all = store.list_beliefs().await.expect("list_beliefs");
     let n = all.len();

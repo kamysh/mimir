@@ -63,7 +63,7 @@ open import Data.Empty           using (⊥-elim)
 --
 -- delete_belief  returns {deleted: true/false} — false if ID unknown (not error).
 -- delete_pattern  returns {deleted: true/false} — same shape as delete_belief.
--- delete_project  returns {deleted: count}      — count of beliefs removed (0 if none).
+-- delete_project  returns {deleted: count}      — count of beliefs + patterns removed (0 if none).
 -- The {deleted: bool} shape is the same for belief and pattern; the {deleted: N}
 -- (integer) shape is used only for the bulk delete_project operation.
 -- ---------------------------------------------------------------------------
@@ -98,6 +98,31 @@ deleteProject-smaller proj []       = z≤n
 deleteProject-smaller proj (b ∷ bs) with not (matchesProject proj b)
 ... | true  = s≤s (deleteProject-smaller proj bs)
 ... | false = ≤-trans (deleteProject-smaller proj bs) (n≤suc-n (length bs))
+
+-- ---------------------------------------------------------------------------
+-- delete_project — Pattern extension
+-- Patterns tagged with a project are also bulk-deleted by delete_project.
+-- Modelled as a filter over a flat list of patterns, symmetric with beliefs.
+-- ---------------------------------------------------------------------------
+
+matchesPatternProject : String → Pattern → Bool
+matchesPatternProject proj p with Pattern.project p
+... | nothing = false
+... | just q  = does (q ≟ proj)
+
+deleteProjectPatterns : String → List Pattern → List Pattern
+deleteProjectPatterns proj []       = []
+deleteProjectPatterns proj (p ∷ ps) with not (matchesPatternProject proj p)
+... | true  = p ∷ deleteProjectPatterns proj ps
+... | false = deleteProjectPatterns proj ps
+
+deleteProjectPatterns-smaller :
+  ∀ (proj : String) (patterns : List Pattern) →
+  length (deleteProjectPatterns proj patterns) ≤ length patterns
+deleteProjectPatterns-smaller proj []       = z≤n
+deleteProjectPatterns-smaller proj (p ∷ ps) with not (matchesPatternProject proj p)
+... | true  = s≤s (deleteProjectPatterns-smaller proj ps)
+... | false = ≤-trans (deleteProjectPatterns-smaller proj ps) (n≤suc-n (length ps))
 
 -- ---------------------------------------------------------------------------
 -- CONTRADICTS edge bidirectionality
