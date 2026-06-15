@@ -52,22 +52,30 @@ has a latency and noise cost; the rule below makes the trade explicit.
 ### Using a surfaced belief — the discipline that prevents decoration
 
 A belief is a **prior over your hypothesis space, not a fact to recite.** When
-one bears on what you're about to do:
+one bears on what you're about to do, you must visibly dispose of it:
 
-- **`probability ≥ 0.8` → load-bearing.** Either act consistently with it, or
-  state in one line why you're overriding it. "Overriding belief X because the
-  code changed in commit Y" is a legitimate move — and that override is itself a
-  `record_defeat` observation (see WRITE). What is *not* legitimate is reading it
-  and silently doing the thing it warns against.
-- **Let `probability` set exploration depth.** A `p=0.9` "X fails because Y"
-  means: don't spend five tool calls rediscovering it — verify in one, or skip.
-  A `p=0.3` hint means weight it lightly and keep your other hypotheses live.
+**Before your first related tool call, write one of:**
+- `Following belief <id>: <one line on what it implies for this action>.`
+- `Overriding belief <id>: <one line on why it does not apply here>.`
+
+This is the checkpoint that prevents decoration. A surfaced belief with no
+disposition statement means you read it and ignored it — the failure mode this
+skill exists to prevent.
+
+The substance of each disposition:
+
+- **`probability ≥ 0.8` → follow unless you have concrete contrary evidence.**
+  "Overriding: code changed in commit X" is valid. Vague hedging ("might not
+  apply") is not.
+- **Let `probability` set exploration depth.** A `p=0.9` warning means: verify
+  in one step or skip re-derivation. A `p=0.3` hint means keep other hypotheses
+  live.
 - **Let `confidence` set your trust in the probability.** Low confidence = the
-  past session wasn't sure either; corroborate before you lean on it.
+  past session wasn't certain; corroborate before leaning on it.
+- **Every override is a `record_defeat` you owe the graph** (see WRITE).
 - **Causal questions deserve the causal tools.** If you're asking "if I change
-  X, what downstream breaks?", that's an intervention, not a keyword match —
-  use `query_intervention` (once available) rather than reading `CAUSES` edges
-  by hand.
+  X, what downstream breaks?", use `query_intervention` rather than reading
+  `CAUSES` edges by hand.
 
 ### Keep mimir and muninn distinct
 
@@ -129,6 +137,14 @@ This is where READ and WRITE join up:
 - Two beliefs disagree (`get_contradictions`) → reconcile by `record_defeat` on whichever you now distrust (its evidence drops; dependents cascade).
 - You acted on a `CAUSES` belief and the predicted downstream effect did/didn't happen → that's support/defeat on the causal claim specifically.
 
+### Auto-grounding
+
+`insert_belief` and `load_document` both automatically create GROUNDS edges to
+semantically similar document chunks / beliefs (cosine similarity ≥ 0.80, same
+project or global). You do not need to call `add_evidence` manually at write
+time — the server wires it. Call `add_evidence` explicitly only when you want
+to assert a specific passage grounds a belief regardless of similarity score.
+
 ### Mechanics — the tool calls
 
 Full schemas in `mcp__mimir__*`; if you forget a parameter list mid-task, run
@@ -142,7 +158,7 @@ Full schemas in `mcp__mimir__*`; if you forget a parameter list mid-task, run
 - `record_support(obs_id, belief_id, weight)` / `record_defeat(obs_id, belief_id, weight)`.
 
 Others: `get_belief`, `list_beliefs`, `delete_belief`,
-`get_contradictions`, `propagate_from`, and (Phase 1) `query_intervention`.
+`get_contradictions`, `propagate_from`, `query_intervention`.
 
 ### Calibration
 

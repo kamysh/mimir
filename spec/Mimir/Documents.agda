@@ -213,6 +213,11 @@ clearChunksByProject-smaller proj (c ∷ cs) with not (chunkMatchesProject proj 
 --       produces `newChunks`; all have documentPath = path).
 --   (3) Insert new chunks into AGE.
 --   (4) Compute embeddings for each new chunk and insert into chunk_embeddings.
+--   (5) Auto-ground: for each new chunk, find existing beliefs whose stored
+--       embedding has cosine similarity ≥ GROUND_THRESHOLD (0.80) to the
+--       chunk embedding AND whose project is compatible (same project, or
+--       chunk/belief project is absent). Create a GROUNDS edge for each match.
+--       Formalised in Evidence.autoGroundChunks.
 --
 -- Calling load_document on an already-loaded document replaces the old
 -- chunks rather than erroring — safe to call after document edits.
