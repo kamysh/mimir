@@ -1245,6 +1245,80 @@ $$) AS (ok ag_catalog.agtype)"#
             .collect()
     }
 
+    /// Cosine nearest-neighbour search over chunk_embeddings, returning (chunk_id, similarity).
+    /// similarity = 1.0 - cosine_distance. Results ordered by similarity descending.
+    /// limit=0 means no limit. Used by auto-grounding in insert_belief.
+    pub async fn query_chunks_by_vector_scored(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+        filter_ids: Option<&[Uuid]>,
+    ) -> Result<Vec<(Uuid, f64)>> {
+        let vec = Vector::from(query_vec.to_vec());
+        let limit_clause = if limit > 0 {
+            format!("LIMIT {limit}")
+        } else {
+            String::new()
+        };
+        let client = self.client.lock().await;
+        let rows = match filter_ids {
+            None => {
+                let sql = format!(
+                    "SELECT chunk_id::text, 1.0 - (embedding <=> $1) AS similarity \
+                     FROM public.chunk_embeddings \
+                     ORDER BY embedding <=> $1 {limit_clause}"
+                );
+                client.query(&sql, &[&vec]).await?
+            }
+            Some(ids) => {
+                let sql = format!(
+                    "SELECT chunk_id::text, 1.0 - (embedding <=> $1) AS similarity \
+                     FROM public.chunk_embeddings \
+                     WHERE chunk_id = ANY($2) \
+                     ORDER BY embedding <=> $1 {limit_clause}"
+                );
+                client.query(&sql, &[&vec, &ids]).await?
+            }
+        };
+        rows.iter()
+            .map(|r| {
+                let id = Uuid::parse_str(r.get::<_, &str>("chunk_id"))?;
+                let sim: f64 = r.get("similarity");
+                Ok((id, sim))
+            })
+            .collect()
+    }
+
+    /// Cosine nearest-neighbour search over belief_embeddings, returning (belief_id, similarity).
+    /// similarity = 1.0 - cosine_distance. Results ordered by similarity descending.
+    /// limit=0 means no limit. Used by auto-grounding in load_document.
+    pub async fn query_beliefs_by_vector_scored(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+    ) -> Result<Vec<(Uuid, f64)>> {
+        let vec = Vector::from(query_vec.to_vec());
+        let limit_clause = if limit > 0 {
+            format!("LIMIT {limit}")
+        } else {
+            String::new()
+        };
+        let sql = format!(
+            "SELECT belief_id::text, 1.0 - (embedding <=> $1) AS similarity \
+             FROM public.belief_embeddings \
+             ORDER BY embedding <=> $1 {limit_clause}"
+        );
+        let client = self.client.lock().await;
+        let rows = client.query(&sql, &[&vec]).await?;
+        rows.iter()
+            .map(|r| {
+                let id = Uuid::parse_str(r.get::<_, &str>("belief_id"))?;
+                let sim: f64 = r.get("similarity");
+                Ok((id, sim))
+            })
+            .collect()
+    }
+
     /// Belief IDs that already have an embedding row (used by `reembed` to skip).
     pub async fn list_embedded_belief_ids(&self) -> Result<Vec<Uuid>> {
         let client = self.client.lock().await;

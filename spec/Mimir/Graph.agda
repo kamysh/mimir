@@ -288,6 +288,16 @@ addEdgePrecondition-empty-false _ _ = refl
 -- No uniqueness constraint: two beliefs with identical content can coexist
 -- with different UUIDs.  Every call adds exactly one vertex.
 -- Modelled as list prepend; the list length increases by exactly 1.
+--
+-- AUTO-GROUNDING (when an embedding backend is configured):
+--   After inserting the belief vertex and storing its embedding in
+--   belief_embeddings, insert_belief performs auto-grounding:
+--   find existing chunks in chunk_embeddings with cosine similarity
+--   ≥ GROUND_THRESHOLD (0.80) to the belief embedding AND project-compatible
+--   (same project, or chunk/belief project is absent), then create a GROUNDS
+--   edge for each match.  Formalised in Evidence.autoGroundBelief.
+--   Non-interference is preserved: GROUNDS edges are EvidenceEdges and never
+--   enter the belief-inference substrate (Evidence.propagate-evidence-invariant).
 -- ---------------------------------------------------------------------------
 
 insertBelief : Belief → List Belief → List Belief

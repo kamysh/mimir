@@ -33,6 +33,11 @@ fn weighted_rrf(lists: &[(&[Uuid], f32)]) -> std::collections::HashMap<Uuid, f32
     scores
 }
 
+/// Cosine similarity threshold for automatic GROUNDS edge creation.
+/// A chunk and belief are auto-grounded when their embedding cosine similarity
+/// meets or exceeds this value. Corresponds to `similarEnough` in Evidence.agda.
+const GROUND_THRESHOLD: f64 = 0.80;
+
 /// Drop the source-mean column from `get_incoming_edges` rows, yielding the
 /// `(from, to, EdgeType, weight)` edge tuples the inference engine consumes.
 fn strip_source_means(
@@ -117,7 +122,15 @@ impl MimirService {
     ) -> Result<Belief> {
         let belief = Belief::new(content.to_string(), probability, confidence)?;
         self.store.insert_belief(&belief).await?;
-        self.embed_and_store_belief(&belief).await?;
+        if let Some(embedder) = &self.embeddings {
+            let mut vecs = embedder
+                .embed(std::slice::from_ref(&belief.content))
+                .await?;
+            if let Some(v) = vecs.pop() {
+                self.store.insert_belief_embedding(belief.id, &v).await?;
+                self.auto_ground_belief(&belief, &v).await?;
+            }
+        }
         Ok(belief)
     }
 
@@ -136,7 +149,15 @@ impl MimirService {
             project.to_string(),
         )?;
         self.store.insert_belief(&belief).await?;
-        self.embed_and_store_belief(&belief).await?;
+        if let Some(embedder) = &self.embeddings {
+            let mut vecs = embedder
+                .embed(std::slice::from_ref(&belief.content))
+                .await?;
+            if let Some(v) = vecs.pop() {
+                self.store.insert_belief_embedding(belief.id, &v).await?;
+                self.auto_ground_belief(&belief, &v).await?;
+            }
+        }
         Ok(belief)
     }
 
@@ -152,6 +173,75 @@ impl MimirService {
                 .await?;
             if let Some(v) = vecs.pop() {
                 self.store.insert_belief_embedding(belief.id, &v).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Auto-ground a newly inserted belief against existing document chunks.
+    /// Finds chunks with cosine similarity ≥ GROUND_THRESHOLD that are
+    /// project-compatible (same project, or either side is unscoped), then
+    /// creates GROUNDS edges. No-op when embeddings are not configured.
+    /// Formalised as Evidence.autoGroundBelief in the Agda spec.
+    async fn auto_ground_belief(&self, belief: &Belief, embedding: &[f32]) -> Result<()> {
+        // Find project-scoped chunk IDs to restrict the search, then search
+        // all global (unscoped) chunks too. We do a single scored search over
+        // all chunks, then filter by project compatibility in Rust.
+        let candidates = self
+            .store
+            .query_chunks_by_vector_scored(embedding, 20, None)
+            .await?;
+        for (chunk_id, sim) in candidates {
+            if sim < GROUND_THRESHOLD {
+                break; // results are ordered by similarity desc
+            }
+            // Check project compatibility: fetch the chunk's project tag.
+            if let Some(chunk) = self.store.get_chunk_by_id(chunk_id).await? {
+                let compatible = match (&belief.project, &chunk.project) {
+                    (None, _) | (_, None) => true,
+                    (Some(bp), Some(cp)) => bp == cp,
+                };
+                if compatible {
+                    self.store
+                        .insert_evidence(chunk_id, belief.id, Probability::new(sim)?)
+                        .await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Auto-ground newly loaded chunks against existing beliefs.
+    /// For each chunk, finds beliefs with cosine similarity ≥ GROUND_THRESHOLD
+    /// that are project-compatible, then creates GROUNDS edges.
+    /// No-op when embeddings are not configured.
+    /// Formalised as Evidence.autoGroundChunks in the Agda spec.
+    async fn auto_ground_chunks(
+        &self,
+        chunks: &[documents::DocumentChunk],
+        embeddings: &[Vec<f32>],
+    ) -> Result<()> {
+        for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
+            let candidates = self
+                .store
+                .query_beliefs_by_vector_scored(embedding, 20)
+                .await?;
+            for (belief_id, sim) in candidates {
+                if sim < GROUND_THRESHOLD {
+                    break;
+                }
+                // Fetch belief to check project compatibility.
+                if let Some(belief) = self.store.get_belief(belief_id).await? {
+                    let compatible = match (&chunk.project, &belief.project) {
+                        (None, _) | (_, None) => true,
+                        (Some(cp), Some(bp)) => cp == bp,
+                    };
+                    if compatible {
+                        self.store
+                            .insert_evidence(chunk.id, belief_id, Probability::new(sim)?)
+                            .await?;
+                    }
+                }
             }
         }
         Ok(())
@@ -548,6 +638,10 @@ impl MimirService {
                 .insert_chunk_embedding(chunk.id, embedding)
                 .await?;
         }
+
+        // Auto-ground: create GROUNDS edges to similar beliefs (Evidence.autoGroundChunks).
+        self.auto_ground_chunks(&chunks, &embeddings).await?;
+
         Ok(count)
     }
 
