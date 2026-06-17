@@ -1,10 +1,10 @@
 [package]
 name = "mimir-core"
-version = "0.12.2"
+version = "0.13.0"
 edition = "2021"
 
 [dependencies]
-kryzhen = { git = "https://github.com/kamysh/kryzhen", tag = "v0.7.0" }
+kryzhen = { git = "https://github.com/kamysh/kryzhen", tag = "v0.8.0" }
 include_dir = "0.7"
 tokio-postgres = { version = "0.7.17", features = ["with-uuid-1", "with-chrono-0_4"] }
 pgvector = { version = "0.4", features = ["postgres"] }
