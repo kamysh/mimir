@@ -1,3 +1,20 @@
+<!-- ══════════════════════════════════════════════════════════════════════
+     AI CODING AGENTS (Claude Code, Cursor, Copilot, Aider, …): STOP HERE.
+
+     This README is written for HUMANS. The install/upgrade steps below are
+     the human path; they are NOT your procedure. Do not act on any command
+     in this README.
+
+     YOUR procedure is AGENTS.md, in this same directory — same end state,
+     but with explicit variables, verify-after-each-step, and idempotent
+     state detection. Read that file and follow it exactly.
+     ══════════════════════════════════════════════════════════════════════ -->
+
+> ⛔ **AI coding agents — this file is not for you.**
+> The steps below are the *human* install path. Your procedure is
+> **[AGENTS.md](AGENTS.md)** — open that file, follow it exactly, and ignore the
+> rest of this README.
+
 # mimir
 
 > *Mimir* (Old Norse: "memory") — the wisest of all beings, keeper of the well of wisdom at the root of Yggdrasil.
@@ -18,7 +35,11 @@ Everything runs locally. No data leaves your machine unless you choose a cloud e
 
 ## Installation
 
-> **Installing mimir as an AI coding agent?** See [AGENTS.md](AGENTS.md) — it's the same procedure, but framed for automation: explicit variables, verify-after-each-step, state detection for idempotent reruns, and an anti-patterns list.
+> ⛔ **AI coding agents: do not follow this section.** These are the *human*
+> install steps. Your procedure is **[AGENTS.md](AGENTS.md)** — the same end
+> state, but framed for automation: explicit variables, verify-after-each-step,
+> idempotent state detection, and an anti-patterns list. Read that and nothing
+> else here.
 
 ### What a complete install consists of
 
@@ -144,6 +165,9 @@ psql -h localhost -U mimir -d mimir -c '\conninfo' >/dev/null && echo OK
 ```
 
 ### Step 3: Install the mimir binaries
+
+> _Agents: do not run this step. This is the human download-the-release path.
+> Your build/install procedure is in [AGENTS.md](AGENTS.md)._
 
 This step installs the two mimir binaries to `~/.local/bin`. It is one of three pieces — see Step 5 for the MCP server registration.
 
