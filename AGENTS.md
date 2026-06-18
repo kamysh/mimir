@@ -259,80 +259,18 @@ crashing on startup. Run `mimir-mcp` directly to see stderr.
 
 ## Step 6 — Install the skill and Claude Code hooks
 
-The skill teaches Claude Code how to drive mimir's belief graph — when
-to read from it before exploring, when to write back what was learned,
-how to treat surfaced beliefs as priors rather than just acknowledging
-them. Three hook scripts make this automatic: `SessionStart` loads the
-skill; `UserPromptSubmit` injects relevant beliefs before each turn;
-`PreToolUse` injects beliefs before each file edit or command.
+The skill, hooks, and a `~/.claude/CLAUDE.md` section work together as a
+unit — the skill alone is not enough. The complete guided procedure is in
+[`docs/claude-code-setup/INSTALL.md`](docs/claude-code-setup/INSTALL.md).
 
-### 6a — Drop the skill file in place
+Hand that directory to Claude Code with:
 
-```sh
-mkdir -p "$HOME/.claude/skills/mimir"
-curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/main/skill/SKILL.md \
-  -o "$HOME/.claude/skills/mimir/SKILL.md"
-```
+> **"Walk me through installing this. Show me each change before applying
+> it and wait for my approval."**
 
-### 6b — Hook commands (built into the binary)
-
-The hook commands are subcommands of the `mimir` binary — no scripts to
-download or maintain:
-
-- `mimir hook prompt` — for `UserPromptSubmit`: reads `{"prompt": "..."}` from
-  stdin, prints matching beliefs as plain text.
-- `mimir hook pretooluse` — for `PreToolUse`: reads `{"tool_input": {...}}`
-  from stdin, emits `additionalContext` JSON.
-
-Both always exit 0 (never block a tool call) and are silent when there are
-no matching beliefs or the DB is unavailable.
-
-### 6c — Wire the hooks into settings.json
-
-Merge three hook entries into `~/.claude/settings.json` with `jq`. The
-merge is idempotent — each hook is keyed by a unique substring of its
-command — and preserves all other entries untouched.
-
-```sh
-SETTINGS="$HOME/.claude/settings.json"
-mkdir -p "$(dirname "$SETTINGS")"
-[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-
-SESSION_CMD='echo "mcp__mimir tools are available. Invoke the mimir skill now: load the read+write belief-graph protocol (consult before >2-step exploration, errors, or approach choices; write back what recurs)."'
-PROMPT_CMD='mimir hook prompt'
-PRETOOLUSE_CMD='mimir hook pretooluse'
-
-tmp=$(mktemp)
-jq --arg s "$SESSION_CMD" --arg p "$PROMPT_CMD" --arg pt "$PRETOOLUSE_CMD" '
-  .hooks //= {}
-  | .hooks.SessionStart     //= []
-  | .hooks.UserPromptSubmit //= []
-  | .hooks.PreToolUse       //= []
-  | (if any(.hooks.SessionStart[]?.hooks[]?;      .command | test("mimir skill")) then .
-     else .hooks.SessionStart     += [{hooks: [{type: "command", command: $s}]}]
-     end)
-  | (if any(.hooks.UserPromptSubmit[]?.hooks[]?;  .command | test("mimir hook prompt")) then .
-     else .hooks.UserPromptSubmit += [{hooks: [{type: "command", command: $p}]}]
-     end)
-  | (if any(.hooks.PreToolUse[]?.hooks[]?;        .command | test("mimir hook pretooluse")) then .
-     else .hooks.PreToolUse += [{matcher: "Edit|Write|Bash", hooks: [{type: "command", command: $pt}]}]
-     end)
-' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
-chmod 600 "$SETTINGS"
-```
-
-Restart Claude Code for the hooks to take effect.
-
-**Verify** (skill in place, all three hooks wired):
-```sh
-[ -f "$HOME/.claude/skills/mimir/SKILL.md" ]                                          && echo OK
-jq -e 'any(.hooks.SessionStart[]?.hooks[]?;      .command | test("mimir skill"))' \
-  "$HOME/.claude/settings.json" >/dev/null                                             && echo OK
-jq -e 'any(.hooks.UserPromptSubmit[]?.hooks[]?;  .command | test("mimir hook prompt"))' \
-  "$HOME/.claude/settings.json" >/dev/null                                             && echo OK
-jq -e 'any(.hooks.PreToolUse[]?.hooks[]?;        .command | test("mimir hook pretooluse"))' \
-  "$HOME/.claude/settings.json" >/dev/null                                             && echo OK
-```
+Claude Code will read the reference files (`skill/SKILL.md`, `CLAUDE.md`,
+`settings.json`), compare them against what is already on the machine,
+propose the minimal diff for each step, and apply it only after you confirm.
 
 ## Final verification gate
 
