@@ -465,17 +465,28 @@ seed-clamped seedMean _ = refl
 -- ---------------------------------------------------------------------------
 -- query_relevant — hybrid retrieval invariants
 -- Rust (MimirService::query_relevant):
+--   0. Project scope (optional 3rd argument `project : Option<&str>`): when
+--      given, EVERY leg below (candidate selection, graph expansion, and the
+--      probability-prior list) is restricted to beliefs whose `project` field
+--      equals the given value OR is unset — i.e. untagged/global beliefs stay
+--      visible from any project's scope, but another project's tagged beliefs
+--      do not. `project = None` (the default) is fully unscoped, identical to
+--      pre-scoping behaviour. This applies uniformly to `list_beliefs` and
+--      `get_contradictions` as well (both gained the same optional argument).
 --   1. Candidate selection (HYBRID): the deduplicated UNION of
 --        (a) token/keyword matches — beliefs whose lowercased content contains
 --            at least one whitespace-split query term, and
---        (b) vector matches — cosine top-k over public.belief_embeddings, when
---            an embedding backend is configured,
+--        (b) vector matches — cosine top-k over public.belief_embeddings
+--            restricted to the in-scope id set when project scoping is active,
+--            when an embedding backend is configured,
 --      forms the seed set (membership only; final order is decided in step 3).
 --      With no embedding backend, (b) is empty and selection degrades to the
 --      token half. (This REPLACES the old whole-query substring match, which
 --      required the entire query string to appear verbatim inside one belief —
 --      so any multi-word natural-language query returned nothing.)
---   2. Graph expansion: SUPPORTS/CAUSES reachable beliefs added (unchanged).
+--   2. Graph expansion: SUPPORTS/CAUSES reachable beliefs added, filtered to
+--      the in-scope id set (endpoint-only: a traversal that leaves scope and
+--      re-enters it is not re-filtered mid-path).
 --   3. Final order: WEIGHTED Reciprocal Rank Fusion (RRF, k=60) over THREE
 --      ranked lists — vector (semantic, weight 1.0), token (lexical, weight
 --      0.3), and a probability-PRIOR list (candidates by probability desc,
@@ -490,11 +501,13 @@ seed-clamped seedMean _ = refl
 -- RRF, cosine, and probability-fused scores are runtime floats not modelled in
 -- --safe Agda (same stance as query_document in Mimir.Documents). The proved
 -- invariants below therefore cover only the structural properties that can be
--- stated without those scores.
+-- stated without those scores. Project-scope membership (step 0) is likewise
+-- documented here but not formally modelled — no Belief-set membership
+-- predicate for "project OR untagged" is proved in this file.
 --
 -- MCP INTERFACE NOTE: the MCP tool input parameter is named "context" (not
 -- "query") — the dispatch maps args["context"] to the service's `query: &str`.
--- The service method is MimirService::query_relevant(query, limit).
+-- The service method is MimirService::query_relevant(query, limit, project).
 -- The parameter rename exists only at the MCP layer; internally it is "query".
 --
 -- Key invariants:

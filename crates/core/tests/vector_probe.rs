@@ -125,7 +125,10 @@ async fn full_query_relevant_ranking() {
         ("EVAL_QUERY", EVAL_QUERY),
     ] {
         let t0 = std::time::Instant::now();
-        let res = svc.query_relevant(q, 10).await.expect("query_relevant");
+        let res = svc
+            .query_relevant(q, 10, None)
+            .await
+            .expect("query_relevant");
         let elapsed = t0.elapsed();
         let rank = res
             .iter()

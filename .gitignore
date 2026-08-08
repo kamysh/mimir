@@ -2,8 +2,9 @@
 **/*.rs.bk
 .envrc
 .mcp.json
-.envspec/_build/
+.env
 spec/_build/
 /.muninn.toml
 /result
 /result-*
+/.direnv/
