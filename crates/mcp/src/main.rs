@@ -152,48 +152,56 @@ fn tools_list() -> Value {
         },
         {
             "name": "list_beliefs",
-            "description": "List all beliefs.",
+            "description": "List beliefs. If project is given, restricts to that project's beliefs plus untagged (global) beliefs; omit to list everything.",
             "inputSchema": {
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "project": { "type": "string", "description": "Restrict to this project's beliefs plus untagged (global) beliefs. Omit to list everything." }
+                }
             }
         },
         {
             "name": "list_patterns",
-            "description": "List all patterns.",
+            "description": "List patterns. If project is given, restricts to that project's patterns plus untagged (global) patterns; omit to list everything.",
             "inputSchema": {
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "project": { "type": "string", "description": "Restrict to this project's patterns plus untagged (global) patterns. Omit to list everything." }
+                }
             }
         },
         {
             "name": "get_contradictions",
-            "description": "Find all actively contradicting belief pairs.",
+            "description": "Find all actively contradicting belief pairs. If project is given, restricts to pairs where both beliefs are visible in that project's scope (tagged with project or untagged).",
             "inputSchema": {
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "project": { "type": "string", "description": "Only consider pairs where both beliefs are tagged with this project or untagged (global). Omit to consider every pair." }
+                }
             }
         },
         {
             "name": "decay_all",
-            "description": "Apply time decay to all beliefs and return count of updated beliefs.",
+            "description": "Apply time decay to beliefs and return count of updated beliefs. If project is given, restricts the sweep to that project's beliefs plus untagged (global) beliefs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "decay_factor": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.99 }
+                    "decay_factor": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.99 },
+                    "project": { "type": "string", "description": "Restrict the decay sweep to this project's beliefs plus untagged (global) beliefs. Omit to decay everything." }
                 }
             }
         },
         {
             "name": "query_relevant",
-            "description": "Hybrid retrieval: text match + graph-proximity expansion, ordered by probability. Set include_evidence=true to also return, per belief, the document passages that ground it (with weights).",
+            "description": "Hybrid retrieval: text match + graph-proximity expansion, ordered by probability. Set include_evidence=true to also return, per belief, the document passages that ground it (with weights). If project is given, restricts the candidate pool to that project's beliefs plus untagged (global) beliefs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "context":          { "type": "string" },
                     "limit":            { "type": "integer", "minimum": 0, "default": 10 },
                     "include_evidence":   { "type": "boolean", "default": false },
-                    "evidence_per_belief":{ "type": "integer", "minimum": 0, "default": 3 }
+                    "evidence_per_belief":{ "type": "integer", "minimum": 0, "default": 3 },
+                    "project":          { "type": "string", "description": "Restrict the candidate pool to this project's beliefs plus untagged (global) beliefs. Omit to search everything." }
                 },
                 "required": ["context"]
             }
@@ -431,17 +439,20 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
         }
 
         "list_beliefs" => {
-            let beliefs = svc.list_beliefs().await?;
+            let project = args["project"].as_str();
+            let beliefs = svc.list_beliefs(project).await?;
             Ok(serde_json::to_value(&beliefs)?)
         }
 
         "list_patterns" => {
-            let patterns = svc.list_patterns().await?;
+            let project = args["project"].as_str();
+            let patterns = svc.list_patterns(project).await?;
             Ok(serde_json::to_value(&patterns)?)
         }
 
         "get_contradictions" => {
-            let pairs = svc.get_contradictions().await?;
+            let project = args["project"].as_str();
+            let pairs = svc.get_contradictions(project).await?;
             let result: Vec<Value> = pairs
                 .into_iter()
                 .map(|(a, b)| json!([a.to_string(), b.to_string()]))
@@ -451,7 +462,8 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
 
         "decay_all" => {
             let decay_factor = args["decay_factor"].as_f64();
-            let count = svc.decay_beliefs(decay_factor).await?;
+            let project = args["project"].as_str();
+            let count = svc.decay_beliefs(decay_factor, project).await?;
             Ok(json!({ "decayed": count }))
         }
 
@@ -461,12 +473,15 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
             let limit = args["limit"].as_u64().unwrap_or(10) as usize;
             let include_evidence = args["include_evidence"].as_bool().unwrap_or(false);
+            let project = args["project"].as_str();
             if !include_evidence {
-                let beliefs = svc.query_relevant(query, limit).await?;
+                let beliefs = svc.query_relevant(query, limit, project).await?;
                 return Ok(serde_json::to_value(&beliefs)?);
             }
             let per = args["evidence_per_belief"].as_u64().unwrap_or(3) as usize;
-            let grounded = svc.query_relevant_grounded(query, limit, per).await?;
+            let grounded = svc
+                .query_relevant_grounded(query, limit, per, project)
+                .await?;
             let result: Vec<Value> = grounded
                 .into_iter()
                 .map(|gb| {

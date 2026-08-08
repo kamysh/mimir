@@ -28,7 +28,7 @@ enum Command {
 
     /// List beliefs, optionally filtered by project.
     List {
-        /// Only show beliefs tagged with this project.
+        /// Show beliefs tagged with this project, plus untagged (global) beliefs.
         #[arg(long, short)]
         project: Option<String>,
 
@@ -39,6 +39,10 @@ enum Command {
 
     /// List patterns.
     Patterns {
+        /// Show patterns tagged with this project, plus untagged (global) patterns.
+        #[arg(long, short)]
+        project: Option<String>,
+
         /// Maximum number of results (0 = no limit).
         #[arg(long, short, default_value_t = 0)]
         limit: usize,
@@ -56,6 +60,10 @@ enum Command {
         /// Also show the document passages that ground each belief.
         #[arg(long)]
         evidence: bool,
+
+        /// Restrict the candidate pool to this project plus untagged beliefs.
+        #[arg(long, short)]
+        project: Option<String>,
     },
 
     /// Manage evidence (document passages that ground a belief).
@@ -85,10 +93,18 @@ enum Command {
         /// Decay factor per day (default 0.99 ≈ 1% per day).
         #[arg(long, short, default_value_t = 0.99)]
         factor: f64,
+
+        /// Restrict the decay sweep to this project plus untagged beliefs.
+        #[arg(long, short)]
+        project: Option<String>,
     },
 
     /// List active contradictions in the graph.
-    Contradictions,
+    Contradictions {
+        /// Only consider pairs where both beliefs are visible in this project's scope.
+        #[arg(long, short)]
+        project: Option<String>,
+    },
 
     /// Parse a markdown file into chunks, embed, and index for semantic search.
     ///
@@ -203,18 +219,19 @@ async fn main() -> Result<()> {
         Command::Init => cmd_init()?,
         Command::Stats => cmd_stats().await?,
         Command::List { project, limit } => cmd_list(project, limit).await?,
-        Command::Patterns { limit } => cmd_patterns(limit).await?,
+        Command::Patterns { project, limit } => cmd_patterns(project, limit).await?,
         Command::Query {
             text,
             limit,
             evidence,
-        } => cmd_query(&text, limit, evidence).await?,
+            project,
+        } => cmd_query(&text, limit, evidence, project.as_deref()).await?,
         Command::Evidence(cmd) => cmd_evidence(cmd).await?,
         Command::Delete { id } => cmd_delete(&id).await?,
         Command::DeletePattern { id } => cmd_delete_pattern(&id).await?,
         Command::Forget { project } => cmd_forget(&project).await?,
-        Command::Decay { factor } => cmd_decay(factor).await?,
-        Command::Contradictions => cmd_contradictions().await?,
+        Command::Decay { factor, project } => cmd_decay(factor, project.as_deref()).await?,
+        Command::Contradictions { project } => cmd_contradictions(project.as_deref()).await?,
         Command::Load { path, project } => cmd_load(&path, project.as_deref()).await?,
         Command::QueryDoc {
             context,
@@ -302,11 +319,7 @@ async fn cmd_stats() -> Result<()> {
 
 async fn cmd_list(project: Option<String>, limit: usize) -> Result<()> {
     let svc = connect().await?;
-    let mut beliefs = svc.list_beliefs().await?;
-
-    if let Some(ref p) = project {
-        beliefs.retain(|b| b.project.as_deref() == Some(p.as_str()));
-    }
+    let mut beliefs = svc.list_beliefs(project.as_deref()).await?;
 
     // Sort by probability descending (consistent with query_relevant).
     beliefs.sort_by(|a, b| {
@@ -348,9 +361,9 @@ async fn cmd_list(project: Option<String>, limit: usize) -> Result<()> {
 // mimir patterns
 // ---------------------------------------------------------------------------
 
-async fn cmd_patterns(limit: usize) -> Result<()> {
+async fn cmd_patterns(project: Option<String>, limit: usize) -> Result<()> {
     let svc = connect().await?;
-    let mut patterns = svc.list_patterns().await?;
+    let mut patterns = svc.list_patterns(project.as_deref()).await?;
 
     // Sort by success rate descending.
     patterns.sort_by(|a, b| {
@@ -386,11 +399,11 @@ async fn cmd_patterns(limit: usize) -> Result<()> {
 // mimir query
 // ---------------------------------------------------------------------------
 
-async fn cmd_query(text: &str, limit: usize, evidence: bool) -> Result<()> {
+async fn cmd_query(text: &str, limit: usize, evidence: bool, project: Option<&str>) -> Result<()> {
     let svc = connect().await?;
 
     if evidence {
-        let grounded = svc.query_relevant_grounded(text, limit, 3).await?;
+        let grounded = svc.query_relevant_grounded(text, limit, 3, project).await?;
         if grounded.is_empty() {
             println!("(no results)");
             return Ok(());
@@ -423,7 +436,7 @@ async fn cmd_query(text: &str, limit: usize, evidence: bool) -> Result<()> {
         return Ok(());
     }
 
-    let beliefs = svc.query_relevant(text, limit).await?;
+    let beliefs = svc.query_relevant(text, limit, project).await?;
     if beliefs.is_empty() {
         println!("(no results)");
         return Ok(());
@@ -578,9 +591,9 @@ async fn cmd_forget(project: &str) -> Result<()> {
 // mimir decay
 // ---------------------------------------------------------------------------
 
-async fn cmd_decay(factor: f64) -> Result<()> {
+async fn cmd_decay(factor: f64, project: Option<&str>) -> Result<()> {
     let svc = connect().await?;
-    let count = svc.decay_beliefs(Some(factor)).await?;
+    let count = svc.decay_beliefs(Some(factor), project).await?;
     println!("decayed {}  [factor: {:.3}]", count, factor);
     Ok(())
 }
@@ -641,9 +654,9 @@ async fn cmd_clear_doc(path: &str) -> Result<()> {
 // mimir contradictions
 // ---------------------------------------------------------------------------
 
-async fn cmd_contradictions() -> Result<()> {
+async fn cmd_contradictions(project: Option<&str>) -> Result<()> {
     let svc = connect().await?;
-    let pairs = svc.get_contradictions().await?;
+    let pairs = svc.get_contradictions(project).await?;
 
     if pairs.is_empty() {
         println!("(no active contradictions)");
@@ -700,7 +713,7 @@ async fn cmd_reembed() -> Result<()> {
     }
     let svc = MimirService::connect(&cfg).await?;
 
-    let beliefs = svc.list_beliefs().await?;
+    let beliefs = svc.list_beliefs(None).await?;
     if beliefs.is_empty() {
         println!("no beliefs to embed.");
         return Ok(());
@@ -751,7 +764,7 @@ async fn cmd_hook_prompt() -> Result<()> {
     }
 
     let svc = connect().await?;
-    let beliefs = svc.query_relevant(&trunc(&prompt, 500), 5).await?;
+    let beliefs = svc.query_relevant(&trunc(&prompt, 500), 5, None).await?;
     if beliefs.is_empty() {
         return Ok(());
     }
@@ -796,7 +809,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
     }
 
     let svc = connect().await?;
-    let beliefs = svc.query_relevant(&trunc(query_raw, 200), 3).await?;
+    let beliefs = svc.query_relevant(&trunc(query_raw, 200), 3, None).await?;
     if beliefs.is_empty() {
         return Ok(());
     }

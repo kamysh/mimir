@@ -211,26 +211,64 @@ fn ensure_cached(url: &str, dest: &std::path::Path) -> Result<()> {
 /// relative URL without a base`. `reqwest`'s redirect policy resolves relative
 /// `Location` against the prior request's URL the way the HTTP spec expects.
 fn download_blocking(url: &str, dest: &std::path::Path) -> Result<()> {
+    use std::io::{Read, Write};
+
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| url.to_string());
     tracing::info!(url, dest = %dest.display(), "downloading model file");
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(600))
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()
         .context("building HTTP client")?;
-    let bytes = client
+    let mut resp = client
         .get(url)
         .send()
         .with_context(|| format!("GET {url}"))?
         .error_for_status()
-        .with_context(|| format!("HTTP error for {url}"))?
-        .bytes()
-        .with_context(|| format!("reading body of {url}"))?;
-    let tmp = dest.with_extension("part");
-    std::fs::write(&tmp, &bytes).with_context(|| format!("writing {}", tmp.display()))?;
+        .with_context(|| format!("HTTP error for {url}"))?;
+
+    let total = resp.content_length();
+    let bar = match total {
+        Some(len) => indicatif::ProgressBar::new(len).with_style(
+            indicatif::ProgressStyle::with_template(
+                "mimir: downloading {msg} {bar:40.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, ETA {eta})",
+            )
+            .unwrap(),
+        ),
+        None => indicatif::ProgressBar::new_spinner().with_style(
+            indicatif::ProgressStyle::with_template("mimir: downloading {msg} {bytes} ({bytes_per_sec})").unwrap(),
+        ),
+    };
+    bar.set_message(name.clone());
+
+    // Unique per-process suffix: two mimir-mcp processes cold-starting the same
+    // model concurrently must not share one .part path, or their interleaved
+    // writes race and the loser's fd ends up writing into an unlinked inode
+    // after the winner's rename.
+    let tmp = dest.with_extension(format!("part-{}", std::process::id()));
+    let mut file =
+        std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = resp
+            .read(&mut buf)
+            .with_context(|| format!("reading body of {url}"))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        bar.inc(n as u64);
+    }
+    bar.finish_with_message(format!("{name} ready"));
+
     std::fs::rename(&tmp, dest).with_context(|| format!("renaming to {}", dest.display()))?;
     Ok(())
 }

@@ -321,14 +321,21 @@ impl MimirService {
         self.store.get_belief(id).await
     }
 
-    /// List all beliefs.
-    pub async fn list_beliefs(&self) -> Result<Vec<Belief>> {
-        self.store.list_beliefs().await
+    /// List beliefs. When `project` is given, restricts to beliefs tagged with
+    /// that project plus untagged (global) beliefs; `None` lists everything.
+    pub async fn list_beliefs(&self, project: Option<&str>) -> Result<Vec<Belief>> {
+        match project {
+            Some(p) => self.store.list_beliefs_by_project(p).await,
+            None => self.store.list_beliefs().await,
+        }
     }
 
-    /// List all patterns.
-    pub async fn list_patterns(&self) -> Result<Vec<Pattern>> {
-        self.store.list_patterns().await
+    /// List patterns. Same project-scoping semantics as `list_beliefs`.
+    pub async fn list_patterns(&self, project: Option<&str>) -> Result<Vec<Pattern>> {
+        match project {
+            Some(p) => self.store.list_patterns_by_project(p).await,
+            None => self.store.list_patterns().await,
+        }
     }
 
     /// Run defeat propagation from a seed belief ID.
@@ -399,14 +406,22 @@ impl MimirService {
             .intervene(target_id, value, &downstream, &edges, &external_means)
     }
 
-    /// Get active contradictions in the graph.
-    pub async fn get_contradictions(&self) -> Result<Vec<(Uuid, Uuid)>> {
-        let pairs = self.store.get_contradiction_pairs().await?;
+    /// Get active contradictions in the graph. Project-scoped the same way as
+    /// `list_beliefs`: a pair is included only if both endpoints are visible
+    /// in scope (tagged with `project` or untagged).
+    pub async fn get_contradictions(&self, project: Option<&str>) -> Result<Vec<(Uuid, Uuid)>> {
+        let pairs = match project {
+            Some(p) => self.store.get_contradiction_pairs_by_project(p).await?,
+            None => self.store.get_contradiction_pairs().await?,
+        };
         if pairs.is_empty() {
             return Ok(vec![]);
         }
 
-        let beliefs = self.store.list_beliefs().await?;
+        let beliefs = match project {
+            Some(p) => self.store.list_beliefs_by_project(p).await?,
+            None => self.store.list_beliefs().await?,
+        };
         let belief_map: std::collections::HashMap<Uuid, &Belief> =
             beliefs.iter().map(|b| (b.id, b)).collect();
 
@@ -415,13 +430,23 @@ impl MimirService {
             .detect_active_contradictions(&belief_map, &pairs))
     }
 
-    /// Apply time decay to all beliefs, write updates.
+    /// Apply time decay to beliefs, write updates. `project`, when given,
+    /// restricts the sweep to that project's beliefs plus untagged (global)
+    /// beliefs (same semantics as `list_beliefs`) — a caller working in one
+    /// project should not silently perturb another project's beliefs.
     /// decay_factor defaults to 0.99 (~1% per day) if not provided.
     /// Grounded beliefs resist decay in proportion to their total grounding mass
     /// (spec Mimir.Beta CCoupling.coupling-increases-strength).
-    pub async fn decay_beliefs(&self, decay_factor: Option<f64>) -> Result<usize> {
+    pub async fn decay_beliefs(
+        &self,
+        decay_factor: Option<f64>,
+        project: Option<&str>,
+    ) -> Result<usize> {
         let factor = decay_factor.unwrap_or(0.99);
-        let beliefs = self.store.get_all_beliefs_for_decay().await?;
+        let beliefs = match project {
+            Some(p) => self.store.list_beliefs_by_project(p).await?,
+            None => self.store.get_all_beliefs_for_decay().await?,
+        };
         let grounding_masses = self.store.get_grounding_mass_all().await?;
         let now = chrono::Utc::now();
         let updates = self
@@ -452,8 +477,19 @@ impl MimirService {
     /// reliable semantic leg lead while probability remains a real ranking signal
     /// rather than a tiebreaker or a naked multiply. Spec: `Mimir.Graph`
     /// (query_relevant section). `limit = 0` means no limit.
-    pub async fn query_relevant(&self, query: &str, limit: usize) -> Result<Vec<Belief>> {
-        let all = self.store.list_beliefs().await?;
+    /// `project`, when given, restricts the candidate pool (token, vector,
+    /// probability-prior, and graph-expansion legs) to beliefs tagged with
+    /// that project plus untagged (global) beliefs — see `list_beliefs`.
+    pub async fn query_relevant(
+        &self,
+        query: &str,
+        limit: usize,
+        project: Option<&str>,
+    ) -> Result<Vec<Belief>> {
+        let all = match project {
+            Some(p) => self.store.list_beliefs_by_project(p).await?,
+            None => self.store.list_beliefs().await?,
+        };
         if all.is_empty() {
             return Ok(vec![]);
         }
@@ -506,7 +542,15 @@ impl MimirService {
             let pool_size = if limit > 0 { (limit * 4).max(20) } else { 50 };
             match embedder.embed(&[query.to_string()]).await {
                 Ok(mut vecs) => match vecs.pop() {
-                    Some(qv) => self.store.query_beliefs_by_vector(&qv, pool_size).await?,
+                    Some(qv) => match project {
+                        Some(_) => {
+                            let ids: Vec<Uuid> = all.iter().map(|b| b.id).collect();
+                            self.store
+                                .query_beliefs_by_vector_filtered(&qv, pool_size, &ids)
+                                .await?
+                        }
+                        None => self.store.query_beliefs_by_vector(&qv, pool_size).await?,
+                    },
                     None => Vec::new(),
                 },
                 Err(e) => {
@@ -548,10 +592,41 @@ impl MimirService {
         // ── Graph expansion: SUPPORTS/CAUSES reachable beliefs (unchanged).
         let matched_ids: Vec<Uuid> = matched.iter().map(|b| b.id).collect();
         for id in matched_ids {
-            let downstream = self.store.get_downstream_beliefs(id).await?;
-            for b in downstream {
-                if !matched.iter().any(|m| m.id == b.id) {
-                    matched.push(b);
+            match project {
+                Some(p) => {
+                    // Hop-by-hop BFS through in-scope nodes only, so a node
+                    // reached solely via an out-of-scope intermediate is
+                    // correctly excluded — AGE can't express per-hop-node
+                    // filtering inside one variable-length-path query (see
+                    // get_direct_downstream_by_project's doc comment), so the
+                    // unbounded closure `get_downstream_beliefs` + an
+                    // endpoint-only filter would admit that bridging case.
+                    let mut visited: std::collections::HashSet<Uuid> =
+                        matched.iter().map(|m| m.id).collect();
+                    visited.insert(id);
+                    let mut frontier = vec![id];
+                    while !frontier.is_empty() {
+                        let mut next_frontier = Vec::new();
+                        for fid in frontier {
+                            let neighbors =
+                                self.store.get_direct_downstream_by_project(fid, p).await?;
+                            for b in neighbors {
+                                if visited.insert(b.id) {
+                                    next_frontier.push(b.id);
+                                    matched.push(b);
+                                }
+                            }
+                        }
+                        frontier = next_frontier;
+                    }
+                }
+                None => {
+                    let downstream = self.store.get_downstream_beliefs(id).await?;
+                    for b in downstream {
+                        if !matched.iter().any(|m| m.id == b.id) {
+                            matched.push(b);
+                        }
+                    }
                 }
             }
         }
@@ -758,8 +833,9 @@ impl MimirService {
         query: &str,
         limit: usize,
         evidence_per_belief: usize,
+        project: Option<&str>,
     ) -> Result<Vec<GroundedBelief>> {
-        let beliefs = self.query_relevant(query, limit).await?;
+        let beliefs = self.query_relevant(query, limit, project).await?;
         if beliefs.is_empty() {
             return Ok(vec![]);
         }

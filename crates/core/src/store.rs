@@ -21,16 +21,36 @@ use crate::graph::{Belief, Edge, EdgeType, Pattern, Probability};
 //   DEALLOCATE stmt;
 //
 // Escaping layers for the agtype JSON value in EXECUTE stmt('...'):
-//   1. JSON layer: \ → \\, " → \" (standard JSON string escaping)
+//   1. JSON layer: standard JSON string escaping (\, ", and control chars)
 //   2. SQL layer:  ' → '' (SQL string literal escaping)
 // Single quotes in the content are fine unescaped in JSON; only SQL-level
 // doubling is needed for them.
 // ---------------------------------------------------------------------------
 
 /// Escape a string for use as a JSON string value inside an agtype literal.
-/// Step 1 of the two-layer escaping: JSON layer only.
+/// Step 1 of the two-layer escaping: JSON layer only. Escapes `\`, `"`, and
+/// every JSON-mandated control character (U+0000..U+001F) — an unescaped
+/// literal newline/tab/etc in the input would otherwise produce invalid JSON
+/// once embedded in the agtype literal, turning a merely-unmatched query into
+/// a hard PREPARE/EXECUTE error.
 fn json_esc(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Escape an agtype JSON literal for embedding inside a SQL string literal
@@ -65,6 +85,35 @@ async fn age_execute(
         .await;
     result?;
     Ok(())
+}
+
+/// Like `age_execute`, but for a Cypher read: runs PREPARE / EXECUTE /
+/// DEALLOCATE and returns the `SimpleQueryRow`s from EXECUTE (non-Row
+/// messages, e.g. the command-complete tag, are dropped). Shared by every
+/// `*_by_project`-style scoped read (list_beliefs_by_project,
+/// list_patterns_by_project, get_contradiction_pairs_by_project,
+/// get_direct_downstream_by_project) so the PREPARE/EXECUTE/DEALLOCATE
+/// sequence exists in one place instead of being hand-rolled per method.
+async fn age_query_rows(
+    client: &Client,
+    stmt_name: &str,
+    prepare_sql: &str,
+    agtype_json: &str,
+) -> Result<Vec<tokio_postgres::SimpleQueryRow>> {
+    client.simple_query(prepare_sql).await?;
+    let exec = format!("EXECUTE {}('{}')", stmt_name, sql_esc(agtype_json));
+    let result = client.simple_query(&exec).await;
+    let _ = client
+        .simple_query(&format!("DEALLOCATE {}", stmt_name))
+        .await;
+    let msgs = result?;
+    Ok(msgs
+        .into_iter()
+        .filter_map(|m| match m {
+            tokio_postgres::SimpleQueryMessage::Row(row) => Some(row),
+            _ => None,
+        })
+        .collect())
 }
 
 /// Closed enum for vertex labels used in `count_vertices`. Using an enum
@@ -124,18 +173,59 @@ fn ensure_finite(label: &str, values: &[(&str, f64)]) -> Result<()> {
 // (strings, numbers) *can* be cast to TEXT via `::text` in the AS-clause.
 // ---------------------------------------------------------------------------
 
+/// A row that exposes its columns as text by name, implemented for both the
+/// extended-protocol `Row` and the simple-query-protocol `SimpleQueryRow` so
+/// `belief_from_row`-style decoding works over either query path.
+trait TextRow {
+    fn text(&self, name: &str) -> Option<&str>;
+}
+
+impl TextRow for Row {
+    fn text(&self, name: &str) -> Option<&str> {
+        self.get(name)
+    }
+}
+
+impl TextRow for tokio_postgres::SimpleQueryRow {
+    fn text(&self, name: &str) -> Option<&str> {
+        self.get(name)
+    }
+}
+
 /// Decode a `Belief` from a tokio-postgres Row with columns:
 ///   id TEXT, content TEXT, probability TEXT, confidence TEXT,
 ///   alpha TEXT, beta TEXT, alpha0 TEXT, beta0 TEXT,
 ///   created_at TEXT, last_activated_at TEXT, project TEXT
 fn belief_from_row(row: &Row) -> Result<Belief> {
-    let id_str: &str = row.get("id");
-    let content: &str = row.get("content");
-    let probability_str: &str = row.get("probability");
-    let confidence_str: &str = row.get("confidence");
-    let created_at_str: &str = row.get("created_at");
-    let last_activated_str: &str = row.get("last_activated_at");
-    let project: Option<&str> = row.get("project");
+    belief_from_text_row(row)
+}
+
+/// Same decoding as `belief_from_row`, for rows produced via `simple_query`
+/// (used by the PREPARE/EXECUTE-with-agtype-param pattern).
+fn belief_from_simple_row(row: &tokio_postgres::SimpleQueryRow) -> Result<Belief> {
+    belief_from_text_row(row)
+}
+
+fn belief_from_text_row<R: TextRow>(row: &R) -> Result<Belief> {
+    let id_str: &str = row
+        .text("id")
+        .ok_or_else(|| anyhow::anyhow!("missing column id"))?;
+    let content: &str = row
+        .text("content")
+        .ok_or_else(|| anyhow::anyhow!("missing column content"))?;
+    let probability_str: &str = row
+        .text("probability")
+        .ok_or_else(|| anyhow::anyhow!("missing column probability"))?;
+    let confidence_str: &str = row
+        .text("confidence")
+        .ok_or_else(|| anyhow::anyhow!("missing column confidence"))?;
+    let created_at_str: &str = row
+        .text("created_at")
+        .ok_or_else(|| anyhow::anyhow!("missing column created_at"))?;
+    let last_activated_str: &str = row
+        .text("last_activated_at")
+        .ok_or_else(|| anyhow::anyhow!("missing column last_activated_at"))?;
+    let project: Option<&str> = row.text("project");
 
     let id = Uuid::parse_str(id_str)?;
     let probability: f64 = probability_str.parse()?;
@@ -146,10 +236,10 @@ fn belief_from_row(row: &Row) -> Result<Belief> {
 
     // Beta state: read α/β/α₀/β₀ if present (post-migration 005), else derive
     // them from the stored (probability, confidence) via the prior mapping.
-    let alpha_str: Option<&str> = row.get("alpha");
-    let beta_str: Option<&str> = row.get("beta");
-    let alpha0_str: Option<&str> = row.get("alpha0");
-    let beta0_str: Option<&str> = row.get("beta0");
+    let alpha_str: Option<&str> = row.text("alpha");
+    let beta_str: Option<&str> = row.text("beta");
+    let alpha0_str: Option<&str> = row.text("alpha0");
+    let beta0_str: Option<&str> = row.text("beta0");
 
     let alpha: Option<f64> = alpha_str.and_then(|s| s.parse().ok());
     let beta: Option<f64> = beta_str.and_then(|s| s.parse().ok());
@@ -179,13 +269,34 @@ fn belief_from_row(row: &Row) -> Result<Belief> {
 ///   id TEXT, situation TEXT, approach TEXT, activation_count TEXT,
 ///   success_rate TEXT, created_at TEXT
 fn pattern_from_row(row: &Row) -> Result<Pattern> {
-    let id_str: &str = row.get("id");
-    let situation: &str = row.get("situation");
-    let approach: &str = row.get("approach");
-    let activation_count_str: &str = row.get("activation_count");
-    let success_rate_str: &str = row.get("success_rate");
-    let created_at_str: &str = row.get("created_at");
-    let project: Option<&str> = row.get("project");
+    pattern_from_text_row(row)
+}
+
+/// Same decoding as `pattern_from_row`, for rows produced via `simple_query`.
+fn pattern_from_simple_row(row: &tokio_postgres::SimpleQueryRow) -> Result<Pattern> {
+    pattern_from_text_row(row)
+}
+
+fn pattern_from_text_row<R: TextRow>(row: &R) -> Result<Pattern> {
+    let id_str: &str = row
+        .text("id")
+        .ok_or_else(|| anyhow::anyhow!("missing column id"))?;
+    let situation: &str = row
+        .text("situation")
+        .ok_or_else(|| anyhow::anyhow!("missing column situation"))?;
+    let approach: &str = row
+        .text("approach")
+        .ok_or_else(|| anyhow::anyhow!("missing column approach"))?;
+    let activation_count_str: &str = row
+        .text("activation_count")
+        .ok_or_else(|| anyhow::anyhow!("missing column activation_count"))?;
+    let success_rate_str: &str = row
+        .text("success_rate")
+        .ok_or_else(|| anyhow::anyhow!("missing column success_rate"))?;
+    let created_at_str: &str = row
+        .text("created_at")
+        .ok_or_else(|| anyhow::anyhow!("missing column created_at"))?;
+    let project: Option<&str> = row.text("project");
 
     let id = Uuid::parse_str(id_str)?;
     let activation_count: u32 = activation_count_str.parse()?;
@@ -566,6 +677,33 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         Ok(beliefs)
     }
 
+    /// Like `list_beliefs`, but scoped to a project: returns beliefs whose
+    /// `project` matches, plus untagged beliefs (`project` unset), which are
+    /// treated as global and always included alongside any project's beliefs.
+    pub async fn list_beliefs_by_project(&self, project: &str) -> Result<Vec<Belief>> {
+        let g = &self.graph_name;
+        let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
+        let stmt = format!("age_list_beliefs_proj_{}", Uuid::new_v4().simple());
+        let prepare = format!(
+            "PREPARE {stmt}(agtype) AS SELECT \
+             id::text, content::text, probability::text, confidence::text, \
+             alpha::text, beta::text, alpha0::text, beta0::text, \
+             created_at::text, last_activated_at::text, project::text \
+             FROM ag_catalog.cypher('{g}', $$ \
+             MATCH (n:Belief) WHERE n.project = $project OR n.project IS NULL \
+             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project \
+             $$, $1) {BELIEF_RETURN_COLUMNS}"
+        );
+
+        let client = self.client.lock().await;
+        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let mut beliefs = Vec::with_capacity(rows.len());
+        for row in &rows {
+            beliefs.push(belief_from_simple_row(row)?);
+        }
+        Ok(beliefs)
+    }
+
     /// Alias for `list_beliefs` — returns all beliefs for time-decay processing.
     pub async fn get_all_beliefs_for_decay(&self) -> Result<Vec<Belief>> {
         self.list_beliefs().await
@@ -742,6 +880,31 @@ $$) {PATTERN_RETURN_COLUMNS}"#
         Ok(patterns)
     }
 
+    /// Like `list_patterns`, but scoped to a project (same `project =
+    /// $project OR project IS NULL` semantics as `list_beliefs_by_project`).
+    pub async fn list_patterns_by_project(&self, project: &str) -> Result<Vec<Pattern>> {
+        let g = &self.graph_name;
+        let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
+        let stmt = format!("age_list_patterns_proj_{}", Uuid::new_v4().simple());
+        let prepare = format!(
+            "PREPARE {stmt}(agtype) AS SELECT \
+             id::text, situation::text, approach::text, activation_count::text, \
+             success_rate::text, created_at::text, project::text \
+             FROM ag_catalog.cypher('{g}', $$ \
+             MATCH (p:Pattern) WHERE p.project = $project OR p.project IS NULL \
+             RETURN p.id, p.situation, p.approach, p.activation_count, p.success_rate, p.created_at, p.project \
+             $$, $1) {PATTERN_RETURN_COLUMNS}"
+        );
+
+        let client = self.client.lock().await;
+        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let mut patterns = Vec::with_capacity(rows.len());
+        for row in &rows {
+            patterns.push(pattern_from_simple_row(row)?);
+        }
+        Ok(patterns)
+    }
+
     // -----------------------------------------------------------------------
     // Edges
     // -----------------------------------------------------------------------
@@ -828,6 +991,41 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
         for row in &rows {
             let from_raw: &str = row.get("from_id");
             let to_raw: &str = row.get("to_id");
+            pairs.push((Uuid::parse_str(from_raw)?, Uuid::parse_str(to_raw)?));
+        }
+        Ok(pairs)
+    }
+
+    /// Like `get_contradiction_pairs`, but scoped to a project: only pairs
+    /// where both endpoints match the project (or are untagged/global) are
+    /// returned, matching `list_beliefs_by_project`'s inclusion semantics.
+    pub async fn get_contradiction_pairs_by_project(
+        &self,
+        project: &str,
+    ) -> Result<Vec<(Uuid, Uuid)>> {
+        let g = &self.graph_name;
+        let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
+        let stmt = format!("age_contra_pairs_proj_{}", Uuid::new_v4().simple());
+        let prepare = format!(
+            "PREPARE {stmt}(agtype) AS SELECT from_id::text, to_id::text \
+             FROM ag_catalog.cypher('{g}', $$ \
+             MATCH (a:Belief)-[:CONTRADICTS]->(b:Belief) \
+             WHERE (a.project = $project OR a.project IS NULL) \
+               AND (b.project = $project OR b.project IS NULL) \
+             RETURN a.id, b.id \
+             $$, $1) AS (from_id agtype, to_id agtype)"
+        );
+
+        let client = self.client.lock().await;
+        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let mut pairs = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let from_raw = row
+                .get("from_id")
+                .ok_or_else(|| anyhow::anyhow!("missing column from_id"))?;
+            let to_raw = row
+                .get("to_id")
+                .ok_or_else(|| anyhow::anyhow!("missing column to_id"))?;
             pairs.push((Uuid::parse_str(from_raw)?, Uuid::parse_str(to_raw)?));
         }
         Ok(pairs)
@@ -1245,6 +1443,38 @@ $$) AS (ok ag_catalog.agtype)"#
             .collect()
     }
 
+    /// Like `query_beliefs_by_vector`, but restricted to `filter_ids`: the
+    /// cosine ranking runs only over that id set, so a project-scoped caller's
+    /// top-K window can't be crowded out by other projects' embeddings (which
+    /// `belief_id = ANY($2)` in `query_beliefs_by_vector` alone cannot do,
+    /// since there is no `project` column on `belief_embeddings`).
+    pub async fn query_beliefs_by_vector_filtered(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+        filter_ids: &[Uuid],
+    ) -> Result<Vec<Uuid>> {
+        if filter_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let vec = Vector::from(query_vec.to_vec());
+        let limit_clause = if limit > 0 {
+            format!("LIMIT {limit}")
+        } else {
+            String::new()
+        };
+        let sql = format!(
+            "SELECT belief_id::text FROM public.belief_embeddings \
+             WHERE belief_id = ANY($2) \
+             ORDER BY embedding <=> $1 {limit_clause}"
+        );
+        let client = self.client.lock().await;
+        let rows = client.query(&sql, &[&vec, &filter_ids]).await?;
+        rows.iter()
+            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("belief_id"))?))
+            .collect()
+    }
+
     /// Cosine nearest-neighbour search over chunk_embeddings, returning (chunk_id, similarity).
     /// similarity = 1.0 - cosine_distance. Results ordered by similarity descending.
     /// limit=0 means no limit. Used by auto-grounding in insert_belief.
@@ -1556,6 +1786,60 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
             beliefs.push(belief_from_row(row)?);
+        }
+        Ok(beliefs)
+    }
+
+    /// Direct (1-hop) SUPPORTS/CAUSES/DEFEATS successors of `start_id`, scoped
+    /// to `project` (matches `project = $project OR project IS NULL`, same
+    /// semantics as `list_beliefs_by_project`).
+    ///
+    /// This exists so a project-scoped caller can walk the transitive closure
+    /// hop-by-hop in application code, stopping the frontier at any node
+    /// outside scope — a scoped node reached only via an out-of-scope
+    /// intermediate is correctly excluded, unlike filtering
+    /// `get_downstream_beliefs`'s unbounded closure by endpoint alone (which
+    /// admits a node whose only path back into scope bridges through an
+    /// out-of-scope node). AGE 1.x cannot express this as one query: it has no
+    /// `[:A|B|C]` relationship-type OR syntax (three MATCH clauses UNION'd,
+    /// same as `get_downstream_beliefs`) and, verified directly against the
+    /// live server, no `all(x IN list WHERE ...)` list-predicate support
+    /// either (`ERROR: syntax error at or near "("`), so per-hop-node
+    /// filtering cannot be inlined into a single variable-length-path query.
+    pub async fn get_direct_downstream_by_project(
+        &self,
+        start_id: Uuid,
+        project: &str,
+    ) -> Result<Vec<Belief>> {
+        let g = &self.graph_name;
+        let id_str = start_id.to_string();
+        let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
+        let stmt = format!("age_direct_downstream_proj_{}", Uuid::new_v4().simple());
+        let prepare = format!(
+            "PREPARE {stmt}(agtype) AS SELECT \
+             id::text, content::text, probability::text, confidence::text, \
+             alpha::text, beta::text, alpha0::text, beta0::text, \
+             created_at::text, last_activated_at::text, project::text \
+             FROM ag_catalog.cypher('{g}', $$ \
+             MATCH (s:Belief {{id: '{id_str}'}})-[:SUPPORTS]->(n:Belief) \
+             WHERE n.project = $project OR n.project IS NULL \
+             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project \
+             UNION \
+             MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES]->(n:Belief) \
+             WHERE n.project = $project OR n.project IS NULL \
+             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project \
+             UNION \
+             MATCH (s:Belief {{id: '{id_str}'}})-[:DEFEATS]->(n:Belief) \
+             WHERE n.project = $project OR n.project IS NULL \
+             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project \
+             $$, $1) {BELIEF_RETURN_COLUMNS}"
+        );
+
+        let client = self.client.lock().await;
+        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let mut beliefs = Vec::with_capacity(rows.len());
+        for row in &rows {
+            beliefs.push(belief_from_simple_row(row)?);
         }
         Ok(beliefs)
     }

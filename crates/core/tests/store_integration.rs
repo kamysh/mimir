@@ -139,6 +139,46 @@ async fn test_list_beliefs_multiple() {
     ctx.cleanup().await;
 }
 
+#[tokio::test]
+async fn test_list_beliefs_by_project_scopes_correctly() {
+    let ctx = TestCtx::new().await;
+    let other_project = format!("_test-other-{}", Uuid::new_v4().simple());
+
+    let mine = ctx.belief(format!("scope-mine-{}", Uuid::new_v4()), 0.5, 0.5);
+    ctx.store.insert_belief(&mine).await.unwrap();
+
+    let other = Belief::new_in_project(
+        format!("scope-other-{}", Uuid::new_v4()),
+        0.5,
+        0.5,
+        other_project.clone(),
+    )
+    .unwrap();
+    ctx.store.insert_belief(&other).await.unwrap();
+
+    let untagged = Belief::new(format!("scope-untagged-{}", Uuid::new_v4()), 0.5, 0.5).unwrap();
+    ctx.store.insert_belief(&untagged).await.unwrap();
+
+    let scoped = ctx
+        .store
+        .list_beliefs_by_project(&ctx.project)
+        .await
+        .unwrap();
+    assert!(scoped.iter().any(|b| b.id == mine.id), "own belief missing");
+    assert!(
+        scoped.iter().any(|b| b.id == untagged.id),
+        "untagged belief should be visible from every project scope"
+    );
+    assert!(
+        !scoped.iter().any(|b| b.id == other.id),
+        "another project's belief leaked into scope"
+    );
+
+    ctx.cleanup().await;
+    let _ = ctx.store.delete_project(&other_project).await;
+    ctx.store.delete_belief(untagged.id).await.unwrap();
+}
+
 // Phase 3 (spec Mimir.Graph: RETIRED SCALAR SETTERS): the old field-independent
 // setters update_belief_probability / update_belief_confidence are retired —
 // belief state is written only via the Beta posterior (update_belief_beta), so
@@ -238,6 +278,45 @@ async fn test_insert_and_list_patterns() {
     let all = ctx.store.list_patterns().await.unwrap();
     assert!(all.iter().any(|x| x.id == p.id));
     ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_list_patterns_by_project_scopes_correctly() {
+    let ctx = TestCtx::new().await;
+    let other_project = format!("_test-other-{}", Uuid::new_v4().simple());
+
+    let mine = ctx.pattern(
+        format!("situation-mine-{}", Uuid::new_v4()),
+        format!("approach-mine-{}", Uuid::new_v4()),
+        0.8,
+    );
+    ctx.store.insert_pattern(&mine).await.unwrap();
+
+    let other = Pattern::new_in_project(
+        format!("situation-other-{}", Uuid::new_v4()),
+        format!("approach-other-{}", Uuid::new_v4()),
+        0.8,
+        other_project.clone(),
+    )
+    .unwrap();
+    ctx.store.insert_pattern(&other).await.unwrap();
+
+    let scoped = ctx
+        .store
+        .list_patterns_by_project(&ctx.project)
+        .await
+        .unwrap();
+    assert!(
+        scoped.iter().any(|p| p.id == mine.id),
+        "own pattern missing"
+    );
+    assert!(
+        !scoped.iter().any(|p| p.id == other.id),
+        "another project's pattern leaked into scope"
+    );
+
+    ctx.cleanup().await;
+    let _ = ctx.store.delete_project(&other_project).await;
 }
 
 #[tokio::test]
@@ -381,6 +460,56 @@ async fn test_no_contradiction_without_edge() {
     ctx.cleanup().await;
 }
 
+#[tokio::test]
+async fn test_get_contradiction_pairs_by_project_scopes_correctly() {
+    let ctx = TestCtx::new().await;
+    let other_project = format!("_test-other-{}", Uuid::new_v4().simple());
+
+    // In-scope pair: both endpoints in ctx.project.
+    let a1 = ctx.belief(format!("scopecontra-a1-{}", Uuid::new_v4()), 0.6, 0.7);
+    let a2 = ctx.belief(format!("scopecontra-a2-{}", Uuid::new_v4()), 0.4, 0.6);
+    ctx.store.insert_belief(&a1).await.unwrap();
+    ctx.store.insert_belief(&a2).await.unwrap();
+    let w = Probability::new(0.95).unwrap();
+    ctx.store.insert_contradicts(a1.id, a2.id, w).await.unwrap();
+
+    // Out-of-scope pair: both endpoints in a different project.
+    let b1 = Belief::new_in_project(
+        format!("scopecontra-b1-{}", Uuid::new_v4()),
+        0.6,
+        0.7,
+        other_project.clone(),
+    )
+    .unwrap();
+    let b2 = Belief::new_in_project(
+        format!("scopecontra-b2-{}", Uuid::new_v4()),
+        0.4,
+        0.6,
+        other_project.clone(),
+    )
+    .unwrap();
+    ctx.store.insert_belief(&b1).await.unwrap();
+    ctx.store.insert_belief(&b2).await.unwrap();
+    ctx.store.insert_contradicts(b1.id, b2.id, w).await.unwrap();
+
+    let scoped = ctx
+        .store
+        .get_contradiction_pairs_by_project(&ctx.project)
+        .await
+        .unwrap();
+    assert!(
+        scoped.iter().any(|(a, b)| *a == a1.id && *b == a2.id),
+        "own contradiction pair missing"
+    );
+    assert!(
+        !scoped.iter().any(|(a, b)| *a == b1.id && *b == b2.id),
+        "another project's contradiction pair leaked into scope"
+    );
+
+    ctx.cleanup().await;
+    let _ = ctx.store.delete_project(&other_project).await;
+}
+
 // ---------------------------------------------------------------------------
 // get_edges_among
 // ---------------------------------------------------------------------------
@@ -496,6 +625,103 @@ async fn test_get_downstream_multi_hop() {
     assert!(downstream.iter().any(|b| b.id == b2.id));
     assert!(downstream.iter().any(|b| b.id == b3.id));
     ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_get_direct_downstream_by_project_one_hop() {
+    let ctx = TestCtx::new().await;
+    let other_project = format!("_test-other-{}", Uuid::new_v4().simple());
+    let seed = ctx.belief(format!("dirdown-seed-{}", Uuid::new_v4()), 0.6, 0.6);
+    let in_scope = ctx.belief(format!("dirdown-in-{}", Uuid::new_v4()), 0.6, 0.6);
+    let out_of_scope = Belief::new_in_project(
+        format!("dirdown-out-{}", Uuid::new_v4()),
+        0.6,
+        0.6,
+        other_project.clone(),
+    )
+    .unwrap();
+    ctx.store.insert_belief(&seed).await.unwrap();
+    ctx.store.insert_belief(&in_scope).await.unwrap();
+    ctx.store.insert_belief(&out_of_scope).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(seed.id, in_scope.id, EdgeType::Supports, 0.8).unwrap())
+        .await
+        .unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(seed.id, out_of_scope.id, EdgeType::Supports, 0.8).unwrap())
+        .await
+        .unwrap();
+
+    let neighbors = ctx
+        .store
+        .get_direct_downstream_by_project(seed.id, &ctx.project)
+        .await
+        .unwrap();
+    assert!(
+        neighbors.iter().any(|b| b.id == in_scope.id),
+        "in-scope neighbor missing"
+    );
+    assert!(
+        !neighbors.iter().any(|b| b.id == out_of_scope.id),
+        "out-of-scope neighbor leaked"
+    );
+
+    ctx.cleanup().await;
+    let _ = ctx.store.delete_project(&other_project).await;
+}
+
+// query_relevant's graph-expansion BFS (lib.rs) walks get_direct_downstream_by_project
+// hop-by-hop so a node reached only via an out-of-scope intermediate is excluded —
+// something get_downstream_beliefs's single unbounded query plus an endpoint-only
+// filter cannot express (AGE has no per-hop-node WHERE for variable-length paths;
+// verified live: `all(x IN list WHERE ...)` list predicates aren't supported by this
+// AGE version at all, syntax error even outside of a path context).
+#[tokio::test]
+async fn test_query_relevant_excludes_beliefs_reachable_only_via_out_of_scope_bridge() {
+    let svc = service().await;
+    let ctx = TestCtx::new().await;
+    let other_project = format!("_test-other-{}", Uuid::new_v4().simple());
+    let seed_term = Uuid::new_v4().simple().to_string();
+
+    // No shared vocabulary between seed/bridge/target: the token leg (the
+    // only leg active — `service()` has no embeddings configured) must find
+    // target ONLY via graph expansion, never via direct text match.
+    let seed = ctx.belief(format!("seedterm {seed_term}"), 0.6, 0.6);
+    let bridge = Belief::new_in_project(
+        "unrelated bridging content zzqvax".to_string(),
+        0.6,
+        0.6,
+        other_project.clone(),
+    )
+    .unwrap();
+    let target = ctx.belief("wombat burrow ventilation shaft".to_string(), 0.6, 0.6);
+    ctx.store.insert_belief(&seed).await.unwrap();
+    ctx.store.insert_belief(&bridge).await.unwrap();
+    ctx.store.insert_belief(&target).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(seed.id, bridge.id, EdgeType::Supports, 0.8).unwrap())
+        .await
+        .unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(bridge.id, target.id, EdgeType::Supports, 0.8).unwrap())
+        .await
+        .unwrap();
+
+    let results = svc
+        .query_relevant(&format!("seedterm {seed_term}"), 0, Some(&ctx.project))
+        .await
+        .unwrap();
+    assert!(
+        results.iter().any(|b| b.id == seed.id),
+        "seed itself should match"
+    );
+    assert!(
+        !results.iter().any(|b| b.id == target.id),
+        "target reachable only via an out-of-scope bridge leaked into scoped results"
+    );
+
+    ctx.cleanup().await;
+    let _ = ctx.store.delete_project(&other_project).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -716,7 +942,10 @@ async fn test_add_and_query_grounded() {
     ctx.store.insert_document_chunk(&chunk).await.unwrap();
     svc.add_evidence(b.id, chunk.id, 0.8).await.unwrap();
 
-    let grounded = svc.query_relevant_grounded(&token, 10, 3).await.unwrap();
+    let grounded = svc
+        .query_relevant_grounded(&token, 10, 3, None)
+        .await
+        .unwrap();
     let gb = grounded
         .iter()
         .find(|g| g.belief.id == b.id)
