@@ -15,9 +15,9 @@ Follow this file instead.
 - Destructive operations (dropping a database, removing a container,
   overwriting a file you did not author) require user confirmation.
   Stop and ask, even when a step appears to call for it.
-- Do **not** run `mimir init` interactively — it opens `$EDITOR` and
-  will block your shell indefinitely. Write the config file directly
-  using the template in Step 4.
+- Do **not** run bare `mimir init` — with no arguments it opens
+  `$EDITOR` and will block your shell indefinitely. Use the
+  non-interactive `mimir init KEY=VALUE ...` form instead (Step 4).
 
 ## What a complete install consists of
 
@@ -193,11 +193,13 @@ though nothing is wrong. Skip the step entirely.
 mimir --help >/dev/null && echo OK
 ```
 
-## Step 4 — Write config (do **not** run `mimir init`)
+## Step 4 — Write config (use `mimir init KEY=VALUE ...`, not bare `mimir init`)
 
-`mimir init` opens `$EDITOR` and blocks. Check for an existing config first —
-if one is present, read it and confirm the values match your variables before
-proceeding. Do **not** overwrite a config you did not author without user confirmation.
+Bare `mimir init` opens `$EDITOR` and blocks. `mimir init` with `KEY=VALUE`
+arguments writes the config directly, no editor. Check for an existing config
+first — if one is present, read it and confirm the values match your variables
+before proceeding. Do **not** overwrite a config you did not author without
+user confirmation.
 
 ```sh
 if [ -f "$HOME/.config/mimir/config.toml" ]; then
@@ -205,26 +207,16 @@ if [ -f "$HOME/.config/mimir/config.toml" ]; then
   cat "$HOME/.config/mimir/config.toml"
   # Verify port=$PORT, user=$DB_USER, dbname=$DB_NAME match. If yes, skip to verify.
 else
-  mkdir -p "$HOME/.config/mimir"
-  cat > "$HOME/.config/mimir/config.toml" <<EOF
-[database]
-host   = "localhost"
-port   = ${PORT}
-dbname = "${DB_NAME}"
-user   = "${DB_USER}"
-
-[embeddings]
-backend = "${EMBEDDING_BACKEND}"
-EOF
+  mimir init host=localhost port="${PORT}" dbname="${DB_NAME}" user="${DB_USER}" backend="${EMBEDDING_BACKEND}"
 fi
 ```
 
-If `EMBEDDING_BACKEND` is `voyage` or `openai`, append model + key
-under the `[embeddings]` block:
+If `EMBEDDING_BACKEND` is `voyage` or `openai`, add `model=` and `api_key=`
+to the same `mimir init` call:
 
-```toml
-model   = "voyage-3-lite"        # or "text-embedding-3-small" for openai
-api_key = "YOUR_KEY_HERE"
+```sh
+mimir init host=localhost port="${PORT}" dbname="${DB_NAME}" user="${DB_USER}" \
+  backend=voyage model=voyage-3-lite api_key="YOUR_KEY_HERE"
 ```
 
 For API keys, ask the user — do not invent or fish for keys from the
@@ -309,8 +301,8 @@ jq -e 'any(.hooks.SessionStart[]?.hooks[]?;      .command | test("mimir skill"))
 
 ## Anti-patterns — things NOT to do
 
-- **Do not run `mimir init` interactively.** It opens `$EDITOR` and
-  will block. Write the file directly (Step 4).
+- **Do not run bare `mimir init`.** With no arguments it opens `$EDITOR`
+  and will block. Use `mimir init KEY=VALUE ...` (Step 4).
 - **Do not overwrite `~/.claude/settings.json`** when installing the
   hooks. The user almost certainly has other settings (theme, model
   selection, other hooks). Read → parse → merge → write back.

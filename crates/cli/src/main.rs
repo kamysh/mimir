@@ -17,11 +17,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create a configuration template and open it in $EDITOR.
+    /// Create a configuration file.
     ///
-    /// Creates ~/.config/mimir/config.toml (or $XDG_CONFIG_HOME/mimir/config.toml)
-    /// and opens it for editing.  Exits non-zero if the config already exists.
-    Init,
+    /// With no arguments: writes a commented template to
+    /// ~/.config/mimir/config.toml (or $XDG_CONFIG_HOME/mimir/config.toml) and
+    /// opens it in $EDITOR. With KEY=VALUE arguments: writes a config built
+    /// from those overrides non-interactively (no $EDITOR). Recognised keys:
+    /// host, port, dbname, user, ssl_mode, ssl_root_cert, ssl_client_cert,
+    /// ssl_client_key, backend, model, api_key, batch_size, cache_dir.
+    /// Exits non-zero if the config already exists.
+    Init {
+        /// KEY=VALUE pairs (e.g. `host=localhost port=5450 backend=local`).
+        /// Omit to get the interactive $EDITOR flow.
+        #[arg(value_parser = parse_kv)]
+        pairs: Vec<(String, String)>,
+    },
 
     /// Print a summary of the belief graph (vertex and edge counts).
     Stats,
@@ -70,17 +80,9 @@ enum Command {
     #[command(subcommand)]
     Evidence(EvidenceCmd),
 
-    /// Delete a belief (and all its edges) by UUID.
-    Delete {
-        /// UUID of the belief to delete.
-        id: String,
-    },
-
-    /// Delete a pattern by UUID.
-    DeletePattern {
-        /// UUID of the pattern to delete.
-        id: String,
-    },
+    /// Delete a belief or pattern by UUID.
+    #[command(subcommand)]
+    Delete(DeleteCmd),
 
     /// Delete all beliefs tagged with a project.
     Forget {
@@ -106,40 +108,11 @@ enum Command {
         project: Option<String>,
     },
 
-    /// Parse a markdown file into chunks, embed, and index for semantic search.
+    /// Manage indexed documents (load, semantic search, clear).
     ///
     /// Requires [embeddings] in config.toml.
-    /// Re-indexing the same path replaces existing chunks.
-    Load {
-        /// Path to the markdown file to index.
-        path: String,
-
-        /// Tag all chunks with this project (optional).
-        #[arg(long, short)]
-        project: Option<String>,
-    },
-
-    /// Semantic search over indexed document chunks.
-    ///
-    /// Requires [embeddings] in config.toml.
-    QueryDoc {
-        /// Query text to embed and search.
-        context: String,
-
-        /// Restrict search to chunks tagged with this project.
-        #[arg(long, short)]
-        project: Option<String>,
-
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 5)]
-        limit: usize,
-    },
-
-    /// Remove all chunks and embeddings for a document path.
-    ClearDoc {
-        /// Path of the document to remove.
-        path: String,
-    },
+    #[command(subcommand)]
+    Doc(DocCmd),
 
     /// Backfill `belief_embeddings` for any beliefs missing a vector.
     ///
@@ -207,6 +180,63 @@ enum EvidenceCmd {
     },
 }
 
+/// `mimir delete <belief|pattern> <id>` subcommands.
+#[derive(Subcommand)]
+enum DeleteCmd {
+    /// Delete a belief (and all its edges) by UUID.
+    Belief {
+        /// UUID of the belief to delete.
+        id: String,
+    },
+    /// Delete a pattern by UUID.
+    Pattern {
+        /// UUID of the pattern to delete.
+        id: String,
+    },
+}
+
+/// `mimir doc <load|query|clear>` subcommands.
+#[derive(Subcommand)]
+enum DocCmd {
+    /// Parse a markdown file into chunks, embed, and index for semantic search.
+    ///
+    /// Re-indexing the same path replaces existing chunks.
+    Load {
+        /// Path to the markdown file to index.
+        path: String,
+
+        /// Tag all chunks with this project (optional).
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+    /// Semantic search over indexed document chunks.
+    Query {
+        /// Query text to embed and search.
+        context: String,
+
+        /// Restrict search to chunks tagged with this project.
+        #[arg(long, short)]
+        project: Option<String>,
+
+        /// Maximum number of results (0 = no limit).
+        #[arg(long, short, default_value_t = 5)]
+        limit: usize,
+    },
+    /// Remove all chunks and embeddings for a document path.
+    Clear {
+        /// Path of the document to remove.
+        path: String,
+    },
+}
+
+/// Parse a `KEY=VALUE` CLI argument into a `(key, value)` pair.
+fn parse_kv(s: &str) -> Result<(String, String), String> {
+    match s.split_once('=') {
+        Some((k, v)) if !k.is_empty() => Ok((k.to_string(), v.to_string())),
+        _ => Err(format!("expected KEY=VALUE, got `{s}`")),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -216,7 +246,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Init => cmd_init()?,
+        Command::Init { pairs } => cmd_init(pairs)?,
         Command::Stats => cmd_stats().await?,
         Command::List { project, limit } => cmd_list(project, limit).await?,
         Command::Patterns { project, limit } => cmd_patterns(project, limit).await?,
@@ -227,18 +257,18 @@ async fn main() -> Result<()> {
             project,
         } => cmd_query(&text, limit, evidence, project.as_deref()).await?,
         Command::Evidence(cmd) => cmd_evidence(cmd).await?,
-        Command::Delete { id } => cmd_delete(&id).await?,
-        Command::DeletePattern { id } => cmd_delete_pattern(&id).await?,
+        Command::Delete(DeleteCmd::Belief { id }) => cmd_delete(&id).await?,
+        Command::Delete(DeleteCmd::Pattern { id }) => cmd_delete_pattern(&id).await?,
         Command::Forget { project } => cmd_forget(&project).await?,
         Command::Decay { factor, project } => cmd_decay(factor, project.as_deref()).await?,
         Command::Contradictions { project } => cmd_contradictions(project.as_deref()).await?,
-        Command::Load { path, project } => cmd_load(&path, project.as_deref()).await?,
-        Command::QueryDoc {
+        Command::Doc(DocCmd::Load { path, project }) => cmd_load(&path, project.as_deref()).await?,
+        Command::Doc(DocCmd::Query {
             context,
             project,
             limit,
-        } => cmd_query_doc(&context, project.as_deref(), limit).await?,
-        Command::ClearDoc { path } => cmd_clear_doc(&path).await?,
+        }) => cmd_query_doc(&context, project.as_deref(), limit).await?,
+        Command::Doc(DocCmd::Clear { path }) => cmd_clear_doc(&path).await?,
         Command::Reembed => cmd_reembed().await?,
         Command::Intervene { id, value } => cmd_intervene(&id, value).await?,
         // Hooks must never exit non-zero — discard any error silently.
@@ -278,13 +308,18 @@ fn trunc(s: &str, max: usize) -> String {
 // mimir init
 // ---------------------------------------------------------------------------
 
-fn cmd_init() -> Result<()> {
-    let path = Config::create_template()?;
-    println!("Created: {}", path.display());
-    println!("Opening in $EDITOR… (save and close to finish)");
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-    std::process::Command::new(&editor).arg(&path).status()?;
-    println!("Done. Restart Claude Code to activate the mimir MCP server.");
+fn cmd_init(pairs: Vec<(String, String)>) -> Result<()> {
+    if pairs.is_empty() {
+        let path = Config::create_template()?;
+        println!("Created: {}", path.display());
+        println!("Opening in $EDITOR… (save and close to finish)");
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+        std::process::Command::new(&editor).arg(&path).status()?;
+    } else {
+        let path = Config::create_from_kv(&pairs)?;
+        println!("Created: {}", path.display());
+    }
+    println!("Restart Claude Code to activate the mimir MCP server.");
     Ok(())
 }
 
