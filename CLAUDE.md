@@ -43,17 +43,18 @@ cd spec && agda Mimir.agda
 # CLI (after `mimir init` writes ~/.config/mimir/config.toml)
 mimir stats
 mimir list [--project NAME] [--limit N]
-mimir query TEXT [--limit N]
-mimir delete UUID
+mimir query TEXT [--limit N] [--project NAME]
+mimir delete belief UUID
+mimir delete pattern UUID
 mimir forget PROJECT
-mimir decay [--factor 0.99]
-mimir contradictions
-mimir patterns [--limit N]
+mimir decay [--factor 0.99] [--project NAME]
+mimir contradictions [--project NAME]
+mimir patterns [--project NAME] [--limit N]
 
 # Document RAG (requires [embeddings] in config.toml)
-mimir load PATH [--project NAME]          # parse, embed, and index a markdown file
-mimir query-doc CONTEXT [--project NAME] [--limit N]  # semantic search over chunks
-mimir clear-doc PATH                      # remove all chunks for a document
+mimir doc load PATH [--project NAME]          # parse, embed, and index a markdown file
+mimir doc query CONTEXT [--project NAME] [--limit N]  # semantic search over chunks
+mimir doc clear PATH                          # remove all chunks for a document
 
 # Full install (DB setup + binary build + .mcp.json registration)
 ./install.sh

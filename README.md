@@ -408,21 +408,22 @@ docker ps --filter name=postgres-ai
 
 | Command | What it does |
 |---|---|
-| `mimir init` | Create `~/.config/mimir/config.toml` and open it in `$EDITOR` |
+| `mimir init [KEY=VALUE ...]` | With no args: create `~/.config/mimir/config.toml` and open it in `$EDITOR`. With `KEY=VALUE` args (e.g. `host=localhost backend=local`): write the config non-interactively, no `$EDITOR` |
 | `mimir stats` | Print belief, pattern, and edge counts |
 | `mimir list [--project NAME] [--limit N]` | List beliefs, sorted by probability |
-| `mimir patterns [--limit N]` | List patterns, sorted by success rate |
-| `mimir query TEXT [--limit N] [--evidence]` | Hybrid search; `--evidence` also prints each belief's grounding passages |
+| `mimir patterns [--project NAME] [--limit N]` | List patterns, sorted by success rate |
+| `mimir query TEXT [--limit N] [--evidence] [--project NAME]` | Hybrid search; `--evidence` also prints each belief's grounding passages |
 | `mimir intervene UUID VALUE` | Counterfactual `do(belief = VALUE)`: read-only projection of causal descendants |
 | `mimir evidence add CHUNK_ID BELIEF_ID [--weight W]` | Ground a belief in a document chunk (GROUNDS edge) |
 | `mimir evidence list BELIEF_ID` | List the passages grounding a belief |
-| `mimir delete UUID` | Delete a belief and all its edges |
+| `mimir delete belief UUID` | Delete a belief and all its edges |
+| `mimir delete pattern UUID` | Delete a pattern |
 | `mimir forget PROJECT` | Delete all beliefs and document chunks for a project |
-| `mimir decay [--factor 0.99]` | Apply time decay to all belief confidences |
-| `mimir contradictions` | List active contradictions in the graph |
-| `mimir load PATH [--project NAME]` | Index a markdown file for semantic search |
-| `mimir query-doc CONTEXT [--project NAME] [--limit N]` | Semantic search over chunks |
-| `mimir clear-doc PATH` | Remove all chunks and embeddings for a document |
+| `mimir decay [--factor 0.99] [--project NAME]` | Apply time decay to belief confidences |
+| `mimir contradictions [--project NAME]` | List active contradictions in the graph |
+| `mimir doc load PATH [--project NAME]` | Index a markdown file for semantic search |
+| `mimir doc query CONTEXT [--project NAME] [--limit N]` | Semantic search over chunks |
+| `mimir doc clear PATH` | Remove all chunks and embeddings for a document |
 
 ## Building from source
 

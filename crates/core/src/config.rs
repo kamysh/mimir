@@ -113,6 +113,140 @@ impl Config {
         std::fs::write(&path, CONFIG_TEMPLATE)?;
         Ok(path)
     }
+
+    /// Build a config non-interactively from `KEY=VALUE` overrides on top of
+    /// sane defaults (host=localhost, port=5432, dbname=mimir, user=mimir, no
+    /// embeddings), write it to the default path, and return the path. Fails
+    /// if the file already exists — same safety contract as `create_template`.
+    ///
+    /// Recognised keys: host, port, dbname, user, ssl_mode, ssl_root_cert,
+    /// ssl_client_cert, ssl_client_key, backend, model, api_key, batch_size,
+    /// cache_dir. `backend`/`model`/`api_key`/`batch_size`/`cache_dir` populate
+    /// `[embeddings]`, which is included only if `backend` is given.
+    pub fn create_from_kv(pairs: &[(String, String)]) -> anyhow::Result<std::path::PathBuf> {
+        let path = Self::config_path();
+        if path.exists() {
+            anyhow::bail!("config already exists at {}", path.display());
+        }
+
+        let mut database = DatabaseConfig {
+            host: "localhost".to_string(),
+            port: 5432,
+            dbname: "mimir".to_string(),
+            user: "mimir".to_string(),
+            ssl_mode: SslMode::default(),
+            ssl_root_cert: None,
+            ssl_client_cert: None,
+            ssl_client_key: None,
+        };
+        let mut embeddings: Option<EmbeddingsConfig> = None;
+
+        for (key, value) in pairs {
+            match key.as_str() {
+                "host" => database.host = value.clone(),
+                "port" => {
+                    database.port = value
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("invalid port: {value}"))?
+                }
+                "dbname" => database.dbname = value.clone(),
+                "user" => database.user = value.clone(),
+                "ssl_mode" => {
+                    database.ssl_mode = match value.as_str() {
+                        "disable" => SslMode::Disable,
+                        "prefer" => SslMode::Prefer,
+                        "require" => SslMode::Require,
+                        "verify-ca" => SslMode::VerifyCa,
+                        "verify-full" => SslMode::VerifyFull,
+                        other => anyhow::bail!(
+                            "invalid ssl_mode: {other} (expected disable/prefer/require/verify-ca/verify-full)"
+                        ),
+                    }
+                }
+                "ssl_root_cert" => database.ssl_root_cert = Some(value.clone()),
+                "ssl_client_cert" => database.ssl_client_cert = Some(value.clone()),
+                "ssl_client_key" => database.ssl_client_key = Some(value.clone()),
+                "backend" => {
+                    let backend = match value.as_str() {
+                        "voyage" => EmbeddingBackend::Voyage,
+                        "openai" => EmbeddingBackend::OpenAi,
+                        "local" => EmbeddingBackend::Local,
+                        other => {
+                            anyhow::bail!("invalid backend: {other} (expected voyage/openai/local)")
+                        }
+                    };
+                    let e = embeddings.get_or_insert_with(|| EmbeddingsConfig {
+                        backend: EmbeddingBackend::Local,
+                        model: String::new(),
+                        api_key: None,
+                        batch_size: 0,
+                        cache_dir: None,
+                    });
+                    e.backend = backend;
+                }
+                "model" => {
+                    embeddings
+                        .get_or_insert_with(|| EmbeddingsConfig {
+                            backend: EmbeddingBackend::Local,
+                            model: String::new(),
+                            api_key: None,
+                            batch_size: 0,
+                            cache_dir: None,
+                        })
+                        .model = value.clone();
+                }
+                "api_key" => {
+                    embeddings
+                        .get_or_insert_with(|| EmbeddingsConfig {
+                            backend: EmbeddingBackend::Local,
+                            model: String::new(),
+                            api_key: None,
+                            batch_size: 0,
+                            cache_dir: None,
+                        })
+                        .api_key = Some(value.clone());
+                }
+                "batch_size" => {
+                    let batch_size = value
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("invalid batch_size: {value}"))?;
+                    embeddings
+                        .get_or_insert_with(|| EmbeddingsConfig {
+                            backend: EmbeddingBackend::Local,
+                            model: String::new(),
+                            api_key: None,
+                            batch_size: 0,
+                            cache_dir: None,
+                        })
+                        .batch_size = batch_size;
+                }
+                "cache_dir" => {
+                    embeddings
+                        .get_or_insert_with(|| EmbeddingsConfig {
+                            backend: EmbeddingBackend::Local,
+                            model: String::new(),
+                            api_key: None,
+                            batch_size: 0,
+                            cache_dir: None,
+                        })
+                        .cache_dir = Some(value.clone());
+                }
+                other => anyhow::bail!("unrecognised config key: {other}"),
+            }
+        }
+
+        let config = Config {
+            database,
+            embeddings,
+        };
+        let content = toml::to_string_pretty(&config)?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, content)?;
+        Ok(path)
+    }
 }
 
 const CONFIG_TEMPLATE: &str = r#"# ~/.config/mimir/config.toml — mimir global configuration
