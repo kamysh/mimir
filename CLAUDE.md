@@ -12,8 +12,9 @@ All commands assume you're in a Nix dev shell. Enter it with `nix develop` (dire
 
 ```bash
 # Build (dynamic, glibc)
+# Note: the CLI crate's cargo package name is `mimir` (dir crates/cli), not `mimir-cli`.
 cargo build --release -p mimir-mcp
-cargo build --release -p mimir-cli
+cargo build --release -p mimir
 
 # Build static binary (musl, no external deps) — via Nix
 nix build .#mimir-static        # result/bin/mimir-mcp and result/bin/mimir
