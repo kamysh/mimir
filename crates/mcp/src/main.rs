@@ -3,7 +3,11 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::error;
 
-use mimir_core::{config::Config, graph::EdgeType, MimirService};
+use mimir_core::{
+    config::Config,
+    graph::{EdgeType, MemoryType},
+    MimirService,
+};
 
 // ---------------------------------------------------------------------------
 // JSON-RPC helpers
@@ -36,7 +40,8 @@ fn tools_list() -> Value {
                     "content":     { "type": "string" },
                     "probability": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                     "confidence":  { "type": "number", "minimum": 0.0, "maximum": 1.0 },
-                    "project":     { "type": "string", "description": "Optional project scope. Beliefs in a project can be bulk-deleted with delete_project when the project is done." }
+                    "project":     { "type": "string", "description": "Optional project scope. Beliefs in a project can be bulk-deleted with delete_project when the project is done." },
+                    "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Functional memory type. 'fact' (default): declarative knowledge that decays over time absent reinforcement. 'experiential': a hard-won working lesson (gotcha, corrected approach) — exempt from time-decay, since its truth doesn't erode with elapsed time. 'working': task-local scratch memory, excluded from cross-session query_relevant retrieval." }
                 },
                 "required": ["content", "probability", "confidence"]
             }
@@ -156,7 +161,8 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "project": { "type": "string", "description": "Restrict to this project's beliefs plus untagged (global) beliefs. Omit to list everything." }
+                    "project": { "type": "string", "description": "Restrict to this project's beliefs plus untagged (global) beliefs. Omit to list everything." },
+                    "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Restrict to this memory type. Useful for orphan cleanup of leftover Working beliefs from an interrupted prior session — NOT a substitute for tracking the IDs of Working beliefs your own session wrote, since this filter has no session-identity concept and cannot distinguish your in-flight Working beliefs from a concurrent session's on a shared DB." }
                 }
             }
         },
@@ -188,6 +194,18 @@ fn tools_list() -> Value {
                 "properties": {
                     "decay_factor": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.99 },
                     "project": { "type": "string", "description": "Restrict the decay sweep to this project's beliefs plus untagged (global) beliefs. Omit to decay everything." }
+                }
+            }
+        },
+        {
+            "name": "sweep_expired_defeated",
+            "description": "Delete defeated beliefs whose grace period has elapsed (attenuated deletion — a defeated belief is deleted only once its probability has decayed below prob_threshold AND grace_hours have passed since it was last defeated, giving a wrong record_defeat call time to be caught and reversed first). Returns count of beliefs deleted. If project is given, restricts the sweep to that project's beliefs plus untagged (global) beliefs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "prob_threshold": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.3, "description": "Probability below which a defeated belief becomes eligible for deletion." },
+                    "grace_hours": { "type": "number", "minimum": 0.0, "default": 24.0, "description": "Hours since the belief was last defeated before it can be deleted." },
+                    "project": { "type": "string", "description": "Restrict the sweep to this project's beliefs plus untagged (global) beliefs. Omit to sweep everything." }
                 }
             }
         },
@@ -308,12 +326,27 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             let confidence = args["confidence"]
                 .as_f64()
                 .ok_or_else(|| anyhow::anyhow!("missing 'confidence'"))?;
+            let memory_type = match args["memory_type"].as_str() {
+                Some(s) => s
+                    .parse::<MemoryType>()
+                    .map_err(|e| anyhow::anyhow!("invalid 'memory_type': {e}"))?,
+                None => MemoryType::default(),
+            };
             let belief = match args["project"].as_str() {
                 Some(project) => {
-                    svc.add_belief_in_project(content, probability, confidence, project)
+                    svc.add_belief_in_project(
+                        content,
+                        probability,
+                        confidence,
+                        project,
+                        memory_type,
+                    )
+                    .await?
+                }
+                None => {
+                    svc.add_belief(content, probability, confidence, memory_type)
                         .await?
                 }
-                None => svc.add_belief(content, probability, confidence).await?,
             };
             Ok(serde_json::to_value(&belief)?)
         }
@@ -440,7 +473,14 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
 
         "list_beliefs" => {
             let project = args["project"].as_str();
-            let beliefs = svc.list_beliefs(project).await?;
+            let memory_type = match args["memory_type"].as_str() {
+                Some(s) => Some(
+                    s.parse::<MemoryType>()
+                        .map_err(|e| anyhow::anyhow!("invalid 'memory_type': {e}"))?,
+                ),
+                None => None,
+            };
+            let beliefs = svc.list_beliefs_filtered(project, memory_type).await?;
             Ok(serde_json::to_value(&beliefs)?)
         }
 
@@ -465,6 +505,16 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             let project = args["project"].as_str();
             let count = svc.decay_beliefs(decay_factor, project).await?;
             Ok(json!({ "decayed": count }))
+        }
+
+        "sweep_expired_defeated" => {
+            let prob_threshold = args["prob_threshold"].as_f64().unwrap_or(0.3);
+            let grace_hours = args["grace_hours"].as_f64().unwrap_or(24.0);
+            let project = args["project"].as_str();
+            let count = svc
+                .sweep_expired_defeated(prob_threshold, grace_hours, project)
+                .await?;
+            Ok(json!({ "deleted": count }))
         }
 
         "query_relevant" => {

@@ -12,6 +12,12 @@ your own working state — mimir is not a second brain for that. Its entire valu
 is that a belief written by a past session, or before the last compaction, is a
 prior you would otherwise have to re-derive from scratch.
 
+One narrow exception: `memory_type: working` is not for logging in-session
+state wholesale (that would violate the line above) — it's a staging tier for
+a conclusion you're about to assert as `fact`/`experiential` but aren't yet
+confident will survive scrutiny. Write it as `working` first; promote it after
+it holds up, or drop it if it doesn't. See CLAUDE.md's memory-types section.
+
 So there are two failure modes, not one:
 
 1. **Hoarding** — you query, never insert, and the graph never grows.
@@ -134,6 +140,7 @@ This is where READ and WRITE join up:
 
 - New observation **confirms** a surfaced belief → `record_support(obs_id, belief_id, weight)`.
 - New observation **contradicts** one → `record_defeat(obs_id, belief_id, weight)` (cascades to dependents). **Every override you made under the READ discipline lands here.**
+- **The moment you write a belief that supersedes an earlier one, call `record_defeat` on the old belief in the same breath — not later, not when a critic or the user forces it.** An un-defeated superseded belief keeps surfacing in `query_relevant` indistinguishable from a live one; discovering "mimir already told me this and I ignored it" after the fact is usually this step skipped, not a retrieval gap.
 - Two beliefs disagree (`get_contradictions`) → reconcile by `record_defeat` on whichever you now distrust (its evidence drops; dependents cascade).
 - You acted on a `CAUSES` belief and the predicted downstream effect did/didn't happen → that's support/defeat on the causal claim specifically.
 

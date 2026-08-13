@@ -41,6 +41,15 @@ data EdgeLabel : Set where
 -- decay indefinitely until confidence reaches zero.
 -- (update_confidence can manually restore confidence after decay, but
 -- last_activated_at itself remains frozen.)
+-- NOT YET MODELED: this record predates Phase 3 (Beta-belief posteriors,
+-- alpha/beta/alpha0/beta0 in graph.rs) and the `memory_type` field
+-- (Fact/Experiential/Working, graph.rs `MemoryType`) added after it — both
+-- are real Rust-side fields this spec does not yet track. `memory_type`
+-- gates `decay_all` (only Fact decays) and `query_relevant` (Working is
+-- excluded from cross-session retrieval); it does not affect any proven
+-- invariant here (non-interference, propagation order-independence, etc.),
+-- so its omission does not invalidate the existing proofs — it is simply
+-- undocumented in Agda, same status as the alpha/beta fields already are.
 record Belief : Set where
   constructor mkBelief
   field

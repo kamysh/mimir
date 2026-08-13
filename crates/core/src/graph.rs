@@ -67,6 +67,54 @@ pub(crate) fn beta_to_pc(alpha: f64, beta: f64) -> (f64, f64) {
     (mean, conf)
 }
 
+/// Functional taxonomy of a belief's memory (survey: arXiv 2512.13564,
+/// "Memory in the Age of AI Agents" — factual/experiential/working memory
+/// functions). Orthogonal to `project`. Determines decay behavior in
+/// `InferenceEngine::decay_all` and retrieval scope in `query_relevant`:
+///   - `Fact`: declarative knowledge about code/environment. Decays toward
+///     the uninformative prior (1,1) as today — a stale fact should lose
+///     confidence over time.
+///   - `Experiential`: a hard-won working lesson (a gotcha, a corrected
+///     approach). Exempt from time-decay — its truth value does not erode
+///     with elapsed time the way a fact's does.
+///   - `Working`: task-local scratch memory. Excluded from cross-session
+///     `query_relevant` retrieval; not intended to persist as durable
+///     knowledge.
+///
+/// Unknown/missing values on read (pre-migration rows) decode as `Fact`,
+/// preserving today's decay behavior for all beliefs written before this
+/// field existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum MemoryType {
+    #[default]
+    Fact,
+    Experiential,
+    Working,
+}
+
+impl MemoryType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fact => "fact",
+            Self::Experiential => "experiential",
+            Self::Working => "working",
+        }
+    }
+}
+
+impl std::str::FromStr for MemoryType {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "fact" => Ok(Self::Fact),
+            "experiential" => Ok(Self::Experiential),
+            "working" => Ok(Self::Working),
+            other => bail!("unknown memory type: {}", other),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Belief {
     pub id: Uuid,
@@ -83,6 +131,9 @@ pub struct Belief {
     pub beta0: f64,
     pub created_at: DateTime<Utc>,
     pub last_activated_at: DateTime<Utc>,
+    /// Functional memory type (Fact/Experiential/Working). See `MemoryType`.
+    #[serde(default)]
+    pub memory_type: MemoryType,
     /// Optional project scope. Beliefs tagged with a project can be bulk-deleted
     /// via `delete_project` when that project's work is complete.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,6 +158,7 @@ impl Belief {
             beta0,
             created_at: now,
             last_activated_at: now,
+            memory_type: MemoryType::default(),
             project: None,
         })
     }
@@ -122,6 +174,12 @@ impl Belief {
         Ok(b)
     }
 
+    /// Builder: set the memory type. Defaults to `MemoryType::Fact` when unset.
+    pub fn with_memory_type(mut self, memory_type: MemoryType) -> Self {
+        self.memory_type = memory_type;
+        self
+    }
+
     /// Reconstruct a belief from persisted fields (store / migration). The
     /// cached probability/confidence are derived from the supplied (α, β).
     #[allow(clippy::too_many_arguments)]
@@ -134,6 +192,7 @@ impl Belief {
         beta0: f64,
         created_at: DateTime<Utc>,
         last_activated_at: DateTime<Utc>,
+        memory_type: MemoryType,
         project: Option<String>,
     ) -> Result<Self> {
         let (mean, conf) = beta_to_pc(alpha, beta);
@@ -148,6 +207,7 @@ impl Belief {
             beta0,
             created_at,
             last_activated_at,
+            memory_type,
             project,
         })
     }
@@ -462,6 +522,38 @@ mod tests {
         let b1 = Belief::new("same content".to_string(), 0.5, 0.5).unwrap();
         let b2 = Belief::new("same content".to_string(), 0.5, 0.5).unwrap();
         assert_ne!(b1.id, b2.id);
+    }
+
+    #[test]
+    fn belief_defaults_to_fact_memory_type() {
+        let b = Belief::new("x".to_string(), 0.5, 0.5).unwrap();
+        assert_eq!(b.memory_type, MemoryType::Fact);
+    }
+
+    #[test]
+    fn belief_with_memory_type_sets_it() {
+        let b = Belief::new("x".to_string(), 0.5, 0.5)
+            .unwrap()
+            .with_memory_type(MemoryType::Experiential);
+        assert_eq!(b.memory_type, MemoryType::Experiential);
+    }
+
+    #[test]
+    fn memory_type_roundtrip() {
+        for mt in [
+            MemoryType::Fact,
+            MemoryType::Experiential,
+            MemoryType::Working,
+        ] {
+            assert_eq!(MemoryType::from_str(mt.as_str()).unwrap(), mt);
+        }
+    }
+
+    #[test]
+    fn memory_type_unknown_str_fails() {
+        assert!(MemoryType::from_str("unknown").is_err());
+        assert!(MemoryType::from_str("").is_err());
+        assert!(MemoryType::from_str("Fact").is_err()); // case-sensitive
     }
 
     // ------------------------------------------------------------------
