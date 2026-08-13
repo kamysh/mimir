@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::graph::{Belief, EdgeType, Probability};
+use crate::graph::{Belief, EdgeType, MemoryType, Probability};
 
 pub struct InferenceEngine;
 
@@ -307,6 +307,12 @@ impl InferenceEngine {
     /// mass M = Σ k·wᵢ, the effective retention factor is:
     ///   f_eff = 1 - (1 - f) / (1 + M)
     /// M=0 → f_eff = f (no resistance); M → ∞ → f_eff → 1 (no decay).
+    ///
+    /// Memory-type gate (survey-informed design, see the `MemoryType` doc
+    /// comment): only `Fact` beliefs decay. `Experiential` and `Working`
+    /// beliefs are exempt — a hard-won lesson's truth value does not erode
+    /// with elapsed time the way a stale fact's does, and `Working` memory is
+    /// task-local scratch that this sweep should not touch at all.
     pub fn decay_all(
         &self,
         beliefs: &[Belief],
@@ -324,6 +330,9 @@ impl InferenceEngine {
         }
         let mut result = Vec::new();
         for belief in beliefs {
+            if belief.memory_type != MemoryType::Fact {
+                continue;
+            }
             let days = ((now - belief.last_activated_at).num_seconds() as f64 / 86400.0).max(0.0);
             let base_f = decay_factor.powf(days);
             // Apply decay-resistance: grounding mass damps the pull toward (1,1).
@@ -342,6 +351,55 @@ impl InferenceEngine {
             }
         }
         Ok(result)
+    }
+
+    /// Find defeated beliefs eligible for deletion under the attenuated-deletion
+    /// design (docs/proposals/80-memory-evolution-open-questions.md, section 1):
+    /// a defeated belief is deleted only after (a) its probability has decayed
+    /// below `prob_threshold` and (b) a `grace_period` has elapsed since it was
+    /// last defeated, with no intervening reversal.
+    ///
+    /// DEFEATS edges carry no timestamp of their own, so the defeat time is
+    /// approximated as the MOST RECENT defeater's `created_at` for that target
+    /// — record_defeat is expected to be called in the same breath as writing
+    /// the correcting belief (see the "call record_defeat immediately" rule),
+    /// so a defeater's creation time is a close proxy for when the defeat
+    /// actually landed. If a belief is defeated more than once, the latest
+    /// defeat resets its grace-period clock.
+    ///
+    /// `edges` is every (defeater_id, defeated_id, defeater_created_at) triple
+    /// for DEFEATS relationships in the graph. `beliefs` supplies current
+    /// probability for each defeated id (a belief absent from `beliefs`, e.g.
+    /// already deleted, is silently skipped). Pure function — the caller
+    /// performs the actual `delete_belief` calls.
+    pub fn find_expired_defeated(
+        &self,
+        edges: &[(Uuid, Uuid, chrono::DateTime<chrono::Utc>)],
+        beliefs: &HashMap<Uuid, Belief>,
+        now: chrono::DateTime<chrono::Utc>,
+        prob_threshold: f64,
+        grace_period: chrono::Duration,
+    ) -> Vec<Uuid> {
+        let mut latest_defeat: HashMap<Uuid, chrono::DateTime<chrono::Utc>> = HashMap::new();
+        for (_defeater, defeated, defeater_created_at) in edges {
+            latest_defeat
+                .entry(*defeated)
+                .and_modify(|t| *t = (*t).max(*defeater_created_at))
+                .or_insert(*defeater_created_at);
+        }
+        latest_defeat
+            .into_iter()
+            .filter_map(|(defeated_id, defeat_time)| {
+                let belief = beliefs.get(&defeated_id)?;
+                if belief.probability.value() >= prob_threshold {
+                    return None;
+                }
+                if now - defeat_time < grace_period {
+                    return None;
+                }
+                Some(defeated_id)
+            })
+            .collect()
     }
 }
 
@@ -773,6 +831,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_decay_all_skips_experiential_beliefs() {
+        let mut b = Belief::new("hard-won lesson".to_string(), 0.9, 0.9)
+            .unwrap()
+            .with_memory_type(crate::graph::MemoryType::Experiential);
+        b.last_activated_at -= chrono::Duration::days(100);
+        let now = chrono::Utc::now();
+        let updates = engine()
+            .decay_all(&[b], now, 0.99, &HashMap::new())
+            .unwrap();
+        assert!(
+            updates.is_empty(),
+            "Experiential beliefs must be exempt from time-decay"
+        );
+    }
+
+    #[test]
+    fn test_decay_all_skips_working_beliefs() {
+        let mut b = Belief::new("scratch note".to_string(), 0.9, 0.9)
+            .unwrap()
+            .with_memory_type(crate::graph::MemoryType::Working);
+        b.last_activated_at -= chrono::Duration::days(100);
+        let now = chrono::Utc::now();
+        let updates = engine()
+            .decay_all(&[b], now, 0.99, &HashMap::new())
+            .unwrap();
+        assert!(
+            updates.is_empty(),
+            "Working beliefs must not be touched by the decay sweep"
+        );
+    }
+
+    #[test]
+    fn test_decay_all_mixed_types_only_decays_fact() {
+        let mut fact = Belief::new("fact".to_string(), 0.9, 0.9).unwrap();
+        fact.last_activated_at -= chrono::Duration::days(100);
+        let mut exp = Belief::new("lesson".to_string(), 0.9, 0.9)
+            .unwrap()
+            .with_memory_type(crate::graph::MemoryType::Experiential);
+        exp.last_activated_at -= chrono::Duration::days(100);
+
+        let updates = engine()
+            .decay_all(
+                &[fact.clone(), exp.clone()],
+                chrono::Utc::now(),
+                0.99,
+                &HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].0, fact.id);
+    }
+
     // ------------------------------------------------------------------
     // Phase 2 — order-independent, fixpoint propagation
     // ------------------------------------------------------------------
@@ -929,6 +1040,120 @@ mod tests {
             "two supporters must raise T above base 0.1, got {tp}"
         );
         assert!((tp - 0.1085).abs() < 2e-3, "got {tp}");
+    }
+
+    // ------------------------------------------------------------------
+    // find_expired_defeated — unit tests
+    // ------------------------------------------------------------------
+
+    fn belief_with_prob(p: f64) -> Belief {
+        Belief::new("x".to_string(), p, 0.5).unwrap()
+    }
+
+    #[test]
+    fn test_find_expired_defeated_below_threshold_past_grace_is_deleted() {
+        let defeated = belief_with_prob(0.1);
+        let defeater = belief_with_prob(0.9);
+        let now = chrono::Utc::now();
+        let defeat_time = now - chrono::Duration::hours(48);
+        let edges = vec![(defeater.id, defeated.id, defeat_time)];
+        let beliefs: HashMap<Uuid, Belief> =
+            [(defeated.id, defeated.clone())].into_iter().collect();
+        let candidates = engine().find_expired_defeated(
+            &edges,
+            &beliefs,
+            now,
+            0.3,
+            chrono::Duration::hours(24),
+        );
+        assert_eq!(candidates, vec![defeated.id]);
+    }
+
+    #[test]
+    fn test_find_expired_defeated_within_grace_is_kept() {
+        let defeated = belief_with_prob(0.1);
+        let defeater = belief_with_prob(0.9);
+        let now = chrono::Utc::now();
+        let defeat_time = now - chrono::Duration::hours(1); // well within a 24h grace period
+        let edges = vec![(defeater.id, defeated.id, defeat_time)];
+        let beliefs: HashMap<Uuid, Belief> =
+            [(defeated.id, defeated.clone())].into_iter().collect();
+        let candidates = engine().find_expired_defeated(
+            &edges,
+            &beliefs,
+            now,
+            0.3,
+            chrono::Duration::hours(24),
+        );
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn test_find_expired_defeated_above_threshold_is_kept() {
+        // Past grace period, but probability hasn't dropped enough — e.g. a
+        // low-weight defeat that only mildly attenuated the target.
+        let defeated = belief_with_prob(0.6);
+        let defeater = belief_with_prob(0.9);
+        let now = chrono::Utc::now();
+        let defeat_time = now - chrono::Duration::hours(48);
+        let edges = vec![(defeater.id, defeated.id, defeat_time)];
+        let beliefs: HashMap<Uuid, Belief> =
+            [(defeated.id, defeated.clone())].into_iter().collect();
+        let candidates = engine().find_expired_defeated(
+            &edges,
+            &beliefs,
+            now,
+            0.3,
+            chrono::Duration::hours(24),
+        );
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn test_find_expired_defeated_latest_defeat_resets_grace_clock() {
+        // Defeated twice: an old defeat (past grace) and a recent one (within
+        // grace). The most recent defeat must reset the clock — the belief is
+        // NOT yet eligible, because the second defeat hasn't survived scrutiny.
+        let defeated = belief_with_prob(0.1);
+        let old_defeater = belief_with_prob(0.9);
+        let recent_defeater = belief_with_prob(0.9);
+        let now = chrono::Utc::now();
+        let edges = vec![
+            (old_defeater.id, defeated.id, now - chrono::Duration::hours(72)),
+            (recent_defeater.id, defeated.id, now - chrono::Duration::hours(1)),
+        ];
+        let beliefs: HashMap<Uuid, Belief> =
+            [(defeated.id, defeated.clone())].into_iter().collect();
+        let candidates = engine().find_expired_defeated(
+            &edges,
+            &beliefs,
+            now,
+            0.3,
+            chrono::Duration::hours(24),
+        );
+        assert!(
+            candidates.is_empty(),
+            "the more recent defeat should reset the grace-period clock"
+        );
+    }
+
+    #[test]
+    fn test_find_expired_defeated_missing_belief_is_skipped() {
+        // The defeated belief has already been deleted by some other path —
+        // it's absent from `beliefs`. Must not panic, must not be returned.
+        let defeated_id = Uuid::new_v4();
+        let defeater = belief_with_prob(0.9);
+        let now = chrono::Utc::now();
+        let edges = vec![(defeater.id, defeated_id, now - chrono::Duration::hours(48))];
+        let beliefs: HashMap<Uuid, Belief> = HashMap::new();
+        let candidates = engine().find_expired_defeated(
+            &edges,
+            &beliefs,
+            now,
+            0.3,
+            chrono::Duration::hours(24),
+        );
+        assert!(candidates.is_empty());
     }
 
     // ------------------------------------------------------------------

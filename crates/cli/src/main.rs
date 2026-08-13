@@ -108,6 +108,22 @@ enum Command {
         project: Option<String>,
     },
 
+    /// Delete defeated beliefs whose grace period has elapsed (attenuated
+    /// deletion — see docs/proposals/80-memory-evolution-open-questions.md).
+    SweepDefeated {
+        /// Probability below which a defeated belief becomes eligible for deletion.
+        #[arg(long, short, default_value_t = 0.3)]
+        threshold: f64,
+
+        /// Hours since the belief was last defeated before it can be deleted.
+        #[arg(long, short, default_value_t = 24.0)]
+        grace_hours: f64,
+
+        /// Restrict the sweep to this project plus untagged beliefs.
+        #[arg(long, short)]
+        project: Option<String>,
+    },
+
     /// Manage indexed documents (load, semantic search, clear).
     ///
     /// Requires [embeddings] in config.toml.
@@ -262,6 +278,11 @@ async fn main() -> Result<()> {
         Command::Forget { project } => cmd_forget(&project).await?,
         Command::Decay { factor, project } => cmd_decay(factor, project.as_deref()).await?,
         Command::Contradictions { project } => cmd_contradictions(project.as_deref()).await?,
+        Command::SweepDefeated {
+            threshold,
+            grace_hours,
+            project,
+        } => cmd_sweep_defeated(threshold, grace_hours, project.as_deref()).await?,
         Command::Doc(DocCmd::Load { path, project }) => cmd_load(&path, project.as_deref()).await?,
         Command::Doc(DocCmd::Query {
             context,
@@ -379,12 +400,20 @@ async fn cmd_list(project: Option<String>, limit: usize) -> Result<()> {
             .as_deref()
             .map(|p| format!("  [{}]", p))
             .unwrap_or_default();
+        // Fact is the default and the overwhelming majority — only call out
+        // the type when it's non-default, to keep normal output uncluttered.
+        let mt = if b.memory_type == mimir_core::graph::MemoryType::Fact {
+            String::new()
+        } else {
+            format!("  <{}>", b.memory_type.as_str())
+        };
         println!(
-            "{}  p={:.3}  c={:.3}  {}{}",
+            "{}  p={:.3}  c={:.3}  {}{}{}",
             b.id,
             b.probability.value(),
             b.confidence.value(),
             trunc(&b.content, 70),
+            mt,
             proj,
         );
     }
@@ -630,6 +659,22 @@ async fn cmd_decay(factor: f64, project: Option<&str>) -> Result<()> {
     let svc = connect().await?;
     let count = svc.decay_beliefs(Some(factor), project).await?;
     println!("decayed {}  [factor: {:.3}]", count, factor);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// mimir sweep-defeated
+// ---------------------------------------------------------------------------
+
+async fn cmd_sweep_defeated(threshold: f64, grace_hours: f64, project: Option<&str>) -> Result<()> {
+    let svc = connect().await?;
+    let count = svc
+        .sweep_expired_defeated(threshold, grace_hours, project)
+        .await?;
+    println!(
+        "deleted {}  [threshold: {:.2}, grace: {:.1}h]",
+        count, threshold, grace_hours
+    );
     Ok(())
 }
 

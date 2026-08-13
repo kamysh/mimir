@@ -67,7 +67,19 @@ impl TestCtx {
     }
 
     async fn cleanup(&self) {
+        // BUG FIX (2026-08-13): this previously called only self.store.delete_project,
+        // the store-layer method that deletes Belief/Pattern vertices ONLY — it has no
+        // knowledge of DocumentChunk. MimirService::delete_project (lib.rs) is the
+        // service-layer wrapper that additionally clears DocumentChunk vertices and
+        // their pgvector rows; tests must mirror that, or every chunk a test creates
+        // leaks into the live graph permanently, on every successful run (not just
+        // crashes — confirmed live: 296 DocumentChunk vertices in production, the
+        // overwhelming majority from `_test-*` projects never cleaned up).
         let _ = self.store.delete_project(&self.project).await;
+        if let Ok(chunk_ids) = self.store.get_chunk_ids_by_project(&self.project).await {
+            let _ = self.store.delete_document_chunks(&chunk_ids).await;
+            let _ = self.store.delete_chunk_embeddings(&chunk_ids).await;
+        }
     }
 }
 
@@ -203,6 +215,51 @@ async fn test_update_belief_beta_round_trips_mean_and_strength() {
     );
     assert!((got.beta - 10.0).abs() < 1e-6, "β persisted: {}", got.beta);
     assert!((got.probability.value() - 0.9).abs() < 1e-9);
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_memory_type_round_trips_through_store() {
+    use mimir_core::graph::MemoryType;
+
+    let ctx = TestCtx::new().await;
+    let fact = ctx.belief(format!("mt-fact-{}", Uuid::new_v4()), 0.5, 0.5);
+    let experiential = ctx
+        .belief(format!("mt-exp-{}", Uuid::new_v4()), 0.5, 0.5)
+        .with_memory_type(MemoryType::Experiential);
+    let working = ctx
+        .belief(format!("mt-work-{}", Uuid::new_v4()), 0.5, 0.5)
+        .with_memory_type(MemoryType::Working);
+
+    ctx.store.insert_belief(&fact).await.unwrap();
+    ctx.store.insert_belief(&experiential).await.unwrap();
+    ctx.store.insert_belief(&working).await.unwrap();
+
+    let got_fact = ctx.store.get_belief(fact.id).await.unwrap().unwrap();
+    let got_exp = ctx
+        .store
+        .get_belief(experiential.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let got_work = ctx.store.get_belief(working.id).await.unwrap().unwrap();
+
+    assert_eq!(got_fact.memory_type, MemoryType::Fact);
+    assert_eq!(got_exp.memory_type, MemoryType::Experiential);
+    assert_eq!(got_work.memory_type, MemoryType::Working);
+
+    // list_beliefs_by_project must also carry the type through.
+    let scoped = ctx
+        .store
+        .list_beliefs_by_project(&ctx.project)
+        .await
+        .unwrap();
+    let scoped_exp = scoped
+        .iter()
+        .find(|b| b.id == experiential.id)
+        .expect("experiential belief missing from scoped list");
+    assert_eq!(scoped_exp.memory_type, MemoryType::Experiential);
+
     ctx.cleanup().await;
 }
 
@@ -670,6 +727,75 @@ async fn test_get_direct_downstream_by_project_one_hop() {
     let _ = ctx.store.delete_project(&other_project).await;
 }
 
+// Working-memory beliefs must never surface from query_relevant's candidate
+// pool (the token/vector/prior legs), even when their content directly
+// matches the query term.
+#[tokio::test]
+async fn test_query_relevant_excludes_working_from_candidate_pool() {
+    let svc = service().await;
+    let ctx = TestCtx::new().await;
+    let term = Uuid::new_v4().simple().to_string();
+
+    let fact = ctx.belief(format!("factterm {term}"), 0.6, 0.6);
+    let working = ctx
+        .belief(format!("factterm {term}"), 0.6, 0.6)
+        .with_memory_type(mimir_core::graph::MemoryType::Working);
+    ctx.store.insert_belief(&fact).await.unwrap();
+    ctx.store.insert_belief(&working).await.unwrap();
+
+    let results = svc
+        .query_relevant(&format!("factterm {term}"), 0, Some(&ctx.project))
+        .await
+        .unwrap();
+    assert!(
+        results.iter().any(|b| b.id == fact.id),
+        "fact belief with matching content should be retrieved"
+    );
+    assert!(
+        !results.iter().any(|b| b.id == working.id),
+        "working belief with matching content leaked into query_relevant results"
+    );
+
+    ctx.cleanup().await;
+}
+
+// Working-memory beliefs must also be excluded when reached only via graph
+// expansion (SUPPORTS/CAUSES traversal from a matched belief), not just from
+// the direct candidate pool — this exercises the separate filter in the
+// project-scoped BFS branch of query_relevant (lib.rs).
+#[tokio::test]
+async fn test_query_relevant_excludes_working_from_graph_expansion() {
+    let svc = service().await;
+    let ctx = TestCtx::new().await;
+    let seed_term = Uuid::new_v4().simple().to_string();
+
+    let seed = ctx.belief(format!("seedterm {seed_term}"), 0.6, 0.6);
+    let working_neighbor = ctx
+        .belief("unreachable working scratch note".to_string(), 0.6, 0.6)
+        .with_memory_type(mimir_core::graph::MemoryType::Working);
+    ctx.store.insert_belief(&seed).await.unwrap();
+    ctx.store.insert_belief(&working_neighbor).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(seed.id, working_neighbor.id, EdgeType::Supports, 0.8).unwrap())
+        .await
+        .unwrap();
+
+    let results = svc
+        .query_relevant(&format!("seedterm {seed_term}"), 0, Some(&ctx.project))
+        .await
+        .unwrap();
+    assert!(
+        results.iter().any(|b| b.id == seed.id),
+        "seed itself should match"
+    );
+    assert!(
+        !results.iter().any(|b| b.id == working_neighbor.id),
+        "working belief reached via graph expansion leaked into query_relevant results"
+    );
+
+    ctx.cleanup().await;
+}
+
 // query_relevant's graph-expansion BFS (lib.rs) walks get_direct_downstream_by_project
 // hop-by-hop so a node reached only via an out-of-scope intermediate is excluded —
 // something get_downstream_beliefs's single unbounded query plus an endpoint-only
@@ -1128,4 +1254,169 @@ async fn test_intervene_counts_out_of_set_cocause() {
         "out-of-set co-cause X must raise M's projection: with X={m_with_x}, without={m_without_x}"
     );
     ctx.cleanup().await;
+}
+
+// ---------------------------------------------------------------------------
+// sweep_expired_defeated (attenuated deletion)
+// docs/proposals/80-memory-evolution-open-questions.md, section 1.
+//
+// These tests bypass svc.add_edge's auto-propagation (which would recompute
+// the defeated belief's Beta state from the defeat itself) by inserting the
+// DEFEATS edge directly via store.insert_edge, then forcing an exact
+// probability via update_beliefs_beta. This isolates the sweep's own
+// threshold/grace-period/project-scoping logic from defeat-attenuation math,
+// which is already covered by test_bare_defeat_lowers_target.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_sweep_expired_defeated_deletes_low_prob_past_grace() {
+    let ctx = TestCtx::new().await;
+    let svc = service().await;
+
+    let defeater = ctx.belief(format!("sweepA-{}", Uuid::new_v4()), 0.9, 0.9);
+    let defeated = ctx.belief(format!("sweepB-{}", Uuid::new_v4()), 0.9, 0.9);
+    ctx.store.insert_belief(&defeater).await.unwrap();
+    ctx.store.insert_belief(&defeated).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(defeater.id, defeated.id, EdgeType::Defeats, 1.0).unwrap())
+        .await
+        .unwrap();
+    // Force a low probability directly (alpha=1, beta=99 -> mean=0.01),
+    // independent of whatever propagate_from would have computed.
+    ctx.store
+        .update_beliefs_beta(&[(defeated.id, 1.0, 99.0)])
+        .await
+        .unwrap();
+
+    // grace_hours=0.0: the defeat "just happened" (defeater's created_at is
+    // ~now), so even a zero-length grace period has elapsed.
+    let deleted = svc
+        .sweep_expired_defeated(0.3, 0.0, Some(&ctx.project))
+        .await
+        .unwrap();
+    assert_eq!(deleted, 1);
+    assert!(
+        ctx.store.get_belief(defeated.id).await.unwrap().is_none(),
+        "defeated belief should have been deleted"
+    );
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_sweep_expired_defeated_keeps_within_grace_period() {
+    let ctx = TestCtx::new().await;
+    let svc = service().await;
+
+    let defeater = ctx.belief(format!("sweepC-{}", Uuid::new_v4()), 0.9, 0.9);
+    let defeated = ctx.belief(format!("sweepD-{}", Uuid::new_v4()), 0.9, 0.9);
+    ctx.store.insert_belief(&defeater).await.unwrap();
+    ctx.store.insert_belief(&defeated).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(defeater.id, defeated.id, EdgeType::Defeats, 1.0).unwrap())
+        .await
+        .unwrap();
+    ctx.store
+        .update_beliefs_beta(&[(defeated.id, 1.0, 99.0)])
+        .await
+        .unwrap();
+
+    // grace_hours=24.0: the defeat just happened, well within a 24h window —
+    // must NOT be deleted yet, even though probability is already low.
+    let deleted = svc
+        .sweep_expired_defeated(0.3, 24.0, Some(&ctx.project))
+        .await
+        .unwrap();
+    assert_eq!(deleted, 0);
+    assert!(
+        ctx.store.get_belief(defeated.id).await.unwrap().is_some(),
+        "defeated belief must survive within its grace period"
+    );
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_sweep_expired_defeated_keeps_above_threshold() {
+    let ctx = TestCtx::new().await;
+    let svc = service().await;
+
+    let defeater = ctx.belief(format!("sweepE-{}", Uuid::new_v4()), 0.9, 0.9);
+    let defeated = ctx.belief(format!("sweepF-{}", Uuid::new_v4()), 0.9, 0.9);
+    ctx.store.insert_belief(&defeater).await.unwrap();
+    ctx.store.insert_belief(&defeated).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(defeater.id, defeated.id, EdgeType::Defeats, 1.0).unwrap())
+        .await
+        .unwrap();
+    // High probability (alpha=99, beta=1 -> mean=0.99) despite being defeated
+    // — e.g. a low-weight defeat that barely attenuated the target.
+    ctx.store
+        .update_beliefs_beta(&[(defeated.id, 99.0, 1.0)])
+        .await
+        .unwrap();
+
+    let deleted = svc
+        .sweep_expired_defeated(0.3, 0.0, Some(&ctx.project))
+        .await
+        .unwrap();
+    assert_eq!(deleted, 0);
+    assert!(
+        ctx.store.get_belief(defeated.id).await.unwrap().is_some(),
+        "belief above the probability threshold must not be deleted regardless of grace period"
+    );
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_sweep_expired_defeated_is_project_scoped() {
+    // Two independent projects, each with an eligible-for-deletion pair. A
+    // sweep scoped to ctx_a's project must delete ONLY ctx_a's belief and
+    // leave ctx_b's untouched — this is the whole reason sweep_expired_defeated
+    // takes a project filter instead of always operating on the entire graph.
+    let ctx_a = TestCtx::new().await;
+    let ctx_b = TestCtx::new().await;
+    let svc = service().await;
+
+    let defeater_a = ctx_a.belief(format!("sweepG-{}", Uuid::new_v4()), 0.9, 0.9);
+    let defeated_a = ctx_a.belief(format!("sweepH-{}", Uuid::new_v4()), 0.9, 0.9);
+    ctx_a.store.insert_belief(&defeater_a).await.unwrap();
+    ctx_a.store.insert_belief(&defeated_a).await.unwrap();
+    ctx_a
+        .store
+        .insert_edge(&Edge::new(defeater_a.id, defeated_a.id, EdgeType::Defeats, 1.0).unwrap())
+        .await
+        .unwrap();
+    ctx_a
+        .store
+        .update_beliefs_beta(&[(defeated_a.id, 1.0, 99.0)])
+        .await
+        .unwrap();
+
+    let defeater_b = ctx_b.belief(format!("sweepI-{}", Uuid::new_v4()), 0.9, 0.9);
+    let defeated_b = ctx_b.belief(format!("sweepJ-{}", Uuid::new_v4()), 0.9, 0.9);
+    ctx_b.store.insert_belief(&defeater_b).await.unwrap();
+    ctx_b.store.insert_belief(&defeated_b).await.unwrap();
+    ctx_b
+        .store
+        .insert_edge(&Edge::new(defeater_b.id, defeated_b.id, EdgeType::Defeats, 1.0).unwrap())
+        .await
+        .unwrap();
+    ctx_b
+        .store
+        .update_beliefs_beta(&[(defeated_b.id, 1.0, 99.0)])
+        .await
+        .unwrap();
+
+    let deleted = svc
+        .sweep_expired_defeated(0.3, 0.0, Some(&ctx_a.project))
+        .await
+        .unwrap();
+    assert_eq!(deleted, 1, "sweep must delete exactly ctx_a's eligible belief");
+    assert!(ctx_a.store.get_belief(defeated_a.id).await.unwrap().is_none());
+    assert!(
+        ctx_b.store.get_belief(defeated_b.id).await.unwrap().is_some(),
+        "sweep scoped to ctx_a's project must not touch ctx_b's belief"
+    );
+
+    ctx_a.cleanup().await;
+    ctx_b.cleanup().await;
 }

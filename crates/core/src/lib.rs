@@ -12,7 +12,7 @@ use uuid::Uuid;
 use config::Config;
 use documents::{parse_markdown, QueryResult};
 use embed::{make_backend, EmbeddingProvider};
-use graph::{Belief, EdgeType, Pattern, Probability};
+use graph::{Belief, EdgeType, MemoryType, Pattern, Probability};
 use inference::InferenceEngine;
 use store::AgeStore;
 
@@ -119,8 +119,10 @@ impl MimirService {
         content: &str,
         probability: f64,
         confidence: f64,
+        memory_type: MemoryType,
     ) -> Result<Belief> {
-        let belief = Belief::new(content.to_string(), probability, confidence)?;
+        let belief = Belief::new(content.to_string(), probability, confidence)?
+            .with_memory_type(memory_type);
         self.store.insert_belief(&belief).await?;
         if let Some(embedder) = &self.embeddings {
             let mut vecs = embedder
@@ -141,13 +143,15 @@ impl MimirService {
         probability: f64,
         confidence: f64,
         project: &str,
+        memory_type: MemoryType,
     ) -> Result<Belief> {
         let belief = Belief::new_in_project(
             content.to_string(),
             probability,
             confidence,
             project.to_string(),
-        )?;
+        )?
+        .with_memory_type(memory_type);
         self.store.insert_belief(&belief).await?;
         if let Some(embedder) = &self.embeddings {
             let mut vecs = embedder
@@ -324,10 +328,31 @@ impl MimirService {
     /// List beliefs. When `project` is given, restricts to beliefs tagged with
     /// that project plus untagged (global) beliefs; `None` lists everything.
     pub async fn list_beliefs(&self, project: Option<&str>) -> Result<Vec<Belief>> {
-        match project {
-            Some(p) => self.store.list_beliefs_by_project(p).await,
-            None => self.store.list_beliefs().await,
-        }
+        self.list_beliefs_filtered(project, None).await
+    }
+
+    /// Like `list_beliefs`, with an optional `memory_type` filter. Used by the
+    /// consolidation workflow to find orphaned Working beliefs (e.g. left behind
+    /// by an interrupted prior session) without pulling the whole scope through
+    /// context. NOTE: this filters by type only — it has no session-identity
+    /// concept, so on a shared DB with concurrent sessions it cannot distinguish
+    /// "my session's" Working beliefs from another session's in-flight ones.
+    /// A session should track the IDs of the Working beliefs it itself wrote
+    /// (already known from its own insert_belief calls) as the primary
+    /// consolidation mechanism; this filter is for orphan cleanup only.
+    pub async fn list_beliefs_filtered(
+        &self,
+        project: Option<&str>,
+        memory_type: Option<graph::MemoryType>,
+    ) -> Result<Vec<Belief>> {
+        let all = match project {
+            Some(p) => self.store.list_beliefs_by_project(p).await?,
+            None => self.store.list_beliefs().await?,
+        };
+        Ok(match memory_type {
+            Some(mt) => all.into_iter().filter(|b| b.memory_type == mt).collect(),
+            None => all,
+        })
     }
 
     /// List patterns. Same project-scoping semantics as `list_beliefs`.
@@ -463,6 +488,49 @@ impl MimirService {
         Ok(count)
     }
 
+    /// Delete defeated beliefs whose grace period has elapsed (attenuated
+    /// deletion — docs/proposals/80-memory-evolution-open-questions.md,
+    /// section 1). A defeated belief is deleted only once its probability has
+    /// decayed below `prob_threshold` AND `grace_period` has passed since it
+    /// was last defeated, with no intervening reversal — this gives a wrong
+    /// `record_defeat` call time to be caught and reversed before its target
+    /// is permanently removed. `project`, when given, restricts the sweep to
+    /// that project's beliefs plus untagged (global) ones, same semantics as
+    /// `decay_beliefs` — a caller working in one project should not silently
+    /// delete another project's beliefs. Returns the number of beliefs deleted.
+    pub async fn sweep_expired_defeated(
+        &self,
+        prob_threshold: f64,
+        grace_hours: f64,
+        project: Option<&str>,
+    ) -> Result<usize> {
+        let edges = match project {
+            Some(p) => self.store.get_defeats_with_timestamps_by_project(p).await?,
+            None => self.store.get_defeats_with_timestamps().await?,
+        };
+        if edges.is_empty() {
+            return Ok(0);
+        }
+        let beliefs = match project {
+            Some(p) => self.store.list_beliefs_by_project(p).await?,
+            None => self.store.list_beliefs().await?,
+        };
+        let belief_map: std::collections::HashMap<Uuid, Belief> =
+            beliefs.into_iter().map(|b| (b.id, b)).collect();
+        let now = chrono::Utc::now();
+        let grace_period = chrono::Duration::minutes((grace_hours * 60.0).round() as i64);
+        let candidates =
+            self.inference
+                .find_expired_defeated(&edges, &belief_map, now, prob_threshold, grace_period);
+        let mut deleted = 0usize;
+        for id in candidates {
+            if self.store.delete_belief(id).await? {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
+
     /// Hybrid retrieval ranked by weighted Reciprocal Rank Fusion.
     ///
     /// Candidate selection: the union of (a) token/keyword matches (beliefs whose
@@ -486,10 +554,15 @@ impl MimirService {
         limit: usize,
         project: Option<&str>,
     ) -> Result<Vec<Belief>> {
-        let all = match project {
+        let all: Vec<Belief> = match project {
             Some(p) => self.store.list_beliefs_by_project(p).await?,
             None => self.store.list_beliefs().await?,
-        };
+        }
+        .into_iter()
+        // Working memory is task-local scratch, excluded from cross-session
+        // retrieval entirely (see the `MemoryType` doc comment).
+        .filter(|b| b.memory_type != MemoryType::Working)
+        .collect();
         if all.is_empty() {
             return Ok(vec![]);
         }
@@ -611,6 +684,9 @@ impl MimirService {
                             let neighbors =
                                 self.store.get_direct_downstream_by_project(fid, p).await?;
                             for b in neighbors {
+                                if b.memory_type == MemoryType::Working {
+                                    continue;
+                                }
                                 if visited.insert(b.id) {
                                     next_frontier.push(b.id);
                                     matched.push(b);
@@ -623,6 +699,9 @@ impl MimirService {
                 None => {
                     let downstream = self.store.get_downstream_beliefs(id).await?;
                     for b in downstream {
+                        if b.memory_type == MemoryType::Working {
+                            continue;
+                        }
                         if !matched.iter().any(|m| m.id == b.id) {
                             matched.push(b);
                         }

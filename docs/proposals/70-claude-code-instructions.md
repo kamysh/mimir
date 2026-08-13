@@ -39,17 +39,47 @@ you do not need to query mimir at startup.
 ### Writing beliefs
 - After you find something **durable, non-obvious, and project-specific** — a gotcha,
   a decision and its rationale, a constraint that cost you exploration — record it with
-  `insert_belief`. One claim per belief, scoped to the project.
+  `insert_belief` as `memory_type: fact` or `experiential` (see below for the
+  distinction). One claim per belief, scoped to the project.
 - `probability` = how true it is; `confidence` = how sure you are. A verified fact is
   ~(0.95, 0.9); a working hypothesis ~(0.7, 0.5).
 - Link beliefs only when the relation is real: `record_support`, `record_defeat`,
   `record_contradiction`. Do not invent edges.
-- Do **not** write: ephemeral state, secrets or credentials, anything already obvious
-  from the code or docs, or personal/unrelated notes (those belong in muninn, not mimir).
+- When a new belief supersedes an older one, call `record_defeat` on the old belief
+  immediately — in the same turn, not later. An un-defeated superseded belief is
+  indistinguishable from a live one in `query_relevant` results.
+- Do **not** write: secrets or credentials, anything already obvious from the code or
+  docs, or personal/unrelated notes (those belong in muninn, not mimir). Ephemeral
+  in-task state is not banned outright — see Working memory below — but it is not
+  written as `fact`/`experiential`.
+
+### Memory types and consolidation (biological model: work now, consolidate later)
+- `memory_type: fact` — declarative knowledge about code/environment. Decays over
+  time absent reinforcement.
+- `memory_type: experiential` — a hard-won working lesson (a gotcha, a corrected
+  approach). Exempt from decay — its truth doesn't erode with elapsed time.
+- `memory_type: working` — NOT a general log of in-session state (mimir is
+  explicitly not a second brain for that — you already hold it in context). It is
+  narrower: a **staging tier for a conclusion you're about to assert as
+  `fact`/`experiential` but aren't yet confident will survive scrutiny**. Write it
+  as `working` first; only promote to `fact`/`experiential` once it's held up under
+  some reflection, rather than asserting it durable at first-draft confidence and
+  correcting it later. They are excluded from cross-session `query_relevant`
+  automatically.
+- **Consolidate at natural session-end points**: review the `working` beliefs YOUR
+  session wrote — track their IDs yourself as you create them, since
+  `list_beliefs(memory_type="working")` has no session-identity concept and cannot
+  distinguish your in-flight beliefs from a concurrent session's on a shared DB (that
+  filter exists mainly for orphan cleanup of leftovers from an interrupted prior
+  session). For each: promote (rewrite as `fact`/`experiential`, delete the working
+  original) or discard (delete without promoting). Also available as an explicit
+  on-demand action.
 
 ### Cost discipline
-- Do not query or write on trivial tasks. A query that will not change what you do is
-  wasted context; mimir earns its place only when a belief saves real exploration.
+- Do not query or write `fact`/`experiential` beliefs on trivial tasks — a query that
+  won't change what you do is wasted context; mimir earns its place only when a belief
+  saves real exploration. This does not apply to `working` beliefs, which are meant to
+  be cheap.
 ```
 
 ---

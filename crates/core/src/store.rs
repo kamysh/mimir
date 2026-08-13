@@ -8,7 +8,7 @@ use tokio_postgres::{Client, Row};
 use uuid::Uuid;
 
 use crate::documents::DocumentChunk;
-use crate::graph::{Belief, Edge, EdgeType, Pattern, Probability};
+use crate::graph::{Belief, Edge, EdgeType, MemoryType, Pattern, Probability};
 
 // ---------------------------------------------------------------------------
 // AGE PREPARE/EXECUTE helpers
@@ -252,6 +252,14 @@ fn belief_from_text_row<R: TextRow>(row: &R) -> Result<Belief> {
     let alpha = alpha.unwrap_or(alpha0);
     let beta = beta.unwrap_or(beta0);
 
+    // Absent or unparseable memory_type (pre-migration rows) decodes as Fact,
+    // preserving today's decay behavior for every belief written before this
+    // field existed.
+    let memory_type: MemoryType = row
+        .text("memory_type")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_default();
+
     Belief::from_stored(
         id,
         content.to_owned(),
@@ -261,6 +269,7 @@ fn belief_from_text_row<R: TextRow>(row: &R) -> Result<Belief> {
         beta0,
         created_at,
         last_activated_at,
+        memory_type,
         project.map(str::to_owned),
     )
 }
@@ -360,6 +369,7 @@ const BELIEF_RETURN_COLUMNS: &str = r#"AS (
   beta0          text,
   created_at     text,
   last_activated_at text,
+  memory_type    text,
   project        text
 )"#;
 
@@ -439,13 +449,14 @@ impl AgeStore {
         )?;
         let created_at = belief.created_at.to_rfc3339();
         let last_activated_at = belief.last_activated_at.to_rfc3339();
+        let memory_type = belief.memory_type.as_str();
 
         let project_prop = match &belief.project {
             Some(p) => format!(r#", "project": "{}""#, json_esc(p)),
             None => String::new(),
         };
         let agtype_json = format!(
-            r#"{{"id": "{id}", "content": "{}", "created_at": "{created_at}", "last_activated_at": "{last_activated_at}"{project_prop}}}"#,
+            r#"{{"id": "{id}", "content": "{}", "created_at": "{created_at}", "last_activated_at": "{last_activated_at}", "memory_type": "{memory_type}"{project_prop}}}"#,
             json_esc(&belief.content)
         );
 
@@ -455,7 +466,8 @@ impl AgeStore {
              CREATE (n:Belief {{id: $id, content: $content, \
              probability: {probability}, confidence: {confidence}, \
              alpha: {alpha}, beta: {beta}, alpha0: {alpha0}, beta0: {beta0}, \
-             created_at: $created_at, last_activated_at: $last_activated_at{}}}) \
+             created_at: $created_at, last_activated_at: $last_activated_at, \
+             memory_type: $memory_type{}}}) \
              RETURN n.id $$, $1) AS (id ag_catalog.agtype)",
             if belief.project.is_some() {
                 ", project: $project"
@@ -574,10 +586,11 @@ $$) AS (ok ag_catalog.agtype)"#
   beta0::text,
   created_at::text,
   last_activated_at::text,
+  memory_type::text,
   project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{id: '{id_str}'}})
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
@@ -661,10 +674,11 @@ $$) AS (id ag_catalog.agtype)"#
   beta0::text,
   created_at::text,
   last_activated_at::text,
+  memory_type::text,
   project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
@@ -688,10 +702,10 @@ $$) {BELIEF_RETURN_COLUMNS}"#
             "PREPARE {stmt}(agtype) AS SELECT \
              id::text, content::text, probability::text, confidence::text, \
              alpha::text, beta::text, alpha0::text, beta0::text, \
-             created_at::text, last_activated_at::text, project::text \
+             created_at::text, last_activated_at::text, memory_type::text, project::text \
              FROM ag_catalog.cypher('{g}', $$ \
              MATCH (n:Belief) WHERE n.project = $project OR n.project IS NULL \
-             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project \
+             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project \
              $$, $1) {BELIEF_RETURN_COLUMNS}"
         );
 
@@ -766,6 +780,79 @@ $$) AS (n ag_catalog.agtype)"#
         }
         let s: &str = rows[0].get("n");
         Ok(s.parse()?)
+    }
+
+    /// Returns every (defeater_id, defeated_id, defeater_created_at) triple for
+    /// DEFEATS relationships in the graph. Used by the attenuated-deletion sweep
+    /// (docs/proposals/80-memory-evolution-open-questions.md, section 1) to find
+    /// defeated beliefs whose grace period has elapsed. DEFEATS edges carry no
+    /// timestamp of their own, so the defeater's `created_at` is returned as the
+    /// proxy for when the defeat happened — see `InferenceEngine::find_expired_defeated`.
+    pub async fn get_defeats_with_timestamps(
+        &self,
+    ) -> Result<Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)>> {
+        let g = &self.graph_name;
+        let sql = format!(
+            r#"SELECT defeater_id::text, defeated_id::text, defeater_created_at::text
+FROM ag_catalog.cypher('{g}', $$
+  MATCH (a:Belief)-[:DEFEATS]->(b:Belief)
+  RETURN a.id, b.id, a.created_at
+$$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_created_at ag_catalog.agtype)"#
+        );
+        let client = self.client.lock().await;
+        let rows = client.query(&sql, &[]).await?;
+        let mut triples = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let defeater_id = Uuid::parse_str(row.get::<_, &str>("defeater_id"))?;
+            let defeated_id = Uuid::parse_str(row.get::<_, &str>("defeated_id"))?;
+            let created_at_str: &str = row.get("defeater_created_at");
+            let defeater_created_at =
+                DateTime::parse_from_rfc3339(created_at_str)?.with_timezone(&chrono::Utc);
+            triples.push((defeater_id, defeated_id, defeater_created_at));
+        }
+        Ok(triples)
+    }
+
+    /// Like `get_defeats_with_timestamps`, scoped to a project: only edges
+    /// where both endpoints match the project (or are untagged/global) are
+    /// returned, matching `list_beliefs_by_project`'s inclusion semantics.
+    pub async fn get_defeats_with_timestamps_by_project(
+        &self,
+        project: &str,
+    ) -> Result<Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)>> {
+        let g = &self.graph_name;
+        let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
+        let stmt = format!("age_defeats_ts_proj_{}", Uuid::new_v4().simple());
+        let prepare = format!(
+            "PREPARE {stmt}(agtype) AS SELECT defeater_id::text, defeated_id::text, defeater_created_at::text \
+             FROM ag_catalog.cypher('{g}', $$ \
+             MATCH (a:Belief)-[:DEFEATS]->(b:Belief) \
+             WHERE (a.project = $project OR a.project IS NULL) \
+               AND (b.project = $project OR b.project IS NULL) \
+             RETURN a.id, b.id, a.created_at \
+             $$, $1) AS (defeater_id agtype, defeated_id agtype, defeater_created_at agtype)"
+        );
+
+        let client = self.client.lock().await;
+        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let mut triples = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let defeater_id_raw = row
+                .get("defeater_id")
+                .ok_or_else(|| anyhow::anyhow!("missing column defeater_id"))?;
+            let defeated_id_raw = row
+                .get("defeated_id")
+                .ok_or_else(|| anyhow::anyhow!("missing column defeated_id"))?;
+            let created_at_raw = row
+                .get("defeater_created_at")
+                .ok_or_else(|| anyhow::anyhow!("missing column defeater_created_at"))?;
+            let defeater_id = Uuid::parse_str(defeater_id_raw)?;
+            let defeated_id = Uuid::parse_str(defeated_id_raw)?;
+            let defeater_created_at =
+                DateTime::parse_from_rfc3339(created_at_raw)?.with_timezone(&chrono::Utc);
+            triples.push((defeater_id, defeated_id, defeater_created_at));
+        }
+        Ok(triples)
     }
 
     // -----------------------------------------------------------------------
@@ -1623,11 +1710,11 @@ $$) AS (weight ag_catalog.agtype)"#
             r#"SELECT
   id::text, content::text, probability::text, confidence::text,
   alpha::text, beta::text, alpha0::text, beta0::text,
-  created_at::text, last_activated_at::text, project::text
+  created_at::text, last_activated_at::text, memory_type::text, project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{id: '{b}'}})
   RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta,
-         n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
+         n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
@@ -1768,16 +1855,17 @@ $$) AS (v ag_catalog.agtype)"#
   beta0::text,
   created_at::text,
   last_activated_at::text,
+  memory_type::text,
   project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (s:Belief {{id: '{id_str}'}})-[:SUPPORTS*1..]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
   UNION
   MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES*1..]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
   UNION
   MATCH (s:Belief {{id: '{id_str}'}})-[:DEFEATS*1..]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
@@ -1819,19 +1907,19 @@ $$) {BELIEF_RETURN_COLUMNS}"#
             "PREPARE {stmt}(agtype) AS SELECT \
              id::text, content::text, probability::text, confidence::text, \
              alpha::text, beta::text, alpha0::text, beta0::text, \
-             created_at::text, last_activated_at::text, project::text \
+             created_at::text, last_activated_at::text, memory_type::text, project::text \
              FROM ag_catalog.cypher('{g}', $$ \
              MATCH (s:Belief {{id: '{id_str}'}})-[:SUPPORTS]->(n:Belief) \
              WHERE n.project = $project OR n.project IS NULL \
-             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project \
+             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project \
              UNION \
              MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES]->(n:Belief) \
              WHERE n.project = $project OR n.project IS NULL \
-             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project \
+             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project \
              UNION \
              MATCH (s:Belief {{id: '{id_str}'}})-[:DEFEATS]->(n:Belief) \
              WHERE n.project = $project OR n.project IS NULL \
-             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project \
+             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project \
              $$, $1) {BELIEF_RETURN_COLUMNS}"
         );
 
@@ -1865,10 +1953,11 @@ $$) {BELIEF_RETURN_COLUMNS}"#
   beta0::text,
   created_at::text,
   last_activated_at::text,
+  memory_type::text,
   project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES*1..10]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
