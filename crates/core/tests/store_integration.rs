@@ -781,7 +781,12 @@ async fn test_query_relevant_excludes_working_from_graph_expansion() {
         .unwrap();
 
     let results = svc
-        .query_relevant(&format!("seedterm {seed_term}"), 0, Some(&ctx.project), None)
+        .query_relevant(
+            &format!("seedterm {seed_term}"),
+            0,
+            Some(&ctx.project),
+            None,
+        )
         .await
         .unwrap();
     assert!(
@@ -831,7 +836,11 @@ async fn test_query_relevant_prefer_type_reorders_tied_matches() {
         )
         .await
         .unwrap();
-    assert_eq!(preferred.len(), 2, "prefer_type must not drop the non-matching belief");
+    assert_eq!(
+        preferred.len(),
+        2,
+        "prefer_type must not drop the non-matching belief"
+    );
     assert_eq!(
         preferred[0].id, experiential.id,
         "prefer_type=Experiential should rank the Experiential belief first among ties"
@@ -878,7 +887,12 @@ async fn test_query_relevant_excludes_beliefs_reachable_only_via_out_of_scope_br
         .unwrap();
 
     let results = svc
-        .query_relevant(&format!("seedterm {seed_term}"), 0, Some(&ctx.project), None)
+        .query_relevant(
+            &format!("seedterm {seed_term}"),
+            0,
+            Some(&ctx.project),
+            None,
+        )
         .await
         .unwrap();
     assert!(
@@ -1453,10 +1467,23 @@ async fn test_sweep_expired_defeated_is_project_scoped() {
         .sweep_expired_defeated(0.3, 0.0, Some(&ctx_a.project))
         .await
         .unwrap();
-    assert_eq!(deleted, 1, "sweep must delete exactly ctx_a's eligible belief");
-    assert!(ctx_a.store.get_belief(defeated_a.id).await.unwrap().is_none());
+    assert_eq!(
+        deleted, 1,
+        "sweep must delete exactly ctx_a's eligible belief"
+    );
+    assert!(ctx_a
+        .store
+        .get_belief(defeated_a.id)
+        .await
+        .unwrap()
+        .is_none());
     assert!(
-        ctx_b.store.get_belief(defeated_b.id).await.unwrap().is_some(),
+        ctx_b
+            .store
+            .get_belief(defeated_b.id)
+            .await
+            .unwrap()
+            .is_some(),
         "sweep scoped to ctx_a's project must not touch ctx_b's belief"
     );
 

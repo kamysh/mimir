@@ -1058,13 +1058,8 @@ mod tests {
         let edges = vec![(defeater.id, defeated.id, defeat_time)];
         let beliefs: HashMap<Uuid, Belief> =
             [(defeated.id, defeated.clone())].into_iter().collect();
-        let candidates = engine().find_expired_defeated(
-            &edges,
-            &beliefs,
-            now,
-            0.3,
-            chrono::Duration::hours(24),
-        );
+        let candidates =
+            engine().find_expired_defeated(&edges, &beliefs, now, 0.3, chrono::Duration::hours(24));
         assert_eq!(candidates, vec![defeated.id]);
     }
 
@@ -1077,13 +1072,8 @@ mod tests {
         let edges = vec![(defeater.id, defeated.id, defeat_time)];
         let beliefs: HashMap<Uuid, Belief> =
             [(defeated.id, defeated.clone())].into_iter().collect();
-        let candidates = engine().find_expired_defeated(
-            &edges,
-            &beliefs,
-            now,
-            0.3,
-            chrono::Duration::hours(24),
-        );
+        let candidates =
+            engine().find_expired_defeated(&edges, &beliefs, now, 0.3, chrono::Duration::hours(24));
         assert!(candidates.is_empty());
     }
 
@@ -1098,13 +1088,8 @@ mod tests {
         let edges = vec![(defeater.id, defeated.id, defeat_time)];
         let beliefs: HashMap<Uuid, Belief> =
             [(defeated.id, defeated.clone())].into_iter().collect();
-        let candidates = engine().find_expired_defeated(
-            &edges,
-            &beliefs,
-            now,
-            0.3,
-            chrono::Duration::hours(24),
-        );
+        let candidates =
+            engine().find_expired_defeated(&edges, &beliefs, now, 0.3, chrono::Duration::hours(24));
         assert!(candidates.is_empty());
     }
 
@@ -1118,18 +1103,21 @@ mod tests {
         let recent_defeater = belief_with_prob(0.9);
         let now = chrono::Utc::now();
         let edges = vec![
-            (old_defeater.id, defeated.id, now - chrono::Duration::hours(72)),
-            (recent_defeater.id, defeated.id, now - chrono::Duration::hours(1)),
+            (
+                old_defeater.id,
+                defeated.id,
+                now - chrono::Duration::hours(72),
+            ),
+            (
+                recent_defeater.id,
+                defeated.id,
+                now - chrono::Duration::hours(1),
+            ),
         ];
         let beliefs: HashMap<Uuid, Belief> =
             [(defeated.id, defeated.clone())].into_iter().collect();
-        let candidates = engine().find_expired_defeated(
-            &edges,
-            &beliefs,
-            now,
-            0.3,
-            chrono::Duration::hours(24),
-        );
+        let candidates =
+            engine().find_expired_defeated(&edges, &beliefs, now, 0.3, chrono::Duration::hours(24));
         assert!(
             candidates.is_empty(),
             "the more recent defeat should reset the grace-period clock"
@@ -1145,13 +1133,8 @@ mod tests {
         let now = chrono::Utc::now();
         let edges = vec![(defeater.id, defeated_id, now - chrono::Duration::hours(48))];
         let beliefs: HashMap<Uuid, Belief> = HashMap::new();
-        let candidates = engine().find_expired_defeated(
-            &edges,
-            &beliefs,
-            now,
-            0.3,
-            chrono::Duration::hours(24),
-        );
+        let candidates =
+            engine().find_expired_defeated(&edges, &beliefs, now, 0.3, chrono::Duration::hours(24));
         assert!(candidates.is_empty());
     }
 
