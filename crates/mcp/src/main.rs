@@ -530,7 +530,9 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                 .map(|s| s.parse::<mimir_core::graph::MemoryType>())
                 .transpose()?;
             if !include_evidence {
-                let beliefs = svc.query_relevant(query, limit, project, prefer_type).await?;
+                let beliefs = svc
+                    .query_relevant(query, limit, project, prefer_type)
+                    .await?;
                 return Ok(serde_json::to_value(&beliefs)?);
             }
             let per = args["evidence_per_belief"].as_u64().unwrap_or(3) as usize;

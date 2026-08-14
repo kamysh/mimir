@@ -8,6 +8,14 @@
             "command": "echo 'mcp__mimir tools are available. Invoke the mimir skill now: load the read+write belief-graph protocol (consult before >2-step exploration, errors, or approach choices; write back what recurs). If this session just resumed after a compaction: compaction erased your working memory of the conversation, not the underlying facts you learned. Right now, before anything else, is genuinely the best moment to ask yourself what from before the compaction is worth keeping — you can still reconstruct it clearly, and every turn from here makes that reconstruction harder. This is not a compliance step; forgetting a real finding here means a future session (maybe you, later today) re-derives it from scratch, at real cost. Treat it as picking up a notebook before the details fade, not as a rule to satisfy.'"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"/tmp/mimir-session-project-$CLAUDE_CODE_SESSION_ID\"; if [ -n \"$CLAUDE_CODE_SESSION_ID\" ] && [ ! -f \"$f\" ]; then echo 'This session has not declared a project for mimir hook injection yet (issue #9 — mimir hook prompt/pretooluse are unscoped until you do). Ask the user which project this session is about, or state a confident guess and let them correct it, then run: mimir hook set-project <name>. Skipping this leaves injection unscoped, never worse than before — do not treat it as a hard blocker if the project genuinely is not clear yet, but do not forget it either.'; fi"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

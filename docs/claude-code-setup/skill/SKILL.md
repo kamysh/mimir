@@ -52,6 +52,32 @@ yourself when you cross into territory the hooks didn't cover:
 Do **not** query on trivial reads or things you can settle in one step. Retrieval
 has a latency and noise cost; the rule below makes the trade explicit.
 
+### Session project scoping
+
+The `UserPromptSubmit`/`PreToolUse` hook injection above is **unscoped by
+default** — it searches every project's beliefs mixed together, not just the
+one you're actually working in (issue #9). Near the start of a session,
+before you've made more than a couple of hook-injected queries, ask which
+project this session is about — or, if it's obvious from context (the repo
+you're in, what the user just asked), state your best guess in one line and
+let them correct it rather than interrupting for something evident. Once you
+have an answer, declare it:
+
+```sh
+mimir hook set-project <name>
+```
+
+This scopes every subsequent hook injection this session to that project
+(plus untagged/global beliefs, which always surface regardless — see
+`list_beliefs_by_project`'s semantics). It's a one-time declaration, not a
+per-query flag — call it again only if the project changes mid-session, or
+if you notice a returned belief looks like it belongs to a different project
+than the one you declared (that's the "reconcile the set" discipline below,
+applied to project mismatch specifically: surface the suspicion, propose the
+correction, re-declare if confirmed). Skipping this entirely just means
+hook injection stays unscoped, same as before #9 — never worse, so don't
+treat it as a hard blocker if the project genuinely isn't clear yet.
+
 ### Cost rule
 
 > One `query_relevant` is cheap relative to one failed edit→build→read cycle.

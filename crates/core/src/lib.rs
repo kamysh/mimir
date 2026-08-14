@@ -519,9 +519,13 @@ impl MimirService {
             beliefs.into_iter().map(|b| (b.id, b)).collect();
         let now = chrono::Utc::now();
         let grace_period = chrono::Duration::minutes((grace_hours * 60.0).round() as i64);
-        let candidates =
-            self.inference
-                .find_expired_defeated(&edges, &belief_map, now, prob_threshold, grace_period);
+        let candidates = self.inference.find_expired_defeated(
+            &edges,
+            &belief_map,
+            now,
+            prob_threshold,
+            grace_period,
+        );
         let mut deleted = 0usize;
         for id in candidates {
             if self.store.delete_belief(id).await? {

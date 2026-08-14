@@ -6,6 +6,7 @@
 --   Mimir.Inference — inference engine (attenuate, decay, boost, proofs)
 --   Mimir.Graph     — graph operations (edges, BFS, sort, MCP semantics)
 --   Mimir.Beta      — Phase 3: beliefs as Beta(α,β) (mean monotonicity, idempotence)
+--   Mimir.Session   — session-scoped project side channel for hook injection (#9)
 module Mimir where
 
 open import Mimir.Types     public
@@ -14,3 +15,4 @@ open import Mimir.Graph     public
 open import Mimir.Documents public
 open import Mimir.Evidence  public
 open import Mimir.Beta      public
+open import Mimir.Session   public

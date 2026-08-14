@@ -4,6 +4,14 @@ This machine uses mimir to carry what past sessions learned across context compa
 and new sessions. Relevant beliefs are injected automatically by the session hooks —
 you do not need to query mimir at startup.
 
+Hook injection is **unscoped by default** — it searches every project's beliefs
+mixed together (issue #9). Near session start, ask (or state a confident guess and
+let it be corrected) which project this session is about, then run `mimir hook
+set-project <name>` to scope every later injection to it plus untagged/global
+beliefs. Skipping this leaves injection unscoped, same as before #9 — never worse,
+so don't treat it as a hard blocker when the project genuinely isn't clear yet. See
+SKILL.md's "Session project scoping" for the full discipline.
+
 ### Reading beliefs — disposition required
 
 When a belief arrives (injected by hook or retrieved mid-task):

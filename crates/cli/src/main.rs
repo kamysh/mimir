@@ -210,6 +210,26 @@ enum HookEvent {
         #[arg(long, short)]
         project: Option<String>,
     },
+
+    /// Declare this Claude Code session's project, for `hook prompt`/`hook
+    /// pretooluse` to scope their belief injection by (issue #9,
+    /// spec/Mimir/Session.agda).
+    ///
+    /// NOT a Claude Code hook event — there is no hook that fires "the agent
+    /// decided something mid-conversation". This is invoked directly by the
+    /// agent via the Bash tool, after asking the user (or stating a guess
+    /// and letting them correct it) which project the session is about.
+    /// Reads the session id from $CLAUDE_CODE_SESSION_ID (present in every
+    /// Bash tool subprocess's environment — verified live, not assumed; see
+    /// mimir belief 71b82a15), NOT from stdin JSON, since a plain Bash
+    /// invocation has none. Writes /tmp/mimir-session-project-<sid>, upsert
+    /// (overwrite) semantics — spec/Mimir/Session.agda's setSessionProject.
+    /// Silently no-ops (still exits 0) if the env var is unset, e.g. run
+    /// outside a Claude Code session.
+    SetProject {
+        /// The project name to scope this session's hook-injected queries to.
+        name: String,
+    },
 }
 
 /// Evidence (GROUNDS edges) subcommands.
@@ -546,7 +566,9 @@ async fn cmd_query(
         return Ok(());
     }
 
-    let beliefs = svc.query_relevant(text, limit, project, prefer_type).await?;
+    let beliefs = svc
+        .query_relevant(text, limit, project, prefer_type)
+        .await?;
     if beliefs.is_empty() {
         println!("(no results)");
         return Ok(());
@@ -876,7 +898,40 @@ async fn cmd_hook(event: HookEvent) -> Result<()> {
         HookEvent::Prompt => cmd_hook_prompt().await,
         HookEvent::Pretooluse => cmd_hook_pretooluse().await,
         HookEvent::Stop { project } => cmd_hook_stop(project.as_deref()).await,
+        HookEvent::SetProject { name } => cmd_hook_set_project(&name).await,
     }
+}
+
+/// Path of the session-scoped project side channel (spec/Mimir/Session.agda
+/// SessionProjectStore) for a given Claude Code session id.
+fn session_project_path(session_id: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("mimir-session-project-{session_id}"))
+}
+
+/// `mimir hook set-project NAME` — see the HookEvent::SetProject doc comment
+/// for why this reads $CLAUDE_CODE_SESSION_ID instead of stdin JSON. Fails
+/// open (still exits 0) on any error — this must never block the agent's
+/// turn, same posture as the other hook subcommands.
+async fn cmd_hook_set_project(name: &str) -> Result<()> {
+    let Ok(session_id) = std::env::var("CLAUDE_CODE_SESSION_ID") else {
+        return Ok(());
+    };
+    let _ = std::fs::write(session_project_path(&session_id), name);
+    Ok(())
+}
+
+/// Read session_id from a hook's stdin JSON (harness-invoked hooks only —
+/// see HookEvent::SetProject's doc comment for the two different ways a
+/// process learns the session id) and look up its declared project, if any.
+/// `None` when unset — the caller MUST treat that as "query unscoped", never
+/// as license to guess (spec/Mimir/Session.agda getSessionProject's semantic
+/// note).
+fn session_project_from_hook_json(v: &serde_json::Value) -> Option<String> {
+    let session_id = v["session_id"].as_str()?;
+    std::fs::read_to_string(session_project_path(session_id))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Stop hook: block the turn from ending while `memory_type=working` beliefs
@@ -981,9 +1036,10 @@ async fn cmd_hook_prompt() -> Result<()> {
         return Ok(());
     }
 
+    let project = session_project_from_hook_json(&v);
     let svc = connect().await?;
     let beliefs = svc
-        .query_relevant(&trunc(&prompt, 500), 5, None, None)
+        .query_relevant(&trunc(&prompt, 500), 5, project.as_deref(), None)
         .await?;
     if beliefs.is_empty() {
         return Ok(());
@@ -1028,9 +1084,10 @@ async fn cmd_hook_pretooluse() -> Result<()> {
         return Ok(());
     }
 
+    let project = session_project_from_hook_json(&v);
     let svc = connect().await?;
     let beliefs = svc
-        .query_relevant(&trunc(query_raw, 200), 3, None, None)
+        .query_relevant(&trunc(query_raw, 200), 3, project.as_deref(), None)
         .await?;
     if beliefs.is_empty() {
         return Ok(());
