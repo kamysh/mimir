@@ -44,13 +44,20 @@ cd spec && agda Mimir.agda
 # CLI (after `mimir init` writes ~/.config/mimir/config.toml)
 mimir stats
 mimir list [--project NAME] [--limit N]
-mimir query TEXT [--limit N] [--project NAME]
+mimir query TEXT [--limit N] [--project NAME] [--prefer-type fact|experiential|working]
 mimir delete belief UUID
 mimir delete pattern UUID
 mimir forget PROJECT
 mimir decay [--factor 0.99] [--project NAME]
 mimir contradictions [--project NAME]
 mimir patterns [--project NAME] [--limit N]
+mimir sweep-defeated [--threshold 0.3] [--grace-hours 24] [--project NAME]  # attenuated deletion of defeated beliefs past grace period
+mimir reembed                                 # one-time backfill of belief_embeddings for pre-existing beliefs
+
+# Claude Code hook subcommands (invoked by settings.json, not directly)
+mimir hook prompt                             # UserPromptSubmit — inject relevant beliefs
+mimir hook pretooluse                         # PreToolUse — inject beliefs relevant to the file/command
+mimir hook stop [--project NAME]              # Stop — blocks the turn while memory_type=working beliefs are unconsolidated
 
 # Document RAG (requires [embeddings] in config.toml)
 mimir doc load PATH [--project NAME]          # parse, embed, and index a markdown file
