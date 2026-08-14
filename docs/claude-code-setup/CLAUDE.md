@@ -14,6 +14,12 @@ When a belief arrives (injected by hook or retrieved mid-task):
 - **p < 0.8 → hint.** Weigh it; do not obey it blindly.
 - When a specific question arises mid-task ("did we decide X?", "does Y work here?"),
   call `query_relevant` before re-deriving from scratch.
+- **A multi-belief result needs reconciling against itself, not just against your
+  plan.** `query_relevant` hands back raw JSON, not a synthesized answer — scan the
+  returned beliefs for disagreement WITH EACH OTHER before acting on any one of them.
+  Two individually-plausible beliefs can still contradict each other on the actual
+  question; if they do and neither has defeated the other, that's a write-back
+  (`record_defeat`), not something to silently pick a favorite on.
 
 ### Writing beliefs
 

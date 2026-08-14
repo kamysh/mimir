@@ -86,6 +86,27 @@ The substance of each disposition:
   X, what downstream breaks?", use `query_intervention` rather than reading
   `CAUSES` edges by hand.
 
+### Reconcile the set, not just each belief individually
+
+`query_relevant` returns several beliefs as raw JSON — it does not synthesize
+them into one answer (that would mean a second LLM call inside the tool for
+every query, so it deliberately doesn't). That reconciliation work is yours,
+not something to skip because each individual belief passed its own
+disposition check. Before acting on a multi-belief result:
+
+- **Scan for disagreement between the returned beliefs themselves**, not just
+  between a belief and your plan — two results can each look individually
+  plausible while contradicting each other on the actual question.
+- If two beliefs conflict and neither has defeated the other, that is itself
+  a write-back opportunity (`get_contradictions` / `record_defeat`), not
+  something to silently pick a favorite on.
+- Prefer the more specific / more recent belief when both are live and
+  genuinely about the same claim — but say so explicitly in your disposition
+  line, the same way you'd note overriding a single belief.
+
+This is the fix for "handed 5 beliefs, acted on the first one, discovered the
+contradiction only after" — a real recurring failure, not a hypothetical one.
+
 ### Keep mimir and muninn distinct
 
 If muninn is also wired: **muninn answers "where is X in the code"; mimir

@@ -201,21 +201,25 @@ being handed 5 beliefs and not reconciling them before acting.
 material for a synthesized, coherent representation, rather than being handed back
 verbatim.
 
-**Open questions**:
-- This is the most speculative of the four and probably the most expensive (an extra LLM
-  call inside `query_relevant`, latency and cost tradeoff against the current single DB
-  round-trip). Worth prototyping before committing, if at all.
-- Was going to subsume consolidation (item 1) — moot now, since item 1 shipped as
-  attenuated deletion instead of a graph-collapse feature; the two no longer compete for
-  the same problem.
+**RESOLVED as a protocol fix, not a tool change (2026-08-14)**: an extra LLM call inside
+`query_relevant` was the wrong shape for this — the caller asking the question is *already*
+an LLM (the Claude Code session itself), so a second round-trip to synthesize what it could
+synthesize directly is pure latency/cost with no new capability. Checked the actual gap
+empirically: `docs/claude-code-setup/skill/SKILL.md`'s READ discipline had a checkpoint for
+disposing of *one* belief against your plan ("Following/Overriding belief `<id>`") but
+**nothing** telling the agent to reconcile *multiple returned beliefs against each other*
+before acting — that's the literal mechanism of the "handed 5 beliefs, acted on the first,
+found the contradiction later" failure. Added a "Reconcile the set, not just each belief
+individually" subsection to SKILL.md (and mirrored to both `CLAUDE.md`s) instructing exactly
+that: scan for disagreement between results, and treat an unresolved conflict as a
+`record_defeat` write-back opportunity, not something to silently pick a favorite on.
 
-**Concrete mechanism, from Sec 5.1.1 (2026-08-13)**: "generative retrieval" was speculative
-because it had no attached algorithm. Sec 5.1.1's *incremental semantic summarization* —
-fuse each new item into a running summary one at a time (MemGPT/Mem0's simple merge; later
-RL-optimized in Mem1/MemAgent to fight semantic drift across steps) — is exactly the missing
-mechanism: apply the same fold-in-order-with-consistency-checking operation to
-`query_relevant`'s ranked result list instead of to a raw dialogue stream. Still not
-scoped as work (same cost/latency concern above applies), but no longer an unattached idea.
+This also settles the paper's Sec 5.1.1 "incremental semantic summarization" angle raised
+earlier — see section 6 below for why that mechanism doesn't transfer to belief-graph
+data the way it does to raw dialogue/interaction logs. No Rust change; no new
+latency/cost. If synthesis quality still turns out insufficient after the caller is
+actually held to this discipline, that would be new evidence for revisiting the
+tool-side LLM-call design — not assumed necessary up front.
 
 **Note on where Sec 5.1.1 does *not* apply**: mimir's beliefs are already atomic,
 single-claim, and short by design (`insert_belief`'s "one claim per belief" discipline) —
@@ -242,9 +246,37 @@ summarize each cluster) applied to `DocumentChunk`s — generate one summary chu
 section-cluster (or one per document), stored and embedded like any other chunk, giving
 `query_document` a coarser retrieval tier alongside today's passage-level one.
 
-**Not evaluated yet** — this is a fresh observation from this reading, not weighed against
-alternatives or scoped. Whether it's worth building depends on whether coarse
-"what's this document about" queries are an actual need, which hasn't been established.
+**SPEC DRAFTED, awaiting approval before any Rust (2026-08-14)** — per this project's
+absolute rule (no implementation code without a governing, user-approved Agda spec
+first), the deliverable at this stage is `spec/Mimir/Documents.agda`, not code. `agda
+--safe Mimir.agda` passes (exit 0).
+
+Chose one-document-per-summary, not RAPTOR's full recursive cluster tree — that's more
+mechanism than the stated problem ("what's this document about") needs, and nothing has
+established that finer-grained cluster summaries are actually wanted. Design, minimal by
+construction:
+
+- `DocumentChunk` gains one field, `isSummary : Bool` (always `false` for chunks
+  `load_document` parses). A summary chunk is otherwise a completely ordinary
+  `DocumentChunk` — same AGE label, same `chunk_embeddings` row, same `CONTAINS`
+  machinery — so no new storage, and it participates in `query_document`'s existing ANN
+  ranking unmodified (it can surface there on its own semantic merit; no RRF change,
+  unlike section 3 — this doesn't need weight-tuning because it isn't a ranked query).
+- Two new MCP tools: `set_document_summary(path, content, project?)` (upsert — replaces
+  any prior summary for that path, never accumulates) and `get_document_summary(path)`
+  (direct lookup, not a semantic search — "what's this about" is an exact-match ask).
+- **Generation stays outside mimir-core**, same reasoning as section 2's judge:
+  mimir-core has no LLM-completion client (only embedding backends) and none is being
+  added. The caller — an interactive session right after `load_document`, or a periodic
+  job like section 2's — writes the summary text and pushes it via
+  `set_document_summary`. mimir's role stays storage + retrieval, never generation.
+- Invariant (stated, not proved from types — same status as the file's existing
+  cross-store consistency invariant): at most one summary chunk per `documentPath`,
+  maintained by the upsert's remove-then-insert pattern.
+
+**Open**: is this actually wanted? Unlike sections 2/3, there's no empirical signal here
+(no measured "coarse queries fail" pain) — this stays a design proposal until the user
+decides it's worth the Rust + MCP-tool implementation.
 
 ## 6. Failure-driven reflection as the consolidation promotion method (new, from Sec 5.1.2)
 
