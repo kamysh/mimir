@@ -796,9 +796,9 @@ async fn test_query_relevant_excludes_working_from_graph_expansion() {
     ctx.cleanup().await;
 }
 
-// prefer_type (section 3, docs/proposals/80-memory-evolution-open-questions.md)
-// is a soft nudge, not a filter: two beliefs with identical content (so vector
-// and token legs are effectively tied) but different memory_type should have
+// prefer_type is a soft nudge, not a filter: two beliefs with identical content
+// (so vector and token legs are effectively tied) but different memory_type
+// should have
 // the preferred type ranked first, while a query with no prefer_type must
 // still return both.
 #[tokio::test]
@@ -1302,7 +1302,6 @@ async fn test_intervene_counts_out_of_set_cocause() {
 
 // ---------------------------------------------------------------------------
 // sweep_expired_defeated (attenuated deletion)
-// docs/proposals/80-memory-evolution-open-questions.md, section 1.
 //
 // These tests bypass svc.add_edge's auto-propagation (which would recompute
 // the defeated belief's Beta state from the defeat itself) by inserting the

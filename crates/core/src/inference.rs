@@ -354,8 +354,7 @@ impl InferenceEngine {
     }
 
     /// Find defeated beliefs eligible for deletion under the attenuated-deletion
-    /// design (docs/proposals/80-memory-evolution-open-questions.md, section 1):
-    /// a defeated belief is deleted only after (a) its probability has decayed
+    /// design: a defeated belief is deleted only after (a) its probability has decayed
     /// below `prob_threshold` and (b) a `grace_period` has elapsed since it was
     /// last defeated, with no intervening reversal.
     ///

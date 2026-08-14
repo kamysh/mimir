@@ -74,10 +74,10 @@ record DocumentChunk : Set where
     project      : Maybe String   -- propagated from load_document's project argument
     isSummary    : Bool           -- false for every chunk load_document parses.
                                   -- true only for a chunk written by
-                                  -- set_document_summary (section 5,
-                                  -- docs/proposals/80-memory-evolution-open-
-                                  -- questions.md). A summary chunk is a normal
-                                  -- DocumentChunk otherwise — same AGE label,
+                                  -- set_document_summary (see
+                                  -- docs/proposals/90-plan-document-
+                                  -- summarization.md). A summary chunk is a
+                                  -- normal DocumentChunk otherwise — same AGE label,
                                   -- same chunk_embeddings row, same CONTAINS
                                   -- parent-child machinery — so it needs no new
                                   -- storage and participates in query_document's
@@ -213,10 +213,11 @@ removeSummary-smaller path (c ∷ cs) with isSummaryAndMatches path c
 -- Who calls this: NOT mimir itself. mimir-core has no LLM-completion client
 -- (only embedding backends — see embed.rs) and none is being added for this
 -- feature; the same reasoning that kept the Experiential-forgetting judge
--- (section 2) OUTSIDE mimir-core applies here. The caller (an interactive
--- Claude Code session right after load_document, or a periodic job like
--- section 2's) generates the summary text and pushes it via this tool.
--- mimir's role stays storage + retrieval, never generation.
+-- (the mimir-judge-experiential systemd timer) OUTSIDE mimir-core applies
+-- here. The caller (an interactive Claude Code session right after
+-- load_document, or a periodic job like that timer) generates the summary
+-- text and pushes it via this tool. mimir's role stays storage + retrieval,
+-- never generation.
 -- ---------------------------------------------------------------------------
 
 setDocumentSummary : String → DocumentChunk → ChunkStore → ChunkStore
@@ -443,7 +444,7 @@ ensureDocumentLabels-complete _ = refl
 --   chunk, if any — clear_document is unaware of isSummary and removes
 --   everything matching the path, summary included.
 --
--- set_document_summary(path, content, project?)     [section 5, new]
+-- set_document_summary(path, content, project?)     [new]
 --   Required: path (must already be loaded via load_document), content
 --             (the summary text — caller-generated, see setDocumentSummary
 --             above for why mimir itself never generates it)
@@ -456,7 +457,7 @@ ensureDocumentLabels-complete _ = refl
 --             like any other), path never loaded (no passage chunks to
 --             summarize)
 --
--- get_document_summary(path)                        [section 5, new]
+-- get_document_summary(path)                        [new]
 --   Required: path
 --   Returns:  {id, documentPath, content} | {"summary": null} if none set
 --   Not a semantic search — direct lookup, see getDocumentSummary above.

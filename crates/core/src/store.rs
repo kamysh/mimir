@@ -784,8 +784,7 @@ $$) AS (n ag_catalog.agtype)"#
 
     /// Returns every (defeater_id, defeated_id, defeater_created_at) triple for
     /// DEFEATS relationships in the graph. Used by the attenuated-deletion sweep
-    /// (docs/proposals/80-memory-evolution-open-questions.md, section 1) to find
-    /// defeated beliefs whose grace period has elapsed. DEFEATS edges carry no
+    /// to find defeated beliefs whose grace period has elapsed. DEFEATS edges carry no
     /// timestamp of their own, so the defeater's `created_at` is returned as the
     /// proxy for when the defeat happened — see `InferenceEngine::find_expired_defeated`.
     pub async fn get_defeats_with_timestamps(
