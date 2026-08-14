@@ -74,6 +74,12 @@ enum Command {
         /// Restrict the candidate pool to this project plus untagged beliefs.
         #[arg(long, short)]
         project: Option<String>,
+
+        /// Nudge ranking toward this memory type (fact/experiential/working) —
+        /// a soft preference, not a filter. Omit for the default, type-neutral
+        /// ranking.
+        #[arg(long)]
+        prefer_type: Option<mimir_core::graph::MemoryType>,
     },
 
     /// Manage evidence (document passages that ground a belief).
@@ -300,7 +306,8 @@ async fn main() -> Result<()> {
             limit,
             evidence,
             project,
-        } => cmd_query(&text, limit, evidence, project.as_deref()).await?,
+            prefer_type,
+        } => cmd_query(&text, limit, evidence, project.as_deref(), prefer_type).await?,
         Command::Evidence(cmd) => cmd_evidence(cmd).await?,
         Command::Delete(DeleteCmd::Belief { id }) => cmd_delete(&id).await?,
         Command::Delete(DeleteCmd::Pattern { id }) => cmd_delete_pattern(&id).await?,
@@ -495,7 +502,13 @@ async fn cmd_patterns(project: Option<String>, limit: usize) -> Result<()> {
 // mimir query
 // ---------------------------------------------------------------------------
 
-async fn cmd_query(text: &str, limit: usize, evidence: bool, project: Option<&str>) -> Result<()> {
+async fn cmd_query(
+    text: &str,
+    limit: usize,
+    evidence: bool,
+    project: Option<&str>,
+    prefer_type: Option<mimir_core::graph::MemoryType>,
+) -> Result<()> {
     let svc = connect().await?;
 
     if evidence {
@@ -532,7 +545,7 @@ async fn cmd_query(text: &str, limit: usize, evidence: bool, project: Option<&st
         return Ok(());
     }
 
-    let beliefs = svc.query_relevant(text, limit, project).await?;
+    let beliefs = svc.query_relevant(text, limit, project, prefer_type).await?;
     if beliefs.is_empty() {
         println!("(no results)");
         return Ok(());
@@ -968,7 +981,9 @@ async fn cmd_hook_prompt() -> Result<()> {
     }
 
     let svc = connect().await?;
-    let beliefs = svc.query_relevant(&trunc(&prompt, 500), 5, None).await?;
+    let beliefs = svc
+        .query_relevant(&trunc(&prompt, 500), 5, None, None)
+        .await?;
     if beliefs.is_empty() {
         return Ok(());
     }
@@ -1013,7 +1028,9 @@ async fn cmd_hook_pretooluse() -> Result<()> {
     }
 
     let svc = connect().await?;
-    let beliefs = svc.query_relevant(&trunc(query_raw, 200), 3, None).await?;
+    let beliefs = svc
+        .query_relevant(&trunc(query_raw, 200), 3, None, None)
+        .await?;
     if beliefs.is_empty() {
         return Ok(());
     }

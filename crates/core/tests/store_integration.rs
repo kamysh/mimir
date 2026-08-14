@@ -744,7 +744,7 @@ async fn test_query_relevant_excludes_working_from_candidate_pool() {
     ctx.store.insert_belief(&working).await.unwrap();
 
     let results = svc
-        .query_relevant(&format!("factterm {term}"), 0, Some(&ctx.project))
+        .query_relevant(&format!("factterm {term}"), 0, Some(&ctx.project), None)
         .await
         .unwrap();
     assert!(
@@ -781,7 +781,7 @@ async fn test_query_relevant_excludes_working_from_graph_expansion() {
         .unwrap();
 
     let results = svc
-        .query_relevant(&format!("seedterm {seed_term}"), 0, Some(&ctx.project))
+        .query_relevant(&format!("seedterm {seed_term}"), 0, Some(&ctx.project), None)
         .await
         .unwrap();
     assert!(
@@ -791,6 +791,50 @@ async fn test_query_relevant_excludes_working_from_graph_expansion() {
     assert!(
         !results.iter().any(|b| b.id == working_neighbor.id),
         "working belief reached via graph expansion leaked into query_relevant results"
+    );
+
+    ctx.cleanup().await;
+}
+
+// prefer_type (section 3, docs/proposals/80-memory-evolution-open-questions.md)
+// is a soft nudge, not a filter: two beliefs with identical content (so vector
+// and token legs are effectively tied) but different memory_type should have
+// the preferred type ranked first, while a query with no prefer_type must
+// still return both.
+#[tokio::test]
+async fn test_query_relevant_prefer_type_reorders_tied_matches() {
+    let svc = service().await;
+    let ctx = TestCtx::new().await;
+    let term = Uuid::new_v4().simple().to_string();
+
+    let fact = ctx
+        .belief(format!("tiedterm {term} shared content"), 0.6, 0.6)
+        .with_memory_type(mimir_core::graph::MemoryType::Fact);
+    let experiential = ctx
+        .belief(format!("tiedterm {term} shared content"), 0.6, 0.6)
+        .with_memory_type(mimir_core::graph::MemoryType::Experiential);
+    ctx.store.insert_belief(&fact).await.unwrap();
+    ctx.store.insert_belief(&experiential).await.unwrap();
+
+    let neutral = svc
+        .query_relevant(&format!("tiedterm {term}"), 0, Some(&ctx.project), None)
+        .await
+        .unwrap();
+    assert_eq!(neutral.len(), 2, "both tied beliefs should be returned");
+
+    let preferred = svc
+        .query_relevant(
+            &format!("tiedterm {term}"),
+            0,
+            Some(&ctx.project),
+            Some(mimir_core::graph::MemoryType::Experiential),
+        )
+        .await
+        .unwrap();
+    assert_eq!(preferred.len(), 2, "prefer_type must not drop the non-matching belief");
+    assert_eq!(
+        preferred[0].id, experiential.id,
+        "prefer_type=Experiential should rank the Experiential belief first among ties"
     );
 
     ctx.cleanup().await;
@@ -834,7 +878,7 @@ async fn test_query_relevant_excludes_beliefs_reachable_only_via_out_of_scope_br
         .unwrap();
 
     let results = svc
-        .query_relevant(&format!("seedterm {seed_term}"), 0, Some(&ctx.project))
+        .query_relevant(&format!("seedterm {seed_term}"), 0, Some(&ctx.project), None)
         .await
         .unwrap();
     assert!(
