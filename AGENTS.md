@@ -113,6 +113,8 @@ claude mcp list 2>&1 | grep -E '^mimir:.*Connected' >/dev/null
   && jq -e 'any(.hooks.SessionStart[]?.hooks[]?;      .command | test("mimir skill"))' \
        "$HOME/.claude/settings.json" >/dev/null \
   && jq -e 'any(.hooks.PreToolUse[]?.hooks[]?;        .command | test("mimir hook pretooluse"))' \
+       "$HOME/.claude/settings.json" >/dev/null \
+  && jq -e 'any(.hooks.Stop[]?.hooks[]?;               .command | test("mimir hook stop"))' \
        "$HOME/.claude/settings.json" >/dev/null
 ```
 
@@ -266,7 +268,7 @@ propose the minimal diff for each step, and apply it only after you confirm.
 
 ## Final verification gate
 
-All eight lines must print `OK`. If any fails, fix that step before
+All nine lines must print `OK`. If any fails, fix that step before
 declaring the install complete.
 
 ```sh
@@ -283,7 +285,15 @@ jq -e 'any(.hooks.UserPromptSubmit[]?.hooks[]?; .command | test("mimir hook prom
   "$HOME/.claude/settings.json" >/dev/null                              && echo OK  # 7
 jq -e 'any(.hooks.SessionStart[]?.hooks[]?;      .command | test("mimir skill"))' \
   "$HOME/.claude/settings.json" >/dev/null                              && echo OK  # 8
+jq -e 'any(.hooks.Stop[]?.hooks[]?;               .command | test("mimir hook stop"))' \
+  "$HOME/.claude/settings.json" >/dev/null                              && echo OK  # 9
 ```
+
+Item 9 (the `Stop` hook) is what enforces Working-memory consolidation —
+without it, `memory_type=working` beliefs accumulate with no gate ever
+forcing them to be promoted or discarded. See
+`docs/claude-code-setup/CLAUDE.md`'s memory-types section for what it
+enforces and why.
 
 ## Known errors → fixes
 

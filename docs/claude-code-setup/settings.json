@@ -58,6 +58,16 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mimir hook stop"
+          }
+        ]
+      }
     ]
   }
 }
