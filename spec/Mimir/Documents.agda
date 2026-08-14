@@ -66,11 +66,26 @@ record DocumentChunk : Set where
     chunkId      : NodeId
     documentPath : String         -- source file; primary key for clear_document
     sectionPath  : SectionPath    -- [] for root chunks; h ∷ rest for nested chunks
-    content      : String         -- raw markdown text of this chunk
+    content      : String         -- raw markdown text of this chunk, OR (when
+                                  -- isSummary ≡ true) LLM-generated summary text
     parentId     : Maybe NodeId   -- nothing for root chunks; just p otherwise
                                   -- invariant: parentId ≡ nothing ↔ sectionPath ≡ []
                                   -- (enforced by parser, not by this record type)
     project      : Maybe String   -- propagated from load_document's project argument
+    isSummary    : Bool           -- false for every chunk load_document parses.
+                                  -- true only for a chunk written by
+                                  -- set_document_summary (section 5,
+                                  -- docs/proposals/80-memory-evolution-open-
+                                  -- questions.md). A summary chunk is a normal
+                                  -- DocumentChunk otherwise — same AGE label,
+                                  -- same chunk_embeddings row, same CONTAINS
+                                  -- parent-child machinery — so it needs no new
+                                  -- storage and participates in query_document's
+                                  -- existing ANN ranking unmodified. Always a
+                                  -- root chunk: sectionPath ≡ [], parentId ≡
+                                  -- nothing (enforced by set_document_summary,
+                                  -- not by this record type, same status as the
+                                  -- parentId/sectionPath invariant above).
 
 -- ---------------------------------------------------------------------------
 -- CONTAINS — AGE edge label connecting parent DocumentChunk to child.
@@ -145,6 +160,97 @@ chunkMatchesProject : String → DocumentChunk → Bool
 chunkMatchesProject proj c with DocumentChunk.project c
 ... | nothing = false
 ... | just p  = does (p ≟ proj)
+
+-- ---------------------------------------------------------------------------
+-- isSummaryAndMatches: is this chunk the summary chunk for a given document?
+-- ---------------------------------------------------------------------------
+
+isSummaryAndMatches : String → DocumentChunk → Bool
+isSummaryAndMatches path c = matchesDocument path c ∧ DocumentChunk.isSummary c
+
+-- ---------------------------------------------------------------------------
+-- removeSummary: drop the existing summary chunk for a document, if any.
+-- Leaves every other chunk (passage or another document's summary) untouched
+-- — the key difference from clearDocument, which drops the WHOLE document.
+-- ---------------------------------------------------------------------------
+
+removeSummary : String → ChunkStore → ChunkStore
+removeSummary path []       = []
+removeSummary path (c ∷ cs) with isSummaryAndMatches path c
+... | true  = removeSummary path cs
+... | false = c ∷ removeSummary path cs
+
+-- removeSummary never increases the store size (same proof shape as
+-- clearDocument-smaller below, which reuses its own copy of this helper —
+-- defined here too since Agda processes the file top-to-bottom and that
+-- copy isn't in scope yet at this point).
+private
+  n≤suc-n-doc : ∀ n → n ≤ Data.Nat.suc n
+  n≤suc-n-doc Data.Nat.zero    = z≤n
+  n≤suc-n-doc (Data.Nat.suc m) = s≤s (n≤suc-n-doc m)
+
+removeSummary-smaller :
+  ∀ (path : String) (cs : ChunkStore) →
+  length (removeSummary path cs) ≤ length cs
+removeSummary-smaller path []       = z≤n
+removeSummary-smaller path (c ∷ cs) with isSummaryAndMatches path c
+... | true  = ≤-trans (removeSummary-smaller path cs) (n≤suc-n-doc (length cs))
+... | false = s≤s (removeSummary-smaller path cs)
+
+-- ---------------------------------------------------------------------------
+-- setDocumentSummary: upsert the one summary chunk for a document.
+-- MCP tool: set_document_summary(path, content, project?) → {"chunk_id": ID}
+--
+-- Implementation: same two-store write as loadDocument (AGE vertex +
+-- chunk_embeddings row) but for exactly one chunk, with isSummary = true,
+-- sectionPath = [], parentId = nothing. Upsert semantics: any prior summary
+-- chunk for the same path is removed first, so calling this again (e.g. after
+-- a document is re-summarized following a re-load) replaces rather than
+-- accumulates. Does NOT touch passage chunks — orthogonal to load_document/
+-- clear_document, callable independently and in either order relative to
+-- them.
+--
+-- Who calls this: NOT mimir itself. mimir-core has no LLM-completion client
+-- (only embedding backends — see embed.rs) and none is being added for this
+-- feature; the same reasoning that kept the Experiential-forgetting judge
+-- (section 2) OUTSIDE mimir-core applies here. The caller (an interactive
+-- Claude Code session right after load_document, or a periodic job like
+-- section 2's) generates the summary text and pushes it via this tool.
+-- mimir's role stays storage + retrieval, never generation.
+-- ---------------------------------------------------------------------------
+
+setDocumentSummary : String → DocumentChunk → ChunkStore → ChunkStore
+setDocumentSummary path summary cs = summary ∷ removeSummary path cs
+
+-- ---------------------------------------------------------------------------
+-- getDocumentSummary: direct fetch of a document's summary chunk, if any.
+-- MCP tool: get_document_summary(path) → chunk object | {"summary": null}
+--
+-- Deliberately NOT a semantic search like query_document — "what is this
+-- document about" is an exact lookup by path, not a ranked query, so no RRF
+-- weighting is involved (avoids repeating section 3's weight-tuning problem
+-- for a case that doesn't need it). query_document's own ranking is
+-- UNCHANGED by this feature: a summary chunk is embedded and stored exactly
+-- like any passage chunk, so it can also surface there on its own semantic
+-- merit — this tool exists only for the direct "give me the summary" ask.
+-- ---------------------------------------------------------------------------
+
+getDocumentSummary : String → ChunkStore → Maybe DocumentChunk
+getDocumentSummary path []       = nothing
+getDocumentSummary path (c ∷ cs) with isSummaryAndMatches path c
+... | true  = just c
+... | false = getDocumentSummary path cs
+
+-- ---------------------------------------------------------------------------
+-- AT-MOST-ONE-SUMMARY INVARIANT (stated; not proved from types — same status
+-- as the CONSISTENCY INVARIANT above)
+--
+-- At all times, for every documentPath, at most one chunk in ChunkStore has
+-- isSummary ≡ true for that path. Maintained by setDocumentSummary's
+-- remove-then-insert pattern (never by clearDocument or loadDocument, which
+-- are unaware of isSummary and simply carry it through on whatever chunks
+-- they're given — load_document always constructs isSummary = false).
+-- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------
 -- clearDocument: remove all chunks for a given file path.
@@ -333,7 +439,27 @@ ensureDocumentLabels-complete _ = refl
 -- clear_document(path)
 --   Required: path
 --   Returns:  {"cleared": N}  N = number of chunks removed (0 if not loaded)
---   No-op if path was never loaded.
+--   No-op if path was never loaded. Also removes that document's summary
+--   chunk, if any — clear_document is unaware of isSummary and removes
+--   everything matching the path, summary included.
+--
+-- set_document_summary(path, content, project?)     [section 5, new]
+--   Required: path (must already be loaded via load_document), content
+--             (the summary text — caller-generated, see setDocumentSummary
+--             above for why mimir itself never generates it)
+--   Optional: project (propagated to the summary chunk like any other)
+--   Returns:  {"chunk_id": ID}
+--   Behaviour: upsert — replaces this document's existing summary chunk if
+--     one exists, never accumulates. Independent of load_document/
+--     clear_document; callable before or after either.
+--   Errors:   embedding model unreachable (the summary chunk is embedded
+--             like any other), path never loaded (no passage chunks to
+--             summarize)
+--
+-- get_document_summary(path)                        [section 5, new]
+--   Required: path
+--   Returns:  {id, documentPath, content} | {"summary": null} if none set
+--   Not a semantic search — direct lookup, see getDocumentSummary above.
 --
 -- delete_project (EXTENDED)
 --   Now removes DocumentChunk vertices tagged with the project in addition
