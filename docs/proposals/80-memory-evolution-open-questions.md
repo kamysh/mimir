@@ -132,20 +132,34 @@ that takes longer than this to settle — not from first-principles reasoning.
 doesn't get less true with elapsed time) but that means the bucket only grows — currently
 123 beliefs, no ceiling.
 
-**Shape from the paper** (Sec 5.2.3): time-based (already excluded, by design), frequency-
-based (retrieval-count — beliefs nothing ever retrieves are candidates), importance-driven
-(LLM-judged redundancy or staleness independent of retrieval activity).
+**Shape from the paper** (Sec 5.2.3): time-based (already excluded, by design),
+~~frequency-based~~ (retrieval-count — REJECTED by user, 2026-08-14: "i don't like
+frequency based update" — rarely-retrieved is not the same signal as wrong or low-value,
+a rare-but-critical lesson would get pruned by exactly this mechanism), importance-driven
+(LLM-judged redundancy or staleness independent of retrieval activity — the only shape
+still on the table if this is ever built).
 
-**Open questions**:
-- Does mimir even track retrieval frequency today? (Need to check — if `query_relevant`
-  doesn't log which beliefs it returned, frequency-based forgetting needs that
-  instrumentation first.)
-- Is this "forgetting" (delete) or "demotion" (something else, e.g. drop out of default
-  ranking but stay queryable on request)? Deleting a hard-won lesson because it's rarely
-  retrieved could just mean it's rarely relevant, not that it's wrong.
-- What's the actual pain being solved — is 123 beliefs (growing at maybe 5-10/session)
-  actually a problem yet, or is this premature? Worth checking whether `query_relevant`'s
-  ranking degrades measurably before building a pruning mechanism for it.
+**Checked empirically (2026-08-14), not speculation anymore**:
+- Does mimir track retrieval frequency today? **No.** `last_activated_at` is set once at
+  insert (`store.rs:451`) and never updated anywhere else — confirmed by grepping every
+  write site, and independently corroborated by `spec/Mimir/Types.agda:60`'s own comment
+  ("write-once; drives decay"). Frequency-based forgetting needs new instrumentation
+  (an on-read touch) before it's buildable at all — not a design question, a prerequisite.
+- Is 123 beliefs actually a problem yet? **Live count re-checked, still exactly 123** —
+  same figure as when this doc was first written, despite ~2 months elapsed (oldest
+  2026-06-08, newest 2026-08-13) and a full day of heavy session work since. Real growth
+  rate ≈2/day, not the 5-10/session guessed originally. No observed symptom of ranking
+  degradation. This is premature to build — there's no evidence of actual pain yet.
+
+**Still open** (the one question that isn't a fact-check):
+- Is this "forgetting" (delete) or "demotion" (drop out of default ranking, stay queryable
+  on request)? Deleting a hard-won lesson because it's rarely retrieved could just mean
+  it's rarely relevant, not that it's wrong. Genuinely a design call, not something to
+  resolve unilaterally.
+
+**Conclusion**: don't build this yet. Both practical blockers (no instrumentation, no
+demonstrated pain) are now confirmed facts rather than open questions — revisit only if
+the belief count actually starts causing a measurable retrieval problem.
 
 ## 3. Type-aware ranking
 
@@ -221,10 +235,49 @@ section-cluster (or one per document), stored and embedded like any other chunk,
 alternatives or scoped. Whether it's worth building depends on whether coarse
 "what's this document about" queries are an actual need, which hasn't been established.
 
+## 6. Failure-driven reflection as the consolidation promotion method (new, from Sec 5.1.2)
+
+**Problem**: the Working→Fact design (superseded twice: `ec68a138`'s narrow "staging tier
+for a not-yet-confident conclusion", then the shipped `mimir hook stop` design, belief
+`670f78a1` — always write Working, promote/discard only at session/task end) says a
+Working belief gets "promoted after it holds up under reflection" — but "reflection" was
+never given a concrete method. Consolidation currently means 1:1 rewrite-and-promote or
+discard; there's no mechanism for extracting something better than the first-draft
+conclusion already written.
+
+**Shape from the paper** (Sec 5.1.2, Distilling Experiential Memory): *failure-driven
+reflection* (Matrix, SAGE, R2D2) — extract insight from the **gap** between a trajectory
+and what actually happened (a correction, a ground-truth mismatch), not from the
+trajectory alone. Contrasts with *success-based* distillation (AWM/Memp, which only
+summarize what worked).
+
+**Where this connects to something already observed**: this session's own
+`10c534fb → 99d9b202 → ec68a138` chain is a concrete instance of exactly this pattern —
+the durable lesson (the narrow Working-as-staging-tier design) wasn't in the first belief,
+it was in the *correction to* the first belief. A promotion step that only rewrites the
+original Working belief would miss that; a promotion step that looks at "what got
+corrected and why" would have captured it directly.
+
+**Also relevant**: a possible backstop for a failure mode this session hit repeatedly —
+an agent forgetting to write a belief mid-task until a hook forced it. The paper's
+trainable-extraction systems (Mem-α, Memory-R1's `LLMExtract`) run distillation as an
+automated pass over a transcript rather than relying solely on in-the-moment judgment.
+
+**Not evaluated yet** — no design decision here, just naming a concrete mechanism (failure-
+driven reflection) for a step ("reflection" in the promotion process) that's currently
+undefined. Previously blocked on Working having zero live writers (belief `6dc25486`) —
+no longer true as of 2026-08-14: `mimir hook stop` enforces consolidation at every turn end
+(belief `670f78a1`), so Working now accumulates real per-session data. Whether manual
+promotion turns out to be insufficient in practice, and failure-driven reflection worth
+building, can now actually be evaluated against that data rather than staying purely
+speculative.
+
 ## Not in scope for this doc
 
 - The `memory_type` field itself — already implemented, tested, and its design settled
-  (see mimir beliefs `ec68a138`, `422e325d`). Not reopened here.
+  (final form: belief `670f78a1`, superseding `ec68a138`/`422e325d`/`6dc25486` — always
+  write `working`, consolidate at session/task end, enforced by `mimir hook stop`). Not
+  reopened here.
 - Auto-DEFEATS on correction — already implemented (belief `9269d940`).
 - The reclassification backfill — already done, one-time operation (belief `941aa15d`).
 

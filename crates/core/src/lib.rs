@@ -766,10 +766,25 @@ impl MimirService {
     /// Parse a markdown file into chunks, embed each one, and store in AGE +
     /// chunk_embeddings.  Replaces any existing chunks for the same path.
     /// Returns the number of chunks loaded.
+    ///
+    /// `path` is canonicalized before use as the document identity key (both
+    /// for the replace-on-reload lookup and for the stored `documentPath`).
+    /// Document identity in the store is an exact string match on
+    /// `documentPath` (`AgeStore::get_chunk_ids_for_document`) with no
+    /// normalization of its own — without canonicalizing here, loading the
+    /// same file via a relative path and later via an absolute path (or any
+    /// two distinct spellings of the same file) creates two independent
+    /// chunk sets instead of replacing one, since neither string matches the
+    /// other. Canonicalizing collapses that to one identity per real file.
     pub async fn load_document(&self, path: &str, project: Option<&str>) -> Result<usize> {
         let embedder = self.embeddings.as_ref().ok_or_else(|| {
             anyhow::anyhow!("embeddings not configured — add [embeddings] to config.toml")
         })?;
+
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|e| anyhow::anyhow!("cannot resolve {}: {}", path, e))?;
+        let path = canonical.to_string_lossy().into_owned();
+        let path = path.as_str();
 
         let text = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("cannot read {}: {}", path, e))?;
@@ -801,7 +816,22 @@ impl MimirService {
 
     /// Remove all chunks (and their embeddings) for the given document path.
     /// Returns the number of chunks cleared. Returns 0 if never loaded.
+    ///
+    /// Attempts the same canonicalization `load_document` applies, so
+    /// `clear_document` can be called with any path spelling that resolves
+    /// to the same file `load_document` stored it under. Falls back to the
+    /// raw path string if canonicalization fails (e.g. the file was deleted
+    /// after loading) — that only matches a chunk set stored under that
+    /// exact raw path, same limitation clear_document always had.
     pub async fn clear_document(&self, path: &str) -> Result<usize> {
+        let canonical_owned;
+        let path: &str = match std::fs::canonicalize(path) {
+            Ok(p) => {
+                canonical_owned = p.to_string_lossy().into_owned();
+                canonical_owned.as_str()
+            }
+            Err(_) => path,
+        };
         let ids = self.store.get_chunk_ids_for_document(path).await?;
         let count = ids.len();
         self.store.delete_document_chunks(&ids).await?;
