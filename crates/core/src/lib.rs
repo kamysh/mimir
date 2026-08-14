@@ -489,8 +489,8 @@ impl MimirService {
     }
 
     /// Delete defeated beliefs whose grace period has elapsed (attenuated
-    /// deletion — docs/proposals/80-memory-evolution-open-questions.md,
-    /// section 1). A defeated belief is deleted only once its probability has
+    /// deletion, not immediate hard deletion at record_defeat time). A
+    /// defeated belief is deleted only once its probability has
     /// decayed below `prob_threshold` AND `grace_period` has passed since it
     /// was last defeated, with no intervening reversal — this gives a wrong
     /// `record_defeat` call time to be caught and reversed before its target
@@ -732,8 +732,7 @@ impl MimirService {
         const W_VECTOR: f32 = 1.0;
         const W_TOKEN: f32 = 0.3;
         const W_PRIOR: f32 = 0.1;
-        // Type-preference leg: only present when the caller passes prefer_type
-        // (section 3, docs/proposals/80-memory-evolution-open-questions.md).
+        // Type-preference leg: only present when the caller passes prefer_type.
         // Deliberately higher than W_TOKEN+W_PRIOR combined (0.4), not just
         // W_PRIOR alone: token and prior are both derived from the same
         // underlying candidate order, so near-duplicate/tied beliefs (the

@@ -115,7 +115,8 @@ enum Command {
     },
 
     /// Delete defeated beliefs whose grace period has elapsed (attenuated
-    /// deletion — see docs/proposals/80-memory-evolution-open-questions.md).
+    /// deletion — soft-retirement via record_defeat, not immediate hard
+    /// deletion, so a wrong defeat can still be caught before it's gone).
     SweepDefeated {
         /// Probability below which a defeated belief becomes eligible for deletion.
         #[arg(long, short, default_value_t = 0.3)]

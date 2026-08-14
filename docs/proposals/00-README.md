@@ -12,6 +12,7 @@ implementation plans to hand to Claude Code, one phase at a time.
 | `40-plan-logodds-propagation.md` | plan → Claude Code | Phase 2. Replace the order-dependent single-pass BFS with order-independent log-odds accumulation run to a fixpoint. |
 | `50-plan-beta-beliefs.md` | plan → Claude Code | Phase 3 (optional). Collapse `probability` + `confidence` into one `Beta(α,β)`; updates become conjugate. Schema change. |
 | `60-plan-evidence-edges.md` | plan → Claude Code | Phase 4. Make document chunks first-class evidence nodes (`GROUNDS` edges) so documents inform reasoning and carry provenance — with a proved non-interference guarantee. C-core ships independently; C-coupling composes with Phase 3. |
+| `90-plan-document-summarization.md` | plan → Claude Code | Add a document-level summary chunk (`isSummary` flag, no new AGE label) so `query_document` can answer "what's this about," not just passage-level retrieval. Spec-drafted, awaiting approval — no empirical pain signal forcing it either way. |
 
 ## The one idea behind all of it
 
