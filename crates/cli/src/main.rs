@@ -174,6 +174,35 @@ enum HookEvent {
     /// Reads {"tool_input": {"file_path"|"path"|"command": "..."}} from stdin,
     /// prints a JSON object with hookSpecificOutput.additionalContext to stdout.
     Pretooluse,
+
+    /// Stop hook — block the turn from ending while memory_type=working
+    /// beliefs are still live, forcing consolidation (promote to fact/
+    /// experiential via insert_belief, or discard via delete_belief) instead
+    /// of relying on the calling agent to remember to do it. This is the
+    /// enforcement mechanism the Working+consolidation design (docs
+    /// belief history: 99d9b202, 422e325d) never had — a prose protocol
+    /// with no gate gets skipped under load, the same way the
+    /// knowledge-writeback line in this environment's own Stop hooks did
+    /// until it was made blocking. Unlike Prompt/Pretooluse, this CAN exit
+    /// non-zero (Claude Code's convention for a Stop hook that blocks).
+    ///
+    /// Reads {"stop_hook_active": bool, ...} from stdin (same shape as this
+    /// environment's other Stop hooks). If stop_hook_active is true, exits 0
+    /// immediately — the hook has already fired once this turn and Claude
+    /// Code is re-invoking after a block; re-blocking would loop forever.
+    Stop {
+        /// Restrict the check to Working beliefs tagged with this project
+        /// (plus untagged/global ones — `list_beliefs_by_project`'s
+        /// inclusion semantics, `n.project = $project OR n.project IS NULL`,
+        /// same as every other project-scoped mimir query). The mimir DB is
+        /// shared across concurrent sessions/projects — scoping isolates
+        /// cross-PROJECT interference (a yovico Working belief won't block a
+        /// mimir session), but an UNTAGGED Working belief from any session
+        /// still matches every scoped check, same limitation already
+        /// documented on `list_beliefs_filtered`. Omit to check globally.
+        #[arg(long, short)]
+        project: Option<String>,
+    },
 }
 
 /// Evidence (GROUNDS edges) subcommands.
@@ -292,7 +321,10 @@ async fn main() -> Result<()> {
         Command::Doc(DocCmd::Clear { path }) => cmd_clear_doc(&path).await?,
         Command::Reembed => cmd_reembed().await?,
         Command::Intervene { id, value } => cmd_intervene(&id, value).await?,
-        // Hooks must never exit non-zero — discard any error silently.
+        // Prompt/Pretooluse must never exit non-zero — discard any error
+        // silently. Stop is the one exception: it can legitimately block by
+        // exiting non-zero (Claude Code's Stop-hook convention), and does so
+        // itself via std::process::exit inside cmd_hook_stop.
         Command::Hook { event } => {
             let _ = cmd_hook(event).await;
         }
@@ -829,7 +861,99 @@ async fn cmd_hook(event: HookEvent) -> Result<()> {
     match event {
         HookEvent::Prompt => cmd_hook_prompt().await,
         HookEvent::Pretooluse => cmd_hook_pretooluse().await,
+        HookEvent::Stop { project } => cmd_hook_stop(project.as_deref()).await,
     }
+}
+
+/// Stop hook: block the turn from ending while `memory_type=working` beliefs
+/// are still live. This is the enforcement half of the Working+consolidation
+/// design — every belief is written as `working` during a task, and this
+/// hook is the gate that forces promotion (fact/experiential) or discard
+/// before the turn can actually end, instead of relying on remembering to
+/// do it. Fails OPEN (exits 0) on any infrastructure error (can't connect,
+/// bad JSON, etc.) — a broken hook must never permanently lock a session out
+/// of ending; it should only block on the specific, real condition it exists
+/// to catch.
+/// Best-effort project-name inference from the current directory: the git
+/// repo's toplevel basename, or the cwd basename if not inside a git repo.
+/// `None` if neither is resolvable (e.g. cwd deleted out from under us).
+fn infer_project_from_cwd() -> Option<String> {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| std::path::PathBuf::from(s.trim().to_string()))
+        .or_else(|| std::env::current_dir().ok())
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+}
+
+async fn cmd_hook_stop(project: Option<&str>) -> Result<()> {
+    use std::io::Read;
+    let mut input = String::new();
+    if std::io::stdin().read_to_string(&mut input).is_err() {
+        return Ok(());
+    }
+    let v: serde_json::Value = match serde_json::from_str(&input) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+
+    // Loop-prevention: Claude Code sets stop_hook_active=true when re-invoking
+    // after this hook already blocked once this turn. Do not block again —
+    // that would loop forever. Same convention as this environment's other
+    // Stop hooks (knowledge-writeback, critic).
+    if v["stop_hook_active"].as_bool().unwrap_or(false) {
+        return Ok(());
+    }
+
+    // This is wired globally (~/.claude/settings.json, every repo), so there
+    // is no per-invocation --project flag in practice. Without scoping,
+    // list_beliefs_filtered(None, ...) falls through to an unfiltered
+    // cross-project scan, and a Working belief left by a concurrent session
+    // in an unrelated project would block this one. Infer the project from
+    // cwd (git toplevel basename, else cwd basename) instead — matching the
+    // project string a model would naturally use when tagging beliefs from
+    // that same directory. Untagged/global Working beliefs still participate
+    // via list_beliefs_by_project's `OR n.project IS NULL`.
+    let inferred;
+    let project = match project {
+        Some(p) => Some(p),
+        None => {
+            inferred = infer_project_from_cwd();
+            inferred.as_deref()
+        }
+    };
+
+    let svc = match connect().await {
+        Ok(svc) => svc,
+        Err(_) => return Ok(()), // fail open — infra issue, not a real block
+    };
+    let working = match svc
+        .list_beliefs_filtered(project, Some(mimir_core::graph::MemoryType::Working))
+        .await
+    {
+        Ok(b) => b,
+        Err(_) => return Ok(()),
+    };
+    if working.is_empty() {
+        return Ok(());
+    }
+
+    let mut msg = format!(
+        "POLICY REQUIREMENT: {} working-memory belief(s) are still unconsolidated. \
+         Every belief this session should have been written as memory_type=working; \
+         consolidation (promote to fact/experiential via insert_belief, or discard via \
+         delete_belief) must happen before the turn ends — not skipped, not deferred. \
+         Resolve each one below, then finish:\n",
+        working.len()
+    );
+    for b in &working {
+        msg.push_str(&format!("  {}  {}\n", b.id, trunc(&b.content, 160)));
+    }
+    eprintln!("{}", msg.trim_end());
+    std::process::exit(2);
 }
 
 async fn cmd_hook_prompt() -> Result<()> {

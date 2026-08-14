@@ -40,28 +40,27 @@ When a belief arrives (injected by hook or retrieved mid-task):
   time absent reinforcement.
 - `memory_type: experiential` — a hard-won working lesson (a gotcha, a corrected
   approach). Exempt from decay — its truth doesn't erode with elapsed time.
-- `memory_type: working` — NOT a general log of in-session state (mimir is
-  explicitly not a second brain for that — you already hold it in context). It is
-  narrower: a **staging tier for a conclusion you're about to assert as
-  `fact`/`experiential` but aren't yet confident will survive scrutiny**. Write it
-  as `working` first; only promote to `fact`/`experiential` once it's held up under
-  some reflection, rather than asserting it durable at first-draft confidence and
-  correcting it later. They are excluded from cross-session `query_relevant`
-  automatically.
-- **Consolidate at natural session-end points** (task wrapping up, or asked to
-  summarize/finish): review the `working` beliefs YOUR session wrote — track their
-  IDs yourself as you create them; do not rely on `list_beliefs(memory_type="working")`
-  for this, since that filter has no session-identity concept and on a shared DB with
-  concurrent sessions cannot distinguish your in-flight beliefs from another session's
-  (the `memory_type` filter exists mainly for orphan cleanup of leftovers from an
-  interrupted prior session, where you'd review candidates before acting). For each
-  Working belief: if it turned out durable and non-obvious, rewrite it as a proper
-  `fact`/`experiential` belief via `insert_belief` and delete the working original; if
-  it didn't pan out or was only useful in the moment, delete it without promoting.
-  Don't leave consolidated-from originals lying around — the promoted belief (or
-  nothing) is what should remain.
-- This is also available as an explicit action if asked to "consolidate mimir" or
-  similar, independent of any particular session ending.
+- `memory_type: working` — default every insert to this. Not a general log of raw
+  in-session state (mimir is still not a second brain for that — you already hold it
+  in context) but every conclusion you'd otherwise write straight to `fact`/
+  `experiential` goes here first, unconditionally — there is no "am I confident
+  enough yet" judgment call at write time. They are excluded from cross-session
+  `query_relevant` automatically.
+- **Consolidate at session/task end**: for each `working` belief, either promote —
+  rewrite as a proper `fact`/`experiential` belief via `insert_belief`, then delete
+  the working original — or discard: delete it outright if it didn't pan out or was
+  only useful in the moment. Don't leave consolidated-from originals lying around —
+  the promoted belief (or nothing) is what should remain.
+- **This is enforced, not just a convention**: a `Stop` hook (`mimir hook stop`,
+  wired into `~/.claude/settings.json`'s `hooks.Stop`) blocks the turn from ending
+  while any `memory_type=working` belief remains in the current project's scope
+  (inferred from cwd; untagged/global `working` beliefs always count too). A
+  prose-only version of this rule was tried first and never actually got used, even
+  by the session that wrote it — text instructions with no enforcement get skipped
+  under load. Do not treat the hook firing as a false positive to explain away; it
+  means a real unconsolidated belief exists — resolve it.
+- Also available as an explicit action if asked to "consolidate mimir" or similar,
+  independent of a session actually ending.
 
 ### Cost discipline
 

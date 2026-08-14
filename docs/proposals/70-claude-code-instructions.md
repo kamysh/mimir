@@ -58,22 +58,22 @@ you do not need to query mimir at startup.
   time absent reinforcement.
 - `memory_type: experiential` — a hard-won working lesson (a gotcha, a corrected
   approach). Exempt from decay — its truth doesn't erode with elapsed time.
-- `memory_type: working` — NOT a general log of in-session state (mimir is
-  explicitly not a second brain for that — you already hold it in context). It is
-  narrower: a **staging tier for a conclusion you're about to assert as
-  `fact`/`experiential` but aren't yet confident will survive scrutiny**. Write it
-  as `working` first; only promote to `fact`/`experiential` once it's held up under
-  some reflection, rather than asserting it durable at first-draft confidence and
-  correcting it later. They are excluded from cross-session `query_relevant`
+- `memory_type: working` — default every insert to this. Not a general log of raw
+  in-session state (mimir is still not a second brain for that — you already hold it
+  in context) but every conclusion you'd otherwise write straight to `fact`/
+  `experiential` goes here first, unconditionally — no "am I confident enough yet"
+  judgment call at write time. Excluded from cross-session `query_relevant`
   automatically.
-- **Consolidate at natural session-end points**: review the `working` beliefs YOUR
-  session wrote — track their IDs yourself as you create them, since
-  `list_beliefs(memory_type="working")` has no session-identity concept and cannot
-  distinguish your in-flight beliefs from a concurrent session's on a shared DB (that
-  filter exists mainly for orphan cleanup of leftovers from an interrupted prior
-  session). For each: promote (rewrite as `fact`/`experiential`, delete the working
-  original) or discard (delete without promoting). Also available as an explicit
-  on-demand action.
+- **Consolidate at session/task end**: for each `working` belief, promote (rewrite
+  as `fact`/`experiential` via `insert_belief`, delete the working original) or
+  discard (delete without promoting if it didn't pan out or was only useful in the
+  moment). Also available as an explicit on-demand action ("consolidate mimir").
+- **Enforced, not just a convention**: a `Stop` hook (`mimir hook stop`) blocks the
+  turn from ending while any `working` belief remains in the current project's scope
+  (cwd-inferred; untagged/global `working` beliefs always count too). The prose-only
+  version of this rule was tried first and never actually got used, even by the
+  session that wrote it — text instructions with no enforcement get skipped under
+  load.
 
 ### Cost discipline
 - Do not query or write `fact`/`experiential` beliefs on trivial tasks — a query that

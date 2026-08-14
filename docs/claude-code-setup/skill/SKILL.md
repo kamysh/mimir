@@ -12,11 +12,14 @@ your own working state — mimir is not a second brain for that. Its entire valu
 is that a belief written by a past session, or before the last compaction, is a
 prior you would otherwise have to re-derive from scratch.
 
-One narrow exception: `memory_type: working` is not for logging in-session
-state wholesale (that would violate the line above) — it's a staging tier for
-a conclusion you're about to assert as `fact`/`experiential` but aren't yet
-confident will survive scrutiny. Write it as `working` first; promote it after
-it holds up, or drop it if it doesn't. See CLAUDE.md's memory-types section.
+Default every insert to `memory_type: working`. It's excluded from
+cross-session `query_relevant`, so nothing you write this way leaks into
+another session half-formed. At session/task end, consolidate: promote each
+Working belief that held up to `fact`/`experiential` via `insert_belief`, then
+delete the Working original; delete outright anything that didn't pan out or
+was only useful in the moment. A `Stop` hook (`mimir hook stop`) blocks the
+turn from ending while Working beliefs remain — consolidation is enforced,
+not optional. See CLAUDE.md's memory-types section.
 
 So there are two failure modes, not one:
 
