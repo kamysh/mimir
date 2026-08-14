@@ -112,7 +112,7 @@ unchanged.
 
 ### 3.1 The two confirmed leaks
 1. **CLI leak.** `mimir`/`mimir-mcp` live in `~/.local/bin` (confirmed:
-   `command -v mimir` → `/home/kamysh/.local/bin/mimir`). Bash is an allowed tool.
+   `command -v mimir` → `$HOME/.local/bin/mimir`). Bash is an allowed tool.
    So any arm — including `control` — can run `mimir query` / `mimir query-doc`
    and read the seeded beliefs and grounding docs directly (belief `d60f49b8`:
    control agents on 04-stale-belief did exactly this and "solved").
@@ -120,9 +120,9 @@ unchanged.
    `~/.local/bin` from the subprocess PATH. This does NOT hold: Claude Code's Bash
    tool sources the user's shell snapshot before each command. Verified — the
    snapshot at `~/.claude/shell-snapshots/snapshot-zsh-*.sh` line ~5364 contains a
-   literal `export PATH=...:/home/kamysh/bin:...:/home/kamysh/.nix-profile/bin:...`
+   literal `export PATH=...:$HOME/bin:...:$HOME/.nix-profile/bin:...`
    that **overwrites** whatever PATH the parent set in `env=`. (`~/.local/bin`
-   re-enters via `/home/kamysh/bin` symlinks / the user's profile chain.) A
+   re-enters via `$HOME/bin` symlinks / the user's profile chain.) A
    parent-env PATH scrub is therefore structurally insufficient.
 3. **Hook-injection leak.** The user's `~/.claude/settings.json` has a live
    `UserPromptSubmit → mimir hook prompt` hook (verified) plus muninn-gate
@@ -140,10 +140,10 @@ bwrap \
   --ro-bind <claude_bin_dir> <claude_bin_dir>      # ~/.nix-profile/bin (claude lives here)
   --ro-bind <node/runtime dirs claude needs> ...    # resolved once at setup, pinned in config
   --bind <workdir> <workdir>                         # the ONLY writable task dir
-  --tmpfs /home/kamysh/.local                        # MASKS ~/.local/bin → mimir/mimir-mcp GONE
-  --bind <sandbox_home> /home/kamysh                 # fresh HOME (see below) ... layered so:
+  --tmpfs $HOME/.local                                # MASKS ~/.local/bin → mimir/mimir-mcp GONE
+  --bind <sandbox_home> $HOME                          # fresh HOME (see below) ... layered so:
   --ro-bind sandbox/settings.json  <CLAUDE_CONFIG_DIR>/settings.json   # EMPTY hooks
-  --ro-bind sandbox/mimir-config.toml /home/kamysh/.config/mimir/config.toml  # DEAD DB
+  --ro-bind sandbox/mimir-config.toml $HOME/.config/mimir/config.toml  # DEAD DB
   --unshare-net                                      # NO network → no DB at localhost:5450
   --unshare-pid --die-with-parent --new-session \
   --setenv PATH "<pinned PATH WITHOUT mimir dirs>" \
@@ -154,7 +154,7 @@ bwrap \
 Why this defeats BOTH leaks, *structurally*, not by assertion:
 
 - **CLI leak + PATH re-add → killed three independent ways.**
-  1. `--tmpfs /home/kamysh/.local` masks the directory the `mimir`/`mimir-mcp`
+  1. `--tmpfs $HOME/.local` masks the directory the `mimir`/`mimir-mcp`
      binaries live in; inside the sandbox they do not exist on disk. Even if the
      shell snapshot re-exports a PATH containing `~/.local/bin`, the entry resolves
      to an empty tmpfs — `mimir` is `command not found`. PATH order is irrelevant

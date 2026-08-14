@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mimir": {
+      "type": "stdio",
+      "command": "mimir-mcp",
+      "args": []
+    }
+  }
+}

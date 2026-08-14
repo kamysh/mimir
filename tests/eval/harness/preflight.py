@@ -40,12 +40,13 @@ from pathlib import Path
 from typing import Optional
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parent
 
 # The mimir source tree whose `crates/core/migrations` is what `sqlx::migrate!()`
 # embeds into the binary. Overridable via config["mimir_src"] or $MIMIR_SRC for
-# CI / a relocated checkout. The default matches this machine's layout.
-DEFAULT_MIMIR_SRC = Path("/home/kamysh/Work/balovstvo/mimir")
+# a relocated checkout; the default self-locates (this file lives at
+# <repo>/tests/eval/harness/preflight.py) rather than hardcoding a path that
+# only works on one machine.
+DEFAULT_MIMIR_SRC = HERE.parents[2]
 
 _MIGRATION_RE = re.compile(r"^(\d+)_.*\.sql$")
 

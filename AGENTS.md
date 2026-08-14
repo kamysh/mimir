@@ -266,6 +266,59 @@ Claude Code will read the reference files (`skill/SKILL.md`, `CLAUDE.md`,
 `settings.json`), compare them against what is already on the machine,
 propose the minimal diff for each step, and apply it only after you confirm.
 
+## Step 7 — Weekly Experiential-belief judge (optional)
+
+`memory_type: experiential` beliefs never decay and have no forgetting
+mechanism, so the set only grows. This step installs a weekly unattended
+pass that reviews them for redundancy/staleness and soft-retires
+duplicates via `record_defeat` — never `delete_belief` directly;
+retirement flows through the existing `sweep_expired_defeated`
+grace-period pipeline (Command reference above). Design rationale:
+mimir belief `4042f100`'s sibling reasoning and
+[`docs/proposals/90-plan-document-summarization.md`](docs/proposals/90-plan-document-summarization.md)'s
+"generation stays outside mimir-core" principle — mimir-core has no
+LLM-completion client (only embedding backends) and none is added for
+this; the judge is a headless `claude -p` call, not new Rust.
+
+Source files: [`docs/claude-code-setup/mimir-judge-experiential/`](docs/claude-code-setup/mimir-judge-experiential/)
+(`prompt.md`, `run.sh`, `mcp-config.json`).
+
+```sh
+cp docs/claude-code-setup/mimir-judge-experiential/prompt.md \
+   "$HOME/.claude/mimir-judge-experiential-prompt.md"
+cp docs/claude-code-setup/mimir-judge-experiential/mcp-config.json \
+   "$HOME/.claude/mimir-judge-mcp.json"
+cp docs/claude-code-setup/mimir-judge-experiential/run.sh \
+   "$HOME/.claude/mimir-judge-experiential.sh"
+chmod +x "$HOME/.claude/mimir-judge-experiential.sh"
+```
+
+`--strict-mcp-config` in `run.sh` is load-bearing, not cosmetic: without
+it, `claude -p` picks up this user's full personal MCP config (any other
+servers they have registered), and an unrelated server that launches a
+real browser or other long-lived process can hang indefinitely with no
+display in an unattended context — this happened on the first version of
+this judge before the isolation was added. Do not drop it.
+
+**Scheduling** — pick whichever fits the host:
+
+- **systemd (Linux)**: a `systemd --user` timer running
+  `bash "$HOME/.claude/mimir-judge-experiential.sh"` weekly, output
+  appended to a log file. (On NixOS, prefer a declarative
+  `systemd.services`/`systemd.timers` module in the host config instead
+  of an imperative `systemctl --user` unit — it survives rebuilds.)
+- **launchd (macOS)**: an equivalent weekly `LaunchAgent`.
+- **cron**: `0 5 * * 0 $HOME/.claude/mimir-judge-experiential.sh >> $HOME/.claude/mimir-judge-experiential.log 2>&1`
+  as a fallback if neither of the above is available.
+
+**Verify:**
+```sh
+bash "$HOME/.claude/mimir-judge-experiential.sh"
+```
+Should complete without error and, if it found anything to retire, add
+`DEFEATS` edges visible via `mimir list --project mimir-meta` (the run
+logs a summary belief there).
+
 ## Final verification gate
 
 All nine lines must print `OK`. If any fails, fix that step before
