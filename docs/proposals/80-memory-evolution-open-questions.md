@@ -171,13 +171,24 @@ identically. A "how should I approach X" query plausibly wants Experiential rank
 lexical+semantic+graph fusion, not function-type-conditioned weighting) — this stays a
 mimir-specific design.
 
-**Open questions**:
-- Is query-shape detection ("how" vs "what") reliable enough to key ranking off, or does
-  it need an explicit caller-supplied hint instead (e.g. a `prefer_type` param on
-  `query_relevant`)?
-- This was explicitly flagged as more speculative than the other candidates until
-  `memory_type` sees real usage across more sessions — is there enough usage data yet to
-  even evaluate whether current ranking is actually a problem?
+**IMPLEMENTED as an explicit caller hint (2026-08-14)**: query-shape auto-detection ("how"
+vs "what") was rejected as too fragile a heuristic over free text. Shipped instead: an
+optional `prefer_type: Option<MemoryType>` parameter on `query_relevant` (CLI
+`--prefer-type`, MCP `prefer_type`), a fourth RRF leg (`W_TYPE`) alongside vector/token/
+prior — matching-type beliefs get a rank boost, non-matches are still returned, and
+omitting the parameter leaves ranking byte-for-byte unchanged (empty leg contributes
+nothing to `weighted_rrf`).
+
+Tuning note, caught by a real integration test before shipping: the first attempt used
+`W_TYPE = 0.1` (same weight class as `W_PRIOR`) and **failed** — `test_query_relevant_
+prefer_type_reorders_tied_matches` showed two beliefs with identical content still ranked
+by the "wrong" type. Root cause: `W_TOKEN` (0.3) and `W_PRIOR` (0.1) both derive from the
+same underlying candidate order, so near-duplicate/tied beliefs (the exact case this
+feature targets) inherit a *correlated* tie-break bias from both legs at once
+(≈0.3+0.1)×(1/60−1/61) ≈ 0.000109, versus `W_TYPE=0.1`'s ≈0.000027 — four times too weak
+to matter. Raised to `W_TYPE = 0.5` (clears the combined bias with margin, still far below
+`W_VECTOR = 1.0` so a real semantic match always wins over type preference alone) — test
+passes, full suite green (48 integration + 85 unit).
 
 ## 4. Generative retrieval (new, from this reading)
 

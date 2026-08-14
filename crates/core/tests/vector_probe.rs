@@ -126,7 +126,7 @@ async fn full_query_relevant_ranking() {
     ] {
         let t0 = std::time::Instant::now();
         let res = svc
-            .query_relevant(q, 10, None)
+            .query_relevant(q, 10, None, None)
             .await
             .expect("query_relevant");
         let elapsed = t0.elapsed();

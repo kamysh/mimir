@@ -219,7 +219,8 @@ fn tools_list() -> Value {
                     "limit":            { "type": "integer", "minimum": 0, "default": 10 },
                     "include_evidence":   { "type": "boolean", "default": false },
                     "evidence_per_belief":{ "type": "integer", "minimum": 0, "default": 3 },
-                    "project":          { "type": "string", "description": "Restrict the candidate pool to this project's beliefs plus untagged (global) beliefs. Omit to search everything." }
+                    "project":          { "type": "string", "description": "Restrict the candidate pool to this project's beliefs plus untagged (global) beliefs. Omit to search everything." },
+                    "prefer_type":      { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Nudge ranking toward this memory type — a soft preference (same weight class as the probability prior), never strong enough to lift an off-topic belief of the preferred type over a real semantic match. Omit for type-neutral ranking." }
                 },
                 "required": ["context"]
             }
@@ -524,8 +525,12 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             let limit = args["limit"].as_u64().unwrap_or(10) as usize;
             let include_evidence = args["include_evidence"].as_bool().unwrap_or(false);
             let project = args["project"].as_str();
+            let prefer_type = args["prefer_type"]
+                .as_str()
+                .map(|s| s.parse::<mimir_core::graph::MemoryType>())
+                .transpose()?;
             if !include_evidence {
-                let beliefs = svc.query_relevant(query, limit, project).await?;
+                let beliefs = svc.query_relevant(query, limit, project, prefer_type).await?;
                 return Ok(serde_json::to_value(&beliefs)?);
             }
             let per = args["evidence_per_belief"].as_u64().unwrap_or(3) as usize;

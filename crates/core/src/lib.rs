@@ -553,6 +553,7 @@ impl MimirService {
         query: &str,
         limit: usize,
         project: Option<&str>,
+        prefer_type: Option<MemoryType>,
     ) -> Result<Vec<Belief>> {
         let all: Vec<Belief> = match project {
             Some(p) => self.store.list_beliefs_by_project(p).await?,
@@ -731,6 +732,19 @@ impl MimirService {
         const W_VECTOR: f32 = 1.0;
         const W_TOKEN: f32 = 0.3;
         const W_PRIOR: f32 = 0.1;
+        // Type-preference leg: only present when the caller passes prefer_type
+        // (section 3, docs/proposals/80-memory-evolution-open-questions.md).
+        // Deliberately higher than W_TOKEN+W_PRIOR combined (0.4), not just
+        // W_PRIOR alone: token and prior are both derived from the same
+        // underlying candidate order, so near-duplicate/tied beliefs (the
+        // common case this feature targets — see the DEFEATS/redundancy work
+        // in section 1/2 of the same doc) inherit a correlated tie-break bias
+        // from BOTH legs at once. A weight matching only W_PRIOR (0.1) is
+        // invisible against that combined ~0.0001 bias — verified by a failing
+        // test at 0.1 before this was raised. 0.5 clears the combined bias
+        // with margin while staying far below W_VECTOR (1.0), so a real
+        // semantic match still always wins over type preference alone.
+        const W_TYPE: f32 = 0.5;
         // Prior list: the candidate set ranked by probability descending.
         let prob_of: std::collections::HashMap<Uuid, f64> = matched
             .iter()
@@ -742,10 +756,29 @@ impl MimirService {
                 .partial_cmp(&prob_of[a])
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        // Type-preference list: matching-type beliefs first (stable order
+        // preserved within each half), so they occupy the low-rank/high-weight
+        // slots of this list without affecting the other two legs at all.
+        let type_ranked: Vec<Uuid> = match prefer_type {
+            Some(pt) => {
+                let (mut preferred, mut rest): (Vec<Uuid>, Vec<Uuid>) = (Vec::new(), Vec::new());
+                for b in &matched {
+                    if b.memory_type == pt {
+                        preferred.push(b.id);
+                    } else {
+                        rest.push(b.id);
+                    }
+                }
+                preferred.append(&mut rest);
+                preferred
+            }
+            None => Vec::new(),
+        };
         let fused = weighted_rrf(&[
             (vector_ranked.as_slice(), W_VECTOR),
             (token_ranked.as_slice(), W_TOKEN),
             (prior_ranked.as_slice(), W_PRIOR),
+            (type_ranked.as_slice(), W_TYPE),
         ]);
         matched.sort_by(|a, b| {
             let sa = fused.get(&a.id).copied().unwrap_or(0.0);
@@ -944,7 +977,7 @@ impl MimirService {
         evidence_per_belief: usize,
         project: Option<&str>,
     ) -> Result<Vec<GroundedBelief>> {
-        let beliefs = self.query_relevant(query, limit, project).await?;
+        let beliefs = self.query_relevant(query, limit, project, None).await?;
         if beliefs.is_empty() {
             return Ok(vec![]);
         }
