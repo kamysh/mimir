@@ -137,9 +137,10 @@ they appear in a separate EXCLUDED block.
 
 `./eval preflight` pins the binary version + migration head into `runs/env.json`
 and aborts on mismatch. It derives the binary's expected migration head from the
-mimir source checkout it was built from (default
-`/home/kamysh/Work/balovstvo/mimir`; override with `config.json["mimir_src"]` or
-`$MIMIR_SRC`), and the DB's applied head from `_sqlx_migrations` on the live DB
+mimir source checkout it was built from (default: this repo, self-located from
+`preflight.py`'s own path; override with `config.json["mimir_src"]` or
+`$MIMIR_SRC` for a relocated checkout), and the DB's applied head from
+`_sqlx_migrations` on the live DB
 (connection read from the same `~/.config/mimir/config.toml` the CLI uses; password
 from `~/.pgpass`). No password is ever written to env.json.
 

@@ -2,7 +2,7 @@
   "claude_bin": "claude",
   "mimir_bin": "mimir",
   "mimir_mcp_bin": "mimir-mcp",
-  "mimir_src": "/home/kamysh/Work/balovstvo/mimir",
+  "mimir_src": null,
 
   "model": null,
   "arms": ["control", "static", "mimir"],
