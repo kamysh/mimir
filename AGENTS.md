@@ -115,6 +115,8 @@ claude mcp list 2>&1 | grep -E '^mimir:.*Connected' >/dev/null
   && jq -e 'any(.hooks.PreToolUse[]?.hooks[]?;        .command | test("mimir hook pretooluse"))' \
        "$HOME/.claude/settings.json" >/dev/null \
   && jq -e 'any(.hooks.Stop[]?.hooks[]?;               .command | test("mimir hook stop"))' \
+       "$HOME/.claude/settings.json" >/dev/null \
+  && jq -e 'any(.hooks.PreToolUse[]?.hooks[]?;        .command | test("mimir-session-project"))' \
        "$HOME/.claude/settings.json" >/dev/null
 ```
 
@@ -319,9 +321,65 @@ Should complete without error and, if it found anything to retire, add
 `DEFEATS` edges visible via `mimir list --project mimir-meta` (the run
 logs a summary belief there).
 
+## Step 8 — Orphaned Working-belief consolidation judge (optional)
+
+Every mimir insert defaults to `memory_type: working`, meant to be
+consolidated (promoted to `fact`/`experiential`, or discarded) at the end of
+the session that wrote it — normally enforced by the `mimir hook stop` Stop
+hook (Step 6). A session killed with Ctrl-C, a crashed terminal, or a reboot
+never reaches that hook, so its Working beliefs are silently orphaned; they
+are only guaranteed to be caught if some *future* session happens to reach a
+graceful Stop scoped to the same project, which may be days away. This step
+installs an hourly unattended pass that finds Working beliefs old enough
+(>8h) that no live session could plausibly still own them, and makes the
+promote-or-discard call an interrupted session never got to make — same
+mechanism as Step 7's judge (headless `claude -p`, isolated MCP config), but
+judging orphaned Working beliefs instead of Experiential redundancy, and on
+an hourly cadence rather than weekly since an unconsolidated orphan is
+unfinished business, not accumulating clutter that can wait a week.
+
+Source files: [`docs/claude-code-setup/mimir-judge-working/`](docs/claude-code-setup/mimir-judge-working/)
+(`prompt.md`, `run.sh`, `mcp-config.json`). `mcp-config.json` can be shared
+with Step 7's judge (both point at the same `mimir-mcp` server) — installing
+it under the same target path as Step 7 is fine and expected.
+
+```sh
+cp docs/claude-code-setup/mimir-judge-working/prompt.md \
+   "$HOME/.claude/mimir-judge-working-prompt.md"
+cp docs/claude-code-setup/mimir-judge-working/mcp-config.json \
+   "$HOME/.claude/mimir-judge-mcp.json"
+cp docs/claude-code-setup/mimir-judge-working/run.sh \
+   "$HOME/.claude/mimir-judge-working.sh"
+chmod +x "$HOME/.claude/mimir-judge-working.sh"
+```
+
+Unlike Step 7's prompt, this one contains a `CURRENT_TIME_UTC` placeholder —
+`run.sh` substitutes it with the real current time at invocation, since the
+judge has no clock or shell access of its own and needs a fixed reference
+point to compare each belief's `created_at` against. Do not strip this
+substitution when adapting the script.
+
+**Scheduling** — same options as Step 7, but hourly instead of weekly:
+
+- **systemd (Linux)**: a `systemd --user` timer running
+  `bash "$HOME/.claude/mimir-judge-working.sh"` hourly, output appended to a
+  log file. (On NixOS, prefer a declarative `systemd.services`/
+  `systemd.timers` module, same as Step 7.)
+- **launchd (macOS)**: an equivalent hourly `LaunchAgent`.
+- **cron**: `0 * * * * $HOME/.claude/mimir-judge-working.sh >> $HOME/.claude/mimir-judge-working.log 2>&1`
+  as a fallback.
+
+**Verify:**
+```sh
+bash "$HOME/.claude/mimir-judge-working.sh"
+```
+Should complete without error. If it found and processed any orphans, a
+summary `working` belief appears under project `mimir-meta` (same log
+pattern as Step 7's judge).
+
 ## Final verification gate
 
-All nine lines must print `OK`. If any fails, fix that step before
+All ten lines must print `OK`. If any fails, fix that step before
 declaring the install complete.
 
 ```sh
@@ -340,6 +398,8 @@ jq -e 'any(.hooks.SessionStart[]?.hooks[]?;      .command | test("mimir skill"))
   "$HOME/.claude/settings.json" >/dev/null                              && echo OK  # 8
 jq -e 'any(.hooks.Stop[]?.hooks[]?;               .command | test("mimir hook stop"))' \
   "$HOME/.claude/settings.json" >/dev/null                              && echo OK  # 9
+jq -e 'any(.hooks.PreToolUse[]?.hooks[]?;        .command | test("mimir-session-project"))' \
+  "$HOME/.claude/settings.json" >/dev/null                              && echo OK  # 10
 ```
 
 Item 9 (the `Stop` hook) is what enforces Working-memory consolidation —
@@ -347,6 +407,17 @@ without it, `memory_type=working` beliefs accumulate with no gate ever
 forcing them to be promoted or discarded. See
 `docs/claude-code-setup/CLAUDE.md`'s memory-types section for what it
 enforces and why.
+
+Item 10 is what enforces session project scoping (issue #9) — without
+it, the SessionStart reminder to run `mimir hook set-project <name>` is
+just prose an agent can silently skip under load, and `mimir hook
+prompt`/`mimir hook pretooluse` stay unscoped, mixing every project's
+beliefs together for the rest of the session. The `PreToolUse` command
+that must be present is documented in
+`docs/claude-code-setup/INSTALL.md`'s "Enforcing session project
+scoping" section — it allows the session's first `Read|Edit|Write|Grep|Glob`
+call through, then blocks every one after that until
+`/tmp/mimir-session-project-$sid` exists.
 
 ## Known errors → fixes
 

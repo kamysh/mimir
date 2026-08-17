@@ -912,11 +912,47 @@ fn session_project_path(session_id: &str) -> std::path::PathBuf {
 /// for why this reads $CLAUDE_CODE_SESSION_ID instead of stdin JSON. Fails
 /// open (still exits 0) on any error — this must never block the agent's
 /// turn, same posture as the other hook subcommands.
+///
+/// The moment a session declares its project is also the first moment any
+/// *other* session's orphaned Working beliefs for that same project become
+/// identifiable — before this, list_beliefs_filtered(project, Working) could
+/// not be scoped at all. Rather than wait for `mimir hook stop` (which only
+/// fires at a graceful end-of-turn the orphaning session never reached) or a
+/// background sweep (which may not run for hours), surface them here,
+/// directly on this command's stdout — this is invoked by the agent via
+/// Bash, not by the Claude Code harness, so plain stdout is what the agent
+/// sees, no hookSpecificOutput plumbing needed. Best-effort only: a DB
+/// connect/query failure here must not block declaring the project, so any
+/// error is swallowed silently, same fail-open posture as every other hook
+/// subcommand.
 async fn cmd_hook_set_project(name: &str) -> Result<()> {
     let Ok(session_id) = std::env::var("CLAUDE_CODE_SESSION_ID") else {
         return Ok(());
     };
     let _ = std::fs::write(session_project_path(&session_id), name);
+
+    if let Ok(svc) = connect().await {
+        if let Ok(working) = svc
+            .list_beliefs_filtered(Some(name), Some(mimir_core::graph::MemoryType::Working))
+            .await
+        {
+            if !working.is_empty() {
+                println!(
+                    "NOTE: {} pre-existing memory_type=working belief(s) found for project \
+                     '{name}' — these were left by a prior session (most likely one that \
+                     never reached a graceful end-of-turn, e.g. Ctrl-C or a crash) and were \
+                     never consolidated. Consider triaging them now (promote via insert_belief \
+                     as fact/experiential + delete_belief on the original, or discard via \
+                     delete_belief) rather than leaving them for a background sweep:",
+                    working.len()
+                );
+                for b in &working {
+                    println!("  {}  {}", b.id, trunc(&b.content, 160));
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 

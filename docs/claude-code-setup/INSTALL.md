@@ -106,3 +106,26 @@ sid=$(jq -r .session_id 2>/dev/null); rm -f "/tmp/claude-mm-mimir-$sid" "/tmp/cl
 ```
 
 See `docs/claude-code-setup/settings.json` in the muninn repo for the full muninn hook set.
+
+## Enforcing session project scoping (issue #9)
+
+The SessionStart hook (above) only *reminds* the agent to run `mimir hook
+set-project <name>` — a prose reminder alone gets skipped under load, the same
+failure mode the `mimir hook stop` working-memory gate exists to prevent for
+consolidation. To make it structurally enforced instead of just suggested, add
+a second command to the same `Read|Edit|Write|Grep|Glob` `PreToolUse` matcher
+used above: it allows the session's first file-touching tool call through
+unconditionally (so the agent can look around enough to form a guess), then
+blocks every call after that until `/tmp/mimir-session-project-$sid` exists —
+the marker file `mimir hook set-project` writes.
+
+```json
+{
+  "type": "command",
+  "command": "sid=$(jq -r .session_id 2>/dev/null); pf=\"/tmp/mimir-session-project-$sid\"; ff=\"/tmp/claude-proj-seen-$sid\"; if [ -f \"$pf\" ] || [ ! -f \"$ff\" ]; then touch \"$ff\" 2>/dev/null; else echo 'Policy: this session has not declared a mimir project yet (issue #9), and this is not the first tool call — ask the user which project this session is about, or state a confident guess and let them correct it, then run: mimir hook set-project <name>. Retry after.' >&2; exit 2; fi"
+}
+```
+
+Unlike the dual mimir/muninn marker above, `/tmp/claude-proj-seen-$sid` is
+**not** reset on `UserPromptSubmit` — project scoping is a once-per-session
+decision, not a once-per-turn one.
