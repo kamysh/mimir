@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat \"${CODEX_HOME:-$HOME/.codex}/mimir-reminder.md\"",
+            "timeout": 5,
+            "statusMessage": "Loading persistent-knowledge guidance"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,3 +1,7 @@
+> **Historical agent-integration proposal.** Its enforcement/automatic-retrieval
+> workflow is superseded. Use the [current installation guide](../claude-code-setup/INSTALL.md)
+> and its skill/templates; do not install the historical commands below.
+
 # Hooks & wiring — make retrieval automatic
 
 The point of these hooks: **don't depend on Claude remembering to retrieve.**

@@ -5,83 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'mcp__mimir tools are available. Invoke the mimir skill now: load the read+write belief-graph protocol (consult before >2-step exploration, errors, or approach choices; write back what recurs). If this session just resumed after a compaction: compaction erased your working memory of the conversation, not the underlying facts you learned. Right now, before anything else, is genuinely the best moment to ask yourself what from before the compaction is worth keeping — you can still reconstruct it clearly, and every turn from here makes that reconstruction harder. This is not a compliance step; forgetting a real finding here means a future session (maybe you, later today) re-derives it from scratch, at real cost. Treat it as picking up a notebook before the details fade, not as a rule to satisfy.'"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "f=\"/tmp/mimir-session-project-$CLAUDE_CODE_SESSION_ID\"; if [ -n \"$CLAUDE_CODE_SESSION_ID\" ] && [ ! -f \"$f\" ]; then echo 'This session has not declared a project for mimir hook injection yet (issue #9 — mimir hook prompt/pretooluse are unscoped until you do). Ask the user which project this session is about, or state a confident guess and let them correct it, then run: mimir hook set-project <name>. Skipping this leaves injection unscoped, never worse than before — do not treat it as a hard blocker if the project genuinely is not clear yet, but do not forget it either.'; fi"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mimir hook prompt"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'Also query muninn recorded knowledge for this repo (mcp__muninn__search_knowledge) at the same time as mimir — it holds durable, non-obvious facts past sessions wrote back about this specific codebase.'"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sid=$(jq -r .session_id 2>/dev/null); rm -f \"/tmp/claude-mm-mimir-$sid\""
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "mcp__mimir__query_relevant|mcp__mimir__query_document",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sid=$(jq -r .session_id 2>/dev/null); touch \"/tmp/claude-mm-mimir-$sid\"; jq -n '{hookSpecificOutput:{hookEventName:\"PostToolUse\",additionalContext:\"POLICY REQUIREMENT: Output exactly one line before proceeding — [mimir] N/10: <reason> — where N is YOUR assessment of how useful the mimir results are for the current task. 1=empty/irrelevant, 5=partial match, 9-10=directly applicable. You are the only one who can evaluate this. Omitting this line is a policy violation.\"}}'",
+            "command": "cat \"$HOME/.claude/mimir-reminder.md\"",
             "timeout": 5
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cmd=$(jq -r '.tool_input.command // \"\"'); if echo \"$cmd\" | grep -qE '\\bgit\\b|\\bgh\\b'; then jq -n '{hookSpecificOutput:{hookEventName:\"PreToolUse\",permissionDecision:\"ask\",permissionDecisionReason:\"git/gh operation — explicit approval required\"}}'; fi"
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mimir hook pretooluse"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mimir hook stop"
           }
         ]
       }

@@ -19,7 +19,7 @@
 
 > *Mimir* (Old Norse: "memory") — the wisest of all beings, keeper of the well of wisdom at the root of Yggdrasil.
 
-Persistent belief graph for [Claude Code](https://claude.ai/code). Mimir stores beliefs, patterns, and the typed relationships between them across sessions, letting Claude reason about its own knowledge over time.
+Persistent belief graph for AI coding agents, including Codex and [Claude Code](https://claude.ai/code). Mimir preserves decisions, rejected approaches and lessons across sessions, so an agent can use prior reasoning instead of repeating investigation and mistakes.
 
 ## What it does
 
@@ -47,11 +47,13 @@ Mimir has three required pieces. Skipping any one leaves an install that looks f
 
 1. A **PostgreSQL container** (or your own DB) holding the belief graph and document index.
 2. **Two binaries** on `PATH` — `mimir` (CLI) and `mimir-mcp` (the MCP server).
-3. The `mimir-mcp` server **registered with Claude Code**. Without this, Claude Code has no tools to call.
+3. The `mimir-mcp` server **registered with your agent client** (Codex or Claude Code).
 
 There is no daemon to start. The MCP server is spawned by Claude Code on demand; the database schema (including the AGE graph) is created automatically by mimir's embedded migrations on first run.
 
-Step 6 at the end of this guide is a one-block verification that all three pieces are in place. Run it before declaring the install complete.
+Step 6 checks the application connection; Step 7 installs and verifies the skill,
+standing guidance and lifecycle reminder. A connected tool alone does not explain
+when retrieval can improve a decision.
 
 ### Conventions used in this guide
 
@@ -76,7 +78,7 @@ docker info >/dev/null 2>&1 && echo OK                                          
 ! lsof -nP -iTCP:5432 -sTCP:LISTEN 2>/dev/null | grep -q . && echo OK              # port 5432 free
 ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx postgres-ai && echo OK # container name free
 echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin" && echo OK                # PATH includes ~/.local/bin
-command -v claude >/dev/null && echo OK                                            # Claude Code CLI installed
+command -v claude >/dev/null && echo OK                                            # or: command -v codex
 ```
 
 If any line fails:
@@ -85,7 +87,7 @@ If any line fails:
 - **Port 5432 in use** → either stop the conflicting service or pick a different port. If you change the port, update *everything* in this guide that mentions `5432`.
 - **Container name `postgres-ai` in use** → either reuse the existing container (if it's a postgres-ai instance from another tool, like muninn) or pick a new name. Do not delete the existing container without checking what it holds.
 - **`~/.local/bin` not on PATH** → add `export PATH="$HOME/.local/bin:$PATH"` to your shell's rc file and reload it.
-- **`claude` CLI missing** → install [Claude Code](https://claude.ai/code) before continuing; Step 5 needs it.
+- **Chosen client missing** → install Codex or [Claude Code](https://claude.ai/code) before Step 5.
 
 ### Step 1: Start the database
 
@@ -259,21 +261,21 @@ Save and close the editor.
 mimir stats >/dev/null && echo OK
 ```
 
-### Step 5: Connect Claude Code
+### Step 5: Connect your agent client
 
-```bash
-claude mcp add --scope user mimir ~/.local/bin/mimir-mcp
+Follow [Agent setup](docs/claude-code-setup/INSTALL.md#register-the-mcp-server)
+for Codex or Claude Code. Inspect existing registration first. For a new setup,
+run the matching command:
+
+```sh
+# Codex
+codex mcp add mimir -- "$HOME/.local/bin/mimir-mcp"
+# Claude Code
+claude mcp add --transport stdio --scope user mimir -- "$HOME/.local/bin/mimir-mcp"
 ```
 
-Use `--scope user` (not `--scope project`) — mimir is a system-wide tool, not project-local.
-
-Restart Claude Code. The mimir tools will appear in its tools panel.
-
-**Verify:**
-
-```bash
-claude mcp list 2>&1 | grep -E '^mimir:.*Connected' && echo OK
-```
+Use the client's `mcp get mimir` to check the configured path, and reconnect or
+open a fresh session to verify an actual tool call.
 
 ### Step 6: Verify the install
 
@@ -286,65 +288,32 @@ command -v mimir-mcp >/dev/null                                                 
 psql -h localhost -U mimir -d mimir \
   -c "SELECT 1 FROM ag_catalog.ag_graph WHERE name='mimir'" -tA 2>/dev/null \
   | grep -q 1                                                                      && echo OK  # 4. AGE graph created by migrations
-claude mcp list 2>&1 | grep -qE '^mimir:.*Connected'                               && echo OK  # 5. MCP wired up to Claude Code
+claude mcp get mimir                                                             && echo OK  # 5. or: codex mcp get mimir
 ```
 
-Five `OK`s = good to go. The most common silent failure is line 4: if it's missing, the migrations haven't run yet (run `mimir stats` once) or the role lacks `search_path = ag_catalog, …` — see Troubleshooting.
+These checks cover application/configuration state, not live tool connectivity
+or reminder delivery. Continue with Step 7. A common failure is line 4: if it's missing, the migrations haven't run yet (run `mimir stats` once) or the role lacks `search_path = ag_catalog, …` — see Troubleshooting.
 
-### Step 7: Install the skill and hooks (recommended)
+### Step 7: Install purposeful agent guidance
 
-The skill teaches Claude Code *how* to use the belief graph — when to read from it, when to write back, and how to calibrate probabilities. The hooks ensure beliefs are surfaced automatically on every session and before every file edit.
+Follow [Agent setup](docs/claude-code-setup/INSTALL.md) to install the shared skill,
+merge the Mimir section into global instructions, and install one SessionStart
+reminder for the chosen client. The guide supplies Mimir-only and combined
+Mimir/Muninn text, client-specific hook templates, and upgrade steps for older
+settings. `install.sh` copies the shared Claude skill; reminder/global-guidance
+merging and verification still use the guide.
 
-**Skill** — copy it to the skills directory (or `install.sh` does this for you):
+The reminder explains how past decisions and failures can inform today's choices,
+including after resume or compaction. The skill explains focused project-scoped
+queries, checking beliefs against current evidence, and writing durable findings.
+The standard setup does not run automatic retrieval before every prompt/action,
+require ratings or writes each turn, or enforce queries through blocking hooks.
 
-```bash
-mkdir -p ~/.claude/skills/mimir
-cp skill/SKILL.md ~/.claude/skills/mimir/SKILL.md
-```
-
-**Wire the hooks** — merge the following into `~/.claude/settings.json` under the top-level `"hooks"` key. Do **not** blindly overwrite the file — append to existing arrays if you already have hooks for these events.
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo 'mcp__mimir tools are available. Invoke the mimir skill now: load the read+write belief-graph protocol (consult before >2-step exploration, errors, or approach choices; write back what recurs).'"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mimir hook prompt"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Edit|Write|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "mimir hook pretooluse"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-`mimir hook prompt` reads the hook JSON from stdin, queries the belief graph on the prompt text, and prints matching beliefs as plain text. `mimir hook pretooluse` does the same for the file path or command, emitting `additionalContext` JSON. Both are built into the `mimir` binary — no shell scripts or extra dependencies needed.
-
-Restart Claude Code for the hooks to take effect.
+Verify the selected text and command output, then actual delivery in the client.
+Codex requires native review of new or changed hook definitions. Finally, observe
+whether the agent retrieves a relevant lesson on a real task without being told
+the tool name. Report untested lifecycle events and behavioral checks; reminder
+presence alone does not prove it changes the agent's choices.
 
 ### Sharing the database with muninn
 

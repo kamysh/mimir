@@ -1,10 +1,9 @@
 # AGENTS.md — install instructions for AI coding agents
 
-This file is the authoritative install procedure for AI coding agents
-(Claude Code, Cursor, Aider, etc.) installing mimir. The human-facing
-[README.md](README.md#installation) covers the same ground but uses
-hedges ("recommended", "optional") that an agent should not rely on.
-Follow this file instead.
+This file is the installation procedure for AI coding agents configuring Mimir
+for Codex or Claude Code. [README.md](README.md#installation) is the human guide;
+[Agent setup](docs/claude-code-setup/INSTALL.md) is the shared client-integration
+procedure. Both use purpose-focused guidance and advisory lifecycle reminders.
 
 ## Read this first
 
@@ -21,29 +20,22 @@ Follow this file instead.
 
 ## What a complete install consists of
 
-Mimir has four required pieces. Skipping any one yields a state that
-looks installed but fails:
+The application needs PostgreSQL, the `mimir` / `mimir-mcp` binaries and an MCP
+registration in the chosen client. The standard agent setup also installs the
+shared skill, global guidance and one purpose-focused SessionStart reminder.
+They explain how prior reasoning can prevent repeated investigation and mistakes.
+They do not require automatic queries, fixed call/write quotas, ratings, a Stop
+critic or consolidation gates. Omitting a reminder does not disable the tools;
+report the intentional omission instead of claiming its delivery was verified.
 
-1. A **PostgreSQL container** (or your own DB) holding the belief
-   graph and document index.
-2. **Two binaries** on `PATH` — `mimir` (CLI) and `mimir-mcp` (the
-   MCP server).
-3. The `mimir-mcp` server **registered with Claude Code**. Without
-   it, Claude Code has no tools to call.
-4. The **skill** and **Claude Code hooks** wired together. The MCP
-   tools alone leave Claude with no trigger to query mimir — the
-   skill's body (`skill/SKILL.md`) assumes a `UserPromptSubmit` hook
-   fires before each message, and a `SessionStart` hook is what loads
-   the skill into a fresh session. Without the hooks the documented
-   loop never starts.
-
-There is **no daemon** to start. The MCP server is spawned by Claude
-Code on demand, and the database schema is created on first run via
-embedded migrations.
+The client launches the MCP server. Schema migrations run through normal Mimir
+startup. Optional scheduled maintenance judges are separate from agent setup.
 
 ## Variables
 
-**Before doing anything else, ask the user for these values:**
+Resolve these values from the existing installation and user agreement; ask only
+for missing consequential choices. Also select `AGENT_CLIENT=codex` or
+`AGENT_CLIENT=claude` (repeat the client steps if both are requested):
 
 1. **Docker container name** — the local name for the postgres-ai container
    (e.g. `local-postgres-ai`). Check `docker ps -a` and suggest a name that
@@ -77,7 +69,7 @@ docker info >/dev/null                                                 # daemon 
 ! lsof -nP -iTCP:"$PORT" -sTCP:LISTEN | grep -q .                      # port free
 ! docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"           # container name free
 echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin"               # PATH includes target
-command -v claude >/dev/null                                           # Claude Code CLI installed
+command -v "$AGENT_CLIENT" >/dev/null                                  # chosen client installed
 ```
 
 If any check fails, stop and report the specific failure to the user.
@@ -103,21 +95,20 @@ command -v mimir && command -v mimir-mcp >/dev/null
 # Step 4 — config exists and CLI can talk to the DB
 [ -f "$HOME/.config/mimir/config.toml" ] && mimir stats >/dev/null 2>&1
 
-# Step 5 — MCP registered with Claude Code
-claude mcp list 2>&1 | grep -E '^mimir:.*Connected' >/dev/null
+# Step 5 — selected client's MCP registration (inspect path/scope too)
+"$AGENT_CLIENT" mcp get mimir
 
-# Step 6 — skill + hooks installed for Claude Code
-[ -f "$HOME/.claude/skills/mimir/SKILL.md" ] \
-  && jq -e 'any(.hooks.UserPromptSubmit[]?.hooks[]?; .command | test("mimir hook prompt"))' \
-       "$HOME/.claude/settings.json" >/dev/null \
-  && jq -e 'any(.hooks.SessionStart[]?.hooks[]?;      .command | test("mimir skill"))' \
-       "$HOME/.claude/settings.json" >/dev/null \
-  && jq -e 'any(.hooks.PreToolUse[]?.hooks[]?;        .command | test("mimir hook pretooluse"))' \
-       "$HOME/.claude/settings.json" >/dev/null \
-  && jq -e 'any(.hooks.Stop[]?.hooks[]?;               .command | test("mimir hook stop"))' \
-       "$HOME/.claude/settings.json" >/dev/null \
-  && jq -e 'any(.hooks.PreToolUse[]?.hooks[]?;        .command | test("mimir-session-project"))' \
-       "$HOME/.claude/settings.json" >/dev/null
+# Step 6 — static reminder probe only; full verification is below.
+# Inspect the chosen client's skill/global guidance at the paths in Agent setup.
+if [ "$AGENT_CLIENT" = codex ]; then
+  MIMIR_CLIENT_SETTINGS="${CODEX_HOME:-$HOME/.codex}/hooks.json"
+else
+  MIMIR_CLIENT_SETTINGS="$HOME/.claude/settings.json"
+fi
+jq -e 'any(.hooks.SessionStart[]?.hooks[]?;
+  .command | test("(mimir|muninn)-reminder[.]md"))' "$MIMIR_CLIENT_SETTINGS"
+# A combined reminder may use Muninn's file path. Inspect its actual text.
+# Inline/custom hooks need equivalent inspection; do not install a duplicate.
 ```
 
 ## Step 1 — Start postgres
@@ -236,39 +227,42 @@ including AGE graph creation. The first run takes a second longer.
 mimir stats >/dev/null && echo OK
 ```
 
-## Step 5 — Register MCP server with Claude Code
+## Step 5 — Register the MCP server in the selected client
+
+Inspect the existing registration before adding one. Use the client's matching
+commands in [Agent setup](docs/claude-code-setup/INSTALL.md#register-the-mcp-server):
 
 ```sh
-claude mcp add --scope user mimir "$HOME/.local/bin/mimir-mcp"
+# Run only the chosen client's command, when registration is absent.
+codex mcp add mimir -- "$HOME/.local/bin/mimir-mcp"
+claude mcp add --transport stdio --scope user mimir -- "$HOME/.local/bin/mimir-mcp"
 ```
 
-Use `--scope user`, never `--scope project`. Mimir is a system-wide
-tool, not project-local.
+Verify the actual path and scope with `mcp get mimir`, then establish connectivity
+in the selected client. An error may involve credentials, environment or process
+startup; inspect the reported cause before changing registration or configuration.
 
-**Verify:**
-```sh
-claude mcp list 2>&1 | grep -E '^mimir:.*Connected' && echo OK
-```
+## Step 6 — Install the skill, guidance and startup reminder
 
-If status is anything other than `Connected`, the MCP server is
-crashing on startup. Run `mimir-mcp` directly to see stderr.
+Follow [Agent setup](docs/claude-code-setup/INSTALL.md). Include this work in the
+agreed installation stage, then complete it and verification without repeatedly
+asking for approval of ordinary details. Use the shared skill and Mimir-only
+reminder, or one combined Mimir/Muninn reminder when both tools are installed.
+Update the existing combined entry rather than adding duplicate hooks.
 
-## Step 6 — Install the skill and Claude Code hooks
-
-The skill, hooks, and a `~/.claude/CLAUDE.md` section work together as a
-unit — the skill alone is not enough. The complete guided procedure is in
-[`docs/claude-code-setup/INSTALL.md`](docs/claude-code-setup/INSTALL.md).
-
-Hand that directory to Claude Code with:
-
-> **"Walk me through installing this. Show me each change before applying
-> it and wait for my approval."**
-
-Claude Code will read the reference files (`skill/SKILL.md`, `CLAUDE.md`,
-`settings.json`), compare them against what is already on the machine,
-propose the minimal diff for each step, and apply it only after you confirm.
+For upgrades, remove the old Mimir/Muninn automation and enforcement within the
+agreed scope, including sentinel/project gates, ratings and Stop requirements.
+Align the global instructions and installed skill as well. The guide describes
+which settings to preserve, Codex hook trust review, and delivery checks for both
+clients. A startup reminder explains why and when to retrieve; it does not query
+on every prompt or file action.
 
 ## Step 7 — Weekly Experiential-belief judge (optional)
+
+This is a separately approved maintenance workflow, not part of the standard
+agent integration or its verification. It changes stored beliefs. The optional
+judge files retain their own workflow and must be reviewed before scheduling;
+the new reminder setup does not install or alter running judge services.
 
 `memory_type: experiential` beliefs never decay and have no forgetting
 mechanism, so the set only grows. This step installs a weekly unattended
@@ -323,20 +317,15 @@ logs a summary belief there).
 
 ## Step 8 — Orphaned Working-belief consolidation judge (optional)
 
-Every mimir insert defaults to `memory_type: working`, meant to be
-consolidated (promoted to `fact`/`experiential`, or discarded) at the end of
-the session that wrote it — normally enforced by the `mimir hook stop` Stop
-hook (Step 6). A session killed with Ctrl-C, a crashed terminal, or a reboot
-never reaches that hook, so its Working beliefs are silently orphaned; they
-are only guaranteed to be caught if some *future* session happens to reach a
-graceful Stop scoped to the same project, which may be days away. This step
-installs an hourly unattended pass that finds Working beliefs old enough
-(>8h) that no live session could plausibly still own them, and makes the
-promote-or-discard call an interrupted session never got to make — same
-mechanism as Step 7's judge (headless `claude -p`, isolated MCP config), but
-judging orphaned Working beliefs instead of Experiential redundancy, and on
-an hourly cadence rather than weekly since an unconsolidated orphan is
-unfinished business, not accumulating clutter that can wait a week.
+This optional maintenance workflow handles intentionally temporary `working`
+beliefs left unresolved by earlier sessions. The standard skill now selects
+`fact` or `experiential` explicitly for durable knowledge, and installs no Stop
+consolidation gate. Existing working beliefs are not modified by changing hooks.
+
+The historical judge template assumes the earlier working-first/Stop-gate
+workflow. Review that assumption, its age criteria and its mutations before
+choosing to schedule it. It is separate from a per-turn Claude critic, and is not
+required for ordinary retrieval or the new agent integration.
 
 Source files: [`docs/claude-code-setup/mimir-judge-working/`](docs/claude-code-setup/mimir-judge-working/)
 (`prompt.md`, `run.sh`, `mcp-config.json`). `mcp-config.json` can be shared
@@ -377,47 +366,37 @@ Should complete without error. If it found and processed any orphans, a
 summary `working` belief appears under project `mimir-meta` (same log
 pattern as Step 7's judge).
 
-## Final verification gate
+## Final verification
 
-All ten lines must print `OK`. If any fails, fix that step before
-declaring the install complete.
+Verify application connectivity and the selected client's registration:
 
 ```sh
-mimir stats >/dev/null                                                  && echo OK  # 1
-docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' \
-  | grep -qx "$CONTAINER"                                               && echo OK  # 2
-command -v mimir-mcp >/dev/null                                         && echo OK  # 3
-psql -h localhost -p "$PORT" -U "$DB_USER" -d "$DB_NAME" \
-  -c "SELECT 1 FROM ag_catalog.ag_graph WHERE name='${DB_NAME}'" \
-  -tA 2>/dev/null | grep -q 1                                           && echo OK  # 4
-claude mcp list 2>&1 | grep -qE '^mimir:.*Connected'                    && echo OK  # 5
-[ -f "$HOME/.claude/skills/mimir/SKILL.md" ]                            && echo OK  # 6
-jq -e 'any(.hooks.UserPromptSubmit[]?.hooks[]?; .command | test("mimir hook prompt"))' \
-  "$HOME/.claude/settings.json" >/dev/null                              && echo OK  # 7
-jq -e 'any(.hooks.SessionStart[]?.hooks[]?;      .command | test("mimir skill"))' \
-  "$HOME/.claude/settings.json" >/dev/null                              && echo OK  # 8
-jq -e 'any(.hooks.Stop[]?.hooks[]?;               .command | test("mimir hook stop"))' \
-  "$HOME/.claude/settings.json" >/dev/null                              && echo OK  # 9
-jq -e 'any(.hooks.PreToolUse[]?.hooks[]?;        .command | test("mimir-session-project"))' \
-  "$HOME/.claude/settings.json" >/dev/null                              && echo OK  # 10
+mimir stats >/dev/null
+command -v mimir-mcp >/dev/null
+"$AGENT_CLIENT" mcp get mimir
 ```
 
-Item 9 (the `Stop` hook) is what enforces Working-memory consolidation —
-without it, `memory_type=working` beliefs accumulate with no gate ever
-forcing them to be promoted or discarded. See
-`docs/claude-code-setup/CLAUDE.md`'s memory-types section for what it
-enforces and why.
+Then check the agent integration explicitly; a working database or MCP
+registration does not prove the agent received useful guidance:
 
-Item 10 is what enforces session project scoping (issue #9) — without
-it, the SessionStart reminder to run `mimir hook set-project <name>` is
-just prose an agent can silently skip under load, and `mimir hook
-prompt`/`mimir hook pretooluse` stay unscoped, mixing every project's
-beliefs together for the rest of the session. The `PreToolUse` command
-that must be present is documented in
-`docs/claude-code-setup/INSTALL.md`'s "Enforcing session project
-scoping" section — it allows the session's first `Read|Edit|Write|Grep|Glob`
-call through, then blocks every one after that until
-`/tmp/mimir-session-project-$sid` exists.
+- Inspect the installed skill and global instructions at the actual client paths.
+  They should match the purpose-focused workflow, without mandatory-call or
+  working-first instructions left over from an earlier installation.
+- Parse the client hook configuration. Locate one relevant `SessionStart`
+  reminder, inspect the selected Mimir-only or combined text and verify its direct
+  output. The static probe in **State detection** is only a locator check.
+- For an upgraded setup, compare against the backup: obsolete retrieval,
+  sentinel/project gates, ratings and Stop enforcement should be removed as
+  agreed; unrelated hooks and settings should be preserved.
+- Complete Codex native hook review where applicable. Verify actual delivery at
+  startup, resume and after compaction using the client's diagnostic evidence.
+- Make a focused retrieval against known stored knowledge. Separately observe
+  whether a fresh agent uses relevant memory for an approach question without an
+  explicit instruction to call Mimir.
+
+Use the [detailed verification procedure](docs/claude-code-setup/INSTALL.md#verify-configuration-delivery-and-usefulness-separately).
+Report results and untested lifecycle/behavioral checks separately. Do not install
+old blocking hooks to satisfy checks copied from a historical guide.
 
 ## Known errors → fixes
 
@@ -461,8 +440,8 @@ call through, then blocks every one after that until
   migrations on first invocation in Step 4. A common mistake (which
   the README's older wording encouraged) is to expect the graph
   after the setup script runs.
-- **Do not declare install complete** before running the **Final
-  verification gate** above and seeing five `OK` lines.
+- **Do not declare the agent integration verified** from command success alone.
+  Complete **Final verification** and report its observed outcomes and limits.
 
 ## Companion tool
 

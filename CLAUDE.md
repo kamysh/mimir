@@ -54,7 +54,7 @@ mimir patterns [--project NAME] [--limit N]
 mimir sweep-defeated [--threshold 0.3] [--grace-hours 24] [--project NAME]  # attenuated deletion of defeated beliefs past grace period
 mimir reembed                                 # one-time backfill of belief_embeddings for pre-existing beliefs
 
-# Claude Code hook subcommands (invoked by settings.json, not directly)
+# Legacy opt-in hook subcommands (not wired by the standard agent setup)
 mimir hook prompt                             # UserPromptSubmit — inject relevant beliefs
 mimir hook pretooluse                         # PreToolUse — inject beliefs relevant to the file/command
 mimir hook stop [--project NAME]              # Stop — blocks the turn while memory_type=working beliefs are unconsolidated
@@ -99,6 +99,13 @@ AGE 1.x does not support `[:A|B]` relationship-type OR syntax. Use UNION inside 
 ## Formal spec
 
 `spec/Mimir.agda` and its submodules (`Types`, `Inference`, `Setup`, `Graph`, `Documents`, `Evidence`) are compiled with `--safe` mode. The spec is Agda-only; no Haskell runtime is involved. Run `agda Mimir.agda` inside `spec/` to typecheck. `Inference` proves the do-operator's `intervene-ignores-parents`; `Evidence` proves `propagate-evidence-invariant` (GROUNDS edges never perturb belief inference).
+
+## Agent integration
+
+Use [the agent setup guide](docs/claude-code-setup/INSTALL.md) for Codex and
+Claude Code. The standard integration uses a purpose-focused SessionStart
+reminder and the shared skill; it does not install automatic retrieval,
+mandatory-call gates, ratings, a Stop critic or consolidation enforcement.
 
 ## Configuration and environment
 
