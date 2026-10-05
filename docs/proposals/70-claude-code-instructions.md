@@ -1,3 +1,7 @@
+> **Historical agent-integration proposal.** Its enforcement/automatic-retrieval
+> workflow is superseded. Use the [current installation guide](../claude-code-setup/INSTALL.md)
+> and its skill/templates; do not install the historical commands below.
+
 # Claude Code instructions for mimir (`CLAUDE.md`)
 
 This is the **standing policy** Claude Code should carry in every session that works

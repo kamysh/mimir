@@ -1,13 +1,16 @@
 # mimir × Claude Code — proposal set
 
-Seven documents. Three are finished artifacts you install today; four are
-implementation plans to hand to Claude Code, one phase at a time.
+Historical proposal set. The earlier agent-wiring proposals are superseded by
+[the current setup guide](../claude-code-setup/INSTALL.md), which installs
+purpose-focused reminders without automatic retrieval or mandatory-call gates.
+Use the current shared skill and templates for installations. The feature plans
+below retain their own historical status; this notice does not assert completion.
 
 | File | Type | What it is |
 |---|---|---|
-| `10-mimir-SKILL.md` | **install now** | Rewritten skill, balanced read + write, with the "use a retrieved belief" discipline the current skill is missing. |
-| `20-hooks-and-wiring.md` | **install now** | `settings.json` hook block + two helper scripts that put beliefs in front of Claude automatically, plus install/verify steps. |
-| `70-claude-code-instructions.md` | **install now** | The project `CLAUDE.md` — the always-loaded standing policy for using mimir each session. Complements the skill (the on-demand manual) and the hooks (automatic injection). |
+| `10-mimir-SKILL.md` | historical, superseded | Rewritten skill, balanced read + write, with the "use a retrieved belief" discipline the current skill is missing. |
+| `20-hooks-and-wiring.md` | historical, superseded | `settings.json` hook block + two helper scripts that put beliefs in front of Claude automatically, plus install/verify steps. |
+| `70-claude-code-instructions.md` | historical, superseded | The project `CLAUDE.md` — the always-loaded standing policy for using mimir each session. Complements the skill (the on-demand manual) and the hooks (automatic injection). |
 | `30-plan-do-operator.md` | plan → Claude Code | Phase 1. Give `CAUSES` real semantics via Pearl's do-operator as a *read-only* counterfactual query. Small, highest leverage. |
 | `40-plan-logodds-propagation.md` | plan → Claude Code | Phase 2. Replace the order-dependent single-pass BFS with order-independent log-odds accumulation run to a fixpoint. |
 | `50-plan-beta-beliefs.md` | plan → Claude Code | Phase 3 (optional). Collapse `probability` + `confidence` into one `Beta(α,β)`; updates become conjugate. Schema change. |
@@ -31,11 +34,11 @@ confidence a real quantity that updates rather than only decays; and evidence
 edges let documents inform belief quality and supply provenance, so a fact with a
 source is treated — and trusted — differently from a hunch.
 
-## Recommended order
+## Historical feature-plan order
 
-1. Install `10`, `20`, `70` — skill, hooks, `CLAUDE.md`. This is most of the
-   practical win and needs no Rust. Run for a few sessions; see whether retrieval
-   changes behavior.
+1. For agent integration, use the [current setup guide](../claude-code-setup/INSTALL.md)
+   in place of the superseded `10`, `20`, `70` artifacts. Observe whether
+   retrieval changes behavior before drawing conclusions about its usefulness.
 2. Phase 1 do-operator (`30`) and Phase 4 C-core (`60`, first layer). Both are
    self-contained and carry no risk to existing inference — Phase 4's
    non-interference is proved. C-core also gives you provenance and the eval's
@@ -54,5 +57,5 @@ treat those as a definition of done and to stop and report if any can't be met
 rather than working around them. The plans deliberately reference exact file
 paths, function names, and signatures as they exist in the repo today (verified
 against the current `main`), so Claude Code should diff against reality first and
-flag drift before editing. (`10`, `20`, and `70` are not plans — they install
-directly.)
+flag drift before editing. `10`, `20`, and `70` retain historical integration
+proposals and are no longer installation sources.

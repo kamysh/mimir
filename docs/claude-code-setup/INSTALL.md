@@ -1,131 +1,180 @@
-# Claude Code setup — mimir
+# Agent setup — Mimir for Codex and Claude Code
 
-Hand this directory to Claude Code with the instruction:
-**"Walk me through installing this. Show me each change before applying it and wait for my approval."**
+Mimir helps recover prior decisions, rejected approaches and lessons that would
+otherwise be rediscovered. The skill explains how to query and evaluate that
+knowledge and preserve useful findings. A startup reminder restores the purpose
+of these tools at session start, resume and after context compaction.
 
-Claude Code will read the reference files here, compare them against what is
-already on the machine, propose the minimal diff for each step, and apply it
-only after you confirm.
+Agree on the client(s), affected files and installation scope first. Compare
+existing settings and back up affected files. Complete the approved stage without
+asking again for every command. Preserve unrelated instructions, hooks, native
+permissions and MCP servers. This guide changes agent integration, not database
+configuration or services.
 
-## Prerequisites (verify before starting)
+## Prerequisites
 
-- `~/.local/bin/mimir` and `~/.local/bin/mimir-mcp` installed (`mimir --version` works)
-- `~/.config/mimir/config.toml` configured (`mimir stats` succeeds)
-- `jq` on PATH
-- Claude Code installed, `claude` on PATH
+- Installed `mimir` and `mimir-mcp`, with the intended database reachable.
+- The chosen client: Codex, Claude Code, or both.
+- A POSIX shell for these examples; `jq` for configuration checks.
+- For the combined reminder, Muninn's MCP server and skill also installed.
 
-## What is in this directory
+Reuse existing connection settings. Application/database installation is covered
+by [README.md](../../README.md#installation) and [AGENTS.md](../../AGENTS.md).
 
-| File | Purpose |
-|---|---|
-| `skill/SKILL.md` | Target content for `~/.claude/skills/mimir/SKILL.md` |
-| `CLAUDE.md` | Target content for the mimir section of `~/.claude/CLAUDE.md` |
-| `settings.json` | Reference hooks — **not a drop-in replacement**, see Step 2 |
+## Register the MCP server
 
-## Steps (each requires human approval before Claude Code acts)
+Inspect the selected client's existing `mcp list` / `mcp get mimir` output first.
+For a new registration, using the default binary location:
 
-### Step 1 — skill file
+```sh
+# Codex
+codex mcp add mimir -- "$HOME/.local/bin/mimir-mcp"
+codex mcp get mimir
 
-Claude Code should:
-1. Read `skill/SKILL.md` and `~/.claude/skills/mimir/SKILL.md` (if it exists).
-2. Show the diff.
-3. Write the new file only after approval. Create `~/.claude/skills/mimir/` if absent.
-
-### Step 2 — settings.json hooks
-
-`settings.json` here is a **reference**, not a replacement. The existing
-`~/.claude/settings.json` may have other permissions, hooks, and settings that
-must be preserved.
-
-Claude Code should:
-1. Read `settings.json` and `~/.claude/settings.json`.
-2. For each hook event, identify what is present in the reference but absent in the target.
-3. Show the proposed additions as a clear before/after of the relevant sections.
-4. Apply each addition only after approval. Never remove existing entries.
-
-The hooks to add if absent:
-
-- **`SessionStart`**: mimir skill reminder echo
-- **`UserPromptSubmit`**: `mimir hook prompt` + per-prompt sentinel reset
-- **`PostToolUse`** (matcher `mcp__mimir__query_relevant|mcp__mimir__query_document`): mimir sentinel creation
-- **`PreToolUse`** (matcher `Edit|Write|Bash`): `mimir hook pretooluse`
-- **`PreToolUse`** (matcher `Bash`): git/gh gate
-
-See `settings.json` for the exact commands.
-
-### Step 3 — CLAUDE.md (global instructions)
-
-`~/.claude/CLAUDE.md` is loaded by Claude Code at the start of every session.
-The `CLAUDE.md` here contains the mimir section only.
-
-Claude Code should:
-1. Read `CLAUDE.md` and `~/.claude/CLAUDE.md` (if it exists).
-2. If the mimir section is already present, show what would change.
-3. If absent, show the section that would be appended.
-4. Apply only after approval. Never remove unrelated sections.
-
-### Step 4 — register MCP server
-
-Claude Code should run `claude mcp list` and check whether `mimir` is registered
-and pointing at `~/.local/bin/mimir-mcp`.
-
-If missing or wrong path:
-```
-claude mcp remove mimir --scope user   # only if it exists with wrong path
-claude mcp add --scope user mimir ~/.local/bin/mimir-mcp
+# Claude Code
+claude mcp add --transport stdio --scope user mimir -- "$HOME/.local/bin/mimir-mcp"
+claude mcp get mimir
 ```
 
-Show the proposed commands and wait for approval before running each one.
+Run only the chosen client's commands. An existing registration with the correct
+path and scope needs no replacement. These start a local stdio process; registration
+alone does not establish connectivity in an already-open session.
+Sources: [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
+[Claude MCP](https://code.claude.com/docs/en/mcp).
 
-### Step 5 — verify
+## Install the shared skill and standing guidance
 
-After all changes are applied:
-1. Show the final `~/.claude/settings.json` for a last review.
-2. Run `claude mcp list` to confirm `mimir` is registered and Connected.
-3. Prompt the user to restart Claude Code for hooks and the new MCP binary to take effect.
+[skill/SKILL.md](skill/SKILL.md) is the canonical skill for both clients and the
+repository's `install.sh`. It uses project-scoped queries, evidence evaluation and
+selective durable writeback. No automatic retrieval or Stop gate is assumed.
 
-## If muninn is also installed
+| Client | Skill location for a new setup | Global instructions |
+| --- | --- | --- |
+| Codex | `~/.agents/skills/mimir/SKILL.md` | `~/.codex/AGENTS.md` or configured Codex home |
+| Claude Code | `~/.claude/skills/mimir/SKILL.md` | `~/.claude/CLAUDE.md` |
 
-When both mimir and muninn are wired, you can add a stronger enforcement hook
-that requires both tools to be queried before any file access. This goes in
-`PreToolUse` with matcher `Read|Edit|Write|Grep|Glob`:
+Existing Codex installations may discover `~/.codex/skills`; update the actual
+working skill location instead of creating duplicates. From the repository root,
+for a new setup in the chosen client:
 
-```json
-{
-  "matcher": "Read|Edit|Write|Grep|Glob",
-  "hooks": [{
-    "type": "command",
-    "command": "sid=$(jq -r .session_id 2>/dev/null); { [ -f \"/tmp/claude-mm-mimir-$sid\" ] && [ -f \"/tmp/claude-mm-muninn-$sid\" ]; } || { echo 'Policy: query mimir (mcp__mimir__query_relevant) AND muninn (mcp__muninn__search_*) BEFORE reading files or writing code. Run both, then retry.' >&2; exit 2; }"
-  }]
-}
+```sh
+# Codex
+mkdir -p "$HOME/.agents/skills/mimir"
+cp docs/claude-code-setup/skill/SKILL.md "$HOME/.agents/skills/mimir/SKILL.md"
+# Claude Code
+mkdir -p "$HOME/.claude/skills/mimir"
+cp docs/claude-code-setup/skill/SKILL.md "$HOME/.claude/skills/mimir/SKILL.md"
 ```
 
-Also add a `UserPromptSubmit` hook that resets the muninn sentinel each prompt:
+Merge [CLAUDE.md](CLAUDE.md)'s Mimir section into the client's global instructions;
+its content applies to both clients. Replace an older Mimir section rather than
+appending contradictory rules. Preserve other sections.
+Sources: [Codex skills](https://learn.chatgpt.com/docs/build-skills),
+[Claude skills](https://code.claude.com/docs/en/skills).
+
+## Install one purpose-focused reminder
+
+Choose [reminders/mimir.md](reminders/mimir.md) for Mimir alone, or
+[reminders/mimir-muninn.md](reminders/mimir-muninn.md) when both tools and skills
+are installed. The combined wording is shared with Muninn's installation guide.
+If Muninn already installed a combined reminder, reuse that hook and its text
+file; do not add another one for Mimir. Installing the second tool should update
+an existing single-tool reminder to the combined version.
+
+For a new reminder, from the repository root:
+
+```sh
+REMINDER_SOURCE=docs/claude-code-setup/reminders/mimir.md
+# For both tools, select this instead:
+# REMINDER_SOURCE=docs/claude-code-setup/reminders/mimir-muninn.md
+
+# Codex
+mkdir -p "${CODEX_HOME:-$HOME/.codex}"
+cp "$REMINDER_SOURCE" "${CODEX_HOME:-$HOME/.codex}/mimir-reminder.md"
+# Claude Code
+mkdir -p "$HOME/.claude"
+cp "$REMINDER_SOURCE" "$HOME/.claude/mimir-reminder.md"
 ```
-sid=$(jq -r .session_id 2>/dev/null); rm -f "/tmp/claude-mm-mimir-$sid" "/tmp/claude-mm-muninn-$sid"
-```
 
-See `docs/claude-code-setup/settings.json` in the muninn repo for the full muninn hook set.
+Run only the selected client's copy commands. The reminder lives independently
+of the source checkout. Adapt paths for a custom client configuration directory.
 
-## Enforcing session project scoping (issue #9)
+### Codex
 
-The SessionStart hook (above) only *reminds* the agent to run `mimir hook
-set-project <name>` — a prose reminder alone gets skipped under load, the same
-failure mode the `mimir hook stop` working-memory gate exists to prevent for
-consolidation. To make it structurally enforced instead of just suggested, add
-a second command to the same `Read|Edit|Write|Grep|Glob` `PreToolUse` matcher
-used above: it allows the session's first file-touching tool call through
-unconditionally (so the agent can look around enough to form a guess), then
-blocks every call after that until `/tmp/mimir-session-project-$sid` exists —
-the marker file `mimir hook set-project` writes.
+Merge the `SessionStart` entry from [codex-hooks.json](codex-hooks.json) into
+`${CODEX_HOME:-$HOME/.codex}/hooks.json`. Use one representation; do not duplicate
+it in inline TOML or project hooks. Review and trust the new or changed definition
+through `/hooks`; Codex skips untrusted definitions. Leave trust records to the
+client. The unfiltered event covers startup, resume, clear and post-compaction
+context. See the [Codex hook reference](https://learn.chatgpt.com/docs/hooks).
 
-```json
-{
-  "type": "command",
-  "command": "sid=$(jq -r .session_id 2>/dev/null); pf=\"/tmp/mimir-session-project-$sid\"; ff=\"/tmp/claude-proj-seen-$sid\"; if [ -f \"$pf\" ] || [ ! -f \"$ff\" ]; then touch \"$ff\" 2>/dev/null; else echo 'Policy: this session has not declared a mimir project yet (issue #9), and this is not the first tool call — ask the user which project this session is about, or state a confident guess and let them correct it, then run: mimir hook set-project <name>. Retry after.' >&2; exit 2; fi"
-}
-```
+### Claude Code
 
-Unlike the dual mimir/muninn marker above, `/tmp/claude-proj-seen-$sid` is
-**not** reset on `UserPromptSubmit` — project scoping is a once-per-session
-decision, not a once-per-turn one.
+Merge the `SessionStart` entry from [settings.json](settings.json) into
+`~/.claude/settings.json`. Inspect it through `/hooks` and verify in a fresh
+session. The unfiltered event includes startup, resume and compaction. See the
+[Claude hook reference](https://code.claude.com/docs/en/hooks#sessionstart).
+
+Both templates only read and print a text file. They perform no query or write,
+require no ratings and impose no tool-call or consolidation gate. A deliberate
+choice to omit the hook does not disable Mimir; report that setup choice.
+
+## Upgrade an enforced setup
+
+Changing the startup message alone leaves earlier enforcement active. Within the
+agreed Mimir/Muninn integration scope, remove:
+
+- Automatic `mimir hook prompt` and `mimir hook pretooluse` registrations.
+- Query-sentinel reset/creation hooks and file-access gates that depend on them.
+- Project-declaration marker gates/reminders used by that automatic injection.
+- Required relevance ratings and per-turn writeback/consolidation Stop gates,
+  including `mimir hook stop`.
+- Older Mimir/Muninn reminders replaced by the single combined reminder.
+
+Review the installed skill and global instructions too: remove fixed query/write
+quotas, compulsory disposition lines and the instruction to make every insert
+`working`. Durable findings use an explicit appropriate memory type; temporary
+working beliefs need deliberate resolution when used. Existing beliefs are not
+modified by this configuration update.
+
+A personal Claude Stop critic that launches a second model is separate from
+Mimir retrieval. When retiring that critic is part of the approved change, remove
+its registration; retain its prompt/log files for recovery. Preserve Git guards,
+collaboration hooks, memory-file loading and other unrelated behavior, including
+any commands sharing a hook entry with the removed logic. Never replace the
+entire settings file with this reference.
+
+Legacy hook CLI commands remain available for explicitly chosen custom workflows;
+the standard installer does not wire them. Optional scheduled belief-maintenance
+judges are separate from the per-turn critic and are not installed, stopped or
+reconfigured by this procedure.
+
+## Verify configuration, delivery and usefulness separately
+
+1. Parse the merged JSON; compare the diff with the backup. Confirm the selected
+   reminder, skill and standing guidance agree and unrelated settings survived.
+2. Run the actual reminder command directly. It should emit the selected text,
+   exit zero and perform no retrieval or mutation. Example for a new Claude setup:
+
+   ```sh
+   printf '%s\n' '{"hook_event_name":"SessionStart","source":"compact"}' |
+     sh -c 'cat "$HOME/.claude/mimir-reminder.md"'
+   ```
+
+   For Codex use the command from `codex-hooks.json`. Supplying `source: compact`
+   manually tests the command's output, not client compaction.
+3. Inspect client MCP registration and reconnect or use a fresh session. Make a
+   focused `query_relevant` call for known stored knowledge and evaluate the result.
+   A successful `mcp list` alone does not prove the running session is connected.
+4. Confirm skill discovery and actual reminder delivery on startup, resume and
+   after `/compact` in a disposable conversation. Use hook diagnostics/transcript
+   evidence that the text reached model context. Report unsupported or untested
+   events, including automatic compaction if only manual compaction was checked.
+5. Give a fresh session an approach question with a relevant stored lesson,
+   without explicitly naming the tool. Observe whether the agent retrieves and
+   uses the lesson appropriately. If Muninn is present, also try a code-discovery
+   question with the implementation location unspecified. Distinguish reminder
+   delivery from useful tool selection; forced calls check connectivity only.
+
+Report command checks, lifecycle delivery and behavioral observations separately.
+Do not claim that parsing JSON or printing the reminder proves agent adoption.

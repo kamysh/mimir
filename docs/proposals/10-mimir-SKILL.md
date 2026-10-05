@@ -3,6 +3,10 @@ name: mimir
 description: Use whenever mcp__mimir tools are available. Two halves, equally important. READ — before you spend more than ~2 exploratory steps on a sub-task, hit an error, or choose among approaches, consult the belief graph; treat a returned belief as a prior that prunes your hypothesis space, and either act on it or say why you're overriding it. WRITE — after any non-trivial turn, if you learned, derived, or got corrected on something that would have changed what you did and will recur, insert it. A belief you neither use nor write back is wasted.
 ---
 
+> **Historical agent-integration proposal.** Its enforcement/automatic-retrieval
+> workflow is superseded. Use the [current installation guide](../claude-code-setup/INSTALL.md)
+> and its skill/templates; do not install the historical commands below.
+
 # Mimir
 
 You have a persistent belief graph. It is your memory across the two things
