@@ -10,11 +10,15 @@ nothing, a wrong deletion costs a hard-won lesson permanently.
 mechanism — the bucket only grows. Your job: find genuinely redundant or
 stale Experiential beliefs and soft-retire them, project by project.
 
-1. Call `mcp__mimir__list_beliefs` with `memory_type: "experiential"` for
-   each project in turn (call it once with no project filter first to see
-   which projects exist among the results, then iterate). Do not process
-   more than ~150 beliefs in one run — if a project has more, do your best
-   effort and stop; there will be another run.
+1. Call `mcp__mimir__list_beliefs` with `memory_type: "experiential"`,
+   `limit: 10`, `offset: 0`, and no project filter. The paged response has
+   `beliefs`, `total`, and `next_offset`. Continue with `offset` set to
+   `next_offset` until it is null. Never
+   call `list_beliefs` without `limit` in this run: the complete result is
+   too large for the tool response. Group the beliefs by project as you
+   review them; untagged beliefs form their own global group. If `total`
+   exceeds 200, stop and report the pass as blocked rather than repeatedly
+   reviewing only the oldest beliefs and starving the rest.
 
 2. For each project's Experiential set, look for:
    - **Near-duplicates**: two beliefs stating essentially the same lesson,
@@ -50,6 +54,13 @@ stale Experiential beliefs and soft-retire them, project by project.
    despite looking similar (so a human skimming this log understands your
    judgment, not just your actions). This is a `working` belief — a future
    consolidation pass or the user will decide whether it's worth promoting.
+
+5. After that `insert_belief` succeeds, finish your response with the exact
+   line `MIMIR_JUDGE_COMPLETE` on its own. If any required tool call is
+   unavailable, denied, or too large, explain the blocker and finish with
+   `MIMIR_JUDGE_BLOCKED` instead. Never claim completion before the summary
+   belief is inserted. The unattended runner treats a missing completion
+   line as a failed pass.
 
 ## Hard limits
 

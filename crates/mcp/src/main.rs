@@ -5,7 +5,7 @@ use tracing::error;
 
 use mimir_core::{
     config::Config,
-    graph::{EdgeType, MemoryType},
+    graph::{Belief, EdgeType, MemoryType},
     MimirService,
 };
 
@@ -157,12 +157,14 @@ fn tools_list() -> Value {
         },
         {
             "name": "list_beliefs",
-            "description": "List beliefs. If project is given, restricts to that project's beliefs plus untagged (global) beliefs; omit to list everything.",
+            "description": "List beliefs. If project is given, restricts to that project's beliefs plus untagged (global) beliefs; omit to list everything. Use limit and offset for bounded, oldest-first pages; without limit the legacy full array is returned.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "project": { "type": "string", "description": "Restrict to this project's beliefs plus untagged (global) beliefs. Omit to list everything." },
-                    "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Restrict to this memory type. Useful for orphan cleanup of leftover Working beliefs from an interrupted prior session — NOT a substitute for tracking the IDs of Working beliefs your own session wrote, since this filter has no session-identity concept and cannot distinguish your in-flight Working beliefs from a concurrent session's on a shared DB." }
+                    "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Restrict to this memory type. Useful for orphan cleanup of leftover Working beliefs from an interrupted prior session — NOT a substitute for tracking the IDs of Working beliefs your own session wrote, since this filter has no session-identity concept and cannot distinguish your in-flight Working beliefs from a concurrent session's on a shared DB." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 10, "description": "Return a page of at most this many beliefs, ordered by created_at then id. When present, the result is an object with beliefs, total, offset, and next_offset." },
+                    "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Zero-based position in the filtered, oldest-first result. Requires limit; use next_offset from the previous page." }
                 }
             }
         },
@@ -314,6 +316,56 @@ fn tools_list() -> Value {
 // ---------------------------------------------------------------------------
 // Tool dispatch
 // ---------------------------------------------------------------------------
+
+fn paginate_beliefs(mut beliefs: Vec<Belief>, limit: usize, offset: usize) -> Value {
+    beliefs.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let total = beliefs.len();
+    let page: Vec<_> = beliefs.into_iter().skip(offset).take(limit).collect();
+    let end = offset.saturating_add(page.len());
+    let next_offset = (end < total).then_some(end);
+    json!({
+        "beliefs": page,
+        "total": total,
+        "offset": offset,
+        "next_offset": next_offset,
+    })
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+
+    #[test]
+    fn pages_are_ordered_without_overlap_and_end_at_null() {
+        let mut beliefs: Vec<_> = (0..3)
+            .into_iter()
+            .map(|n| {
+                let mut belief = Belief::new(n.to_string(), 0.5, 0.5).unwrap();
+                belief.created_at = format!("2020-01-01T00:00:0{n}Z").parse().unwrap();
+                belief
+            })
+            .collect();
+        beliefs.rotate_right(1);
+
+        let first = paginate_beliefs(beliefs.clone(), 2, 0);
+        assert_eq!(first["total"], 3);
+        assert_eq!(first["next_offset"], 2);
+        assert_eq!(first["beliefs"][0]["content"], "0");
+        assert_eq!(first["beliefs"][1]["content"], "1");
+
+        let last = paginate_beliefs(beliefs.clone(), 2, 2);
+        assert_eq!(last["beliefs"][0]["content"], "2");
+        assert!(last["next_offset"].is_null());
+
+        let beyond = paginate_beliefs(beliefs, 2, 4);
+        assert_eq!(beyond["beliefs"].as_array().unwrap().len(), 0);
+        assert!(beyond["next_offset"].is_null());
+    }
+}
 
 async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Result<Value> {
     match name {
@@ -482,7 +534,31 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                 None => None,
             };
             let beliefs = svc.list_beliefs_filtered(project, memory_type).await?;
-            Ok(serde_json::to_value(&beliefs)?)
+            match args.get("limit") {
+                None => {
+                    if args.get("offset").is_some() {
+                        anyhow::bail!("'offset' requires 'limit'");
+                    }
+                    Ok(serde_json::to_value(&beliefs)?)
+                }
+                Some(raw_limit) => {
+                    let limit = raw_limit
+                        .as_u64()
+                        .filter(|n| (1..=10).contains(n))
+                        .ok_or_else(|| anyhow::anyhow!("'limit' must be an integer from 1 to 10"))?
+                        as usize;
+                    let offset = match args.get("offset") {
+                        None => 0,
+                        Some(raw_offset) => raw_offset
+                            .as_u64()
+                            .and_then(|n| usize::try_from(n).ok())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("'offset' must be a nonnegative integer")
+                            })?,
+                    };
+                    Ok(paginate_beliefs(beliefs, limit, offset))
+                }
+            }
         }
 
         "list_patterns" => {
