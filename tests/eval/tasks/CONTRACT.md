@@ -1,8 +1,10 @@
 # Task file contract (mimir-eval)
 
-Authoritative source: `IMPLEMENTATION_PLAN.md` §4 and §6. This file is the
-operational reference an author follows when adding or auditing a task. Every
-task MUST pass `python -m harness.task_check <task_dir>` (exit 0) before it ships.
+This is the retained contract for the existing evaluator; its original design
+is recorded in `../IMPLEMENTATION_PLAN.md` §4 and §6. The legacy synthetic tasks
+have been removed, and no benchmark tasks are currently bundled. This contract
+does not settle the design of future learning-loop evaluations. Every
+task MUST pass `./eval task-check <task_dir>` (exit 0) before it ships.
 The self-check spends **zero** model/API budget — no `claude` is invoked.
 
 ## Files
@@ -13,12 +15,11 @@ tasks/<NN-name>/
   belief.json   # REQUIRED. The injected knowledge + scoring metadata (see below).
   setup.sh      # REQUIRED, +x. $1=workdir; materialises the opaque tool + broken driver.
   verify.sh     # REQUIRED, +x. $1=workdir; exit 0 == solved (re-runs the driver clean).
-  trap.py       # REQUIRED. trap_hit(tool_calls)->bool; INVOCATION predicate (§6).
   check.json    # REQUIRED for the self-check. Contract metadata; NOT shipped to the actor.
   solution.sh   # REQUIRED, +x. CHECK-ONLY mechanical fix (the "stub actor"); NOT shipped.
   naive.sh      # REQUIRED for trap_avoidance tasks, +x. CHECK-ONLY naive detour; NOT shipped.
   docs/*.md     # OPTIONAL. Grounding passages for Phase-4 grounded tasks. Seeded into
-                #   mimir; NOT copied into the workdir.
+                #   Mimir; NOT copied into the workdir.
   distractor.json # OPTIONAL. Plausible-but-wrong belief for --with-distractors.
 ```
 
@@ -50,7 +51,7 @@ Two task kinds. Declare which one with `contract_kind`.
 The correct value is an ARBITRARY token NOT present in any file the agent can
 read and NOT emitted by any tool. The naive path errors opaquely. `control`
 provably fails; `static`/`mimir` (or `grounded`, for stale-belief tasks) can
-solve. Models: `01-hidden-ua`, `04-stale-belief`.
+solve.
 
 ```json
 {
@@ -63,17 +64,16 @@ Do NOT list the success payload (e.g. `ARTIFACT-OK-...`) in `opaque_tokens` — 
 necessarily lives in the tool's source and is not the answer.
 
 How opacity is enforced: the tool checks the secret against a **SHA-256 hash**
-(see `01-hidden-ua` / `04-stale-belief` `setup.sh`). `cat`-ing the source reveals
+in the generated tool. `cat`-ing the source reveals
 only the hash, so the plaintext is non-derivable. To set a new secret:
-`python3 -c "import hashlib;print(hashlib.sha256(b'SECRET').hexdigest())"` and
-paste the digest as `EXPECTED`.
+run `printf %s SECRET | sha256sum` and paste the digest as `EXPECTED`.
 
 ### Trap-avoidance tasks (`contract_kind: "trap_avoidance"`)
 
 The correct fix IS derivable by reading the fixture sources; the belief's value
 is FOREKNOWLEDGE that steers the agent away from a naive detour (wrong version,
 wrong layer). The decisive metric is the TRAP rate, not the solve rate. The
-opacity probe is skipped. Models: `02-abi-pin`, `03-chunk-cap`.
+opacity probe is skipped.
 
 ```json
 {
@@ -83,7 +83,7 @@ opacity probe is skipped. Models: `02-abi-pin`, `03-chunk-cap`.
 }
 ```
 
-## What `task_check.py` asserts (all offline)
+## What `./eval task-check` asserts (all offline)
 
 | Check | Assertion |
 |---|---|
@@ -92,7 +92,7 @@ opacity probe is skipped. Models: `02-abi-pin`, `03-chunk-cap`.
 | C3 | opaque-token tasks: each `opaque_tokens` value is ABSENT from the materialised workdir; `sha_plaintext_absent` plaintext is in no file |
 | C4 | control-fails: `verify.sh` exits non-zero on the broken baseline (pristine workdir for opaque-token; the `naive.sh` state for trap_avoidance) |
 | C5 | solvable-with: after `solution.sh` (the mechanical "stub actor" fix), `verify.sh` exits 0 |
-| C6 | trap/solve consistency: `trap_hit(naive.json) is True` and `trap_hit(correct.json) is False` |
+| C6 | trap/solve consistency: the Rust predicate marks `naive.json` trapped and `correct.json` untrapped |
 
 C5's `solution.sh` is the **non-claude stub actor** mandated by §4.3: it applies
 the fix the knowledge prescribes, proving solvable-with-knowledge without any
@@ -112,7 +112,7 @@ tests/predicates/<NN-name>/
 ```
 
 Format: a JSON list of `{"name": <tool>, "input": {...}}` objects, matching what
-`harness/parse_stream.parse_stream` emits. Trap predicates operate on tool-call
+the Rust stream parser emits. Trap predicates operate on tool-call
 INPUTS only (`Bash.command`, `Write.content`, `Edit.new_string`), strip comments
 before matching, and require the token in an executable position.
 
@@ -121,8 +121,9 @@ before matching, and require the token in an executable position.
 1. Write `task.md`, `belief.json` (project `eval-<name>`, a distinctive `eval_query`).
 2. Write `setup.sh` (+x). For an opaque-token task, gate the tool on a SHA-256 hash.
 3. Write `verify.sh` (+x): re-run the driver from a CLEAN state; exit 0 == solved.
-4. Write `trap.py`: detect the INVOCATION (anchored regex, comments stripped,
-   first-invocation-wins). See `04-stale-belief/trap.py` — the canonical template.
+4. Add the task's invocation predicate to the Rust evaluator and register its
+   name in `has_trap_predicate` for rescoring. Detect actions, strip comments,
+   and preserve first-invocation-wins where the task requires it.
 5. Write `check.json`, `solution.sh` (+x), and (trap_avoidance) `naive.sh` (+x).
 6. Add `tests/predicates/<name>/{naive,correct}.json`.
-7. Run `python -m harness.task_check tasks/<NN-name>` — must exit 0.
+7. Run `./eval task-check tasks/<NN-name>` — must exit 0.
