@@ -1,6 +1,9 @@
-# mimir-eval — Implementation Plan (v2 rebuild)
+# mimir-eval — Implementation Plan (v2 rebuild; historical design)
 
-Status: PLAN ONLY. Reviewed by the user before any building begins.
+Status: Historical design. The evaluator has since been ported to a standalone Rust
+tool at `tests/eval/main.rs`; use `tests/eval/README.md` and `tests/eval/tasks/CONTRACT.md`
+for current commands and task authoring. The Python paths below describe the original
+design and are retained as provenance, not executable instructions.
 Author role: software architect. Date: 2026-06-10.
 
 This plan rebuilds `mimir-eval` into a reliable, extensible harness that measures
