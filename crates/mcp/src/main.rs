@@ -6,7 +6,7 @@ use tracing::error;
 
 use mimir_core::{
     config::Config,
-    graph::{Belief, EdgeType, MemoryType},
+    graph::{EdgeType, MemoryType},
     MimirService,
 };
 
@@ -321,59 +321,15 @@ fn tools_list() -> Value {
 // Tool dispatch
 // ---------------------------------------------------------------------------
 
-fn paginate_beliefs(mut beliefs: Vec<Belief>, limit: usize, offset: usize) -> Value {
-    beliefs.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    let total = beliefs.len();
-    let page: Vec<_> = beliefs.into_iter().skip(offset).take(limit).collect();
-    let end = offset.saturating_add(page.len());
-    let next_offset = (end < total).then_some(end);
-    json!({
-        "beliefs": page,
-        "total": total,
-        "offset": offset,
-        "next_offset": next_offset,
-    })
-}
-
-#[cfg(test)]
-mod pagination_tests {
-    use super::*;
-
-    #[test]
-    fn pages_are_ordered_without_overlap_and_end_at_null() {
-        let mut beliefs: Vec<_> = (0..3)
-            .into_iter()
-            .map(|n| {
-                let mut belief = Belief::new(n.to_string(), 0.5, 0.5).unwrap();
-                belief.created_at = format!("2020-01-01T00:00:0{n}Z").parse().unwrap();
-                belief
-            })
-            .collect();
-        beliefs.rotate_right(1);
-
-        let first = paginate_beliefs(beliefs.clone(), 2, 0);
-        assert_eq!(first["total"], 3);
-        assert_eq!(first["next_offset"], 2);
-        assert_eq!(first["beliefs"][0]["content"], "0");
-        assert_eq!(first["beliefs"][1]["content"], "1");
-
-        let last = paginate_beliefs(beliefs.clone(), 2, 2);
-        assert_eq!(last["beliefs"][0]["content"], "2");
-        assert!(last["next_offset"].is_null());
-
-        let beyond = paginate_beliefs(beliefs, 2, 4);
-        assert_eq!(beyond["beliefs"].as_array().unwrap().len(), 0);
-        assert!(beyond["next_offset"].is_null());
-    }
-}
-
 async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Result<Value> {
     match name {
-        "explain_belief" | "record_experience" | "review_experience" | "get_experience" | "experience_history" | "pending_experiences" | "query_learning_context" => learning::call(svc, name, args).await,
+        "explain_belief"
+        | "record_experience"
+        | "review_experience"
+        | "get_experience"
+        | "experience_history"
+        | "pending_experiences"
+        | "query_learning_context" => learning::call(svc, name, args).await,
         "insert_belief" => {
             let content = args["content"]
                 .as_str()
@@ -445,7 +401,19 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             let success_rate = args["success_rate"]
                 .as_f64()
                 .ok_or_else(|| anyhow::anyhow!("missing 'success_rate'"))?;
-            let pattern = svc.add_pattern_in_project(situation, approach, success_rate, args.get("project").map(|v|v.as_str().ok_or_else(||anyhow::anyhow!("project must be a string"))).transpose()?).await?;
+            let pattern = svc
+                .add_pattern_in_project(
+                    situation,
+                    approach,
+                    success_rate,
+                    args.get("project")
+                        .map(|v| {
+                            v.as_str()
+                                .ok_or_else(|| anyhow::anyhow!("project must be a string"))
+                        })
+                        .transpose()?,
+                )
+                .await?;
             Ok(serde_json::to_value(&pattern)?)
         }
 
@@ -538,13 +506,14 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                 ),
                 None => None,
             };
-            let beliefs = svc.list_beliefs_filtered(project, memory_type).await?;
             match args.get("limit") {
                 None => {
                     if args.get("offset").is_some() {
                         anyhow::bail!("'offset' requires 'limit'");
                     }
-                    Ok(serde_json::to_value(&beliefs)?)
+                    Ok(serde_json::to_value(
+                        svc.list_beliefs_filtered(project, memory_type).await?,
+                    )?)
                 }
                 Some(raw_limit) => {
                     let limit = raw_limit
@@ -561,7 +530,8 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                                 anyhow::anyhow!("'offset' must be a nonnegative integer")
                             })?,
                     };
-                    Ok(paginate_beliefs(beliefs, limit, offset))
+                    svc.list_beliefs_page(project, memory_type, limit, offset)
+                        .await
                 }
             }
         }

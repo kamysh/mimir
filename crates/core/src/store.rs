@@ -1970,3 +1970,52 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         Ok(beliefs)
     }
 }
+
+impl AgeStore {
+    /// Page in PostgreSQL, before rows cross the connection. Unlike the legacy
+    /// full-list path, this never decodes all belief contents to return one page.
+    pub async fn list_beliefs_page(
+        &self,
+        project: Option<&str>,
+        memory_type: Option<MemoryType>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<Belief>, usize)> {
+        anyhow::ensure!((1..=10).contains(&limit), "limit must be in 1..=10");
+        anyhow::ensure!(offset <= i64::MAX as usize, "offset is too large");
+        let mut filters = Vec::new();
+        if project.is_some() {
+            filters.push("(n.project = $project OR n.project IS NULL)".to_owned());
+        }
+        if let Some(mt) = memory_type {
+            filters.push(match mt {
+                MemoryType::Fact => "(n.memory_type IS NULL OR (n.memory_type <> 'experiential' AND n.memory_type <> 'working'))".to_owned(),
+                _ => format!("n.memory_type = '{}'",mt.as_str()),
+            });
+        }
+        let filter = if filters.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", filters.join(" AND "))
+        };
+        let params = serde_json::json!({"project":project}).to_string();
+        let g = &self.graph_name;
+        let client = self.client.lock().await;
+        let count_stmt = format!("age_page_count_{}", Uuid::new_v4().simple());
+        let count_sql = format!("PREPARE {count_stmt}(agtype) AS SELECT total::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN count(n) $$, $1) AS (total ag_catalog.agtype)");
+        let counts = age_query_rows(&client, &count_stmt, &count_sql, &params).await?;
+        let total = counts[0]
+            .get("total")
+            .ok_or_else(|| anyhow::anyhow!("missing count"))?
+            .parse()?;
+        let stmt = format!("age_page_{}", Uuid::new_v4().simple());
+        let sql = format!("PREPARE {stmt}(agtype) AS SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project $$,$1) {BELIEF_RETURN_COLUMNS} ORDER BY trim(both '\"' from created_at::text)::timestamptz,id::text LIMIT {limit} OFFSET {offset}");
+        let rows = age_query_rows(&client, &stmt, &sql, &params).await?;
+        Ok((
+            rows.iter()
+                .map(belief_from_simple_row)
+                .collect::<Result<_>>()?,
+            total,
+        ))
+    }
+}
