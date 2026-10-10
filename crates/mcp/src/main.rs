@@ -1,4 +1,6 @@
 mod learning;
+#[cfg(test)]
+mod learning_cycle_test;
 use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -7,6 +9,7 @@ use tracing::error;
 use mimir_core::{
     config::Config,
     graph::{EdgeType, MemoryType},
+    learning::IndependentProvenance,
     MimirService,
 };
 
@@ -34,17 +37,19 @@ fn tools_list() -> Value {
     let mut tools = json!([
         {
             "name": "insert_belief",
-            "description": "Add a new belief to the graph.",
+            "description": "Add a belief grounded in an explicit user instruction or document independent of a queued incident. Provenance is required and persisted. Incident-derived conclusions must use record_experience and review_experience candidates; a standalone prior plus review feedback would count one incident twice.",
             "inputSchema": {
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
                     "content":     { "type": "string" },
                     "probability": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                     "confidence":  { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                     "project":     { "type": "string", "description": "Optional project scope. Beliefs in a project can be bulk-deleted with delete_project when the project is done." },
-                    "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Functional memory type. 'fact' (default): declarative knowledge that decays over time absent reinforcement. 'experiential': a hard-won working lesson (gotcha, corrected approach) — exempt from time-decay, since its truth doesn't erode with elapsed time. 'working': task-local scratch memory, excluded from cross-session query_relevant retrieval." }
+                    "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Functional memory type. 'fact' (default): declarative knowledge that decays over time absent reinforcement. 'experiential': a hard-won working lesson (gotcha, corrected approach) — exempt from time-decay, since its truth doesn't erode with elapsed time. 'working': task-local scratch memory, excluded from cross-session query_relevant retrieval." },
+                    "provenance": { "type": "object", "additionalProperties": false, "properties": { "basis": {"type":"string","enum":["user_instruction","document"]}, "reference": {"type":"string","minLength":1,"maxLength":2048} }, "required": ["basis","reference"], "description": "Identify the independent source. Do not use this tool for a conclusion derived from an experience." }
                 },
-                "required": ["content", "probability", "confidence"]
+                "required": ["content", "probability", "confidence", "provenance"]
             }
         },
         {
@@ -331,6 +336,12 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
         | "pending_experiences"
         | "query_learning_context" => learning::call(svc, name, args).await,
         "insert_belief" => {
+            let provenance: IndependentProvenance = serde_json::from_value(
+                args.get("provenance")
+                    .ok_or_else(|| anyhow::anyhow!("missing 'provenance'"))?
+                    .clone(),
+            )?;
+            provenance.validate()?;
             let content = args["content"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'content'"))?;
@@ -346,22 +357,16 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                     .map_err(|e| anyhow::anyhow!("invalid 'memory_type': {e}"))?,
                 None => MemoryType::default(),
             };
-            let belief = match args["project"].as_str() {
-                Some(project) => {
-                    svc.add_belief_in_project(
-                        content,
-                        probability,
-                        confidence,
-                        project,
-                        memory_type,
-                    )
-                    .await?
-                }
-                None => {
-                    svc.add_belief(content, probability, confidence, memory_type)
-                        .await?
-                }
-            };
+            let belief = svc
+                .add_independent_belief(
+                    content,
+                    probability,
+                    confidence,
+                    args["project"].as_str(),
+                    memory_type,
+                    &provenance,
+                )
+                .await?;
             Ok(serde_json::to_value(&belief)?)
         }
 

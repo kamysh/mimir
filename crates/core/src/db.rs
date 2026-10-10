@@ -59,11 +59,25 @@ fn pgpass_lookup(host: &str, port: u16, dbname: &str, user: &str) -> Option<Stri
 pub async fn migrate(cfg: &DatabaseConfig) -> Result<()> {
     let migrations = embedded_migrations()?;
     let mut client = connect(cfg).await?;
+    // Parallel MCP connections can start with the same new embedded migration.
+    // Serialize schema changes across processes, not just within one client.
+    client
+        .query("SELECT pg_advisory_lock(671942184)", &[])
+        .await?;
     let receipt: kryzhen::sqlx_import::Receipt = serde_json::from_str(RECEIPT_JSON)?;
-    kryzhen::sqlx_import::import(&client, &receipt, &migrations)
-        .await
-        .map_err(anyhow::Error::from)?;
-    kryzhen::migrate(&mut client, &migrations, false).await?;
+    let result: Result<()> = async {
+        kryzhen::sqlx_import::import(&client, &receipt, &migrations)
+            .await
+            .map_err(anyhow::Error::from)?;
+        kryzhen::migrate(&mut client, &migrations, false).await?;
+        Ok(())
+    }
+    .await;
+    let unlocked = client
+        .query("SELECT pg_advisory_unlock(671942184)", &[])
+        .await;
+    result?;
+    unlocked?;
     Ok(())
 }
 
