@@ -31,7 +31,19 @@ Claude Code connects to Mimir via MCP and can:
 - Decay belief confidence over time
 - Index markdown documents and run semantic search over them (RAG)
 
-Everything runs locally. No data leaves your machine unless you choose a cloud embedding backend (Voyage AI or OpenAI) for document search — and even then only short text chunks are sent, never the full document.
+The graph and search can run locally. A configured cloud embedding backend sends
+document chunks to its provider. A configured API judge sends the selected
+experience and retrieved tool results to its provider; a CLI harness uses its
+configured model account. The judge does not run automatically.
+
+The bounded experiential judge is included in the `mimir` CLI; it needs no third
+binary. Set `[judge]` and `[llm]` in the private Mimir config, including an
+explicit `[llm].model`, then use `mimir judge check-config` to validate the
+settings. `mimir judge run` processes one pending batch, while
+`mimir judge watch` repeats bounded batches until stopped or its failure limit
+is reached. Neither command is installed as a service. See the
+[configuration examples and adapter notes](runtime/README.md) before selecting
+a model or enabling optional email notifications.
 
 ## Installation
 
@@ -348,7 +360,7 @@ docker ps --filter name=postgres-ai
 
 | Tool | What it does |
 |---|---|
-| `insert_belief` | Add a belief with `content`, `probability` [0,1], `confidence` [0,1] |
+| `insert_belief` | Add an independently sourced belief with `content`, `probability` [0,1], `confidence` [0,1], and required `provenance` (`basis`, `reference`) |
 | `delete_belief` | Remove a belief and all its edges by `id` |
 | `insert_pattern` | Add a pattern with `situation`, `approach`, `success_rate` [0,1] |
 | `delete_pattern` | Remove a pattern by `id` |
@@ -376,8 +388,9 @@ docker ps --filter name=postgres-ai
 ## Learning from experience
 
 Mimir supplies the durable learning operations; an LLM agent or experiential
-runner interprets observations and proposes hypotheses. No completion model,
-new daemon, or timer is installed by this change.
+runner interprets observations and proposes hypotheses. `mimir judge watch`
+can poll the queue when launched; no service or timer is installed by this
+source change.
 
 The application loop is:
 
@@ -391,13 +404,15 @@ The application loop is:
    oldest first. The runner can run frequently and exit immediately on an empty
    batch. A successful review removes that version from the pending set. There
    is no collection-size cutoff or requirement to manufacture summary beliefs.
-3. The runner retrieves relevant beliefs and inspects evidence. It can use the
-   existing `insert_belief` to express a candidate explanation with a modest
-   prior, then `review_experience` to submit its assessment. The review contains
-   a rationale, support/defeat feedback, and optional `Supports`, `Defeats`,
-   `Causes`, or `Contradicts` relationships between existing beliefs. All targets
-   must belong to the experience's exact project; a project observation cannot
-   implicitly revise global or another project's knowledge.
+3. The runner retrieves relevant beliefs and inspects evidence. A new
+   explanation or procedure is declared as a stable-key candidate inside
+   `review_experience`, so its identity and contribution belong to that incident.
+   Do not first create a standalone belief from the same report and count the
+   review as independent confirmation. The review contains a rationale,
+   support/defeat feedback, and optional `Supports`, `Defeats`, `Causes`, or
+   `Contradicts` relationships. All mutation targets must belong to the
+   experience's exact project; a project observation cannot implicitly revise
+   global or another project's knowledge.
 4. Mimir applies the review and acknowledges the reviewed version in one
    transaction. The existing Beta engine recomputes affected beliefs and their
    descendants. Reviewed causal links participate in `query_intervention`;
@@ -421,6 +436,14 @@ Reviews can explicitly mark `superseded_beliefs`. These leave normal retrieval
 even when their original prior is strong. This is separate from probabilistic
 counter-evidence; a single defeat does not automatically retire a belief.
 Replacing the review can restore a mistakenly superseded belief.
+
+MCP `insert_belief` now requires explicit independent `provenance` with a
+`user_instruction` or `document` basis and a nonempty source reference. The
+source is stored with the graph node and shown by `explain_belief`; untagged MCP
+writes are rejected. This is a provenance declaration by the caller, not proof
+that the cited source is authentic. Incident-derived conclusions still belong
+to atomic review candidates. Existing CLI belief insertion remains available
+for explicit manual operations.
 
 `insert_pattern` now accepts `project`. `query_learning_context` returns relevant
 beliefs plus situation-matched patterns, with successes, failures, unresolved
@@ -459,10 +482,14 @@ A link has `from_id`, `to_id`, `relation` and `weight` in [0,1]; feedback has
 `belief_id`, `verdict` (`support` or `defeat`) and `weight` in [0,1]. Existing
 manually recorded edges are not removed when a review is replaced.
 
-The installed historical judge is still a separate maintenance workflow. To use
-this loop, its prompt/tool allowlist and the foreground agents' experience
-capture must be adapted and deployed explicitly. App support alone does not
-establish that agents are learning or that their performance improves.
+The [Rust learning runtime](runtime/README.md) provides `mimir judge` commands
+and locally tested Claude Code, Codex, custom-command, OpenAI, Anthropic,
+OpenRouter, DeepSeek, Z.ai, Gemini, and explicit OpenAI-compatible adapters.
+It is included in `mimir` but is not scheduled automatically. A bounded Step 11
+Codex comparison exercised live model calls; other provider/account behavior
+has not been verified. The shared agent skill explains experience
+capture and correction. No performance gain is claimed merely from the existing
+learning infrastructure.
 
 ### Verification
 

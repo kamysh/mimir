@@ -1,0 +1,304 @@
+#+TITLE: Mimir learning-loop functionality audit
+#+OPTIONS: toc:2 num:t
+
+* Overview and current state
+
+The changes add an experience-and-review layer to Mimir, a separate LLM judge
+runtime, shared configuration, and email notifications. They exist locally;
+the running Mimir installation has not been upgraded.
+
+This is a snapshot of the implementation at the time of the audit, before
+adding this document. The worktree is
+=/home/kamysh/Work/balovstvo/mimir-learning-loop=. The implementation changes
+39 files, with roughly 3,450 added lines.
+
+| Component                                                | Current local state                    |
+|----------------------------------------------------------+----------------------------------------|
+| Experience storage, reviews, and inference integration    | Committed: =77438a4=                    |
+| Database-backed belief pagination                        | Committed: =c8c8b29=                    |
+| Shared configuration                                     | Committed: =72a0bc1=                    |
+| LLM adapters and judge runtime                            | Committed: =4e17ec5=                    |
+| SMTP notifications                                       | Implemented and staged, not committed  |
+| Agent guidance and old-runner replacement                 | Modified, not committed                |
+
+* Experience records
+
+Previously, an agent principally saved a conclusion as a belief. The new code
+can also save the incident that might justify a conclusion.
+
+| Field               | Meaning                                            |
+|---------------------+----------------------------------------------------|
+| Stable ID           | Identifies the incident across retries/corrections |
+| Project             | Required ownership and scope                       |
+| Context             | Situation in which the action occurred             |
+| Action              | What was attempted                                 |
+| Outcome             | =success=, =failure=, or =unknown=                  |
+| Source              | =tool_result=, =user_feedback=, or =agent_report=   |
+| Evidence            | Text describing the observations                   |
+| Belief IDs          | Relevant existing beliefs                          |
+| Optional pattern ID | Procedure whose outcome was observed               |
+
+For example, “restarting the indicator fixed its display” can be recorded as
+an observation without immediately treating the inferred explanation as an
+established belief.
+
+Three PostgreSQL tables store current experience pointers, immutable experience
+versions, and immutable review versions:
+
+- =mimir_experiences=
+- =mimir_experience_versions=
+- =mimir_review_versions=
+
+Correcting an incident creates another version of the same experience. Earlier
+versions remain inspectable.
+
+Provenance is reported by the caller, not independently verified by Mimir.
+Duplicate protection depends on reusing the incident ID; two agents assigning
+different IDs to the same incident can still duplicate it.
+
+Sources: [[file:../crates/core/src/learning.rs][experience model]] and
+[[file:../crates/core/migrations/006_learning.sql][database migration]].
+
+* Review application and belief inference
+
+A review identifies the exact experience version it interprets and records a
+reviewer identity and rationale. It can apply three kinds of changes:
+
+| Review result               | Effect                                                      |
+|-----------------------------+-------------------------------------------------------------|
+| Weighted support or defeat  | Adds evidence to the belief's existing Beta calculation      |
+| Graph relationships         | Adds Supports, Defeats, Causes, or Contradicts edges         |
+| Explicit supersession       | Excludes selected beliefs from normal retrieval, not storage |
+
+Supersession addresses a specific problem: a belief with a very strong initial
+prior can remain highly ranked despite contrary evidence. Marking it
+superseded removes it from normal retrieval independently of that prior.
+
+Review-created edges carry the experience ID. Replacing a review removes its
+previous contributions and applies its replacement. Correcting an experience
+invalidates the old review and retracts its effects immediately, before
+another judge run.
+
+Graph changes and acknowledgement of the reviewed version are committed
+together. Stale revisions are rejected; retrying the same accepted review does
+not add its evidence again. Direct review targets must belong to the
+experience's project and cannot be Working beliefs.
+
+This does not introduce a new causal inference engine. It connects LLM
+judgments to Mimir's existing engine and intervention queries. The LLM decides
+whether a causal hypothesis is warranted; Mimir stores and calculates its
+consequences.
+
+Reversibility covers review-owned evidence and edges. A new belief or pattern
+inserted separately by the judge is not automatically deleted when the
+experience is corrected.
+
+Source: [[file:../crates/core/src/store/learning.rs][review storage and application]].
+
+* Learning retrieval and explanations
+
+Seven MCP tools were added:
+
+| Tool                     | Purpose                                                    |
+|--------------------------+------------------------------------------------------------|
+| =record_experience=      | Create or correct an incident                              |
+| =get_experience=         | Read its current version and revision counters             |
+| =experience_history=     | Read previous observations and reviews                     |
+| =pending_experiences=    | Fetch a bounded batch awaiting review                      |
+| =review_experience=      | Apply the judgment and acknowledge that version            |
+| =query_learning_context= | Retrieve beliefs and procedures with outcome counts        |
+| =explain_belief=         | Show incoming relationships and active reviews for a belief |
+
+Procedure retrieval returns success, failure, and unknown counts from the
+current versions of linked experiences. Agent-reported outcomes count as
+unknown for this calculation.
+
+The estimated procedure success probability is:
+
+#+begin_example
+(successes + 1) / (successes + failures + 2)
+#+end_example
+
+An untested procedure starts at 0.5 rather than inheriting an asserted success
+rate as empirical evidence. Correcting an experience changes the counts
+instead of adding another independent observation.
+
+Procedure matching currently uses shared words in the situation description.
+Relevance ranks first; observed success breaks ties. Existing belief retrieval
+remains hybrid.
+
+This adds outcome information alongside patterns; it does not automatically
+rewrite their procedural text or establish that a future agent followed them.
+
+Sources: [[file:../crates/core/src/learning.rs][learning retrieval]] and
+[[file:../crates/mcp/src/learning.rs][MCP interface]].
+
+* Existing propagation and belief listing
+
+Propagation and intervention calculations now include active review evidence
+and document-grounding contributions. The grounding change prevents
+recalculation from discarding evidence previously supplied by document
+passages. This affects existing inference behavior, not just the new
+experience tools.
+
+For listing, pagination moved into PostgreSQL. A paged request returns up to
+ten beliefs plus =total=, =offset=, and =next_offset=, with stable ordering and
+project/type filters. There is no 200-belief total cutoff. The legacy unpaged
+response remains available.
+
+This is not a complete large-corpus optimization. New experience recording
+and review application still load the full belief collection internally. Some
+review retrieval also loads all active reviews before filtering. The listing
+fix does not remove those costs.
+
+Sources: [[file:../crates/core/src/lib.rs][service integration]],
+[[file:../crates/core/src/store.rs][belief listing]], and
+[[file:../crates/core/src/store/learning.rs][learning storage]].
+
+* Incremental judge runtime
+
+A separate Python application, =mimir-judge=, runs the review loop. Generation
+remains outside the Rust core.
+
+Each invocation:
+
+1. Loads configuration and takes a local lock.
+2. Starts the configured Mimir MCP executable.
+3. Checks that the learning tools exist.
+4. Fetches pending experiences: five by default, optionally restricted to one project.
+5. Pins their revisions and invokes the selected LLM.
+6. Executes the model's permitted tool requests.
+7. Checks Mimir's stored revision counters to establish which reviews actually completed.
+8. Writes local status and optionally handles email notifications.
+
+An empty queue invokes no LLM. Failed or unfinished reviews remain pending.
+Changed experiences are deferred to another invocation.
+
+The model can retrieve relevant knowledge, create beliefs or patterns, inspect
+interventions, and submit reviews. The host validates tool names, project
+scope, and revision references. A model's statement that it has finished is
+insufficient.
+
+The runtime is a single-run command, not a newly installed daemon or scheduler.
+No timer frequency has been changed.
+
+Capture is still agent-driven: there is no new automatic collector that
+observes every session and constructs experiences.
+
+Sources: [[file:../runtime/README.md][runtime guide]],
+[[file:../runtime/mimir_runtime/runner.py][runner]], and
+[[file:../runtime/mimir_runtime/mcp.py][MCP transport and tool scope]].
+
+* Shared configuration and LLM backends
+
+The proposed schema adds three optional sections to the existing Mimir TOML:
+
+| Section   | Settings                                                          |
+|-----------+-------------------------------------------------------------------|
+| =[judge]= | Batch size, optional project, MCP executable and arguments         |
+| =[llm]=   | Backend, model, credentials/endpoint, execution limits              |
+| =[email]= | SMTP connection, authentication, recipients, retries               |
+
+Implemented LLM adapters:
+
+| Backend                                 | Implementation                                                        |
+|-----------------------------------------+-----------------------------------------------------------------------|
+| Claude Code                             | Existing login; structured responses; subprocess tools/MCP disabled    |
+| Codex                                   | Existing authentication; structured responses; restricted read-only run |
+| Custom command                          | Explicit executable/arguments using a JSON input/output protocol      |
+| OpenAI                                  | Chat Completions tool calling                                         |
+| Anthropic                               | Messages tool calling                                                 |
+| OpenRouter, DeepSeek, Z.ai, Gemini        | Their OpenAI-compatible interfaces                                    |
+| Other compatible service                | Configurable endpoint                                                 |
+
+The harness adapters ask the model to return proposed tool calls; the Python
+runtime executes those calls against Mimir.
+
+There is no automatic provider or account fallback. Defaults are:
+
+- 300 seconds for the LLM review loop.
+- 20 model calls and 20 total tool executions.
+- 4,096 output tokens for direct APIs.
+
+Claude Code additionally supports a dollar limit per invocation, not per
+complete batch.
+
+Credentials may be inline. The runtime accepts an owned private file or an
+owned private containing directory. Newly generated config uses directory
+=0700= and file =0600=; runtime state requires a private directory. These
+permissions do not isolate credentials from programs running as the same user.
+
+The installed configuration has not received these sections or permission
+changes.
+
+Sources: [[file:../runtime/config.example.toml][configuration example]],
+[[file:../runtime/mimir_runtime/config.py][runtime configuration]], and
+[[file:../runtime/mimir_runtime/backends.py][LLM adapters]].
+
+* SMTP notifications
+
+The uncommitted email implementation supports:
+
+- STARTTLS or implicit TLS with certificate verification.
+- Password/app-password authentication.
+- Google and Microsoft OAuth2 refresh plus SMTP XOAUTH2.
+- An unauthenticated relay option.
+- Persistent notification retries and duplicate suppression.
+
+OAuth refresh credentials and cached access tokens are stored in protected
+runtime state. Rotated refresh tokens are saved before attempting delivery.
+
+An unhealthy judge status creates an alert; recovery creates a recovery
+message. Repeated identical failures are coalesced. Delivery retries use
+increasing delays and stop after a configured maximum. Retries occur on
+subsequent runtime invocations.
+
+Messages contain status/error categories rather than belief contents or raw
+model responses.
+
+This does not perform initial Google/Microsoft account authorization. It also
+cannot notify the user if the scheduler never starts the runtime, and invalid
+configuration can prevent notification setup entirely.
+
+Source: [[file:../runtime/mimir_runtime/email.py][email implementation]].
+
+* Agent guidance and remaining behavioral limitations
+
+The repository's shared skill and reminders now tell agents to capture useful
+incidents, distinguish reported outcomes from observed tool results, reuse
+incident IDs for corrections, and let the judge interpret queued observations.
+
+The old experiential-judge script was changed into a wrapper around
+=mimir-judge=. Its full-collection review prompt and 200-item stopping rule were
+replaced by the incremental runtime direction. These are repository changes;
+installed scripts and guidance remain untouched.
+
+The latest live test still found an agent both queuing an observation and
+inserting a conclusion from that same incident. That permits the judge to
+reinforce evidence already reflected in the conclusion. Reliable prevention
+of this duplication is unfinished.
+
+The tests demonstrate storage, review, correction, and retrieval mechanisms.
+They do not yet demonstrate sustained improvement in future agent decisions.
+
+Sources: [[file:claude-code-setup/skill/SKILL.md][agent skill]],
+[[file:claude-code-setup/mimir-judge-experiential/run.sh][old runner wrapper]], and
+[[file:../tests/learning_runner.py][end-to-end runner test]].
+
+* Active installation and local side effects
+
+At the time of this audit:
+
+- Installed Mimir binaries remain unchanged.
+- None of the new branches or PRs exists on the remote.
+- The new runtime was built into a local wheel but not installed.
+- No new email account configuration, real email delivery, or production
+  learning run was performed.
+- Development worktrees and build artifacts remain locally.
+- A disposable test database remains running on =127.0.0.1:32885= in container
+  =mimir-learning-series-20261009=.
+- Its temporary credential entry remains in =~/.pgpass=.
+- Tests invoked live Claude Code and Codex models.
+- Direct API providers and SMTP delivery were tested with local fixtures.
+
+Implementation, publication, deployment, and cleanup remain suspended.

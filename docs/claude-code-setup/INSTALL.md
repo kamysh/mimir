@@ -149,6 +149,12 @@ the standard installer does not wire them. Optional scheduled belief-maintenance
 judges are separate from the per-turn critic and are not installed, stopped or
 reconfigured by this procedure.
 
+The [Rust learning runtime](../../runtime/README.md) provides `mimir judge`
+commands in the installed `mimir` binary. This agent-integration procedure does
+not configure or schedule the judge. The optional experiential `run.sh` launches
+one `mimir judge run` batch; it is not a service. The shared skill explains
+experience capture; this does not mean a judge is running.
+
 ## Verify configuration, delivery and usefulness separately
 
 1. Parse the merged JSON; compare the diff with the backup. Confirm the selected
