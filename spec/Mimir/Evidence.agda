@@ -3,8 +3,9 @@
 -- Mimir.Evidence — document-grounded beliefs (Phase 4 C-core).
 --
 -- A DocumentChunk grounds a Belief via a GROUNDS edge. The hard invariant is
--- NON-INTERFERENCE: the evidence overlay must not perturb belief↔belief
--- inference. This module formalises that guarantee.
+-- STRUCTURAL NON-INTERFERENCE: the evidence overlay does not add edges to
+-- belief↔belief inference. Numerical C-coupling changes priors separately
+-- (Mimir.Beta.CCoupling); it is not numerical posterior invariance.
 --
 -- The Rust side enforces it structurally: GROUNDS originates at a
 -- :DocumentChunk and is NOT in {SUPPORTS, DEFEATS, CAUSES, CONTRADICTS}, while
@@ -84,7 +85,9 @@ overlay-preserves-substrate (e ∷ es) g = overlay-preserves-substrate es g
 -- the result on the bare graph. This is the formal counterpart of the
 -- operational theorem in proposal 60: propagate g ≡ propagate (g ⊎ overlay e).
 -- Because `propagate` is universally quantified, the existing Mimir.Inference
--- proofs (whatever propagation actually computes) are preserved verbatim.
+-- proofs remain applicable to the unchanged edge substrate. This statement
+-- fixes all inputs other than the edge list; it does not hold priors fixed
+-- while simultaneously claiming to model numerical C-coupling.
 propagate-evidence-invariant :
   ∀ {A : Set} (propagate : List Edge → A)
     (es : List EvidenceEdge) (g : Graph) →
@@ -189,3 +192,38 @@ autoGroundBelief sim bId bEmb bProj (mkGroundingEntry cId cEmb cProj ∷ cs) wit
 -- overlay (auto-grounded edges) g = mkGraph (beliefEdges g) (...),
 -- so inferenceSubstrate is unchanged. No additional lemma is needed beyond
 -- propagate-evidence-invariant, which already quantifies over all overlays.
+
+-- Numerical bridge to C-coupling. The edge list includes fixed incoming
+-- quanta; changed source means in a cascade require a new recomputation.
+-- This is not a global linearity claim about graph fixed points.
+module Numerical where
+  import Mimir.Beta as B
+  open import Data.Rational using (ℚ; _+_)
+  open import Data.Rational.Properties using (+-assoc)
+  open import Relation.Binary.PropositionalEquality using (sym; trans)
+
+  posterior-base-offset : ∀ base offset es →
+    B.posteriorα (base + offset) es ≡ B.posteriorα base es + offset
+  posterior-base-offset base offset [] = refl
+  posterior-base-offset base offset (e ∷ es) with B.InEdge.polarity e
+  ... | B.pos = trans
+    (cong (B.quantum e +_) (posterior-base-offset base offset es))
+    (sym (+-assoc (B.quantum e) (B.posteriorα base es) offset))
+  ... | B.neg = posterior-base-offset base offset es
+
+  -- Independent review and grounding contributions enter the fixed prior;
+  -- neither is taken from the previous posterior (which would count twice).
+  recompute : ℚ → ℚ → ℚ → ℚ → ℚ → List B.InEdge → B.Beta
+  recompute baseα baseβ reviewα reviewβ grounding es =
+    B.posteriorOf ((baseα + reviewα) + grounding) (baseβ + reviewβ) es
+
+  grounding-survives-recompute : ∀ baseα baseβ reviewα reviewβ grounding es →
+    B.Beta.α (recompute baseα baseβ reviewα reviewβ grounding es) ≡
+    B.posteriorα (baseα + reviewα) es + grounding
+  grounding-survives-recompute baseα baseβ reviewα reviewβ grounding es =
+    posterior-base-offset (baseα + reviewα) grounding es
+
+  grounding-preserves-negative-mass : ∀ baseα baseβ reviewα reviewβ g₁ g₂ es →
+    B.Beta.β (recompute baseα baseβ reviewα reviewβ g₁ es) ≡
+    B.Beta.β (recompute baseα baseβ reviewα reviewβ g₂ es)
+  grounding-preserves-negative-mass baseα baseβ reviewα reviewβ g₁ g₂ es = refl

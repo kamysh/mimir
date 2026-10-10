@@ -431,6 +431,14 @@ impl AgeStore {
     // -----------------------------------------------------------------------
 
     pub async fn insert_belief(&self, belief: &Belief) -> Result<()> {
+        self.insert_belief_with_provenance(belief, None).await
+    }
+
+    pub async fn insert_belief_with_provenance(
+        &self,
+        belief: &Belief,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+    ) -> Result<()> {
         let g = &self.graph_name;
         let id = belief.id.to_string();
         let probability = belief.probability.value();
@@ -456,8 +464,15 @@ impl AgeStore {
             Some(p) => format!(r#", "project": "{}""#, json_esc(p)),
             None => String::new(),
         };
+        let origin_prop = provenance.map_or_else(String::new, |source| {
+            format!(
+                r#", "origin_basis": "{}", "origin_reference": "{}""#,
+                source.basis.as_str(),
+                json_esc(&source.reference)
+            )
+        });
         let agtype_json = format!(
-            r#"{{"id": "{id}", "content": "{}", "created_at": "{created_at}", "last_activated_at": "{last_activated_at}", "memory_type": "{memory_type}"{project_prop}}}"#,
+            r#"{{"id": "{id}", "content": "{}", "created_at": "{created_at}", "last_activated_at": "{last_activated_at}", "memory_type": "{memory_type}"{project_prop}{origin_prop}}}"#,
             json_esc(&belief.content)
         );
 
@@ -468,13 +483,18 @@ impl AgeStore {
              probability: {probability}, confidence: {confidence}, \
              alpha: {alpha}, beta: {beta}, alpha0: {alpha0}, beta0: {beta0}, \
              created_at: $created_at, last_activated_at: $last_activated_at, \
-             memory_type: $memory_type{}}}) \
+             memory_type: $memory_type{}{} }}) \
              RETURN n.id $$, $1) AS (id ag_catalog.agtype)",
             if belief.project.is_some() {
                 ", project: $project"
             } else {
                 ""
-            }
+            },
+            if provenance.is_some() {
+                ", origin_basis: $origin_basis, origin_reference: $origin_reference"
+            } else {
+                ""
+            },
         );
 
         let client = self.client.lock().await;
@@ -485,12 +505,24 @@ impl AgeStore {
     pub async fn delete_belief(&self, id: Uuid) -> Result<bool> {
         let g = &self.graph_name;
         let id_str = id.to_string();
-        // First check existence to give a meaningful return value.
-        // AGE does not support RETURN after DETACH DELETE reliably.
-        let exists = self.get_belief(id).await?.is_some();
-        if !exists {
+        let mut client = self.client.lock().await;
+        let tx = client.transaction().await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let exists = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief {{id:'{id_str}'}}) RETURN n.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
+        if exists.is_empty() {
             return Ok(false);
         }
+        let children = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (a:Belief {{id:'{id_str}'}})-[r]->(b:Belief) RETURN b.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
+        let affected: std::collections::HashSet<Uuid> = children
+            .iter()
+            .map(|row| Uuid::parse_str(row.get::<_, &str>(0)))
+            .collect::<std::result::Result<_, _>>()?;
+        tx.execute(
+            "UPDATE mimir_review_candidates SET retired=true WHERE node_id=$1",
+            &[&id],
+        )
+        .await?;
         let sql = format!(
             r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{id: '{id_str}'}})
@@ -498,10 +530,14 @@ impl AgeStore {
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        let client = self.client.lock().await;
-        client.query(&sql, &[]).await?;
-        drop(client);
-        self.delete_belief_embeddings(&[id]).await?;
+        tx.query(&sql, &[]).await?;
+        tx.execute(
+            "DELETE FROM public.belief_embeddings WHERE belief_id=$1",
+            &[&id],
+        )
+        .await?;
+        self.recompute_learning(&tx, None, affected).await?;
+        tx.commit().await?;
         Ok(true)
     }
 
@@ -534,9 +570,6 @@ $$) AS (ok ag_catalog.agtype)"#
             .iter()
             .filter(|m| matches!(m, tokio_postgres::SimpleQueryMessage::Row(_)))
             .count();
-        if count == 0 {
-            return Ok(0);
-        }
         let ids: Vec<Uuid> = msgs
             .iter()
             .filter_map(|m| {
@@ -925,10 +958,19 @@ $$) {PATTERN_RETURN_COLUMNS}"#
     pub async fn delete_pattern(&self, id: Uuid) -> Result<bool> {
         let g = &self.graph_name;
         let id_str = id.to_string();
-        let exists = self.get_pattern(id).await?.is_some();
-        if !exists {
+        let mut client = self.client.lock().await;
+        let tx = client.transaction().await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let exists = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (p:Pattern {{id:'{id_str}'}}) RETURN p.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
+        if exists.is_empty() {
             return Ok(false);
         }
+        tx.execute(
+            "UPDATE mimir_review_candidates SET retired=true WHERE node_id=$1",
+            &[&id],
+        )
+        .await?;
         let sql = format!(
             r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (p:Pattern {{id: '{id_str}'}})
@@ -936,8 +978,8 @@ $$) {PATTERN_RETURN_COLUMNS}"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        let client = self.client.lock().await;
-        client.query(&sql, &[]).await?;
+        tx.query(&sql, &[]).await?;
+        tx.commit().await?;
         Ok(true)
     }
 
@@ -1412,8 +1454,18 @@ $$) AS (ok ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        let client = self.client.lock().await;
-        client.query(&sql, &[]).await?;
+        let mut client = self.client.lock().await;
+        let tx = client.transaction().await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let grounded = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (c:DocumentChunk)-[:GROUNDS]->(b:Belief) WHERE c.id IN [{id_list}] RETURN DISTINCT b.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
+        let affected: std::collections::HashSet<Uuid> = grounded
+            .iter()
+            .map(|row| Uuid::parse_str(row.get::<_, &str>(0)))
+            .collect::<std::result::Result<_, _>>()?;
+        tx.query(&sql, &[]).await?;
+        self.recompute_learning(&tx, None, affected).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1706,20 +1758,10 @@ $$) {CHUNK_RETURN_COLUMNS}"#
   RETURN r.weight
 $$) AS (weight ag_catalog.agtype)"#
         );
-        let get_sql = format!(
-            r#"SELECT
-  id::text, content::text, probability::text, confidence::text,
-  alpha::text, beta::text, alpha0::text, beta0::text,
-  created_at::text, last_activated_at::text, memory_type::text, project::text
-FROM ag_catalog.cypher('{g}', $$
-  MATCH (n:Belief {{id: '{b}'}})
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta,
-         n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
-$$) {BELIEF_RETURN_COLUMNS}"#
-        );
-
         let mut client = self.client.lock().await;
         let tx = client.transaction().await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
 
         // Step 1: create the GROUNDS edge (errors if endpoints missing).
         let rows = tx.query(&create_sql, &[]).await?;
@@ -1731,21 +1773,10 @@ $$) {BELIEF_RETURN_COLUMNS}"#
             );
         }
 
-        // Step 2: read current (α, β) inside the same transaction.
-        let rows = tx.query(&get_sql, &[]).await?;
-        let belief = rows
-            .first()
-            .map(belief_from_row)
-            .transpose()?
-            .ok_or_else(|| anyhow::anyhow!("insert_evidence: belief {} vanished", b))?;
-
-        // Step 3: compute new α and derive cached scalars; write back atomically.
-        let new_alpha = belief.alpha + EVIDENCE_MASS_K * w;
-        let update_sql = self.update_belief_beta_sql(belief_id, new_alpha, belief.beta)?;
-        let rows = tx.query(&update_sql, &[]).await?;
-        if rows.is_empty() {
-            bail!("insert_evidence: belief {} disappeared before update", b);
-        }
+        // Recompute from the fixed prior and every current evidence source.
+        // This also updates descendants within the same transaction.
+        self.recompute_learning(&tx, None, [belief_id].into())
+            .await?;
 
         tx.commit().await?;
         Ok(())
@@ -1821,8 +1852,14 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
   DELETE r
 $$) AS (v ag_catalog.agtype)"#
         );
-        let client = self.client.lock().await;
-        client.execute(&sql, &[]).await?;
+        let mut client = self.client.lock().await;
+        let tx = client.transaction().await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        tx.execute(&sql, &[]).await?;
+        self.recompute_learning(&tx, None, [belief_id].into())
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 

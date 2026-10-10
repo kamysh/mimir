@@ -19,6 +19,43 @@ pub enum ObservationSource {
     UserFeedback,
     AgentReport,
 }
+
+/// A direct MCP belief must come from a source independent of a queued
+/// experience. Incident-derived conclusions belong to review candidates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndependentBasis {
+    UserInstruction,
+    Document,
+}
+
+impl IndependentBasis {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::UserInstruction => "user_instruction",
+            Self::Document => "document",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndependentProvenance {
+    pub basis: IndependentBasis,
+    pub reference: String,
+}
+
+impl IndependentProvenance {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.reference.trim().is_empty()
+                && self.reference.len() <= 2048
+                && self.reference == self.reference.trim(),
+            "independent provenance needs a trimmed reference of at most 2048 bytes"
+        );
+        Ok(())
+    }
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Experience {
@@ -77,6 +114,99 @@ pub struct LearningLink {
     pub relation: EdgeType,
     pub weight: f64,
 }
+
+fn experiential_memory() -> crate::graph::MemoryType {
+    crate::graph::MemoryType::Experiential
+}
+
+/// A candidate key is stable within one experience. The server owns its UUID.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Candidate {
+    Belief {
+        key: String,
+        content: String,
+        #[serde(default = "experiential_memory")]
+        memory_type: crate::graph::MemoryType,
+    },
+    Pattern {
+        key: String,
+        situation: String,
+        approach: String,
+    },
+}
+
+impl Candidate {
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Belief { key, .. } | Self::Pattern { key, .. } => key,
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Belief { .. } => "belief",
+            Self::Pattern { .. } => "pattern",
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        let key = self.key();
+        ensure!(
+            !key.trim().is_empty() && key.len() <= 128 && key == key.trim(),
+            "candidate key must be a nonempty trimmed string of at most 128 bytes"
+        );
+        match self {
+            Self::Belief {
+                content,
+                memory_type,
+                ..
+            } => {
+                ensure!(
+                    !content.trim().is_empty(),
+                    "candidate belief content is empty"
+                );
+                ensure!(
+                    *memory_type != crate::graph::MemoryType::Working,
+                    "working memory cannot be a review candidate"
+                );
+            }
+            Self::Pattern {
+                situation,
+                approach,
+                ..
+            } => ensure!(
+                !situation.trim().is_empty() && !approach.trim().is_empty(),
+                "candidate pattern situation and approach are required"
+            ),
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BeliefTarget {
+    Existing { belief_id: Uuid },
+    Candidate { candidate_key: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateFeedback {
+    pub target: BeliefTarget,
+    pub verdict: Verdict,
+    pub weight: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateLink {
+    pub from: BeliefTarget,
+    pub to: BeliefTarget,
+    pub relation: EdgeType,
+    pub weight: f64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Review {
@@ -92,6 +222,12 @@ pub struct Review {
     /// Correct a review with an empty list to restore a mistakenly retired belief.
     #[serde(default)]
     pub superseded_beliefs: Vec<Uuid>,
+    #[serde(default)]
+    pub candidates: Vec<Candidate>,
+    #[serde(default)]
+    pub candidate_feedback: Vec<CandidateFeedback>,
+    #[serde(default)]
+    pub candidate_links: Vec<CandidateLink>,
 }
 impl Review {
     pub fn validate(&self) -> Result<()> {
@@ -108,6 +244,29 @@ impl Review {
             "review has too many targets"
         );
         ensure!(self.links.len() <= 64, "too many links");
+        ensure!(self.candidates.len() <= 64, "too many candidates");
+        ensure!(
+            self.feedback.len() + self.candidate_feedback.len() <= 64,
+            "too many feedback targets"
+        );
+        ensure!(
+            self.links.len() + self.candidate_links.len() <= 64,
+            "too many links"
+        );
+        let mut candidate_keys = std::collections::HashSet::new();
+        for candidate in &self.candidates {
+            candidate.validate()?;
+            ensure!(
+                candidate_keys.insert(candidate.key()),
+                "duplicate candidate key"
+            );
+        }
+        for feedback in &self.candidate_feedback {
+            crate::graph::Probability::new(feedback.weight)?;
+        }
+        for link in &self.candidate_links {
+            crate::graph::Probability::new(link.weight)?;
+        }
         let mut link_keys = std::collections::HashSet::new();
         for link in &self.links {
             crate::graph::Probability::new(link.weight)?;
@@ -143,6 +302,18 @@ pub struct ExperienceState {
     pub revision: i64,
     pub review_revision: i64,
     pub reviewed_revision: i64,
+    /// Resolved identities for candidates declared by the active review.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub candidate_ids: std::collections::HashMap<String, Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateProvenance {
+    pub experience_id: Uuid,
+    pub candidate_key: String,
+    pub kind: String,
+    pub active: bool,
+    pub retired: bool,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct PatternResult {
@@ -152,6 +323,8 @@ pub struct PatternResult {
     pub unknown: usize,
     /// Beta(1,1) with one observation per distinct experience, not asserted rate.
     pub observed_success_probability: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_provenance: Option<CandidateProvenance>,
 }
 #[derive(Debug, Serialize)]
 pub struct LearningContext {
@@ -269,6 +442,10 @@ impl crate::MimirService {
             "from_id":from,"to_id":to,"relation":relation,"weight":weight.value(),"source_probability":mean
         })).collect();
         let reviews = self.store.reviews_for_belief(id, offset, limit).await?;
-        Ok(serde_json::json!({"belief":belief,"incoming_edges":parents,"learning":reviews}))
+        let candidate_provenance = self.store.candidate_provenance(id).await?;
+        let independent_provenance = self.store.independent_provenance(id).await?;
+        Ok(
+            serde_json::json!({"belief":belief,"incoming_edges":parents,"learning":reviews,"candidate_provenance":candidate_provenance,"independent_provenance":independent_provenance}),
+        )
     }
 }
