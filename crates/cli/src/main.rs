@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use mimir_core::{config::Config, MimirService};
+mod judge;
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -17,6 +18,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Configure and run the bounded learning judge.
+    #[command(subcommand)]
+    Judge(judge::JudgeCommand),
+
     /// Create a configuration file.
     ///
     /// With no arguments: writes a commented template to
@@ -315,9 +320,26 @@ fn parse_kv(s: &str) -> Result<(String, String), String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) {
+                error.exit();
+            }
+            if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("judge")) {
+                eprintln!("invalid judge arguments");
+                println!("{}", serde_json::json!({"status":"invalid_arguments"}));
+                std::process::exit(2);
+            }
+            error.exit();
+        }
+    };
 
     match cli.command {
+        Command::Judge(command) => std::process::exit(judge::dispatch(command).await),
         Command::Init { pairs } => cmd_init(pairs)?,
         Command::Stats => cmd_stats().await?,
         Command::List { project, limit } => cmd_list(project, limit).await?,
