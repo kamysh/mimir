@@ -369,9 +369,119 @@ docker ps --filter name=postgres-ai
 | `load_document` | Parse a markdown file into chunks, embed, and index for semantic search |
 | `query_document` | Semantic search over indexed document chunks |
 | `clear_document` | Remove all chunks and embeddings for a document `path` |
-| `add_evidence` | Ground a belief in a document passage: GROUNDS edge from a `chunk_id` to a `belief_id` (`weight` default 1.0). Provenance only — never affects belief inference |
+| `add_evidence` | Ground a belief in a document passage: GROUNDS edge from a `chunk_id` to a `belief_id` (`weight` default 1.0). Adds local positive evidence; never becomes a causal edge |
 | `get_evidence` | List the document passages grounding a `belief_id`, strongest first |
 | `query_relevant` (`include_evidence: true`) | Each returned belief also carries an `evidence[]` array of its top-`evidence_per_belief` grounding passages |
+
+## Learning from experience
+
+Mimir supplies the durable learning operations; an LLM agent or experiential
+runner interprets observations and proposes hypotheses. No completion model,
+new daemon, or timer is installed by this change.
+
+The application loop is:
+
+1. `record_experience` records a project, situation, action, observed outcome,
+   evidence references, and optionally the beliefs/procedure used. Choose a
+   stable UUID for an incident. Send `expected_revision: 0` to create it, then
+   the returned revision when correcting it. Replaying the same submission does
+   not count another observation. Evidence references are supplied by the
+   caller; Mimir does not independently verify their contents.
+2. `pending_experiences` returns a bounded batch of new or changed experiences,
+   oldest first. The runner can run frequently and exit immediately on an empty
+   batch. A successful review removes that version from the pending set. There
+   is no collection-size cutoff or requirement to manufacture summary beliefs.
+3. The runner retrieves relevant beliefs and inspects evidence. It can use the
+   existing `insert_belief` to express a candidate explanation with a modest
+   prior, then `review_experience` to submit its assessment. The review contains
+   a rationale, support/defeat feedback, and optional `Supports`, `Defeats`,
+   `Causes`, or `Contradicts` relationships between existing beliefs. All targets
+   must belong to the experience's exact project; a project observation cannot
+   implicitly revise global or another project's knowledge.
+4. Mimir applies the review and acknowledges the reviewed version in one
+   transaction. The existing Beta engine recomputes affected beliefs and their
+   descendants. Reviewed causal links participate in `query_intervention`;
+   this is a projection under the recorded hypothesis, not proof that the
+   hypothesis identifies a real causal effect. Success alone does not establish
+   causation. The runner should compare predictions with later observations.
+5. Correcting an experience invalidates its earlier review and removes that
+   review's effects. Correcting a review replaces its entire contribution;
+   empty feedback, links and supersession lists retract it. Both operations
+   retain history and reject stale revision tokens. Concurrent reviewers do not
+   need a lease: the first valid revision wins, and the other must re-read.
+
+`get_experience` returns the current version and review tokens.
+`experience_history` exposes previous observations and judgments.
+`explain_belief` returns incoming reasoning edges and paged active reviews,
+linking an inferred probability back to the observations that influenced it.
+Retries are deduplicated by incident UUID, not by semantic similarity: callers
+must reuse the same identity rather than submit the same incident under new IDs.
+
+Reviews can explicitly mark `superseded_beliefs`. These leave normal retrieval
+even when their original prior is strong. This is separate from probabilistic
+counter-evidence; a single defeat does not automatically retire a belief.
+Replacing the review can restore a mistakenly superseded belief.
+
+`insert_pattern` now accepts `project`. `query_learning_context` returns relevant
+beliefs plus situation-matched patterns, with successes, failures, unresolved
+outcomes and an observed Beta(1,1) success estimate. Only current experience
+versions count. Agent reports remain visible as unresolved observations; they
+are not measured successes. The originally asserted pattern success rate stays
+separate for compatibility. Procedure matching is lexical, while beliefs retain
+hybrid retrieval. Retrieving a procedure never counts as successfully using it.
+
+Existing document evidence remains outside belief-to-belief and causal traversal.
+Its local positive evidence mass is retained when propagation or a review
+recomputes a posterior. Learned feedback is also retained by later propagation.
+
+### Runner contract
+
+For each pending item, submit:
+
+```json
+{
+  "expected_review_revision": 0,
+  "review": {
+    "experience_id": "<experience UUID>",
+    "experience_revision": 1,
+    "reviewer": "experiential-runner",
+    "rationale": "Evidence and alternative explanations considered",
+    "feedback": [],
+    "links": [],
+    "superseded_beliefs": []
+  }
+}
+```
+
+Use the actual revision values returned by the pending item. An empty assessment
+acknowledges that the experience was considered without claiming a new lesson.
+A link has `from_id`, `to_id`, `relation` and `weight` in [0,1]; feedback has
+`belief_id`, `verdict` (`support` or `defeat`) and `weight` in [0,1]. Existing
+manually recorded edges are not removed when a review is replaced.
+
+The installed historical judge is still a separate maintenance workflow. To use
+this loop, its prompt/tool allowlist and the foreground agents' experience
+capture must be adapted and deployed explicitly. App support alone does not
+establish that agents are learning or that their performance improves.
+
+### Verification
+
+The Rust learning integration tests require an isolated database whose name
+starts with `mimir_learning_test`. Provision its application role through
+`mimir-setup/create-db-user.sh`; `postgres` is for administration inside the
+container, not the external application connection. Set `MIMIR_HOST`,
+`MIMIR_PORT`, `MIMIR_DBNAME` and `MIMIR_USER`, then run:
+
+```sh
+cargo test --workspace --lib --bins --test learning_integration --test store_integration -- --test-threads=1
+```
+
+The tests cover causal projection/retraction, retry idempotence, stale and
+concurrent reviews, reversible supersession, project isolation, corrected
+pattern outcomes, and incremental processing beyond 200 experiences.
+`spec/Mimir/Learning.agda` proves general contribution replacement and stale
+review exclusion laws; the aggregate specification is `spec/Mimir.agda`.
+These laws model the lifecycle, not the SQL implementation itself.
 
 ## CLI reference
 

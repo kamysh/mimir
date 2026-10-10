@@ -1,3 +1,4 @@
+mod learning;
 use anyhow::{bail, Result};
 use chrono::DateTime;
 use pgvector::Vector;

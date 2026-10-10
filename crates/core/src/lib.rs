@@ -4,6 +4,7 @@ pub mod documents;
 pub mod embed;
 pub mod graph;
 pub mod inference;
+pub mod learning;
 pub mod store;
 
 use anyhow::Result;
@@ -272,6 +273,7 @@ impl MimirService {
         let chunk_count = chunk_ids.len();
         self.store.delete_document_chunks(&chunk_ids).await?;
         self.store.delete_chunk_embeddings(&chunk_ids).await?;
+        self.store.delete_learning_project(project).await?;
         Ok(belief_count + chunk_count)
     }
 
@@ -371,7 +373,16 @@ impl MimirService {
             Some(b) => b,
             None => anyhow::bail!("belief {} not found", seed_id),
         };
-        let downstream = self.store.get_downstream_beliefs(seed_id).await?;
+        let mut downstream = self.store.get_downstream_beliefs(seed_id).await?;
+        let (learning_mass, _) = self.store.learning_overlay().await?;
+        let grounding_mass = self.store.get_grounding_mass_all().await?;
+        for belief in &mut downstream {
+            belief.alpha0 += grounding_mass.get(&belief.id).copied().unwrap_or(0.0);
+            if let Some((a, b)) = learning_mass.get(&belief.id) {
+                belief.alpha0 += a;
+                belief.beta0 += b;
+            }
+        }
 
         // Collect all IDs in the subgraph (seed + downstream)
         let mut ids: Vec<Uuid> = downstream.iter().map(|b| b.id).collect();
@@ -416,7 +427,16 @@ impl MimirService {
         if self.store.get_belief(target_id).await?.is_none() {
             anyhow::bail!("belief {} not found", target_id);
         }
-        let downstream = self.store.get_causal_downstream_beliefs(target_id).await?;
+        let mut downstream = self.store.get_causal_downstream_beliefs(target_id).await?;
+        let (learning_mass, _) = self.store.learning_overlay().await?;
+        let grounding_mass = self.store.get_grounding_mass_all().await?;
+        for belief in &mut downstream {
+            belief.alpha0 += grounding_mass.get(&belief.id).copied().unwrap_or(0.0);
+            if let Some((a, b)) = learning_mass.get(&belief.id) {
+                belief.alpha0 += a;
+                belief.beta0 += b;
+            }
+        }
         let mut ids: Vec<Uuid> = downstream.iter().map(|b| b.id).collect();
         ids.push(target_id);
         // Complete incoming edges of every descendant, with source means — so a
@@ -559,6 +579,7 @@ impl MimirService {
         project: Option<&str>,
         prefer_type: Option<MemoryType>,
     ) -> Result<Vec<Belief>> {
+        let (_, superseded) = self.store.learning_overlay().await?;
         let all: Vec<Belief> = match project {
             Some(p) => self.store.list_beliefs_by_project(p).await?,
             None => self.store.list_beliefs().await?,
@@ -566,7 +587,7 @@ impl MimirService {
         .into_iter()
         // Working memory is task-local scratch, excluded from cross-session
         // retrieval entirely (see the `MemoryType` doc comment).
-        .filter(|b| b.memory_type != MemoryType::Working)
+        .filter(|b| b.memory_type != MemoryType::Working && !superseded.contains(&b.id))
         .collect();
         if all.is_empty() {
             return Ok(vec![]);
@@ -689,7 +710,7 @@ impl MimirService {
                             let neighbors =
                                 self.store.get_direct_downstream_by_project(fid, p).await?;
                             for b in neighbors {
-                                if b.memory_type == MemoryType::Working {
+                                if b.memory_type == MemoryType::Working || superseded.contains(&b.id) {
                                     continue;
                                 }
                                 if visited.insert(b.id) {
@@ -704,7 +725,7 @@ impl MimirService {
                 None => {
                     let downstream = self.store.get_downstream_beliefs(id).await?;
                     for b in downstream {
-                        if b.memory_type == MemoryType::Working {
+                        if b.memory_type == MemoryType::Working || superseded.contains(&b.id) {
                             continue;
                         }
                         if !matched.iter().any(|m| m.id == b.id) {

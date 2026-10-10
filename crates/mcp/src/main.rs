@@ -1,3 +1,4 @@
+mod learning;
 use anyhow::Result;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -30,7 +31,7 @@ fn err_response(id: &Value, code: i64, message: &str) -> Value {
 // ---------------------------------------------------------------------------
 
 fn tools_list() -> Value {
-    json!([
+    let mut tools = json!([
         {
             "name": "insert_belief",
             "description": "Add a new belief to the graph.",
@@ -87,7 +88,8 @@ fn tools_list() -> Value {
                 "properties": {
                     "situation":    { "type": "string" },
                     "approach":     { "type": "string" },
-                    "success_rate": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                    "success_rate": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                    "project": { "type": "string" }
                 },
                 "required": ["situation", "approach", "success_rate"]
             }
@@ -229,7 +231,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "add_evidence",
-            "description": "Ground a belief in a document passage: create a GROUNDS edge from a DocumentChunk to a Belief. Read-only w.r.t. belief inference — purely provenance. Get chunk_id from query_document results.",
+            "description": "Ground a belief in a document passage: create a GROUNDS edge from a DocumentChunk to a Belief. Adds local positive evidence to the belief Beta state; GROUNDS never becomes a causal or belief-to-belief edge. Get chunk_id from query_document results.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -310,7 +312,9 @@ fn tools_list() -> Value {
                 "required": ["path"]
             }
         }
-    ])
+    ]);
+    tools.as_array_mut().unwrap().extend(learning::tools());
+    tools
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +373,7 @@ mod pagination_tests {
 
 async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Result<Value> {
     match name {
+        "explain_belief" | "record_experience" | "review_experience" | "get_experience" | "experience_history" | "pending_experiences" | "query_learning_context" => learning::call(svc, name, args).await,
         "insert_belief" => {
             let content = args["content"]
                 .as_str()
@@ -440,7 +445,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             let success_rate = args["success_rate"]
                 .as_f64()
                 .ok_or_else(|| anyhow::anyhow!("missing 'success_rate'"))?;
-            let pattern = svc.add_pattern(situation, approach, success_rate).await?;
+            let pattern = svc.add_pattern_in_project(situation, approach, success_rate, args.get("project").map(|v|v.as_str().ok_or_else(||anyhow::anyhow!("project must be a string"))).transpose()?).await?;
             Ok(serde_json::to_value(&pattern)?)
         }
 

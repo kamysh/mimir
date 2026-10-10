@@ -16,3 +16,5 @@ open import Mimir.Documents public
 open import Mimir.Evidence  public
 open import Mimir.Beta      public
 open import Mimir.Session   public
+
+open import Mimir.Learning  public
