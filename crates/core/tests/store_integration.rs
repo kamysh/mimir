@@ -87,6 +87,9 @@ async fn service() -> MimirService {
     let cfg = Config {
         database: test_db_config(),
         embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
     };
     MimirService::connect(&cfg).await.expect("connect service")
 }
@@ -1008,18 +1011,27 @@ async fn test_evidence_preserves_substrate_and_survives_propagation() {
     let b = ctx.belief("grounding target".into(), 0.3, 0.1);
     ctx.store.insert_belief(&a).await.unwrap();
     ctx.store.insert_belief(&b).await.unwrap();
-    ctx.store.insert_edge(&Edge::new(a.id,b.id,EdgeType::Supports,0.5).unwrap()).await.unwrap();
-    let before = ctx.store.get_edges_among(&[a.id,b.id]).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(a.id, b.id, EdgeType::Supports, 0.5).unwrap())
+        .await
+        .unwrap();
+    let before = ctx.store.get_edges_among(&[a.id, b.id]).await.unwrap();
     let chunk = ctx.chunk("grounding-recompute.md", "observation");
     ctx.store.insert_document_chunk(&chunk).await.unwrap();
-    svc.add_evidence(b.id,chunk.id,0.9).await.unwrap();
-    assert_eq!(before,ctx.store.get_edges_among(&[a.id,b.id]).await.unwrap());
+    svc.add_evidence(b.id, chunk.id, 0.9).await.unwrap();
+    assert_eq!(
+        before,
+        ctx.store.get_edges_among(&[a.id, b.id]).await.unwrap()
+    );
     svc.propagate_from(a.id).await.unwrap();
     let after = svc.get_belief(b.id).await.unwrap().unwrap();
     let expected = b.alpha0 + 0.9 + 0.5 * a.probability.value() * mimir_core::graph::EVIDENCE_UNIT;
-    assert!((after.alpha-expected).abs()<1e-9);
+    assert!((after.alpha - expected).abs() < 1e-9);
     svc.propagate_from(a.id).await.unwrap();
-    assert_eq!(after.alpha,svc.get_belief(b.id).await.unwrap().unwrap().alpha);
+    assert_eq!(
+        after.alpha,
+        svc.get_belief(b.id).await.unwrap().unwrap().alpha
+    );
     ctx.cleanup().await;
 }
 

@@ -117,6 +117,9 @@ async fn full_query_relevant_ranking() {
     let cfg = Config {
         database: test_db_config(),
         embeddings: Some(local_embeddings()),
+        llm: None,
+        judge: None,
+        email: None,
     };
     let svc = MimirService::connect(&cfg).await.expect("connect");
 

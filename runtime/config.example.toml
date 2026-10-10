@@ -1,0 +1,56 @@
+# Merge these optional sections into ~/.config/mimir/config.toml.
+# Keep [database] and optional [embeddings]. Directory 0700; file 0600.
+# Select a model available to your account; no provider/model fallback occurs.
+
+[judge]
+batch_size = 5
+# project = "my-project" # omit to process pending experiences across projects
+mcp_command = "mimir-mcp"
+mcp_args = []
+# Run once with `mimir judge run`; `mimir judge watch` repeats bounded runs.
+# No service or timer is installed by this configuration.
+
+[llm]
+backend = "claude-code" # claude-code | codex | command | api
+model = "YOUR_MODEL"
+# reasoning_effort = "high" # Codex only; minimal | low | medium | high | xhigh
+timeout_seconds = 300
+max_calls = 20 # caps both model invocations and total tool executions
+max_output_tokens = 4096 # direct APIs only; includes reasoning where provider supports it
+# max_budget_usd = 1.0 # Claude Code only, PER invocation, not the whole run
+
+# For backend = "api", add:
+# provider = "openai" # openai | anthropic | openrouter | deepseek | zai | gemini | openai-compatible
+# api_key = "YOUR_API_KEY"
+# base_url = "https://api.openai.com/v1" # API base, not endpoint suffix; required for openai-compatible
+
+# For backend = "command", add (explicit JSON stdin/stdout protocol):
+# command = "/absolute/path/to/adapter"
+# args = []
+
+[email]
+enabled = false
+host = "smtp.gmail.com"
+port = 587
+tls = "starttls" # starttls | tls (implicit TLS, normally port 465)
+from = "you@gmail.com"
+to = ["you@gmail.com"]
+username = "you@gmail.com"
+auth = "password" # password | oauth2 | none (authenticated relay configured separately)
+password = "YOUR_APP_PASSWORD"
+timeout_seconds = 15
+retry_seconds = 300
+max_attempts = 5
+
+# For OAuth2 use auth = "oauth2", remove password, and add the matching
+# provider settings. See runtime/README.md for complete Google/Microsoft examples
+# and initial authorization guidance. No live provider account was tested.
+# [email.oauth]
+# provider = "google" # google | microsoft
+# client_id = "YOUR_REGISTERED_CLIENT_ID"
+# client_secret = "YOUR_CLIENT_SECRET" # when required by your client registration
+# refresh_token = "YOUR_INITIAL_REFRESH_TOKEN"
+# scope = "https://mail.google.com/" # Google SMTP scope
+# tenant = "common" # Microsoft: tenant ID, common, consumers, or organizations
+# scope = "https://outlook.office.com/SMTP.Send offline_access" # Microsoft
+# Microsoft SMTP: smtp.office365.com (Microsoft 365), smtp-mail.outlook.com (Outlook.com)
