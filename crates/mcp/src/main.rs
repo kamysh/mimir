@@ -373,7 +373,13 @@ mod pagination_tests {
 
 async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Result<Value> {
     match name {
-        "explain_belief" | "record_experience" | "review_experience" | "get_experience" | "experience_history" | "pending_experiences" | "query_learning_context" => learning::call(svc, name, args).await,
+        "explain_belief"
+        | "record_experience"
+        | "review_experience"
+        | "get_experience"
+        | "experience_history"
+        | "pending_experiences"
+        | "query_learning_context" => learning::call(svc, name, args).await,
         "insert_belief" => {
             let content = args["content"]
                 .as_str()
@@ -445,7 +451,19 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             let success_rate = args["success_rate"]
                 .as_f64()
                 .ok_or_else(|| anyhow::anyhow!("missing 'success_rate'"))?;
-            let pattern = svc.add_pattern_in_project(situation, approach, success_rate, args.get("project").map(|v|v.as_str().ok_or_else(||anyhow::anyhow!("project must be a string"))).transpose()?).await?;
+            let pattern = svc
+                .add_pattern_in_project(
+                    situation,
+                    approach,
+                    success_rate,
+                    args.get("project")
+                        .map(|v| {
+                            v.as_str()
+                                .ok_or_else(|| anyhow::anyhow!("project must be a string"))
+                        })
+                        .transpose()?,
+                )
+                .await?;
             Ok(serde_json::to_value(&pattern)?)
         }
 

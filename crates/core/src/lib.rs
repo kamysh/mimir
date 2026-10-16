@@ -710,7 +710,9 @@ impl MimirService {
                             let neighbors =
                                 self.store.get_direct_downstream_by_project(fid, p).await?;
                             for b in neighbors {
-                                if b.memory_type == MemoryType::Working || superseded.contains(&b.id) {
+                                if b.memory_type == MemoryType::Working
+                                    || superseded.contains(&b.id)
+                                {
                                     continue;
                                 }
                                 if visited.insert(b.id) {
