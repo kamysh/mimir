@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # mimir-eval — the single documented entry point (IMPLEMENTATION_PLAN.md §8).
 #
-# Thin, auditable wrapper around `python -m harness.runner` (+ analyze/score).
+# Thin Bash entry point for the standalone Rust evaluation tool.
 # It exists so there is ONE command to learn and so the operational runbook is
 # executable, not just prose. Every sub-command maps 1:1 to a runner flag; this
 # script adds nothing the runner does not already do — it only documents the
@@ -15,7 +15,10 @@
 #   ./eval isolation-check           # §8.2 MANDATORY positive gate (SPENDS API BUDGET)
 #   ./eval run [--trials N] [--resume] [--arms a,b] [--tasks t]   # §8.3 the matrix
 #   ./eval analyze                   # §8.4 rates/effect-sizes (excludes error trials)
-#   ./eval rescore                   # §8.5 re-apply trap.py offline (NO API)
+#   ./eval rescore                   # §8.5 re-apply Rust predicates offline (NO API)
+#   ./eval task-check <task_dir>     # offline task contract + predicate checks
+#   ./eval learning-compare --arm-a A.toml --arm-b B.toml --mimir /abs/mimir --mcp /abs/mimir-mcp [--live]
+#   ./eval tripwire <stream...>      # scan saved streams for isolation leaks
 #   ./eval cleanup                   # §8.6 mimir forget eval-<task>
 #   ./eval snapshot-after            # §8.6 diff vs before; report untagged residue
 #   ./eval gate                      # convenience: preflight + offline isolation probe (NO API)
@@ -26,40 +29,49 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
-PY="${PYTHON:-python3}"
-RUN=("$PY" -m harness.runner)
+export CARGO_TARGET_DIR="${MIMIR_EVAL_TARGET_DIR:-/var/tmp/mimir/mimir-eval-target}"
+if command -v cargo >/dev/null 2>&1; then
+  RUN=(cargo run --quiet --manifest-path "$HERE/Cargo.toml" --bin mimir-eval --)
+  LEARNING=(cargo run --quiet --manifest-path "$HERE/Cargo.toml" --bin mimir-learning-compare --)
+else
+  RUN=(nix develop --command cargo run --quiet --manifest-path "$HERE/Cargo.toml" --bin mimir-eval --)
+  LEARNING=(nix develop --command cargo run --quiet --manifest-path "$HERE/Cargo.toml" --bin mimir-learning-compare --)
+fi
 
 usage() { sed -n '2,30p' "${BASH_SOURCE[0]}"; }
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
-  preflight)        exec "${RUN[@]}" --preflight "$@" ;;
-  snapshot-before)  exec "${RUN[@]}" --snapshot-before "$@" ;;
-  snapshot-after)   exec "${RUN[@]}" --snapshot-after "$@" ;;
-  seed)             exec "${RUN[@]}" --seed "$@" ;;
-  isolation-check)  exec "${RUN[@]}" --isolation-check "$@" ;;
-  run)              exec "${RUN[@]}" "$@" ;;
-  cleanup)          exec "${RUN[@]}" --cleanup "$@" ;;
-  analyze)          exec "$PY" -m harness.analyze runs/results.jsonl "$@" ;;
-  rescore)          exec "$PY" -m harness.score --rescore runs/results.jsonl "$@" ;;
+  preflight)        exec "${RUN[@]}" preflight "$@" ;;
+  snapshot-before)  exec "${RUN[@]}" snapshot before "$@" ;;
+  snapshot-after)   exec "${RUN[@]}" snapshot after "$@" ;;
+  seed)             exec "${RUN[@]}" seed "$@" ;;
+  isolation-check)  exec "${RUN[@]}" isolation-check "$@" ;;
+  judge)            exec "${RUN[@]}" judge "${1:-runs/results.jsonl}" "${@:2}" ;;
+  run)              exec "${RUN[@]}" run "$@" ;;
+  cleanup)          exec "${RUN[@]}" cleanup "$@" ;;
+  analyze)          exec "${RUN[@]}" analyze runs/results.jsonl "$@" ;;
+  rescore)          exec "${RUN[@]}" rescore runs/results.jsonl "$@" ;;
+  task-check)       exec "${RUN[@]}" task-check "$@" ;;
+  learning-compare) exec "${LEARNING[@]}" "$@" ;;
+  tripwire)         exec "${RUN[@]}" tripwire "$@" ;;
   gate)
     # Offline-only gate: version-skew + in-sandbox leak probe. No API, no claude.
-    "${RUN[@]}" --preflight
-    exec "$PY" -m harness.sandbox --probe
+    exec "${RUN[@]}" gate
     ;;
   full)
     # Full runbook in order. STOPS for confirmation before the two API-spending
     # steps (isolation-check and the matrix) so budget is never burned blindly.
-    "${RUN[@]}" --preflight
-    "${RUN[@]}" --snapshot-before
-    "${RUN[@]}" --seed
+    "${RUN[@]}" preflight
+    "${RUN[@]}" snapshot before
+    "${RUN[@]}" seed
     echo ">>> About to run the MANDATORY isolation gate then the matrix — these SPEND API BUDGET."
     read -r -p ">>> Continue? [y/N] " ans; [ "$ans" = y ] || { echo "aborted before API spend"; exit 0; }
-    "${RUN[@]}" --isolation-check
-    "${RUN[@]}" "$@"
-    "$PY" -m harness.analyze runs/results.jsonl
-    "${RUN[@]}" --cleanup
-    exec "${RUN[@]}" --snapshot-after
+    "${RUN[@]}" isolation-check
+    "${RUN[@]}" run "$@"
+    "${RUN[@]}" analyze runs/results.jsonl
+    "${RUN[@]}" cleanup
+    exec "${RUN[@]}" snapshot after
     ;;
   -h|--help|"") usage ;;
   *) echo "unknown sub-command: $cmd" >&2; usage >&2; exit 64 ;;
