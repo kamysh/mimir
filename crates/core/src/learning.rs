@@ -261,11 +261,31 @@ impl Review {
                 "duplicate candidate key"
             );
         }
+        let belief_candidates: std::collections::HashSet<&str> = self
+            .candidates
+            .iter()
+            .filter_map(|candidate| match candidate {
+                Candidate::Belief { key, .. } => Some(key.as_str()),
+                Candidate::Pattern { .. } => None,
+            })
+            .collect();
+        let validate_target = |target: &BeliefTarget| -> Result<()> {
+            if let BeliefTarget::Candidate { candidate_key } = target {
+                ensure!(
+                    belief_candidates.contains(candidate_key.as_str()),
+                    "candidate belief reference must be declared in this review"
+                );
+            }
+            Ok(())
+        };
         for feedback in &self.candidate_feedback {
             crate::graph::Probability::new(feedback.weight)?;
+            validate_target(&feedback.target)?;
         }
         for link in &self.candidate_links {
             crate::graph::Probability::new(link.weight)?;
+            validate_target(&link.from)?;
+            validate_target(&link.to)?;
         }
         let mut link_keys = std::collections::HashSet::new();
         for link in &self.links {
@@ -296,6 +316,7 @@ impl Review {
         Ok(())
     }
 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperienceState {
     pub experience: Experience,
@@ -363,6 +384,16 @@ impl crate::MimirService {
         limit: usize,
     ) -> Result<Vec<ExperienceState>> {
         self.store.list_experiences(project, true, limit).await
+    }
+    pub async fn pending_experiences_excluding(
+        &self,
+        project: Option<&str>,
+        limit: usize,
+        excluded: &[Uuid],
+    ) -> Result<Vec<ExperienceState>> {
+        self.store
+            .list_experiences_excluding(project, true, limit, excluded)
+            .await
     }
     pub async fn add_pattern_in_project(
         &self,
@@ -447,5 +478,77 @@ impl crate::MimirService {
         Ok(
             serde_json::json!({"belief":belief,"incoming_edges":parents,"learning":reviews,"candidate_provenance":candidate_provenance,"independent_provenance":independent_provenance}),
         )
+    }
+}
+
+#[cfg(test)]
+mod review_validation_tests {
+    use super::*;
+
+    #[test]
+    fn candidate_references_require_belief_declarations_in_the_same_review() {
+        let mut review = Review {
+            experience_id: Uuid::new_v4(),
+            experience_revision: 1,
+            reviewer: "judge".into(),
+            rationale: "review evidence".into(),
+            feedback: vec![],
+            links: vec![],
+            superseded_beliefs: vec![],
+            candidates: vec![],
+            candidate_feedback: vec![CandidateFeedback {
+                target: BeliefTarget::Candidate {
+                    candidate_key: "claim".into(),
+                },
+                verdict: Verdict::Support,
+                weight: 0.8,
+            }],
+            candidate_links: vec![],
+        };
+        let undeclared = "candidate belief reference must be declared in this review";
+        assert!(review
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains(undeclared));
+
+        review.candidates.push(Candidate::Pattern {
+            key: "claim".into(),
+            situation: "situation".into(),
+            approach: "approach".into(),
+        });
+        assert!(review
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains(undeclared));
+
+        review.candidates[0] = Candidate::Belief {
+            key: "claim".into(),
+            content: "supported claim".into(),
+            memory_type: crate::graph::MemoryType::Experiential,
+        };
+        review.validate().unwrap();
+
+        review.candidate_feedback.clear();
+        review.candidate_links.push(CandidateLink {
+            from: BeliefTarget::Existing {
+                belief_id: Uuid::new_v4(),
+            },
+            to: BeliefTarget::Candidate {
+                candidate_key: "missing".into(),
+            },
+            relation: EdgeType::Supports,
+            weight: 0.7,
+        });
+        assert!(review
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains(undeclared));
+        review.candidate_links[0].to = BeliefTarget::Candidate {
+            candidate_key: "claim".into(),
+        };
+        review.validate().unwrap();
     }
 }
