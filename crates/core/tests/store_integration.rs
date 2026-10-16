@@ -87,6 +87,9 @@ async fn service() -> MimirService {
     let cfg = Config {
         database: test_db_config(),
         embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
     };
     MimirService::connect(&cfg).await.expect("connect service")
 }
