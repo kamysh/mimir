@@ -83,7 +83,10 @@ remain in the printed `/var/tmp` artifact directory; containers are removed.
 
 ## Proof and test boundary
 
-Startup uses Kryzhen 2.0.2 with an explicit `public` migration target. Upgrading
+Startup uses Kryzhen 2.0.2 validation and ledger APIs with a `public` migration
+target. A compatibility executor retains `public,ag_catalog` while running
+historical SQL, whose AGE operators need that search path. Each migration body
+and its ledger entries commit in one transaction. Upgrading
 an existing Kryzhen ledger must preserve its canonical records and application
 data while adding schema associations. The historical sqlx receipt remains
 supported. The real-server matrix checks fresh startup, both upgrade paths and

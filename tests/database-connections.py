@@ -181,7 +181,8 @@ try:
     probe("fresh migration with Kryzhen 2", port, {"password": SECRET}, path="migrate", database=migration_db)
     before = ledger()
     migration_sql("CREATE TABLE public.upgrade_sentinel(value text); INSERT INTO public.upgrade_sentinel VALUES ('preserved');")
-    migration_sql("DROP TABLE mallard.applied_migration_schemas; DROP TABLE mallard.migrator_version;")
+    migration_sql("DROP TABLE mallard.applied_migration_schemas; DROP TABLE mallard.migrator_version; "
+                  "DROP INDEX mallard.applied_migrations_name_key;")
     probe("upgrade existing Kryzhen history", port, {"password": SECRET}, path="migrate", database=migration_db)
     assert ledger() == before, "upgrade replayed or changed canonical migration history"
     assert migration_sql("SELECT value FROM public.upgrade_sentinel;") == "preserved"
@@ -204,6 +205,12 @@ try:
     before = ledger()
     probe("sqlx import is idempotent", port, {"password": SECRET}, path="migrate", database=migration_db)
     assert ledger() == before
+    migration_sql("UPDATE mallard.applied_migrations SET checksum=decode(repeat('00',32),'hex') "
+                  "WHERE name=(SELECT name FROM mallard.applied_migrations ORDER BY name LIMIT 1);")
+    tampered = ledger()
+    probe("changed migration checksum is rejected", port, {"password": SECRET}, path="migrate", database=migration_db, ok=False)
+    assert ledger() == tampered, "failed validation changed migration history"
+    assert migration_sql("SELECT value FROM public.upgrade_sentinel;") == "preserved"
 
     secure, tls_port = start(True, tls_only=True)
     sql(secure, "CREATE ROLE tester LOGIN PASSWORD '" + SECRET.replace("'", "''") + "'; CREATE ROLE certuser LOGIN;")
