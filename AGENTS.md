@@ -208,6 +208,11 @@ mimir --help >/dev/null && echo OK
 
 ## Step 4 — Write config (use `mimir init KEY=VALUE ...`, not bare `mimir init`)
 
+Database credentials and TLS options can be specified in `[database]`, including
+optional `password` and `pgpassfile`. See [credentials and TLS](docs/database-connections.md)
+for source precedence, password-file escaping, CA verification and client certificates.
+Keep config files owner-only and avoid printing existing credentials during inspection.
+
 Bare `mimir init` opens `$EDITOR` and blocks. `mimir init` with `KEY=VALUE`
 arguments writes the config directly, no editor. Check for an existing config
 first — if one is present, read it and confirm the values match your variables

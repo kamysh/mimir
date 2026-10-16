@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create a role and database for mimir on a postgres-ai Docker container.
 #
-# Password is read from ~/.pgpass — add an entry before running:
+# Password comes from nonempty PGPASSWORD, or PGPASSFILE / ~/.pgpass:
 #   localhost:5432:mimir:mimir:<password>
 #
 # The AGE graph, vertex/edge labels, and chunk_embeddings table are created
@@ -42,44 +42,85 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-PGPASS_FILE="${HOME}/.pgpass"
-if [[ ! -f "$PGPASS_FILE" ]]; then
-    echo "Error: ~/.pgpass not found. Add an entry first:"
-    echo "  echo '${DBHOST}:${DBPORT}:${DBNAME}:${DBUSER}:<password>' >> ~/.pgpass && chmod 600 ~/.pgpass"
-    exit 1
+# Resolve credentials without evaluating shell syntax or passing secrets in argv.
+pgpass_field() {
+    local input=$1 index ch
+    PGPASS_FIELD= PGPASS_RAW= PGPASS_REST= PGPASS_DELIMITED=false
+    for ((index=0; index<${#input}; index++)); do
+        ch=${input:index:1}
+        if [[ $ch == : ]]; then
+            PGPASS_REST=${input:index+1}
+            PGPASS_DELIMITED=true
+            return 0
+        fi
+        PGPASS_RAW+=$ch
+        if [[ $ch == '\' && $((index+1)) -lt ${#input} ]]; then
+            index=$((index+1))
+            ch=${input:index:1}
+            PGPASS_RAW+=$ch
+        fi
+        PGPASS_FIELD+=$ch
+    done
+}
+
+read_password_file() {
+    local path=$1 mode line rest expected
+    [[ -f $path ]] || return 1
+    mode=$(stat -c '%a' "$path" 2>/dev/null) || mode=$(stat -f '%Lp' "$path") || return 1
+    [[ $mode =~ ^[0-7]+$ ]] || return 1
+    if (( (8#$mode & 077) != 0 )); then
+        echo "Error: password file has group or world permissions; use chmod 600" >&2
+        return 1
+    fi
+    while IFS= read -r line || [[ -n $line ]]; do
+        while [[ $line == *$'\r' ]]; do line=${line%$'\r'}; done
+        [[ -n $line && $line != \#* ]] || continue
+        rest=$line
+        for expected in "$DBHOST" "$DBPORT" "$DBNAME" "$DBUSER"; do
+            pgpass_field "$rest"
+            if [[ $PGPASS_DELIMITED != true || ( $PGPASS_RAW != '*' && $PGPASS_FIELD != "$expected" ) ]]; then
+                continue 2
+            fi
+            rest=$PGPASS_REST
+        done
+        pgpass_field "$rest"
+        PASSWORD=$PGPASS_FIELD
+        return 0
+    done < "$path"
+    return 1
+}
+
+PASSWORD=${PGPASSWORD-}
+if [[ -z $PASSWORD ]]; then
+    if ! read_password_file "${PGPASSFILE-${HOME}/.pgpass}"; then
+        echo "Error: no usable password-file entry for the requested connection; set PGPASSWORD or PGPASSFILE" >&2
+        exit 1
+    fi
 fi
 
-PASSWORD=$(awk -F: -v h="$DBHOST" -v p="$DBPORT" -v d="$DBNAME" -v u="$DBUSER" '
-    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
-    { if (($1==h||$1=="*") && ($2==p||$2=="*") && ($3==d||$3=="*") && ($4==u||$4=="*")) print $5 }
-' "$PGPASS_FILE" | head -1)
+# SQL values and identifiers have different quoting rules.
+PASSWORD_SQL=${PASSWORD//\'/\'\'}
+DBUSER_SQL=${DBUSER//\'/\'\'}
+DBNAME_SQL=${DBNAME//\'/\'\'}
+DBUSER_IDENT=${DBUSER//\"/\"\"}
+DBNAME_IDENT=${DBNAME//\"/\"\"}
 
-if [[ -z "$PASSWORD" ]]; then
-    echo "Error: no ~/.pgpass entry for ${DBHOST}:${DBPORT}:${DBNAME}:${DBUSER}"
-    echo "Add one:"
-    echo "  echo '${DBHOST}:${DBPORT}:${DBNAME}:${DBUSER}:<password>' >> ~/.pgpass && chmod 600 ~/.pgpass"
-    exit 1
-fi
 
 PSQL_ADMIN=(docker exec -i "$CONTAINER" psql -U postgres -v ON_ERROR_STOP=1)
 
 echo "==> Creating role '${DBUSER}' and database '${DBNAME}'..."
 
 "${PSQL_ADMIN[@]}" -d postgres <<SQL
-DO \$\$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${DBUSER}') THEN
-        CREATE ROLE "${DBUSER}" WITH LOGIN;
-    END IF;
-END
-\$\$;
+SET standard_conforming_strings = on;
+SELECT format('CREATE ROLE %I WITH LOGIN', '${DBUSER_SQL}')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${DBUSER_SQL}')\gexec
 
-ALTER ROLE "${DBUSER}" PASSWORD '${PASSWORD}';
+ALTER ROLE "${DBUSER_IDENT}" PASSWORD '${PASSWORD_SQL}';
 
-SELECT 'CREATE DATABASE "${DBNAME}" OWNER "${DBUSER}"'
-WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '${DBNAME}')\gexec
+SELECT format('CREATE DATABASE %I OWNER %I', '${DBNAME_SQL}', '${DBUSER_SQL}')
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '${DBNAME_SQL}')\gexec
 
-GRANT ALL PRIVILEGES ON DATABASE "${DBNAME}" TO "${DBUSER}";
+GRANT ALL PRIVILEGES ON DATABASE "${DBNAME_IDENT}" TO "${DBUSER_IDENT}";
 SQL
 
 echo "==> Installing extensions in '${DBNAME}'..."
@@ -94,13 +135,13 @@ SQL
 echo "==> Granting schema and ag_catalog privileges..."
 
 "${PSQL_ADMIN[@]}" -d "${DBNAME}" <<SQL
-GRANT USAGE, CREATE ON SCHEMA public TO "${DBUSER}";
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES    TO "${DBUSER}";
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO "${DBUSER}";
-GRANT USAGE                                          ON SCHEMA ag_catalog TO "${DBUSER}";
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES   IN SCHEMA ag_catalog TO "${DBUSER}";
-GRANT EXECUTE ON ALL FUNCTIONS                       IN SCHEMA ag_catalog TO "${DBUSER}";
-GRANT USAGE   ON ALL SEQUENCES                       IN SCHEMA ag_catalog TO "${DBUSER}";
+GRANT USAGE, CREATE ON SCHEMA public TO "${DBUSER_IDENT}";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES    TO "${DBUSER_IDENT}";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO "${DBUSER_IDENT}";
+GRANT USAGE                                          ON SCHEMA ag_catalog TO "${DBUSER_IDENT}";
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES   IN SCHEMA ag_catalog TO "${DBUSER_IDENT}";
+GRANT EXECUTE ON ALL FUNCTIONS                       IN SCHEMA ag_catalog TO "${DBUSER_IDENT}";
+GRANT USAGE   ON ALL SEQUENCES                       IN SCHEMA ag_catalog TO "${DBUSER_IDENT}";
 SQL
 
 echo "==> Done."

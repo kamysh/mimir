@@ -22,6 +22,8 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
             port: std::env::var("MIMIR_PORT")?.parse()?,
             user: std::env::var("MIMIR_USER")?,
             dbname,
+            password: None,
+            pgpassfile: None,
             ssl_mode: SslMode::Disable,
             ssl_root_cert: None,
             ssl_client_cert: None,

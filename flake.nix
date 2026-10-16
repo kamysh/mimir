@@ -59,7 +59,7 @@
           cargoLock = {
             lockFile = ./Cargo.lock;
             outputHashes = {
-              "kryzhen-0.8.0" = "sha256-tK3y6pYtoj0BJavUQdESJfbyDPGWWCKvsY2lbY/0wLM=";
+              "kryzhen-2.0.2" = "sha256-jms4RPxJarj3kG7G6lnKsgjGoTmvsUzZuQsTVHTeNvU=";
             };
           };
           doCheck = false; # integration tests require a live PostgreSQL connection
