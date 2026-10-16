@@ -179,12 +179,15 @@ current_project="$project"
 make_config command "$project" "$config" 2 "$base/judge-process-fixture"
 seed "$config" "$project" "$id"
 status=0
-MIMIR_JUDGE_FIXTURE_MODE=crash "$bin" judge watch --config "$config" \
+MIMIR_JUDGE_FIXTURE_MODE=crash timeout 20s "$bin" judge watch --config "$config" \
     --state-dir "$base/state-watch" --interval-seconds 60 \
-    --max-consecutive-failures 1 > "$base/watch-report.json" || status=$?
-test "$status" -eq 3
-jq -e '.status == "blocked" and .block_reason == "backend_error_or_timeout"' "$base/watch-report.json" >/dev/null
+    --max-consecutive-failures 1 > "$base/watch-stdout" 2> "$base/watch-stderr" || status=$?
+test "$status" -eq 124
+test ! -s "$base/watch-stdout"
+test "$(grep -c 'judge watch: incomplete run' "$base/watch-stderr")" -eq 1
+"$bin" judge status --state-dir "$base/state-watch" \
+    | jq -e '.report.status == "blocked" and .report.block_reason == "backend_error_or_timeout"' >/dev/null
 call_tool "$config" pending_experiences "$(jq -nc --arg project "$project" '{project:$project,limit:1}')" | jq -e 'length == 1' >/dev/null
 call_tool "$config" delete_project "$(jq -nc --arg project "$project" '{project:$project}')" >/dev/null
 current_project=
-printf 'judge adapter fixtures passed: Claude, Codex, custom, crash, malformed, oversized, timeout, descendant cleanup, false completion, incompatible flags, bounded watch retry\n'
+printf 'judge adapter fixtures passed: Claude, Codex, custom, crash, malformed, oversized, timeout, descendant cleanup, false completion, incompatible flags, quiet watch retry\n'

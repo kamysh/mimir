@@ -79,7 +79,7 @@ pub async fn run(
     let mut child = GroupChild::new(
         command
             .spawn()
-            .map_err(|_| anyhow!("unable to start harness"))?,
+            .map_err(|error| anyhow!("unable to start harness: {error}"))?,
     );
     let mut stdin = child
         .child
@@ -103,7 +103,7 @@ pub async fn run(
             drop(stdin);
             Ok::<_, std::io::Error>(())
         };
-        let ((), stdout, _stderr) = tokio::try_join!(
+        let ((), stdout, stderr) = tokio::try_join!(
             async { write.await.map_err(anyhow::Error::from) },
             read_limited(stdout, MAX_OUTPUT),
             read_limited(stderr, MAX_DIAGNOSTIC),
@@ -112,7 +112,10 @@ pub async fn run(
         child.kill_group();
         let exit = child.child.wait().await?;
         child.group = None;
-        ensure!(exit.success(), "harness exited unsuccessfully");
+        if !exit.success() {
+            let detail = super::state::bounded(&String::from_utf8_lossy(&stderr), 512);
+            return Err(anyhow!("harness exited with {exit}: {detail}"));
+        }
         Ok::<_, anyhow::Error>(Output { stdout })
     })
     .await;
@@ -129,7 +132,7 @@ pub async fn run(
     }
     match outcome {
         Ok(Ok(output)) => Ok(output),
-        Ok(Err(_)) => Err(anyhow!("harness I/O or exit failure")),
+        Ok(Err(error)) => Err(error),
         Err(_) => Err(anyhow!("harness timed out")),
     }
 }
