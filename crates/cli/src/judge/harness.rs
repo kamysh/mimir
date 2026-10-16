@@ -4,6 +4,7 @@ use super::{
     config::{Backend as Kind, LlmConfig},
     process,
     runner::{Action, Backend},
+    state::SourceFailure,
 };
 use anyhow::{anyhow, bail, ensure, Result};
 use mimir_core::learning::ExperienceState;
@@ -77,7 +78,7 @@ fn read_answer(path: &Path) -> Result<Vec<u8>> {
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)
-        .map_err(|_| anyhow!("harness answer is missing"))?;
+        .map_err(|error| anyhow!("harness answer is missing: {error}"))?;
     ensure!(
         file.metadata()?.is_file() && file.metadata()?.len() <= MAX_ANSWER,
         "invalid harness answer"
@@ -92,20 +93,25 @@ fn read_answer(path: &Path) -> Result<Vec<u8>> {
 }
 
 fn parse_reply(value: Value) -> Result<(Value, Action)> {
-    let reply: Reply =
-        serde_json::from_value(value.clone()).map_err(|_| anyhow!("invalid harness reply"))?;
+    let reply: Reply = serde_json::from_value(value.clone()).map_err(|error| {
+        SourceFailure::json("invalid harness reply", value.to_string().as_bytes(), error)
+    })?;
     ensure!(reply.calls.len() <= 1, "harness returned too many calls");
     let action = if let Some(call) = reply.calls.into_iter().next() {
         ensure!(call.name.len() <= 128, "harness tool name is too long");
-        let arguments: Value = serde_json::from_str(&call.arguments_json)
-            .map_err(|_| anyhow!("invalid harness tool arguments"))?;
-        ensure!(
-            arguments.is_object(),
-            "harness tool arguments must be an object"
-        );
-        Action::Tool {
-            name: call.name,
-            arguments,
+        match serde_json::from_str(&call.arguments_json) {
+            Ok(arguments) => Action::Tool {
+                name: call.name,
+                arguments,
+            },
+            Err(error) => Action::RejectedTool {
+                name: call.name,
+                source: SourceFailure::json(
+                    "invalid harness tool arguments",
+                    call.arguments_json.as_bytes(),
+                    error,
+                ),
+            },
         }
     } else {
         Action::Done
@@ -162,7 +168,7 @@ impl<'a> Harness<'a> {
             Duration::from_secs(5),
         )
         .await
-        .map_err(|_| anyhow!("harness capability check failed"))?;
+        .map_err(|error| anyhow!("harness capability check failed: {error:#}"))?;
         let help = String::from_utf8(output.stdout).map_err(|_| anyhow!("invalid harness help"))?;
         let required: &[&str] = if self.config.backend == Kind::Codex {
             &[
@@ -331,8 +337,9 @@ impl<'a> Harness<'a> {
         .await?;
         let reply_value = match self.config.backend {
             Kind::ClaudeCode => {
-                let wrapper: Value = serde_json::from_slice(&output.stdout)
-                    .map_err(|_| anyhow!("invalid Claude result"))?;
+                let wrapper: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+                    SourceFailure::json("invalid Claude result", &output.stdout, error)
+                })?;
                 ensure!(wrapper["is_error"] == false, "Claude reported failure");
                 if !wrapper["structured_output"].is_null() {
                     wrapper["structured_output"].clone()
@@ -340,17 +347,24 @@ impl<'a> Harness<'a> {
                     let result = wrapper["result"]
                         .as_str()
                         .ok_or_else(|| anyhow!("Claude result missing"))?;
-                    serde_json::from_str(result)
-                        .map_err(|_| anyhow!("invalid Claude structured result"))?
+                    serde_json::from_str(result).map_err(|error| {
+                        SourceFailure::json(
+                            "invalid Claude structured result",
+                            result.as_bytes(),
+                            error,
+                        )
+                    })?
                 }
             }
             Kind::Codex => {
                 let answer = read_answer(&work.path().join("answer.json"))?;
-                serde_json::from_slice(&answer)
-                    .map_err(|_| anyhow!("invalid Codex structured result"))?
+                serde_json::from_slice(&answer).map_err(|error| {
+                    SourceFailure::json("invalid Codex structured result", &answer, error)
+                })?
             }
-            Kind::Command => serde_json::from_slice(&output.stdout)
-                .map_err(|_| anyhow!("invalid command result"))?,
+            Kind::Command => serde_json::from_slice(&output.stdout).map_err(|error| {
+                SourceFailure::json("invalid command result", &output.stdout, error)
+            })?,
             Kind::Api => bail!("API backend is not a harness"),
         };
         let (reply, action) = parse_reply(reply_value)?;
@@ -367,5 +381,30 @@ impl Backend for Harness<'_> {
         tools: &'a [Value],
     ) -> Pin<Box<dyn Future<Output = Result<Action>> + Send + 'a>> {
         Box::pin(self.step(selected, last, tools))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::judge::state::Report;
+
+    #[test]
+    fn malformed_arguments_are_a_recoverable_tool_request() {
+        let (_, action) = parse_reply(json!({
+            "calls": [{"name": "review_experience", "arguments_json": "{\"review\": }"}]
+        }))
+        .unwrap();
+        let Action::RejectedTool { name, source } = action else {
+            panic!("expected rejected tool call")
+        };
+        assert_eq!(name, "review_experience");
+        assert_eq!(source.stage, "invalid harness tool arguments");
+        assert!(source.detail.contains("line 1 column"));
+        assert_eq!(source.excerpt, "{\"review\": }");
+        let mut report = Report::new("blocked", 1, 0, 0, 1, 0);
+        report.failure_source = Some(source);
+        let serialized = serde_json::to_value(&report).unwrap();
+        assert_eq!(serialized["failure_source"]["excerpt"], "{\"review\": }");
     }
 }
