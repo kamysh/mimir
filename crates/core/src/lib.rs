@@ -357,6 +357,23 @@ impl MimirService {
         })
     }
 
+    pub async fn list_beliefs_page(
+        &self,
+        project: Option<&str>,
+        memory_type: Option<MemoryType>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<serde_json::Value> {
+        let (beliefs, total) = self
+            .store
+            .list_beliefs_page(project, memory_type, limit, offset)
+            .await?;
+        let end = offset.saturating_add(beliefs.len());
+        Ok(
+            serde_json::json!({"beliefs":beliefs,"total":total,"offset":offset,"next_offset":(end<total).then_some(end)}),
+        )
+    }
+
     /// List patterns. Same project-scoping semantics as `list_beliefs`.
     pub async fn list_patterns(&self, project: Option<&str>) -> Result<Vec<Pattern>> {
         match project {
