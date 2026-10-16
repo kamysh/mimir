@@ -26,6 +26,12 @@ retrieval alone is not successful use. Direct `insert_belief` now requires an
 independent user instruction or document reference; incident-derived claims go
 through experience-owned review candidates.
 
-The lifecycle reminder supplies guidance rather than automatic queries, mandatory
-calls, ratings or per-turn writeback. When Muninn is also installed, use it to
-locate code and repository notes, and Mimir for lessons affecting the approach.
+After Mimir or Muninn retrieval, give the user a brief 0–5 usefulness assessment
+for the current task, one reason, and the next step it informs. Rate the
+information, not belief probability. Combine related calls into one assessment
+and avoid repeating raw JSON unless the user requests it.
+
+The lifecycle reminder supplies guidance rather than automatic queries,
+mandatory calls, hook-generated ratings or per-turn writeback. When Muninn is
+also installed, use it to locate code and repository notes, and Mimir for
+lessons affecting the approach.

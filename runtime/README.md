@@ -8,12 +8,19 @@ Keep that file and its directory private if it contains credentials. See
 `mimir judge check-config` validates settings locally. `mimir judge run` reviews
 one bounded batch through `mimir-mcp`; `mimir judge watch` repeats bounded runs
 every five minutes by default (`--interval-seconds`, minimum 60) until interrupted.
-It stops after three consecutive incomplete or unavailable runs by default
-(`--max-consecutive-failures`), limiting repeated model calls on a stuck item.
-An empty queue makes no model call. `mimir judge status` reads the last local
-report. The database review receipt is authoritative; a local status snapshot
-or model claim does not establish completion. The runner restricts tool calls
-to the selected experience and project.
+After three consecutive incomplete or unavailable runs by default
+(`--max-consecutive-failures`), it backs off to hourly runs. An empty queue
+makes no model call. `mimir judge status` reads the last local report and gives
+the ID of a retained failure trace. `mimir judge diagnostics` reads the first
+failure trace of the current incident; `--list` shows retained attempt IDs and
+`--id UUID` selects a specific attempt. The private trace records ordered model
+requests, tool requests and outcomes, remaining call budgets, and the final
+failure reason. It retains at
+most eight attempts, 48 events and 256 KiB per attempt, and truncates event
+details to 3,072 characters. Later successful runs do not erase an earlier
+failure trace. The database review receipt is authoritative; a local status
+snapshot or model claim does not establish completion. The runner restricts
+tool calls to the selected experience and project.
 After a committed review, it checks the pinned database revision and finishes
 that item without requiring a separate model "done" turn. A failed or
 budget-limited run leaves the revision pending for the next run and reports a
@@ -72,8 +79,14 @@ Protocol references: [OpenRouter routing](https://openrouter.ai/docs/guides/rout
 
 Notifications live in the reusable Rust `mimir-notifications` crate. A component
 submits a source, incident key, and failure code with a short safe summary, or
-a recovery event. The judge is one client; it sends only fixed status summaries,
-not belief contents, model output, or credentials. Each incident has independent
+a recovery event. It may also provide bounded, validated email details that
+are stored with the pending alert for retries. The judge supplies the project,
+failure reason, selected experience IDs, result counts, and diagnostic ID. On
+recovery it reports the earlier failure and distinguishes affected reviews
+confirmed by a later completed batch from reviews whose completion is
+unverified. An idle queue closes the alert episode but does not prove that a
+specific review completed. Email excludes belief contents, model output, tool
+arguments and responses, and credentials. Each incident has independent
 failure suppression, recovery, retry, and exhaustion state. The crate owns
 `notification.lock` and a private atomic `notification-outbox.json` in the Mimir
 state directory; other components can use the same crate and directory without

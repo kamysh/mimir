@@ -1527,7 +1527,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "mimir"
-version = "1.2.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1547,7 +1547,7 @@ dependencies = [
 
 [[package]]
 name = "mimir-core"
-version = "1.2.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "mimir-mcp"
-version = "1.2.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "mimir-core",
@@ -1586,7 +1586,7 @@ dependencies = [
 
 [[package]]
 name = "mimir-notifications"
-version = "1.2.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
