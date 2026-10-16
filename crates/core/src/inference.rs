@@ -71,6 +71,32 @@ impl InferenceEngine {
         self.propagate_core(seed.id, seed.probability, downstream, edges, external_means)
     }
 
+    /// Recompute changed evidence targets and their closure without clamping any
+    /// real belief. The ordinary propagation path clamps its explicit seed;
+    /// evidence revision must also recompute the target itself.
+    pub fn recompute(
+        &self,
+        beliefs: &[Belief],
+        edges: &[(Uuid, Uuid, EdgeType, Probability)],
+        external_means: &HashMap<Uuid, f64>,
+    ) -> Result<Vec<(Uuid, (f64, f64))>> {
+        let mut virtual_seed = Uuid::new_v4();
+        while beliefs.iter().any(|b| b.id == virtual_seed)
+            || edges
+                .iter()
+                .any(|(a, b, _, _)| *a == virtual_seed || *b == virtual_seed)
+        {
+            virtual_seed = Uuid::new_v4();
+        }
+        self.propagate_core(
+            virtual_seed,
+            Probability::new(0.5)?,
+            beliefs,
+            edges,
+            external_means,
+        )
+    }
+
     /// Counterfactual projection P(· | do(target = value)). Pearl's do-operator
     /// as graph surgery: delete every edge INTO `target_id` (sever its parents),
     /// keep only CAUSES edges (cut the evidential/correlational paths an
