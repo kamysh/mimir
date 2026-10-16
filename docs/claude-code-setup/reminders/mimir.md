@@ -11,3 +11,11 @@ At startup, resume or after compaction, identify which gaps in your understandin
 Mimir could fill before reconstructing everything from scratch. Preserve durable,
 non-obvious findings so future sessions can benefit. Read the mimir skill for tool
 selection, evidence evaluation and limitations.
+
+When choosing an approach, learning context can expose observed successes and
+failures. Record meaningful observations and corrections within authorized scope
+so the background judge can test hypotheses; reuse the incident ID on retries.
+If a retrieved lesson guided a later action, record that action's independently
+observed result with the used belief or pattern ID. Retrieval itself is not a
+success. Direct MCP belief writes require an explicit independent source;
+incident-derived conclusions belong to experience-owned review candidates.

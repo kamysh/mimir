@@ -257,63 +257,19 @@ which settings to preserve, Codex hook trust review, and delivery checks for bot
 clients. A startup reminder explains why and when to retrieve; it does not query
 on every prompt or file action.
 
-## Step 7 — Weekly Experiential-belief judge (optional)
+## Step 7 — Incremental experiential judge (optional)
 
-This is a separately approved maintenance workflow, not part of the standard
-agent integration or its verification. It changes stored beliefs. The optional
-judge files retain their own workflow and must be reviewed before scheduling;
-the new reminder setup does not install or alter running judge services.
-
-`memory_type: experiential` beliefs never decay and have no forgetting
-mechanism, so the set only grows. This step installs a weekly unattended
-pass that reviews them for redundancy/staleness and soft-retires
-duplicates via `record_defeat` — never `delete_belief` directly;
-retirement flows through the existing `sweep_expired_defeated`
-grace-period pipeline (Command reference above). Design rationale:
-mimir belief `4042f100`'s sibling reasoning and
-[`docs/proposals/90-plan-document-summarization.md`](docs/proposals/90-plan-document-summarization.md)'s
-"generation stays outside mimir-core" principle — mimir-core has no
-LLM-completion client (only embedding backends) and none is added for
-this; the judge is a headless `claude -p` call, not new Rust.
-
-Source files: [`docs/claude-code-setup/mimir-judge-experiential/`](docs/claude-code-setup/mimir-judge-experiential/)
-(`prompt.md`, `run.sh`, `mcp-config.json`).
-
-```sh
-cp docs/claude-code-setup/mimir-judge-experiential/prompt.md \
-   "$HOME/.claude/mimir-judge-experiential-prompt.md"
-cp docs/claude-code-setup/mimir-judge-experiential/mcp-config.json \
-   "$HOME/.claude/mimir-judge-mcp.json"
-cp docs/claude-code-setup/mimir-judge-experiential/run.sh \
-   "$HOME/.claude/mimir-judge-experiential.sh"
-chmod +x "$HOME/.claude/mimir-judge-experiential.sh"
-```
-
-`--strict-mcp-config` in `run.sh` is load-bearing, not cosmetic: without
-it, `claude -p` picks up this user's full personal MCP config (any other
-servers they have registered), and an unrelated server that launches a
-real browser or other long-lived process can hang indefinitely with no
-display in an unattended context — this happened on the first version of
-this judge before the isolation was added. Do not drop it.
-
-**Scheduling** — pick whichever fits the host:
-
-- **systemd (Linux)**: a `systemd --user` timer running
-  `bash "$HOME/.claude/mimir-judge-experiential.sh"` weekly, output
-  appended to a log file. (On NixOS, prefer a declarative
-  `systemd.services`/`systemd.timers` module in the host config instead
-  of an imperative `systemctl --user` unit — it survives rebuilds.)
-- **launchd (macOS)**: an equivalent weekly `LaunchAgent`.
-- **cron**: `0 5 * * 0 $HOME/.claude/mimir-judge-experiential.sh >> $HOME/.claude/mimir-judge-experiential.log 2>&1`
-  as a fallback if neither of the above is available.
-
-**Verify:**
-```sh
-bash "$HOME/.claude/mimir-judge-experiential.sh"
-```
-Should complete without error and, if it found anything to retire, add
-`DEFEATS` edges visible via `mimir list --project mimir-meta` (the run
-logs a summary belief there).
+The Rust judge is part of the `mimir` binary installed in Step 3. Its settings
+belong in the private `~/.config/mimir/config.toml`; use
+[`runtime/config.example.toml`](runtime/config.example.toml) and
+[`runtime/README.md`](runtime/README.md) to choose a model, backend, and optional
+notification settings. Validate with `mimir judge check-config`, then run one
+bounded batch with `mimir judge run`. The optional
+[`run.sh`](docs/claude-code-setup/mimir-judge-experiential/run.sh) is only a Bash
+launcher for that command; the adjacent prompt is reference text, not a file
+loaded by the Rust runner. `mimir judge watch` can repeat batches while running,
+but this installer does not enable a service or timer. Do not run the judge as
+part of agent installation or use a live account to verify this guide.
 
 ## Step 8 — Orphaned Working-belief consolidation judge (optional)
 
@@ -328,9 +284,9 @@ choosing to schedule it. It is separate from a per-turn Claude critic, and is no
 required for ordinary retrieval or the new agent integration.
 
 Source files: [`docs/claude-code-setup/mimir-judge-working/`](docs/claude-code-setup/mimir-judge-working/)
-(`prompt.md`, `run.sh`, `mcp-config.json`). `mcp-config.json` can be shared
-with Step 7's judge (both point at the same `mimir-mcp` server) — installing
-it under the same target path as Step 7 is fine and expected.
+(`prompt.md`, `run.sh`, `mcp-config.json`). `mcp-config.json` is for this
+separate Claude Code workflow; the Rust experiential judge invokes `mimir-mcp`
+from its own TOML configuration.
 
 ```sh
 cp docs/claude-code-setup/mimir-judge-working/prompt.md \
@@ -353,7 +309,7 @@ substitution when adapting the script.
 - **systemd (Linux)**: a `systemd --user` timer running
   `bash "$HOME/.claude/mimir-judge-working.sh"` hourly, output appended to a
   log file. (On NixOS, prefer a declarative `systemd.services`/
-  `systemd.timers` module, same as Step 7.)
+  `systemd.timers` module.)
 - **launchd (macOS)**: an equivalent hourly `LaunchAgent`.
 - **cron**: `0 * * * * $HOME/.claude/mimir-judge-working.sh >> $HOME/.claude/mimir-judge-working.log 2>&1`
   as a fallback.
@@ -363,8 +319,7 @@ substitution when adapting the script.
 bash "$HOME/.claude/mimir-judge-working.sh"
 ```
 Should complete without error. If it found and processed any orphans, a
-summary `working` belief appears under project `mimir-meta` (same log
-pattern as Step 7's judge).
+summary `working` belief appears under project `mimir-meta`.
 
 ## Final verification
 
