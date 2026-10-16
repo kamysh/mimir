@@ -17,6 +17,15 @@ intentional temporary memory and track its resolution; it is excluded from
 cross-session retrieval. The standard setup has no automatic consolidation gate.
 Read the `mimir` skill for tool choice, evidence and writeback details.
 
+For approach choices, `query_learning_context` includes procedures and observed
+outcomes. Capture meaningful action/outcome evidence with `record_experience`
+when authorized, preserving incident IDs on retries and corrections. The optional
+background judge reviews these observations. When retrieved context guides a
+later action, record its observed result with the used belief or pattern ID;
+retrieval alone is not successful use. Direct `insert_belief` now requires an
+independent user instruction or document reference; incident-derived claims go
+through experience-owned review candidates.
+
 The lifecycle reminder supplies guidance rather than automatic queries, mandatory
 calls, ratings or per-turn writeback. When Muninn is also installed, use it to
 locate code and repository notes, and Mimir for lessons affecting the approach.

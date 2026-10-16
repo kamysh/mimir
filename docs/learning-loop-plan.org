@@ -1,0 +1,1537 @@
+#+TITLE: Mimir Rust/Bash implementation plan and model allocation
+#+DATE: 2026-10-09
+#+OPTIONS: toc:3 num:t
+
+* Status and fixed requirements
+
+This plan is being executed in separately approved stages; it does not authorize
+the whole series. Step 1 is complete, including the subsequently approved Rust
+evaluator port and removal of the legacy synthetic task fixtures. Step 2 is
+complete: interfaces, learning/runner contracts, atomic belief/pattern candidate
+ownership, general Agda laws, and the verification map are recorded below.
+Steps 3 through 10 are complete to their locally approved verification boundary
+in the dedicated worktree. Their isolated database, MCP, CLI, and adapter
+verification is recorded below. Live harness and API account checks remain
+separate.
+Publication and deployment remain separate stages.
+The prior implementation is inventoried in [[file:learning-loop-audit.org][the functionality audit]].
+
+Fixed requirements:
+
+- Rust for application logic and Rust/Bash for new project test tooling.
+- Python is excluded, regardless of model choice or estimated implementation
+  cost. Remove the newly introduced Python runtime, packaging, and tests.
+  Do not keep a Python fallback, launcher, fixture server, or transition runtime.
+- Preserve the existing Agda specification and specify changed behavior before
+  implementing it. Nix, TOML, SQL, JSON, documentation, and existing build
+  metadata remain appropriate to their existing roles.
+- Temporary worktrees, build outputs, fixtures, and receipts belong under
+  =/var/tmp/mimir/=. Do not create more directories under =~/Work= or use =/tmp=
+  for this project. Reuse the existing worktrees rather than creating one per
+  small task.
+- Keep the existing Rust belief engine; generation and email stay outside
+  =mimir-core='s inference implementation.
+- Keep shared configuration in =~/.config/mimir/config.toml=, respecting XDG.
+  Inline credentials are supported with private file/directory permissions.
+- Support Claude Code, Codex, a custom executable adapter, OpenAI, Anthropic,
+  OpenRouter, DeepSeek, Z.ai, Gemini, and an explicit compatible endpoint.
+- Use standard SMTP with password/app-password and Google/Microsoft OAuth2.
+  No new paid notification service.
+- Preserve uncommitted work until its explicit replacement/removal step. Do not
+  rewrite existing commits or discard unrelated files as routine cleanup.
+- This plan does not authorize live settings changes, account setup, email
+  delivery, production belief mutations, scheduling, publishing, or deployment.
+
+* Recommendation
+
+Use GPT-6.1 Sol for most Rust implementation, GPT-6 Luna for tightly specified
+mechanical work, and GPT-6 Astra for the formal model and focused reviews of
+revision, inference, and concurrency correctness. Do not use a frontier model
+for every fixture, documentation edit, or command execution.
+
+These assignments are engineering recommendations, not measured comparative
+benchmarks on this repository. Start with small, observable tasks and retain
+only models whose results meet the same acceptance criteria.
+
+Use one implementer at a time in the existing worktree. Model assignments do
+not imply permission to spawn agents or concurrently modify the checkout.
+A separate review can be a later sequential session with only the relevant
+contract, diff, and receipts.
+
+* Proposed architecture and decisions to settle
+
+** Application layout
+
+Recommendation: add =mimir judge= subcommands to the existing Rust CLI rather
+than shipping another standalone package or requiring another language runtime.
+Proposed commands:
+
+#+begin_example
+mimir judge check-config [--config PATH]
+mimir judge run [--config PATH] [--state-dir PATH]
+mimir judge status [--state-dir PATH]
+#+end_example
+
+Suggested module layout inside the existing CLI crate:
+
+#+begin_example
+crates/cli/src/judge/
+  mod.rs             command entry points
+  config.rs          typed judge/LLM settings and validation
+  runner.rs          bounded review lifecycle and completion checks
+  mcp.rs             stdio MCP transport and scoped tool execution
+  state.rs           locking and private atomic judge status
+  notification.rs    safe judge-status adapter to shared notifications
+  backends/
+    mod.rs           transport-independent requests, results, usage
+    harness.rs       Claude Code, Codex, and explicit command adapters
+    openai.rs        Responses API
+    anthropic.rs     Messages API
+    compatible.rs   compatible Chat Completions provider adapters
+crates/notifications/
+  src/config.rs      shared email settings and validation
+  src/state.rs       independent private outbox and lock
+  src/smtp.rs        lettre transport and message construction
+  src/lib.rs         source/incident event API and transitions
+#+end_example
+
+These paths are a proposal, not files already created. Add abstractions only
+where two concrete adapters actually share behavior. No generic agent framework,
+plugin host, new service process, or model-routing platform is proposed.
+
+Use the existing Tokio, serde, TOML, and reqwest ecosystem. Declare dependencies
+in the crate that uses them; do not move LLM completion clients into core merely
+because core already depends on reqwest for embeddings.
+
+Keep the MCP child boundary initially. It preserves the current isolation and
+allows the same tool schemas and server-side revision checks to be exercised.
+Direct service calls are a possible later simplification, not part of this port.
+
+** Public configuration
+
+Preserve the agreed =[judge]=, =[llm]=, and =[email]= sections. Keep their existing
+purpose and avoid incompatible renaming solely to accommodate Rust types.
+The runtime and shared notification crate own typed validation of these sections.
+Existing database/embedding
+configurations must still load when the optional judge is not configured.
+
+Recommended precedence: explicit =--config=, then =MIMIR_CONFIG=, then the XDG
+path. The MCP child must receive the exact resolved file. Validate new fields
+without printing source lines, credential values, or raw provider responses.
+
+Retain explicit model selection and no automatic provider/account fallback.
+A model recommendation in this document must not become a silent default.
+
+** Correctness decisions before porting
+
+1. Specify whether grounding changes numerical evidence during propagation,
+   and distinguish that from adding GROUNDS to the belief-edge substrate.
+   Reconcile the existing Evidence theorem, the original integration test, and
+   the new implementation. Do not weaken the theorem to make the code pass.
+2. Specify what is reversible: review-owned evidence/edges are reversible;
+   separately created beliefs and patterns currently are not. Preserve this
+   distinction unless a separately agreed design extends ownership.
+3. Specify the treatment of the same incident recorded both as a belief and as
+   an experience. Prompt instructions alone are not a general deduplication
+   guarantee. The minimum target is one evidence contribution for an identified
+   incident; arbitrary semantic deduplication is not promised.
+4. Keep schema/revision, credential, and tool-scope checks mandatory. They are
+   application correctness checks, not agent interaction gates or memory quotas.
+5. Decide whether to retain one =max_calls= bound or separate model/tool limits.
+   Recommendation for the first port: retain existing semantics and document
+   them; do not silently add a larger allowance.
+
+* Current material to retain, replace, or assess
+
+| Existing material                         | Treatment                                                       |
+|-------------------------------------------+-----------------------------------------------------------------|
+| =77438a4= learning foundations             | Assess against contracts; retain verified Rust and migration work |
+| =c8c8b29= SQL pagination                   | Retain after focused boundary and large-corpus checks             |
+| =72a0bc1= shared configuration             | Retain compatible Rust changes; replace Python validation/tests   |
+| =4e17ec5= Python judge/runtime             | Remove Python; reimplement accepted behavior in Rust              |
+| Staged Python email implementation        | Replace in Rust; use behavior inventory, not mechanical translation |
+| Uncommitted guidance                      | Revise to match Rust commands and verified capture behavior        |
+| =tests/learning_mcp.py=                    | Replace with Rust integration test                               |
+| =tests/learning_runner.py=                 | Replace with Rust integration test and Bash invocation            |
+| Pre-existing unrelated evaluation tooling | Inventory separately; do not silently delete outside this change  |
+
+Existing commits remain recoverable. Corrective commits are the default.
+Reshaping unpublished history into clean final PRs is a separate agreed action;
+force-pushing or deleting branches is not implied by this plan.
+
+* Models and price basis
+
+Prices checked against official documentation on 2026-10-10 UTC
+(2026-10-09 America/Los_Angeles). USD per one million tokens, standard API
+processing, uncached input, short-context pricing, excluding taxes and tools.
+
+| Model             | Input | Output | Recommended responsibility                         |
+|-------------------+-------+--------+----------------------------------------------------|
+| GPT-6 Luna        |  0.10 |   0.50 | Mechanical edits, fixtures, documentation, inventory |
+| GPT-6.1 Sol       |  2.00 |  10.00 | Most Rust implementation and integration            |
+| GPT-6 Astra       | 10.00 |  50.00 | Formal design and difficult correctness review      |
+| Claude Haiku 5.5  |  0.10 |   0.50 | Optional alternative for small bounded tasks        |
+| Claude Sonnet 5.5 |  2.00 |  10.00 | Optional independent reviewer or Sol alternative    |
+
+OpenAI rates: [[https://developers.openai.com/api/docs/models/gpt-6-luna][Luna]],
+[[https://developers.openai.com/api/docs/models/gpt-6.1-sol][Sol]], and
+[[https://developers.openai.com/api/docs/models/gpt-6-astra][Astra]].
+Claude rates: [[https://platform.claude.com/docs/en/about-claude/pricing][official pricing]].
+Haiku's listed rate applies through 100,000 input tokens; longer prompts have
+higher rates. The OpenAI short-context threshold is 272,000 input tokens.
+
+The installed Codex model catalog lists all three proposed OpenAI models.
+This establishes local catalog presence, not unlimited quota or direct API
+access. Claude model/account availability must be checked before assigning it.
+A working Sonnet 5 login from prior testing does not establish Sonnet 5.5 access.
+
+API prices are a comparison basis, not a claim about this Codex session's bill.
+Existing Codex/Claude subscriptions may cover harness usage subject to their
+limits. Do not create API accounts, enable extra usage, or substitute paid API
+credentials merely to follow the model table.
+
+** Simple cost comparison
+
+For a work packet totaling 100,000 input and 20,000 billed output tokens:
+
+| Model       | Uncached standard API cost |
+|-------------+----------------------------|
+| Luna        | USD 0.02                   |
+| Sol         | USD 0.40                   |
+| Astra       | USD 2.00                   |
+| Sonnet 5.5  | USD 0.40                   |
+
+Repeated prompts and tool results count again when billed; reasoning tokens
+must be included in output usage where applicable. These are arithmetic
+examples, not estimates of the number of tokens a step will consume.
+
+** Cost-control rules for development
+
+- Prefer Sol medium for a normal Rust step; use high when concurrency, process
+  lifecycle, credential handling, or multi-module reasoning warrants it.
+- Use Luna low/medium only after the interface and expected behavior are fixed.
+  Do not ask it to independently choose inference semantics or revise proofs.
+- Give Astra the contracts, disputed functions, and failing counterexample,
+  not the entire historical conversation. Use high rather than max by default.
+- Stop after two failed repair attempts on the same cause. Escalate the smallest
+  failing case to the recommended stronger model instead of replaying the task.
+- Require an exact diff, checks, and remaining issues at handoff. Preserve a
+  concise receipt so the next model does not rediscover the repository.
+- Run deterministic fixtures before paid live calls. Do not repeatedly call
+  real LLMs to debug TOML parsing, SMTP sockets, or a malformed test fixture.
+- Use standard processing. Fast/ultrafast is not a cost optimization. Batch
+  discounts are not assumed for an interactive, dependent tool loop.
+- Record input, cached input, output, and actual provider/harness cost when
+  available; report unknown usage as unknown rather than inventing a charge.
+
+A transparent planning scenario: 2M input/0.3M output on Luna costs USD 0.35;
+4M/0.6M on Sol costs USD 14; 0.6M/0.1M on Astra costs USD 11. Total: USD 25.35.
+The same 6.6M/1M tokens entirely on Astra would cost USD 116. This illustrates
+allocation savings under equal token volume; real models can need different
+numbers of attempts and tokens. It is not a quote, cap, or spending approval.
+
+* Step-by-step execution plan
+
+Every step ends with a reviewable result. The model suggestions below do not
+replace the user's approval of the next execution stage.
+
+** Step 0 — Establish the exact replacement boundary
+
+Model: GPT-6 Luna, low. Escalation: Sol medium only for ambiguous Git state.
+Dependencies: none. No LLM-generated design is needed.
+
+Actions:
+1. Inventory tracked, staged, unstaged, untracked, and ignored files in the
+   current worktree; record the four existing commit identities.
+2. Identify every newly introduced Python file, package reference, test command,
+   and generated runtime artifact. Distinguish old unrelated evaluation files.
+3. Preserve a patch/manifest receipt under =/var/tmp/mimir/= before removal.
+   No extra checkout is needed and no secret file belongs in the receipt.
+4. Verify the moved worktrees' Git registration and relative document links.
+5. List baseline failures and test resources already present. Do not launch
+   live model tests or edit the installed configuration.
+
+Deliverable: exact removal/replacement manifest and a baseline receipt.
+Acceptance: every file has a retain/replace/assess classification; no implementation
+or environment change is hidden inside inventory work.
+
+** Step 1 — Remove the rejected Python delivery path
+
+Model: GPT-6 Luna, medium; Sol medium reviews the exact deletion/reference diff.
+Dependencies: Step 0 and explicit approval of its removal manifest.
+
+Actions:
+1. Remove the new =runtime/mimir_runtime/= package, =runtime/pyproject.toml=,
+   runtime Python tests, and new Python integration tests from the working tree.
+2. Remove only their generated caches/build products and uninstalled wheel
+   artifacts identified by the manifest. Retain behavior notes, prompt text,
+   and configuration examples as reference documentation.
+3. Replace pip/PYTHONPATH instructions with an explicit “Rust replacement pending”
+   state. Do not advertise a working command that has not been implemented.
+4. Do not replace the installed Bash judge or change any timer. Keep source
+   compatibility-wrapper changes pending until the Rust command exists.
+
+Deliverable: Python-free new implementation surface; the judge is explicitly
+unavailable in this intermediate state rather than silently falling back.
+Acceptance: Rust core still builds; no new installation or test entry point
+requires Python. Historical Git objects are preserved, not rewritten.
+
+*** Completion receipt
+
+The rejected Python runtime, package metadata, runtime tests, integration scripts,
+and identified generated Python artifacts are absent from the working tree.
+The configuration example and maintained judge prompt remain reference material;
+the Rust learning runtime is explicitly pending.
+
+The separately approved evaluator port is a standalone Rust tool behind Bash.
+The four legacy synthetic task directories are removed. Their Rust predicates
+and saved JSON examples remain for historical rescoring, which no longer needs
+the deleted task directories. Empty task runs refuse before preflight/model
+work; the evaluator documentation no longer advertises the deleted tasks.
+
+Verification: offline locked Rust core and evaluator checks passed; the evaluator
+built; Bash syntax and diff checks passed. Eight historical predicate cases
+passed, dry-run input remained unchanged, unsupported tasks were preserved, and
+an empty run refused with external tools unavailable. No live model, database,
+SMTP, installed configuration, or timer changes were part of completion.
+
+The final cleanup baseline and focused diff are under
+=/var/tmp/mimir/step-1-finish/=. The original Step 0 inventory overcounted the
+pre-existing evaluator Python files: the actual removed set contained 20, not 31.
+
+** Step 2 — Specify the accepted Rust behavior and formal contracts
+
+Model: GPT-6.1 Sol high for interfaces; GPT-6 Astra high for Agda and inference
+contracts. Luna may format documentation only after the content is settled.
+Dependencies: Step 0; can be reviewed before Step 1, but precedes new implementation.
+
+Required model handoff:
+- Start with GPT-6.1 Sol at high reasoning for action 1. Complete the interface
+  proposal and record agreed decisions, relevant code references, and unresolved
+  questions in this document.
+- Before action 2 or any inference-semantics or Agda work, Sol must explicitly
+  ask the user to switch to GPT-6 Astra at high reasoning. If an inference
+  decision is needed during action 1, request the handoff at that point.
+- Finish the Sol portion with a clear handoff receipt and wait for the user to
+  switch models and resume. Do not silently continue into the Astra portion,
+  claim that the model has changed, or spawn a substitute agent.
+- Astra resumes from the recorded decisions and completes the remaining Step 2
+  contracts and proofs. The handoff does not mark Step 2 complete.
+
+*** Sol action 1 — Rust judge interface contract (agreed)
+
+The user agreed to this interface contract after reviewing the proposal. These
+are design decisions, not implemented commands. Sol action 1 is complete; the
+remaining Step 2 inference semantics and Agda work are recorded in the Astra
+section below; the user subsequently switched models and resumed this stage.
+
+**** Command surface and compatibility
+
+Use one =Judge= subcommand group in the existing =mimir= binary:
+
+#+begin_example
+mimir judge check-config [--config PATH]
+mimir judge run [--config PATH] [--state-dir PATH]
+mimir judge status [--state-dir PATH]
+#+end_example
+
+=check-config= parses and validates the selected TOML locally. It does not start
+MCP, open the database, contact an LLM or SMTP server, or create a state file.
+=run= processes one bounded pending batch and writes local status. =status= reads
+only the last local report and can return a =never_run= result when it is absent;
+it does not infer database completion from a file. Existing =mimir= commands and
+=MimirService= keep their present behavior when =[judge]=, =[llm]=, and =[email]=
+are absent. A judge invocation requires valid judge and LLM settings; email
+remains optional. No independent =mimir-judge= executable or Python fallback is
+part of this interface.
+
+**** Configuration and private files
+
+Resolve one config path for a judge invocation in this order: explicit =--config=,
+then =MIMIR_CONFIG=, then =XDG_CONFIG_HOME/mimir/config.toml= (falling back to
+=~/.config/mimir/config.toml=). Resolve a relative explicit path against the
+launch directory before starting a child, and pass the resulting absolute path
+through =MIMIR_CONFIG= to =mimir-mcp=. Do not change process-global environment
+to select a file; the Rust loader should accept an explicit path. Preserve the
+existing =[database]= and optional =[embeddings]= sections, and parse the
+existing =[judge]=, =[llm]=, and =[email]= names from
+=runtime/config.example.toml= without gratuitous renaming. No provider/model
+fallback is allowed. Unknown runtime fields, invalid combinations, limits,
+credential settings, and endpoints must fail validation with redacted messages.
+
+The existing core writes new config files with a private directory and file;
+the judge should validate ownership/access on the selected file and must not
+chmod, replace, or print the user's existing config. A private directory
+(mode 0700) or a private regular file (mode 0600) is accepted only where the
+other path components cannot expose the file; the exact permission check and
+symlink policy belong to Step 4's typed validator. This is intentionally open
+until its safe implementation is reviewed.
+
+Resolve state from explicit =--state-dir=, then an absolute =XDG_STATE_HOME/mimir=,
+then =~/.local/state/mimir=. State belongs to the user, is created by =run= with
+mode 0700, and holds only private atomic status/outbox/token files (mode 0600)
+and a per-state-directory lock. =status= is read-only and distinguishes missing
+state from a successful idle run. A stale file is a historical report, not a
+live process or proof of pending work. Step 5 specifies lock and crash behavior.
+
+**** Transport and visible outcomes
+
+The initial judge starts the configured =mimir-mcp= child over stdio JSON-RPC.
+The child receives the exact selected config path. Host code verifies the
+learning tool schemas and permits only the explicit review tool allowlist,
+pinned batch revisions, and selected project scope; a model cannot call arbitrary
+MCP tools. The database's committed revision, not model prose or a status file,
+establishes review completion. Direct in-process service calls are deferred.
+
+Each command emits one machine-readable JSON result on stdout. Diagnostics go to
+stderr, without configuration source lines, credentials, belief bodies, raw LLM
+or SMTP response bodies. =check-config= reports =valid= or =invalid_config=.
+=run= reports =idle= (no pending work, no model call), =complete= (every selected
+revision confirmed), =partial= (some revisions remain/deferred), =blocked=
+(no trustworthy progress), or =already_running= (lock not acquired). It records
+an independent notification outcome: =disabled=, =not_needed=, =sent=,
+=retry_pending=, or =exhausted=. A notification failure must not change a
+confirmed review from =complete= to =partial=. =status= returns the last report
+or =never_run= and its recorded time, explicitly marked as a snapshot.
+
+Exit status must distinguish successful idle/complete from invalid config,
+partial/blocked work, and lock contention; the exact numeric map and JSON field
+schema are deferred to Step 4's CLI implementation, where they can be verified
+against callers. No class of transport/model failure may be printed as a
+successful =complete=. Step 5 defines the transition rules and retry semantics.
+
+**** Source correspondence and handoff
+
+- =crates/cli/src/main.rs=: current Clap command enum and dispatch; add =Judge=
+  here after the interface is agreed.
+- =crates/core/src/config.rs=: existing =Config= accepts optional runtime tables,
+  =Config::config_path()= uses =MIMIR_CONFIG=/XDG, and =Config::load()= currently
+  parses the selected file without contacting the database. Add explicit-path
+  loading while preserving old-command compatibility.
+- =crates/mcp/src/main.rs=: the MCP process loads =Config= at startup and then
+  connects, so the parent must set =MIMIR_CONFIG= before spawning it.
+- =crates/mcp/src/learning.rs=: existing learning tool schemas and handler
+  names; Step 5 checks those schemas and keeps the host allowlist narrow.
+- =runtime/config.example.toml=: existing public section names, backend names,
+  limits, and SMTP/OAuth fields. It is an example, not a working validator.
+- =runtime/mimir_runtime/config.py= and =runner.py= were introduced by commit
+  =4e17ec5= and later removed from the working tree. Their Git versions document
+  previous local permission/status behavior; they are historical evidence.
+
+Agreed decisions: the command names, config/state path rules, JSON-only command
+result, and separate learning and email outcomes above. Unresolved by design:
+the precise permission algorithm, exit-code numbers, JSON keys, and runner state
+machine; these are settled in the Astra section where applicable, with CLI
+encoding and permission details retained for Steps 4–5.
+
+Actions:
+1. Agree the CLI layout, configuration precedence, state directory, transport
+   boundary, and observable failure/status categories described above.
+2. Trace =Learning.agda=, =Evidence.agda=, =Inference.agda=, the storage methods,
+   and their live callers. Resolve grounding semantics explicitly.
+3. Specify general revision/identity, stale-refusal, replacement/retraction,
+   project-target isolation, queue acknowledgement, and unknown-outcome laws.
+4. Specify the runner transitions: idle, running, partial, complete, blocked;
+   tool-call refusal, finite limits, and completion established from database state.
+5. Specify notification transitions and retry exhaustion separately from learning
+   completion; successful review must not be undone by failed email delivery.
+6. State the incident deduplication boundary and separately inserted candidate
+   lifecycle. If enforcing the chosen rule requires schema/API changes, present
+   that concrete extension for agreement before touching implementation.
+7. Map each contract to implementation functions, persistence boundaries,
+   failure behavior, and meaningful tests. Identify external assumptions such
+   as database atomicity and SMTP acceptance; do not pretend Agda verifies I/O.
+8. Develop proofs interactively and run the aggregate safe specification check.
+
+Deliverables: reviewed interface/behavior contract, general Agda laws, and a
+contract-to-code verification map. No postulates or weakened existing laws.
+Acceptance: specification approved and type-checking, with unresolved semantic
+choices exposed rather than filled in by the implementing model.
+
+*** Astra actions 2–8 — Learning and runner contracts
+
+Status: Step 2 complete. The user approved project-local review propagation and
+atomic, experience-owned candidates for both beliefs and patterns. The aggregate
+specification passes, and the implementation correspondence and verification
+obligations are recorded below. No Rust, MCP, or SQL migration has been changed
+during this specification stage.
+
+**** Revision, ownership, and acknowledgement
+
+An incident is identified by its caller-stable experience UUID. Its project is
+immutable. A correction keeps that UUID and increments the source revision;
+it is not another independent observation. Source and review revisions are
+separate monotonically increasing counters. Current immutable source/review
+versions are selected by pointers, not by summing historical rows.
+
+The existing source-write contract is retained: an identical payload with
+expected revision equal to the current revision or its predecessor is a retry;
+otherwise the expected source revision must equal the current revision before
+a correction is accepted. A changed project is always refused. Bounded Rust
+counters must reject overflow; Agda uses unbounded natural numbers.
+
+A review request names the experience UUID, the exact source revision, and the
+expected review revision. A stale source is refused even if its payload matches
+an old review. An exact replay of the active review with expected review revision
+=current= or =current - 1= returns the existing result. All other requests must
+match the current review revision. Retry equality includes reviewer identity,
+rationale, candidate declarations, resolved targets, and the complete effect
+bundle; use a stable canonical request representation, without generated UUIDs
+or timestamps making an identical retry different.
+
+Before a new review commits, validate every target and candidate reference,
+project membership, evidence prerequisites, finite weights, payload bounds,
+and duplicate/conflicting keys. Existing targets must belong to the exact
+experience project and must not be Working beliefs. Global retrieval visibility
+does not authorize writes to global targets. Host-side checks complement these
+server-side checks; the model cannot choose the host's project scope or reviewer.
+
+One transaction must persist the review version, resolve/create its candidates,
+replace its owned links and numerical contributions, recompute affected beliefs,
+and acknowledge the current source revision. Any failure rolls all those effects
+back. A connection loss after sending the request is an unknown commit outcome:
+read the database and retry the exact request if necessary. Do not infer rollback
+from a missing reply and generate a new identity.
+
+A corrected source immediately deactivates the old review bundle and becomes
+pending. A replacement review removes the entire previous owned bundle before
+applying the replacement. An empty-effect review acknowledges without adding
+support; this is also how a mistaken interpretation is retracted. Immutable
+history remains. Manual edges, other experiences' contributions, base priors,
+and document grounding are independent and must survive review replacement.
+The original =Learning.Contributions= laws remain unchanged; the new contracts
+also model guarded transitions, pointwise ownership, and independent manual data.
+
+**** Numerical grounding and project boundaries
+
+There is no contradiction between the two existing formal contracts:
+
+- =Evidence.propagate-evidence-invariant= quantifies over functions of the
+  belief-edge list. GROUNDS never becomes a SUPPORTS/DEFEATS/CAUSES edge.
+- =Beta.CCoupling= adds positive document evidence mass to the Beta prior used
+  for recomputation. That can change a belief's posterior and downstream means.
+  It does not claim numerical non-interference.
+
+Recompute from the fixed insertion prior plus current independent evidence:
+
+#+begin_example
+alpha = alpha0 + current positive review mass + current grounding mass
+        + complete positive incoming-edge mass
+beta  = beta0 + current negative review mass
+        + complete negative incoming-edge mass
+#+end_example
+
+Never start from the previous posterior and add the same evidence again.
+=Evidence.Numerical= proves that grounding remains an additive alpha component
+for every fixed list of incoming edge quanta and that it does not add beta mass.
+Changing source means can change edge quanta; the law does not assert global
+linearity of a cyclic graph. Existing convergence and complete-incoming-edge
+requirements still apply. Evidence removal must recompute from remaining
+sources; merely deleting a GROUNDS edge leaves stale numerical support.
+
+For a review in project P, derive the affected closure inside P. Include targets
+of removed effects as seeds as well as new targets. Do not traverse into another
+project and back. Persist numerical updates only for P. Preserve every incoming
+belief edge to an affected node, including parents outside P; their committed
+means are read-only boundary inputs. This prevents missing incoming support
+without writing foreign nodes. This is a review-triggered propagation contract;
+it does not change the separately invoked general graph-propagation API.
+
+The current =recompute_learning= validates direct targets but then expands over
+all projects. Step 3 must fix that gap. It must also replace all-belief/all-edge/
+all-review loading with targeted validation, project-restricted affected closure,
+complete incoming-edge reads, and relevant active-review/grounding queries.
+Paging must not introduce another corpus-size cap. An affected connected
+component may itself be large; that cost must be reported, not hidden by a cutoff.
+
+**** Incident deduplication and belief/pattern candidates
+
+Deduplication is exact identity, not semantic similarity. Reusing an experience
+UUID prevents retry duplication. Two different UUIDs for the same real-world
+incident can still count twice; callers must preserve incident identity. The
+judge may flag suspected duplicates for review, but must not silently merge
+histories or invent a universal semantic deduplicator.
+
+For new automatic learning, capture the incident once as an experience and use
+its atomic candidate/review path. Do not also insert a high-confidence standalone
+belief for that same incident and then treat it as independent confirmation. A
+legacy standalone belief with no incident ownership cannot be safely stripped
+of its prior by this mechanism; identify that overlap for review instead. This
+is a remaining capture/provenance limitation, not a deduplication guarantee for
+all existing manual beliefs. Step 11 must test the identified-incident path and
+report the limits of any prompt-only protection.
+
+The approved Step 3 extension adds candidate declarations to =review_experience=,
+with a stable local key and typed payload, and permits typed references to either
+an existing UUID or a candidate key in that same review. Existing UUID-only
+clients remain valid. The response returns the resolved key-to-UUID mapping.
+Server-generated UUIDs, project ownership, and initial numeric state are not
+selected by the model.
+
+Persist a registry with a unique =(experience_id, candidate_key)= identity,
+the candidate kind, assigned UUID, and immutable original declaration. Reusing
+a key with a different declaration is a conflict; a revised claim needs a new
+key. Reject a supplied UUID belonging to another experience as a claim of local
+ownership. Referencing an existing same-project belief as evidence is allowed
+without adopting it. Reserve identities and create graph nodes inside the same
+transaction as the review; do not expose standalone =insert_belief= or
+=insert_pattern= to this judge. Candidate keys share one namespace per experience;
+changing a key from belief to pattern (or conversely) is a declaration conflict.
+Validate reference kinds: belief feedback and causal links cannot target patterns.
+
+A new belief candidate starts with a neutral Beta(1,1) prior. Its model-assessed
+support/defeat is explicit review-owned feedback, not a permanent high-confidence
+insertion prior. Document grounding and later independent reviews remain separate
+contributions. Source correction or review retraction removes owned support,
+links, and supersession decisions; it does not hard-delete candidate identity,
+history, or unrelated work. The same key continues to resolve to the same node.
+A retained neutral candidate is a hypothesis, not a verified lesson; no claim of
+automatic deletion or invisibility is made by this contract.
+
+Deletion must not free a candidate key for silent recreation. Preserve a retired
+mapping/tombstone and refuse an attempt to materialize that deleted identity;
+a new intentional candidate needs a new key. Step 3 must coordinate this with
+explicit belief/pattern deletion and project deletion, and must not recreate manually
+deleted knowledge on an automatic retry. Project deletion remains the explicit
+operation that may remove the project's whole registry/history.
+
+The user also approved atomic pattern candidates. A pattern declaration carries
+its stable key, kind, situation, and approach. The server assigns the project
+and UUID inside the review transaction. Pattern identity and immutable content
+follow the same retry, conflict, retention, and deletion rules as beliefs.
+Its declaring review owns the provenance association; replacing/retracting the
+review or correcting its source removes that association from active evidence,
+without deleting the procedure or another experience's evidence for it.
+
+A declaration proposes a procedure; it does not assert that the procedure was
+used successfully. New patterns have zero activations and a neutral initial
+success-rate value of 0.5, not an LLM-supplied success percentage. Observed
+success/failure counts retain the existing current-source =Experience.pattern_id=
+contract. Candidate declaration, review retries, retrieval, and model endorsement
+do not manufacture observed uses or rewrite the source's pattern assignment.
+A later recorded experience may explicitly identify the retained pattern and
+contribute its own outcome. Its evidence survives retraction of the original
+candidate's declaring review. An untested retained pattern has zero observed
+successes/failures and the Beta(1,1) estimate; it is not a verified procedure.
+
+Step 3 must expose candidate provenance through the existing learning inspection
+responses, distinguishing an active declaration from retained historical origin.
+The generic =Candidates= identity laws and =Revision=/=Learning.Contributions=
+active-bundle laws apply to both kinds. Concrete kind validation, atomic graph
+creation, and provenance joins are Rust/SQL obligations, not additional claims
+made by the abstract proofs.
+
+**** Outcomes and causal hypotheses
+
+Pattern outcomes count the current source version once per experience, not every
+review or historical source version. Unknown outcomes add neither a success nor
+a failure. AgentReport adds neither regardless of its asserted outcome. Existing
+ToolResult/UserFeedback classes are caller-reported provenance, not authenticated
+proof. =LearningContracts.Outcomes= formalizes precisely this classification.
+An unknown outcome with recorded evidence can still support a justified review
+of that evidence; it must not be relabelled as observed task success.
+
+The judge may propose causal hypotheses as typed, weighted, review-owned CAUSES
+links between permitted targets. It must distinguish an observed association,
+a proposed mechanism, and an actual intervention result in its rationale.
+=query_intervention= is read-only propagation through the supplied causal graph;
+its output is not independent confirmation of that graph. A successful task or
+a high model confidence alone does not establish causal identification. These
+claims remain revisable through the same replacement/retraction mechanism.
+No autonomous execution of proposed experiments is added in this stage.
+
+**** Runner transitions and refusal
+
+The host fetches one bounded batch and pins each =(experience ID, source
+revision, expected review revision, project)=. Failure to fetch is =blocked=,
+not an empty successful batch. An empty successfully fetched batch is =idle=
+and makes no model call. A nonempty batch enters =running= after the lock and
+preflight succeed. =already_running= is a separate refusal before work starts.
+
+At completion, re-read the selected identities from the database. A receipt is
+=confirmed= only when the selected source revision is still current and is
+acknowledged by a committed current review. A concurrently corrected source is
+=corrected=; an unreviewed source is =pending=; a failed/malformed/missing read is
+=unavailable=. A newer source is deferred to a later batch rather than silently
+changing the work assigned to this invocation.
+
+| Receipts at the final observation | Additional run failure | Learning result |
+|----------------------------------+------------------------+-----------------|
+| Successful empty fetch           | none                   | idle            |
+| Every selected revision confirmed| none                   | complete        |
+| Some confirmed, others unresolved| either                 | partial         |
+| Every selected revision confirmed| model/transport error  | partial         |
+| None confirmed                   | either                 | blocked         |
+| Batch fetch failed               | yes                    | blocked         |
+
+A partial result after an error can still report all confirmed reviews; it must
+not discard them. Notification errors do not set the learning failure flag.
+The report describes a database observation, not a promise that no correction
+will occur afterward. Local status files and model completion claims cannot
+acknowledge anything. =Judge.Completion= proves that =complete= requires every
+receipt to be confirmed and that changing model prose cannot alter the verdict.
+
+The model-visible allowlist is =get_experience=, =experience_history=,
+=query_relevant=, =query_learning_context=, =explain_belief=, =get_belief=,
+=query_intervention=, =get_contradictions=, and atomic =review_experience=.
+=pending_experiences= is host-only batch selection. =record_experience= and
+standalone insertion/mutation tools are not exposed to the judge.
+Pin =get_experience=/history/review to the selected identities and revisions;
+constrain retrieval to the selected experience's project and bounded results.
+Reads may include global context under existing visibility rules; writes may
+not. Refuse arbitrary tools, standalone insertion, raw SQL, wrong projects,
+out-of-batch review requests, stale sources, malformed arguments, and unsupported
+schemas before dispatch. Do not relax these checks for a harness backend.
+
+=[llm].max_calls= provides two independent counters: model invocations and total
+model-requested tool executions. Reserve one unit before each attempted call;
+failed attempts and retries consume units. Check allowance before execution.
+The formal trace conserves the sum of remaining counters and executed calls;
+one counter cannot borrow unused units from the other. Trusted batch fetch and
+completion reads are separately bounded by batch size, paging, and I/O deadlines.
+All provider, MCP, and subprocess waits need finite deadlines and bounded input/
+output; budget arithmetic alone does not prove termination of blocked I/O.
+Timeout ends the affected attempt and process cleanup includes descendants.
+
+A crash before commit leaves work pending; a crash after commit but before the
+status write requires reading the committed state on the next invocation. The
+state-directory lock prevents cooperating invocations sharing that directory;
+it does not exclude runners using different directories. Database CAS and
+atomicity remain mandatory. Write the local report atomically, without treating
+that filesystem operation as a distributed transaction with PostgreSQL.
+
+**** Notification transitions
+
+Learning status and notification status are independent fields. Disabled email
+is =disabled=; no due alert is =not_needed=. A due enabled alert enters the outbox
+with a bounded attempt count. Each actual delivery attempt consumes one attempt;
+SMTP acceptance produces =sent=, a failure with attempts remaining produces
+=retry_pending= with a due time, and no remaining attempts produces =exhausted=.
+Do not sleep for repeated deliveries inside a judge run; future scheduled
+invocations retry due items. A successful idle learning run may still retry mail.
+Keep a stable local alert identity to avoid generating a new outbox item for
+every recurrence of the same unresolved incident. Exact fingerprint, recovery
+reset, and backoff encoding are Step 8 implementation details to review there.
+
+=Judge.Notification= proves failed attempts cannot be marked sent, retries spend
+their remaining allowance, and every notification transition preserves the
+arbitrary learning state. Report exhaustion locally; do not recursively email
+about an email-delivery failure. Authentication expiry blocks the affected
+backend and leaves work pending; it must not trigger provider/model fallback.
+Email is useful only when its own independent credentials still work.
+
+SMTP acceptance is not inbox delivery. A crash after acceptance but before the
+outbox write can cause a duplicate email on retry; ordinary SMTP cannot provide
+exactly-once delivery. OAuth refresh, server replies, token rotation, clocks,
+and private atomic file replacement are adapter obligations, not Agda theorems.
+
+**** Contract-to-code correspondence and future verification
+
+| Formal contract / boundary | Existing code or planned adapter | Required implementation verification |
+|----------------------------+----------------------------------+--------------------------------------|
+| Learning.Contributions replacement/staleness | store/learning.rs active_review, ACTIVE_REVIEWS, replace_review_edges | Correct and reverse a review; obsolete source/review contributes nothing; manual and another experience's identical-endpoint edge survive |
+| LearningContracts.Revision guards/replay/ack | record_experience, review_experience; migration 006 pointers/history | Concurrent source correction and reviewers; exact retry after lost response; stale non-replay refusal; overflow refusal; no duplicate evidence |
+| Ownership foreign-write-refused | validate_targets plus recompute_learning | Cross-project outgoing edge and path leaving/reentering project; no foreign writes; complete incoming external support retained |
+| Candidates stable reservation, both kinds | Step 3 registry/schema, Rust DTO and MCP review extension | Same-key retry returns same UUID; changed kind/content refused; rollback leaves no orphan; correction retracts provenance/support; deletion tombstone prevents resurrection |
+| ManualFrame manual-preserved | owned edge selector and current review mass | Retract a review while manual edges, another review, priors and grounding remain |
+| Evidence substrate; Numerical grounding; Beta C-coupling | insert_evidence, delete_evidence, propagate_from, query_intervention, recompute_learning | Unchanged edge substrate; alpha contains ground mass after repeated recomputation; evidence deletion removes only deleted support; query is read-only |
+| Outcomes unknown/assertion laws; candidate/observation separation | pattern_outcomes current-version SQL and candidate provenance reads | Declaration/retry does not count as use; later recorded use counts once and survives original candidate-review retraction; unknown and AgentReport never count as observed success/failure |
+| Completion confirmed receipts | Step 5 MCP runner/database verification | LLM falsely claims done; partial batch; post-review correction; failed empty fetch; status-file crash; no transport error reported as complete |
+| Budget trace and refusal | Step 5 host loop, Step 6/7 adapters | Independent call limits including failed attempts; wrong tool/project refused; oversized response; deadline and descendant cleanup |
+| Notification failure/independence | Step 9 shared notification crate and judge adapter; Step 10 OAuth | Exhausted retries; idle outbox retry; failed email preserves committed review; simulated acceptance-before-crash duplicate boundary |
+| SQL paging (existing obligation) | store.rs paged beliefs; targeted learning reads | 0/1/full/last pages; >200 large beliefs; global/project visibility; deterministic order; invalid limits; application-role PostgreSQL/MCP |
+
+Paths in this table are under =crates/core/src/= unless a later implementation
+step is named. Core methods exposed through =crates/core/src/learning.rs= and
+=crates/mcp/src/learning.rs= must preserve the same checks. Integration tests
+belong in Rust/Bash against the isolated application-role database, not in Agda
+fixtures or a privileged production session. Injection of a failure between
+history insertion, graph mutation, and acknowledgement must demonstrate rollback.
+An SQL/query inspection must establish that small target validation no longer
+loads the corpus. Numeric comparisons must use justified floating-point tolerances.
+
+The new safe Agda modules are =Mimir.LearningContracts= and =Mimir.Judge=;
+=Mimir.Evidence.Numerical= bridges the existing grounding/shape contracts.
+=Mimir.agda= imports all of them. Proofs are universal over arbitrary identities,
+values, revisions, receipts, action traces, and notification states. Existing
+=Learning= and =Beta= laws have not been weakened to match the Rust implementation.
+
+The model does not prove PostgreSQL isolation/rollback, AGE/SQL equivalence,
+UUID freshness, registry uniqueness in a real database, canonical JSON equality,
+correct target validation, the rational-to-f64 correspondence, or truthful
+caller provenance. Nor does it prove that generated causal hypotheses are true,
+that the harness actually enforces isolation, or that subprocess/SMTP I/O ends.
+These are explicit implementation obligations with the checks listed above.
+The source-write exact-retry contract is traced to Rust and requires integration
+checks; the new guarded transition proof specifically models review submission.
+
+**** Verification receipt
+
+Verified in the existing =/var/tmp/mimir/mimir-learning-loop= worktree:
+
+- Persistent =agda --interaction-json= development used goal/context inspection,
+  case splitting, type inference, meta listing, and constraint inspection.
+  The changed modules loaded with =checked=true=, no goals, and no constraints.
+- From =spec/=, =nix develop --command agda Mimir.agda= completed with exit 0
+  using Agda 2.8.0. The aggregate imports all new formal modules, whose
+  =--safe= pragmas are enforced. The log is at
+  =/var/tmp/mimir/step2-formal/agda-final.log=.
+- Existing =Learning.agda= and =Beta.agda= laws were retained; the Evidence
+  theorem statement is unchanged. Its comments now distinguish structural
+  separation from numerical C-coupling.
+- The stage changes only the Org plan, =spec/Mimir.agda=,
+  =spec/Mimir/Evidence.agda=, and the new =LearningContracts.agda= and
+  =Judge.agda=. Rust/schema/MCP implementation remains for Step 3. No live
+  configuration, timer, provider, SMTP, or database writes were performed.
+- Focused changes and the baseline are retained under
+  =/var/tmp/mimir/step2-formal/=. No commit, push, or PR was created.
+
+Step 2 is complete. The final pattern-candidate decision is approved and
+incorporated above; the aggregate Agda check was rerun successfully afterward. The
+candidate identity proofs quantify over arbitrary node identities; the review
+proofs quantify over arbitrary payloads, including either candidate kind. No
+new outcome-counting mechanism or model-asserted success evidence was introduced.
+
+Step 3 needs its own bounded implementation approval. Its assigned model remains
+GPT-6.1 Sol high, with Astra high reviewing inference/transactions. The handoff is
+the contracts, correspondence table, implementation actions below, and focused
+=/var/tmp/mimir/step2-formal/step2.patch=. Preserve existing Rust behavior except
+for those specified corrections/extensions. Deployment and publication remain
+excluded.
+
+** Step 3 — Bring the existing Rust core into correspondence
+
+Model: GPT-6.1 Sol high; Astra high reviews only inference/transaction changes.
+Dependencies: Step 2.
+
+Actions:
+1. Keep valid experience/history/review work; correct deviations identified by
+   the contract review instead of rewriting all existing Rust.
+2. Preserve atomic graph effects plus queue acknowledgement, stale rejection,
+   exact-retry behavior, manual-edge preservation, and current-version counts.
+3. Implement the approved grounding behavior and restore adequate tests for
+   both graph-substrate separation and the numerical evidence contract.
+4. Verify project boundaries, including what propagation through existing
+   cross-project edges is allowed to affect. Do not equate target validation
+   with a proof that every downstream write is isolated.
+5. Retain SQL paging; test 0/1/full/last pages, more than 200 large beliefs,
+   global-plus-project visibility, deterministic ordering, and invalid limits.
+6. Replace whole-corpus reads in new learning operations with targeted belief
+   validation and affected-subgraph reads; select relevant active reviews in SQL.
+   Avoid a new corpus-size cutoff. Do not broaden into a rewrite of all legacy
+   retrieval code. Document unavoidable graph-closure cost explicitly.
+7. Implement the atomic belief/pattern candidate registry, typed declarations
+   and references, neutral initial state, retry mapping, active provenance, and
+   retraction/deletion behavior specified in Step 2. Extend MCP schemas compatibly
+   with existing UUID-only review clients. Keep observed pattern outcomes sourced
+   from recorded experiences; candidate creation is not a successful use.
+8. Test correction, concurrent reviewers, deletion interactions, and rollback
+   on a failed transaction with the application database role.
+
+Deliverable: a core/pagination diff justified by the approved contracts.
+Acceptance: Rust and real isolated PostgreSQL/MCP tests pass; query inspection
+shows no whole-corpus application load merely to validate a few target IDs.
+Timing measurements are evidence, not an invented performance guarantee.
+
+Step 3 implementation (2026-10-09):
+- Added the review-candidate registry and original-request column in migration
+  =007_review_candidates.sql=. The review transaction creates belief/pattern
+  candidates, resolves typed references, records the exact request for retries,
+  applies evidence and links, and acknowledges the queue together. Deletion
+  retires candidate mappings; source correction and review replacement retract
+  owned effects while retaining identity and history.
+- Review target validation fetches requested IDs only. Review recomputation
+  expands from affected nodes inside the experience's project, reads complete
+  incoming edges (including fixed foreign parents), and selects relevant active
+  reviews and grounding in SQL. It updates from fixed priors and current sources.
+  The closure remains proportional to the actual reachable component, which can
+  itself be large; there is no invented cutoff or performance guarantee.
+- The SQL belief pager covers the filtered corpus with deterministic ordering
+  and no 200-item total limit. Existing =query_relevant= and pattern lexical
+  retrieval still scan their legacy candidate pools; this step did not rewrite
+  general retrieval, as excluded above. Offset pages assume a stable data set
+  during traversal; concurrent inserts/deletes can shift their boundaries.
+- Verified 15 learning integration tests and 48 existing store integration tests
+  against the isolated application-role AGE database, plus a real MCP smoke
+  covering candidate creation, exact retry, provenance, and neutral pattern
+  outcomes. The MCP smoke removed its isolated test project afterward.
+- Focused Step 3 diff: =/var/tmp/mimir/step3/step3.patch=. No commit, push,
+  installation, production database change, or Step 4 implementation.
+
+** Step 4 — Add typed Rust configuration and CLI entry points
+
+Model: GPT-6.1 Sol medium. Luna medium can produce table-driven validation cases.
+Dependencies: Step 2; integration depends on Step 3.
+
+Actions:
+1. Add =judge= subcommands to =crates/cli/src/main.rs= and typed runtime settings
+   under =crates/cli/src/judge/config.rs=.
+2. Reuse core config loading and the same file resolution for the MCP child.
+   Keep old config files valid for existing commands without judge settings.
+3. Validate provider/model combinations, command argument arrays, limits,
+   SMTP/OAuth settings, and HTTPS endpoints with explicit loopback exceptions.
+4. Preserve inline credentials, private creation, and redacted diagnostics.
+   Do not chmod or rewrite the user's installed config automatically.
+5. Make =check-config= entirely local: no database, provider, SMTP, or login calls.
+6. Define exit codes and machine-readable status output; keep errors useful
+   without dumping config values or external response bodies.
+
+Deliverable: working offline configuration validation and documented CLI schema.
+Acceptance: old-config compatibility, malformed config, permission alternatives,
+unknown fields, and secret-redaction tests in Rust.
+
+Step 4 CLI/config schema (implemented 2026-10-10):
+
+#+begin_example
+mimir judge check-config [--config PATH]
+mimir judge run [--config PATH] [--state-dir PATH]
+mimir judge status [--state-dir PATH]
+#+end_example
+
+=check-config= is offline. It accepts an explicit path first, then
+=MIMIR_CONFIG=, then the existing XDG/default path. A relative selected path
+is resolved against the launch directory. It does not open PostgreSQL, start
+MCP, call a provider, send email, or create state. The resolved absolute path
+is retained in the typed runtime settings for Step 5's child launch; this stage
+does not start that child. Existing non-judge commands still load old configs
+without requiring runtime sections.
+
+| Section | Recognized fields | Required when active |
+|---------+-------------------+----------------------|
+| =judge= | =batch_size=, =project=, =mcp_command=, =mcp_args= | Section; defaults 5, omitted, =mimir-mcp=, =[]= |
+| =llm= | =backend=, =model=, =timeout_seconds=, =max_calls=, =max_output_tokens=, =max_budget_usd=, =provider=, =api_key=, =base_url=, =command=, =args= | Section, backend, explicit model; backend-specific fields |
+| =email= | =enabled=, =host=, =port=, =tls=, =from=, =to=, =username=, =auth=, =password=, =timeout_seconds=, =retry_seconds=, =max_attempts=, nested =oauth= | Optional; SMTP settings and one auth mode if enabled |
+
+Backends are =claude-code=, =codex=, =command=, and =api=. An API backend needs
+an explicit provider, key, and model. Providers are =openai=, =anthropic=,
+=openrouter=, =deepseek=, =zai=, =gemini=, and =openai-compatible=; the last
+also needs =base_url=. A command backend needs an absolute executable path and
+an explicit model; harness backends use neither API credentials nor custom
+command fields. =max_budget_usd= is positive/finite and Claude Code only.
+An endpoint needs HTTPS, except HTTP on a literal loopback address or
+=localhost=; embedded credentials, query, and fragment are rejected.
+
+For enabled email, =tls= is =starttls= or =tls=, and =auth= is =password=,
+=oauth2=, or =none=. Password auth needs username/password; OAuth2 needs
+username and =[email.oauth]= provider, client ID, and refresh token. Google
+does not accept a tenant; Microsoft also needs tenant and scope. Optional
+client secret remains inline in the private config. Disabled email may retain
+example values without making them active; unknown fields and malformed types
+still fail. The validator performs basic mailbox syntax checks, not delivery.
+
+Judge config files must be regular files owned by the running user. A private
+file (no group/other access) or an owner-private ancestor directory protects
+the content; group/other-writable ancestors are refused except root-owned
+sticky temporary directories. Symlinks in the selected path are refused.
+Validation never chmods or rewrites an installed config. New configs still use
+the existing core private creation path. TOML/typed parse errors do not echo
+source lines or credential values.
+
+Each recognized judge invocation emits one JSON object on stdout. At this
+stage =check-config= returns ={"status":"valid","schema_version":1}= with
+exit 0, or =invalid_config= with a safe =error= and exit 2. Judge argument
+errors return =invalid_arguments= and exit 2. =run= and =status= are reserved
+entry points returning =unavailable= and exit 5 until Step 5 supplies the
+runner and local-state reader; they do not imply any review occurred.
+Step 5 will use exit 0 for idle/complete, 3 for partial/blocked, 4 for
+already-running, and 5 for unavailable/internal failure.
+
+The Rust validator tests cover old config compatibility, providers and
+backends, malformed/unknown input, permission alternatives, email modes, and
+secret redaction. A Bash CLI smoke uses fake credentials and an unreachable
+test database host under =/var/tmp/mimir/step4= to verify offline behavior,
+precedence, JSON, exit codes, and no state creation. No live configuration,
+account, database, provider, or SMTP action was performed.
+
+** Step 5 — Implement the bounded runner, MCP client, and local state
+
+Model: GPT-6.1 Sol high. Astra only for a demonstrated concurrency ambiguity.
+Dependencies: Steps 3–4.
+
+Actions:
+1. Implement bounded newline JSON-RPC MCP transport with initialization,
+   request IDs, notification handling, deadlines, and response-size limits.
+2. Fetch and pin the pending batch; enforce the same tool and project scope
+   across every backend. Stamp reviewer identity in host code.
+3. Implement the backend interface with a deterministic Rust test backend first.
+4. Verify actual reviewed revisions after the model loop; retain incomplete
+   work and defer concurrently corrected experiences.
+5. Implement a shared-state-directory lock, atomic private state writes, and
+   explicit partial/blocked status. Test interrupted writes and lock contention.
+6. Bound subprocess input/output and terminate child process groups on timeout,
+   including descendants. Do not leave harness helpers running.
+7. Keep one invocation finite and idle invocations free of model calls.
+
+Deliverable: a real database/MCP cycle driven by a fake backend, without Python.
+Acceptance: success, correction, stale result, malformed transport, timeout,
+crash, concurrent invocation, and false model-completion scenarios pass.
+
+*** Step 5 completion receipt
+
+The Rust judge now starts the configured MCP child with the exact validated
+configuration path, initializes JSON-RPC, checks required tool schemas, bounds
+messages and deadlines, and kills the child process group on timeout. The host
+pins one pending batch, enforces the model-visible tool/project/revision scope,
+stamps reviewer identity, and re-reads committed source/review revisions for the
+final verdict. The backend interface has a deterministic test implementation;
+the normal CLI reports =blocked= on nonempty work until Step 6 or 7 installs a
+real adapter. Idle work makes no backend call. Run/status use a private state
+directory, nonblocking per-directory lock, and atomic private report file.
+
+Verification used the existing disposable application-role database at
+=127.0.0.1:32885=, project-scoped Rust fake-backend cycles and the built MCP
+child. Nine judge tests passed, including success, idle, false completion,
+stale token, concurrent correction, backend failure, partial batch, lock
+contention, interrupted status write, malformed MCP response, and timeout
+cleanup of a descendant process. CLI smoke returned =never_run=, =idle=, then
+an =idle= snapshot for an empty isolated project. =cargo clippy -p mimir
+--all-targets --offline -- -D warnings= passed. No live provider, SMTP,
+production database, scheduling, deployment, or publication action occurred.
+
+** Step 6 — Port Claude Code, Codex, and custom-command adapters
+
+Model: GPT-6.1 Sol medium; use high for process cleanup or isolation failures.
+Dependencies: Step 5.
+
+Actions:
+1. Build explicit argument vectors with no shell interpolation. The custom
+   adapter follows the documented JSON stdin/stdout protocol.
+2. Check installed CLI capabilities and pin the tested flag combinations.
+   Fail clearly on incompatible versions rather than dropping isolation flags.
+3. Preserve access to the intended harness login while disabling unrelated MCP
+   servers, project instructions, hooks, tools, and session persistence where
+   the harness supports that contract. Test actual behavior, not flag spelling.
+4. Parse structured results and error exits; enforce whole-run time/call limits
+   and document any harness-specific budget semantics.
+5. Use Rust fixture executables and Bash scripts for malformed/slow/forking
+   subprocess tests. No Python fixture executable.
+6. After separate approval for account usage, perform one minimal live check
+   for each configured harness and one representative review cycle.
+
+Deliverable: both built-in harnesses plus the explicit custom-command path.
+Acceptance: fixture suite proves cleanup and failure handling; live results
+are recorded separately from simulated results. No assumed fallback login.
+
+*** Step 6 local completion receipt
+
+The Rust CLI now selects Claude Code, Codex, or an absolute custom command as
+the judge backend. Every invocation receives a bounded JSON review context and
+returns a structured request for at most one host-executed MCP tool. The host
+retains project/experience scoping and database receipt verification. Claude
+Code and Codex use explicit structured-output and isolation flags; a CLI whose
+help lacks required flags blocks before a model invocation. The installed
+Claude Code 2.1.283 and Codex CLI 0.162.1 help advertise the required flags.
+This is a capability check, not a live isolation or login test.
+
+The subprocess runner bounds input, stdout, stderr, and elapsed time; owns a
+process group and terminates descendants on completion, timeout, or failure.
+Private per-turn files under =/var/tmp/mimir= are removed after use. The
+custom-command JSON stdin/stdout contract is documented in =runtime/README.md=.
+=cargo test -p mimir --offline= passed 9 tests; =cargo clippy -p mimir
+--all-targets --offline -- -D warnings= and CLI formatting passed. The isolated
+database fixture =tests/judge-adapters.sh= passed review cycles for all three
+backends plus crash, malformed response, oversized output, timeout, descendant
+cleanup, false completion, and incompatible-flag cases. No live model/account
+call, provider spending, email, scheduling, deployment, or publication occurred.
+Action 6 above still needs separate account approval; actual harness isolation,
+login continuity, and model response behavior are unverified.
+
+** Step 7 — Implement OpenAI Responses and Anthropic Messages
+
+Model: GPT-6.1 Sol medium, high for reasoning/tool continuation issues.
+Dependencies: Step 5; can follow Step 6 without another checkout.
+
+Actions:
+1. Implement OpenAI Responses function-call/result handling. Do not port the
+   Python draft's Chat Completions-only implementation as the primary OpenAI path.
+2. Implement Anthropic Messages tool-use/tool-result handling separately.
+3. Preserve required reasoning items/signatures across turns; handle multiple
+   calls, partial output, provider errors, usage, and explicit response limits.
+4. Route all requested tools through the common scoped executor.
+5. Disable redirects and unintended provider/account fallbacks. Classify auth,
+   quota, unsupported model, invalid response, and timeout failures without secrets.
+6. Use local Rust HTTP fixtures for requests and continuation. Test selected
+   live models only after explicit account/spending approval.
+
+Why this is necessary: official [[https://developers.openai.com/api/docs/models/gpt-6.1-sol][Sol documentation]] specifies Responses for tool
+calling; its Chat Completions support does not include tools. [[https://developers.openai.com/api/docs/models/gpt-6-luna][Luna documentation]]
+also distinguishes Responses from Chat Completions tool support. Model names
+alone therefore cannot define a compatible transport.
+
+Deliverable: two verified protocol adapters, not an untested “all providers” claim.
+Acceptance: request/response contract fixtures pass, including continuation,
+limits, auth failure, and no database acknowledgement after incomplete work.
+
+*** Step 7 local completion receipt
+
+=crates/cli/src/judge/api.rs= implements OpenAI Responses and Anthropic
+Messages as separate wire protocols behind the existing scoped host tool
+executor. OpenAI uses stateless =store: false= calls and replays response output,
+including encrypted reasoning, alongside =function_call_output= items.
+Anthropic replays assistant content blocks, including signed or redacted
+thinking, in original order and pairs each =tool_result= to a =tool_use= ID.
+Multiple calls in one response queue separately through the host; a queued
+tool does not spend another model-invocation allowance. The host still spends
+one tool allowance per attempted execution and requires a database review
+receipt for completion. Non-OpenAI/Anthropic API providers remain unavailable
+for Step 8 rather than silently falling back.
+
+The HTTP client disables redirects, uses only the explicitly selected base
+URL/API key/model, bounds serialized context and response bytes, and rejects
+partial provider output. Local Rust HTTP fixtures cover request fields,
+reasoning and tool-result continuation, multiple calls, authentication and
+quota responses, unsupported-model classification, redirects, malformed calls,
+timeout, oversized output, and token limits. An isolated application-role
+database fixture confirms a text-only model claim leaves the experience
+pending; a subsequent response with two scoped tool calls confirms review via
+the database with independent model/tool call budgets. The Rust CLI build,
+15 tests, CLI formatting, and Clippy all pass. No live provider/account call,
+spending, email, scheduling, deployment, or publication occurred.
+
+** Step 8 — Add the remaining API providers with shared transport
+
+Model: GPT-6 Luna medium for repetitive presets/fixtures after Sol defines the
+adapter; GPT-6.1 Sol medium for provider-specific deviations and review.
+Dependencies: Step 7.
+
+Actions:
+1. Add explicit provider presets for OpenRouter, DeepSeek, Z.ai, Gemini, and a
+   user-specified OpenAI-compatible endpoint.
+2. Reuse compatible transport logic without assuming all providers or models
+   accept identical token limits, reasoning fields, or tool schemas.
+3. Verify each provider's current official protocol before finalizing fixtures.
+4. Keep model selection explicit. Reject unsupported tool/model combinations
+   with a useful error; do not silently select another model.
+5. For OpenRouter, retain explicit routing/no-fallback intent and distinguish
+   downstream provider behavior from Mimir's own retries.
+6. Mark fixtures versus live-account verification per provider in the guide.
+
+Deliverable: provider compatibility matrix and focused Rust fixtures.
+Acceptance: all advertised paths have protocol tests; no broad live test sweep
+or new accounts merely to put check marks beside provider names.
+
+*** Step 8 local completion receipt
+
+The Rust API backend now has Chat Completions presets for OpenRouter, DeepSeek,
+Z.ai, and Gemini, plus a required-base-URL generic compatible endpoint. Each
+uses an explicit model and the shared bounded transport. OpenRouter requests
+disable upstream fallback and require parameter support; =openrouter/auto= is
+rejected. The chat parser validates finish reasons, tool IDs/arguments, output
+usage when present, and the tool-call count; it replays the full assistant
+message and all paired results, retaining DeepSeek reasoning and Gemini thought
+signatures. A provider/model rejecting the request blocks the run.
+
+The [[file:../runtime/README.md][compatibility matrix]] distinguishes local fixtures
+from live-account verification. Focused Rust fixtures cover the five advertised
+paths, default endpoint presets, continuation, partial/malformed responses,
+and OpenRouter routing fields. The full CLI suite passes with the isolated
+application-role database, and Clippy passes. No live provider/account calls,
+email, scheduling, deployment, or publication occurred.
+
+** Step 9 — Implement SMTP and failure/recovery notifications in Rust
+
+Model: GPT-6.1 Sol medium; Luna medium for deterministic retry-table fixtures.
+Dependencies: Steps 4–5; independent of adding every API provider.
+
+Actions:
+1. Use a maintained Rust SMTP library, recommended =lettre=, rather than hand-roll
+   SMTP/TLS. Its documented transport supports the required authentication
+   mechanisms; verify the selected feature set against Nix/static builds.
+2. Implement STARTTLS and implicit TLS with certificate verification, password
+   authentication, and explicit relay mode.
+3. Put message construction, delivery, and persistent notification state in a
+   reusable =mimir-notifications= Rust crate with its own lock and an event API
+   keyed by source and incident. Judge is a thin client, not the owner.
+4. Implement failure/recovery transitions, identical-failure suppression,
+   bounded retries, retry exhaustion, and latest-status replacement.
+5. Persist attempts before sending; retain Message-ID across retry. State
+   clearly that a crash after SMTP acceptance can cause a duplicate, while a
+   crash before sending can consume one of the bounded attempts.
+6. Keep email failure separate from committed learning results. Avoid raw
+   belief contents, model output, and credentials in notification bodies.
+7. Use a Rust loopback SMTP/TLS fixture; create test certificates with Bash
+   invoking the existing certificate tool where available.
+
+Deliverable: local SMTP delivery and persistent transition behavior.
+Acceptance: certificate rejection, STARTTLS, implicit TLS, refused recipients,
+restart/retry, exhaustion, recovery, and the accepted-message/QUIT boundary.
+No real email is sent in this stage.
+
+*** Step 9 local completion receipt
+
+The reusable =mimir-notifications= crate now owns typed email validation, a
+private atomic outbox and independent lock, source/incident-keyed failure and
+recovery events, suppression, bounded retries, exhaustion, and stable Message-ID
+across retries. It uses =lettre= for SMTP, STARTTLS or implicit TLS, password or
+unauthenticated relay, and certificate checks. The judge supplies only fixed
+status summaries through a thin adapter. OAuth2 configuration validates, but
+OAuth2 delivery remains unavailable until Step 10. No periodic scheduler is
+installed; =Notifier::retry_due= is callable by other components.
+
+The isolated judge suite passed (18 tests), and the notification crate passed
+five Rust tests including loopback TLS, refusal, recovery, restart, privacy,
+retry, and acceptance/QUIT/crash boundaries. Formatting, Clippy with warnings
+denied, and whitespace checks passed. A focused =x86_64-unknown-linux-musl=
+check of =mimir-notifications= passed in the Nix development shell. The full
+optimized =mimir-static= package was attempted from a small source snapshot
+and stopped after prolonged unrelated =tract-core= compilation; it is not
+claimed as verified. No real email, account call, scheduling, deployment, or
+publication was performed.
+
+** Step 10 — Add Google/Microsoft OAuth refresh
+
+Model: GPT-6.1 Sol high. Optional Sonnet 5.5 review of token-state handling if
+available; no second review is required merely for model diversity.
+Dependencies: Step 9.
+
+Actions:
+1. Reuse the Rust HTTP client for token refresh and SMTP XOAUTH2 for authentication.
+2. Scope cached tokens to the configured account/client identity.
+3. Persist a rotated refresh token atomically before attempting SMTP delivery.
+4. Invalidate rejected access tokens without losing the latest refresh token.
+5. Handle revocation, expired consent, malformed token replies, and changed
+   account settings as explicit failures requiring operator attention.
+6. Document initial authorization as a separate account-setup action; do not
+   add a browser login flow or collect credentials during implementation.
+
+Deliverable: protected refresh-state implementation and provider-specific examples.
+Acceptance: local token fixtures cover rotation, interrupted writes, rejection,
+expiry, account changes, and redacted failures. Google/Microsoft live account
+verification remains separately opt-in.
+
+*** Step 10 local completion receipt
+
+The shared notification crate now uses fixed Google/Microsoft HTTPS refresh
+endpoints through =reqwest= and =lettre='s XOAUTH2-only SMTP mechanism. A
+private =notification-oauth.json= cache holds access and rotated refresh tokens,
+scoped by a hash of provider, account, client, tenant, scope, SMTP host,
+client secret, and bootstrap refresh token. A rotated token is atomically
+stored before SMTP can use its access token. A rejected cached access token is
+invalidated while retaining the refresh token, then refreshed and retried once.
+Changed identity, rejected consent, malformed replies, and repeated SMTP auth
+rejection surface as =auth_required= while attempts remain, then =exhausted=
+after the final failed attempt. Transient token-server failures remain
+retryable. The provider errors, token bodies, and secrets are not reported.
+
+The Agda notification contract now states account-change refusal, durable
+rotation before send, and refresh-token preservation on access rejection. Its
+aggregate =Mimir.agda= check passed. Twelve notification tests passed with
+loopback token and SMTP servers, including rotation, expiry, account changes,
+write failure, revocation, malformed replies, redaction, and cached-token
+rejection/retry. Eighteen judge tests, strict Clippy, formatting, and a focused
+musl check of =mimir-notifications= passed. The full optimized static package
+was not rebuilt. The [[file:../runtime/README.md][runtime guide]] now gives
+Google and Microsoft examples and separates initial authorization from Mimir's
+runtime. No real account, email, deployment, or publication action occurred.
+
+** Step 11 — Repair capture guidance and evaluate actual learning behavior
+
+Model: GPT-6.1 Sol high for evaluation design; Luna medium for approved fixture
+variations. Astra only for a specific unresolved causal/revision question.
+Dependencies: Steps 3, 5, and at least one working LLM adapter.
+
+Actions:
+1. Rewrite the shared skill into an unambiguous choice between incident capture
+   and recording an independent durable constraint. Preserve user requirements
+   as authoritative requirements, not statistical hypotheses.
+2. Carry the stable incident ID into corrections. Distinguish user reports,
+   observed tool results, and unverified agent assessments.
+3. Implement the identified-incident rule agreed in Step 2 and test the known
+   failure: foreground belief insertion plus queued evidence must not be
+   accepted as independent confirmation of the same incident.
+4. Replace the two Python end-to-end tests with Rust tests. Use deterministic
+   backends for mechanics and an explicitly approved small live set for behavior.
+5. Use at least six fixed scenario classes: success, failure, unknown outcome,
+   corrected result, repeated incident, and confounded apparent cause. Include
+   fresh-session retrieval and an unrelated situation where the lesson should
+   not be applied.
+6. Compare the chosen low-cost judge with Sol on the same isolated snapshots.
+   Score evidence attribution, duplicate contributions, stale rejection,
+   justified graph changes, and the later action actually chosen. Each arm
+   selects its model in a private Mimir TOML file through =[llm].model=;
+   Codex arms may set optional =[llm].reasoning_effort= to select a supported
+   effort explicitly. Do not hard-code the model in the evaluator or change the
+   installed user config. The Codex adapter must forward the selected effort
+   into its isolated CLI invocation; omitting it retains current behavior.
+7. Distinguish hard failures from uncertain model quality. Do not erase a failed
+   case or repeatedly tune the prompt against it and call that generalization.
+
+Deliverable: revised guidance, Rust evaluation harness, and a small results table.
+Acceptance: no false acknowledgement or stale/cross-scope mutation; the duplicate
+case is explicitly resolved or remains a release blocker. Claims of improved
+agent behavior require observed later decisions, not merely nonempty retrieval.
+No guarantee of broad self-improvement is inferred from this finite evaluation.
+
+*** Step 11 offline fixture receipt
+
+The approved offline portion rewrites the shared capture skill, the retained
+reference prompt, the MCP tool descriptions, and the active Rust API/harness
+judge instructions. An incident-derived hypothesis now uses a stable-key,
+experience-owned review candidate; an independently established constraint or
+explicit decision may be inserted directly. The guidance preserves user
+requirements as requirements and carries one incident UUID through corrections.
+Both active judge adapter families use one Rust guidance function.
+
+Rust replaces the deleted Python learning checks with the six-scenario real-AGE
+matrix in =crates/core/tests/learning_integration.rs=, an MCP tool-dispatch
+cycle in =crates/mcp/src/learning_cycle_test.rs=, and the existing fake-backend
+runner/MCP integration test. These fixtures use only an explicitly named
+=mimir_learning_test*= database, scoped temporary projects, and deterministic
+review actions. The fresh-session retrieval check opens a second database
+connection; its deterministic chooser applies the retrieved lesson to the
+keyboard situation and declines it for an unrelated disk-quota situation.
+
+| Offline case | Observed result | Limit |
+|--------------+-----------------+-------|
+| Success | One owned candidate gains one positive review; later scoped retrieval surfaces it | Later action is chosen by a fixed Rust rule, not a live agent |
+| Failure | Negative review raises beta, not positive mass | Verdict supplied by fixture |
+| Unknown | Agent report remains neutral; no observed success is manufactured | Fixture does not measure judge judgment |
+| Corrected result | Same UUID advances source revision, retracts old support, rejects stale review, accepts replacement | No concurrent model race in this case |
+| Repeated incident | Exact source/review retries keep one revision, one candidate UUID, one contribution | A different UUID for the same real incident is not detectable |
+| Confounded apparent cause | Candidate stays neutral; no causal edge or success inference is asserted | Human/model confounder recognition still unmeasured |
+| Cross-scope/false completion | Foreign target rejected without acknowledgement or foreign mutation; existing runner fixture rejects false done/stale completion | Transport and DB tested locally only |
+| Legacy foreground overlap | Standalone prior plus review feedback both add mass for one report | *Release blocker* for unrestricted automated capture; prompt-only protection is incomplete |
+
+The identified-incident candidate path passes. The separate foreground-overlap
+characterization test demonstrates that an ordinary =insert_belief= has no
+incident ownership, so the server cannot strip its prior from a later review
+based on wording. Until a provenance-enforced direct-write path or an equivalent
+capture gate exists, do not claim duplicate prevention for that path. This is
+not a regression in the candidate path and not a semantic deduplication claim.
+
+No live low-cost-versus-Sol comparison, account call, email, deployment, or
+publication was performed in this offline stage. Model quality and actual later
+agent decisions remain unmeasured; a live comparison still needs its own
+approved, isolated stage.
+
+Local verification on 2026-10-10: the six-case matrix, the foreground-overlap
+characterization, the Rust MCP tool-dispatch cycle, and the existing Rust
+runner/MCP fake-backend cycle passed against the disposable test database.
+Strict Clippy passed for =mimir-core=, =mimir-mcp=, and =mimir= including test
+targets; file-scoped rustfmt and =git diff --check= passed. A workspace-wide
+=cargo fmt --all --check= still reports pre-existing formatting differences in
+other Step 1–10 files, so this stage did not reformat unrelated source.
+
+*** Step 11 live-comparison preparation
+
+The approved comparison now selects each arm from an explicit private TOML
+file. The existing =[llm].model= remains the model selector. Optional
+=[llm].reasoning_effort= is typed, Codex-only, and forwarded to the isolated
+Codex invocation; omitting it preserves prior behavior. No installed config
+was edited. The Rust comparator behind =./eval learning-compare= checks that
+arms share the same disposable database, embeddings, and timeout, then uses the
+same incident UUIDs across six scenario classes. It records review histories,
+retrieval, safety checks, and a fresh-session model's chosen actions for a
+related and an unrelated situation. Completed case records are private files
+under =/var/tmp/mimir=; each test project is deleted after inspection.
+
+The comparator defaults to a read-only preflight. =--live= is required for
+account-backed calls. Each first review has at most two model turns; a
+correction has at most two more. An exact source retry is checked through MCP
+history without another judge run. Each scenario has one fresh-session actor
+call. The harness checks =codex exec --help= for every model turn, so these
+checks count as Codex processes even though they do not call a model. The
+comparator does not enforce an aggregate process limit internally. Codex may
+make provider-internal requests that the runner cannot meter; account charges
+or quota are not a known dollar amount. A two-turn review may commit but leave
+the runner status =partial= because there is no final completion turn.
+
+Local fake-Codex validation exercises all twelve arm/case combinations and
+checks that the disposable test database has no remaining =step11-%= experience
+rows afterward. This verifies the orchestration and cleanup, not model quality.
+
+*** Step 11 live comparison receipt (2026-10-10)
+
+The approved live run compared =gpt-6-luna= at medium effort with =gpt-6.1-sol=
+at high effort through the current Codex login, using two private configs for
+the same disposable test database. An external private wrapper counted 47 new
+real Codex processes, including help checks; two earlier preflight Codex
+processes make 49 total, below the approved limit of 56. The wrapper cached
+one real =codex exec --help= response for subsequent capability checks. All 12
+cases completed and their project cleanup calls succeeded; a direct query found
+zero =step11-%= rows in =mimir_experiences=. Results and per-case
+receipts are in =/var/tmp/mimir/learning-compare-9a30d1a7-0889-406b-abe0-b32cf20967fc/results.json=.
+
+| Case | Luna medium | Sol high |
+|------+-------------+----------|
+| Success | One reviewed tentative pattern; later actor used it | One reviewed belief and pattern, with one support item; later actor used a retrieved ID |
+| Failure | One reviewed diagnostic pattern; later actor used it | One reviewed incident-specific failure belief with support; later actor used it |
+| Unknown | No success feedback; actor used no ID | No success feedback; actor used a tentative pattern ID |
+| Corrected | Source revision 2; replacement review blocked | Source revision 2; replacement review blocked |
+| Exact retry | One review; before/after retrieval identical | One review; before/after retrieval identical |
+| Confounded | No review; pending experience remains | Review records no candidate, feedback, or causal link |
+
+All first reviews that committed were reported =partial= by the runner under the
+two-turn limit. The second correction review was =blocked= in both arms. Neither
+arm earned a clean end-to-end pass. Sol handled the confounded review and
+created more explicit evidence-bearing beliefs, but this small, constrained
+sample does not establish a model choice or improved later behavior. The
+legacy foreground-overlap release blocker remains unresolved.
+
+*** Postcomparison learning-path repair (2026-10-10)
+
+The agent-facing MCP =insert_belief= tool now requires an explicit independent
+=user_instruction= or =document= source reference. It rejects untagged writes
+and incident-report provenance. The source is stored on the belief node and
+exposed through =explain_belief=. Incident-derived conclusions still use
+=record_experience= and atomic =review_experience= candidates. This closes the
+untagged MCP foreground route, while the caller's source claim is not verified
+by the server; direct manual/core writes can still create an unowned prior.
+Do not claim semantic deduplication of arbitrary text or a global one-incident
+guarantee for legacy clients.
+
+The judge now checks the stored pinned revision immediately after a review and
+finishes a confirmed item without another model completion turn. Incomplete
+runs retain pending work and report a bounded =block_reason=. =mimir judge
+watch= repeats bounded runs at a configurable interval (five minutes by
+default), stopping after three consecutive failures by default. It is a
+source-level capability, not an installed service or enabled schedule. The
+agent guidance requires a later *observed* action/outcome with the actually used
+belief or pattern ID; retrieval is not success. An MCP fixture checks that
+later observation changes pattern counts and a source correction replaces it.
+No live model rerun, production data migration, installed config change, or
+deployment is part of this repair.
+
+** Step 12 — Package the Rust application and prepare the PR series
+
+Model: GPT-6 Luna medium for docs/Bash/mechanical checks; Sol medium for build
+integration and final diff review. Astra reviews only still-unresolved high-risk code.
+Dependencies: Steps 1–11.
+
+Actions:
+1. Update README, agent installation guidance, config examples, and the old
+   experiential runner wrapper to use =mimir judge run=.
+2. Keep Bash limited to launching the Rust command, fixture provisioning, and
+   packaging. Do not move JSON, OAuth, or inference logic into large shell scripts.
+3. Verify existing release packaging still delivers =mimir= and =mimir-mcp=;
+   integrating the judge into =mimir= should not need a third runtime package.
+4. Verify Linux/Nix static builds locally where supported. Check the existing
+   macOS build path in available CI; report any platform not actually exercised.
+5. Run the relevant Rust tests, aggregate Agda check, changed-file formatting/
+   linting, and Bash syntax/ShellCheck where available. Do not fix unrelated
+   repository lint debt or broaden this into an unrelated cleanup campaign.
+6. Inspect shipped files and test entry points for newly introduced Python,
+   pip, PYTHONPATH, or Python fixture dependencies. Historical audit text may
+   still describe the rejected implementation and is not an executable dependency.
+7. Prepare exact local PR diffs and descriptions, including checks, limitations,
+   dependency order, and behavior changes. Do not push them in this step.
+8. Retire only identified disposable test resources under an agreed cleanup
+   scope. Keep the receipt and the current worktree; never delete another
+   session's directory or an unrelated evaluation directory.
+
+Deliverable: reviewable Rust/Bash-only final tree and a local PR series.
+Acceptance: no Python delivery/test dependency introduced by this series;
+no missing binary, hidden account setup, live-config change, or unreported failing test.
+
+** Step 13 — Publication and deployment, separately approved
+
+Model: GPT-6 Luna low for exact GitHub metadata/publication actions; Sol medium
+for deployment validation. No frontier model is needed for routine commands.
+Dependencies: Step 12 and the applicable explicit approvals.
+
+Publication:
+1. Present exact branches, commit ranges, destination visibility, and PR bodies.
+2. On approval, publish the agreed subset and verify remote SHAs and metadata.
+3. Use the existing assignee =kamysh=, no requested reviewer, and agreed labels
+   =bug=, =enhancement=, or =documentation= as appropriate.
+4. Do not treat permission for the first PR as permission for all later PRs.
+
+Deployment, if later requested:
+1. Back up affected live state and review migration compatibility before startup.
+2. Install verified binaries; configure the chosen model and optional email.
+3. Validate configuration, login, and one explicitly authorized real notification.
+4. Enable the requested schedule only after a successful bounded run; verify an
+   empty queue makes no model call and a failed login leaves reviews pending.
+5. Record binary/config identities and the rollback procedure. Disabling a timer
+   or reverting a binary does not retract already committed learning effects.
+
+Deliverable: only the specifically approved published/deployed result.
+
+* Suggested PR boundaries
+
+These are review boundaries, not a requirement for eight new directories.
+Reuse the existing worktrees under =/var/tmp/mimir/= and operate sequentially.
+The original four local commits are input material, not automatically final PRs.
+
+Prepare the final stack from main at its verified base (currently =58b7ca9=),
+using selected retained changes and the Rust replacements. Keep the original
+local branches intact for recovery. Do not include the rejected Python commits
+in the published stack and then remove them in a later public PR. Step 1 is
+local preparation; main never received that Python code and needs no deletion PR.
+Creating the final local stack is an explicit Step 12 action, not permission to
+reset the current dirty worktree or rewrite the original branches.
+
+| PR | Content                                       | Principal steps | Proposed base |
+|----+-----------------------------------------------+-----------------+---------------|
+|  1 | Learning foundations, contracts, core fixes    | 2–3             | main          |
+|  2 | Database-backed belief pagination             | 3               | PR 1          |
+|  3 | Typed config and Rust judge command skeleton  | 4               | PR 2          |
+|  4 | Bounded runner, MCP, and harness adapters      | 5–6             | PR 3          |
+|  5 | Direct API backends and provider fixtures     | 7–8             | PR 4          |
+|  6 | SMTP transitions and delivery                 | 9               | PR 5          |
+|  7 | Google/Microsoft OAuth refresh                | 10              | PR 6          |
+|  8 | Capture evaluation, packaging, final guidance | 11–12           | PR 7          |
+
+Tests belong with the behavior they validate, not all in the final PR. The
+linear stack avoids an integration branch solely for parallel PR dependencies;
+SMTP implementation itself does not require every API adapter. Each published
+PR must identify its actual base and contain only the advertised change.
+
+* Selecting the ongoing judge model
+
+This is separate from the models used to implement the application.
+
+Initial recommendation: evaluate GPT-6 Luna at medium effort through Responses
+against GPT-6.1 Sol on the same small corpus. Choose Luna only if it meets the
+required evidence/revision behavior; otherwise use Sol. Claude Haiku 5.5 and
+Sonnet 5.5 are alternatives when available through the user's chosen account.
+No automatic two-model cascade or paid-provider fallback is part of this plan.
+
+The cheap model must be tested on corrections and causal confounding, not just
+on successfully emitting JSON. A malformed response, authentication failure,
+or incomplete review leaves the experience pending; it does not trigger an
+unapproved more expensive model.
+
+For illustration, a whole invocation totaling 30,000 uncached input and 5,000
+billed output tokens costs about USD 0.0055 on Luna or USD 0.11 on Sol. At
+1,000 such invocations, that is USD 5.50 or USD 110. Actual totals depend on the
+number of tool turns and reasoning tokens. An empty queue uses no LLM tokens.
+
+Keep model names explicit and record actual usage. Tune batch size and context
+from measurements rather than increasing the schedule interval to compensate
+for a runner that repeatedly processes the same evidence.
+
+* Recommended first executable stage
+
+Only Step 0: establish the exact replacement/removal manifest and baseline in
+the existing =/var/tmp/mimir/mimir-learning-loop= worktree. No code edits,
+cleanup, live model calls, publication, or deployment in that stage.
+
+Then approve the concrete Python removal step and contract/specification work
+with their exact boundaries. Python removal is a requirement; approval concerns
+which files and accompanying references are changed, not whether Python stays.
+
+* Sources and verification boundary
+
+Repository evidence for this plan:
+
+- [[file:learning-loop-audit.org][Functionality audit]]
+- [[file:../Cargo.toml][Cargo workspace]]
+- [[file:../crates/cli/Cargo.toml][Existing CLI dependencies]]
+- [[file:../crates/core/Cargo.toml][Existing core dependencies]]
+- [[file:../spec/Mimir/Learning.agda][Learning specification]]
+- [[file:../spec/Mimir/Evidence.agda][Evidence specification]]
+- [[file:../.github/workflows/release.yml][Existing release workflow]]
+
+External sources checked for this plan:
+
+- [[https://developers.openai.com/api/docs/models/gpt-6-luna][GPT-6 Luna: capability, transport, and pricing]]
+- [[https://developers.openai.com/api/docs/models/gpt-6.1-sol][GPT-6.1 Sol: capability, transport, and pricing]]
+- [[https://developers.openai.com/api/docs/models/gpt-6-astra][GPT-6 Astra: capability and pricing]]
+- [[https://platform.claude.com/docs/en/about-claude/pricing][Claude standard model pricing]]
+- [[https://docs.rs/lettre/latest/lettre/transport/smtp/index.html][lettre SMTP transport]]
+- [[https://docs.rs/lettre/latest/lettre/transport/smtp/authentication/enum.Mechanism.html][lettre authentication mechanisms including XOAUTH2]]
+
+No implementation, model evaluation, account authorization, database mutation,
+or deployment was performed to produce this plan. Price calculations illustrate
+specified token volumes; they do not establish model quality or authorize spend.

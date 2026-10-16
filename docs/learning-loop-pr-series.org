@@ -1,0 +1,212 @@
+#+title: Local learning-loop PR series
+
+* Scope and use
+
+This is the Step 12 handoff for the prepared Git stack. Publication status must
+be checked on GitHub; this file is not a live status source. No branch in this
+stack installs or deploys the application. Each branch is based on the previous
+row. Inspect one proposed PR with =git diff BASE..HEAD= and its
+exact commit with =git log --oneline BASE..HEAD=. The original local branches
+=feat/learning-foundations=, =fix/sql-belief-pagination=,
+=feat/judge-configuration=, =feat/llm-review-runner=, and =feat/learning-loop=
+remain unchanged. The new stack starts at =main= (=58b7ca9=) and does not
+contain the rejected Python judge commits. The old Python evaluator already on
+=main= is removed in PR 7.
+
+| PR | Base | Head | Label |
+|----+------+------|-------|
+| 1 | =main= | =prep/learning-01-foundations= | enhancement |
+| 2 | =prep/learning-01-foundations= | =prep/learning-02-pagination= | bug |
+| 3 | =prep/learning-02-pagination= | =prep/learning-03-config= | enhancement |
+| 4 | =prep/learning-03-config= | =prep/learning-04-notifications= | enhancement |
+| 5 | =prep/learning-04-notifications= | =prep/learning-05-core-learning= | enhancement |
+| 6 | =prep/learning-05-core-learning= | =prep/learning-06-rust-judge= | enhancement |
+| 7 | =prep/learning-06-rust-judge= | =prep/learning-07-evaluator= | enhancement |
+| 8 | =prep/learning-07-evaluator= | =prep/learning-08-guidance= | documentation |
+
+For publication, assign =kamysh= and request no reviewer.
+The current installed binaries and account settings are outside every local PR
+action.
+
+* Copy-ready titles and descriptions
+
+** PR 1
+
+#+begin_src markdown
+Title: Record revisioned experiences and reversible learning reviews
+
+Mimir previously had no durable incident/review identity, so a later model run
+could count one report again as fresh evidence. Add revisioned experiences,
+bounded pending selection, atomic review receipts, review history, and scoped
+belief/pattern context in Rust core and MCP. A source correction invalidates
+the earlier review contribution. The general learning contract is represented
+in the Agda aggregate specification.
+
+Validation: Rust learning integration tests and aggregate Agda check on the
+final stack. This PR deliberately omits the earlier Python MCP test; Rust
+coverage for the MCP dispatch arrives in PR 5.
+
+Limit: evidence references are caller supplied, and repeated reports under
+different incident UUIDs cannot be deduplicated by wording.
+#+end_src
+
+** PR 2
+
+#+begin_src markdown
+Title: Page belief results in PostgreSQL
+
+Listing and retrieval previously materialized too many graph beliefs before
+applying the limit, which made the old 200-item cutoff tempting. Apply bounded
+database-backed pagination with stable page traversal and project visibility,
+without imposing a whole-collection stopping rule. Cover the single-page,
+last-page, and large filtered-corpus cases.
+
+Validation: Rust learning integration tests against the disposable AGE database
+on the final stack.
+#+end_src
+
+** PR 3
+
+#+begin_src markdown
+Title: Add private Mimir TOML sections for judge, model, and email settings
+
+Keep optional judge, LLM, and email settings in Mimir's existing private
+config.toml while preserving old configurations. Set 0700 on newly created
+config directories and 0600 on new files, and reject overwrite. Document the
+explicit model selector and optional backend/provider fields. This PR contains
+no Python runtime or test package.
+
+Validation: Rust config/unit tests and workspace formatting on the final stack.
+The typed runtime-specific validation and backend behavior arrive in PR 6.
+#+end_src
+
+** PR 4
+
+#+begin_src markdown
+Title: Add reusable Rust notifications with SMTP and OAuth state
+
+Provide a notification crate that other Mimir components can call by source and
+incident key. Persist suppression, retry, recovery, and OAuth refresh state in
+private local files. SMTP uses the configured relay; Google and Microsoft token
+refreshes preserve account identity and fail closed when durable token storage
+fails. A mail failure cannot undo a learning review.
+
+Validation: twelve Rust notification tests, including loopback STARTTLS/TLS,
+OAuth rotation and refusal, retries, and state privacy. No live email or account
+authorization was performed.
+
+Limit: SMTP acceptance is not inbox delivery, and a crash after relay acceptance
+may produce a duplicate notification on retry.
+#+end_src
+
+** PR 5
+
+#+begin_src markdown
+Title: Make learning reviews atomic and provenance-aware in Rust core and MCP
+
+Make stable-key belief/pattern candidates part of the same review transaction,
+with retry reuse, correction/retraction, scoped numerical propagation, and
+source provenance. MCP insert_belief now requires a declared independent
+user-instruction or document source; incident-derived conclusions use review
+candidates. Store and expose provenance in belief explanations. Add Rust MCP
+cycle coverage and Agda contracts for the review and budget boundaries.
+
+Validation: Rust core and MCP integration tests against the disposable AGE
+database, plus aggregate Agda check on the final stack.
+
+Compatibility: existing untagged MCP insert_belief calls are rejected. Direct
+CLI/core insertion remains available for explicit manual operations. Provenance
+is a caller declaration, not source authentication.
+#+end_src
+
+** PR 6
+
+#+begin_src markdown
+Title: Run bounded Rust judge with harness and API adapters
+
+Add mimir judge check-config, run, watch, and status to the existing mimir CLI.
+The runner pins a bounded batch, scopes MCP calls, confirms database receipts,
+and leaves failed or changed revisions pending. Add Claude Code, Codex, custom
+command, OpenAI Responses, Anthropic Messages, OpenRouter, DeepSeek, Z.ai,
+Gemini, and explicit OpenAI-compatible adapters. A reusable notification client
+reports bounded status without exposing incident or credential text. Watch
+repeats batches locally and stops after a configurable failure count; no service
+or timer is installed.
+
+Validation: Rust judge unit/API fixture tests and fake-backend process/MCP
+fixtures on the final stack. A bounded Codex login comparison was performed in
+Step 11; no live API-provider or email account was exercised.
+
+Limit: provider/model compatibility varies, and no model was selected from the
+small live comparison. An empty queue makes no model call.
+#+end_src
+
+** PR 7
+
+#+begin_src markdown
+Title: Replace the Python evaluator with a Rust/Bash tool
+
+Remove the old Python toy evaluator and its synthetic tasks. Add the standalone
+Rust/Bash evaluator entry point and learning comparator, with updated evaluator
+contracts and runbook. The evaluator is separate from the Mimir release
+workspace and is not a new runtime dependency.
+
+Validation: standalone evaluator Rust tests, fake comparison fixture with
+twelve isolated cases, and Bash syntax checks. No live model account was used
+in this PR's Step 12 verification.
+
+Limit: the Rust evaluator intentionally has no replacement synthetic benchmark
+tasks yet; it does not establish field learning quality.
+#+end_src
+
+** PR 8
+
+#+begin_src markdown
+Title: Document the Rust learning path and release package
+
+Update agent guidance, installation instructions, README, and the experiential
+wrapper for mimir judge run. Keep the prior audit as history and explain what
+was actually tested. The release still packages mimir and mimir-mcp from the
+same crate workspace; the judge adds no third binary. Include the local plan
+and PR handoff for review.
+
+Validation: workspace tests, strict Clippy and formatting, aggregate Agda check,
+Bash syntax check, and a local Linux static package build with both binaries.
+The macOS release matrix was inspected but not exercised locally.
+
+Limit: no installed config, schedule, live account, or deployment change is part
+of this PR.
+#+end_src
+
+* Verification receipt
+
+- Final-tree =cargo test --workspace --all-targets --offline -- --test-threads=1=
+  with the disposable =mimir_learning_test_series= database: passed; two
+  explicitly ignored vector probes.
+- Standalone =tests/eval= Rust package tests: passed.
+- =nix develop --command agda Mimir.agda= from =spec/=: passed.
+- =cargo fmt --all -- --check= and strict workspace Clippy: passed.
+- Bash syntax check for changed scripts: passed; =shellcheck= unavailable on
+  the local PATH.
+- =tests/judge-adapters.sh=: passed against fake Claude, Codex, and command
+  adapters, including failure, timeout, and bounded-watch cases.
+- =tests/eval/learning-compare-fixture.sh=: passed twelve isolated cases with
+  fake Codex, review receipts, actor decisions, and fixture cleanup.
+- Local PR 1 through 5 source snapshots each passed =cargo check --workspace
+  --offline=; the temporary snapshots were removed afterward. Final-tree
+  workspace tests and Clippy cover PR 6 and 7 Rust code.
+- =nix build path:<Step-12-source-snapshot>#mimir-static --no-link=: passed on
+  Linux x86_64. The output
+  =/nix/store/9jr6mr0y3ps0wd1dblrvglmnazyk0vzw-mimir-static-x86_64-unknown-linux-musl-1.2.1=
+  contains executable, static-pie-linked =mimir= and =mimir-mcp=, and no third
+  binary. Both =mimir judge run --help= and =mimir judge check-config --help=
+  worked from the package; the experiential Bash wrapper forwarded =--help= to
+  the Rust run command. The release workflow archives precisely those two
+  binaries on Linux amd64/arm64 and macOS arm64. The source snapshot preceded
+  only final documentation and test-file formatting edits; executable Rust
+  source was unchanged. macOS was not built locally.
+- The disposable Step 12 source snapshot, branch-check snapshots, and alternate
+  Git index files were removed. The current worktree and earlier local branches
+  remain available for recovery.
+
+No live API-provider, SMTP relay, or macOS build was exercised in Step 12.
