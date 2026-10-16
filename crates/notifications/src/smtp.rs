@@ -1,6 +1,7 @@
 use crate::{
+    computer_name,
     config::{Auth, EmailConfig, Tls as EmailTls},
-    Alert, AlertKind,
+    Alert, AlertKind, Digest,
 };
 use anyhow::{anyhow, Result};
 use lettre::{
@@ -15,11 +16,12 @@ pub(crate) fn message(config: &EmailConfig, alert: &Alert) -> Result<Message> {
         .from_address
         .as_deref()
         .ok_or_else(|| anyhow!("missing mail sender"))?;
+    let computer = computer_name();
     let mut builder = Message::builder()
         .from(from.parse().map_err(|_| anyhow!("invalid mail sender"))?)
         .subject(match alert.kind {
-            AlertKind::Failure => "Mimir notification: attention needed",
-            AlertKind::Recovery => "Mimir notification: recovered",
+            AlertKind::Failure => format!("Mimir [{computer}] notification: attention needed"),
+            AlertKind::Recovery => format!("Mimir [{computer}] notification: recovered"),
         })
         .message_id(Some(format!("<mimir-{}@mimir.local>", alert.id)))
         .header(ContentType::TEXT_PLAIN);
@@ -28,19 +30,50 @@ pub(crate) fn message(config: &EmailConfig, alert: &Alert) -> Result<Message> {
             .parse()
             .map_err(|_| anyhow!("invalid mail recipient"))?);
     }
+    let details = alert
+        .details
+        .as_deref()
+        .unwrap_or("Inspect the local component status for details.");
     let body = match alert.kind {
         AlertKind::Failure => format!(
-            "Mimir reported a failure.\nSource: {}\nCode: {}\nSummary: {}\n\nInspect the local component status for details.\n",
-            alert.source, alert.code, alert.summary
+            "Mimir reported a failure.\nComputer: {}\nSource: {}\nCode: {}\nSummary: {}\n\n{}\n",
+            computer, alert.source, alert.code, alert.summary, details
         ),
         AlertKind::Recovery => format!(
-            "Mimir reported recovery.\nSource: {}\n\nInspect the local component status for details.\n",
-            alert.source
+            "Mimir reported recovery.\nComputer: {}\nSource: {}\n\n{}\n",
+            computer, alert.source, details
         ),
     };
     builder
         .body(body)
         .map_err(|_| anyhow!("unable to construct notification"))
+}
+
+pub(crate) fn digest_message(config: &EmailConfig, digest: &Digest) -> Result<Message> {
+    let from = config
+        .from_address
+        .as_deref()
+        .ok_or_else(|| anyhow!("missing mail sender"))?;
+    let computer = computer_name();
+    let mut builder = Message::builder()
+        .from(from.parse().map_err(|_| anyhow!("invalid mail sender"))?)
+        .subject(format!(
+            "Mimir [{computer}] daily statistics through {}",
+            digest.through_day
+        ))
+        .message_id(Some(format!(
+            "<mimir-daily-{}-{}@mimir.local>",
+            digest.through_day, computer
+        )))
+        .header(ContentType::TEXT_PLAIN);
+    for recipient in &config.to {
+        builder = builder.to(recipient
+            .parse()
+            .map_err(|_| anyhow!("invalid mail recipient"))?);
+    }
+    builder
+        .body(format!("Computer: {computer}\n{}", digest.body))
+        .map_err(|_| anyhow!("unable to construct digest"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

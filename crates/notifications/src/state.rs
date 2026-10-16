@@ -13,6 +13,7 @@ use std::{
 const MAX_STATE: u64 = 1024 * 1024;
 const STATE_FILE: &str = "notification-outbox.json";
 const OAUTH_FILE: &str = "notification-oauth.json";
+const DIGEST_FILE: &str = "notification-digest.json";
 
 pub(crate) struct StateDir {
     path: PathBuf,
@@ -96,6 +97,10 @@ impl StateDir {
         self.read_named(OAUTH_FILE)
     }
 
+    pub(crate) fn read_digest<T: DeserializeOwned>(&self) -> Result<Option<T>> {
+        self.read_named(DIGEST_FILE)
+    }
+
     fn read_named<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
         let file = match OpenOptions::new()
             .read(true)
@@ -131,6 +136,10 @@ impl StateDir {
 
     pub(crate) fn write_oauth<T: Serialize>(&self, value: &T) -> Result<()> {
         self.write_named(OAUTH_FILE, value)
+    }
+
+    pub(crate) fn write_digest<T: Serialize>(&self, value: &T) -> Result<()> {
+        self.write_named(DIGEST_FILE, value)
     }
 
     fn write_named<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {

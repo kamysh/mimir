@@ -23,11 +23,18 @@ pub struct Event {
     pub source: String,
     pub incident_key: String,
     pub status: EventStatus,
+    /// Bounded, component-supplied facts safe to include in email.
+    pub details: Option<String>,
 }
 
 #[derive(Clone)]
 pub enum EventStatus {
-    Failure { code: String, summary: String },
+    Failure {
+        code: String,
+        summary: String,
+    },
+    /// A successful unit of work while the component may still have queued work.
+    Progress,
     Recovery,
 }
 
@@ -40,6 +47,44 @@ pub enum Outcome {
     Exhausted,
     AuthRequired,
     Unavailable,
+}
+
+/// Persistent delivery cursor for the daily digest. Dates use ISO local calendar days.
+#[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DigestState {
+    pub through_day: Option<String>,
+    pub next_due: u64,
+    #[serde(default)]
+    pub last_attempt_failed: bool,
+}
+
+pub struct Digest {
+    pub through_day: String,
+    pub body: String,
+}
+
+/// The host which actually sends the email, not the origin of every database row.
+pub fn computer_name() -> String {
+    let mut bytes = [0u8; 256];
+    let result = unsafe { libc::gethostname(bytes.as_mut_ptr().cast(), bytes.len()) };
+    if result != 0 {
+        return "unknown-host".into();
+    }
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    let name = std::str::from_utf8(&bytes[..end]).unwrap_or("");
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        "unknown-host".into()
+    } else {
+        name.into()
+    }
 }
 
 impl Outcome {
@@ -94,6 +139,8 @@ struct Alert {
     source: String,
     code: String,
     summary: String,
+    #[serde(default)]
+    details: Option<String>,
     attempts: usize,
     next_due: u64,
     delivery: Delivery,
@@ -109,6 +156,7 @@ impl Alert {
             source: event.source.clone(),
             code: code.into(),
             summary: summary.into(),
+            details: event.details.clone(),
             attempts: 0,
             next_due: now,
             delivery: Delivery::Pending,
@@ -169,6 +217,16 @@ impl Event {
                 "invalid notification summary"
             );
         }
+        if let Some(details) = &self.details {
+            ensure!(
+                !details.is_empty()
+                    && details.len() <= 2048
+                    && details
+                        .chars()
+                        .all(|character| character == '\n' || !character.is_control()),
+                "invalid notification details"
+            );
+        }
         Ok(())
     }
 
@@ -185,6 +243,7 @@ fn reconcile(incident: &mut Incident, event: &Event, now: u64) {
                 incident.outbox = Some(Alert::new(AlertKind::Failure, event, code, summary, now));
             }
         }
+        EventStatus::Progress => {}
         EventStatus::Recovery => {
             if incident.active_code.take().is_some() {
                 incident.outbox = incident
@@ -236,6 +295,68 @@ impl<'a> Notifier<'a> {
 
     pub async fn submit(&self, event: &Event) -> Result<Outcome> {
         self.submit_internal(event, now(), None::<NoSender>).await
+    }
+
+    pub fn digest_state(&self) -> Result<DigestState> {
+        let state = StateDir::lock(&self.state_dir)?;
+        Ok(state.read_digest()?.unwrap_or_default())
+    }
+
+    /// Reserve an hourly retry before SMTP, then advance the cursor only on acceptance.
+    pub async fn send_digest(&self, digest: &Digest) -> Result<Outcome> {
+        self.send_digest_at(digest, now(), None::<NoSender>).await
+    }
+
+    async fn send_digest_at<F, Fut>(
+        &self,
+        digest: &Digest,
+        current: u64,
+        send_override: Option<F>,
+    ) -> Result<Outcome>
+    where
+        F: FnOnce(lettre::Message) -> Fut,
+        Fut: Future<Output = std::result::Result<(), SendFailure>>,
+    {
+        if !self.config.enabled {
+            return Ok(Outcome::Disabled);
+        }
+        ensure!(
+            digest.through_day.len() == 10
+                && digest.through_day.bytes().enumerate().all(|(index, byte)| {
+                    if index == 4 || index == 7 {
+                        byte == b'-'
+                    } else {
+                        byte.is_ascii_digit()
+                    }
+                }),
+            "invalid digest day"
+        );
+        ensure!(digest.body.len() <= 256 * 1024, "digest body is too large");
+        let state = StateDir::lock(&self.state_dir)?;
+        let mut cursor: DigestState = state.read_digest()?.unwrap_or_default();
+        if cursor.through_day.as_deref() >= Some(digest.through_day.as_str()) {
+            return Ok(Outcome::NotNeeded);
+        }
+        if current < cursor.next_due {
+            return Ok(Outcome::RetryPending);
+        }
+        let message = smtp::digest_message(self.config, digest)?;
+        cursor.next_due = current.saturating_add(3600);
+        cursor.last_attempt_failed = true;
+        state.write_digest(&cursor)?;
+        let sent = match send_override {
+            Some(send) => send(message).await,
+            None => self.send_real(&state, message).await,
+        };
+        if sent.is_ok() {
+            cursor.through_day = Some(digest.through_day.clone());
+            cursor.next_due = 0;
+            cursor.last_attempt_failed = false;
+            state.write_digest(&cursor)?;
+            Ok(Outcome::Sent)
+        } else {
+            Ok(Outcome::RetryPending)
+        }
     }
 
     pub async fn retry_due(&self, limit: usize) -> Result<Vec<(String, String, Outcome)>> {
@@ -310,6 +431,11 @@ impl<'a> Notifier<'a> {
             "unsupported notification state version"
         );
         let key = event.map_key();
+        if !matches!(&event.status, EventStatus::Failure { .. })
+            && !outbox.incidents.contains_key(&key)
+        {
+            return Ok(Outcome::NotNeeded);
+        }
         let incident = outbox
             .incidents
             .entry(key.clone())

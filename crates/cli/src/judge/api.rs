@@ -2,6 +2,7 @@
 use super::{
     config::{Backend as Kind, LlmConfig, Provider},
     runner::{Action, Backend},
+    state::SourceFailure,
 };
 use anyhow::{anyhow, bail, ensure, Result};
 use mimir_core::learning::ExperienceState;
@@ -26,7 +27,22 @@ enum Wire {
 struct Call {
     id: String,
     name: String,
-    arguments: Value,
+    arguments: std::result::Result<Value, SourceFailure>,
+}
+
+impl Call {
+    fn into_action(self) -> Action {
+        match self.arguments {
+            Ok(arguments) => Action::Tool {
+                name: self.name,
+                arguments,
+            },
+            Err(source) => Action::RejectedTool {
+                name: self.name,
+                source,
+            },
+        }
+    }
 }
 
 pub struct ApiBackend<'a> {
@@ -251,7 +267,8 @@ impl<'a> ApiBackend<'a> {
         if !status.is_success() {
             bail!("{}", classify_error(status, &bytes));
         }
-        serde_json::from_slice(&bytes).map_err(|_| anyhow!("invalid provider JSON"))
+        serde_json::from_slice(&bytes)
+            .map_err(|error| SourceFailure::json("invalid provider JSON", &bytes, error).into())
     }
 
     fn parse_openai(&mut self, reply: &Value) -> Result<()> {
@@ -283,16 +300,22 @@ impl<'a> ApiBackend<'a> {
                     let name = item["name"]
                         .as_str()
                         .ok_or_else(|| anyhow!("missing OpenAI function name"))?;
-                    let encoded = item["arguments"]
-                        .as_str()
-                        .ok_or_else(|| anyhow!("missing OpenAI arguments"))?;
-                    let arguments: Value = serde_json::from_str(encoded)
-                        .map_err(|_| anyhow!("invalid OpenAI function arguments"))?;
+                    let arguments = match item["arguments"].as_str() {
+                        Some(encoded) => serde_json::from_str(encoded).map_err(|error| {
+                            SourceFailure::json(
+                                "invalid OpenAI function arguments",
+                                encoded.as_bytes(),
+                                error,
+                            )
+                        }),
+                        None => Err(SourceFailure::input(
+                            "invalid OpenAI function arguments",
+                            item["arguments"].to_string().as_bytes(),
+                            "function arguments must be JSON text",
+                        )),
+                    };
                     ensure!(
-                        !id.is_empty()
-                            && id.len() <= 128
-                            && seen.insert(id)
-                            && arguments.is_object(),
+                        !id.is_empty() && id.len() <= 128 && seen.insert(id),
                         "invalid OpenAI function call"
                     );
                     calls.push_back(Call {
@@ -338,12 +361,18 @@ impl<'a> ApiBackend<'a> {
                         .ok_or_else(|| anyhow!("missing Anthropic tool name"))?;
                     let arguments = block["input"].clone();
                     ensure!(
-                        !id.is_empty()
-                            && id.len() <= 128
-                            && seen.insert(id)
-                            && arguments.is_object(),
+                        !id.is_empty() && id.len() <= 128 && seen.insert(id),
                         "invalid Anthropic tool call"
                     );
+                    let arguments = if arguments.is_object() {
+                        Ok(arguments)
+                    } else {
+                        Err(SourceFailure::input(
+                            "invalid Anthropic tool arguments",
+                            arguments.to_string().as_bytes(),
+                            "tool input must be a JSON object",
+                        ))
+                    };
                     calls.push_back(Call {
                         id: id.into(),
                         name: name.into(),
@@ -431,17 +460,22 @@ impl<'a> ApiBackend<'a> {
                 "invalid chat function call"
             );
             let arguments = match &call["function"]["arguments"] {
-                Value::String(encoded) => serde_json::from_str(encoded)
-                    .map_err(|_| anyhow!("invalid chat function arguments"))?,
+                Value::String(encoded) => serde_json::from_str(encoded).map_err(|error| {
+                    SourceFailure::json(
+                        "invalid chat function arguments",
+                        encoded.as_bytes(),
+                        error,
+                    )
+                }),
                 Value::Object(object) if self.config.provider == Some(Provider::Zai) => {
-                    Value::Object(object.clone())
+                    Ok(Value::Object(object.clone()))
                 }
-                _ => bail!("invalid chat function arguments"),
+                other => Err(SourceFailure::input(
+                    "invalid chat function arguments",
+                    other.to_string().as_bytes(),
+                    "function arguments must be JSON text",
+                )),
             };
-            ensure!(
-                arguments.is_object(),
-                "chat function arguments must be an object"
-            );
             calls.push_back(Call {
                 id: id.into(),
                 name: name.into(),
@@ -479,11 +513,8 @@ impl<'a> ApiBackend<'a> {
             _ => bail!("provider tool result sequence is invalid"),
         }
         if let Some(call) = self.pending.pop_front() {
-            self.awaiting = Some(call.id);
-            return Ok(Action::Tool {
-                name: call.name,
-                arguments: call.arguments,
-            });
+            self.awaiting = Some(call.id.clone());
+            return Ok(call.into_action());
         }
         self.flush_results()?;
         let request = self.request(selected, tools)?;
@@ -494,11 +525,8 @@ impl<'a> ApiBackend<'a> {
             Wire::Chat => self.parse_chat(&reply)?,
         }
         if let Some(call) = self.pending.pop_front() {
-            self.awaiting = Some(call.id);
-            Ok(Action::Tool {
-                name: call.name,
-                arguments: call.arguments,
-            })
+            self.awaiting = Some(call.id.clone());
+            Ok(call.into_action())
         } else {
             Ok(Action::Done)
         }
@@ -884,16 +912,48 @@ mod tests {
             json!({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[]}}]}),
             json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","tool_calls":[
                 {"id":"a","type":"function","function":{"name":"get_experience","arguments":"{}"}}]}}]}),
-            json!({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[
-                {"id":"a","type":"function","function":{"name":"get_experience","arguments":"not-json"}}]}}]}),
             json!({"usage":{"completion_tokens":257},"choices":[{"finish_reason":"stop",
                 "message":{"role":"assistant","content":"done"}}]}),
         ] {
             assert!(backend.parse_chat(&reply).is_err());
         }
+        backend
+            .parse_chat(&json!({"choices":[{"finish_reason":"tool_calls",
+                "message":{"role":"assistant","tool_calls":[{"id":"bad-args",
+                    "type":"function","function":{"name":"get_experience",
+                        "arguments":"not-json"}}]}}]}))
+            .unwrap();
+        let call = backend.pending.pop_front().unwrap();
+        assert_eq!(call.id, "bad-args");
+        assert!(matches!(call.into_action(), Action::RejectedTool { .. }));
+        backend
+            .parse_chat(&json!({"choices":[{"finish_reason":"tool_calls",
+                "message":{"role":"assistant","tool_calls":[{"id":"wrong-type",
+                    "type":"function","function":{"name":"get_experience",
+                        "arguments":null}}]}}]}))
+            .unwrap();
+        assert!(matches!(
+            backend.pending.pop_front().unwrap().into_action(),
+            Action::RejectedTool { .. }
+        ));
         let mut auto = config(Provider::Openrouter, "http://127.0.0.1:1/v1".into());
         auto.model = "openrouter/auto".into();
         assert!(ApiBackend::new(&auto).is_err());
+    }
+
+    #[test]
+    fn anthropic_non_object_tool_input_is_recoverable() {
+        let config = config(Provider::Anthropic, "http://127.0.0.1:1/v1".into());
+        let mut backend = ApiBackend::new(&config).unwrap().unwrap();
+        backend
+            .parse_anthropic(&json!({"stop_reason":"tool_use","content":[
+                {"type":"tool_use","id":"bad-input","name":"get_experience","input":42}
+            ]}))
+            .unwrap();
+        assert!(matches!(
+            backend.pending.pop_front().unwrap().into_action(),
+            Action::RejectedTool { .. }
+        ));
     }
 
     #[test]
@@ -971,11 +1031,24 @@ mod tests {
     fn rejects_bad_calls_usage_and_classifies_provider_errors() {
         let config = config(Provider::Openai, "http://127.0.0.1:1/v1".into());
         let mut backend = ApiBackend::new(&config).unwrap().unwrap();
-        assert!(backend
+        backend
             .parse_openai(&json!({"status":"completed","output":[
                 {"type":"function_call","call_id":"one","name":"get_experience","arguments":"not JSON"}
             ]}))
-            .is_err());
+            .unwrap();
+        assert!(matches!(
+            backend.pending.pop_front().unwrap().into_action(),
+            Action::RejectedTool { .. }
+        ));
+        backend
+            .parse_openai(&json!({"status":"completed","output":[
+                {"type":"function_call","call_id":"two","name":"get_experience","arguments":42}
+            ]}))
+            .unwrap();
+        assert!(matches!(
+            backend.pending.pop_front().unwrap().into_action(),
+            Action::RejectedTool { .. }
+        ));
         assert!(backend
             .parse_openai(&json!({"status":"completed","usage":{"output_tokens":257},"output":[]}))
             .is_err());
