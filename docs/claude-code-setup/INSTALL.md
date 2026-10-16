@@ -11,6 +11,21 @@ asking again for every command. Preserve unrelated instructions, hooks, native
 permissions and MCP servers. This guide changes agent integration, not database
 configuration or services.
 
+## Obtain the installation files
+
+If you installed release binaries without a source checkout, download the matching
+installation files before using the relative paths below:
+
+```sh
+mkdir -p "$HOME/.local/share/mimir"
+curl -fL https://github.com/kamysh/mimir/archive/refs/tags/v2.0.0.tar.gz \
+  | tar -xz -C "$HOME/.local/share/mimir"
+cd "$HOME/.local/share/mimir/mimir-2.0.0"
+```
+
+If you already have that checkout, change to its root instead. This downloads
+scripts and client guidance; it does not build the application.
+
 ## Prerequisites
 
 - Installed `mimir` and `mimir-mcp`, with the intended database reachable.
@@ -44,8 +59,8 @@ Sources: [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
 
 ## Install the shared skill and standing guidance
 
-[skill/SKILL.md](skill/SKILL.md) is the canonical skill for both clients and the
-repository's `install.sh`. It uses project-scoped queries, evidence evaluation and
+[skill/SKILL.md](skill/SKILL.md) is the canonical skill for both clients.
+It uses project-scoped queries, evidence evaluation and
 selective durable writeback. No automatic retrieval or Stop gate is assumed.
 
 | Client | Skill location for a new setup | Global instructions |

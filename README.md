@@ -77,7 +77,8 @@ On macOS, avoid ports `5000` (AirPlay Receiver) and `6000` (X11) if you change t
 
 ### Preflight check
 
-Run these before you start. Each line should print `OK`:
+Install `curl`, `tar`, `openssl`, `lsof`, and the PostgreSQL client (`psql`)
+if they are missing. Run these before you start. Each line should print `OK`:
 
 ```bash
 docker info >/dev/null 2>&1 && echo OK                                            # Docker daemon running
@@ -140,7 +141,9 @@ docker exec postgres-ai psql -U postgres -c 'SELECT 1' >/dev/null && echo OK
 
 ### Step 2: Create the database and user
 
-Add your chosen password to `~/.pgpass`:
+Generate a password with `openssl rand -hex 32` and add it to `~/.pgpass`.
+Use the generated hexadecimal value: the current application reader does not
+decode escaped `.pgpass` fields.
 
 ```
 # ~/.pgpass — format: hostname:port:database:username:password
@@ -154,8 +157,8 @@ chmod 600 ~/.pgpass
 Run the setup script (creates the role, database, extensions, and grants):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/main/mimir-setup/create-db-user.sh \
-  | bash
+curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.0.0/mimir-setup/create-db-user.sh \
+  | bash -s -- --container postgres-ai --host localhost --port 5432 --user mimir --db mimir
 ```
 
 Or clone the repo and run it locally:
@@ -179,33 +182,25 @@ psql -h localhost -U mimir -d mimir -c '\conninfo' >/dev/null && echo OK
 
 This step installs the two mimir binaries to `~/.local/bin`. It is one of three pieces — see Step 5 for the MCP server registration.
 
-Download the archive for your platform from the [latest release](https://github.com/kamysh/mimir/releases/latest):
-
-| Platform | File |
-|---|---|
-| Linux x86_64 | `mimir-linux-amd64.tar.gz` |
-| Linux ARM64 | `mimir-linux-arm64.tar.gz` |
-| macOS Apple Silicon | `mimir-darwin-arm64.tar.gz` |
-
-(Intel Macs are not built; see "Building from source" below.)
+Install the **2.0.0** release. This block selects one archive for your platform:
 
 ```bash
-# Linux x86_64
-curl -L https://github.com/kamysh/mimir/releases/latest/download/mimir-linux-amd64.tar.gz \
-  | tar -xz -C ~/.local/bin
-
-# Linux ARM64
-curl -L https://github.com/kamysh/mimir/releases/latest/download/mimir-linux-arm64.tar.gz \
-  | tar -xz -C ~/.local/bin
-
-# macOS Apple Silicon
-curl -L https://github.com/kamysh/mimir/releases/latest/download/mimir-darwin-arm64.tar.gz \
-  | tar -xz -C ~/.local/bin
+mkdir -p "$HOME/.local/bin"
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64)  TARBALL=mimir-linux-amd64.tar.gz ;;
+  Linux-aarch64) TARBALL=mimir-linux-arm64.tar.gz ;;
+  Darwin-arm64)  TARBALL=mimir-darwin-arm64.tar.gz ;;
+  *) echo "Use Building from source for this platform" >&2; exit 1 ;;
+esac
+curl -fL "https://github.com/kamysh/mimir/releases/download/v2.0.0/${TARBALL}" \
+  | tar -xz -C "$HOME/.local/bin"
+chmod +x "$HOME/.local/bin/mimir" "$HOME/.local/bin/mimir-mcp"
+export PATH="$HOME/.local/bin:$PATH"
+mimir --version  # must report 2.0.0
 ```
 
-```bash
-chmod +x ~/.local/bin/mimir ~/.local/bin/mimir-mcp
-```
+The release workflow builds Linux x86_64, Linux ARM64 and Apple Silicon.
+For Intel macOS, use [Building from source](#building-from-source).
 
 **macOS only — quarantine flag.** macOS adds a quarantine attribute to files downloaded via a *browser*, which blocks them from running. If you downloaded the archive with a browser, remove it:
 
@@ -306,7 +301,7 @@ Follow [Agent setup](docs/claude-code-setup/INSTALL.md) to install the shared sk
 merge the Mimir section into global instructions, and install one SessionStart
 reminder for the chosen client. The guide supplies Mimir-only and combined
 Mimir/Muninn text, client-specific hook templates, and upgrade steps for older
-settings. `install.sh` copies the shared Claude skill; reminder/global-guidance
+settings. `install.sh` optionally registers the selected client; skill/reminder/global-guidance
 merging and verification still use the guide.
 
 The reminder explains how past decisions and failures can inform today's choices,
@@ -543,8 +538,8 @@ cargo build --release -p mimir-cli
 # Build static binary (single self-contained executable)
 nix build .#mimir-static    # result/bin/mimir-mcp and result/bin/mimir
 
-# Install from source into Nix profile and register with Claude Code
-./install.sh
+# Install static binaries into ~/.local/bin and register the selected client
+./install.sh --client claude  # or --client codex; omit to install binaries only
 ```
 
 ## License
