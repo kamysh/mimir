@@ -18,6 +18,8 @@ fn test_db_config() -> DatabaseConfig {
         dbname: std::env::var("MIMIR_DBNAME")
             .expect("MIMIR_DBNAME must be set to run integration tests"),
         user: std::env::var("MIMIR_USER").expect("MIMIR_USER must be set to run integration tests"),
+        password: None,
+        pgpassfile: None,
         ssl_mode: mimir_core::config::SslMode::default(),
         ssl_root_cert: None,
         ssl_client_cert: None,
