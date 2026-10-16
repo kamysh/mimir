@@ -107,7 +107,7 @@ docker run -d \
   kamysh/postgres-ai:latest
 ```
 
-This image has pgvector, Apache AGE, uuid-ossp, and pgcrypto pre-installed, and sets `search_path = ag_catalog, "$user", public` cluster-wide (mimir relies on this — see Troubleshooting if you use a different image).
+This image includes pgvector, Apache AGE, uuid-ossp, and pgcrypto. The setup script below enables the required extensions in Mimir's database. Mimir sets `search_path = public,ag_catalog` on its own connections.
 
 <details>
 <summary>Docker Compose alternative</summary>
@@ -157,7 +157,7 @@ chmod 600 ~/.pgpass
 Run the setup script (creates the role, database, extensions, and grants):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.0.1/mimir-setup/create-db-user.sh \
+curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.0.2/mimir-setup/create-db-user.sh \
   | bash -s -- --container postgres-ai --host localhost --port 5432 --user mimir --db mimir
 ```
 
@@ -182,7 +182,7 @@ psql -h localhost -U mimir -d mimir -c '\conninfo' >/dev/null && echo OK
 
 This step installs the two mimir binaries to `~/.local/bin`. It is one of three pieces — see Step 5 for the MCP server registration.
 
-Install the **2.0.1** release. This block selects one archive for your platform:
+Install the **2.0.2** release. This block selects one archive for your platform:
 
 ```bash
 mkdir -p "$HOME/.local/bin"
@@ -192,11 +192,11 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)  TARBALL=mimir-darwin-arm64.tar.gz ;;
   *) echo "Use Building from source for this platform" >&2; exit 1 ;;
 esac
-curl -fL "https://github.com/kamysh/mimir/releases/download/v2.0.1/${TARBALL}" \
+curl -fL "https://github.com/kamysh/mimir/releases/download/v2.0.2/${TARBALL}" \
   | tar -xz -C "$HOME/.local/bin"
 chmod +x "$HOME/.local/bin/mimir" "$HOME/.local/bin/mimir-mcp"
 export PATH="$HOME/.local/bin:$PATH"
-mimir --version  # must report 2.0.1
+mimir --version  # must report 2.0.2
 ```
 
 The release workflow builds Linux x86_64, Linux ARM64 and Apple Silicon.
@@ -296,7 +296,7 @@ claude mcp get mimir                                                            
 ```
 
 These checks cover application/configuration state, not live tool connectivity
-or reminder delivery. Continue with Step 7. A common failure is line 4: if it's missing, the migrations haven't run yet (run `mimir stats` once) or the role lacks `search_path = ag_catalog, …` — see Troubleshooting.
+or reminder delivery. Continue with Step 7. If line 4 is missing, inspect the error from `mimir stats`: startup migrations or database permissions may have failed — see Troubleshooting.
 
 ### Step 7: Install purposeful agent guidance
 
@@ -324,7 +324,7 @@ presence alone does not prove it changes the agent's choices.
 
 ### Sharing the database with muninn
 
-If you also use [muninn](https://github.com/kamysh/muninn), the two tools can share **one** `postgres-ai` container — just create separate roles and databases. The `kamysh/postgres-ai` image is designed for this: pgvector, AGE, and the support extensions are cluster-wide, and the cluster-default `search_path` works for both tools. In that case, run only one `docker run` from Step 1, and run each tool's setup script against the shared container.
+If you also use [muninn](https://github.com/kamysh/muninn), the two tools can share **one** `postgres-ai` container — create separate roles and databases. Run only one `docker run` from Step 1, and run each tool's setup script against the shared container to enable extensions and grant access in its database.
 
 ### Troubleshooting
 
@@ -333,7 +333,7 @@ A few failure modes are common enough to call out explicitly:
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `error returned from database: graph "mimir" does not exist` | Migrations haven't run yet — mimir creates the graph on first invocation, not the setup script. | Run any mimir command, e.g. `mimir stats`. The migration will create the graph. |
-| `error returned from database: permission denied for table _ag_label_vertex` | `search_path` is missing `ag_catalog`. The `kamysh/postgres-ai` image sets this cluster-wide; a custom postgres does not. | As the postgres superuser: `ALTER DATABASE mimir SET search_path = ag_catalog, "$user", public;` then reconnect. |
+| `error returned from database: permission denied for table _ag_label_vertex` | The connected role lacks access to AGE's catalog table. | Verify the role and database, then check the grants made by `mimir-setup/create-db-user.sh`. Changing `search_path` does not grant privileges. |
 | `Cannot connect to the Docker daemon` | Docker Desktop / runtime not running. | Start it. |
 | `docker run` fails with "container name in use" | Another container is already named `postgres-ai` (e.g. from muninn). | Either reuse it — see "Sharing the database with muninn" above — or pick a different name. Do not delete the existing container without checking what's in it. |
 | `bind: address already in use` on port 5432 | Another postgres or app is using 5432. | Pick a different port. Update `docker run -p`, `~/.pgpass`, the setup script's `--port` flag, and `~/.config/mimir/config.toml` together. |
@@ -535,10 +535,9 @@ Requires [Nix](https://nixos.org/download) with flakes enabled.
 nix develop
 
 # Build (dynamic)
-cargo build --release -p mimir-mcp
-cargo build --release -p mimir-cli
+cargo build --release -p mimir -p mimir-mcp
 
-# Build static binary (single self-contained executable)
+# Build static binaries
 nix build .#mimir-static    # result/bin/mimir-mcp and result/bin/mimir
 
 # Install static binaries into ~/.local/bin and register the selected client
