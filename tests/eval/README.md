@@ -1,7 +1,52 @@
 # mimir-eval — does the belief graph actually earn its keep?
 
-A runnable harness that operationalizes the measurement design from the proposal
-set. It answers one question with as little subjectivity as possible:
+A standalone Rust harness with a Bash entry point. The four legacy synthetic
+tasks have been removed; no runnable benchmark tasks are currently bundled.
+Offline parsing, analysis, and rescoring of saved results remain available.
+The retained Rust predicates and JSON predicate fixtures support historical
+results; they do not recreate the deleted tasks.
+
+## Learning-loop comparison (Step 11)
+
+`./eval learning-compare` is a separate Rust runner for six fixed experience
+classes: observed success, observed failure, unknown outcome, correction, exact
+retry, and confounded apparent cause. It compares two judge configs against the
+same incident IDs in disposable, isolated projects. Each config selects its
+model with `[llm].model` and, for Codex, may select
+`[llm].reasoning_effort`. The runner requires `backend = "codex"`, a loopback
+`mimir_learning_test*` database, and explicit absolute binary paths. It rejects
+the installed `~/.config/mimir/config.toml`; use two private comparison files.
+The files must use the same database, embeddings, and timeout, and select
+different models or effort settings.
+
+```sh
+./eval learning-compare --arm-a /var/tmp/mimir/arm-a.toml \
+  --arm-b /var/tmp/mimir/arm-b.toml \
+  --mimir /var/tmp/mimir/step5/target/debug/mimir \
+  --mcp /var/tmp/mimir/step5/target/debug/mimir-mcp
+```
+
+Without `--live`, this only checks the configs and prints their model selectors.
+`--live` makes account-backed Codex calls. The runner caps initial reviews at
+two model turns and corrected reviews at two more; it reads exact-retry state
+through MCP and makes one fresh-session action call per scenario. Each model
+turn may also start a `codex exec --help` capability check. The runner does not
+enforce an aggregate Codex process limit; use an external process cap when one
+is required. Two turns can commit a review but leave the runner status `partial`
+because there is no final completion turn.
+Codex may make provider-internal requests that the runner cannot meter. The
+actor records chosen actions for a related
+keyboard situation and an unrelated disk-quota situation. It disables email,
+creates private per-case configs and artifacts under `/var/tmp/mimir`, and
+deletes each test project after capturing its result. A failed run leaves any
+completed case artifacts there for audit. A model's chosen action is an observed
+sample, not evidence of broad improvement or causality on its own.
+
+The config files may contain credentials; keep them private. Neither preflight
+nor `--live` edits the source configs or the installed Mimir config. Use
+`runtime/config.example.toml` for the full settings schema.
+
+The original measurement question was:
 
 > On tasks where a past session learned a non-obvious, project-specific lesson,
 > does having that lesson in mimir cause Claude Code to **avoid the trap / waste
@@ -16,11 +61,11 @@ paying for its complexity — and that is a finding worth having *before* Phases
 
 | Signal | How | Objectivity |
 |---|---|---|
-| **trap-hit** | per-task predicate over the actor's tool calls (`trap.py`) | near-objective — a designed binary with a clean counterfactual |
+| **trap-hit** | built-in Rust predicate over actor tool calls | near-objective — a designed binary with a clean counterfactual |
 | **solved** | per-task executable acceptance test (`verify.sh`, exit 0) | objective |
 | **steps** | count of `tool_use` blocks in the stream | objective to count, noisy → compared as distributions |
 | **tokens / cost** | from the stream's final `result` event | objective |
-| **belief-use quality** | blind LLM judge, checkable sub-questions (`judge.py`) | subjective residual only — *not* the headline |
+| **belief-use quality** | optional blind Claude judge (`./eval judge`) | subjective residual only — *not* the headline |
 
 The judge is deliberately confined to what can't be instrumented. The headline
 numbers are programmatic.
@@ -29,7 +74,7 @@ numbers are programmatic.
 
 - **control** — no mimir, no notes. Baseline. Its trap-hit rate is also the
   **dynamic-range check**: if control rarely hits the trap, the lesson wasn't
-  novel and the task is uninformative (`analyze.py` flags this).
+  novel and the task is uninformative (the Rust analyzer flags this).
 - **static** — the lesson is injected verbatim via `--append-system-prompt`
   (the "what if you'd just written it in CLAUDE.md" ceiling).
 - **mimir** — the lesson is injected via whatever `mimir query "<task>"` actually
@@ -51,32 +96,28 @@ Interpreting the contrast:
 > underdocumented). Once you trust the result, add the `mimir_agentic` arm
 > (Extensions) to also test the plumbing and mid-task `PreToolUse` retrieval.
 
-## The three seed tasks
+## Available tasks
 
-Structurally faithful to the real infra lessons in your graph, but self-contained
-and fast (pure Python + bash, no Nix, no network, verify in seconds). Each trap
-**fails opaquely** — the naive path gives no hint about the fix — so the lesson
-provides genuine uplift and the assay has dynamic range.
+`tasks/` now contains only the retained [task contract](tasks/CONTRACT.md).
+New benchmark design is deferred to the learning-loop development plan.
+`./eval run` refuses an empty task selection before preflight or model work.
 
-1. `01-hidden-ua` — a tool 403s default/curl user-agents (mirrors the crates.io-UA lesson).
-2. `02-abi-pin` — bumping a dep to an ABI-breaking version removes a symbol the app uses (mirrors the onnxruntime `*-sys` pin lesson).
-3. `03-chunk-cap` — an embedder hard-errors past a token cap; the fix belongs in the chunker, not the wrapper (mirrors the fastembed truncation lesson).
+## Runbook for a future task set
 
-The real heavyweight tasks (actual Nix builds) can be added as Tier-B fixtures;
-see Extensions.
+The task-dependent commands below require an added task set. Do not run
+`seed`, `run`, or `full` as a benchmark with the current empty `tasks/` directory.
+Analysis and rescoring require existing results and, for rescoring, saved streams.
 
-## Run it — the operational runbook
-
-There is **one entry point**: the `./eval` wrapper (a thin, auditable shim over
-`python -m harness.runner`). Each sub-command maps 1:1 to a runner flag; the shim
-only documents the ORDER and stops before anything that spends API budget. You can
-always call `python -m harness.runner --<flag>` directly — `./eval` adds nothing
-the runner does not already do.
+There is **one entry point**: the Bash `./eval` wrapper, which invokes the
+standalone Rust tool in this directory. Build output goes under
+`/var/tmp/mimir/mimir-eval-target`; the wrapper enters the repository's Nix
+development shell when Cargo is not already on `PATH`.
 
 ```bash
-# deps: Python 3.9+ stdlib, bwrap on PATH, mimir + mimir-mcp on PATH (parent only),
+# deps: Rust/Cargo (or Nix), Bash, bwrap,
+# mimir + mimir-mcp on PATH (parent only),
 # psql on PATH (read-only DB head check), ~/.pgpass with the mimir password.
-cd mimir-eval
+cd tests/eval
 
 # ── 0. PRE-FLIGHT: version-skew guard (§8 step 0; belief 14f83426) ────────────
 ./eval preflight
@@ -108,13 +149,16 @@ cd mimir-eval
 #   results.jsonl rows are keyed (task,arm,trial) and flushed per trial.
 #   On API-credit exhaustion / crash, resume:
 ./eval run --trials 30 --resume           # skips completed NON-error keys; RE-RUNS is_error/timed_out
-#   Subset while iterating: --arms control,static,grounded   --tasks 04-stale-belief
+#   Subset while iterating: --arms control,static,grounded --tasks <added-task-name>
 
 # ── 4. ANALYZE (excludes error trials; prints EXCLUDED block + power notes) ────
 ./eval analyze
+# Optional subjective residual summary, when judge results exist:
+./eval analyze --judge runs/judge.jsonl
 
 # ── 5. OPTIONAL re-score after a predicate fix — NO API spend ─────────────────
-./eval rescore                            # re-apply each task's trap.py to saved streams
+./eval rescore                            # re-apply the Rust predicate to saved streams
+./eval task-check tasks/<added-task-name> # requires a new task fixture
 
 # ── 6. CLEANUP + pollution audit ──────────────────────────────────────────────
 ./eval cleanup                            # mimir forget eval-<task> (beliefs AND doc chunks)
@@ -138,14 +182,14 @@ they appear in a separate EXCLUDED block.
 `./eval preflight` pins the binary version + migration head into `runs/env.json`
 and aborts on mismatch. It derives the binary's expected migration head from the
 mimir source checkout it was built from (default: this repo, self-located from
-`preflight.py`'s own path; override with `config.json["mimir_src"]` or
+the evaluator's location; override with `config.json["mimir_src"]` or
 `$MIMIR_SRC` for a relocated checkout), and the DB's applied head from
 `_sqlx_migrations` on the live DB
 (connection read from the same `~/.config/mimir/config.toml` the CLI uses; password
 from `~/.pgpass`). No password is ever written to env.json.
 
 Non-determinism is the norm — single runs are noise. `--trials 30` is the default
-floor (belief `62efefba`: n≥30 under identical conditions); `analyze.py` reports
+floor (belief `62efefba`: n≥30 under identical conditions); `./eval analyze` reports
 medians/IQRs, rank-based contrasts, and effect sizes (Cliff's delta, risk
 differences with Wilson + bootstrap CIs), not point estimates, and flags any arm
 below `config.json["min_n_per_arm"]`. It's powered for *large* effects.
@@ -153,7 +197,7 @@ below `config.json["min_n_per_arm"]`. It's powered for *large* effects.
 ## Seams to confirm against your installed Claude Code (`claude --help`)
 
 These flags were verified against current docs but are version-sensitive; the
-runner centralizes them in `config.json` and `harness/runner.py::build_cmd`:
+runner centralizes them in `config.json` and its Rust actor-command builder:
 
 - `-p` / `--output-format stream-json` / `--verbose` (stream-json may require `--verbose`).
 - MCP isolation: `--strict-mcp-config --mcp-config <empty.json>` so your ambient
@@ -161,7 +205,7 @@ runner centralizes them in `config.json` and `harness/runner.py::build_cmd`:
 - Unattended permissions: `--dangerously-skip-permissions` (run in a container) +
   `--allowedTools`. Adjust if you prefer `--permission-mode`.
 - `--append-system-prompt` carries the injected lesson.
-- The **stream-json event schema** is underdocumented and changes; `parse_stream.py`
+- The **stream-json event schema** is underdocumented and changes; the Rust parser
   is written defensively (it recursively finds any `type:"tool_use"` block and the
   final `type:"result"` object) rather than hard-coding the envelope. If step
   counts come back as 0, eyeball one `runs/**/**.ndjson` and adjust the collector.
@@ -173,7 +217,7 @@ An arm is a pure function `fn(task, cfg) -> Injection` (text for
 analyzer, and isolation are all arm-agnostic — they only ever see "injection text
 or None". To add one (§5.3):
 
-1. Add a function to `harness/arms.py` and register it in the `ARMS` dict.
+1. Add a Rust injection branch in `tests/eval/main.rs`.
 2. Add its name to `config.json["arms"]`.
 
 That is the entire change. Record `Injection(text=..., belief_surfaced=...)` so a
@@ -190,25 +234,23 @@ task.md       # the prompt; names the tool to fix and "do not modify <tool>"
 belief.json   # {content, probability, confidence, project: eval-<name>, eval_query, evidence?}
 setup.sh      # $1=workdir; materialises an OPAQUE tool + a broken driver
 verify.sh     # $1=workdir; exit 0 == solved (re-runs the driver from a clean state)
-trap.py       # trap_hit(tool_calls)->bool ; INVOCATION predicate (not a mention)
 docs/*.md     # optional grounding documents (Phase-4 grounded tasks)
 distractor.json # optional plausible-but-wrong belief for --with-distractors
-solution.sh   # CHECK-ONLY: the mechanical fix, for task_check.py — never shipped to agents
+solution.sh   # CHECK-ONLY: the mechanical fix, for ./eval task-check — never shipped
 ```
 
 The non-negotiable rule (belief `35f590e1`): the correct value must be an
-**arbitrary token NOT derivable from any file the agent can read** (model
-`01-hidden-ua`'s UA token or `04-stale-belief`'s SHA-gated token), and the naive
+**arbitrary token NOT derivable from any file the agent can read**, and the naive
 path must **fail opaquely**. Before adding it, run the OFFLINE self-check (no API):
 
 ```bash
-python -m harness.task_check tasks/<NN-name>     # opacity probe + control-fails / solvable-with
+./eval task-check tasks/<NN-name>                # offline opacity and solvability check
 ```
 
-It runs `setup.sh` into a tmpdir, asserts the token is absent from the workdir,
+It runs `setup.sh` under `/var/tmp/mimir`, asserts the token is absent from the workdir,
 asserts `verify.sh` fails pristine and passes after `solution.sh`, and checks the
-`tests/predicates/<task>/{naive,correct}.json` fixtures fire correctly
-(`trap_hit(naive)==True`, `trap_hit(correct)==False`).
+`tests/predicates/<task>/{naive,correct}.json` fixtures fire correctly through
+the built-in Rust predicate (`naive` is trapped; `correct` is not).
 
 ## Extensions
 
