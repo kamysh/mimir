@@ -29,6 +29,17 @@ beliefs and procedures with observed outcome counts. For causal impact questions
 inspect `explain_belief` and consider `query_intervention`: its projections are
 conditional on the stored graph, not proof of causation.
 
+## Explain retrieval to the user
+
+After a retrieval, tell the user how useful the result was for the current task:
+give a 0–5 score, one short reason, and what you will do with the information.
+Use 0 when nothing usable was found and 5 when it directly resolves the question.
+This is your assessment of task usefulness, not the belief's probability or
+confidence. When several retrievals answer one question, a single assessment
+of the combined findings is enough. Explain in plain language; do not repeat
+raw JSON unless the user asks for it. For example: "Mimir usefulness: 4/5 —
+this recalls an earlier decision; I'll check it against the current code."
+
 ## Choose the write that matches the evidence
 
 For an incident that may change a later approach, use `record_experience` with
@@ -116,5 +127,5 @@ notes; use Mimir to recover reasoning that can change the approach. Read Muninn'
 skill for checkout selection and note scoping.
 
 The startup reminder explains this purpose. It does not run retrieval or enforce
-calls, ratings, per-turn writes or a fixed exploration threshold. Use the tools
+calls, hook-generated ratings, per-turn writes or a fixed exploration threshold. Use the tools
 because the information can improve the work, and judge what they return.
