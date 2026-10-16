@@ -1384,7 +1384,14 @@ The judge now checks the stored pinned revision immediately after a review and
 finishes a confirmed item without another model completion turn. Incomplete
 runs retain pending work and report a bounded =block_reason=. =mimir judge
 watch= repeats bounded runs at a configurable interval (five minutes by
-default), stopping after three consecutive failures by default. It is a
+default). After three consecutive failed runs it retries hourly, keeping
+the process alive. It logs only the start and end of a continuous failure
+episode; the notifier keeps one active incident across blocked and partial
+results, so repeated failures do not create repeated mail. A rejected review
+with an immutable candidate-key conflict gets one bounded correction attempt;
+if still rejected, its source revision is deferred until corrected or reviewed
+externally, while other pending work remains eligible. The last status is
+replaced atomically rather than appended to a log. It is a
 source-level capability, not an installed service or enabled schedule. The
 agent guidance requires a later *observed* action/outcome with the actually used
 belief or pattern ID; retrieval is not success. An MCP fixture checks that

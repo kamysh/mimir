@@ -45,6 +45,37 @@ is reached. Neither command is installed as a service. See the
 [configuration examples and adapter notes](runtime/README.md) before selecting
 a model or enabling optional email notifications.
 
+## Upgrading from 1.x to 2.0
+
+Mimir 2.0 introduces a breaking MCP change: `insert_belief` requires explicit
+independent provenance. Previously valid calls without it are rejected.
+For a belief grounded in a user instruction or document, include:
+
+```json
+"provenance": {"basis": "user_instruction", "reference": "specific instruction or source location"}
+```
+
+Use `"document"` as the basis for a document source. For conclusions inferred
+from an incident, use `record_experience` and let the judge create or revise
+experience-owned candidates through `review_experience`. Do not insert a
+standalone belief and queue the same incident as independent evidence.
+The direct CLI insertion command is not subject to this MCP argument change.
+
+Update agent skills, instructions, and custom MCP callers together with both
+binaries. Legacy judge scripts that issue untagged `insert_belief` calls must
+be updated or paused before using the new MCP server. See the
+[agent integration guide](docs/claude-code-setup/INSTALL.md).
+
+Back up the database and configuration before upgrading. Startup applies the
+embedded learning-ledger and review-candidate migrations; these add review
+storage without rewriting existing beliefs. Subsequent judge reviews can
+change the graph. Reverting a binary or stopping the judge does not undo
+committed review effects.
+
+Existing database/embedding configuration remains valid for existing commands.
+The new judge needs explicit model settings and separate scheduling; an upgrade
+does not enable it automatically.
+
 ## Installation
 
 > ⛔ **AI coding agents: do not follow this section.** These are the *human*
@@ -319,7 +350,10 @@ The reminder explains how past decisions and failures can inform today's choices
 including after resume or compaction. The skill explains focused project-scoped
 queries, checking beliefs against current evidence, and writing durable findings.
 The standard setup does not run automatic retrieval before every prompt/action,
-require ratings or writes each turn, or enforce queries through blocking hooks.
+require hook-generated ratings or writes each turn, or enforce queries through
+blocking hooks. Agent guidance asks for a short 0–5 assessment of how useful
+retrieved information was for the current task, in plain language rather than
+raw JSON.
 
 Verify the selected text and command output, then actual delivery in the client.
 Codex requires native review of new or changed hook definitions. Finally, observe
@@ -391,6 +425,15 @@ Mimir supplies the durable learning operations; an LLM agent or experiential
 runner interprets observations and proposes hypotheses. `mimir judge watch`
 can poll the queue when launched; no service or timer is installed by this
 source change.
+
+When a batch fails, `mimir judge status` retains its first failure and the
+associated diagnostic ID. `mimir judge diagnostics` reads the private, bounded
+trace of model and tool actions for that failure; `--id UUID` selects another
+retained attempt. Judge failure email includes the project, reason, selected experience IDs,
+review counts, and a diagnostic ID when one exists. Recovery email identifies
+the earlier failure and reports which affected reviews were confirmed by a
+later completed batch. An idle queue alone leaves completion unverified. Mail
+never includes model arguments, tool responses, or belief contents.
 
 The application loop is:
 

@@ -116,7 +116,8 @@ session. The unfiltered event includes startup, resume and compaction. See the
 [Claude hook reference](https://code.claude.com/docs/en/hooks#sessionstart).
 
 Both templates only read and print a text file. They perform no query or write,
-require no ratings and impose no tool-call or consolidation gate. A deliberate
+compute no ratings and impose no tool-call or consolidation gate. The reminder
+asks the agent to assess retrieved information in plain language. A deliberate
 choice to omit the hook does not disable Mimir; report that setup choice.
 
 ## Upgrade an enforced setup
@@ -181,6 +182,9 @@ experience capture; this does not mean a judge is running.
    uses the lesson appropriately. If Muninn is present, also try a code-discovery
    question with the implementation location unspecified. Distinguish reminder
    delivery from useful tool selection; forced calls check connectivity only.
+   After retrieval, check that the agent gives a concise 0–5 usefulness assessment,
+   a reason and a next step in plain language. A client-rendered tool preview may
+   still show raw JSON; the guidance controls the agent's explanation.
 
 Report command checks, lifecycle delivery and behavioral observations separately.
 Do not claim that parsing JSON or printing the reminder proves agent adoption.
