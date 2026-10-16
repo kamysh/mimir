@@ -42,6 +42,61 @@ fn experience(project: &str) -> Experience {
         pattern_id: None,
     }
 }
+
+#[tokio::test]
+async fn sql_pages_cover_large_filtered_corpus_without_a_total_cutoff() {
+    let svc = service().await;
+    let project = format!("paging-{}", Uuid::new_v4());
+    let mut expected = std::collections::HashSet::new();
+    for n in 0..207 {
+        let b = svc
+            .add_belief_in_project(
+                &format!("{n}: {}", "long evidence ".repeat(300)),
+                0.5,
+                0.1,
+                &project,
+                MemoryType::Fact,
+            )
+            .await
+            .unwrap();
+        expected.insert(b.id.to_string());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut offset = 0;
+    loop {
+        let page = svc
+            .list_beliefs_page(Some(&project), Some(MemoryType::Fact), 10, offset)
+            .await
+            .unwrap();
+        let beliefs = page["beliefs"].as_array().unwrap();
+        assert!(beliefs.len() <= 10);
+        for b in beliefs {
+            assert!(
+                seen.insert(b["id"].as_str().unwrap().to_owned()),
+                "duplicate page entry"
+            );
+        }
+        match page["next_offset"].as_u64() {
+            Some(next) => {
+                assert!(next as usize > offset);
+                offset = next as usize;
+            }
+            None => break,
+        }
+    }
+    assert!(expected.is_subset(&seen)); // Global beliefs may also be visible.
+    assert!(svc
+        .list_beliefs_page(Some(&project), None, 11, 0)
+        .await
+        .is_err());
+    let empty = svc
+        .list_beliefs_page(Some(&project), None, 10, 100_000)
+        .await
+        .unwrap();
+    assert!(empty["beliefs"].as_array().unwrap().is_empty());
+    assert!(empty["next_offset"].is_null());
+    svc.delete_project(&project).await.unwrap();
+}
 fn review(e: &Experience) -> Review {
     Review {
         experience_id: e.id,
