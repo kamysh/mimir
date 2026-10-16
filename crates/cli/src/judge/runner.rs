@@ -348,8 +348,7 @@ fn trace(
     report: &Report,
     selected: &ExperienceState,
     kind: &str,
-    model_left: usize,
-    tool_left: usize,
+    (model_left, tool_left): (usize, usize),
     tool: Option<&str>,
     detail: Option<&str>,
 ) -> Result<()> {
@@ -527,8 +526,7 @@ async fn run_inner<B: Backend>(
                     report,
                     selected,
                     "model_budget_exhausted",
-                    model_left,
-                    tool_left,
+                    (model_left, tool_left),
                     None,
                     None,
                 )?;
@@ -546,8 +544,7 @@ async fn run_inner<B: Backend>(
                     report,
                     selected,
                     "model_request",
-                    model_left,
-                    tool_left,
+                    (model_left, tool_left),
                     None,
                     detail.as_deref(),
                 )?;
@@ -565,8 +562,7 @@ async fn run_inner<B: Backend>(
                         report,
                         selected,
                         "model_error",
-                        model_left,
-                        tool_left,
+                        (model_left, tool_left),
                         None,
                         Some(&format!("{error:#}")),
                     )?;
@@ -584,8 +580,7 @@ async fn run_inner<B: Backend>(
                         report,
                         selected,
                         "model_timeout",
-                        model_left,
-                        tool_left,
+                        (model_left, tool_left),
                         None,
                         None,
                     )?;
@@ -604,8 +599,7 @@ async fn run_inner<B: Backend>(
                         report,
                         selected,
                         "model_done",
-                        model_left,
-                        tool_left,
+                        (model_left, tool_left),
                         None,
                         None,
                     )?;
@@ -617,8 +611,7 @@ async fn run_inner<B: Backend>(
                         report,
                         selected,
                         "tool_parse_rejection",
-                        model_left,
-                        tool_left,
+                        (model_left, tool_left),
                         Some(&name),
                         Some(&source.excerpt),
                     )?;
@@ -628,8 +621,7 @@ async fn run_inner<B: Backend>(
                             report,
                             selected,
                             "tool_budget_exhausted",
-                            model_left,
-                            tool_left,
+                            (model_left, tool_left),
                             Some(&name),
                             None,
                         )?;
@@ -651,8 +643,7 @@ async fn run_inner<B: Backend>(
                         report,
                         selected,
                         "tool_request",
-                        model_left,
-                        tool_left,
+                        (model_left, tool_left),
                         Some(&name),
                         Some(&arguments.to_string()),
                     )?;
@@ -662,8 +653,7 @@ async fn run_inner<B: Backend>(
                             report,
                             selected,
                             "tool_budget_exhausted",
-                            model_left,
-                            tool_left,
+                            (model_left, tool_left),
                             Some(&name),
                             None,
                         )?;
@@ -681,8 +671,7 @@ async fn run_inner<B: Backend>(
                                 report,
                                 selected,
                                 "tool_result",
-                                model_left,
-                                tool_left,
+                                (model_left, tool_left),
                                 Some(&name),
                                 Some(&value.to_string()),
                             )?;
@@ -705,8 +694,7 @@ async fn run_inner<B: Backend>(
                                 report,
                                 selected,
                                 "candidate_conflict",
-                                model_left,
-                                tool_left,
+                                (model_left, tool_left),
                                 Some(&name),
                                 Some(&format!("{error:#}")),
                             )?;
@@ -730,8 +718,7 @@ async fn run_inner<B: Backend>(
                                 report,
                                 selected,
                                 "tool_rejection",
-                                model_left,
-                                tool_left,
+                                (model_left, tool_left),
                                 Some(&name),
                                 Some(&format!("{error:#}")),
                             )?;
@@ -761,8 +748,7 @@ async fn run_inner<B: Backend>(
                                 report,
                                 selected,
                                 "tool_error",
-                                model_left,
-                                tool_left,
+                                (model_left, tool_left),
                                 Some(&name),
                                 Some(&format!("{error:#}")),
                             )?;
