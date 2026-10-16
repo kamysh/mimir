@@ -45,7 +45,7 @@ pub async fn migrate(cfg: &DatabaseConfig) -> Result<()> {
         kryzhen::sqlx_import::import(&mut client, &receipt, &migrations)
             .await
             .map_err(anyhow::Error::from)?;
-        kryzhen::migrate(&mut client, &migrations, Some("public"), false).await?;
+        apply_migrations(&mut client, &migrations).await?;
         Ok(())
     }
     .await;
@@ -54,6 +54,31 @@ pub async fn migrate(cfg: &DatabaseConfig) -> Result<()> {
         .await;
     result?;
     unlocked?;
+    Ok(())
+}
+
+/// Kryzhen 2's template executor restricts search_path to the target schema.
+/// Mimir's immutable historical SQL also resolves AGE operators in ag_catalog.
+/// Keep Kryzhen's validation and ledger, but execute the original SQL with the
+/// application's search path. The body and both ledger rows commit atomically.
+async fn apply_migrations(client: &mut Client, migrations: &[kryzhen::Migration]) -> Result<()> {
+    kryzhen::validation::check_duplicate_names(migrations)?;
+    let ordered = kryzhen::graph::topo_sort(migrations.to_vec())?;
+    kryzhen::postgres::ensure_schema(client).await?;
+    let checksums = kryzhen::postgres::load_applied(client).await?;
+    let applied = kryzhen::postgres::load_applied_for_schema(client, "public").await?;
+    kryzhen::validation::check_checksums(&ordered, &checksums)?;
+    for migration in &ordered {
+        if applied.contains(&migration.name) {
+            continue;
+        }
+        let mut tx = client.transaction().await?;
+        tx.batch_execute(&format!("SET LOCAL search_path TO {SEARCH_PATH}"))
+            .await?;
+        tx.batch_execute(&migration.script).await?;
+        kryzhen::postgres::record_applied(&mut tx, migration, "public").await?;
+        tx.commit().await?;
+    }
     Ok(())
 }
 
