@@ -99,51 +99,6 @@ fn agent_json_text(value: &Value) -> serde_json::Result<String> {
     serde_json::to_string(&AgentJson(value))
 }
 
-#[cfg(test)]
-mod agent_json_tests {
-    use super::*;
-
-    #[test]
-    fn belief_fields_put_content_first_and_posterior_last_even_when_nested() {
-        let result = json!({
-            "beliefs": [{
-                "alpha": 2.0,
-                "alpha0": 1.0,
-                "beta": 3.0,
-                "beta0": 1.0,
-                "confidence": 0.5,
-                "content": "A useful belief",
-                "evidence": [{"snippet": "A source passage"}],
-                "id": "belief-id",
-                "memory_type": "Fact",
-                "probability": 0.4,
-                "project": "mimir",
-                "extra": "future field"
-            }],
-            "patterns": []
-        });
-        let text = agent_json_text(&result).unwrap();
-        assert!(
-            text.starts_with("{\"beliefs\":[{\"content\":\"A useful belief\",\"id\":\"belief-id\"")
-        );
-        assert!(text.contains(
-            "\"extra\":\"future field\",\"alpha\":2.0,\"beta\":3.0,\"alpha0\":1.0,\"beta0\":1.0}"
-        ));
-        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), result);
-    }
-
-    #[test]
-    fn non_belief_json_keeps_its_fields_and_values() {
-        let result = json!({"z": [true, null], "a": {"beta": 2, "content": "not a belief"}});
-        let text = agent_json_text(&result).unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), result);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tool list
-// ---------------------------------------------------------------------------
-
 fn tools_list() -> Value {
     let mut tools = json!([
         {
@@ -954,3 +909,48 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod agent_json_tests {
+    use super::*;
+
+    #[test]
+    fn belief_fields_put_content_first_and_posterior_last_even_when_nested() {
+        let result = json!({
+            "beliefs": [{
+                "alpha": 2.0,
+                "alpha0": 1.0,
+                "beta": 3.0,
+                "beta0": 1.0,
+                "confidence": 0.5,
+                "content": "A useful belief",
+                "evidence": [{"snippet": "A source passage"}],
+                "id": "belief-id",
+                "memory_type": "Fact",
+                "probability": 0.4,
+                "project": "mimir",
+                "extra": "future field"
+            }],
+            "patterns": []
+        });
+        let text = agent_json_text(&result).unwrap();
+        assert!(
+            text.starts_with("{\"beliefs\":[{\"content\":\"A useful belief\",\"id\":\"belief-id\"")
+        );
+        assert!(text.contains(
+            "\"extra\":\"future field\",\"alpha\":2.0,\"beta\":3.0,\"alpha0\":1.0,\"beta0\":1.0}"
+        ));
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), result);
+    }
+
+    #[test]
+    fn non_belief_json_keeps_its_fields_and_values() {
+        let result = json!({"z": [true, null], "a": {"beta": 2, "content": "not a belief"}});
+        let text = agent_json_text(&result).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), result);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool list
+// ---------------------------------------------------------------------------
