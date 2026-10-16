@@ -567,7 +567,11 @@ mod tests {
         let task = tokio::spawn(async move {
             let mut captured = Vec::new();
             for (status, body) in replies {
-                let (mut socket, _) = listener.accept().await.unwrap();
+                let (mut socket, _) =
+                    tokio::time::timeout(std::time::Duration::from_secs(30), listener.accept())
+                        .await
+                        .expect("API fixture did not receive its expected request")
+                        .unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0u8; 4096];
                 let boundary = loop {
@@ -1122,22 +1126,19 @@ mod tests {
             "experience_id":selected.experience.id,"experience_revision":1,
             "reviewer":"untrusted-provider","rationale":"local API fixture review"
         }});
-        let (url, server) = fixture(vec![
-            (
-                200,
-                json!({"status":"completed","output":[
-                    {"type":"function_call","call_id":"call_read","name":"get_experience",
-                        "arguments":json!({"id":selected.experience.id}).to_string()},
-                    {"type":"function_call","call_id":"call_review","name":"review_experience",
-                        "arguments":review.to_string()}
-                ]}),
-            ),
-            (200, json!({"status":"completed","output":[]})),
-        ])
+        let (url, server) = fixture(vec![(
+            200,
+            json!({"status":"completed","output":[
+                {"type":"function_call","call_id":"call_read","name":"get_experience",
+                    "arguments":json!({"id":selected.experience.id}).to_string()},
+                {"type":"function_call","call_id":"call_review","name":"review_experience",
+                    "arguments":review.to_string()}
+            ]}),
+        )])
         .await;
         settings.llm = config(Provider::Openai, url);
-        // Two provider requests and two host tools; the queued second tool is
-        // not charged as a third provider request.
+        // One provider response supplies both tools. The database receipt ends
+        // the review without another model request or completion message.
         settings.llm.max_calls = 2;
         let mut backend = ApiBackend::new(&settings.llm).unwrap().unwrap();
         let report = super::super::runner::run(&settings, &state, &mut backend).await;
@@ -1152,7 +1153,7 @@ mod tests {
                 .reviewed_revision,
             1
         );
-        server.await.unwrap();
+        assert_eq!(server.await.unwrap().len(), 1);
         service.delete_project(&project).await.unwrap();
         drop(state);
         std::fs::remove_dir_all(state_path).unwrap();
