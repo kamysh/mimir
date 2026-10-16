@@ -5,7 +5,9 @@ pub mod embed;
 pub mod graph;
 pub mod inference;
 pub mod learning;
+mod password;
 pub mod store;
+mod tls;
 
 use anyhow::Result;
 use uuid::Uuid;

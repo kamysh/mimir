@@ -28,7 +28,7 @@ enum Command {
     /// ~/.config/mimir/config.toml (or $XDG_CONFIG_HOME/mimir/config.toml) and
     /// opens it in $EDITOR. With KEY=VALUE arguments: writes a config built
     /// from those overrides non-interactively (no $EDITOR). Recognised keys:
-    /// host, port, dbname, user, ssl_mode, ssl_root_cert, ssl_client_cert,
+    /// host, port, dbname, user, password, pgpassfile, ssl_mode, ssl_root_cert, ssl_client_cert,
     /// ssl_client_key, backend, model, api_key, batch_size, cache_dir.
     /// Exits non-zero if the config already exists.
     Init {

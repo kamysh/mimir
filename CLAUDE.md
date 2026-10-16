@@ -77,7 +77,7 @@ mimir doc clear PATH                          # remove all chunks for a document
 - `store.rs` — `AgeStore`: all graph DB operations. Queries are Cypher strings interpolated into `ag_catalog.cypher(...)` SQL calls.
 - `inference.rs` — `InferenceEngine`: pure computation only (no I/O). Defeat attenuation formula: `P(target) × (1 − weight × P(defeater))`. Support boost: `P + (1−P) × weight × P(supporter)`.
 - `lib.rs` — `MimirService`: composes `AgeStore` + `InferenceEngine`. This is the public API surface.
-- `config.rs` — `Config` / `DatabaseConfig`, loaded from `~/.config/mimir/config.toml`. Passwords come from `~/.pgpass`, never from config.
+- `config.rs` — `Config` / `DatabaseConfig`, loaded from `~/.config/mimir/config.toml`. Password precedence: config `password`, nonempty `PGPASSWORD`, password file (`pgpassfile`, `PGPASSFILE`, `~/.pgpass`). See `docs/database-connections.md` for TLS and credential rules.
 - `documents.rs` — `DocumentChunk`, `QueryResult`, `parse_markdown`. Splits markdown into heading-bounded chunks with pre-assigned UUIDs for parent tracking.
 - `embed.rs` — `EmbeddingProvider` trait + `VoyageBackend`, `OpenAiBackend`, `LocalBackend` (fastembed + BGE-Base-EN-v1.5 via ONNX Runtime). `make_backend()` is the factory. `vec_literal()` formats `Vec<f32>` for pgvector SQL interpolation.
 - Document chunks are stored as `DocumentChunk` vertices in AGE + CONTAINS edges; embeddings live in `public.chunk_embeddings` (pgvector). The two-store split is required because AGE's `agtype` cannot hold a `vector` value.

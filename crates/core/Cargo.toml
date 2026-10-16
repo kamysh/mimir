@@ -4,25 +4,25 @@ version = "2.0.0"
 edition = "2021"
 
 [dependencies]
-kryzhen = { git = "https://github.com/kamysh/kryzhen", tag = "v0.8.0" }
-include_dir = "0.7"
-tokio-postgres = { version = "0.7.17", features = ["with-uuid-1", "with-chrono-0_4"] }
-pgvector = { version = "0.4", features = ["postgres"] }
+kryzhen = { git = "https://github.com/kamysh/kryzhen", tag = "v2.0.2" }
+include_dir = "0.7.4"
+tokio-postgres = { version = "0.7.18", features = ["with-uuid-1", "with-chrono-0_4"] }
+pgvector = { version = "0.4.2", features = ["postgres"] }
 native-tls = "0.2.18"
 postgres-native-tls = { version = "0.5.3", features = ["runtime"] }
-uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
-anyhow = "1"
-toml = "0.8"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
-indicatif = "0.17"
-tract-onnx = "0.21"
-tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+uuid = { version = "1.28.0", features = ["v4", "serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
+anyhow = "1.0.104"
+toml = "0.8.23"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.53.3", features = ["full"] }
+tracing = "0.1.44"
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+indicatif = "0.17.11"
+tract-onnx = "0.21.19"
+tokenizers = { version = "0.21.4", default-features = false, features = ["fancy-regex"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full", "test-util"] }
-proptest = "1"
+tokio = { version = "1.53.3", features = ["full", "test-util"] }
+proptest = "1.12.0"
