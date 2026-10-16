@@ -168,7 +168,7 @@ Run the setup script (creates role, DB, extensions, grants — but
 **not** the AGE graph, which mimir's migrations create on first run):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/main/mimir-setup/create-db-user.sh \
+curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.0.0/mimir-setup/create-db-user.sh \
   | bash -s -- --container "$CONTAINER" --port "$PORT" \
                 --user "$DB_USER" --db "$DB_NAME"
 ```
@@ -184,17 +184,17 @@ psql -h localhost -p "$PORT" -U "$DB_USER" -d "$DB_NAME" -c '\conninfo' >/dev/nu
 mkdir -p "$HOME/.local/bin"
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)  TARBALL=mimir-darwin-arm64.tar.gz ;;
-  Darwin-x86_64) TARBALL=mimir-darwin-amd64.tar.gz ;;
   Linux-x86_64)  TARBALL=mimir-linux-amd64.tar.gz ;;
   Linux-aarch64) TARBALL=mimir-linux-arm64.tar.gz ;;
   *) echo "Unsupported platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
-curl -fsSL "https://github.com/kamysh/mimir/releases/latest/download/${TARBALL}" \
+curl -fsSL "https://github.com/kamysh/mimir/releases/download/v2.0.0/${TARBALL}" \
   | tar -xz -C "$HOME/.local/bin"
 chmod +x "$HOME/.local/bin/mimir" "$HOME/.local/bin/mimir-mcp"
 ```
 
-(Releases ship `darwin-arm64` for Apple Silicon and `darwin-amd64` for Intel Macs.)
+(The 2.0.0 release workflow builds Apple Silicon, Linux x86_64 and Linux ARM64.
+Intel Macs require a source build.)
 
 Do **not** run `xattr -d com.apple.quarantine` on these files. The
 quarantine flag is only set on browser downloads — `curl` does not
