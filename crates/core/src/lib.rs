@@ -124,17 +124,7 @@ impl MimirService {
     ) -> Result<Belief> {
         let belief = Belief::new(content.to_string(), probability, confidence)?
             .with_memory_type(memory_type);
-        self.store.insert_belief(&belief).await?;
-        if let Some(embedder) = &self.embeddings {
-            let mut vecs = embedder
-                .embed(std::slice::from_ref(&belief.content))
-                .await?;
-            if let Some(v) = vecs.pop() {
-                self.store.insert_belief_embedding(belief.id, &v).await?;
-                self.auto_ground_belief(&belief, &v).await?;
-            }
-        }
-        Ok(belief)
+        self.insert_and_embed_belief(belief, None).await
     }
 
     /// Add a new belief scoped to a project.
@@ -153,7 +143,42 @@ impl MimirService {
             project.to_string(),
         )?
         .with_memory_type(memory_type);
-        self.store.insert_belief(&belief).await?;
+        self.insert_and_embed_belief(belief, None).await
+    }
+
+    /// Agent-facing direct write for a separately established source. The
+    /// provenance is stored with the graph node, not inferred from its text.
+    pub async fn add_independent_belief(
+        &self,
+        content: &str,
+        probability: f64,
+        confidence: f64,
+        project: Option<&str>,
+        memory_type: MemoryType,
+        provenance: &crate::learning::IndependentProvenance,
+    ) -> Result<Belief> {
+        provenance.validate()?;
+        let belief = match project {
+            Some(project) => Belief::new_in_project(
+                content.to_string(),
+                probability,
+                confidence,
+                project.to_string(),
+            )?,
+            None => Belief::new(content.to_string(), probability, confidence)?,
+        }
+        .with_memory_type(memory_type);
+        self.insert_and_embed_belief(belief, Some(provenance)).await
+    }
+
+    async fn insert_and_embed_belief(
+        &self,
+        belief: Belief,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+    ) -> Result<Belief> {
+        self.store
+            .insert_belief_with_provenance(&belief, provenance)
+            .await?;
         if let Some(embedder) = &self.embeddings {
             let mut vecs = embedder
                 .embed(std::slice::from_ref(&belief.content))

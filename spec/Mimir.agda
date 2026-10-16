@@ -18,3 +18,7 @@ open import Mimir.Beta      public
 open import Mimir.Session   public
 
 open import Mimir.Learning  public
+
+-- Namespaced contracts avoid collisions with the existing public graph laws.
+import Mimir.LearningContracts
+import Mimir.Judge
