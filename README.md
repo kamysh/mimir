@@ -157,7 +157,7 @@ chmod 600 ~/.pgpass
 Run the setup script (creates the role, database, extensions, and grants):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.0.0/mimir-setup/create-db-user.sh \
+curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.0.1/mimir-setup/create-db-user.sh \
   | bash -s -- --container postgres-ai --host localhost --port 5432 --user mimir --db mimir
 ```
 
@@ -182,7 +182,7 @@ psql -h localhost -U mimir -d mimir -c '\conninfo' >/dev/null && echo OK
 
 This step installs the two mimir binaries to `~/.local/bin`. It is one of three pieces — see Step 5 for the MCP server registration.
 
-Install the **2.0.0** release. This block selects one archive for your platform:
+Install the **2.0.1** release. This block selects one archive for your platform:
 
 ```bash
 mkdir -p "$HOME/.local/bin"
@@ -192,11 +192,11 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)  TARBALL=mimir-darwin-arm64.tar.gz ;;
   *) echo "Use Building from source for this platform" >&2; exit 1 ;;
 esac
-curl -fL "https://github.com/kamysh/mimir/releases/download/v2.0.0/${TARBALL}" \
+curl -fL "https://github.com/kamysh/mimir/releases/download/v2.0.1/${TARBALL}" \
   | tar -xz -C "$HOME/.local/bin"
 chmod +x "$HOME/.local/bin/mimir" "$HOME/.local/bin/mimir-mcp"
 export PATH="$HOME/.local/bin:$PATH"
-mimir --version  # must report 2.0.0
+mimir --version  # must report 2.0.1
 ```
 
 The release workflow builds Linux x86_64, Linux ARM64 and Apple Silicon.
