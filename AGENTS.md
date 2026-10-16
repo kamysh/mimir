@@ -74,7 +74,7 @@ Bind the answers as shell variables once, then re-use in every command below:
 | Variable | Notes |
 |---|---|
 | `PORT` | Host port. Avoid 5000 (AirPlay on macOS), 6000 (X11), and anything in use. |
-| `CONTAINER` | Local container name. Must not collide with an existing container. Image: `kamysh/postgres-ai`. |
+| `CONTAINER` | Existing postgres-ai container to reuse, or an unused name for a new container. Image: `kamysh/postgres-ai`. |
 | `VOLUME` | Docker volume for the postgres data dir (e.g. `mimir_data`). If sharing a container with muninn, use the same volume. |
 | `DB_USER` | PostgreSQL role for mimir. |
 | `DB_NAME` | Database for mimir. |
@@ -84,8 +84,6 @@ Bind the answers as shell variables once, then re-use in every command below:
 
 ```sh
 docker info >/dev/null                                                 # daemon running
-! lsof -nP -iTCP:"$PORT" -sTCP:LISTEN | grep -q .                      # port free
-! docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"           # container name free
 echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin"               # PATH includes target
 command -v "$AGENT_CLIENT" >/dev/null                                  # chosen client installed
 ```
@@ -96,22 +94,23 @@ Do not try to recover automatically.
 ## State detection — skip steps already complete
 
 Run these probes before doing any work. For each that returns 0, skip
-the corresponding step.
+the corresponding step. For a shared or existing installation, confirm the
+container's image, published port and volume match the agreed values. An occupied
+port is expected when reusing that running container.
 
 ```sh
 # Step 1 — postgres container running
 docker ps --filter "name=^${CONTAINER}$" --filter "status=running" \
   --format '{{.Names}}' | grep -qx "$CONTAINER"
 
-# Step 2 — DB and role exist
-docker exec "$CONTAINER" psql -U postgres -lqt \
-  | cut -d\| -f1 | grep -qw "$DB_NAME"
+# Step 2 — DB and role exist, and the agreed role can connect
+docker exec "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -c 'SELECT 1' >/dev/null
 
 # Step 3 — binaries installed
 command -v mimir && command -v mimir-mcp >/dev/null
 
-# Step 4 — config exists and CLI can talk to the DB
-[ -f "$HOME/.config/mimir/config.toml" ] && mimir stats >/dev/null 2>&1
+# Step 4 — config exists and CLI can talk to the DB (can apply pending migrations)
+[ -f "${MIMIR_CONFIG:-$HOME/.config/mimir/config.toml}" ] && mimir stats
 
 # Step 5 — selected client's MCP registration (inspect path/scope too)
 "$AGENT_CLIENT" mcp get mimir
@@ -131,6 +130,16 @@ jq -e 'any(.hooks.SessionStart[]?.hooks[]?;
 
 ## Step 1 — Start postgres
 
+Skip this step when reusing the verified running container. For a **new**
+container, both checks below must pass before creation. If the selected name
+belongs to a stopped container or the port belongs to another service, stop and
+resolve that existing state with the user; do not create a replacement blindly.
+
+```sh
+! lsof -nP -iTCP:"$PORT" -sTCP:LISTEN | grep -q .
+! docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"
+```
+
 ```sh
 docker run -d \
   --name "$CONTAINER" \
@@ -146,11 +155,11 @@ sleep 3
 docker exec "$CONTAINER" psql -U postgres -c 'SELECT 1' >/dev/null && echo OK
 ```
 
-The `kamysh/postgres-ai` image has pgvector, Apache AGE, uuid-ossp,
-and pgcrypto pre-installed, and sets `search_path = ag_catalog,
-"$user", public` cluster-wide. Mimir relies on that search_path — if
-you use a different postgres image, set it manually with
-`ALTER DATABASE "$DB_NAME" SET search_path = ag_catalog, "$user", public;`.
+The `kamysh/postgres-ai` image includes pgvector, Apache AGE, uuid-ossp,
+and pgcrypto. Mimir sets `search_path = public,ag_catalog` on its own
+connections. The setup script enables the required extensions and grants
+access in the selected database; extension availability alone does not create
+them in every database.
 
 ## Step 2 — Create role and database
 
@@ -168,7 +177,7 @@ Run the setup script (creates role, DB, extensions, grants — but
 **not** the AGE graph, which mimir's migrations create on first run):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.0.1/mimir-setup/create-db-user.sh \
+curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.0.2/mimir-setup/create-db-user.sh \
   | bash -s -- --container "$CONTAINER" --port "$PORT" \
                 --user "$DB_USER" --db "$DB_NAME"
 ```
@@ -188,12 +197,12 @@ case "$(uname -s)-$(uname -m)" in
   Linux-aarch64) TARBALL=mimir-linux-arm64.tar.gz ;;
   *) echo "Unsupported platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
-curl -fsSL "https://github.com/kamysh/mimir/releases/download/v2.0.1/${TARBALL}" \
+curl -fsSL "https://github.com/kamysh/mimir/releases/download/v2.0.2/${TARBALL}" \
   | tar -xz -C "$HOME/.local/bin"
 chmod +x "$HOME/.local/bin/mimir" "$HOME/.local/bin/mimir-mcp"
 ```
 
-(The 2.0.1 release workflow builds Apple Silicon, Linux x86_64 and Linux ARM64.
+(The 2.0.2 release workflow builds Apple Silicon, Linux x86_64 and Linux ARM64.
 Intel Macs require a source build.)
 
 Do **not** run `xattr -d com.apple.quarantine` on these files. The
@@ -215,22 +224,27 @@ Keep config files owner-only and avoid printing existing credentials during insp
 
 Bare `mimir init` opens `$EDITOR` and blocks. `mimir init` with `KEY=VALUE`
 arguments writes the config directly, no editor. Check for an existing config
-first — if one is present, read it and confirm the values match your variables
-before proceeding. Do **not** overwrite a config you did not author without
-user confirmation.
+first, at `${MIMIR_CONFIG:-$HOME/.config/mimir/config.toml}`. If one exists,
+inspect the connection and backend settings without printing credentials;
+skip creation when they match. Do **not** overwrite a config you did not author
+without user confirmation.
+
+If the config is absent, choose **one** creation command:
+
+Belief graph only (omit the embedding arguments entirely):
 
 ```sh
-if [ -f "$HOME/.config/mimir/config.toml" ]; then
-  echo "Config already exists:"
-  cat "$HOME/.config/mimir/config.toml"
-  # Verify port=$PORT, user=$DB_USER, dbname=$DB_NAME match. If yes, skip to verify.
-else
-  mimir init host=localhost port="${PORT}" dbname="${DB_NAME}" user="${DB_USER}" backend="${EMBEDDING_BACKEND}"
-fi
+mimir init host=localhost port="${PORT}" dbname="${DB_NAME}" user="${DB_USER}"
 ```
 
-If `EMBEDDING_BACKEND` is `voyage` or `openai`, add `model=` and `api_key=`
-to the same `mimir init` call:
+Belief graph and local document embeddings:
+
+```sh
+mimir init host=localhost port="${PORT}" dbname="${DB_NAME}" user="${DB_USER}" backend=local
+```
+
+For a hosted backend, include its backend, model and API key in that same
+initial creation command, for example:
 
 ```sh
 mimir init host=localhost port="${PORT}" dbname="${DB_NAME}" user="${DB_USER}" \
@@ -240,8 +254,8 @@ mimir init host=localhost port="${PORT}" dbname="${DB_NAME}" user="${DB_USER}" \
 For API keys, ask the user — do not invent or fish for keys from the
 environment.
 
-If you only need the belief graph (no document search), you can omit
-the entire `[embeddings]` section.
+For OpenAI, select `backend=openai` and the agreed model. Do not pass `backend=`
+with an empty value, or run another creation command against an existing config.
 
 **Verify:** the first `mimir stats` triggers schema migrations,
 including AGE graph creation. The first run takes a second longer.
@@ -384,7 +398,7 @@ old blocking hooks to satisfy checks copied from a historical guide.
 | `docker: ... container name "/postgres-ai" is already in use` | Name collision with an unrelated container. | Pick a different `CONTAINER`. Do **not** delete the existing one without user confirmation — it may hold data. |
 | `bind: address already in use` on port 5432 | Another postgres or app on that port. | Pick a different `PORT`. Update `~/.pgpass`, `config.toml`, the `docker run -p` flag, and the setup-script `--port` flag together. |
 | `error returned from database: graph "mimir" does not exist` | Migrations have not run yet. Mimir creates the graph on its first invocation. | Run any read-only command first, e.g. `mimir stats`. The migration will create the graph. |
-| `error returned from database: permission denied for table _ag_label_vertex` | `search_path` is missing `ag_catalog`. The `kamysh/postgres-ai` image sets this cluster-wide; a custom postgres does not. | `ALTER DATABASE "$DB_NAME" SET search_path = ag_catalog, "$user", public;` as the postgres superuser. |
+| `error returned from database: permission denied for table _ag_label_vertex` | The connected role lacks access to AGE's catalog table. | Verify the actual role and database, then check the AGE grants made by `mimir-setup/create-db-user.sh`. Changing `search_path` does not grant privileges. |
 | `xattr: [Errno 13] Permission denied` on `~/.local/bin/mimir*` | No quarantine flag exists (curl-downloaded). | Skip the `xattr -d` step entirely. |
 | `~/.pgpass` ignored | Wrong permissions. | `chmod 600 ~/.pgpass`. |
 | MCP shows `Failed to connect` | `mimir-mcp` crashing on startup. | Run `mimir-mcp` directly in a shell; the panic/error message goes to stderr. Usually a DB connectivity or config issue. |
@@ -426,9 +440,8 @@ old blocking hooks to satisfy checks copied from a historical guide.
 If you are also installing [muninn](https://github.com/kamysh/muninn)
 (the indexed code-search MCP server), the two tools can share **one**
 `postgres-ai` container — just create separate roles and databases.
-The `kamysh/postgres-ai` image is designed for this: AGE, pgvector,
-and the support extensions are cluster-wide, and the cluster-default
-`search_path` works for both tools.
+The `kamysh/postgres-ai` image includes the extensions needed by both tools;
+each setup script enables them and grants access in its own database.
 
 To share: run only one `postgres-ai` container in Step 1. For mimir,
 use the variables in this doc. For muninn, run its setup script
