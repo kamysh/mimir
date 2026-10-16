@@ -42,9 +42,20 @@ impl AgeStore {
         pending: bool,
         limit: usize,
     ) -> Result<Vec<ExperienceState>> {
+        self.list_experiences_excluding(project, pending, limit, &[])
+            .await
+    }
+    pub async fn list_experiences_excluding(
+        &self,
+        project: Option<&str>,
+        pending: bool,
+        limit: usize,
+        excluded: &[Uuid],
+    ) -> Result<Vec<ExperienceState>> {
         ensure!((1..=100).contains(&limit), "limit must be in 1..=100");
+        ensure!(excluded.len() <= 1000, "too many excluded experiences");
         let client = self.client.lock().await;
-        client.query(&format!("{CURRENT} WHERE ($1::text IS NULL OR e.project=$1) AND (NOT $2 OR e.reviewed_revision<e.revision) ORDER BY e.updated_at,e.id LIMIT $3"), &[&project, &pending, &(limit as i64)]).await?.iter().map(state).collect()
+        client.query(&format!("{CURRENT} WHERE ($1::text IS NULL OR e.project=$1) AND (NOT $2 OR e.reviewed_revision<e.revision) AND NOT (e.id = ANY($4::uuid[])) ORDER BY e.updated_at,e.id LIMIT $3"), &[&project, &pending, &(limit as i64), &excluded]).await?.iter().map(state).collect()
     }
     pub async fn experience_history(&self, id: Uuid) -> Result<serde_json::Value> {
         let client = self.client.lock().await;

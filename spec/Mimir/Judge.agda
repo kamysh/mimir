@@ -5,7 +5,7 @@
 module Mimir.Judge where
 
 open import Data.Bool using (Bool; true; false; _∧_; _∨_)
-open import Data.Nat using (ℕ; zero; suc; _+_)
+open import Data.Nat using (ℕ; zero; suc; _+_; _≟_)
 open import Data.Nat.Properties using (+-suc)
 open import Data.List using (List; []; _∷_; length)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
@@ -13,6 +13,7 @@ open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Product using (_×_; _,_; proj₁; proj₂)
 open import Data.Unit using (⊤; tt)
 open import Data.Empty using (⊥)
+open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; sym; trans)
 
 module Completion where
@@ -144,7 +145,240 @@ module Budget where
   trace-conserves-budget (tool {m} {t} trace) =
     trans (cong suc (trace-conserves-budget trace)) (sym (+-suc m t))
 
+-- Diagnostic events are recorded as the runner observes them, before a later
+-- model call or successful batch can replace the status snapshot. The concrete
+-- file adapter also caps serialized bytes, stores it privately, and retains a
+-- bounded number of attempts; those I/O conditions are checked in Rust.
+module Diagnostics where
+  data Event : Set where
+    modelRequest modelReply toolRequest toolResult budgetStop : Event
+
+  data Within (A : Set) : ℕ → Set where
+    empty : ∀ {capacity} → Within A capacity
+    cons : ∀ {capacity} → A → Within A capacity → Within A (suc capacity)
+
+  capture : ∀ {A capacity} → A → Within A capacity → Within A capacity
+  capture {capacity = zero} event empty = empty
+  capture {capacity = suc capacity} event empty = cons event empty
+  capture {capacity = suc capacity} event (cons first rest) =
+    cons first (capture event rest)
+
+  -- The oldest event remains even when the trace fills: exhaustion cannot
+  -- erase the sequence that led to it.
+  firstSurvives : ∀ {A capacity} (first next : A)
+    (rest : Within A capacity) →
+    capture next (cons first rest) ≡ cons first (capture next rest)
+  firstSurvives first next rest = refl
+
+  record Incident : Set where
+    constructor incident
+    field
+      first : Maybe (Within Event 64)
+      latest : Maybe (Within Event 64)
+      recovered : Bool
+
+  newFailure : Within Event 64 → Incident → Incident
+  newFailure trace (incident nothing latest recovered) =
+    incident (just trace) (just trace) false
+  newFailure trace (incident (just first) latest recovered) =
+    incident (just first) (just trace) false
+
+  completed : Incident → Incident
+  completed episode = episode
+
+  idle : Incident → Incident
+  idle (incident first latest recovered) = incident first latest true
+
+  completed-preserves-first : ∀ episode →
+    Incident.first (completed episode) ≡ Incident.first episode
+  completed-preserves-first episode = refl
+
+  repeated-failure-preserves-first : ∀ first latest recovered trace →
+    Incident.first (newFailure trace (incident (just first) latest recovered))
+      ≡ just first
+  repeated-failure-preserves-first first latest recovered trace = refl
+
+  idle-preserves-first : ∀ episode →
+    Incident.first (idle episode) ≡ Incident.first episode
+  idle-preserves-first (incident first latest recovered) = refl
+
+-- Email may claim that an affected review completed only after a later batch
+-- observed its database acknowledgement. An empty queue is a separate fact:
+-- it closes the alert episode but cannot itself prove that a specific review
+-- was accepted. The Rust adapter supplies only database-observed completions.
+module NotificationEvidence where
+  data Claim : Set where confirmed unverified : Claim
+
+  record Episode : Set where
+    constructor episode
+    field
+      confirmedIDs : List ℕ
+      queueIdle : Bool
+
+  contains : ℕ → List ℕ → Bool
+  contains id [] = false
+  contains id (candidate ∷ rest) with id ≟ candidate
+  ... | yes _ = true
+  ... | no _ = contains id rest
+
+  claim : ℕ → Episode → Claim
+  claim id (episode confirmedIDs idle) with contains id confirmedIDs
+  ... | true = confirmed
+  ... | false = unverified
+
+  completed : Bool → ℕ → Episode → Episode
+  completed true id (episode confirmedIDs idle) = episode (id ∷ confirmedIDs) idle
+  completed false id current = current
+
+  observedIdle : Episode → Episode
+  observedIdle (episode confirmedIDs idle) = episode confirmedIDs true
+
+  idle-cannot-create-confirmation : ∀ id current →
+    claim id (observedIdle current) ≡ claim id current
+  idle-cannot-create-confirmation id (episode confirmedIDs idle) = refl
+
+  unconfirmed-batch-cannot-create-confirmation : ∀ id current →
+    claim id (completed false id current) ≡ claim id current
+  unconfirmed-batch-cannot-create-confirmation id current = refl
+
+-- Candidate references in a model request must resolve to belief declarations
+-- in that same request before the host dispatches it to MCP or the store.
+-- Existing belief IDs require their separate scope check in the adapter.
+module PreDispatch where
+  data Declaration : Set where belief patternDeclaration : ℕ → Declaration
+  data Target : Set where existing candidate : ℕ → Target
+
+  declaresBelief : ℕ → List Declaration → Bool
+  declaresBelief key [] = false
+  declaresBelief key (belief declared ∷ rest) with declared ≟ key
+  ... | yes _ = true
+  ... | no _ = declaresBelief key rest
+  declaresBelief key (patternDeclaration declared ∷ rest) = declaresBelief key rest
+
+  validTarget : List Declaration → Target → Bool
+  validTarget declarations (existing id) = true
+  validTarget declarations (candidate key) = declaresBelief key declarations
+
+  validTargets : List Declaration → List Target → Bool
+  validTargets declarations [] = true
+  validTargets declarations (target ∷ rest) =
+    validTarget declarations target ∧ validTargets declarations rest
+
+  dispatch : List Declaration → List Target → Maybe (List Target)
+  dispatch declarations targets with validTargets declarations targets
+  ... | true = just targets
+  ... | false = nothing
+
+  undeclared-candidate-never-dispatched : ∀ declarations key rest →
+    declaresBelief key declarations ≡ false →
+    dispatch declarations (candidate key ∷ rest) ≡ nothing
+  undeclared-candidate-never-dispatched declarations key rest absent
+    rewrite absent = refl
+
+  pattern-declaration-is-not-a-belief : ∀ declarations key rest →
+    declaresBelief key declarations ≡ false →
+    dispatch (patternDeclaration key ∷ declarations) (candidate key ∷ rest) ≡ nothing
+  pattern-declaration-is-not-a-belief declarations key rest absent =
+    undeclared-candidate-never-dispatched
+      (patternDeclaration key ∷ declarations) key rest absent
+
+-- A malformed model request is returned as corrective tool feedback; it is
+-- not a deferred source revision. Immutable candidate-key conflicts can be
+-- deferred after bounded in-run correction, while the watcher keeps one alert
+-- episode and its existing backoff for incomplete batches.
+module Watch where
+  data Outcome : Set where success rejected infrastructureFailure : Outcome
+  data Rejection : Set where invalidRequest candidateConflict : Rejection
+  data RevisionCheck : Set where unchanged corrected resolved : RevisionCheck
+  data Cycle : Set where failed completed idle : Cycle
+
+  deferRejection : Rejection → RevisionCheck → Bool
+  deferRejection invalidRequest revision = false
+  deferRejection candidateConflict unchanged = true
+  deferRejection candidateConflict corrected = false
+  deferRejection candidateConflict resolved = false
+
+  invalid-request-remains-eligible : ∀ revision →
+    deferRejection invalidRequest revision ≡ false
+  invalid-request-remains-eligible revision = refl
+
+  -- A completed batch does not prove that the queue has drained. An idle
+  -- observation alone closes a failure episode and permits recovery output.
+  episodeAfter : Bool → Cycle → Bool
+  episodeAfter previous failed = true
+  episodeAfter previous completed = previous
+  episodeAfter previous idle = false
+
+  logTransition : Bool → Cycle → Bool
+  logTransition false failed = true
+  logTransition true idle = true
+  logTransition _ _ = false
+
+  completed-preserves-episode : ∀ previous →
+    episodeAfter previous completed ≡ previous
+  completed-preserves-episode previous = refl
+
+  completed-is-quiet : ∀ previous → logTransition previous completed ≡ false
+  completed-is-quiet false = refl
+  completed-is-quiet true = refl
+
+  idle-closes-episode : ∀ previous → episodeAfter previous idle ≡ false
+  idle-closes-episode previous = refl
+
+  idle-reports-active-episode : ∀ previous →
+    logTransition previous idle ≡ previous
+  idle-reports-active-episode false = refl
+  idle-reports-active-episode true = refl
+
+  reached : ℕ → ℕ → Bool
+  reached zero current = true
+  reached (suc limit) zero = false
+  reached (suc limit) (suc current) = reached limit current
+
+  retryDelay : ℕ → ℕ → ℕ → ℕ → ℕ
+  retryDelay threshold failures normal backedOff with reached threshold failures
+  ... | true = backedOff
+  ... | false = normal
+
+  threshold-switches-to-slow-retry : ∀ normal backedOff →
+    retryDelay 3 3 normal backedOff ≡ backedOff
+  threshold-switches-to-slow-retry normal backedOff = refl
+
+  retryDeferred : RevisionCheck → Bool
+  retryDeferred unchanged = false
+  retryDeferred corrected = true
+  retryDeferred resolved = false
+
+  unchanged-rejection-is-not-retried : retryDeferred unchanged ≡ false
+  unchanged-rejection-is-not-retried = refl
+
+  corrected-revision-can-be-reviewed : retryDeferred corrected ≡ true
+  corrected-revision-can-be-reviewed = refl
+
+  failures : Outcome → ℕ → ℕ
+  failures success previous = zero
+  failures rejected previous = zero
+  failures infrastructureFailure previous = suc previous
+
+  rejected-resets-failure-streak : ∀ previous → failures rejected previous ≡ zero
+  rejected-resets-failure-streak previous = refl
+
+  infrastructure-failure-increments : ∀ previous →
+    failures infrastructureFailure previous ≡ suc previous
+  infrastructure-failure-increments previous = refl
+
 module Notification where
+  incidentAfter : Bool → Watch.Cycle → Bool
+  incidentAfter = Watch.episodeAfter
+
+  completed-batch-keeps-incident : ∀ active →
+    incidentAfter active Watch.completed ≡ active
+  completed-batch-keeps-incident = Watch.completed-preserves-episode
+
+  idle-clears-incident : ∀ active →
+    incidentAfter active Watch.idle ≡ false
+  idle-clears-incident = Watch.idle-closes-episode
+
   data Mail : Set where disabled notNeeded sent exhausted : Mail
                         retryPending : ℕ → Mail
   attempt : ℕ → Bool → Mail
