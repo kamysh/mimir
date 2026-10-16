@@ -357,19 +357,40 @@ async fn incremental_queue_handles_more_than_two_hundred_experiences() {
 async fn contradiction_review_changes_detection_without_triggering_evidence_propagation() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let a = svc.add_belief_in_project("claim A", 0.8, 0.1, &project, MemoryType::Experiential).await.unwrap();
-    let b = svc.add_belief_in_project("claim B", 0.7, 0.1, &project, MemoryType::Experiential).await.unwrap();
+    let a = svc
+        .add_belief_in_project("claim A", 0.8, 0.1, &project, MemoryType::Experiential)
+        .await
+        .unwrap();
+    let b = svc
+        .add_belief_in_project("claim B", 0.7, 0.1, &project, MemoryType::Experiential)
+        .await
+        .unwrap();
     // Legacy support insertion deliberately does not trigger propagation.
-    svc.add_edge(a.id, b.id, EdgeType::Supports, 1.0).await.unwrap();
+    svc.add_edge(a.id, b.id, EdgeType::Supports, 1.0)
+        .await
+        .unwrap();
     let e = experience(&project);
     svc.record_experience(&e, 0).await.unwrap();
     let mut r = review(&e);
-    r.links.push(LearningLink { from_id:a.id, to_id:b.id, relation:EdgeType::Contradicts, weight:1.0 });
+    r.links.push(LearningLink {
+        from_id: a.id,
+        to_id: b.id,
+        relation: EdgeType::Contradicts,
+        weight: 1.0,
+    });
     svc.review_experience(&r, 0).await.unwrap();
     assert_eq!(svc.get_belief(b.id).await.unwrap().unwrap().alpha, b.alpha);
-    assert!(!svc.get_contradictions(Some(&project)).await.unwrap().is_empty());
+    assert!(!svc
+        .get_contradictions(Some(&project))
+        .await
+        .unwrap()
+        .is_empty());
     r.links.clear();
     svc.review_experience(&r, 1).await.unwrap();
-    assert!(svc.get_contradictions(Some(&project)).await.unwrap().is_empty());
+    assert!(svc
+        .get_contradictions(Some(&project))
+        .await
+        .unwrap()
+        .is_empty());
     svc.delete_project(&project).await.unwrap();
 }
