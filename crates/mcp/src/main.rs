@@ -339,38 +339,6 @@ fn paginate_beliefs(mut beliefs: Vec<Belief>, limit: usize, offset: usize) -> Va
     })
 }
 
-#[cfg(test)]
-mod pagination_tests {
-    use super::*;
-
-    #[test]
-    fn pages_are_ordered_without_overlap_and_end_at_null() {
-        let mut beliefs: Vec<_> = (0..3)
-            .into_iter()
-            .map(|n| {
-                let mut belief = Belief::new(n.to_string(), 0.5, 0.5).unwrap();
-                belief.created_at = format!("2020-01-01T00:00:0{n}Z").parse().unwrap();
-                belief
-            })
-            .collect();
-        beliefs.rotate_right(1);
-
-        let first = paginate_beliefs(beliefs.clone(), 2, 0);
-        assert_eq!(first["total"], 3);
-        assert_eq!(first["next_offset"], 2);
-        assert_eq!(first["beliefs"][0]["content"], "0");
-        assert_eq!(first["beliefs"][1]["content"], "1");
-
-        let last = paginate_beliefs(beliefs.clone(), 2, 2);
-        assert_eq!(last["beliefs"][0]["content"], "2");
-        assert!(last["next_offset"].is_null());
-
-        let beyond = paginate_beliefs(beliefs, 2, 4);
-        assert_eq!(beyond["beliefs"].as_array().unwrap().len(), 0);
-        assert!(beyond["next_offset"].is_null());
-    }
-}
-
 async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Result<Value> {
     match name {
         "explain_belief"
@@ -885,4 +853,36 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+
+    #[test]
+    fn pages_are_ordered_without_overlap_and_end_at_null() {
+        let mut beliefs: Vec<_> = (0..3)
+            .into_iter()
+            .map(|n| {
+                let mut belief = Belief::new(n.to_string(), 0.5, 0.5).unwrap();
+                belief.created_at = format!("2020-01-01T00:00:0{n}Z").parse().unwrap();
+                belief
+            })
+            .collect();
+        beliefs.rotate_right(1);
+
+        let first = paginate_beliefs(beliefs.clone(), 2, 0);
+        assert_eq!(first["total"], 3);
+        assert_eq!(first["next_offset"], 2);
+        assert_eq!(first["beliefs"][0]["content"], "0");
+        assert_eq!(first["beliefs"][1]["content"], "1");
+
+        let last = paginate_beliefs(beliefs.clone(), 2, 2);
+        assert_eq!(last["beliefs"][0]["content"], "2");
+        assert!(last["next_offset"].is_null());
+
+        let beyond = paginate_beliefs(beliefs, 2, 4);
+        assert_eq!(beyond["beliefs"].as_array().unwrap().len(), 0);
+        assert!(beyond["next_offset"].is_null());
+    }
 }
