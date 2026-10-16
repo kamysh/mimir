@@ -10,6 +10,7 @@
 module Mimir where
 
 import Mimir.Connection
+import Mimir.Startup
 
 open import Mimir.Types     public
 open import Mimir.Inference public
