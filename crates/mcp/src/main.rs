@@ -2,6 +2,8 @@ mod learning;
 #[cfg(test)]
 mod learning_cycle_test;
 use anyhow::Result;
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::{Serialize, Serializer};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::error;
@@ -27,6 +29,115 @@ fn err_response(id: &Value, code: i64, message: &str) -> Value {
         "id": id,
         "error": { "code": code, "message": message }
     })
+}
+
+/// Put the information an agent can use first in belief results. Keep this at
+/// the MCP text boundary: serde_json::Value otherwise sorts keys alphabetically.
+struct AgentJson<'a>(&'a Value);
+
+impl Serialize for AgentJson<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self.0 {
+            Value::Array(items) => {
+                let mut seq = serializer.serialize_seq(Some(items.len()))?;
+                for item in items {
+                    seq.serialize_element(&AgentJson(item))?;
+                }
+                seq.end()
+            }
+            Value::Object(fields) => {
+                let mut map = serializer.serialize_map(Some(fields.len()))?;
+                const FIRST_BELIEF_FIELDS: &[&str] = &[
+                    "content",
+                    "id",
+                    "project",
+                    "memory_type",
+                    "probability",
+                    "confidence",
+                    "created_at",
+                    "last_activated_at",
+                    "evidence",
+                ];
+                const POSTERIOR_FIELDS: &[&str] = &["alpha", "beta", "alpha0", "beta0"];
+                let is_belief = fields.contains_key("content")
+                    && fields.contains_key("id")
+                    && fields.contains_key("alpha")
+                    && fields.contains_key("beta");
+                if is_belief {
+                    for key in FIRST_BELIEF_FIELDS {
+                        if let Some(value) = fields.get(*key) {
+                            map.serialize_entry(key, &AgentJson(value))?;
+                        }
+                    }
+                }
+                for (key, value) in fields {
+                    if !is_belief
+                        || (!FIRST_BELIEF_FIELDS.contains(&key.as_str())
+                            && !POSTERIOR_FIELDS.contains(&key.as_str()))
+                    {
+                        map.serialize_entry(key, &AgentJson(value))?;
+                    }
+                }
+                if is_belief {
+                    for key in POSTERIOR_FIELDS {
+                        if let Some(value) = fields.get(*key) {
+                            map.serialize_entry(key, &AgentJson(value))?;
+                        }
+                    }
+                }
+                map.end()
+            }
+            other => other.serialize(serializer),
+        }
+    }
+}
+
+fn agent_json_text(value: &Value) -> serde_json::Result<String> {
+    serde_json::to_string(&AgentJson(value))
+}
+
+#[cfg(test)]
+mod agent_json_tests {
+    use super::*;
+
+    #[test]
+    fn belief_fields_put_content_first_and_posterior_last_even_when_nested() {
+        let result = json!({
+            "beliefs": [{
+                "alpha": 2.0,
+                "alpha0": 1.0,
+                "beta": 3.0,
+                "beta0": 1.0,
+                "confidence": 0.5,
+                "content": "A useful belief",
+                "evidence": [{"snippet": "A source passage"}],
+                "id": "belief-id",
+                "memory_type": "Fact",
+                "probability": 0.4,
+                "project": "mimir",
+                "extra": "future field"
+            }],
+            "patterns": []
+        });
+        let text = agent_json_text(&result).unwrap();
+        assert!(
+            text.starts_with("{\"beliefs\":[{\"content\":\"A useful belief\",\"id\":\"belief-id\"")
+        );
+        assert!(text.contains(
+            "\"extra\":\"future field\",\"alpha\":2.0,\"beta\":3.0,\"alpha0\":1.0,\"beta0\":1.0}"
+        ));
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), result);
+    }
+
+    #[test]
+    fn non_belief_json_keeps_its_fields_and_values() {
+        let result = json!({"z": [true, null], "a": {"beta": 2, "content": "not a belief"}});
+        let text = agent_json_text(&result).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), result);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -821,7 +932,7 @@ async fn main() -> Result<()> {
                 match handle_tool_call(&svc, tool_name, arguments).await {
                     Ok(result) => ok_response(
                         &id,
-                        json!({ "content": [{ "type": "text", "text": result.to_string() }] }),
+                        json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
                     ),
                     Err(e) => err_response(&id, -32000, &e.to_string()),
                 }
