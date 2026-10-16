@@ -18,15 +18,33 @@ procedure. Both use purpose-focused guidance and advisory lifecycle reminders.
   `$EDITOR` and will block your shell indefinitely. Use the
   non-interactive `mimir init KEY=VALUE ...` form instead (Step 4).
 
+## Upgrading from 1.x to 2.0
+
+MCP `insert_belief` now rejects calls without an independent
+`provenance: {"basis":"user_instruction"|"document","reference":"..."}`.
+Update the installed skill and custom callers as part of the upgrade.
+Incident-derived conclusions must use `record_experience` and review-owned
+candidates; do not count the same report through both paths. Direct CLI
+insertion is unchanged.
+
+Back up the database and affected configuration before starting the new
+binaries: startup applies the additive learning-ledger and review-candidate
+migrations. Coordinate both binaries and client guidance. Identify any legacy
+scheduled judges that make untagged MCP insertions and agree on updating or
+pausing them before replacing their server. Old database/embedding settings
+remain usable, and the Rust judge stays opt-in. A binary rollback does not
+retract reviews that have already changed the graph.
+
 ## What a complete install consists of
 
 The application needs PostgreSQL, the `mimir` / `mimir-mcp` binaries and an MCP
 registration in the chosen client. The standard agent setup also installs the
 shared skill, global guidance and one purpose-focused SessionStart reminder.
 They explain how prior reasoning can prevent repeated investigation and mistakes.
-They do not require automatic queries, fixed call/write quotas, ratings, a Stop
-critic or consolidation gates. Omitting a reminder does not disable the tools;
-report the intentional omission instead of claiming its delivery was verified.
+They do not require automatic queries, fixed call/write quotas, hook-generated
+ratings, a Stop critic or consolidation gates. Omitting a reminder does not
+disable the tools; report the intentional omission instead of claiming its
+delivery was verified.
 
 The client launches the MCP server. Schema migrations run through normal Mimir
 startup. Optional scheduled maintenance judges are separate from agent setup.
@@ -251,7 +269,7 @@ reminder, or one combined Mimir/Muninn reminder when both tools are installed.
 Update the existing combined entry rather than adding duplicate hooks.
 
 For upgrades, remove the old Mimir/Muninn automation and enforcement within the
-agreed scope, including sentinel/project gates, ratings and Stop requirements.
+agreed scope, including sentinel/project gates, enforced ratings and Stop requirements.
 Align the global instructions and installed skill as well. The guide describes
 which settings to preserve, Codex hook trust review, and delivery checks for both
 clients. A startup reminder explains why and when to retrieve; it does not query
@@ -341,7 +359,7 @@ registration does not prove the agent received useful guidance:
   reminder, inspect the selected Mimir-only or combined text and verify its direct
   output. The static probe in **State detection** is only a locator check.
 - For an upgraded setup, compare against the backup: obsolete retrieval,
-  sentinel/project gates, ratings and Stop enforcement should be removed as
+  sentinel/project gates, enforced ratings and Stop enforcement should be removed as
   agreed; unrelated hooks and settings should be preserved.
 - Complete Codex native hook review where applicable. Verify actual delivery at
   startup, resume and after compaction using the client's diagnostic evidence.

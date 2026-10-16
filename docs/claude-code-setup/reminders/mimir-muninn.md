@@ -27,3 +27,9 @@ When a retrieved lesson guides a later action, record the observed result with
 the used belief or pattern ID; retrieval alone is not successful use. Direct MCP
 belief writes require an explicit independent source, while incident-derived
 conclusions belong to experience-owned review candidates.
+
+After Mimir or Muninn retrieval, briefly tell the user how useful the result was
+for this task on a 0–5 scale, why, and what it changes in your next step. Assess
+the information, not a belief's probability. When several calls answer one
+question, one summary is enough. Use plain language rather than repeating raw
+JSON unless requested.

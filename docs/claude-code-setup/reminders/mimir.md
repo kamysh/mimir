@@ -19,3 +19,8 @@ If a retrieved lesson guided a later action, record that action's independently
 observed result with the used belief or pattern ID. Retrieval itself is not a
 success. Direct MCP belief writes require an explicit independent source;
 incident-derived conclusions belong to experience-owned review candidates.
+
+After retrieval, briefly tell the user how useful the result was for this task
+on a 0–5 scale, why, and what it changes in your next step. Assess the information,
+not the belief's probability. When several calls answer one question, one summary
+is enough. Use plain language rather than repeating raw JSON unless requested.
