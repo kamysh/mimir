@@ -2,16 +2,66 @@ use anyhow::{anyhow, bail, ensure, Result};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::Mutex;
 
 const MAX_MESSAGE: usize = 1024 * 1024;
+const MAX_STDERR: usize = 4096;
+
+#[derive(Debug)]
+pub struct CandidateConflict;
+
+#[derive(Debug)]
+pub struct UndeclaredBeliefCandidate;
+
+#[derive(Debug)]
+pub struct McpApplicationError;
+
+impl std::fmt::Display for McpApplicationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Mimir rejected a tool call")
+    }
+}
+
+impl std::error::Error for McpApplicationError {}
+
+impl std::fmt::Display for CandidateConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("review candidate key conflicts with an earlier declaration")
+    }
+}
+
+impl std::error::Error for CandidateConflict {}
+
+impl std::fmt::Display for UndeclaredBeliefCandidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("candidate belief reference is not declared in this review")
+    }
+}
+
+impl std::error::Error for UndeclaredBeliefCandidate {}
+
+fn candidate_conflict(error: &Value) -> bool {
+    error["code"].as_i64() == Some(-32000)
+        && error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("candidate key has a different declaration"))
+}
+
+fn undeclared_belief_candidate(error: &Value) -> bool {
+    error["code"].as_i64() == Some(-32000)
+        && error["message"].as_str()
+            == Some("candidate belief reference must be declared in this review")
+}
 
 pub struct Client {
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
+    stderr: Arc<Mutex<Vec<u8>>>,
     next_id: u64,
     deadline: Instant,
     allowed_tools: Vec<Value>,
@@ -30,7 +80,7 @@ impl Client {
             .env("MIMIR_CONFIG", config)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         // A separate process group lets timeout cleanup include grandchildren.
         unsafe {
@@ -43,7 +93,7 @@ impl Client {
         }
         let mut child = process
             .spawn()
-            .map_err(|_| anyhow!("unable to start MCP child"))?;
+            .map_err(|error| anyhow!("unable to start MCP child: {error}"))?;
         let input = child
             .stdin
             .take()
@@ -54,10 +104,31 @@ impl Client {
                 .take()
                 .ok_or_else(|| anyhow!("MCP stdout unavailable"))?,
         );
+        let mut error_pipe = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("MCP stderr unavailable"))?;
+        let stderr = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&stderr);
+        tokio::spawn(async move {
+            let mut chunk = [0u8; 1024];
+            while let Ok(size) = error_pipe.read(&mut chunk).await {
+                if size == 0 {
+                    break;
+                }
+                let mut bytes = captured.lock().await;
+                bytes.extend_from_slice(&chunk[..size]);
+                if bytes.len() > MAX_STDERR {
+                    let excess = bytes.len() - MAX_STDERR;
+                    bytes.drain(..excess);
+                }
+            }
+        });
         let mut client = Self {
             child,
             input,
             output,
+            stderr,
             next_id: 1,
             deadline: Instant::now() + Duration::from_secs(seconds),
             allowed_tools: Vec::new(),
@@ -114,18 +185,32 @@ impl Client {
         loop {
             let byte = tokio::time::timeout(self.remaining()?, self.output.read_u8())
                 .await
-                .map_err(|_| anyhow!("MCP read timeout"))?
-                .map_err(|_| anyhow!("MCP stream ended"))?;
+                .map_err(|_| anyhow!("MCP read timeout"))?;
+            let byte = match byte {
+                Ok(byte) => byte,
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    let stderr = self.stderr.lock().await;
+                    let detail = super::state::bounded(&String::from_utf8_lossy(&stderr), 512);
+                    if detail.is_empty() {
+                        bail!("MCP stream ended");
+                    }
+                    bail!("MCP stream ended: {detail}");
+                }
+            };
             if byte == b'\n' {
                 break;
             }
             ensure!(bytes.len() < MAX_MESSAGE, "MCP response exceeds limit");
             bytes.push(byte);
         }
-        serde_json::from_slice(&bytes).map_err(|_| anyhow!("malformed MCP response"))
+        serde_json::from_slice(&bytes).map_err(|error| {
+            super::state::SourceFailure::json("malformed MCP response", &bytes, error).into()
+        })
     }
 
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        let review_call = method == "tools/call" && params["name"] == "review_experience";
         let id = self.next_id;
         self.next_id = self
             .next_id
@@ -154,7 +239,22 @@ impl Client {
                 "unexpected MCP response ID"
             );
             if response.get("error").is_some() {
-                bail!("MCP request failed");
+                if review_call && candidate_conflict(&response["error"]) {
+                    return Err(CandidateConflict.into());
+                }
+                if review_call && undeclared_belief_candidate(&response["error"]) {
+                    return Err(UndeclaredBeliefCandidate.into());
+                }
+                let code = response["error"]["code"].as_i64().unwrap_or(-1);
+                let message = response["error"]["message"]
+                    .as_str()
+                    .unwrap_or("unspecified MCP failure");
+                if method == "tools/call" {
+                    // Keep the detailed server response in the local error chain.
+                    // The judge sends only a fixed, generic message to the model.
+                    return Err(anyhow!("MCP error {code}: {message}").context(McpApplicationError));
+                }
+                bail!("MCP error {code}: {message}");
             }
             return response
                 .get("result")
@@ -172,7 +272,11 @@ impl Client {
         for (name, required) in [
             (
                 "pending_experiences",
-                &[("project", "string"), ("limit", "integer")][..],
+                &[
+                    ("project", "string"),
+                    ("limit", "integer"),
+                    ("exclude_ids", "array"),
+                ][..],
             ),
             ("get_experience", &[("id", "string")][..]),
             (
@@ -254,10 +358,9 @@ impl Client {
         let result = self
             .request("tools/call", json!({"name":name,"arguments":args}))
             .await?;
-        ensure!(
-            result.get("isError").and_then(Value::as_bool) != Some(true),
-            "MCP tool failed"
-        );
+        if result.get("isError").and_then(Value::as_bool) == Some(true) {
+            return Err(anyhow!("MCP tool returned isError").context(McpApplicationError));
+        }
         let content = result["content"]
             .as_array()
             .ok_or_else(|| anyhow!("invalid MCP tool result"))?;
@@ -268,7 +371,10 @@ impl Client {
         let text = content[0]["text"]
             .as_str()
             .ok_or_else(|| anyhow!("invalid MCP tool text"))?;
-        serde_json::from_str(text).map_err(|_| anyhow!("invalid MCP tool JSON"))
+        serde_json::from_str(text).map_err(|error| {
+            super::state::SourceFailure::json("invalid MCP tool JSON", text.as_bytes(), error)
+                .into()
+        })
     }
 }
 
@@ -286,16 +392,45 @@ impl Drop for Client {
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_known_candidate_conflicts_are_deferred() {
+        assert!(candidate_conflict(
+            &json!({"code":-32000,"message":"candidate key has a different declaration"})
+        ));
+        assert!(!candidate_conflict(
+            &json!({"code":-32000,"message":"database unavailable"})
+        ));
+        assert!(!candidate_conflict(
+            &json!({"code":-32001,"message":"candidate key has a different declaration"})
+        ));
+        assert!(undeclared_belief_candidate(&json!({
+            "code":-32000,
+            "message":"candidate belief reference must be declared in this review"
+        })));
+        assert!(!undeclared_belief_candidate(&json!({
+            "code":-32001,
+            "message":"candidate belief reference must be declared in this review"
+        })));
+        assert!(!undeclared_belief_candidate(&json!({
+            "code":-32000,
+            "message":"database unavailable"
+        })));
+    }
+
     #[tokio::test]
     async fn rejects_malformed_transport_and_kills_descendants_on_timeout() {
         let crashed = Client::start(
             "bash",
-            &["-c".into(), "exit 7".into()],
+            &["-c".into(), "echo startup-failure >&2; exit 7".into()],
             Path::new("/var/tmp/mimir/step5/unused-config"),
             2,
         )
         .await;
-        assert!(crashed.is_err());
+        assert!(crashed
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("startup-failure"));
         let malformed = Client::start(
             "bash",
             &["-c".into(), "read -r request; printf 'not-json\\n'".into()],

@@ -324,6 +324,7 @@ fn failure(source: &str, incident: &str, code: &str) -> Event {
             code: code.into(),
             summary: "Fixture failed".into(),
         },
+        details: None,
     }
 }
 
@@ -332,6 +333,16 @@ fn recovery(source: &str, incident: &str) -> Event {
         source: source.into(),
         incident_key: incident.into(),
         status: EventStatus::Recovery,
+        details: None,
+    }
+}
+
+fn progress(source: &str, incident: &str) -> Event {
+    Event {
+        source: source.into(),
+        incident_key: incident.into(),
+        status: EventStatus::Progress,
+        details: None,
     }
 }
 
@@ -341,7 +352,8 @@ async fn independent_components_retry_restart_suppress_and_recover() {
     let path = directory();
     let notifier = Notifier::new(&config, &path).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let event = failure("judge", "project-a", "blocked");
+    let mut event = failure("judge", "project-a", "blocked");
+    event.details = Some("Reason: model call limit reached\nDiagnostic ID: fixture".into());
     let collected = seen.clone();
     let result = notifier
         .submit_with(&event, 100, move |mail| async move {
@@ -396,8 +408,10 @@ async fn independent_components_retry_restart_suppress_and_recover() {
         let messages = seen.lock().unwrap();
         assert_eq!(messages.len(), 2);
         for raw in messages.iter() {
-            assert!(String::from_utf8_lossy(raw)
-                .contains(&format!("Message-ID: <mimir-{first_id}@mimir.local>")));
+            let message = String::from_utf8_lossy(raw);
+            assert!(message.contains(&format!("Message-ID: <mimir-{first_id}@mimir.local>")));
+            assert!(message.contains("Reason: model call limit reached"));
+            assert!(message.contains("Diagnostic ID: fixture"));
         }
     }
     assert_eq!(
@@ -409,7 +423,8 @@ async fn independent_components_retry_restart_suppress_and_recover() {
             .unwrap(),
         Outcome::NotNeeded
     );
-    let healthy = recovery("judge", "project-a");
+    let mut healthy = recovery("judge", "project-a");
+    healthy.details = Some("Affected reviews: 1 confirmed by completed batches".into());
     assert_eq!(
         notifier
             .submit_with(&healthy, 120, |_| async { Err(SendFailure::Retryable) })
@@ -419,7 +434,11 @@ async fn independent_components_retry_restart_suppress_and_recover() {
     );
     assert_eq!(
         notifier
-            .submit_with(&healthy, 130, |_| async { Ok(()) })
+            .submit_with(&healthy, 130, |mail| async move {
+                assert!(String::from_utf8_lossy(&mail.formatted())
+                    .contains("Affected reviews: 1 confirmed by completed batches"));
+                Ok(())
+            })
             .await
             .unwrap(),
         Outcome::Sent
@@ -427,6 +446,69 @@ async fn independent_components_retry_restart_suppress_and_recover() {
     let saved: Outbox = StateDir::lock(&path).unwrap().read().unwrap().unwrap();
     assert!(!saved.incidents.contains_key(&event.map_key()));
     assert!(saved.incidents.contains_key(&other.map_key()));
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[tokio::test]
+async fn progress_keeps_failure_incident_open_until_idle_recovery() {
+    let config = config();
+    let path = directory();
+    let notifier = Notifier::new(&config, &path).unwrap();
+    let failed = failure("judge", "all-projects", "judge_failure");
+    let completed = progress("judge", "all-projects");
+    let idle = recovery("judge", "all-projects");
+
+    assert_eq!(
+        notifier
+            .submit_with(&completed, 100, |_| async {
+                panic!("progress alone must not send")
+            })
+            .await
+            .unwrap(),
+        Outcome::NotNeeded
+    );
+    assert_eq!(
+        notifier
+            .submit_with(&failed, 101, |_| async { Ok(()) })
+            .await
+            .unwrap(),
+        Outcome::Sent
+    );
+    for time in 102..1102 {
+        assert_eq!(
+            notifier
+                .submit_with(&completed, time, |_| async {
+                    panic!("completed batch must not send recovery")
+                })
+                .await
+                .unwrap(),
+            Outcome::NotNeeded
+        );
+        assert_eq!(
+            notifier
+                .submit_with(&failed, time, |_| async {
+                    panic!("same failure must not send again")
+                })
+                .await
+                .unwrap(),
+            Outcome::NotNeeded
+        );
+    }
+    let saved: Outbox = StateDir::lock(&path).unwrap().read().unwrap().unwrap();
+    assert_eq!(
+        saved.incidents[&failed.map_key()].active_code.as_deref(),
+        Some("judge_failure")
+    );
+    drop(saved);
+    assert_eq!(
+        notifier
+            .submit_with(&idle, 1102, |_| async { Ok(()) })
+            .await
+            .unwrap(),
+        Outcome::Sent
+    );
+    let saved: Outbox = StateDir::lock(&path).unwrap().read().unwrap().unwrap();
+    assert!(!saved.incidents.contains_key(&failed.map_key()));
     std::fs::remove_dir_all(path).unwrap();
 }
 
@@ -545,6 +627,94 @@ async fn loopback_starttls_and_implicit_tls_with_certificate_checks() {
         .iter()
         .all(|line| !line.starts_with("AUTH")));
     std::fs::remove_dir_all(cert_dir).unwrap();
+}
+
+#[tokio::test]
+async fn digest_uses_host_and_real_loopback_smtp() {
+    let (cert_dir, root, cert, key) = certificate();
+    let (port, server) = fixture(EmailTls::Tls, ServerCase::Accept, cert, key).await;
+    let mut config = config();
+    config.tls = Some(EmailTls::Tls);
+    config.port = Some(port);
+    let digest = Digest {
+        through_day: "2026-10-10".into(),
+        body: "2026-10-10   2 reviews\nRunning total: 2\n".into(),
+    };
+    let message = smtp::digest_message(&config, &digest).unwrap();
+    let result = smtp::send_with_root(&config, message, Some(&root), None).await;
+    let captured = server.await.unwrap();
+    assert!(result.is_ok(), "fixture delivery failed: {result:?}");
+    assert!(captured.accepted);
+    assert!(captured
+        .data
+        .contains(&format!("Mimir [{}] daily statistics", computer_name())));
+    assert!(captured
+        .data
+        .contains(&format!("Computer: {}", computer_name())));
+    assert!(captured.data.contains("Running total: 2"));
+    std::fs::remove_dir_all(cert_dir).unwrap();
+}
+
+#[tokio::test]
+async fn digest_cursor_suppresses_repeats_and_throttles_failed_delivery() {
+    use std::os::unix::fs::PermissionsExt;
+    let config = config();
+    let path = directory();
+    let notifier = Notifier::new(&config, &path).unwrap();
+    let digest = Digest {
+        through_day: "2026-10-10".into(),
+        body: "Fixture statistics\n".into(),
+    };
+    assert_eq!(
+        notifier
+            .send_digest_at(
+                &digest,
+                100,
+                Some(|_| async { Err(SendFailure::Retryable) })
+            )
+            .await
+            .unwrap(),
+        Outcome::RetryPending
+    );
+    let state = notifier.digest_state().unwrap();
+    assert_eq!(state.next_due, 3700);
+    assert_eq!(state.through_day, None);
+    assert!(state.last_attempt_failed);
+    assert_eq!(
+        std::fs::metadata(path.join("notification-digest.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert_eq!(
+        notifier
+            .send_digest_at(&digest, 3699, Some(|_| async { panic!("too early") }))
+            .await
+            .unwrap(),
+        Outcome::RetryPending
+    );
+    assert_eq!(
+        notifier
+            .send_digest_at(&digest, 3700, Some(|_| async { Ok(()) }))
+            .await
+            .unwrap(),
+        Outcome::Sent
+    );
+    assert_eq!(
+        notifier.digest_state().unwrap().through_day.as_deref(),
+        Some("2026-10-10")
+    );
+    assert!(!notifier.digest_state().unwrap().last_attempt_failed);
+    assert_eq!(
+        notifier
+            .send_digest_at(&digest, 3701, Some(|_| async { panic!("duplicate") }))
+            .await
+            .unwrap(),
+        Outcome::NotNeeded
+    );
+    std::fs::remove_dir_all(path).unwrap();
 }
 
 #[tokio::test]

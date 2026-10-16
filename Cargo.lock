@@ -1530,6 +1530,7 @@ name = "mimir"
 version = "1.2.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "libc",
  "mimir-core",
@@ -1538,6 +1539,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-postgres",
  "toml",
  "url",
  "uuid",
