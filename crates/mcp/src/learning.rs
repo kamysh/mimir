@@ -26,7 +26,7 @@ pub fn tools() -> Vec<Value> {
                 "evidence":{"type":"array","items":{"type":"string"},"maxItems":32},
                 "belief_ids":{"type":"array","items":uuid,"maxItems":64},"pattern_id":{"type":["string","null"]}},
                 "required":["id","project","context","action","outcome","source","evidence"]}},"required":["experience","expected_revision"]}}),
-        json!({"name":"pending_experiences","description":"Get the oldest new or changed experiences awaiting LLM review. Bounded incremental work: successful review removes that exact version; failed/stale submissions leave it pending. An empty array means no work. No claim or lease; concurrent reviewers use revision checks.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100,"default":10}}}}),
+        json!({"name":"pending_experiences","description":"Get the oldest new or changed experiences awaiting LLM review. Bounded incremental work: successful review removes that exact version; failed/stale submissions leave it pending. A judge may temporarily exclude deferred IDs; an empty filtered array does not prove the whole queue is empty. No claim or lease; concurrent reviewers use revision checks.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100,"default":10},"exclude_ids":{"type":"array","items":uuid,"maxItems":1000}}}}),
         json!({"name":"review_experience","description":"Apply one atomic, revision-checked review. Declare new belief/pattern candidates with stable keys; the response maps keys to server UUIDs. Candidate creation is not an observed successful use. Existing UUID-only reviews remain valid. Corrections retract owned evidence and links while retaining candidate identity and independent work.","inputSchema":{"type":"object","properties":{
             "expected_review_revision":{"type":"integer","minimum":0},
             "review":{"type":"object","additionalProperties":false,"properties":{
@@ -99,11 +99,16 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
         }
         "experience_history" => svc.experience_history(text(args, "id")?.parse()?).await?,
         "pending_experiences" => serde_json::to_value(
-            svc.pending_experiences(
+            svc.pending_experiences_excluding(
                 args.get("project")
                     .map(|_| text(args, "project"))
                     .transpose()?,
                 limit(args, 10)?,
+                &args
+                    .get("exclude_ids")
+                    .map(|ids| serde_json::from_value::<Vec<uuid::Uuid>>(ids.clone()))
+                    .transpose()?
+                    .unwrap_or_default(),
             )
             .await?,
         )?,
