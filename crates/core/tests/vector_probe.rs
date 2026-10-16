@@ -36,6 +36,8 @@ fn test_db_config() -> DatabaseConfig {
             .unwrap(),
         dbname: std::env::var("MIMIR_DBNAME").expect("MIMIR_DBNAME"),
         user: std::env::var("MIMIR_USER").expect("MIMIR_USER"),
+        password: None,
+        pgpassfile: None,
         ssl_mode: SslMode::default(),
         ssl_root_cert: None,
         ssl_client_cert: None,

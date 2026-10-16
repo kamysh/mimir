@@ -9,6 +9,8 @@
 --   Mimir.Session   — session-scoped project side channel for hook injection (#9)
 module Mimir where
 
+import Mimir.Connection
+
 open import Mimir.Types     public
 open import Mimir.Inference public
 open import Mimir.Graph     public

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use include_dir::{include_dir, Dir};
-use postgres_native_tls::MakeTlsConnector;
 use tokio_postgres::Client;
 
 use crate::config::{DatabaseConfig, SslMode};
@@ -28,29 +27,6 @@ fn embedded_migrations() -> anyhow::Result<Vec<kryzhen::Migration>> {
     Ok(all)
 }
 
-/// Read password from ~/.pgpass for (host, port, dbname, user).
-fn pgpass_lookup(host: &str, port: u16, dbname: &str, user: &str) -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let path = std::path::Path::new(&home).join(".pgpass");
-    let content = std::fs::read_to_string(path).ok()?;
-    let port_s = port.to_string();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let parts: Vec<&str> = line.splitn(5, ':').collect();
-        if parts.len() != 5 {
-            continue;
-        }
-        let m = |pat: &str, val: &str| pat == "*" || pat == val;
-        if m(parts[0], host) && m(parts[1], &port_s) && m(parts[2], dbname) && m(parts[3], user) {
-            return Some(parts[4].to_owned());
-        }
-    }
-    None
-}
-
 /// Run kryzhen migrations against the database. Called once at startup.
 ///
 /// Migrations and the sqlx import receipt are embedded at compile time.
@@ -66,10 +42,10 @@ pub async fn migrate(cfg: &DatabaseConfig) -> Result<()> {
         .await?;
     let receipt: kryzhen::sqlx_import::Receipt = serde_json::from_str(RECEIPT_JSON)?;
     let result: Result<()> = async {
-        kryzhen::sqlx_import::import(&client, &receipt, &migrations)
+        kryzhen::sqlx_import::import(&mut client, &receipt, &migrations)
             .await
             .map_err(anyhow::Error::from)?;
-        kryzhen::migrate(&mut client, &migrations, false).await?;
+        apply_migrations(&mut client, &migrations).await?;
         Ok(())
     }
     .await;
@@ -78,6 +54,31 @@ pub async fn migrate(cfg: &DatabaseConfig) -> Result<()> {
         .await;
     result?;
     unlocked?;
+    Ok(())
+}
+
+/// Kryzhen 2's template executor restricts search_path to the target schema.
+/// Mimir's immutable historical SQL also resolves AGE operators in ag_catalog.
+/// Keep Kryzhen's validation and ledger, but execute the original SQL with the
+/// application's search path. The body and both ledger rows commit atomically.
+async fn apply_migrations(client: &mut Client, migrations: &[kryzhen::Migration]) -> Result<()> {
+    kryzhen::validation::check_duplicate_names(migrations)?;
+    let ordered = kryzhen::graph::topo_sort(migrations.to_vec())?;
+    kryzhen::postgres::ensure_schema(client).await?;
+    let checksums = kryzhen::postgres::load_applied(client).await?;
+    let applied = kryzhen::postgres::load_applied_for_schema(client, "public").await?;
+    kryzhen::validation::check_checksums(&ordered, &checksums)?;
+    for migration in &ordered {
+        if applied.contains(&migration.name) {
+            continue;
+        }
+        let mut tx = client.transaction().await?;
+        tx.batch_execute(&format!("SET LOCAL search_path TO {SEARCH_PATH}"))
+            .await?;
+        tx.batch_execute(&migration.script).await?;
+        kryzhen::postgres::record_applied(&mut tx, migration, "public").await?;
+        tx.commit().await?;
+    }
     Ok(())
 }
 
@@ -94,7 +95,14 @@ pub async fn connect(cfg: &DatabaseConfig) -> Result<Client> {
     pg_cfg.dbname(&cfg.dbname);
     pg_cfg.user(&cfg.user);
     pg_cfg.options(format!("-c search_path={SEARCH_PATH}"));
-    if let Some(pw) = pgpass_lookup(&cfg.host, cfg.port, &cfg.dbname, &cfg.user) {
+    if let Some(pw) = crate::password::resolve(
+        cfg.password.as_deref(),
+        cfg.pgpassfile.as_deref(),
+        &cfg.host,
+        cfg.port,
+        &cfg.dbname,
+        &cfg.user,
+    ) {
         pg_cfg.password(pw);
     }
 
@@ -106,39 +114,12 @@ pub async fn connect(cfg: &DatabaseConfig) -> Result<Client> {
         }
     });
 
-    if cfg.ssl_mode == SslMode::Disable {
-        let (client, conn) = pg_cfg.connect(tokio_postgres::NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(e) = conn.await {
-                tracing::error!("postgres connection error: {e}");
-            }
-        });
-        return Ok(client);
-    }
-
-    let mut tls_builder = native_tls::TlsConnector::builder();
-    match cfg.ssl_mode {
-        SslMode::Require | SslMode::Prefer => {
-            tls_builder.danger_accept_invalid_certs(true);
-        }
-        SslMode::VerifyCa | SslMode::VerifyFull => {
-            if let Some(ref path) = cfg.ssl_root_cert {
-                let pem = std::fs::read(path)?;
-                let cert = native_tls::Certificate::from_pem(&pem)?;
-                tls_builder.add_root_certificate(cert);
-            }
-        }
-        _ => {}
-    }
-    if let Some(ref cert_path) = cfg.ssl_client_cert {
-        if let Some(ref key_path) = cfg.ssl_client_key {
-            let cert_pem = std::fs::read(cert_path)?;
-            let key_pem = std::fs::read(key_path)?;
-            let identity = native_tls::Identity::from_pkcs8(&cert_pem, &key_pem)?;
-            tls_builder.identity(identity);
-        }
-    }
-    let tls = MakeTlsConnector::new(tls_builder.build()?);
+    let tls = crate::tls::connector(
+        &cfg.ssl_mode,
+        cfg.ssl_root_cert.as_deref(),
+        cfg.ssl_client_cert.as_deref(),
+        cfg.ssl_client_key.as_deref(),
+    )?;
     let (client, conn) = pg_cfg.connect(tls).await?;
     tokio::spawn(async move {
         if let Err(e) = conn.await {

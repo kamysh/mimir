@@ -142,8 +142,8 @@ docker exec postgres-ai psql -U postgres -c 'SELECT 1' >/dev/null && echo OK
 ### Step 2: Create the database and user
 
 Generate a password with `openssl rand -hex 32` and add it to `~/.pgpass`.
-Use the generated hexadecimal value: the current application reader does not
-decode escaped `.pgpass` fields.
+For an existing password, escape `:` as `\:` and `\` as `\\` in each `.pgpass`
+field. Quotes and spaces are literal and must be preserved.
 
 ```
 # ~/.pgpass — format: hostname:port:database:username:password
@@ -232,7 +232,10 @@ dbname = "mimir"
 user   = "mimir"      # the role you created in Step 2
 ```
 
-Password comes from `~/.pgpass` — never from the config file.
+Credentials can come from optional `database.password`, then `PGPASSWORD`, then
+a password file. Optional `database.pgpassfile` selects that file ahead of
+`PGPASSFILE` and `~/.pgpass`. See [database credentials and TLS](docs/database-connections.md)
+for configuration examples, client certificates and verification modes.
 
 **Document search (optional):** To use `load_document` and `query_document`, add an `[embeddings]` section. Three backends are available:
 

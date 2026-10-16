@@ -43,13 +43,19 @@ pub enum SslMode {
 
 // ── Database config ────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct DatabaseConfig {
     // ── Required ──────────────────────────────────────────────────────────
     pub host: String,
     pub port: u16,
     pub dbname: String,
     pub user: String,
+    /// Literal password; precedes PGPASSWORD and password-file lookup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    /// Password file; precedes PGPASSFILE and ~/.pgpass.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pgpassfile: Option<String>,
 
     // ── TLS (optional) ────────────────────────────────────────────────────
     /// SSL negotiation mode. Default: prefer.
@@ -64,6 +70,20 @@ pub struct DatabaseConfig {
     /// Path to PEM-encoded client private key (mutual TLS).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssl_client_key: Option<String>,
+}
+
+impl std::fmt::Debug for DatabaseConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("dbname", &self.dbname)
+            .field("user", &self.user)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("pgpassfile", &self.pgpassfile)
+            .field("ssl_mode", &self.ssl_mode)
+            .finish_non_exhaustive()
+    }
 }
 
 // ── Global config ──────────────────────────────────────────────────────────
@@ -161,7 +181,7 @@ impl Config {
     /// embeddings), write it to the default path, and return the path. Fails
     /// if the file already exists — same safety contract as `create_template`.
     ///
-    /// Recognised keys: host, port, dbname, user, ssl_mode, ssl_root_cert,
+    /// Recognised keys: host, port, dbname, user, password, pgpassfile, ssl_mode, ssl_root_cert,
     /// ssl_client_cert, ssl_client_key, backend, model, api_key, batch_size,
     /// cache_dir. `backend`/`model`/`api_key`/`batch_size`/`cache_dir` populate
     /// `[embeddings]`, which is included only if `backend` is given.
@@ -176,6 +196,8 @@ impl Config {
             port: 5432,
             dbname: "mimir".to_string(),
             user: "mimir".to_string(),
+            password: None,
+            pgpassfile: None,
             ssl_mode: SslMode::default(),
             ssl_root_cert: None,
             ssl_client_cert: None,
@@ -193,6 +215,8 @@ impl Config {
                 }
                 "dbname" => database.dbname = value.clone(),
                 "user" => database.user = value.clone(),
+                "password" => database.password = Some(value.clone()),
+                "pgpassfile" => database.pgpassfile = Some(value.clone()),
                 "ssl_mode" => {
                     database.ssl_mode = match value.as_str() {
                         "disable" => SslMode::Disable,
@@ -299,14 +323,15 @@ const CONFIG_TEMPLATE: &str = r#"# ~/.config/mimir/config.toml — mimir global 
 
 # ── Required ──────────────────────────────────────────────────────────────────
 # PostgreSQL server address and application database.
-# mimir never stores a password. Add a ~/.pgpass entry instead:
-#   HOST:PORT:DBNAME:USER:password
-# The file must be chmod 600 or PostgreSQL will ignore it.
+# Password precedence: password below, nonempty PGPASSWORD, then password file.
+# File selection: pgpassfile below, PGPASSFILE, then ~/.pgpass (chmod 600).
 
 host   = "localhost"   # hostname or IP of the PostgreSQL server
 port   = 5432          # PostgreSQL port
 dbname = "mimir"       # name of the mimir database (must already exist)
 user   = "mimir"       # PostgreSQL role used by mimir at runtime
+# password = "literal password"   # Optional; TOML string escaping applies.
+# pgpassfile = "/path/to/pgpass"   # Optional explicit password file.
 
 # ── TLS (optional) ────────────────────────────────────────────────────────────
 # Controls SSL/TLS negotiation between mimir and PostgreSQL.
@@ -316,9 +341,9 @@ user   = "mimir"       # PostgreSQL role used by mimir at runtime
 #   prefer      — try TLS first, fall back to plain text (default)
 #   require     — require TLS, but do not verify the server certificate
 #   verify-ca   — require TLS and verify the server certificate is signed
-#                 by a trusted CA (ssl_root_cert must be set)
+#                 by a trusted CA (system trust or ssl_root_cert)
 #   verify-full — like verify-ca, and also verify the server hostname
-#                 matches the certificate CN/SAN (ssl_root_cert must be set)
+#                 matches the certificate CN/SAN (system trust or ssl_root_cert)
 #
 # ssl_mode      = "prefer"
 # ssl_root_cert = "/path/to/ca.crt"      # CA certificate for verify-ca / verify-full
