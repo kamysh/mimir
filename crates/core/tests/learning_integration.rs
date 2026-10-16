@@ -25,7 +25,9 @@ async fn service() -> MimirService {
             ssl_client_key: None,
         },
         embeddings: None,
-        llm: None, judge: None, email: None,
+        llm: None,
+        judge: None,
+        email: None,
     })
     .await
     .unwrap()

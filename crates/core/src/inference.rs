@@ -82,10 +82,19 @@ impl InferenceEngine {
     ) -> Result<Vec<(Uuid, (f64, f64))>> {
         let mut virtual_seed = Uuid::new_v4();
         while beliefs.iter().any(|b| b.id == virtual_seed)
-            || edges.iter().any(|(a,b,_,_)| *a == virtual_seed || *b == virtual_seed) {
+            || edges
+                .iter()
+                .any(|(a, b, _, _)| *a == virtual_seed || *b == virtual_seed)
+        {
             virtual_seed = Uuid::new_v4();
         }
-        self.propagate_core(virtual_seed, Probability::new(0.5)?, beliefs, edges, external_means)
+        self.propagate_core(
+            virtual_seed,
+            Probability::new(0.5)?,
+            beliefs,
+            edges,
+            external_means,
+        )
     }
 
     /// Counterfactual projection P(· | do(target = value)). Pearl's do-operator
