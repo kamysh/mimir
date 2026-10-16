@@ -186,7 +186,9 @@ test "$status" -eq 124
 test ! -s "$base/watch-stdout"
 test "$(grep -c 'judge watch: incomplete run' "$base/watch-stderr")" -eq 1
 "$bin" judge status --state-dir "$base/state-watch" \
-    | jq -e '.report.status == "blocked" and .report.block_reason == "backend_error_or_timeout"' >/dev/null
+    | jq -e '.report.status == "blocked" and .report.block_reason == "backend_error"
+        and .report.diagnostics_id != null
+        and (.report.failure_detail | contains("exit status: 7"))' >/dev/null
 call_tool "$config" pending_experiences "$(jq -nc --arg project "$project" '{project:$project,limit:1}')" | jq -e 'length == 1' >/dev/null
 call_tool "$config" delete_project "$(jq -nc --arg project "$project" '{project:$project}')" >/dev/null
 current_project=
