@@ -83,14 +83,16 @@ remain in the printed `/var/tmp` artifact directory; containers are removed.
 
 ## Proof and test boundary
 
-Startup uses Kryzhen 2.0.2 validation and ledger APIs with a `public` migration
+Startup uses Kryzhen 2.0.3 validation and ledger APIs with a `public` migration
 target. A compatibility executor retains `public,ag_catalog` while running
 historical SQL, whose AGE operators need that search path. Each migration body
-and its ledger entries commit in one transaction. Upgrading
-an existing Kryzhen ledger must preserve its canonical records and application
-data while adding schema associations. The historical sqlx receipt remains
-supported. The real-server matrix checks fresh startup, both upgrade paths and
-repeat startup; existing migration SQL and checksums remain unchanged.
+and its ledger entries commit in one transaction. The real-server matrix checks
+fresh startup, upgrading the pre-schema-tracking Kryzhen ledger, importing the
+historical sqlx receipt, and repeat startup. It checks preservation of existing
+migration records and application data; migration SQL and checksums remain
+unchanged. This does not cover every historical ledger state: an existing but
+incomplete schema-association table requires investigation and a verified manual
+repair, not replaying SQL whose effects are already present.
 
 `Mimir.Connection` proves source precedence, mandatory-TLS plaintext refusal,
 CA-only hostname independence and uniform policy across abstract connection
