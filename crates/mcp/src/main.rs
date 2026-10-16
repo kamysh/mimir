@@ -795,14 +795,28 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Handle --version / -V before any I/O or DB work, mirroring the CLI's clap
-    // `--version` so both binaries answer the same way.
-    if std::env::args()
-        .skip(1)
-        .any(|a| a == "--version" || a == "-V")
-    {
-        println!("mimir-mcp {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+    // Mimir.Startup: only an empty invocation may load configuration or connect.
+    // Keep OS strings intact so invalid Unicode is a usage error, not a panic.
+    const USAGE: &str = "Usage: mimir-mcp [--help | --version]";
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    match args.as_slice() {
+        [] => {}
+        [arg] if arg == "--help" || arg == "-h" => {
+            println!(
+                "Mimir MCP server over stdio\n\n{USAGE}\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n\nRun without arguments to start the server.\nConfiguration: MIMIR_CONFIG or ~/.config/mimir/config.toml"
+            );
+            return Ok(());
+        }
+        [arg] if arg == "--version" || arg == "-V" => {
+            println!("mimir-mcp {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        _ => {
+            eprintln!(
+                "error: unexpected arguments\n\n{USAGE}\n\nFor more information, try '--help'."
+            );
+            std::process::exit(2);
+        }
     }
 
     // Init tracing to stderr (stdout is reserved for JSON-RPC responses).
