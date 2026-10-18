@@ -35,6 +35,21 @@ Select the model with `[llm].model`; for Codex, optional
 `[llm].reasoning_effort` passes an explicit effort to each invocation. Omitting
 it leaves Codex's normal default in effect. Model-specific effort support is
 checked by Codex at runtime.
+
+Codex runs with `--json` and reads its structured answer from
+`--output-last-message`; Claude Code uses `--output-format json` and reads the
+structured reply from that wrapper. Codex's human-readable mode echoes the prompt
+to stderr, so it is unsuitable for the judge's potentially large history payloads.
+All subprocess adapters retain the same per-invocation limits: 2 MiB input,
+8 MiB stdout and 64 KiB stderr. Crossing an output limit still fails the attempt
+and terminates its process group. The error names stdout or stderr, its limit,
+and the observed byte count (a lower bound because reading stops at overflow).
+The local failure report retains at most 32 KiB of that stream's prefix as a
+private `failure_source`; ordinary error text and email omit the excerpt.
+This is an I/O contract enforced by runtime tests, outside the abstract Agda
+diagnostic-retention proofs. Successful process output alone never acknowledges
+a review; the existing database-receipt rule remains in force.
+
 The `api` backend requires an explicit model, provider, and API key. OpenAI
 Responses calls use stateless `store: false`
 requests and replay response output, including encrypted reasoning items, with

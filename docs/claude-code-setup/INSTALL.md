@@ -18,9 +18,9 @@ installation files before using the relative paths below:
 
 ```sh
 mkdir -p "$HOME/.local/share/mimir"
-curl -fL https://github.com/kamysh/mimir/archive/refs/tags/v2.0.2.tar.gz \
+curl -fL https://github.com/kamysh/mimir/archive/refs/tags/v2.0.3.tar.gz \
   | tar -xz -C "$HOME/.local/share/mimir"
-cd "$HOME/.local/share/mimir/mimir-2.0.2"
+cd "$HOME/.local/share/mimir/mimir-2.0.3"
 ```
 
 If you already have that checkout, change to its root instead. This downloads
