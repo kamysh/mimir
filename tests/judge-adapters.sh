@@ -18,7 +18,7 @@ if [[ " $* " == *" --help "* ]]; then
         exit 0
     fi
     if [[ "$kind" == codex ]]; then
-        printf '%s\n' '--ignore-user-config --ignore-rules --ephemeral --sandbox --output-schema --output-last-message --skip-git-repo-check --model --config'
+        printf '%s\n' '--ignore-user-config --ignore-rules --ephemeral --sandbox --output-schema --output-last-message --json --skip-git-repo-check --model --config'
     else
         printf '%s\n' '--print --restricted --tools --strict-mcp-config --mcp-config --disable-slash-commands --no-session-persistence --output-format --json-schema --permission-mode --permission-prompts --settings --model'
     fi
@@ -29,7 +29,7 @@ if [[ "${MIMIR_JUDGE_FIXTURE_MODE:-}" == incompatible ]]; then
     exit 9
 fi
 if [[ "$kind" == codex ]]; then
-    for needle in exec --ignore-user-config --ignore-rules --ephemeral --sandbox --output-schema --output-last-message --skip-git-repo-check --model; do has "$@"; done
+    for needle in exec --ignore-user-config --ignore-rules --ephemeral --sandbox --output-schema --output-last-message --json --skip-git-repo-check --model; do has "$@"; done
     needle='model_reasoning_effort="high"'; has "$@"
 elif [[ "$kind" == claude ]]; then
     for needle in --print --restricted --tools --strict-mcp-config --mcp-config --disable-slash-commands --no-session-persistence --output-format --json-schema --permission-mode --permission-prompts --settings --model; do has "$@"; done

@@ -17,7 +17,7 @@ cat > "$base/bin/codex" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ " $* " == *" --help "* ]]; then
-    printf '%s\n' '--ignore-user-config --ignore-rules --ephemeral --sandbox --output-schema --output-last-message --skip-git-repo-check --model --config'
+    printf '%s\n' '--ignore-user-config --ignore-rules --ephemeral --sandbox --output-schema --output-last-message --json --skip-git-repo-check --model --config'
     exit 0
 fi
 answer=
