@@ -177,7 +177,7 @@ Run the setup script (creates role, DB, extensions, grants — but
 **not** the AGE graph, which mimir's migrations create on first run):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.0.2/mimir-setup/create-db-user.sh \
+curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.0.3/mimir-setup/create-db-user.sh \
   | bash -s -- --container "$CONTAINER" --port "$PORT" \
                 --user "$DB_USER" --db "$DB_NAME"
 ```
@@ -197,12 +197,12 @@ case "$(uname -s)-$(uname -m)" in
   Linux-aarch64) TARBALL=mimir-linux-arm64.tar.gz ;;
   *) echo "Unsupported platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
-curl -fsSL "https://github.com/kamysh/mimir/releases/download/v2.0.2/${TARBALL}" \
+curl -fsSL "https://github.com/kamysh/mimir/releases/download/v2.0.3/${TARBALL}" \
   | tar -xz -C "$HOME/.local/bin"
 chmod +x "$HOME/.local/bin/mimir" "$HOME/.local/bin/mimir-mcp"
 ```
 
-(The 2.0.2 release workflow builds Apple Silicon, Linux x86_64 and Linux ARM64.
+(The 2.0.3 release workflow builds Apple Silicon, Linux x86_64 and Linux ARM64.
 Intel Macs require a source build.)
 
 Do **not** run `xattr -d com.apple.quarantine` on these files. The
