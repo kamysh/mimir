@@ -6,7 +6,7 @@ use super::{
     runner::{Action, Backend},
     state::SourceFailure,
 };
-use anyhow::{anyhow, bail, ensure, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use mimir_core::learning::ExperienceState;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -168,7 +168,7 @@ impl<'a> Harness<'a> {
             Duration::from_secs(5),
         )
         .await
-        .map_err(|error| anyhow!("harness capability check failed: {error:#}"))?;
+        .context("harness capability check failed")?;
         let help = String::from_utf8(output.stdout).map_err(|_| anyhow!("invalid harness help"))?;
         let required: &[&str] = if self.config.backend == Kind::Codex {
             &[
@@ -178,6 +178,7 @@ impl<'a> Harness<'a> {
                 "--sandbox",
                 "--output-schema",
                 "--output-last-message",
+                "--json",
                 "--skip-git-repo-check",
                 "--model",
                 "--config",
@@ -249,6 +250,9 @@ impl<'a> Harness<'a> {
                 let schema = work.write("schema.json", SCHEMA.as_bytes())?;
                 let mut args = vec![
                     "exec".into(),
+                    // Human output echoes the full prompt to stderr, which can
+                    // exceed its diagnostic budget before the model replies.
+                    "--json".into(),
                     "--ignore-user-config".into(),
                     "--ignore-rules".into(),
                     "--ephemeral".into(),
@@ -388,6 +392,183 @@ impl Backend for Harness<'_> {
 mod tests {
     use super::*;
     use crate::judge::state::Report;
+    use std::os::unix::fs::PermissionsExt;
+
+    // An offline executable that reproduces Codex's human prompt echo and the
+    // distinct Codex/Claude answer transports. It never starts an actual model.
+    const FIXTURE: &str = r#"#!/usr/bin/env bash
+set -eu
+kind=command
+json=false
+answer=
+model=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --help)
+      printf '%s\n' '--ignore-user-config --ignore-rules --ephemeral --sandbox --output-schema --output-last-message --json --skip-git-repo-check --model --config --print --restricted --tools --strict-mcp-config --mcp-config --disable-slash-commands --no-session-persistence --output-format --json-schema --permission-mode --permission-prompts --settings'
+      exit 0 ;;
+    exec) kind=codex ;;
+    --print) kind=claude ;;
+    --json) json=true ;;
+    --output-format) shift; [ "$1" = json ]; json=true ;;
+    --output-last-message) shift; answer=$1 ;;
+    --model) shift; model=$1 ;;
+  esac
+  shift
+done
+cat > "${0}.payload"
+case "$model" in
+  overflow-stdout) head -c 8388609 /dev/zero; exit 0 ;;
+  overflow-stderr) head -c 65537 /dev/zero >&2; exit 0 ;;
+esac
+if [ "$(wc -c < "${0}.payload")" -gt 65536 ]; then
+  reply='{"calls":[]}'
+else
+  reply='{"calls":[{"name":"experience_history","arguments_json":"{}"}]}'
+fi
+case "$kind" in
+  codex)
+    if [ "$json" = false ]; then cat "${0}.payload" >&2; fi
+    printf '%s\n' '{"type":"thread.started"}' '{"type":"turn.completed"}'
+    printf '%s' "$reply" > "$answer" ;;
+  claude)
+    [ "$json" = true ]
+    printf '{"is_error":false,"structured_output":%s}\n' "$reply" ;;
+  command) printf '%s\n' "$reply" ;;
+esac
+"#;
+
+    fn fixture(work: &RunDir) -> PathBuf {
+        let program = work.write("harness-fixture", FIXTURE.as_bytes()).unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        program
+    }
+
+    fn config(backend: &str, model: &str) -> LlmConfig {
+        toml::from_str(&format!(
+            "backend = {backend:?}\nmodel = {model:?}\ntimeout_seconds = 5\n"
+        ))
+        .unwrap()
+    }
+
+    fn selected() -> ExperienceState {
+        serde_json::from_value(json!({
+            "experience": {
+                "id": Uuid::new_v4(), "project": "adapter-regression",
+                "context": "large history", "action": "review",
+                "outcome": "unknown", "source": "agent_report", "evidence": [],
+                "pattern_id": null
+            },
+            "revision": 1, "review_revision": 0, "reviewed_revision": 0
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn adapters_deliver_large_history_without_prompt_echo_overflow() {
+        for backend in ["codex", "claude-code", "command"] {
+            let work = RunDir::new().unwrap();
+            let program = fixture(&work);
+            let config = config(backend, "offline-fixture");
+            let mut harness = Harness::with_program(&config, program.to_str().unwrap());
+            let selected = selected();
+            let tools = vec![json!({"name": "experience_history"})];
+            let action = harness.step(&selected, None, &tools).await.unwrap();
+            assert!(matches!(action, Action::Tool { name, .. } if name == "experience_history"));
+
+            let history = json!({"history": "history entry; ".repeat(5_000)});
+            assert!(serde_json::to_vec(&history).unwrap().len() > 64 * 1024);
+            let action = harness
+                .step(&selected, Some(&history), &tools)
+                .await
+                .unwrap();
+            assert!(matches!(action, Action::Done));
+            let delivered: Value = serde_json::from_slice(
+                &fs::read(work.path().join("harness-fixture.payload")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                delivered["history"][1]["tool_results"][0]["result"],
+                history
+            );
+            assert_eq!(
+                delivered["experience"]["experience"]["id"],
+                selected.experience.id.to_string()
+            );
+            assert_eq!(delivered["tools"], json!(tools));
+        }
+    }
+
+    #[tokio::test]
+    async fn codex_requires_machine_output_before_sending_the_prompt() {
+        let work = RunDir::new().unwrap();
+        let script = FIXTURE
+            .replace("--output-last-message --json", "--output-last-message")
+            .replace("--json-schema", "--schema");
+        let program = work.write("old-codex", script.as_bytes()).unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        let config = config("codex", "offline-fixture");
+        let mut harness = Harness::with_program(&config, program.to_str().unwrap());
+        let error = match harness.step(&selected(), None, &[]).await {
+            Err(error) => error,
+            Ok(_) => panic!("accepted Codex without machine output"),
+        };
+        assert!(error
+            .to_string()
+            .contains("lacks required isolation or output flags"));
+        assert!(!work.path().join("old-codex.payload").exists());
+    }
+
+    #[tokio::test]
+    async fn capability_checks_preserve_overflow_evidence() {
+        for backend in ["codex", "claude-code"] {
+            let work = RunDir::new().unwrap();
+            let program = work
+                .write(
+                    "noisy-help",
+                    b"#!/usr/bin/env bash\nhead -c 65537 /dev/zero >&2\n",
+                )
+                .unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+            let config = config(backend, "offline-fixture");
+            let mut harness = Harness::with_program(&config, program.to_str().unwrap());
+            let error = match harness.step(&selected(), None, &[]).await {
+                Err(error) => error,
+                Ok(_) => panic!("accepted excessive capability output"),
+            };
+            assert_eq!(error.to_string(), "harness capability check failed");
+            let source = error.downcast_ref::<SourceFailure>().unwrap();
+            assert_eq!(source.stage, "harness stderr output");
+            assert_eq!(source.total_bytes, 65537);
+        }
+    }
+
+    #[tokio::test]
+    async fn adapters_preserve_stream_overflow_diagnostics() {
+        for backend in ["codex", "claude-code", "command"] {
+            for (stream, limit) in [("stdout", 8 * 1024 * 1024), ("stderr", 64 * 1024)] {
+                let work = RunDir::new().unwrap();
+                let program = fixture(&work);
+                let mut config = config(backend, &format!("overflow-{stream}"));
+                if backend == "command" {
+                    config.args = vec!["--model".into(), config.model.clone()];
+                }
+                let mut harness = Harness::with_program(&config, program.to_str().unwrap());
+                let error = match harness.step(&selected(), None, &[]).await {
+                    Err(error) => error,
+                    Ok(_) => panic!("{backend} accepted excessive {stream}"),
+                };
+                let mut report = Report::new("blocked", 1, 0, 0, 1, 0);
+                report.capture_source(&error);
+                let source = report.failure_source.unwrap();
+                assert_eq!(source.stage, format!("harness {stream} output"));
+                assert!(source.detail.contains(&format!("limit of {limit} bytes")));
+                assert_eq!(source.total_bytes, limit + 1);
+                assert_eq!(source.excerpt.len(), 32 * 1024);
+                assert!(!error.to_string().contains('\0'));
+            }
+        }
+    }
 
     #[test]
     fn malformed_arguments_are_a_recoverable_tool_request() {
