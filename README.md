@@ -38,6 +38,30 @@ See [Installation](#installation) for setup. Agents performing installation use
 > **[AGENTS.md](AGENTS.md)** — open that file, follow it exactly, and ignore the
 > rest of this README.
 
+## Install the binaries with Nix
+
+With Nix installed and its `nix-command` and `flakes` features enabled, build the
+CLI and MCP server without installing them:
+
+```sh
+nix build github:kamysh/mimir#mimir
+./result/bin/mimir --version
+./result/bin/mimir-mcp --version
+```
+
+To add these programs to your user profile instead, use
+`nix profile add github:kamysh/mimir#mimir`.
+This installs binaries only. Follow [Installation](#installation) to prepare
+PostgreSQL and Apache AGE, configure Mimir and register the MCP server. No
+database, judge or scheduled service is created by this package. Use the
+installed absolute MCP executable path in the client registration;
+`command -v mimir-mcp` shows it after installation.
+
+The commands follow the repository's default branch. Append a commit to the
+repository address, as in `github:kamysh/mimir/COMMIT#mimir`, to pin a version.
+These packages come from this repository; Nixpkgs' `mimir` package is Grafana's
+unrelated monitoring software.
+
 ## What it does
 
 Claude Code connects to Mimir via MCP and can:
