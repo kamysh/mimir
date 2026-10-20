@@ -1,3 +1,26 @@
+# Mimir
+
+Persistent reasoning memory for AI coding agents through MCP.
+
+Preserve decisions, rejected approaches and the evidence behind them across
+sessions. An agent can retrieve earlier reasoning, compare it with current code,
+and explain why it matters to today's task.
+
+- Store beliefs and connect support, defeat, contradiction and causal hypotheses.
+- Record observations separately from the conclusions drawn from them.
+- Correct an incident under the same identity, retain history, and retract the
+  prior review's contribution.
+- Inspect provenance and the observations behind a belief.
+
+Mimir uses PostgreSQL and Apache AGE. Its CLI and MCP server support clients
+including Codex and Claude Code. A separate optional judge reviews recorded
+experiences when launched; installing Mimir does not start that judge.
+
+See [Installation](#installation) for setup. Agents performing installation use
+[AGENTS.md](AGENTS.md).
+
+**Article:** [Mimir reasoning memory with evidence and corrections](docs/articles/reasoning-memory.md).
+
 <!-- ══════════════════════════════════════════════════════════════════════
      AI CODING AGENTS (Claude Code, Cursor, Copilot, Aider, …): STOP HERE.
 
@@ -14,12 +37,6 @@
 > The steps below are the *human* install path. Your procedure is
 > **[AGENTS.md](AGENTS.md)** — open that file, follow it exactly, and ignore the
 > rest of this README.
-
-# mimir
-
-> *Mimir* (Old Norse: "memory") — the wisest of all beings, keeper of the well of wisdom at the root of Yggdrasil.
-
-Persistent belief graph for AI coding agents, including Codex and [Claude Code](https://claude.ai/code). Mimir preserves decisions, rejected approaches and lessons across sessions, so an agent can use prior reasoning instead of repeating investigation and mistakes.
 
 ## What it does
 
@@ -543,6 +560,16 @@ nix build .#mimir-static    # result/bin/mimir-mcp and result/bin/mimir
 # Install static binaries into ~/.local/bin and register the selected client
 ./install.sh --client claude  # or --client codex; omit to install binaries only
 ```
+
+## Related projects
+
+| Project | Purpose |
+| --- | --- |
+| [Kryzhen](https://github.com/kamysh/kryzhen) | Dependency-based PostgreSQL migrations as a Rust library and CLI |
+| [Muninn](https://github.com/kamysh/muninn) | Code search and repository knowledge for AI coding agents |
+
+Muninn and Mimir can run independently. Their documented setup can share one
+compatible PostgreSQL instance with separate roles and databases.
 
 ## License
 
