@@ -63,9 +63,22 @@
             };
           };
           doCheck = false; # integration tests require a live PostgreSQL connection
+          meta = {
+            description = "Persistent reasoning memory with evidence and corrections for AI coding agents";
+            homepage = "https://github.com/kamysh/mimir";
+            license = pkgs.lib.licenses.asl20;
+            mainProgram = "mimir";
+          };
         };
 
-        mimir = pkgs.rustPlatform.buildRustPackage commonAttrs;
+        mimir = pkgs.rustPlatform.buildRustPackage (commonAttrs // {
+          nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.pkg-config
+          ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.openssl
+          ];
+        });
 
         # ── mimir-static ─────────────────────────────────────────────────────
         #
