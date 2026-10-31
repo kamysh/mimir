@@ -5,6 +5,143 @@ The experiential judge is part of the Rust `mimir` CLI. Configure it with
 Keep that file and its directory private if it contains credentials. See
 `config.example.toml` for the supported settings.
 
+## Configure a scheduled judge
+
+The supported job runs `mimir judge run` from the installed CLI. The model
+subprocess is managed by that runtime; do not make a separate Claude prompt,
+MCP allowlist or direct belief-insertion script part of this job.
+Configuring skills and startup reminders does not configure the judge.
+
+For an agreed Claude Code setup, merge these sections into the existing private
+Mimir config. Preserve its database, embedding, notification and other settings.
+Choose a model actually available to the authenticated Claude account:
+
+```toml
+[judge]
+batch_size = 5
+mcp_command = "/ABSOLUTE/HOME/.local/bin/mimir-mcp"
+mcp_args = []
+
+[llm]
+backend = "claude-code"
+model = "YOUR_MODEL"
+timeout_seconds = 300
+max_calls = 20
+```
+
+For an agreed Codex setup, keep `[judge]` above and use this `[llm]` section
+instead. Use the model and effort selected for the authenticated Codex account;
+do not substitute models merely because another one is newer:
+
+```toml
+[llm]
+backend = "codex"
+model = "YOUR_CODEX_MODEL"
+reasoning_effort = "medium" # use the selected effort, or omit for the CLI default
+timeout_seconds = 300
+max_calls = 20
+```
+
+Check Codex authentication with `codex login status`; use `codex login` when
+needed. The job's `PATH` must resolve the intended `codex` executable. A
+successful harmless `codex exec` request verifies model access without creating
+an experience or review. OpenAI/Codex authentication does not authenticate GitHub
+or Claude Code.
+
+Set the config directory to `0700` and the config file to `0600`.
+Check the selected client's authentication and network access before scheduling.
+For Claude Code, `claude auth status` reports account status; `claude auth login`
+renews an expired login. A successful `mimir stats` or MCP registration does not
+verify the model account. Never copy credentials into the plist or disable TLS
+verification to get a test to pass.
+
+If Claude reports `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, configure its trusted CA
+bundle with `NODE_EXTRA_CA_CERTS` in the job environment. Use a verified existing
+bundle appropriate to this machine (for example `/etc/ssl/cert.pem` when that
+bundle contains the required trust roots). Test a harmless Claude request with
+that same environment, model and authentication before claiming model access.
+See [Claude network configuration](https://code.claude.com/docs/en/network-config).
+Do not silently substitute a different backend or model on an access failure.
+
+### macOS launchd
+
+Inspect any existing job with this label before replacing it. When replacement
+is authorized, unload its registration and remove the superseded job definition
+and task-specific launcher/prompt; do not leave two scheduled writers active.
+Preserve unrelated jobs, application data and credentials. Create
+`~/Library/LaunchAgents/org.mimir.judge.plist` using literal absolute paths:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>org.mimir.judge</string>
+  <key>ProgramArguments</key><array>
+    <string>/ABSOLUTE/HOME/.local/bin/mimir</string>
+    <string>judge</string><string>run</string>
+    <string>--config</string><string>/ABSOLUTE/HOME/.config/mimir/config.toml</string>
+  </array>
+  <key>WorkingDirectory</key><string>/ABSOLUTE/HOME</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>HOME</key><string>/ABSOLUTE/HOME</string>
+    <key>PATH</key><string>/ABSOLUTE/HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StartCalendarInterval</key><dict>
+    <key>Weekday</key><integer>0</integer>
+    <key>Hour</key><integer>5</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/ABSOLUTE/HOME/.local/state/mimir/judge.log</string>
+  <key>StandardErrorPath</key><string>/ABSOLUTE/HOME/.local/state/mimir/judge.log</string>
+</dict></plist>
+```
+
+Adjust the schedule to the agreed time (this example is Sunday 05:00).
+Include the actual directory from `command -v claude` or `command -v codex`,
+as appropriate, in `PATH`; Nix/Home Manager
+commonly uses `/etc/profiles/per-user/YOUR_USER/bin`. Add `NODE_EXTRA_CA_CERTS`
+only when the verified network setup requires it. launchd does not inherit shell
+exports. No credential value belongs in the plist.
+
+Create the private state directory, validate and load the job:
+
+```sh
+mkdir -p "$HOME/.local/state/mimir" "$HOME/Library/LaunchAgents"
+chmod 700 "$HOME/.local/state/mimir" "$HOME/.config/mimir"
+chmod 600 "$HOME/.config/mimir/config.toml" "$HOME/Library/LaunchAgents/org.mimir.judge.plist"
+plutil -lint "$HOME/Library/LaunchAgents/org.mimir.judge.plist"
+mimir judge check-config --config "$HOME/.config/mimir/config.toml"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/org.mimir.judge.plist"
+launchctl print "gui/$(id -u)/org.mimir.judge"
+```
+
+For a previously loaded job, `launchctl bootout "gui/$(id -u)/org.mimir.judge"`
+must precede bootstrap. A calendar job normally has no PID between runs.
+
+### Verify the actual scheduled job
+
+A registered job or valid config is not a completed model review. When a live
+bounded batch is authorized, start the actual service and inspect its report:
+
+```sh
+launchctl kickstart "gui/$(id -u)/org.mimir.judge"
+launchctl print "gui/$(id -u)/org.mimir.judge"
+tail -n 30 "$HOME/.local/state/mimir/judge.log"
+mimir judge status
+```
+
+Check the final exit status and the report. An empty pending queue should finish
+without a model call: it verifies scheduling, config, MCP and database access,
+but does not verify provider authentication or model/review behavior. For a
+nonempty batch, verify committed database review receipts. Do not manufacture
+an experience merely to make an installation test write to memory. Use
+`mimir judge diagnostics` for a failed batch, and report authentication, network,
+model, timeout and review failures separately. Keep the installation incomplete
+when a required account or permission step remains unresolved.
+
+## Runtime behavior
+
 `mimir judge check-config` validates settings locally. `mimir judge run` reviews
 one bounded batch through `mimir-mcp`; `mimir judge watch` repeats bounded runs
 every five minutes by default (`--interval-seconds`, minimum 60) until interrupted.
