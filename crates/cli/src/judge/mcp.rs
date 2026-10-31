@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, ensure, Result};
+use mimir_core::validation::{Fault, Refusal, RefusalKind};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Stdio;
@@ -12,17 +13,17 @@ const MAX_MESSAGE: usize = 1024 * 1024;
 const MAX_STDERR: usize = 4096;
 
 #[derive(Debug)]
-pub struct CandidateConflict;
+pub struct CandidateConflict(pub Fault);
 
 #[derive(Debug)]
-pub struct UndeclaredBeliefCandidate;
+pub struct UndeclaredBeliefCandidate(pub Fault);
 
 #[derive(Debug)]
-pub struct McpApplicationError;
+pub struct McpApplicationError(pub Fault);
 
 impl std::fmt::Display for McpApplicationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Mimir rejected a tool call")
+        f.write_str(&self.0.message)
     }
 }
 
@@ -30,7 +31,7 @@ impl std::error::Error for McpApplicationError {}
 
 impl std::fmt::Display for CandidateConflict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("review candidate key conflicts with an earlier declaration")
+        f.write_str(&self.0.message)
     }
 }
 
@@ -38,23 +39,20 @@ impl std::error::Error for CandidateConflict {}
 
 impl std::fmt::Display for UndeclaredBeliefCandidate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("candidate belief reference is not declared in this review")
+        f.write_str(&self.0.message)
     }
 }
 
 impl std::error::Error for UndeclaredBeliefCandidate {}
 
+#[cfg(test)]
 fn candidate_conflict(error: &Value) -> bool {
-    error["code"].as_i64() == Some(-32000)
-        && error["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("candidate key has a different declaration"))
+    Refusal::from_mcp(error).is_some_and(|r| r.kind == RefusalKind::CandidateConflict)
 }
 
+#[cfg(test)]
 fn undeclared_belief_candidate(error: &Value) -> bool {
-    error["code"].as_i64() == Some(-32000)
-        && error["message"].as_str()
-            == Some("candidate belief reference must be declared in this review")
+    Refusal::from_mcp(error).is_some_and(|r| r.kind == RefusalKind::UndeclaredCandidate)
 }
 
 pub struct Client {
@@ -241,21 +239,25 @@ impl Client {
                 "unexpected MCP response ID"
             );
             if response.get("error").is_some() {
-                if review_call && candidate_conflict(&response["error"]) {
-                    return Err(CandidateConflict.into());
-                }
-                if review_call && undeclared_belief_candidate(&response["error"]) {
-                    return Err(UndeclaredBeliefCandidate.into());
+                if method == "tools/call" {
+                    if let Some(refusal) = Refusal::from_mcp(&response["error"]) {
+                        return Err(match refusal.kind {
+                            RefusalKind::CandidateConflict if review_call => {
+                                CandidateConflict(refusal.fault).into()
+                            }
+                            RefusalKind::UndeclaredCandidate => {
+                                UndeclaredBeliefCandidate(refusal.fault).into()
+                            }
+                            _ => McpApplicationError(refusal.fault).into(),
+                        });
+                    }
                 }
                 let code = response["error"]["code"].as_i64().unwrap_or(-1);
                 let message = response["error"]["message"]
                     .as_str()
                     .unwrap_or("unspecified MCP failure");
-                if method == "tools/call" {
-                    // Keep the detailed server response in the local error chain.
-                    // The judge sends only a fixed, generic message to the model.
-                    return Err(anyhow!("MCP error {code}: {message}").context(McpApplicationError));
-                }
+                // An unclassified error is not a validation refusal and cannot
+                // justify telling the model that no mutation occurred.
                 bail!("MCP error {code}: {message}");
             }
             return response
@@ -275,7 +277,7 @@ impl Client {
             .request("tools/call", json!({"name":name,"arguments":args}))
             .await?;
         if result.get("isError").and_then(Value::as_bool) == Some(true) {
-            return Err(anyhow!("MCP tool returned isError").context(McpApplicationError));
+            bail!("MCP tool returned an unclassified isError result");
         }
         let content = result["content"]
             .as_array()
@@ -488,7 +490,7 @@ mod tests {
     #[test]
     fn only_known_candidate_conflicts_are_deferred() {
         assert!(candidate_conflict(
-            &json!({"code":-32000,"message":"candidate key has a different declaration"})
+            &json!({"code":-32000,"message":"candidate key has a different declaration", "data":Refusal::candidate_conflict()})
         ));
         assert!(!candidate_conflict(
             &json!({"code":-32000,"message":"database unavailable"})
@@ -498,7 +500,8 @@ mod tests {
         ));
         assert!(undeclared_belief_candidate(&json!({
             "code":-32000,
-            "message":"candidate belief reference must be declared in this review"
+            "message":"candidate belief reference must be declared in this review",
+            "data":Refusal::undeclared_candidate()
         })));
         assert!(!undeclared_belief_candidate(&json!({
             "code":-32001,
@@ -508,6 +511,9 @@ mod tests {
             "code":-32000,
             "message":"database unavailable"
         })));
+        assert!(!candidate_conflict(
+            &json!({"code":-32000,"message":"candidate key has a different declaration"})
+        ));
     }
 
     #[tokio::test]

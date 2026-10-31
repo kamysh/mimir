@@ -208,10 +208,9 @@ impl AgeStore {
             let kind: &str = row.get(0);
             let declaration: serde_json::Value = serde_json::from_str(row.get(2))?;
             let retired: bool = row.get(3);
-            ensure!(
-                kind == candidate.kind() && declaration == serde_json::to_value(candidate)?,
-                "candidate key has a different declaration"
-            );
+            if kind != candidate.kind() || declaration != serde_json::to_value(candidate)? {
+                return Err(crate::validation::Refusal::candidate_conflict().into());
+            }
             ensure!(!retired, "candidate identity was deleted");
             ids.insert(candidate.key().to_owned(), row.get(1));
         }
@@ -230,8 +229,9 @@ impl AgeStore {
                 let kind: &str = row.get(0);
                 let declaration: serde_json::Value = serde_json::from_str(row.get(2))?;
                 let retired: bool = row.get(3);
-                ensure!(kind == candidate.kind() && declaration == serde_json::to_value(candidate)?,
-                    "candidate key has a different declaration");
+                if kind != candidate.kind() || declaration != serde_json::to_value(candidate)? {
+                    return Err(crate::validation::Refusal::candidate_conflict().into());
+                }
                 ensure!(!retired, "candidate identity was deleted");
                 ids.insert(candidate.key().to_owned(), row.get(1));
                 continue;
@@ -395,7 +395,9 @@ impl AgeStore {
         review: &Review,
         expected: i64,
     ) -> Result<ExperienceState> {
-        review.validate()?;
+        review
+            .validate()
+            .map_err(crate::validation::Refusal::validation)?;
         ensure!(
             (0..i64::MAX).contains(&expected),
             "expected_review_revision must be nonnegative"
@@ -432,7 +434,8 @@ impl AgeStore {
             "stale review revision: current is {}",
             current.review_revision
         );
-        crate::learning_sources::validate_review(review, &current.experience)?;
+        crate::learning_sources::validate_review(review, &current.experience)
+            .map_err(crate::validation::Refusal::validation)?;
         if let Some(prior)=tx.query_opt("SELECT payload::text FROM mimir_review_versions WHERE experience_id=$1 AND revision=$2", &[&review.experience_id,&current.review_revision]).await? {
             let prior:Review=serde_json::from_str(prior.get(0))?;
             for item in prior.extracted_items {

@@ -1,0 +1,64 @@
+{
+  "verified_at": "2026-10-31T20:40:14.447698+00:00",
+  "package_version": "2.1.1",
+  "agda": {
+    "command": "nix develop --command agda Mimir.agda (from spec/)",
+    "exit": 0,
+    "safe_modules": 643,
+    "new_postulates": 0
+  },
+  "rust": {
+    "distinct_tests_passed": 263,
+    "unit_and_protocol": 190,
+    "database_integration": 73,
+    "notes": [
+      "Two 10-second fixtures exceeded their deadlines on the slow temporary filesystem, then passed unchanged in private memory-backed storage (0.22s and 0.52s).",
+      "Database tests initially refused to run without an explicitly selected disposable database; they all passed with the fixture selected.",
+      "Static replay uses a fresh database and fresh candidate bindings: saved reviews contain database-local belief UUIDs and extracted item identities are globally checked."
+    ]
+  },
+  "build": {
+    "source": "/nix/store/xnc7h099pmqc9i5p8cvvd6x7zaj4p2zn-lijd8ky4q453x2ddssr4p9sa46zph04h-source",
+    "matching_runtime_and_formal_inputs": 713,
+    "binaries": {
+      "mimir": {
+        "version": "mimir 2.1.1",
+        "sha256": "f2dbabcf85a8f7d42e77bfa8d45924e2a398628ea0bad444d94e50d7cc0e51aa",
+        "static": true
+      },
+      "mimir-mcp": {
+        "version": "mimir-mcp 2.1.1",
+        "sha256": "4fa40263f576d43a2b87d0106166abf9329a74da327935ab642b830685e001c7",
+        "static": true
+      }
+    }
+  },
+  "built_and_installed_checks": [
+    "Legacy configuration rejected; upgrade preserves credentials/settings; compatibility check passes offline",
+    "CLI stats with embedded migrations on disposable database",
+    "MCP initialize version, 34-tool catalog and learning capabilities",
+    "Experience write, candidate review, idempotent retry, readback, retrieval and provenance",
+    "Failed-source copy with fresh fixture candidate bindings: exact typed quotation fault; opaque missing-reference error stays unclassified; readbacks confirm no review; corrected 18-item review saved",
+    "Owned MCP process exits cleanly on EOF"
+  ],
+  "live_judge": {
+    "service_active": true,
+    "new_runtime_feature_observed": true,
+    "previously_failing_review_saved": true,
+    "experience_revision": 1,
+    "review_revision": 1,
+    "extracted_items": 18,
+    "assessments": 9,
+    "all_quotations_literal": true,
+    "all_actors_match": true,
+    "process_identity_boundary": "Installed hashes, fresh service start, matching PID in new runtime receipt, and live saved review verified. Kernel denied direct reading of /proc/PID/exe bytes.",
+    "second_completed_batch_observed": true,
+    "consecutive_failures_after_second_batch": 0
+  },
+  "database_migrations_added": 0,
+  "system_configuration_changed": false,
+  "model_settings_changed": false,
+  "publication": "Local repair; existing release tag was not moved.",
+  "disposable_databases_removed": true,
+  "temporary_database_credentials_removed": true
+}

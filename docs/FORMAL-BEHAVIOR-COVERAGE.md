@@ -139,3 +139,18 @@ The persistent interactive root check passed with no errors or goals. The final 
 The [verification receipt](FORMAL-BEHAVIOR-VERIFICATION.json) records commands, logs, coverage results, assumption boundaries and SHA-256 hashes of every checked formal source. Completion took 4.93 hours from the agreed start, before the eight-hour deadline.
 
 Machine-readable maps: [FORMAL-BEHAVIOR-COVERAGE.json](FORMAL-BEHAVIOR-COVERAGE.json) and [FORMAL-INVENTORY.json](FORMAL-INVENTORY.json).
+
+## Operational repair (2026-10-31)
+
+The aggregate now checks **643 safe modules**. `OperationalConfiguration`,
+`ConfigurationUpgrade`, `OperationalLogRetention`, `OperationalDiagnostics`
+and `OperationalLifecycle` cover required configuration compatibility, bounded
+logs, public failure explanations and per-batch startup/retry. CLI coverage is
+30 leaves, including `config check`, `config upgrade` and `judge diagnose`.
+The quotation repair implements the existing `FaultWire`, `McpErrors` and
+`JudgeErrorAdapter` contracts without weakening exact source matching.
+
+See [operational verification](OPERATIONAL-REPAIR-VERIFICATION.json) and
+[operating instructions](operations.md). The safe specification and observed
+Rust/installed-service checks are separate evidence; no new postulates or
+machine-checked Rust refinement theorem are claimed.

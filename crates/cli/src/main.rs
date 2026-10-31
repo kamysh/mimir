@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use mimir_core::{config::Config, MimirService};
+mod configuration;
 mod judge;
 
 // ---------------------------------------------------------------------------
@@ -18,6 +19,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Check compatibility or upgrade an existing configuration offline.
+    #[command(subcommand)]
+    Config(configuration::Command),
     /// Configure and run the bounded learning judge.
     #[command(subcommand)]
     Judge(judge::JudgeCommand),
@@ -341,6 +345,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Judge(command) => std::process::exit(judge::dispatch(command).await),
         Command::Init { pairs } => cmd_init(pairs)?,
+        Command::Config(command) => configuration::dispatch(command)?,
         Command::Stats => cmd_stats().await?,
         Command::List { project, limit } => cmd_list(project, limit).await?,
         Command::Patterns { project, limit } => cmd_patterns(project, limit).await?,
@@ -388,8 +393,8 @@ async fn main() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn connect() -> Result<MimirService> {
-    let cfg = Config::load()
-        .map_err(|e| anyhow::anyhow!("{e}\nRun `mimir init` to create a config file."))?;
+    let (cfg, operations) = Config::load_with_operations(&Config::config_path())?;
+    operations.logging.prepare()?;
     MimirService::connect(&cfg).await
 }
 

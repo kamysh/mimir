@@ -293,10 +293,9 @@ impl Review {
             .collect();
         let validate_target = |target: &BeliefTarget| -> Result<()> {
             if let BeliefTarget::Candidate { candidate_key } = target {
-                ensure!(
-                    belief_candidates.contains(candidate_key.as_str()),
-                    "candidate belief reference must be declared in this review"
-                );
+                if !belief_candidates.contains(candidate_key.as_str()) {
+                    return Err(crate::validation::Refusal::undeclared_candidate().into());
+                }
             }
             Ok(())
         };

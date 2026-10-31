@@ -1,6 +1,6 @@
 use super::{
     config::RuntimeConfig,
-    mcp::{CandidateConflict, Client, McpApplicationError},
+    mcp::{CandidateConflict, Client, McpApplicationError, UndeclaredBeliefCandidate},
     notification,
     state::{
         self, DeferredReview, DiagnosticEvent, FailureDiagnostic, Report, SourceFailure, State,
@@ -163,6 +163,8 @@ async fn scoped_tool(
                     super::evidence::guidance(&selected.experience)
                 ))
             })?;
+            mimir_core::learning_sources::validate_review(&review, &selected.experience)
+                .map_err(mimir_core::validation::Refusal::validation)?;
             args["review"] = serde_json::to_value(review)?;
         }
         "query_relevant" | "query_learning_context" | "get_contradictions" => {
@@ -677,6 +679,7 @@ async fn run_inner<B: Backend>(
                         break;
                     }
                     tool_left -= 1;
+                    let attempted_review = arguments.get("review").cloned();
                     match scoped_tool(&mut client, selected, &name, arguments).await {
                         Ok(value) => {
                             trace(
@@ -722,6 +725,10 @@ async fn run_inner<B: Backend>(
                         Err(error)
                             if error.downcast_ref::<InputRejected>().is_some()
                                 || error.downcast_ref::<McpApplicationError>().is_some()
+                                || error.downcast_ref::<UndeclaredBeliefCandidate>().is_some()
+                                || error
+                                    .downcast_ref::<mimir_core::validation::Refusal>()
+                                    .is_some()
                                 || error.downcast_ref::<SourceFailure>().is_some_and(
                                     |source| source.stage == "invalid review arguments",
                                 ) =>
@@ -735,24 +742,49 @@ async fn run_inner<B: Backend>(
                                 Some(&name),
                                 Some(&format!("{error:#}")),
                             )?;
-                            // Tool-level rejection is feedback to the model, not
-                            // a service failure. Never forward MCP error text.
+                            // Only typed validation faults are correction feedback.
+                            // Preserve the exact path, code and explanation.
+                            let fault = error
+                                .downcast_ref::<McpApplicationError>()
+                                .map(|e| &e.0)
+                                .or_else(|| {
+                                    error
+                                        .downcast_ref::<UndeclaredBeliefCandidate>()
+                                        .map(|e| &e.0)
+                                })
+                                .or_else(|| {
+                                    error
+                                        .downcast_ref::<mimir_core::validation::Refusal>()
+                                        .map(|e| &e.fault)
+                                });
                             let message = if let Some(input) = error.downcast_ref::<InputRejected>()
                             {
                                 input.to_string()
                             } else if let Some(source) = error.downcast_ref::<SourceFailure>() {
                                 source.detail.clone()
+                            } else if let Some(fault) = fault {
+                                fault.message.clone()
                             } else {
-                                "Mimir rejected this tool call. Check the tool schema and arguments."
-                                    .into()
+                                unreachable!("only classified validation failures reach correction")
                             };
                             last = Some(json!({"error":"invalid_tool_arguments",
                                 "message":message,
+                                "fault":fault,
                                 "guidance":"Correct the tool arguments and resubmit the request. The rejected call changed nothing."}));
+                            let focused = fault.and_then(|fault| {
+                                use mimir_core::validation::{Code, Segment};
+                                if fault.code != Code::QuotationMismatch { return None; }
+                                let index = fault.path.iter().find_map(|part| match part { Segment::Index(n)=>Some(*n), _=>None })?;
+                                let item = attempted_review.as_ref()?.get("extracted_items")?.get(index)?;
+                                let source_ref = item.get("source_ref")?.as_str()?;
+                                let source = selected.experience.source_records.iter().find(|s|s.source_ref==source_ref)?;
+                                let payload = json!({"fault":fault,"rejected_item":item,"cited_source":source}).to_string();
+                                Some(SourceFailure::input("quotation_mismatch",payload.as_bytes(),&fault.message))
+                            });
                             last_rejection = Some((
                                 name,
                                 state::bounded(&format!("{error:#}"), 512),
-                                error.downcast_ref::<SourceFailure>().cloned(),
+                                focused.or_else(|| error.downcast_ref::<SourceFailure>().cloned()),
                             ));
                         }
                         Err(error) => {
@@ -1105,7 +1137,7 @@ mod tests {
             std::fs::write(
                 &config_path,
                 format!(
-                    "[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\ntimeout_seconds=10\nmax_calls=3\n",
+                    "config_version=1\n[logging]\ndirectory='/tmp/mimir-fixture-logs'\n[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\ntimeout_seconds=10\nmax_calls=3\n",
                     fixture.display(), id
                 ),
             )
@@ -1126,6 +1158,13 @@ mod tests {
                     report.failure_source.as_ref().unwrap().excerpt,
                     "{\"review\": }"
                 );
+            } else if matches!(case, RejectionCase::MimirError) {
+                assert_eq!(report.status, "blocked");
+                assert_eq!(
+                    backend.calls, 1,
+                    "unclassified database failures are not argument-correction feedback"
+                );
+                assert_eq!(report.block_reason.as_deref(), Some("tool_error"));
             } else {
                 assert_eq!(report.status, "complete");
                 assert_eq!(backend.calls, 2);
@@ -1148,7 +1187,7 @@ mod tests {
         std::fs::write(
             &config_path,
             format!(
-                "[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\ntimeout_seconds=10\nmax_calls=5\n",
+                "config_version=1\n[logging]\ndirectory='/tmp/mimir-fixture-logs'\n[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\ntimeout_seconds=10\nmax_calls=5\n",
                 fixture.display(), Uuid::new_v4()
             ),
         )
@@ -1230,7 +1269,7 @@ mod tests {
             std::fs::write(
                 &config_path,
                 format!(
-                    "[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\ntimeout_seconds=10\nmax_calls=4\n",
+                    "config_version=1\n[logging]\ndirectory='/tmp/mimir-fixture-logs'\n[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\ntimeout_seconds=10\nmax_calls=4\n",
                     fixture.display(), id, review_log.display()
                 ),
             )

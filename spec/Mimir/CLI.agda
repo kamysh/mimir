@@ -34,6 +34,7 @@ import Mimir.Validation as Validation
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
 
 data JudgeCommand : Set where
+  diagnose : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   checkConfig : Maybe Path.Path → JudgeCommand
   run : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   watch : Maybe Path.Path → Maybe Path.Path → ℕ → ℕ → JudgeCommand
@@ -57,7 +58,12 @@ data ServiceCommand : Set where
   docClear : Text → ServiceCommand
   intervene : Text → Float → ServiceCommand
 
+data ConfigurationCommand : Set where
+  check : Maybe Path.Path → ConfigurationCommand
+  upgrade : Maybe Path.Path → Maybe Path.Path → ConfigurationCommand
+
 data Command : Set where
+  configuration : ConfigurationCommand → Command
   init : List (String × Text) → Command
   service : ServiceCommand → Command
   reembed : Command

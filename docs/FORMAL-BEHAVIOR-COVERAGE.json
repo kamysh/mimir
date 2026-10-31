@@ -3,7 +3,7 @@
   "scope": "Completed detailed existing Mimir behavioral specification; Rust conformance and deployment are separate.",
   "counts": {
     "mcp": 34,
-    "cli_leaves": 27,
+    "cli_leaves": 30,
     "lifecycle_groups": 7
   },
   "mcp": [
@@ -1601,6 +1601,48 @@
       "status": "behavior-defined-and-aggregate-checked",
       "baseline_gap": "Compose existing models with command defaults, watch retry/backoff/signal handling, status and diagnostics projections.",
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "config check",
+      "source": "crates/cli/src/configuration.rs",
+      "step": 4,
+      "existing_modules": [],
+      "completion_modules": [
+        "spec/Mimir/OperationalConfiguration.agda",
+        "spec/Mimir/ConfigurationSchema.agda",
+        "spec/Mimir/ConfigurationProtocol.agda",
+        "spec/Mimir/CLI.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "remaining": "See operational repair verification receipt; no machine-checked Rust refinement claim."
+    },
+    {
+      "name": "config upgrade",
+      "source": "crates/cli/src/configuration.rs",
+      "step": 4,
+      "existing_modules": [],
+      "completion_modules": [
+        "spec/Mimir/ConfigurationUpgrade.agda",
+        "spec/Mimir/OperationalConfiguration.agda",
+        "spec/Mimir/ConfigurationProtocol.agda",
+        "spec/Mimir/CLI.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "remaining": "See operational repair verification receipt; no machine-checked Rust refinement claim."
+    },
+    {
+      "name": "judge diagnose",
+      "source": "crates/cli/src/judge/diagnose.rs",
+      "step": 4,
+      "existing_modules": [],
+      "completion_modules": [
+        "spec/Mimir/OperationalDiagnostics.agda",
+        "spec/Mimir/OperationalLifecycle.agda",
+        "spec/Mimir/JudgeStatusProtocol.agda",
+        "spec/Mimir/CLI.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "remaining": "See operational repair verification receipt; no machine-checked Rust refinement claim."
     }
   ],
   "lifecycles": [
@@ -1849,8 +1891,18 @@
       "modules": [
         "spec/Mimir/CoreLibrary.agda"
       ]
+    },
+    {
+      "name": "operational configuration and bounded logs",
+      "modules": [
+        "spec/Mimir/OperationalConfiguration.agda",
+        "spec/Mimir/OperationalLogRetention.agda",
+        "spec/Mimir/OperationalLifecycle.agda",
+        "spec/Mimir/ConfigurationUpgrade.agda"
+      ]
     }
   ],
   "updated_at": "2026-10-31T03:50:09.149598+00:00",
-  "completed_utc": "2026-10-31T03:59:41.624081+00:00"
+  "completed_utc": "2026-10-31T03:59:41.624081+00:00",
+  "operational_update_checked_at": "2026-10-31T20:24:20.743313+00:00"
 }

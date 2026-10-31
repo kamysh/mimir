@@ -38,15 +38,16 @@ def check():
 
     main = 'crates/cli/src/main.rs'
     commands = [kebab(name) for name in enum_variants(main, 'Command')
-                if name not in ['Judge', 'Evidence', 'Delete', 'Doc', 'Hook']]
+                if name not in ['Config', 'Judge', 'Evidence', 'Delete', 'Doc', 'Hook']]
     for prefix, enum, source in [
+        ('config', 'Command', 'crates/cli/src/configuration.rs'),
         ('evidence', 'EvidenceCmd', main), ('delete', 'DeleteCmd', main),
         ('doc', 'DocCmd', main), ('hook', 'HookEvent', main),
         ('judge', 'JudgeCommand', 'crates/cli/src/judge/mod.rs'),
     ]:
         commands += [prefix + ' ' + kebab(name) for name in enum_variants(source, enum)]
     cli_names = [item['name'] for item in coverage['cli']]
-    assert len(commands) == len(set(commands)) == len(cli_names) == 27
+    assert len(commands) == len(set(commands)) == len(cli_names) == coverage['counts']['cli_leaves']
     assert set(commands) == set(cli_names)
 
     files = list((ROOT / 'spec').rglob('*.agda'))

@@ -20,18 +20,22 @@ import Mimir.ConfigurationValues as Values
 import Mimir.ConfigurationInput as Input
 import Mimir.ConfigurationSchema as Schema
 import Mimir.StructuredValue as V
+import Mimir.OperationalConfiguration as Operations
+import Mimir.Validation as Validation
 import Mimir.Effects as Effects
 
 data Content : Set where
-  template : Content
-  configured : Values.Config → Content
+  template : Operations.Admitted → Content
+  configured : Operations.Admitted → Values.Config → Content
 
 data Failure : Set where
   file : IO.Failure → Failure
   override : Input.Error → Failure
+  validation : Validation.Fault → Failure
   editorLaunch : Failure
 
 data Effect : Set where
+  defaultOperations : Effect
   exists : Path.Path → Effect
   readUTF8 : Path.Path → Effect
   parseTOML : Text → Effect
@@ -42,6 +46,7 @@ data Effect : Set where
   editor : Text → Path.Path → Effect
 
 Reply : Effect → Set
+Reply defaultOperations = IO.Failure ⊎ Operations.Admitted
 Reply (exists _) = Bool
 Reply (readUTF8 _) = IO.Failure ⊎ Text
 Reply (parseTOML _) = IO.Failure ⊎ V.Value
@@ -60,8 +65,8 @@ module Run (sizeMaximum : ℕ) where
   module Decode = Schema.Decode sizeMaximum
   module Overrides = Input.Read sizeMaximum
 
-  caseDecoded : ∀ {A : Set} → A ⊎ Schema.Config → Script (Failure ⊎ Schema.Config)
-  caseDecoded (inj₁ _) = done (inj₁ (file IO.invalidTOML))
+  caseDecoded : Validation.Fault ⊎ Schema.Config → Script (Failure ⊎ Schema.Config)
+  caseDecoded (inj₁ fault) = done (inj₁ (validation fault))
   caseDecoded (inj₂ config) = done (inj₂ config)
 
   loadFrom : Path.Path → Script (Failure ⊎ Schema.Config)
@@ -100,27 +105,29 @@ module Run (sizeMaximum : ℕ) where
 
   -- Creation checks existence before decoding overrides. The actual writer
   -- is the WriteRun relation above, preserving O_EXCL and partial-write states.
-  afterCheck : List (String × Text) → Script (Failure ⊎ Content)
-  afterCheck [] = done (inj₂ template)
-  afterCheck pairs@(_ ∷ _) with Overrides.create pairs
+  afterCheck : Operations.Admitted → List (String × Text) → Script (Failure ⊎ Content)
+  afterCheck operations [] = done (inj₂ (template operations))
+  afterCheck operations pairs@(_ ∷ _) with Overrides.create pairs
   ... | inj₁ error = done (inj₁ (override error))
   ... | inj₂ config = ask (prettyTOML config) λ where
     (inj₁ error) → done (inj₁ (file error))
-    (inj₂ _) → done (inj₂ (configured config))
+    (inj₂ _) → done (inj₂ (configured operations config))
 
   prepare : Path.Path → List (String × Text) → Script (Failure ⊎ Content)
   prepare path pairs = ask (exists path) λ where
     true → done (inj₁ (file IO.alreadyExists))
-    false → afterCheck pairs
+    false → ask defaultOperations λ where
+      (inj₁ error) → done (inj₁ (file error))
+      (inj₂ operations) → afterCheck operations pairs
 
   selectEditor : Maybe Text → Text
   selectEditor nothing = toList "vi"
   selectEditor (just value) = value
 
   afterCreation : Path.Path → Content → Maybe Text → Script (Failure ⊎ ⊤)
-  afterCreation path (configured _) editorValue = ask (announceCreated path) λ _ →
+  afterCreation path (configured _ _) editorValue = ask (announceCreated path) λ _ →
     ask announceRestart λ _ → done (inj₂ tt)
-  afterCreation path template editorValue = ask (announceCreated path) λ _ →
+  afterCreation path (template _) editorValue = ask (announceCreated path) λ _ →
     ask announceEditor λ _ → ask (editor (selectEditor editorValue) path) λ where
       (inj₁ _) → done (inj₁ editorLaunch)
       (inj₂ _) → ask announceRestart λ _ → done (inj₂ tt)

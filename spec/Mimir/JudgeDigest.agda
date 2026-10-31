@@ -22,6 +22,7 @@ import Mimir.StructuredValue as V
 import Mimir.JudgeScopedTools as Fields
 import Mimir.SignedMachine as Signed
 import Mimir.JudgeHost as Host
+import Mimir.OperationalDiagnostics as Diagnostics
 import Mimir.JudgeConfiguration as Config
 import Mimir.NotificationConfig as Email
 import Mimir.DigestDelivery as Delivery
@@ -100,6 +101,7 @@ render calendar daily cumulative pending run zone =
 
 data Effect : Set where
   localNow loadConfig resolveState : Effect
+  readReport : Path.Path → Effect
   readCursor : Email.Config → Path.Path → Effect
   connect : Config.Runtime → Effect
   beginReadOnlyRepeatable close : ℕ → Effect
@@ -111,6 +113,7 @@ Reply : Effect → Set
 Reply localNow = Now
 Reply loadConfig = Text ⊎ Config.Runtime
 Reply resolveState = Text ⊎ Path.Path
+Reply (readReport _) = Maybe Diagnostics.R.Report
 Reply (readCursor _ _) = Text ⊎ Delivery.Cursor
 Reply (connect _) = Text ⊎ ℕ
 Reply (beginReadOnlyRepeatable _) = Text ⊎ ⊤
@@ -184,7 +187,8 @@ module Run (calendar : Calendar) where
     (inj₁ error) → done (inj₁ error)
     (inj₂ connection) → content connection first through run (Now.timezone now) >>= λ where
       (inj₁ error) → ask (close connection) (λ _ → done (inj₁ error))
-      (inj₂ body) → ask (send settings path (Delivery.digest (Calendar.showDay calendar through) body))
+      (inj₂ body) → ask (readReport path) λ report →
+        ask (send settings path (Delivery.digest (Calendar.showDay calendar through) (body ++ Diagnostics.summary report ++ toList "The watcher retries automatically while running, with hourly backoff after repeated failures. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/main/docs/operations.md\n")))
         (λ reply → ask (close connection) (λ _ → done (sent reply)))
 
   cursor : Config.Runtime → Path.Path → ℤ → Now → Host.Outcome → (Text ⊎ Delivery.Cursor) → Script (Text ⊎ Bool)

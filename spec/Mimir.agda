@@ -756,3 +756,9 @@ import Mimir.BeliefEmbeddingStorage
 import Mimir.StoreRows
 import Mimir.AgeQueryProtocol
 import Mimir.CoreLibrary
+
+import Mimir.OperationalConfiguration
+import Mimir.OperationalLogRetention
+import Mimir.ConfigurationUpgrade
+import Mimir.OperationalDiagnostics
+import Mimir.OperationalLifecycle

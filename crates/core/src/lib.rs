@@ -10,6 +10,7 @@ pub mod learning_sources;
 mod password;
 pub mod store;
 mod tls;
+pub mod validation;
 
 use anyhow::Result;
 use uuid::Uuid;
@@ -1058,3 +1059,5 @@ impl MimirService {
         })
     }
 }
+
+pub mod operations;

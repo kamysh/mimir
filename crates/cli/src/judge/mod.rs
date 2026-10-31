@@ -1,5 +1,6 @@
 mod api;
 pub mod config;
+mod diagnose;
 mod digest;
 mod evidence;
 mod harness;
@@ -30,6 +31,13 @@ const ALREADY_RUNNING: i32 = 4;
 
 #[derive(Subcommand)]
 pub enum JudgeCommand {
+    /// Explain the current failure and recovery action without database/model access.
+    Diagnose {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+    },
     /// Validate judge, LLM and optional email settings without network or database I/O.
     CheckConfig {
         /// Config file; defaults to MIMIR_CONFIG, then the XDG config path.
@@ -76,6 +84,15 @@ pub enum JudgeCommand {
 
 pub async fn dispatch(command: JudgeCommand) -> i32 {
     match command {
+        JudgeCommand::Diagnose { config, state_dir } => {
+            match diagnose::show(config.as_deref(), state_dir.as_deref()) {
+                Ok(()) => 0,
+                Err(error) => {
+                    eprintln!("Cannot read diagnostic state: {error}");
+                    UNAVAILABLE
+                }
+            }
+        }
         JudgeCommand::CheckConfig { config } => match config::load(config.as_deref()) {
             Ok(_settings) => {
                 println!("{}", json!({"status":"valid","schema_version":1}));
@@ -124,8 +141,18 @@ pub async fn dispatch(command: JudgeCommand) -> i32 {
                 }
                 let (delay, transition) =
                     watch.advance(outcome, interval_seconds, max_consecutive_failures);
+                let next_attempt = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |t| t.as_secs())
+                    .saturating_add(delay);
+                if let Ok(path) = state::resolve(state_dir.as_deref()) {
+                    if let Ok(Some(state)) = state::State::lock(path) {
+                        let _ = state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"waiting","next_attempt_unix":next_attempt,"delay_seconds":delay,"consecutive_failures":watch.consecutive_failures}));
+                    }
+                }
                 if let Some(message) = transition {
                     eprintln!("{message}");
+                    eprintln!("Next attempt in {delay} seconds. For cause and recovery steps, run: mimir judge diagnose");
                 }
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => return 0,
@@ -367,6 +394,31 @@ async fn run_once(
             };
         }
     };
+    if let Err(error) = settings.operations.logging.prepare().and_then(|()| {
+        settings.operations.logging.event(
+            "judge",
+            &format!(
+                "starting batch; version={}; config_format={}; pid={}",
+                env!("CARGO_PKG_VERSION"),
+                settings.operations.config_version,
+                std::process::id()
+            ),
+        )
+    }) {
+        let mut report = state::Report::new("blocked", 0, 0, 0, 0, 0);
+        report.block_reason = Some("invalid_config".into());
+        report.failure_detail = Some(format!("logging.directory is unavailable: {error}"));
+        let _ = state.write(&report);
+        if !watch_mode {
+            eprintln!("Cannot write configured operational logs: {error}");
+        }
+        return RunOutcome {
+            code: INVALID_CONFIG,
+            degraded: true,
+            idle: false,
+        };
+    }
+    let _=state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"reviewing","config_format":settings.operations.config_version}));
     let report = match settings.llm.backend {
         config::Backend::Api => match api::ApiBackend::new(&settings.llm) {
             Ok(Some(mut backend)) => runner::run(&settings, &state, &mut backend).await,
@@ -382,6 +434,21 @@ async fn run_once(
             }
         },
     };
+    let _ = settings.operations.logging.event(
+        "judge",
+        &format!(
+            "batch {}; confirmed={}; pending={}; unavailable={}; reason={}; diagnostics={}",
+            report.status,
+            report.confirmed,
+            report.pending,
+            report.unavailable,
+            report.block_reason.as_deref().unwrap_or("none"),
+            report
+                .diagnostics_id
+                .map_or_else(|| "none".into(), |id| id.to_string())
+        ),
+    );
+    let _=state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"batch_finished","outcome":report.status,"config_format":settings.operations.config_version}));
     let code = match report.status.as_str() {
         "idle" | "complete" => 0,
         "partial" | "blocked" => INCOMPLETE,

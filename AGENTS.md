@@ -37,6 +37,21 @@ settings
 remain usable, and the Rust judge stays opt-in. A binary rollback does not
 retract reviews that have already changed the graph.
 
+## Configuration compatibility after updates
+
+Run `mimir config check` after every binary update, before database/model work.
+For a legacy configuration, use `mimir config upgrade --log-directory PATH`
+with the agreed absolute application log directory, then check again. Preserve
+all other settings; do not change the package version or system services as an
+incidental part of this upgrade. New processes and each watcher batch enforce
+required configuration compatibility. An already-running old process must be
+restarted separately to use the new binary.
+
+Use `mimir judge diagnose` for a human-readable failure report. See
+[operations](docs/operations.md) for log bounds, private diagnostics, and actual
+review verification. A version string or successful check is not evidence that
+the judge completed a review.
+
 ## What a complete install consists of
 
 The application needs PostgreSQL, the `mimir` / `mimir-mcp` binaries and an MCP

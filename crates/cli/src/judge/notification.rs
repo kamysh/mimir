@@ -80,6 +80,8 @@ fn failure_details(project: &str, max_calls: usize, report: &Report) -> String {
     } else {
         details.push_str("\nDiagnostic ID: unavailable; inspect mimir judge status");
     }
+    details.push('\n');
+    details.push_str(&super::diagnose::summary(Some(report)));
     details
 }
 

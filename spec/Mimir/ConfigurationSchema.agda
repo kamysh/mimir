@@ -16,13 +16,14 @@ open import Mimir.Validation using (Fault)
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
 open import Mimir.PublicInput using (bad; enum; unsigned; required; optional; defaulted)
 import Mimir.StructuredValue as V
+import Mimir.OperationalConfiguration as Operations
 import Mimir.ConfigurationValues as C
 import Mimir.ConfigurationInput as Input
 import Mimir.SourceReview as TextEquality
 
 record Config : Set where
   constructor config
-  field core : C.Config; llm judge email : Maybe V.Value
+  field operations : Operations.Admitted; core : C.Config; llm judge email : Maybe V.Value
 
 sslMode : V.Value → Fault ⊎ C.Mode
 sslMode = enum (("disable" , C.disable) ∷ ("prefer" , C.prefer) ∷ ("require" , C.require) ∷
@@ -56,12 +57,13 @@ module Decode (sizeMaximum : ℕ) where
       optional "cache_dir" V.asString values >>= λ cache → inj₂ (C.embeddings backend model key batch cache)
 
   decode : V.Value → Fault ⊎ Config
-  decode raw = V.asObject raw >>= λ entries → fields (V.Object.normalize entries)
+  decode raw = Operations.decode raw >>= λ operations →
+    V.asObject raw >>= λ entries → fields operations (V.Object.normalize entries)
     where
-    fields : V.Object.View → Fault ⊎ Config
-    fields values = required "database" database values >>= λ db → optional "embeddings" embeddings values >>= λ embed →
+    fields : Operations.Admitted → V.Object.View → Fault ⊎ Config
+    fields operations values = required "database" database values >>= λ db → optional "embeddings" embeddings values >>= λ embed →
       optional "llm" table values >>= λ llm → optional "judge" table values >>= λ judge → optional "email" table values >>= λ email →
-      inj₂ (config (C.config db embed) llm judge email)
+      inj₂ (config operations (C.config db embed) llm judge email)
 
 -- CLI parsing splits only at the first '='; values can contain more equals
 -- signs, whitespace or an empty string. Keys are not trimmed or case-folded.
