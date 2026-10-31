@@ -151,25 +151,38 @@ impl StateDir {
         let temp = self
             .path
             .join(format!(".notification-{}.tmp", uuid::Uuid::new_v4()));
-        let result = (|| -> Result<()> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(&temp)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            fs::rename(&temp, self.path.join(name))?;
-            File::open(&self.path)?.sync_all()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temp);
-        }
-        result
+        replace_state_file(&temp, &self.path.join(name), &self.path, &bytes)
     }
 }
+
+// NotificationStorage.File.write delegates to JudgeWrite.replace: creation
+// grants cleanup ownership, and successful rename ends temporary-name ownership.
+fn replace_state_file(temp: &Path, target: &Path, directory: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(temp)?;
+    let publication = (|| -> Result<()> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(temp, target)?;
+        Ok(())
+    })();
+    if let Err(error) = publication {
+        drop(file);
+        let _ = fs::remove_file(temp);
+        return Err(error);
+    }
+    // An error here does not imply rollback: the target was already replaced.
+    File::open(directory)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "state_persistence_tests.rs"]
+mod persistence_tests;
 
 impl Drop for StateDir {
     fn drop(&mut self) {

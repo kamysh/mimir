@@ -57,7 +57,7 @@ impl EmbeddingProvider for VoyageBackend {
                 .error_for_status()?
                 .json()
                 .await?;
-            parse_embeddings(&resp)
+            parse_embeddings(&resp, texts.len())
         })
     }
 }
@@ -99,7 +99,7 @@ impl EmbeddingProvider for OpenAiBackend {
                 .error_for_status()?
                 .json()
                 .await?;
-            parse_embeddings(&resp)
+            parse_embeddings(&resp, texts.len())
         })
     }
 }
@@ -430,22 +430,83 @@ pub fn make_backend(cfg: &EmbeddingsConfig) -> Box<dyn EmbeddingProvider> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn parse_embeddings(resp: &serde_json::Value) -> Result<Vec<Vec<f32>>> {
+fn parse_embeddings(resp: &serde_json::Value, count: usize) -> Result<Vec<Vec<f32>>> {
     let data = resp["data"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("missing 'data' array in embedding response"))?;
-    data.iter()
-        .map(|item| {
-            item["embedding"]
-                .as_array()
-                .ok_or_else(|| anyhow::anyhow!("missing 'embedding' in data item"))?
+    anyhow::ensure!(
+        data.len() == count,
+        "embedding response count does not match input"
+    );
+    let mut vectors = vec![None; count];
+    let mut dimension = None;
+    for item in data {
+        let index = item["index"]
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| anyhow::anyhow!("invalid embedding response index"))?;
+        anyhow::ensure!(index < count, "embedding response index is outside input");
+        anyhow::ensure!(
+            vectors[index].is_none(),
+            "duplicate embedding response index"
+        );
+        let values = item["embedding"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("missing 'embedding' in data item"))?;
+        match dimension {
+            None => dimension = Some(values.len()),
+            Some(expected) => anyhow::ensure!(
+                values.len() == expected,
+                "inconsistent embedding dimensions"
+            ),
+        }
+        vectors[index] = Some(
+            values
                 .iter()
-                .map(|v| {
-                    v.as_f64()
-                        .map(|f| f as f32)
+                .map(|value| {
+                    value
+                        .as_f64()
+                        .map(|number| number as f32)
                         .ok_or_else(|| anyhow::anyhow!("non-numeric value in embedding"))
                 })
-                .collect::<Result<Vec<f32>>>()
-        })
+                .collect::<Result<Vec<_>>>()?,
+        );
+    }
+    vectors
+        .into_iter()
+        .map(|vector| vector.ok_or_else(|| anyhow::anyhow!("missing embedding response index")))
         .collect()
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn provider_order_does_not_change_input_association() {
+        let response =
+            json!({"data":[{"index":1,"embedding":[3.0,4.0]}, {"index":0,"embedding":[1.0,2.0]}]});
+        assert_eq!(
+            parse_embeddings(&response, 2).unwrap(),
+            vec![vec![1.0, 2.0], vec![3.0, 4.0]]
+        );
+        assert!(parse_embeddings(&json!({"data":[]}), 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn malformed_associations_are_rejected_without_truncation() {
+        for data in [
+            json!([]),
+            json!([{"index":0,"embedding":[1.0]}]),
+            json!([{"index":0,"embedding":[1.0]},{"index":0,"embedding":[2.0]}]),
+            json!([{"index":0,"embedding":[1.0]},{"index":2,"embedding":[2.0]}]),
+            json!([{"index":0,"embedding":[1.0]},{"index":1,"embedding":[2.0,3.0]}]),
+            json!([{"index":0,"embedding":[1.0]},{"embedding":[2.0]}]),
+            json!([{"index":0,"embedding":[1.0]},{"index":-1,"embedding":[2.0]}]),
+            json!([{"index":0,"embedding":[1.0]},{"index":1,"embedding":["invalid"]}]),
+        ] {
+            assert!(parse_embeddings(&json!({"data":data}), 2).is_err());
+        }
+    }
 }

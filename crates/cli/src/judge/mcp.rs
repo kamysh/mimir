@@ -148,6 +148,8 @@ impl Client {
             .notify("notifications/initialized", json!({}))
             .await?;
         client.allowed_tools = client.validate_tools().await?;
+        let capabilities = client.tool("learning_capabilities", json!({})).await?;
+        validate_learning_capabilities(&capabilities)?;
         Ok(client)
     }
 
@@ -265,93 +267,7 @@ impl Client {
 
     async fn validate_tools(&mut self) -> Result<Vec<Value>> {
         let result = self.request("tools/list", json!({})).await?;
-        let tools = result["tools"]
-            .as_array()
-            .ok_or_else(|| anyhow!("invalid MCP tool list"))?;
-        let mut allowed = Vec::new();
-        for (name, required) in [
-            (
-                "pending_experiences",
-                &[
-                    ("project", "string"),
-                    ("limit", "integer"),
-                    ("exclude_ids", "array"),
-                ][..],
-            ),
-            ("get_experience", &[("id", "string")][..]),
-            (
-                "review_experience",
-                &[
-                    ("review", "object"),
-                    ("expected_review_revision", "integer"),
-                ][..],
-            ),
-            ("experience_history", &[("id", "string")][..]),
-            (
-                "query_relevant",
-                &[
-                    ("context", "string"),
-                    ("project", "string"),
-                    ("limit", "integer"),
-                ][..],
-            ),
-            (
-                "query_learning_context",
-                &[
-                    ("context", "string"),
-                    ("project", "string"),
-                    ("limit", "integer"),
-                ][..],
-            ),
-            (
-                "explain_belief",
-                &[
-                    ("id", "string"),
-                    ("limit", "integer"),
-                    ("offset", "integer"),
-                ][..],
-            ),
-            ("get_belief", &[("id", "string")][..]),
-            (
-                "query_intervention",
-                &[("id", "string"), ("value", "number")][..],
-            ),
-            ("get_contradictions", &[("project", "string")][..]),
-        ] {
-            let schema = tools
-                .iter()
-                .find(|tool| tool["name"] == name)
-                .and_then(|tool| tool.get("inputSchema"))
-                .ok_or_else(|| anyhow!("required MCP tool unavailable: {name}"))?;
-            for (key, kind) in required {
-                ensure!(
-                    schema["properties"][key]["type"] == *kind,
-                    "unsupported MCP schema: {name}"
-                );
-            }
-            if name == "review_experience" {
-                for (key, kind) in [
-                    ("experience_id", "string"),
-                    ("experience_revision", "integer"),
-                    ("reviewer", "string"),
-                ] {
-                    ensure!(
-                        schema["properties"]["review"]["properties"][key]["type"] == kind,
-                        "unsupported MCP review schema"
-                    );
-                }
-            }
-            if name != "pending_experiences" {
-                allowed.push(
-                    tools
-                        .iter()
-                        .find(|tool| tool["name"] == name)
-                        .unwrap()
-                        .clone(),
-                );
-            }
-        }
-        Ok(allowed)
+        checked_tools(&result)
     }
 
     pub async fn tool(&mut self, name: &str, args: Value) -> Result<Value> {
@@ -378,6 +294,179 @@ impl Client {
     }
 }
 
+// Mimir.JudgeToolCatalogue.check: first matching definitions, exact property
+// types, and host-only demands excluded from the model tool catalogue.
+fn checked_tools(result: &Value) -> Result<Vec<Value>> {
+    let tools = result["tools"]
+        .as_array()
+        .ok_or_else(|| anyhow!("invalid MCP tool list"))?;
+    let mut allowed = Vec::new();
+    for (name, required) in [
+        (
+            "pending_experiences",
+            &[
+                ("project", "string"),
+                ("limit", "integer"),
+                ("exclude_ids", "array"),
+            ][..],
+        ),
+        ("learning_capabilities", &[][..]),
+        ("get_experience", &[("id", "string")][..]),
+        (
+            "review_experience",
+            &[
+                ("review", "object"),
+                ("expected_review_revision", "integer"),
+            ][..],
+        ),
+        ("experience_history", &[("id", "string")][..]),
+        (
+            "query_relevant",
+            &[
+                ("context", "string"),
+                ("project", "string"),
+                ("limit", "integer"),
+            ][..],
+        ),
+        (
+            "query_learning_context",
+            &[
+                ("context", "string"),
+                ("project", "string"),
+                ("limit", "integer"),
+            ][..],
+        ),
+        (
+            "explain_belief",
+            &[
+                ("id", "string"),
+                ("limit", "integer"),
+                ("offset", "integer"),
+            ][..],
+        ),
+        ("get_belief", &[("id", "string")][..]),
+        (
+            "query_intervention",
+            &[("id", "string"), ("value", "number")][..],
+        ),
+        ("get_contradictions", &[("project", "string")][..]),
+    ] {
+        let schema = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .and_then(|tool| tool.get("inputSchema"))
+            .ok_or_else(|| anyhow!("required MCP tool unavailable: {name}"))?;
+        if name == "learning_capabilities" {
+            ensure!(
+                schema["type"] == "object",
+                "unsupported MCP capability schema"
+            );
+        }
+        for (key, kind) in required {
+            ensure!(
+                schema["properties"][key]["type"] == *kind,
+                "unsupported MCP schema: {name}"
+            );
+        }
+        if name == "review_experience" {
+            for (key, kind) in [
+                ("experience_id", "string"),
+                ("experience_revision", "integer"),
+                ("reviewer", "string"),
+                ("rationale", "string"),
+                ("assessments", "array"),
+                ("extracted_items", "array"),
+                ("source_coverage", "array"),
+                ("feedback", "array"),
+                ("links", "array"),
+                ("superseded_beliefs", "array"),
+                ("candidates", "array"),
+                ("candidate_feedback", "array"),
+                ("candidate_links", "array"),
+            ] {
+                ensure!(
+                    schema["properties"]["review"]["properties"][key]["type"] == kind,
+                    "unsupported MCP review schema"
+                );
+            }
+        }
+        if !matches!(name, "pending_experiences" | "learning_capabilities") {
+            allowed.push(
+                tools
+                    .iter()
+                    .find(|tool| tool["name"] == name)
+                    .unwrap()
+                    .clone(),
+            );
+        }
+    }
+    for name in ["get_lesson_assessment", "lesson_assessment_history"] {
+        if let Some(tool) = tools.iter().find(|tool| tool["name"] == name) {
+            for key in ["project", "belief_id", "scope", "rubric"] {
+                ensure!(
+                    tool["inputSchema"]["properties"][key]["type"] == "string",
+                    "unsupported assessment schema"
+                );
+            }
+            allowed.push(tool.clone());
+        }
+    }
+    if let Some(tool) = tools.iter().find(|t| t["name"] == "get_learning_review") {
+        ensure!(
+            tool["inputSchema"]["properties"]["id"]["type"] == "string",
+            "unsupported review receipt schema"
+        );
+        allowed.push(tool.clone());
+    }
+    Ok(allowed)
+}
+
+// Mimir.LearningCapabilities.admit 2 1. Compatibility is independent of the
+// user-controlled package version, and only gates the optional judge client.
+fn validate_learning_capabilities(capabilities: &Value) -> Result<()> {
+    ensure!(capabilities.is_object(), "expected an object");
+    let integer = |key: &str| -> Result<u64> {
+        capabilities
+            .get(key)
+            .ok_or_else(|| anyhow!("missing required field: {key}"))?
+            .as_u64()
+            .ok_or_else(|| anyhow!("expected an unsigned integer: {key}"))
+    };
+    let contract = integer("contract_version")?;
+    let model = integer("assessment_model_version")?;
+    let requirements = [
+        ("source_coverage", "source coverage is unavailable"),
+        (
+            "typed_learning_items",
+            "typed learning items are unavailable",
+        ),
+        (
+            "revision_owned_assessments",
+            "revision-owned assessments are unavailable",
+        ),
+        (
+            "legacy_graph_probability_unchanged",
+            "legacy graph probability compatibility is unavailable",
+        ),
+    ];
+    let mut flags = [false; 4];
+    // Decode the complete record before semantic validation, matching fields
+    // followed by validate in LearningCapabilities.admit.
+    for (index, (key, _)) in requirements.iter().enumerate() {
+        flags[index] = capabilities
+            .get(key)
+            .ok_or_else(|| anyhow!("missing required field: {key}"))?
+            .as_bool()
+            .ok_or_else(|| anyhow!("expected a boolean: {key}"))?;
+    }
+    ensure!(contract == 2, "unsupported learning contract version");
+    ensure!(model == 1, "unsupported assessment model version");
+    for (supported, (_, message)) in flags.into_iter().zip(requirements) {
+        ensure!(supported, "{message}");
+    }
+    Ok(())
+}
+
 impl Drop for Client {
     fn drop(&mut self) {
         if let Some(pid) = self.child.id() {
@@ -387,6 +476,10 @@ impl Drop for Client {
         let _ = self.child.start_kill();
     }
 }
+
+#[cfg(test)]
+#[path = "mcp_startup_tests.rs"]
+mod startup_tests;
 
 #[cfg(test)]
 mod tests {
@@ -440,10 +533,11 @@ mod tests {
         .await;
         assert!(malformed.is_err());
 
-        let pid_file = format!("/var/tmp/mimir/step5/descendant-{}.pid", std::process::id());
+        let pid_file =
+            std::env::temp_dir().join(format!("mimir-descendant-{}.pid", uuid::Uuid::new_v4()));
         let script = format!(
             "sleep 30 & child=$!; printf '%s' \"$child\" > '{}'; wait",
-            pid_file
+            pid_file.display()
         );
         let timed_out = Client::start(
             "bash",

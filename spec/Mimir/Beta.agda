@@ -300,9 +300,15 @@ betaDecay-1 b = cong₂ mkBeta (one+id (α b)) (one+id (β b))
             y-1+1 z = trans (+-assoc z (- 1ℚ) 1ℚ)
                             (trans (cong (z +_) (+-inverseˡ 1ℚ)) (+-identityʳ z))
 
--- The decay target (1,1) has mean exactly ½.
-decay-target-mean-is-½ : betaMean (mkBeta 1ℚ 1ℚ) ≡ ½
-decay-target-mean-is-½ = refl
+-- Complete decay sends every input evidence state to mean ½.
+zeroDecayNonzero : ∀ b → NonZero (strength (betaDecay b 0ℚ))
+zeroDecayNonzero b = Relation.Binary.PropositionalEquality.subst
+  (λ state → NonZero (strength state)) (sym (betaDecay-0 b)) Data.Rational.nonZero
+
+zeroDecayMeanIsHalf : ∀ b → betaMean (betaDecay b 0ℚ) {{zeroDecayNonzero b}} ≡ ½
+zeroDecayMeanIsHalf b = Relation.Binary.PropositionalEquality.subst
+  (λ state → (valid : NonZero (strength state)) → betaMean state {{valid}} ≡ ½)
+  (sym (betaDecay-0 b)) (λ valid → refl) (zeroDecayNonzero b)
 
 -- ---------------------------------------------------------------------------
 -- Persistence contract.

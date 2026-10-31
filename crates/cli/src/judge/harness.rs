@@ -321,7 +321,7 @@ impl<'a> Harness<'a> {
         self.check_capabilities(&work).await?;
         let payload = json!({
             "instructions":format!("Review only this pinned experience. Use the supplied tools through calls; do not execute tools yourself. {} The host enforces project {}, experience {}, source revision {}, and review revision {}. Return an empty calls array only when you have finished.",
-                super::review_guidance(), selected.experience.project, selected.experience.id, selected.revision, selected.review_revision),
+                super::review_guidance(selected), selected.experience.project, selected.experience.id, selected.revision, selected.review_revision),
             "experience":selected,
             "tools":tools,
             "history":self.history,

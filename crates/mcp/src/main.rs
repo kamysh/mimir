@@ -397,10 +397,14 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
         "explain_belief"
         | "record_experience"
         | "review_experience"
+        | "get_learning_review"
         | "get_experience"
         | "experience_history"
         | "pending_experiences"
-        | "query_learning_context" => learning::call(svc, name, args).await,
+        | "query_learning_context"
+        | "learning_capabilities"
+        | "get_lesson_assessment"
+        | "lesson_assessment_history" => learning::call(svc, name, args).await,
         "insert_belief" => {
             let provenance: IndependentProvenance = serde_json::from_value(
                 args.get("provenance")

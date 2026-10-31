@@ -143,7 +143,7 @@ impl<'a> ApiBackend<'a> {
     fn instructions(selected: &ExperienceState) -> String {
         format!(
             "Review only this pinned experience. Use the supplied functions for evidence and review; never claim database completion in text. {} The host enforces project {}, experience {}, source revision {}, and review revision {}. Stop after the review is submitted.",
-            super::review_guidance(),
+            super::review_guidance(selected),
             selected.experience.project,
             selected.experience.id,
             selected.revision,
@@ -672,6 +672,8 @@ mod tests {
                 evidence: vec!["local fixture".into()],
                 belief_ids: Vec::new(),
                 pattern_id: None,
+                learning_items: vec![],
+                source_records: vec![],
             },
             revision: 1,
             review_revision: 0,
@@ -1121,8 +1123,29 @@ mod tests {
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
         let oversized = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = [0u8; 4096];
-            let _ = socket.read(&mut request).await.unwrap();
+            // Consume the complete request before closing the response socket.
+            // A larger judge prompt otherwise leaves unread TCP data and can
+            // produce a reset instead of exercising the response-size guard.
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let boundary = loop {
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0 && request.len() + count < MAX_REQUEST);
+                request.extend_from_slice(&chunk[..count]);
+                if let Some(end) = request.windows(4).position(|s| s == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+            let headers = String::from_utf8(request[..boundary].to_vec()).unwrap();
+            let length: usize = headers.lines().find_map(|line| {
+                line.to_ascii_lowercase().strip_prefix("content-length: ")
+                    .and_then(|v| v.trim().parse().ok())
+            }).unwrap();
+            while request.len() - boundary < length {
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0 && request.len() + count < MAX_REQUEST);
+                request.extend_from_slice(&chunk[..count]);
+            }
             let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 MAX_RESPONSE + 1
@@ -1141,7 +1164,7 @@ mod tests {
             Ok(_) => panic!("oversized provider body was accepted"),
             Err(error) => error.to_string(),
         };
-        assert!(error.contains("exceeded limit"));
+        assert!(error.contains("exceeded limit"), "{error}");
         oversized.await.unwrap();
     }
 

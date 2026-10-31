@@ -5,8 +5,8 @@
 module Mimir.Judge where
 
 open import Data.Bool using (Bool; true; false; _∧_; _∨_)
-open import Data.Nat using (ℕ; zero; suc; _+_; _≟_)
-open import Data.Nat.Properties using (+-suc)
+open import Data.Nat using (ℕ; zero; suc; _+_; _≟_; _≤_; _<_; z≤n; s≤s)
+open import Data.Nat.Properties using (+-suc; ≤-refl)
 open import Data.List using (List; []; _∷_; length)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
@@ -340,20 +340,41 @@ module Watch where
   ... | true = backedOff
   ... | false = normal
 
-  threshold-switches-to-slow-retry : ∀ normal backedOff →
-    retryDelay 3 3 normal backedOff ≡ backedOff
-  threshold-switches-to-slow-retry normal backedOff = refl
+  reached-complete : ∀ {limit current} → limit ≤ current → reached limit current ≡ true
+  reached-complete z≤n = refl
+  reached-complete (s≤s bound) = reached-complete bound
+
+  reached-sound : ∀ limit current → reached limit current ≡ true → limit ≤ current
+  reached-sound zero current proof = z≤n
+  reached-sound (suc limit) zero ()
+  reached-sound (suc limit) (suc current) proof = s≤s (reached-sound limit current proof)
+
+  below-threshold : ∀ {limit current} → current < limit → reached limit current ≡ false
+  below-threshold {suc limit} {zero} (s≤s bound) = refl
+  below-threshold {suc limit} {suc current} (s≤s bound) = below-threshold bound
+
+  threshold-switches-to-slow-retry : ∀ threshold normal backedOff →
+    retryDelay threshold threshold normal backedOff ≡ backedOff
+  threshold-switches-to-slow-retry threshold normal backedOff rewrite reached-complete (≤-refl {x = threshold}) = refl
+
+  after-threshold-keeps-slow-retry : ∀ threshold current normal backedOff → threshold ≤ current →
+    retryDelay threshold current normal backedOff ≡ backedOff
+  after-threshold-keeps-slow-retry threshold current normal backedOff bound rewrite reached-complete bound = refl
+
+  before-threshold-keeps-normal-retry : ∀ threshold current normal backedOff → current < threshold →
+    retryDelay threshold current normal backedOff ≡ normal
+  before-threshold-keeps-normal-retry threshold current normal backedOff bound rewrite below-threshold bound = refl
 
   retryDeferred : RevisionCheck → Bool
   retryDeferred unchanged = false
   retryDeferred corrected = true
   retryDeferred resolved = false
 
-  unchanged-rejection-is-not-retried : retryDeferred unchanged ≡ false
-  unchanged-rejection-is-not-retried = refl
+  retryRequiresCorrection : ∀ revision → retryDeferred revision ≡ true → revision ≡ corrected
+  retryRequiresCorrection corrected allowed = refl
 
-  corrected-revision-can-be-reviewed : retryDeferred corrected ≡ true
-  corrected-revision-can-be-reviewed = refl
+  correctionPermitsRetry : ∀ revision → revision ≡ corrected → retryDeferred revision ≡ true
+  correctionPermitsRetry revision refl = refl
 
   failures : Outcome → ℕ → ℕ
   failures success previous = zero

@@ -1,4 +1,7 @@
 {-# OPTIONS --safe #-}
+-- Legacy ideal/percentage structural laws. Current floating operation order,
+-- posterior iteration and service effects are in GraphNumerics,
+-- PosteriorComputation, CoreLibrary and InferenceProtocol.
 module Mimir.Inference where
 
 open import Mimir.Types
@@ -154,7 +157,7 @@ decay-f-≤ p (Data.Nat.suc d) f f≤100 =
 -- PHASE 3 NOTE: `decay-confidence` below models the PRE-Phase-3 scalar decay
 -- (decay the confidence scalar only). Under Phase 3, decay instead pulls the
 -- Beta counts (α,β) toward (1,1), moving BOTH the mean and the strength — see
--- Mimir.Beta (decay-target-mean-is-½). `decay-f` is kept as the legacy model.
+-- Mimir.Beta (zeroDecayMeanIsHalf). `decay-f` is kept as the legacy model.
 -- ---------------------------------------------------------------------------
 -- decay_all — the Rust inference engine decays the `confidence` field
 -- (not `probability`) of every belief.  Correspondingly the spec applies
@@ -226,8 +229,8 @@ attenuate-≤ target defeater w =
 -- — then propagates forward along the surgical edge set. The structural
 -- content of mutilation is: NO surviving edge points into the intervened node
 -- (its value is independent of its former parents). That is the lemma proved
--- below. RRF/cosine and the numeric BFS are runtime concerns not modelled in
--- --safe Agda; here we model only the edge-set surgery and its key property.
+-- below. Current numeric iteration is defined separately in
+-- PosteriorComputation; here we retain edge-set surgery and its general law.
 -- ---------------------------------------------------------------------------
 
 -- Boolean equality on node identifiers (compares the underlying ℕ uid).

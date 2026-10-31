@@ -1,6 +1,7 @@
 mod api;
 pub mod config;
 mod digest;
+mod evidence;
 mod harness;
 mod mcp;
 mod notification;
@@ -10,8 +11,8 @@ mod state;
 
 /// Shared policy for both provider APIs and external harnesses. The host still
 /// validates scope and revisions; these instructions govern evidence attribution.
-fn review_guidance() -> &'static str {
-    "Treat the experience as one incident, not independent confirmation of a belief created from that same report. Distinguish tool_result, user_feedback and agent_report; unknown or agent-reported outcomes do not prove success. For a new hypothesis or procedure use review_experience candidates with stable keys, not a separate insert_belief or insert_pattern call. Every candidate_key in candidate_feedback or candidate_links must name a belief candidate declared in the candidates array of this same review; use belief_id for an existing belief. Reuse a pre-existing scoped belief only for genuinely independent evidence. If a standalone belief appears to rest on this incident already, flag possible duplicate provenance in the rationale; do not count it as a second observation. A user requirement is an authoritative constraint, not a causal hypothesis to score. Identify confounding and keep unsupported causal claims tentative. A correction replaces the prior review for this same experience ID. Inspect experience_history when correcting a source: a candidate key may be reused only with its exact original kind and declaration; give a revised claim a new key."
+fn review_guidance(selected: &mimir_core::learning::ExperienceState) -> String {
+    format!("{}\n{}", include_str!("review-guidance.txt"), evidence::guidance(&selected.experience))
 }
 
 use clap::Subcommand;

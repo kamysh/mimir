@@ -554,24 +554,34 @@ impl State {
         let temp = self
             .path
             .join(format!(".judge-{}-{}.tmp", name, Uuid::new_v4()));
-        let result = (|| -> Result<()> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(&temp)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            fs::rename(&temp, self.path.join(name))?;
-            File::open(&self.path)?.sync_all()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temp);
-        }
-        result
+        replace_state_file(&temp, &self.path.join(name), &self.path, &bytes)
     }
+}
+
+// Mimir.JudgeWrite.replace: only successful exclusive creation grants cleanup
+// ownership, and successful rename ends ownership of the temporary pathname.
+fn replace_state_file(temp: &Path, target: &Path, directory: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(temp)?;
+    let publication = (|| -> Result<()> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(temp, target)?;
+        Ok(())
+    })();
+    if let Err(error) = publication {
+        drop(file);
+        let _ = fs::remove_file(temp);
+        return Err(error);
+    }
+    // A directory error can occur after replacement. It is not rollback and
+    // must not remove a pathname which this operation no longer owns.
+    File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 impl Drop for State {
@@ -640,6 +650,10 @@ fn read_named_limited<T: for<'de> Deserialize<'de>>(
 }
 
 #[cfg(test)]
+#[path = "state_persistence_tests.rs"]
+mod persistence_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -686,11 +700,7 @@ mod tests {
 
     #[test]
     fn lock_and_atomic_report() {
-        let dir = PathBuf::from(format!("/var/tmp/mimir/step5/state-{}", std::process::id()));
-        fs::create_dir_all(dir.parent().unwrap()).unwrap();
-        if dir.exists() {
-            fs::remove_dir_all(&dir).unwrap();
-        }
+        let dir = std::env::temp_dir().join(format!("mimir-state-{}", Uuid::new_v4()));
         let state = State::lock(dir.clone()).unwrap().unwrap();
         assert!(State::lock(dir.clone()).unwrap().is_none());
         assert!(read(&dir).unwrap().is_none());

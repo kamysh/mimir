@@ -16,7 +16,26 @@ pub fn tools() -> Vec<Value> {
         {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"belief"},"key":{"type":"string","minLength":1,"maxLength":128},"content":{"type":"string","minLength":1},"memory_type":{"enum":["Fact","Experiential"]}},"required":["kind","key","content"]},
         {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"pattern"},"key":{"type":"string","minLength":1,"maxLength":128},"situation":{"type":"string","minLength":1},"approach":{"type":"string","minLength":1}},"required":["kind","key","situation","approach"]}
     ]});
+    let axis = |minimum| json!({"type":"object","additionalProperties":false,"properties":{"value":{"type":["number","null"],"minimum":minimum,"maximum":1},"weight":{"type":"number","minimum":0,"maximum":1}},"required":["value","weight"]});
+    let assessment = json!({"type":"object","additionalProperties":false,"properties":{
+        "target":target,"scope":{"type":"string","minLength":1},"rubric":{"type":"string","minLength":1},
+        "correctness":axis(0),"usefulness":axis(-1),"rationale":{"type":"string","minLength":1},
+        "evidence_indices":{"type":"array","description":"Zero-based indices into experience.evidence for this source revision. When source_records is empty or absent, cite the evidence strings using experience.source as their provenance; user_feedback/tool_result may support weight without source_records. Otherwise evidence[i] references source_records[i], whose provenance applies. Positive weight requires relevant cited observed evidence; agent reports alone carry zero observed weight.","items":{"type":"integer","minimum":0},"maxItems":32},
+        "item_ids":{"type":"array","items":uuid,"maxItems":64}},"required":["target","scope","rubric","correctness","usefulness","rationale","evidence_indices"]});
+    let prediction = json!({"type":"object","additionalProperties":false,"properties":{
+        "quantity":{"type":"string"},"value":{"type":"number"},"unit":{"type":"string"},"probability":{"type":["number","null"],"minimum":0,"maximum":1},
+        "lower":{"type":["number","null"]},"upper":{"type":["number","null"]},"horizon":{"type":"string"},"recorded_at":{"type":"string"},"inferred":{"type":"boolean"}},
+        "required":["quantity","value","unit","horizon","recorded_at","inferred"]});
+    let item = json!({"type":"object","additionalProperties":false,"properties":{
+        "id":uuid,"kind":{"enum":["estimate","decision","suggestion"]},"source_ref":{"type":"string"},"actor":{"type":"string"},"statement":{"type":"string"},"conditions":{"type":"string"},"predictions":{"type":"array","items":prediction,"maxItems":16}},
+        "required":["id","kind","source_ref","actor","statement","conditions"]});
+    let source = json!({"type":"object","additionalProperties":false,"properties":{"source_ref":{"type":"string","maxLength":1000},"actor":{"type":"string","maxLength":200},"provenance":{"enum":["agent_report","user_feedback","tool_result"]},"text":{"type":"string","maxLength":12000},"recorded_at":{"type":["string","null"],"maxLength":100}},"required":["source_ref","actor","provenance","text"]});
+    let coverage = json!({"type":"object","additionalProperties":false,"properties":{"source_ref":{"type":"string"},"status":{"enum":["complete","unresolved"]},"reason":{"type":"string","minLength":1,"maxLength":4000}},"required":["source_ref","status","reason"]});
     vec![
+        json!({"name":"get_learning_review","description":"Read current source coverage and extracted items atomically. A null review means pending; unresolved coverage is not complete extraction.","inputSchema":{"type":"object","properties":{"id":uuid},"required":["id"]}}),
+        json!({"name":"learning_capabilities","description":"Read the installed typed learning contract and assessment model version.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
+        json!({"name":"get_lesson_assessment","description":"Get separate numeric correctness and usefulness for an explicit lesson, applicability scope and benefit rubric. Uses current review versions only; never grants authority. Values are uncalibrated and distinct from generic graph probability.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"belief_id":uuid,"scope":{"type":"string"},"rubric":{"type":"string"}},"required":["project","belief_id","scope","rubric"]}}),
+        json!({"name":"lesson_assessment_history","description":"Page through immutable assessment contributions with active/stale status and exact experience/review revisions. Evidence indices address that experience version.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"belief_id":uuid,"scope":{"type":"string"},"rubric":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}},"required":["project","belief_id","scope","rubric"]}}),
         json!({"name":"explain_belief","description":"Inspect the belief's incoming reasoning edges and a bounded page of active evidence-backed reviews. Follow experience_id with get_experience or experience_history for observations and past revisions. This explains provenance, not causal identification.","inputSchema":{"type":"object","properties":{"id":uuid,"offset":{"type":"integer","minimum":0,"default":0},"limit":{"type":"integer","minimum":1,"maximum":20,"default":10}},"required":["id"]}}),
         json!({"name":"record_experience","description":"Record one observed action and outcome for incremental LLM review. Use a stable UUID for the same incident, expected_revision=0 to create, or the returned revision to correct it. Do not also insert a standalone conclusion from this same incident; review-owned candidates avoid that duplicate prior. Exact retries do not duplicate evidence. ToolResult/UserFeedback are caller-reported provenance, not server verification. A correction invalidates the old review and retracts its effects atomically.","inputSchema":{"type":"object","properties":{
             "expected_revision":{"type":"integer","minimum":0},
@@ -24,13 +43,14 @@ pub fn tools() -> Vec<Value> {
                 "id":uuid,"project":{"type":"string"},"context":{"type":"string"},"action":{"type":"string"},
                 "outcome":{"enum":["success","failure","unknown"]},"source":{"enum":["tool_result","user_feedback","agent_report"]},
                 "evidence":{"type":"array","items":{"type":"string"},"maxItems":32},
-                "belief_ids":{"type":"array","items":uuid,"maxItems":64},"pattern_id":{"type":["string","null"]}},
+                "belief_ids":{"type":"array","items":uuid,"maxItems":64},"pattern_id":{"type":["string","null"]},"learning_items":{"type":"array","items":item,"maxItems":64},"source_records":{"type":"array","items":source,"maxItems":32}},
                 "required":["id","project","context","action","outcome","source","evidence"]}},"required":["experience","expected_revision"]}}),
         json!({"name":"pending_experiences","description":"Get the oldest new or changed experiences awaiting LLM review. Bounded incremental work: successful review removes that exact version; failed/stale submissions leave it pending. A judge may temporarily exclude deferred IDs; an empty filtered array does not prove the whole queue is empty. No claim or lease; concurrent reviewers use revision checks.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100,"default":10},"exclude_ids":{"type":"array","items":uuid,"maxItems":1000}}}}),
         json!({"name":"review_experience","description":"Apply one atomic, revision-checked review. Declare new belief/pattern candidates with stable keys; the response maps keys to server UUIDs. Candidate creation is not an observed successful use. Existing UUID-only reviews remain valid. Corrections retract owned evidence and links while retaining candidate identity and independent work.","inputSchema":{"type":"object","properties":{
             "expected_review_revision":{"type":"integer","minimum":0},
             "review":{"type":"object","additionalProperties":false,"properties":{
                 "experience_id":uuid,"experience_revision":{"type":"integer","minimum":1},"reviewer":{"type":"string"},"rationale":{"type":"string"},
+                "assessments":{"type":"array","items":assessment,"maxItems":64},"extracted_items":{"type":"array","items":item,"maxItems":64},"source_coverage":{"type":"array","items":coverage,"maxItems":32},
                 "feedback":{"type":"array","items":feedback,"maxItems":64},"links":{"type":"array","items":link,"maxItems":64},
                 "superseded_beliefs":{"type":"array","items":uuid,"maxItems":64},
                 "candidates":{"type":"array","items":candidate,"maxItems":64},
@@ -65,6 +85,36 @@ fn limit(args: &Value, default: usize) -> Result<usize> {
 }
 pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value> {
     Ok(match name {
+        "learning_capabilities" => {
+            json!({"contract_version":2,"source_coverage":true,"assessment_model_version":1,"typed_learning_items":true,"revision_owned_assessments":true,"legacy_graph_probability_unchanged":true})
+        }
+        "get_lesson_assessment" => {
+            svc.lesson_assessment(
+                text(args, "project")?,
+                text(args, "belief_id")?.parse()?,
+                text(args, "scope")?,
+                text(args, "rubric")?,
+            )
+            .await?
+        }
+        "lesson_assessment_history" => {
+            svc.lesson_assessment_history(
+                text(args, "project")?,
+                text(args, "belief_id")?.parse()?,
+                text(args, "scope")?,
+                text(args, "rubric")?,
+                args.get("offset")
+                    .map(|v| {
+                        v.as_u64()
+                            .and_then(|x| usize::try_from(x).ok())
+                            .ok_or_else(|| anyhow!("invalid offset"))
+                    })
+                    .transpose()?
+                    .unwrap_or(0),
+                limit(args, 20)?,
+            )
+            .await?
+        }
         "explain_belief" => {
             svc.explain_belief(
                 text(args, "id")?.parse()?,
@@ -94,6 +144,7 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
             )
             .await?,
         )?,
+        "get_learning_review" => svc.learning_review(text(args, "id")?.parse()?).await?,
         "get_experience" => {
             serde_json::to_value(svc.get_experience(text(args, "id")?.parse()?).await?)?
         }
