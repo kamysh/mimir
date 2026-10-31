@@ -12,7 +12,11 @@ mod state;
 /// Shared policy for both provider APIs and external harnesses. The host still
 /// validates scope and revisions; these instructions govern evidence attribution.
 fn review_guidance(selected: &mimir_core::learning::ExperienceState) -> String {
-    format!("{}\n{}", include_str!("review-guidance.txt"), evidence::guidance(&selected.experience))
+    format!(
+        "{}\n{}",
+        include_str!("review-guidance.txt"),
+        evidence::guidance(&selected.experience)
+    )
 }
 
 use clap::Subcommand;

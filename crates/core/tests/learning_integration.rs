@@ -1471,11 +1471,24 @@ async fn source_coverage_is_atomic_revision_owned_and_preserves_unresolved_items
         predictions: vec![],
     };
     r.extracted_items.push(item.clone());
-    let mut legacy=r.clone();
-    legacy.feedback.push(Feedback{belief_id:Uuid::new_v4(),verdict:Verdict::Support,weight:1.0});
+    let mut legacy = r.clone();
+    legacy.feedback.push(Feedback {
+        belief_id: Uuid::new_v4(),
+        verdict: Verdict::Support,
+        weight: 1.0,
+    });
     // Supply coverage so the rejection specifically concerns legacy evidence.
-    legacy.source_coverage.push(Coverage{source_ref:"event/1".into(),status:CoverageStatus::Unresolved,reason:"pending".into()});
-    assert!(svc.review_experience(&legacy,0).await.unwrap_err().to_string().contains("source reviews use typed"));
+    legacy.source_coverage.push(Coverage {
+        source_ref: "event/1".into(),
+        status: CoverageStatus::Unresolved,
+        reason: "pending".into(),
+    });
+    assert!(svc
+        .review_experience(&legacy, 0)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("source reviews use typed"));
 
     r.source_coverage.push(Coverage {
         source_ref: "event/1".into(),

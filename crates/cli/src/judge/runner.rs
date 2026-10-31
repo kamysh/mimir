@@ -157,9 +157,12 @@ async fn scoped_tool(
             );
             // The model never chooses reviewer identity.
             review.reviewer = "mimir-judge".into();
-            review
-                .validate()
-                .map_err(|error| InputRejected(format!("{error}. {}", super::evidence::guidance(&selected.experience))))?;
+            review.validate().map_err(|error| {
+                InputRejected(format!(
+                    "{error}. {}",
+                    super::evidence::guidance(&selected.experience)
+                ))
+            })?;
             args["review"] = serde_json::to_value(review)?;
         }
         "query_relevant" | "query_learning_context" | "get_contradictions" => {
