@@ -1,3 +1,26 @@
+# Mimir
+
+Persistent reasoning memory for AI coding agents through MCP.
+
+Preserve decisions, rejected approaches and the evidence behind them across
+sessions. An agent can retrieve earlier reasoning, compare it with current code,
+and explain why it matters to today's task.
+
+- Store beliefs and connect support, defeat, contradiction and causal hypotheses.
+- Record observations separately from the conclusions drawn from them.
+- Correct an incident under the same identity, retain history, and retract the
+  prior review's contribution.
+- Inspect provenance and the observations behind a belief.
+
+Mimir uses PostgreSQL and Apache AGE. Its CLI and MCP server support clients
+including Codex and Claude Code. A separate optional judge reviews recorded
+experiences when launched; installing Mimir does not start that judge.
+
+See [Installation](#installation) for setup. Agents performing installation use
+[AGENTS.md](AGENTS.md).
+
+**Article:** [Mimir reasoning memory with evidence and corrections](docs/articles/reasoning-memory.md).
+
 <!-- ══════════════════════════════════════════════════════════════════════
      AI CODING AGENTS (Claude Code, Cursor, Copilot, Aider, …): STOP HERE.
 
@@ -15,11 +38,29 @@
 > **[AGENTS.md](AGENTS.md)** — open that file, follow it exactly, and ignore the
 > rest of this README.
 
-# mimir
+## Install the binaries with Nix
 
-> *Mimir* (Old Norse: "memory") — the wisest of all beings, keeper of the well of wisdom at the root of Yggdrasil.
+With Nix installed and its `nix-command` and `flakes` features enabled, build the
+CLI and MCP server without installing them:
 
-Persistent belief graph for AI coding agents, including Codex and [Claude Code](https://claude.ai/code). Mimir preserves decisions, rejected approaches and lessons across sessions, so an agent can use prior reasoning instead of repeating investigation and mistakes.
+```sh
+nix build github:kamysh/mimir#mimir
+./result/bin/mimir --version
+./result/bin/mimir-mcp --version
+```
+
+To add these programs to your user profile instead, use
+`nix profile add github:kamysh/mimir#mimir`.
+This installs binaries only. Follow [Installation](#installation) to prepare
+PostgreSQL and Apache AGE, configure Mimir and register the MCP server. No
+database, judge or scheduled service is created by this package. Use the
+installed absolute MCP executable path in the client registration;
+`command -v mimir-mcp` shows it after installation.
+
+The commands follow the repository's default branch. Append a commit to the
+repository address, as in `github:kamysh/mimir/COMMIT#mimir`, to pin a version.
+These packages come from this repository; Nixpkgs' `mimir` package is Grafana's
+unrelated monitoring software.
 
 ## What it does
 
@@ -543,6 +584,16 @@ nix build .#mimir-static    # result/bin/mimir-mcp and result/bin/mimir
 # Install static binaries into ~/.local/bin and register the selected client
 ./install.sh --client claude  # or --client codex; omit to install binaries only
 ```
+
+## Related projects
+
+| Project | Purpose |
+| --- | --- |
+| [Kryzhen](https://github.com/kamysh/kryzhen) | Dependency-based PostgreSQL migrations as a Rust library and CLI |
+| [Muninn](https://github.com/kamysh/muninn) | Code search and repository knowledge for AI coding agents |
+
+Muninn and Mimir can run independently. Their documented setup can share one
+compatible PostgreSQL instance with separate roles and databases.
 
 ## License
 

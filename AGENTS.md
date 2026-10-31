@@ -29,9 +29,11 @@ insertion is unchanged.
 
 Back up the database and affected configuration before starting the new
 binaries: startup applies the additive learning-ledger and review-candidate
-migrations. Coordinate both binaries and client guidance. Identify any legacy
-scheduled judges that make untagged MCP insertions and agree on updating or
-pausing them before replacing their server. Old database/embedding settings
+migrations. Coordinate both binaries and client guidance. Validate any configured
+scheduled judge against the current
+[runtime setup](runtime/README.md#configure-a-scheduled-judge), including its
+model account, service environment and actual run report. Old database/embedding
+settings
 remain usable, and the Rust judge stays opt-in. A binary rollback does not
 retract reviews that have already changed the graph.
 
@@ -305,7 +307,10 @@ bounded batch with `mimir judge run`. The optional
 [`run.sh`](docs/claude-code-setup/mimir-judge-experiential/run.sh) is only a Bash
 launcher for that command; the adjacent prompt is reference text, not a file
 loaded by the Rust runner. `mimir judge watch` can repeat batches while running,
-but this installer does not enable a service or timer. Do not run the judge as
+but this installer does not enable a service or timer. When a scheduled judge
+is requested, follow the complete
+[schedule and verification procedure](runtime/README.md#configure-a-scheduled-judge).
+Do not run the judge as
 part of agent installation or use a live account to verify this guide.
 
 ## Step 8 — Orphaned Working-belief consolidation judge (optional)
