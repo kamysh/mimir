@@ -51,6 +51,8 @@ fn experience(project: &str) -> Experience {
         evidence: vec!["test receipt: new process loaded changed configuration".into()],
         belief_ids: vec![],
         pattern_id: None,
+        learning_items: vec![],
+        source_records: vec![],
     }
 }
 
@@ -198,7 +200,211 @@ fn review(e: &Experience) -> Review {
         candidates: vec![],
         candidate_feedback: vec![],
         candidate_links: vec![],
+        assessments: vec![],
+        extracted_items: vec![],
+        source_coverage: vec![],
     }
+}
+
+#[tokio::test]
+async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
+    use mimir_core::assessment::{Assessment, Axis, ItemKind, LearningItem, Prediction};
+    let svc = service().await;
+    let project = format!("assessment-{}", Uuid::new_v4());
+    let mut e = experience(&project);
+    let item_id = Uuid::new_v4();
+    e.learning_items.push(LearningItem {
+        id: item_id,
+        kind: ItemKind::Estimate,
+        source_ref: "task/event/1#span0".into(),
+        actor: "worker".into(),
+        statement: "complete within 30 minutes".into(),
+        conditions: "fixed scope".into(),
+        predictions: vec![Prediction {
+            quantity: "duration".into(),
+            value: 30.,
+            unit: "minutes".into(),
+            probability: Some(0.8),
+            lower: None,
+            upper: None,
+            horizon: "this task".into(),
+            recorded_at: "2026-10-28T00:00:00Z".into(),
+            inferred: false,
+        }],
+    });
+    svc.record_experience(&e, 0).await.unwrap();
+    let mut duplicate = e.clone();
+    duplicate.id = Uuid::new_v4();
+    assert!(svc.record_experience(&duplicate, 0).await.is_err());
+    assert!(svc.get_experience(duplicate.id).await.unwrap().is_none());
+    let mut moved = e.clone();
+    moved.learning_items[0].actor = "another actor".into();
+    assert!(svc.record_experience(&moved, 1).await.is_err());
+    let mut r = review(&e);
+    r.candidates.push(Candidate::Belief {
+        key: "lesson".into(),
+        content: "30 minutes suffices under fixed scope".into(),
+        memory_type: MemoryType::Experiential,
+    });
+    r.assessments.push(Assessment {
+        target: BeliefTarget::Candidate {
+            candidate_key: "lesson".into(),
+        },
+        scope: "fixed-scope-v1".into(),
+        rubric: "benefit-v1".into(),
+        correctness: Axis {
+            value: Some(1.),
+            weight: 1.,
+        },
+        usefulness: Axis {
+            value: Some(1.),
+            weight: 1.,
+        },
+        evidence_indices: vec![0],
+        item_ids: vec![item_id],
+        rationale: "observed completion with clear net benefit".into(),
+    });
+    let first = svc.review_experience(&r, 0).await.unwrap();
+    let id = first.candidate_ids["lesson"];
+    let score = svc
+        .lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+        .await
+        .unwrap();
+    assert!((score["scores"]["correctness"].as_f64().unwrap() - 2. / 3.).abs() < 1e-12);
+    assert_eq!(score["scores"]["usefulness"], 0.5);
+    let retrieved = svc
+        .query_learning_context("30 minutes fixed scope", &project, 5)
+        .await
+        .unwrap();
+    assert!(retrieved
+        .assessments
+        .iter()
+        .any(|a| a["belief_id"] == id.to_string() && a["scores"]["usefulness"] == 0.5));
+    assert!(!retrieved.assessments_truncated);
+    assert_eq!(
+        svc.review_experience(&r, 0).await.unwrap().review_revision,
+        1
+    );
+    assert_eq!(
+        svc.lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+            .await
+            .unwrap(),
+        score
+    );
+    assert_eq!(
+        svc.get_belief(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .probability
+            .value(),
+        0.5
+    );
+    assert!(svc
+        .lesson_assessment("foreign", id, "fixed-scope-v1", "benefit-v1")
+        .await
+        .is_err());
+    // A later judgment corrects the SAME incident, rather than adding a failure.
+    r.assessments[0].correctness.value = Some(0.);
+    r.assessments[0].usefulness.value = Some(-0.5);
+    assert!(svc.review_experience(&r, 0).await.is_err());
+    svc.review_experience(&r, 1).await.unwrap();
+    let corrected = svc
+        .lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+        .await
+        .unwrap();
+    assert!((corrected["scores"]["correctness"].as_f64().unwrap() - 1. / 3.).abs() < 1e-12);
+    assert_eq!(corrected["scores"]["usefulness"], -0.25);
+    assert_eq!(corrected["scores"]["incidents"], 1);
+    let page = svc
+        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 0, 1)
+        .await
+        .unwrap();
+    assert_eq!(page["entries"][0]["active"], false);
+    assert_eq!(page["next_offset"], 1);
+    let page = svc
+        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 1, 1)
+        .await
+        .unwrap();
+    assert_eq!(page["entries"][0]["active"], true);
+    // Reconnect proves persistence; correcting source invalidates its old review.
+    let reopened = service().await;
+    assert_eq!(
+        reopened
+            .lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+            .await
+            .unwrap(),
+        corrected
+    );
+    e.evidence[0] = "original measurement used wrong run; outcome unresolved".into();
+    e.outcome = Outcome::Unknown;
+    reopened.record_experience(&e, 1).await.unwrap();
+    assert!(reopened.review_experience(&r, 2).await.is_err());
+    let prior = reopened
+        .lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+        .await
+        .unwrap();
+    assert_eq!(prior["scores"]["correctness"], 0.5);
+    assert_eq!(prior["scores"]["usefulness"], 0.0);
+    assert_eq!(prior["scores"]["incidents"], 0);
+    r.experience_revision = 2;
+    r.assessments[0].correctness = Axis {
+        value: None,
+        weight: 0.,
+    };
+    r.assessments[0].usefulness = Axis {
+        value: None,
+        weight: 0.,
+    };
+    reopened.review_experience(&r, 2).await.unwrap();
+    let unresolved = reopened
+        .lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+        .await
+        .unwrap();
+    assert_eq!(unresolved["scores"]["correctness"], 0.5);
+    assert_eq!(unresolved["scores"]["usefulness"], 0.0);
+    assert_eq!(unresolved["scores"]["unresolved_correctness"], 1);
+    let mut bad = r.clone();
+    bad.assessments[0].evidence_indices = vec![99];
+    assert!(reopened.review_experience(&bad, 3).await.is_err());
+    bad = r.clone();
+    bad.assessments.push(bad.assessments[0].clone());
+    assert!(reopened.review_experience(&bad, 3).await.is_err());
+    bad = r.clone();
+    bad.feedback.push(Feedback {
+        belief_id: id,
+        verdict: Verdict::Support,
+        weight: 1.,
+    });
+    assert!(reopened.review_experience(&bad, 3).await.is_err());
+    // Failed writes did not advance the review pointer or change assessment.
+    assert_eq!(
+        reopened
+            .get_experience(e.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .review_revision,
+        3
+    );
+    assert_eq!(
+        reopened
+            .lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+            .await
+            .unwrap(),
+        unresolved
+    );
+    // Legacy JSON keeps exactly the old shape when typed fields are absent.
+    let legacy = experience(&project);
+    assert!(serde_json::to_value(&legacy)
+        .unwrap()
+        .get("learning_items")
+        .is_none());
+    assert!(serde_json::to_value(review(&legacy))
+        .unwrap()
+        .get("assessments")
+        .is_none());
+    reopened.delete_project(&project).await.unwrap();
 }
 
 /// Fixed Step-11 scenarios exercise the real ledger, candidate ownership, and
@@ -231,6 +437,8 @@ async fn offline_learning_scenario_matrix() {
             evidence: vec![evidence.into()],
             belief_ids: vec![],
             pattern_id: None,
+            learning_items: vec![],
+            source_records: vec![],
         };
     let assess = |e: &Experience, verdict: Option<Verdict>| {
         let mut r = review(e);
@@ -1227,4 +1435,110 @@ async fn contradiction_review_changes_detection_without_triggering_evidence_prop
         .unwrap()
         .is_empty());
     svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
+async fn source_coverage_is_atomic_revision_owned_and_preserves_unresolved_items() {
+    use mimir_core::{
+        assessment::{ItemKind, LearningItem},
+        learning_sources::{Coverage, CoverageStatus, SourceRecord},
+    };
+    let svc = service().await;
+    let mut e = experience(&format!("sources-{}", Uuid::new_v4()));
+    e.source = ObservationSource::AgentReport;
+    e.outcome = Outcome::Unknown;
+    e.source_records = vec![SourceRecord {
+        recorded_at: None,
+        source_ref: "event/1".into(),
+        actor: "agent".into(),
+        provenance: ObservationSource::AgentReport,
+        text: "I suggest testing first. Estimate: 30 minutes.".into(),
+    }];
+    e.evidence = vec!["event/1".into()];
+    svc.record_experience(&e, 0).await.unwrap();
+    let mut r = review(&e);
+    assert!(
+        svc.review_experience(&r, 0).await.is_err(),
+        "legacy reviewer must not silently skip source extraction"
+    );
+    let item = LearningItem {
+        id: Uuid::new_v4(),
+        kind: ItemKind::Suggestion,
+        source_ref: "event/1".into(),
+        actor: "agent".into(),
+        statement: "I suggest testing first.".into(),
+        conditions: "untried".into(),
+        predictions: vec![],
+    };
+    r.extracted_items.push(item.clone());
+    let mut legacy=r.clone();
+    legacy.feedback.push(Feedback{belief_id:Uuid::new_v4(),verdict:Verdict::Support,weight:1.0});
+    // Supply coverage so the rejection specifically concerns legacy evidence.
+    legacy.source_coverage.push(Coverage{source_ref:"event/1".into(),status:CoverageStatus::Unresolved,reason:"pending".into()});
+    assert!(svc.review_experience(&legacy,0).await.unwrap_err().to_string().contains("source reviews use typed"));
+
+    r.source_coverage.push(Coverage {
+        source_ref: "event/1".into(),
+        status: CoverageStatus::Complete,
+        reason: "extracted suggestion".into(),
+    });
+    assert!(
+        svc.review_experience(&r, 0).await.is_err(),
+        "complete item needs an assessment"
+    );
+    r.source_coverage[0].status = CoverageStatus::Unresolved;
+    r.source_coverage[0].reason = "Suggestion is untried; estimate still needs analysis".into();
+    let first = svc.review_experience(&r, 0).await.unwrap();
+    assert_eq!(first.review_revision, 1);
+    assert_eq!(
+        svc.review_experience(&r, 0).await.unwrap().review_revision,
+        1
+    );
+    let receipt = svc.learning_review(e.id).await.unwrap();
+    assert_eq!(
+        receipt["review"]["source_coverage"][0]["status"],
+        "unresolved"
+    );
+    assert!(
+        !svc.pending_experiences(Some(&e.project), 10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|s| s.experience.id == e.id),
+        "unresolved review must not hot-loop unchanged evidence"
+    );
+    let mut changed = e.clone();
+    changed.source_records[0].text = "Rewritten original".into();
+    assert!(svc.record_experience(&changed, 1).await.is_err());
+    e.source_records.push(SourceRecord {
+        recorded_at: None,
+        source_ref: "correction/1".into(),
+        actor: "human".into(),
+        provenance: ObservationSource::UserFeedback,
+        text: "Testing was not attempted; actual duration unknown".into(),
+    });
+    e.evidence.push("correction/1".into());
+    svc.record_experience(&e, 1).await.unwrap();
+    assert!(svc.learning_review(e.id).await.unwrap()["review"].is_null());
+    assert!(svc.review_experience(&r, 1).await.is_err());
+    r.experience_revision = 2;
+    r.source_coverage.push(Coverage {
+        source_ref: "correction/1".into(),
+        status: CoverageStatus::Complete,
+        reason: "No additional decision, suggestion or estimate".into(),
+    });
+    let mut omitted = r.clone();
+    omitted.extracted_items.clear();
+    assert!(
+        svc.review_experience(&omitted, 1).await.is_err(),
+        "correction cannot discard extracted item"
+    );
+    let mut invented = r.clone();
+    invented.extracted_items[0].statement = "Never said".into();
+    assert!(svc.review_experience(&invented, 1).await.is_err());
+    svc.review_experience(&r, 1).await.unwrap();
+    assert_eq!(
+        svc.learning_review(e.id).await.unwrap()["review"]["extracted_items"][0]["id"],
+        item.id.to_string()
+    );
 }

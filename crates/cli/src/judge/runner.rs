@@ -116,7 +116,17 @@ async fn scoped_tool(
     let project = project_for(selected);
     let id = selected.experience.id.to_string();
     match name {
-        "get_experience" | "experience_history" => {
+        "get_lesson_assessment" | "lesson_assessment_history" => {
+            input_ensure!(
+                args["project"] == project,
+                "assessment is outside selected project"
+            );
+            if name == "lesson_assessment_history" {
+                let limit = args["limit"].as_u64().unwrap_or(20);
+                input_ensure!((1..=100).contains(&limit), "history page too large");
+            }
+        }
+        "get_experience" | "experience_history" | "get_learning_review" => {
             input_ensure!(args["id"] == id, "experience is outside pinned batch");
             if name == "experience_history" {
                 let current = client.tool("get_experience", json!({"id":id})).await?;
@@ -149,7 +159,7 @@ async fn scoped_tool(
             review.reviewer = "mimir-judge".into();
             review
                 .validate()
-                .map_err(|error| InputRejected(error.to_string()))?;
+                .map_err(|error| InputRejected(format!("{error}. {}", super::evidence::guidance(&selected.experience))))?;
             args["review"] = serde_json::to_value(review)?;
         }
         "query_relevant" | "query_learning_context" | "get_contradictions" => {
@@ -1282,6 +1292,8 @@ mod tests {
             evidence: vec!["isolated test receipt".into()],
             belief_ids: vec![],
             pattern_id: None,
+            learning_items: vec![],
+            source_records: vec![],
         };
         let e = make_experience();
         service.record_experience(&e, 0).await.unwrap();
@@ -1354,6 +1366,9 @@ mod tests {
                 candidates: vec![],
                 candidate_feedback: vec![],
                 candidate_links: vec![],
+                assessments: vec![],
+                extracted_items: vec![],
+                source_coverage: vec![],
             };
             service
                 .review_experience(&review, latest.review_revision)

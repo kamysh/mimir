@@ -192,17 +192,20 @@ edgeWeightRequired DEFEATS     = true
 edgeWeightRequired CAUSES      = true   -- record_cause MCP tool; weight required
 edgeWeightRequired CONTRADICTS = false  -- optional MCP param, defaults to 1.0
 
-edgeWeightRequired-contradiction-optional :
-  edgeWeightRequired CONTRADICTS ≡ false
-edgeWeightRequired-contradiction-optional = refl
+data RequiredWeight : EdgeLabel → Set where
+  supportWeight : RequiredWeight SUPPORTS
+  defeatWeight : RequiredWeight DEFEATS
+  causeWeight : RequiredWeight CAUSES
 
-edgeWeightRequired-supports-required :
-  edgeWeightRequired SUPPORTS ≡ true
-edgeWeightRequired-supports-required = refl
+edgeWeightRequiredSound : ∀ label → edgeWeightRequired label ≡ true → RequiredWeight label
+edgeWeightRequiredSound SUPPORTS required = supportWeight
+edgeWeightRequiredSound DEFEATS required = defeatWeight
+edgeWeightRequiredSound CAUSES required = causeWeight
 
-edgeWeightRequired-defeats-required :
-  edgeWeightRequired DEFEATS ≡ true
-edgeWeightRequired-defeats-required = refl
+edgeWeightRequiredComplete : ∀ label → RequiredWeight label → edgeWeightRequired label ≡ true
+edgeWeightRequiredComplete label supportWeight = refl
+edgeWeightRequiredComplete label defeatWeight = refl
+edgeWeightRequiredComplete label causeWeight = refl
 
 -- ---------------------------------------------------------------------------
 -- Defeat edge insertion triggers automatic propagation.
@@ -341,13 +344,17 @@ propagates CAUSES      = true
 propagates DEFEATS     = true
 propagates CONTRADICTS = false
 
--- DEFEATS is a propagation edge (the fix: a defeat reaches its target).
-defeats-propagates : propagates DEFEATS ≡ true
-defeats-propagates = refl
+-- The propagation labels are exactly the three labels with required weights.
+-- These laws cover every label, including rejection of CONTRADICTS.
+propagatesSound : ∀ label → propagates label ≡ true → RequiredWeight label
+propagatesSound SUPPORTS propagated = supportWeight
+propagatesSound DEFEATS propagated = defeatWeight
+propagatesSound CAUSES propagated = causeWeight
 
--- CONTRADICTS is not (it is detected, not propagated).
-contradicts-does-not-propagate : propagates CONTRADICTS ≡ false
-contradicts-does-not-propagate = refl
+propagatesComplete : ∀ label → RequiredWeight label → propagates label ≡ true
+propagatesComplete label supportWeight = refl
+propagatesComplete label defeatWeight = refl
+propagatesComplete label causeWeight = refl
 
 -- A directed propagation edge between two beliefs (label restricted to a
 -- propagation label by `propagates`).
@@ -384,15 +391,13 @@ reaches-closed :
   → Reaches g seed (dst e)
 reaches-closed g seed e mem pl r = step e mem refl pl r
 
--- WITNESS (the regression fixed): a bare S →DEFEATS→ T reaches T. In the old
--- design T was excluded (DEFEATS untraversed) and its posterior never moved;
--- here T is provably in the recompute set, so the defeat lowers it.
+-- Every defeat edge from a reached source reaches its target in any graph.
 defeat-target-is-reached :
-  ∀ (s t : NodeId) →
-  let e = mkPropEdge s t DEFEATS
-  in Reaches (e ∷ []) s t
-defeat-target-is-reached s t =
-  step (mkPropEdge s t DEFEATS) (any-here refl) refl refl here
+  ∀ (g : List PropEdge) (seed s t : NodeId) →
+  mkPropEdge s t DEFEATS ∈ g → Reaches g seed s → Reaches g seed t
+defeat-target-is-reached g seed s t member source =
+  reaches-closed g seed (mkPropEdge s t DEFEATS) member
+    (propagatesComplete DEFEATS defeatWeight) source
 
 -- ---------------------------------------------------------------------------
 -- PHASE 3 — RETIRED SCALAR SETTERS.
@@ -498,12 +503,11 @@ seed-clamped seedMean _ = refl
 --      belief bury a strong semantic match).
 --   4. Limit: if limit > 0, truncate to `limit` results (unchanged).
 --
--- RRF, cosine, and probability-fused scores are runtime floats not modelled in
--- --safe Agda (same stance as query_document in Mimir.Documents). The proved
--- invariants below therefore cover only the structural properties that can be
--- stated without those scores. Project-scope membership (step 0) is likewise
--- documented here but not formally modelled — no Belief-set membership
--- predicate for "project OR untagged" is proved in this file.
+-- This legacy section proves structural list properties. Current floating
+-- RRF (including type preference), project/global selection and complete
+-- retrieval transitions are defined in RetrievalRanking, RetrievalProtocol
+-- and StorageReadBinding. Cosine is a standard pgvector dependency operation;
+-- its application filtering, ordering and LIMIT contract is explicit there.
 --
 -- MCP INTERFACE NOTE: the MCP tool input parameter is named "context" (not
 -- "query") — the dispatch maps args["context"] to the service's `query: &str`.
@@ -511,10 +515,9 @@ seed-clamped seedMean _ = refl
 -- The parameter rename exists only at the MCP layer; internally it is "query".
 --
 -- Key invariants:
---   a. Results are ordered by the weighted-RRF fused score descending. RRF is
---      rank-based and not modelled in --safe Agda; this invariant is stated but
---      not formally proved here. The `IsSortedByProb` / `sort-by-prob-sorted`
---      infrastructure below is retained as a general utility.
+--   a. Current results use RetrievalRanking's weighted-RRF ordering. The
+--      `IsSortedByProb` / `sort-by-prob-sorted` infrastructure below remains a
+--      separate general utility, not the current retrieval implementation.
 --   b. If limit > 0, |results| ≤ limit  (proved via take-length).
 -- ---------------------------------------------------------------------------
 
@@ -526,7 +529,7 @@ take-length (Data.Nat.suc n) (x ∷ xs) = s≤s (take-length n xs)
 
 -- query_relevant result length respects limit when limit > 0:
 -- |results| ≤ limit   (the `truncate(limit)` in Rust maps to `take limit`).
--- Consequence: if limit = 1, only the single highest-probability belief is
+-- Consequence: if limit = 1, only the single highest-ranked belief is
 -- returned; if limit = 0, all matching beliefs (no truncation).
 
 -- Deduplication: query_relevant never returns the same belief ID twice.

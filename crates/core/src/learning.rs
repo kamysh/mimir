@@ -70,9 +70,25 @@ pub struct Experience {
     #[serde(default)]
     pub belief_ids: Vec<Uuid>,
     pub pattern_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub learning_items: Vec<crate::assessment::LearningItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_records: Vec<crate::learning_sources::SourceRecord>,
 }
 impl Experience {
     pub fn validate(&self) -> Result<()> {
+        crate::assessment::validate_items(&self.learning_items)?;
+        crate::learning_sources::validate_sources(&self.source_records)?;
+        ensure!(
+            self.source_records.is_empty()
+                || (self.source_records.len() == self.evidence.len()
+                    && self
+                        .source_records
+                        .iter()
+                        .zip(&self.evidence)
+                        .all(|(s, e)| s.source_ref == *e)),
+            "source evidence indices must correspond to source references"
+        );
         ensure!(!self.project.trim().is_empty(), "project must be explicit");
         ensure!(
             !self.context.trim().is_empty() && !self.action.trim().is_empty(),
@@ -228,6 +244,12 @@ pub struct Review {
     pub candidate_feedback: Vec<CandidateFeedback>,
     #[serde(default)]
     pub candidate_links: Vec<CandidateLink>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assessments: Vec<crate::assessment::Assessment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extracted_items: Vec<crate::assessment::LearningItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_coverage: Vec<crate::learning_sources::Coverage>,
 }
 impl Review {
     pub fn validate(&self) -> Result<()> {
@@ -281,6 +303,44 @@ impl Review {
         for feedback in &self.candidate_feedback {
             crate::graph::Probability::new(feedback.weight)?;
             validate_target(&feedback.target)?;
+        }
+        ensure!(self.assessments.len() <= 64, "too many assessments");
+        let mut assessment_keys = std::collections::HashSet::new();
+        for assessment in &self.assessments {
+            assessment.validate()?;
+            validate_target(&assessment.target)?;
+            ensure!(
+                assessment_keys.insert((
+                    serde_json::to_string(&assessment.target)?,
+                    &assessment.scope,
+                    &assessment.rubric
+                )),
+                "duplicate incident assessment"
+            );
+            ensure!(
+                !self
+                    .candidate_feedback
+                    .iter()
+                    .any(|f| f.target == assessment.target),
+                "typed and legacy feedback overlap"
+            );
+            if let BeliefTarget::Existing { belief_id } = assessment.target {
+                ensure!(
+                    !self.feedback.iter().any(|f| f.belief_id == belief_id)
+                        && !self
+                            .links
+                            .iter()
+                            .any(|l| l.to_id == belief_id || l.from_id == belief_id),
+                    "typed and legacy evidence overlap"
+                );
+            }
+            ensure!(
+                !self
+                    .candidate_links
+                    .iter()
+                    .any(|l| l.from == assessment.target || l.to == assessment.target),
+                "typed and legacy evidence overlap"
+            );
         }
         for link in &self.candidate_links {
             crate::graph::Probability::new(link.weight)?;
@@ -351,9 +411,35 @@ pub struct PatternResult {
 pub struct LearningContext {
     pub beliefs: Vec<Belief>,
     pub patterns: Vec<PatternResult>,
+    pub assessments: Vec<serde_json::Value>,
+    pub assessments_truncated: bool,
 }
 
 impl crate::MimirService {
+    pub async fn lesson_assessment(
+        &self,
+        project: &str,
+        belief_id: Uuid,
+        scope: &str,
+        rubric: &str,
+    ) -> Result<serde_json::Value> {
+        self.store
+            .lesson_assessment(project, belief_id, scope, rubric)
+            .await
+    }
+    pub async fn lesson_assessment_history(
+        &self,
+        project: &str,
+        belief_id: Uuid,
+        scope: &str,
+        rubric: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<serde_json::Value> {
+        self.store
+            .lesson_assessment_history(project, belief_id, scope, rubric, offset, limit)
+            .await
+    }
     pub async fn record_experience(
         &self,
         experience: &Experience,
@@ -374,6 +460,9 @@ impl crate::MimirService {
     }
     pub async fn get_experience(&self, id: Uuid) -> Result<Option<ExperienceState>> {
         self.store.get_experience(id).await
+    }
+    pub async fn learning_review(&self, id: Uuid) -> Result<serde_json::Value> {
+        self.store.learning_review(id).await
     }
     pub async fn experience_history(&self, id: Uuid) -> Result<serde_json::Value> {
         self.store.experience_history(id).await
@@ -448,9 +537,15 @@ impl crate::MimirService {
                 })
                 .then_with(|| x.pattern.id.cmp(&y.pattern.id))
         });
+        let (assessments, assessments_truncated) = self
+            .store
+            .assessments_for_beliefs(project, &beliefs.iter().map(|b| b.id).collect::<Vec<_>>())
+            .await?;
         Ok(LearningContext {
             beliefs,
             patterns: ranked.into_iter().take(limit).map(|(_, p)| p).collect(),
+            assessments,
+            assessments_truncated,
         })
     }
 }
@@ -504,6 +599,9 @@ mod review_validation_tests {
                 weight: 0.8,
             }],
             candidate_links: vec![],
+            assessments: vec![],
+            extracted_items: vec![],
+            source_coverage: vec![],
         };
         let undeclared = "candidate belief reference must be declared in this review";
         assert!(review

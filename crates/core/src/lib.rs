@@ -1,3 +1,4 @@
+pub mod assessment;
 pub mod config;
 pub mod db;
 pub mod documents;
@@ -5,6 +6,7 @@ pub mod embed;
 pub mod graph;
 pub mod inference;
 pub mod learning;
+pub mod learning_sources;
 mod password;
 pub mod store;
 mod tls;
@@ -413,48 +415,7 @@ impl MimirService {
     /// Loads the downstream subgraph and all edges among it, applies attenuate/boost,
     /// and writes updated probabilities back to the store.
     pub async fn propagate_from(&self, seed_id: Uuid) -> Result<Vec<(Uuid, Probability)>> {
-        let seed = match self.store.get_belief(seed_id).await? {
-            Some(b) => b,
-            None => anyhow::bail!("belief {} not found", seed_id),
-        };
-        let mut downstream = self.store.get_downstream_beliefs(seed_id).await?;
-        let (learning_mass, _) = self.store.learning_overlay().await?;
-        let grounding_mass = self.store.get_grounding_mass_all().await?;
-        for belief in &mut downstream {
-            belief.alpha0 += grounding_mass.get(&belief.id).copied().unwrap_or(0.0);
-            if let Some((a, b)) = learning_mass.get(&belief.id) {
-                belief.alpha0 += a;
-                belief.beta0 += b;
-            }
-        }
-
-        // Collect all IDs in the subgraph (seed + downstream)
-        let mut ids: Vec<Uuid> = downstream.iter().map(|b| b.id).collect();
-        ids.push(seed_id);
-
-        // Load the COMPLETE incoming-edge set of every downstream node (spec:
-        // Mimir.Beta evidence completeness) — sources may lie OUTSIDE the
-        // subgraph; get_incoming_edges returns each edge WITH its source's stored
-        // mean, so out-of-subgraph parents count with no per-source follow-up
-        // query.
-        let incoming = self.store.get_incoming_edges(&ids).await?;
-        let edges = strip_source_means(&incoming);
-        let external_means = external_means_from(&incoming, &ids);
-
-        let updates =
-            self.inference
-                .propagate_defeat(&seed, &downstream, &edges, &external_means)?;
-        // Persist the durable Beta posterior ATOMICALLY (all-or-nothing, so a
-        // propagation never leaves the subgraph half-updated); probability/
-        // confidence are refreshed from (α,β) by update_beliefs_beta.
-        let writes: Vec<(Uuid, f64, f64)> =
-            updates.iter().map(|&(id, (a, b))| (id, a, b)).collect();
-        self.store.update_beliefs_beta(&writes).await?;
-        let mut out = Vec::with_capacity(updates.len());
-        for (id, (alpha, beta)) in updates {
-            out.push((id, Probability::new(graph::beta_mean(alpha, beta))?));
-        }
-        Ok(out)
+        self.store.propagate_locked(seed_id).await
     }
 
     /// Counterfactual projection P(· | do(target = value)). Read-only: computes
@@ -531,25 +492,9 @@ impl MimirService {
         decay_factor: Option<f64>,
         project: Option<&str>,
     ) -> Result<usize> {
-        let factor = decay_factor.unwrap_or(0.99);
-        let beliefs = match project {
-            Some(p) => self.store.list_beliefs_by_project(p).await?,
-            None => self.store.get_all_beliefs_for_decay().await?,
-        };
-        let grounding_masses = self.store.get_grounding_mass_all().await?;
-        let now = chrono::Utc::now();
-        let updates = self
-            .inference
-            .decay_all(&beliefs, now, factor, &grounding_masses)?;
-        let count = updates.len();
-        // Persist decayed Beta state (spec: betaDecay toward (1,1)) ATOMICALLY,
-        // so a failed sweep cannot leave some beliefs decayed and others not
-        // (decay is not idempotent in elapsed time — a half-sweep would
-        // double-decay the committed prefix on the next run).
-        let writes: Vec<(Uuid, f64, f64)> =
-            updates.into_iter().map(|(id, (a, b))| (id, a, b)).collect();
-        self.store.update_beliefs_beta(&writes).await?;
-        Ok(count)
+        self.store
+            .decay_locked(decay_factor.unwrap_or(0.99), project)
+            .await
     }
 
     /// Delete defeated beliefs whose grace period has elapsed (attenuated
@@ -892,11 +837,6 @@ impl MimirService {
         let text = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("cannot read {}: {}", path, e))?;
 
-        // Replace-on-reload: clear existing chunks for this path first.
-        let old_ids = self.store.get_chunk_ids_for_document(path).await?;
-        self.store.delete_document_chunks(&old_ids).await?;
-        self.store.delete_chunk_embeddings(&old_ids).await?;
-
         let chunks = parse_markdown(&text, path, project);
         let count = chunks.len();
 
@@ -904,12 +844,10 @@ impl MimirService {
         let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
         let embeddings = embedder.embed(&texts).await?;
 
-        for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
-            self.store.insert_document_chunk(chunk).await?;
-            self.store
-                .insert_chunk_embedding(chunk.id, embedding)
-                .await?;
-        }
+        // DocumentLoading: preparation precedes one paired publication.
+        self.store
+            .replace_document(path, &chunks, &embeddings)
+            .await?;
 
         // Auto-ground: create GROUNDS edges to similar beliefs (Evidence.autoGroundChunks).
         self.auto_ground_chunks(&chunks, &embeddings).await?;
@@ -935,11 +873,7 @@ impl MimirService {
             }
             Err(_) => path,
         };
-        let ids = self.store.get_chunk_ids_for_document(path).await?;
-        let count = ids.len();
-        self.store.delete_document_chunks(&ids).await?;
-        self.store.delete_chunk_embeddings(&ids).await?;
-        Ok(count)
+        self.store.clear_document(path).await
     }
 
     /// Semantic search over loaded document chunks.

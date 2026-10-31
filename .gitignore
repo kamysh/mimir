@@ -8,3 +8,4 @@ spec/_build/
 /result
 /result-*
 /.direnv/
+assumptions/_build/

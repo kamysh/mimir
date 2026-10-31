@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Check the behavioral inventory, imports and embedded SQL source bindings.
+
+This is an inventory/structure check, not an Agda check or a Rust refinement
+proof. Run Agda separately and retain its complete log and process exit status.
+"""
+from pathlib import Path
+import json
+import re
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def read(path):
+    return (ROOT / path).read_text()
+
+
+def enum_variants(path, name):
+    match = re.search(r'(?:pub )?enum ' + name + r' \{(.*?)\n\}', read(path), re.S)
+    assert match, (path, name)
+    return re.findall(r'^    ([A-Z][A-Za-z]+)\b', match.group(1), re.M)
+
+
+def kebab(name):
+    return re.sub(r'(?<!^)(?=[A-Z])', '-', name).lower()
+
+
+def check():
+    coverage = json.loads(read('docs/FORMAL-BEHAVIOR-COVERAGE.json'))
+    inventory = json.loads(read('docs/FORMAL-INVENTORY.json'))
+    formal_names = re.findall(r'^wireName\s+\w+\s*=\s*"([a-z_]+)"', read('spec/Mimir/ToolCatalog.agda'), re.M)
+    advertised = []
+    for source in ['crates/mcp/src/main.rs', 'crates/mcp/src/learning.rs']:
+        advertised += re.findall(r'"name"\s*:\s*"([a-z_]+)"\s*,\s*"description"\s*:', read(source))
+    operation_names = [item['name'] for item in coverage['mcp']]
+    assert len(operation_names) == len(set(operation_names)) == 34
+    assert set(operation_names) == set(formal_names) == set(advertised)
+
+    main = 'crates/cli/src/main.rs'
+    commands = [kebab(name) for name in enum_variants(main, 'Command')
+                if name not in ['Judge', 'Evidence', 'Delete', 'Doc', 'Hook']]
+    for prefix, enum, source in [
+        ('evidence', 'EvidenceCmd', main), ('delete', 'DeleteCmd', main),
+        ('doc', 'DocCmd', main), ('hook', 'HookEvent', main),
+        ('judge', 'JudgeCommand', 'crates/cli/src/judge/mod.rs'),
+    ]:
+        commands += [prefix + ' ' + kebab(name) for name in enum_variants(source, enum)]
+    cli_names = [item['name'] for item in coverage['cli']]
+    assert len(commands) == len(set(commands)) == len(cli_names) == 27
+    assert set(commands) == set(cli_names)
+
+    files = list((ROOT / 'spec').rglob('*.agda'))
+    module_paths = {'.'.join(p.relative_to(ROOT / 'spec').with_suffix('').parts): p for p in files}
+    reached = set()
+
+    def visit(name):
+        if name in reached or name not in module_paths:
+            return
+        reached.add(name)
+        source = module_paths[name].read_text()
+        for dependency in re.findall(r'\bimport\s+(Mimir(?:\.[A-Za-z0-9_]+)*)', source):
+            assert dependency in module_paths, (name, dependency)
+            visit(dependency)
+
+    visit('Mimir')
+    assert reached == set(module_paths), sorted(set(module_paths) - reached)
+    for path in files:
+        source = path.read_text()
+        assert re.search(r'\{-#\s*OPTIONS\s+[^#]*--safe\b', source), path
+        # Remove line comments before scanning. This is an escape-marker audit;
+        # the type checker is the authority for safety, holes and termination.
+        code = '\n'.join(line.split('--', 1)[0] for line in source.splitlines())
+        assert not re.search(r'\bpostulate\b|\bTERMINATING\b|\bNON_TERMINATING\b|allow-unsolved|\{!', code), path
+
+    referenced = set()
+    for category in ['mcp', 'cli', 'lifecycles']:
+        for item in coverage[category]:
+            assert item['completion_modules'], item['name']
+            referenced.update(item['completion_modules'])
+    for item in coverage['core_library']:
+        referenced.update(item['modules'])
+    for entry in inventory['files']:
+        assert (ROOT / entry['path']).exists(), entry['path']
+        if entry['classification'] == 'production-behavior':
+            assert entry['behavioral_specification'], entry['path']
+            referenced.update(entry['behavioral_specification'])
+    for path in referenced:
+        assert (ROOT / path).exists(), path
+        assert '.'.join(Path(path).relative_to('spec').with_suffix('').parts) in reached, path
+
+    bound_sources = {key: json.loads(value).strip() for key, value in re.findall(
+        r'^source Schema\.(\w+) = toList (".*")$', read('spec/Mimir/MigrationScriptBinding.agda'), re.M)}
+    migration_keys = ['initial', 'searchPath', 'embeddingTable', 'evidenceEdges',
+                      'betaBeliefs', 'learning', 'candidates', 'assessment', 'owners']
+    sql_files = sorted((ROOT / 'crates/core/migrations').glob('*.sql'))
+    assert len(sql_files) == len(migration_keys) == len(bound_sources) == 9
+    for path, key in zip(sql_files, migration_keys):
+        lines = path.read_text().splitlines()
+        while lines and (not lines[0].strip() or lines[0].lstrip().startswith('--')):
+            lines.pop(0)
+        assert '\n'.join(lines).strip() == bound_sources[key], path
+
+    return {
+        'result': 'passed', 'mcp_operations': len(operation_names),
+        'cli_leaves': len(cli_names), 'lifecycle_groups': len(coverage['lifecycles']),
+        'source_artifacts': len(inventory['files']),
+        'production_artifacts': sum(x['classification'] == 'production-behavior' for x in inventory['files']),
+        'safe_modules': len(files), 'root_reachable_modules': len(reached),
+        'referenced_modules': len(referenced), 'exact_migration_bodies': len(sql_files),
+        'boundary': 'Inventory and structural audit; Agda checking and Rust correspondence are separate.'
+    }
+
+
+if __name__ == '__main__':
+    print(json.dumps(check(), indent=2))
