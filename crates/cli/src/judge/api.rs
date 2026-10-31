@@ -1137,10 +1137,14 @@ mod tests {
                 }
             };
             let headers = String::from_utf8(request[..boundary].to_vec()).unwrap();
-            let length: usize = headers.lines().find_map(|line| {
-                line.to_ascii_lowercase().strip_prefix("content-length: ")
-                    .and_then(|v| v.trim().parse().ok())
-            }).unwrap();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .and_then(|v| v.trim().parse().ok())
+                })
+                .unwrap();
             while request.len() - boundary < length {
                 let count = socket.read(&mut chunk).await.unwrap();
                 assert!(count > 0 && request.len() + count < MAX_REQUEST);

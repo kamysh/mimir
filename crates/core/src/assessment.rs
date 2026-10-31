@@ -268,7 +268,8 @@ mod tests {
             "action":"Created unsolicited backups","outcome":"unknown","source":"user_feedback",
             "evidence":["Copying completed", "Remove all backups. Nobody asked you to make them."],
             "belief_ids":[],"pattern_id":null
-        })).unwrap();
+        }))
+        .unwrap();
         let mut assessment: Assessment = serde_json::from_value(serde_json::json!({
             "target":{"belief_id":"22222222-2222-4222-8222-222222222222"},
             "scope":"This unsolicited-backup decision","rubric":"authorized-and-user-accepted/v1",
@@ -276,29 +277,32 @@ mod tests {
             "evidence_indices":[1],"rationale":"Explicit user rejection of authorization and benefit; no claim of technical failure"
         })).unwrap();
         assessment.validate_source(&experience).unwrap();
-        let score=Scores::from_totals(0.,1.,-1.,1.,1,0,0).unwrap();
-        assert_eq!(score.correctness,1./3.);
-        assert_eq!(score.usefulness,-0.5);
+        let score = Scores::from_totals(0., 1., -1., 1., 1, 0, 0).unwrap();
+        assert_eq!(score.correctness, 1. / 3.);
+        assert_eq!(score.usefulness, -0.5);
         // Technical correctness can remain unknown while benefit is observed.
-        assessment.correctness=Axis {value:None,weight:0.};
+        assessment.correctness = Axis {
+            value: None,
+            weight: 0.,
+        };
         assessment.validate_source(&experience).unwrap();
         assessment.evidence_indices.clear();
         assert!(assessment.validate_source(&experience).is_err());
-        assessment.evidence_indices=vec![2];
+        assessment.evidence_indices = vec![2];
         assert!(assessment.validate_source(&experience).is_err());
-        assessment.evidence_indices=vec![1];
-        experience.source=ObservationSource::AgentReport;
+        assessment.evidence_indices = vec![1];
+        experience.source = ObservationSource::AgentReport;
         assert!(assessment.validate_source(&experience).is_err());
         // Structured provenance overrides the root and cannot flow to neighbors.
-        experience.source=ObservationSource::UserFeedback;
-        experience.evidence=vec!["agent".into(),"human".into()];
+        experience.source = ObservationSource::UserFeedback;
+        experience.evidence = vec!["agent".into(), "human".into()];
         experience.source_records=serde_json::from_value(serde_json::json!([
             {"source_ref":"agent","actor":"agent","provenance":"agent_report","text":"Copy succeeded"},
             {"source_ref":"human","actor":"human","provenance":"user_feedback","text":"Nobody asked you to make them"}
         ])).unwrap();
-        assessment.evidence_indices=vec![0];
+        assessment.evidence_indices = vec![0];
         assert!(assessment.validate_source(&experience).is_err());
-        assessment.evidence_indices=vec![1];
+        assessment.evidence_indices = vec![1];
         assessment.validate_source(&experience).unwrap();
     }
     #[test]
