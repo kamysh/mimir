@@ -90,7 +90,7 @@ pub fn validate_review(review: &Review, experience: &Experience) -> Result<()> {
         );
     }
     let mut ids: HashSet<_> = experience.learning_items.iter().map(|i| i.id).collect();
-    for item in &review.extracted_items {
+    for (index, item) in review.extracted_items.iter().enumerate() {
         let source = sources
             .get(&item.source_ref)
             .ok_or_else(|| anyhow::anyhow!("extracted item has no source"))?;
@@ -99,10 +99,14 @@ pub fn validate_review(review: &Review, experience: &Experience) -> Result<()> {
             "extracted item provenance or identity conflict"
         );
         // Statement is an exact quotation. Interpretations belong in conditions/rationale.
-        ensure!(
-            source.text.contains(&item.statement),
-            "extracted statement is not in its cited source"
-        );
+        if !source.text.contains(&item.statement) {
+            use crate::validation::{Code, Refusal, Segment};
+            return Err(Refusal::invalid(
+                Code::QuotationMismatch,
+                vec![Segment::Key("extracted_items".into()), Segment::Index(index), Segment::Key("statement".into())],
+                format!("extracted statement is not in its cited source: extracted_items[{index}].statement (item {}, source {}). Copy an exact contiguous substring of that source record's text. Preserve literal backslashes, escaped quotes and whitespace when the text contains serialized JSON; put interpretation in conditions.", item.id, item.source_ref),
+            ).into());
+        }
     }
     // Each extracted item must participate in an assessment or be explicitly
     // unresolved; completeness is the judge's claim, not semantic proof.

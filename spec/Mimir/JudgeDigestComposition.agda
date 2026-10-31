@@ -80,6 +80,9 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   data State : Set where idle : State; connected : ℕ → Snapshot.State → State
 
   data Receipt (migrations : M.Inputs) : State → (effect : Digest.Effect) → Digest.Reply effect → State → Set where
+    -- The read uses the existing bounded status-file decoder; unavailable
+    -- or absent state yields no report and an explicit diagnostic action.
+    reportRead : ∀ state path report → Receipt migrations state (Digest.readReport path) report state
     clock : ∀ state now → Receipt migrations state Digest.localNow now state
     configured : ∀ state reply → H.Receipt H.loadConfig reply → Receipt migrations state Digest.loadConfig (configResult reply) state
     path : ∀ state reply → H.Receipt H.resolveState reply → Receipt migrations state Digest.resolveState (pathResult reply) state

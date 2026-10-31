@@ -257,13 +257,28 @@ xattr -d com.apple.quarantine ~/.local/bin/mimir ~/.local/bin/mimir-mcp
 mimir --help >/dev/null && echo OK
 ```
 
+### Updating an existing installation
+
+After replacing binaries, run `mimir config check`. Missing required settings
+must be resolved before application work starts. For a legacy configuration:
+
+```sh
+mimir config upgrade --log-directory "$HOME/.local/state/mimir/logs"
+mimir config check
+```
+
+The upgrade preserves existing settings and comments. Restart the existing
+judge process and reconnect MCP clients so they use the updated executable.
+See [operations and troubleshooting](docs/operations.md) for log limits and
+`mimir judge diagnose`, the plain-English failure report.
+
 ### Step 4: Configure mimir
 
 ```bash
 mimir init
 ```
 
-This creates `~/.config/mimir/config.toml` and opens it in `$EDITOR`. Fill in the database section:
+This creates `~/.config/mimir/config.toml` and opens it in `$EDITOR`. It includes the required configuration format and log directory. Keep those settings and fill in the database section:
 
 ```toml
 [database]

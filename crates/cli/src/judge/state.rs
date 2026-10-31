@@ -394,6 +394,10 @@ impl State {
         self.write_named(STATUS_FILE, report)
     }
 
+    pub fn write_runtime(&self, value: &serde_json::Value) -> Result<()> {
+        self.write_named("judge-runtime.json", value)
+    }
+
     pub fn begin_trace(&self, report: &Report, budget: usize) -> Result<Uuid> {
         let mut diagnostics = read_diagnostics(&self.path)?;
         for trace in &mut diagnostics.attempts {
@@ -592,6 +596,10 @@ impl Drop for State {
 
 pub fn read(path: &Path) -> Result<Option<Report>> {
     read_named(path, STATUS_FILE)
+}
+
+pub fn read_runtime(path: &Path) -> Result<Option<serde_json::Value>> {
+    read_named(path, "judge-runtime.json")
 }
 
 pub fn read_failure(path: &Path) -> Result<Option<FailureIncident>> {

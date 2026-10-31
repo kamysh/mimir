@@ -170,7 +170,7 @@ pub async fn tick(
         return Ok(cursor.last_attempt_failed);
     }
     let client = mimir_core::db::connect(&settings.core.database).await?;
-    let body = content(
+    let mut body = content(
         &client,
         first,
         through,
@@ -178,6 +178,9 @@ pub async fn tick(
         &now.format("%Z").to_string(),
     )
     .await?;
+    let report = state::read(&state::resolve(state_dir)?).ok().flatten();
+    body.push_str(&super::diagnose::summary(report.as_ref()));
+    body.push_str("The watcher retries automatically while running, with hourly backoff after repeated failures. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/main/docs/operations.md\n");
     let digest = Digest {
         through_day: through.to_string(),
         body,

@@ -79,7 +79,7 @@ while IFS= read -r request; do
                       [.candidates[]? | select(.kind == "belief") | .key] as $declared |
                       [.candidate_feedback[]?.target.candidate_key | select(. != null)] as $referenced |
                       ($referenced - $declared | length) == 0' <<< "$request" >/dev/null; then
-                        error='{"code":-32000,"message":"candidate belief reference must be declared in this review"}'
+                        error='{"code":-32000,"message":"candidate belief reference must be declared in this review","data":{"kind":"undeclared_candidate","fault":{"path":["candidates"],"code":"missing_reference","message":"candidate belief reference must be declared in this review"}}}'
                     else reviewed=1; value='{"review_revision":1}'; fi ;;
                 query_relevant) error='{"code":-32000,"message":"private fixture database detail"}' ;;
                 *) error='{"code":-32601,"message":"unexpected fixture tool"}' ;;

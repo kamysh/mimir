@@ -86,6 +86,7 @@ pub struct LlmConfig {
 pub struct RuntimeConfig {
     pub path: PathBuf,
     pub core: Config,
+    pub operations: mimir_core::operations::Operations,
     pub judge: JudgeConfig,
     pub llm: LlmConfig,
     pub email: EmailConfig,
@@ -340,7 +341,7 @@ impl LlmConfig {
 pub fn load(explicit: Option<&Path>) -> Result<RuntimeConfig> {
     let path = resolved_path(explicit)?;
     validate_file_security(&path)?;
-    let core = Config::load_from_path(&path)?;
+    let (core, operations) = Config::load_with_operations(&path)?;
     let judge: JudgeConfig = section(core.judge.as_ref(), "judge")?;
     let llm: LlmConfig = section(core.llm.as_ref(), "llm")?;
     let email: EmailConfig = match core.email.as_ref() {
@@ -353,6 +354,7 @@ pub fn load(explicit: Option<&Path>) -> Result<RuntimeConfig> {
     Ok(RuntimeConfig {
         path,
         core,
+        operations,
         judge,
         llm,
         email,
@@ -365,7 +367,7 @@ mod tests {
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     const DATABASE: &str =
-        "[database]\nhost='localhost'\nport=5432\ndbname='mimir'\nuser='mimir'\n";
+        "config_version=1\n[logging]\ndirectory='/tmp/mimir-fixture-logs'\n[database]\nhost='localhost'\nport=5432\ndbname='mimir'\nuser='mimir'\n";
     const HARNESS: &str =
         "[judge]\nbatch_size=5\n[llm]\nbackend='claude-code'\nmodel='test-model'\n";
 

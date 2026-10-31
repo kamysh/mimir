@@ -119,7 +119,7 @@ fn arguments_never_connect_even_with_valid_database_configuration() {
     let mut config = std::fs::File::create(fixture.config()).unwrap();
     writeln!(
         config,
-        "[database]\nhost = '127.0.0.1'\nport = {}\nuser = 'unused'\ndbname = 'unused'\nssl_mode = 'disable'",
+        "config_version=1\n[logging]\ndirectory='/tmp/mimir-fixture-logs'\n[database]\nhost = '127.0.0.1'\nport = {}\nuser = 'unused'\ndbname = 'unused'\nssl_mode = 'disable'",
         listener.local_addr().unwrap().port()
     )
     .unwrap();

@@ -5,6 +5,18 @@ The experiential judge is part of the Rust `mimir` CLI. Configure it with
 Keep that file and its directory private if it contains credentials. See
 `config.example.toml` for the supported settings.
 
+## Updates and failures
+
+Run `mimir config check` after each binary update. Existing configurations need
+`config_version = 1` and `[logging].directory`; use
+`mimir config upgrade --log-directory "$HOME/.local/state/mimir/logs"` to add
+these while preserving other settings. Restart the existing watcher after
+updating its binary. An old running process continues to use its old code.
+
+When an email reports a failure, run `mimir judge diagnose` on that computer.
+See [operations and troubleshooting](../docs/operations.md) for exact recovery
+steps, bounded log retention and private diagnostic handling.
+
 ## Configure a scheduled judge
 
 The supported job runs `mimir judge run` from the installed CLI. The model

@@ -1,3 +1,11 @@
+# Required global operational settings; put config_version before any table.
+# For an existing file use: mimir config upgrade --log-directory /absolute/path/to/logs
+config_version = 1
+[logging]
+directory = "/ABSOLUTE/HOME/.local/state/mimir/logs"
+max_file_bytes = 1048576
+retained_files = 4
+
 # Merge these optional sections into ~/.config/mimir/config.toml.
 # Keep [database] and optional [embeddings]. Directory 0700; file 0600.
 # Select a model available to your account; no provider/model fallback occurs.

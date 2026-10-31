@@ -15,6 +15,7 @@ open import Relation.Nullary using (yes; no; does)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.DiagnosticText as Bounded
+import Mimir.OperationalDiagnostics as Diagnostics
 import Mimir.NotificationConfig as Config
 import Mimir.NotificationIncident as I
 import Mimir.NotificationDelivery as Delivery
@@ -96,7 +97,8 @@ module Details (format : Encoding.Formatting) (localTime : ℕ → Text) where
     toList "\nSelected: " ++ number (R.Report.selected report) ++ toList "; confirmed: " ++ number (R.Report.confirmed report) ++
     toList "; corrected: " ++ number (R.Report.corrected report) ++ toList "; pending: " ++ number (R.Report.pending report) ++
     toList "; unavailable: " ++ number (R.Report.unavailable report) ++ toList "\nAffected experience IDs: " ++
-    ids (R.Report.selectedIds report) ++ modelLimit maximum report ++ diagnostic (R.Report.diagnosticsId report)
+    ids (R.Report.selectedIds report) ++ modelLimit maximum report ++ diagnostic (R.Report.diagnosticsId report) ++
+    toList "\n" ++ Diagnostics.summary (just report)
 
   find : ℕ → List R.Confirmed → Maybe R.Confirmed
   find id [] = nothing
