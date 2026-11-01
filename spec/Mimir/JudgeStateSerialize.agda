@@ -88,9 +88,9 @@ event : ∀ value → T.EventText value → C.Supported (W.event value)
 event value valid = C.object $
   ++⁺ (entry "at" tt (C.unsigned (R.Event.at value)) All.∷
     entry "experience_id" tt (uuid (R.Event.experience value)) All.∷
-    entry "kind" tt (C.string (T.EventText.kind valid)) All.∷
-    entry "model_remaining" tt (C.unsigned (R.Event.modelRemaining value)) All.∷
-    entry "tool_remaining" tt (C.unsigned (R.Event.toolRemaining value)) All.∷ All.[]) $
+    entry "kind" tt (C.string (T.EventText.kind valid)) All.∷ All.[]) $
+  ++⁺ (Support.optionalUniform (toList "model_requests") tt JSON.unsigned C.unsigned (R.Event.modelRequests value)) $
+  ++⁺ (Support.optionalUniform (toList "tool_attempts") tt JSON.unsigned C.unsigned (R.Event.toolAttempts value)) $
   ++⁺ (Support.optional (toList "tool") tt JSON.string (λ value valid → C.string valid) (R.Event.tool value) (T.EventText.tool valid)) $
   ++⁺ (Support.optional (toList "detail") tt JSON.string (λ value valid → C.string valid) (R.Event.detail value) (T.EventText.detail valid)) $
   Support.optionalUniform (toList "detail_bytes") tt JSON.unsigned C.unsigned (R.Event.detailBytes value)
@@ -102,9 +102,9 @@ trace value valid = C.object $
   ++⁺ (Support.optionalUniform (toList "finished_at") tt JSON.unsigned C.unsigned (R.Trace.finishedAt value)) $
   ++⁺ (member "status" tt (C.string (T.TraceText.status valid))) $
   ++⁺ (Support.optional (toList "block_reason") tt JSON.string (λ value valid → C.string valid) (R.Trace.blockReason value) (T.TraceText.reason valid)) $
-  entry "selected_ids" tt (C.array (Support.arrayUniform UUID.encode uuid (R.Trace.selectedIds value))) All.∷
-  entry "model_remaining" tt (C.unsigned (R.Trace.modelRemaining value)) All.∷
-  entry "tool_remaining" tt (C.unsigned (R.Trace.toolRemaining value)) All.∷
+  ++⁺ (member "selected_ids" tt (C.array (Support.arrayUniform UUID.encode uuid (R.Trace.selectedIds value)))) $
+  ++⁺ (Support.optionalUniform (toList "model_requests") tt JSON.unsigned C.unsigned (R.Trace.modelRequests value)) $
+  ++⁺ (Support.optionalUniform (toList "tool_attempts") tt JSON.unsigned C.unsigned (R.Trace.toolAttempts value)) $
   entry "events" tt (C.array (Support.array W.event event (R.Trace.events value) (T.TraceText.events valid))) All.∷
   entry "events_omitted" tt (C.unsigned (R.Trace.eventsOmitted value)) All.∷ All.[]
 

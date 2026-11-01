@@ -62,8 +62,8 @@ module Map (From To : Set) (identity : From → To) where
     { at = S.Event.at value
     ; experience = identity (S.Event.experience value)
     ; kind = S.Event.kind value
-    ; modelRemaining = S.Event.modelRemaining value
-    ; toolRemaining = S.Event.toolRemaining value
+    ; modelRequests = S.Event.modelRequests value
+    ; toolAttempts = S.Event.toolAttempts value
     ; tool = S.Event.tool value
     ; detail = S.Event.detail value
     ; detailBytes = S.Event.detailBytes value }
@@ -76,8 +76,8 @@ module Map (From To : Set) (identity : From → To) where
     ; status = S.Trace.status value
     ; blockReason = S.Trace.blockReason value
     ; selectedIds = List.map identity (S.Trace.selectedIds value)
-    ; modelRemaining = S.Trace.modelRemaining value
-    ; toolRemaining = S.Trace.toolRemaining value
+    ; modelRequests = S.Trace.modelRequests value
+    ; toolAttempts = S.Trace.toolAttempts value
     ; events = List.map event (S.Trace.events value)
     ; eventsOmitted = S.Trace.eventsOmitted value }
 

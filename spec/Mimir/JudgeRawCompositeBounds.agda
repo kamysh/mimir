@@ -190,8 +190,8 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ) where
   eventProperties zero value = value ≤ P.u64Maximum
   eventProperties (suc zero) value = ⊤
   eventProperties (suc (suc zero)) value = ⊤
-  eventProperties (suc (suc (suc zero))) value = value ≤ sizeMaximum
-  eventProperties (suc (suc (suc (suc zero)))) value = value ≤ sizeMaximum
+  eventProperties (suc (suc (suc zero))) value = Bounds.Optional (_≤ sizeMaximum) value
+  eventProperties (suc (suc (suc (suc zero)))) value = Bounds.Optional (_≤ sizeMaximum) value
   eventProperties (suc (suc (suc (suc (suc zero))))) value = ⊤
   eventProperties (suc (suc (suc (suc (suc (suc zero)))))) value = ⊤
   eventProperties (suc (suc (suc (suc (suc (suc (suc zero))))))) value = Bounds.Optional (_≤ sizeMaximum) value
@@ -199,6 +199,8 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ) where
 
   eventDefaults : I.Defaults D.eventFields eventProperties
   eventDefaults (suc (suc (suc (suc (suc zero))))) value refl = tt
+  eventDefaults (suc (suc (suc (suc zero)))) value refl = tt
+  eventDefaults (suc (suc (suc zero))) value refl = tt
   eventDefaults (suc (suc (suc (suc (suc (suc zero)))))) value refl = tt
   eventDefaults (suc (suc (suc (suc (suc (suc (suc zero))))))) value refl = tt
   eventDefaults (suc (suc (suc (suc (suc (suc (suc (suc ())))))))) value observed
@@ -214,8 +216,8 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ) where
     (Flow.Productive.result
      (Slots.readerAt D.eventFields (suc (suc zero))
       (R.eventReaders allowance) input))
-  eventReaders allowance (suc (suc (suc zero))) input = Inv.uint sizeMaximum input
-  eventReaders allowance (suc (suc (suc (suc zero)))) input = Inv.uint sizeMaximum input
+  eventReaders allowance (suc (suc (suc zero))) input = Inv.optional R.size (_≤ sizeMaximum) (Inv.uint sizeMaximum) input
+  eventReaders allowance (suc (suc (suc (suc zero)))) input = Inv.optional R.size (_≤ sizeMaximum) (Inv.uint sizeMaximum) input
   eventReaders allowance (suc (suc (suc (suc (suc zero))))) input = S.trivial
     (Flow.Productive.result
      (Slots.readerAt D.eventFields (suc (suc (suc (suc (suc zero)))))
@@ -249,14 +251,16 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ) where
   traceProperties (suc (suc (suc zero))) value = ⊤
   traceProperties (suc (suc (suc (suc zero)))) value = ⊤
   traceProperties (suc (suc (suc (suc (suc zero))))) value = ⊤
-  traceProperties (suc (suc (suc (suc (suc (suc zero)))))) value = value ≤ sizeMaximum
-  traceProperties (suc (suc (suc (suc (suc (suc (suc zero))))))) value = value ≤ sizeMaximum
+  traceProperties (suc (suc (suc (suc (suc (suc zero)))))) value = Bounds.Optional (_≤ sizeMaximum) value
+  traceProperties (suc (suc (suc (suc (suc (suc (suc zero))))))) value = Bounds.Optional (_≤ sizeMaximum) value
   traceProperties (suc (suc (suc (suc (suc (suc (suc (suc zero)))))))) value = All B.EventBounds value
   traceProperties (suc (suc (suc (suc (suc (suc (suc (suc (suc zero))))))))) value = value ≤ sizeMaximum
   traceProperties (suc (suc (suc (suc (suc (suc (suc (suc (suc (suc ()))))))))))
 
   traceDefaults : I.Defaults D.traceFields traceProperties
   traceDefaults (suc (suc zero)) value refl = tt
+  traceDefaults (suc (suc (suc (suc (suc (suc (suc zero))))))) value refl = tt
+  traceDefaults (suc (suc (suc (suc (suc (suc zero)))))) value refl = tt
   traceDefaults (suc (suc (suc (suc zero)))) value refl = tt
   traceDefaults (suc (suc (suc (suc (suc (suc (suc (suc (suc zero))))))))) value refl = z≤n
   traceDefaults (suc (suc (suc (suc (suc (suc (suc (suc (suc (suc ())))))))))) value observed
@@ -281,8 +285,8 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ) where
     (Flow.Productive.result
      (Slots.readerAt D.traceFields (suc (suc (suc (suc (suc zero)))))
       (R.traceReaders allowance) input))
-  traceReaders allowance (suc (suc (suc (suc (suc (suc zero)))))) input = Inv.uint sizeMaximum input
-  traceReaders allowance (suc (suc (suc (suc (suc (suc (suc zero))))))) input = Inv.uint sizeMaximum input
+  traceReaders allowance (suc (suc (suc (suc (suc (suc zero)))))) input = Inv.optional R.size (_≤ sizeMaximum) (Inv.uint sizeMaximum) input
+  traceReaders allowance (suc (suc (suc (suc (suc (suc (suc zero))))))) input = Inv.optional R.size (_≤ sizeMaximum) (Inv.uint sizeMaximum) input
   traceReaders allowance (suc (suc (suc (suc (suc (suc (suc (suc zero)))))))) input = Inv.vector R.event B.EventBounds event allowance input
   traceReaders allowance (suc (suc (suc (suc (suc (suc (suc (suc (suc zero))))))))) input = Inv.uint sizeMaximum input
   traceReaders allowance (suc (suc (suc (suc (suc (suc (suc (suc (suc (suc ())))))))))) input

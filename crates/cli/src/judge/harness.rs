@@ -10,19 +10,16 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use mimir_core::learning::ExperienceState;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::time::Duration;
 use uuid::Uuid;
 
-const MAX_PAYLOAD: usize = 2 * 1024 * 1024;
-const MAX_ANSWER: u64 = 8 * 1024 * 1024;
-
-const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"properties":{"calls":{"type":"array","maxItems":1,"items":{"type":"object","additionalProperties":false,"properties":{"name":{"type":"string"},"arguments_json":{"type":"string"}},"required":["name","arguments_json"]}}},"required":["calls"]}"#;
+const SCHEMA: &str = r#"{"type":"object","additionalProperties":false,"properties":{"calls":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"name":{"type":"string"},"arguments_json":{"type":"string"}},"required":["name","arguments_json"]}}},"required":["calls"]}"#;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,7 +52,6 @@ impl RunDir {
         &self.0
     }
     fn write(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
-        ensure!(bytes.len() <= MAX_PAYLOAD, "harness fixture exceeded limit");
         let path = self.0.join(name);
         let mut file = OpenOptions::new()
             .write(true)
@@ -74,32 +70,25 @@ impl Drop for RunDir {
 }
 
 fn read_answer(path: &Path) -> Result<Vec<u8>> {
-    let file = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)
         .map_err(|error| anyhow!("harness answer is missing: {error}"))?;
-    ensure!(
-        file.metadata()?.is_file() && file.metadata()?.len() <= MAX_ANSWER,
-        "invalid harness answer"
-    );
+    ensure!(file.metadata()?.is_file(), "invalid harness answer");
     let mut bytes = Vec::new();
-    file.take(MAX_ANSWER + 1).read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() <= MAX_ANSWER as usize,
-        "harness answer exceeded limit"
-    );
+    file.read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 
-fn parse_reply(value: Value) -> Result<(Value, Action)> {
+fn parse_reply(value: Value) -> Result<(Value, VecDeque<Action>)> {
     let reply: Reply = serde_json::from_value(value.clone()).map_err(|error| {
         SourceFailure::json("invalid harness reply", value.to_string().as_bytes(), error)
     })?;
-    ensure!(reply.calls.len() <= 1, "harness returned too many calls");
-    let action = if let Some(call) = reply.calls.into_iter().next() {
-        ensure!(call.name.len() <= 128, "harness tool name is too long");
-        match serde_json::from_str(&call.arguments_json) {
+    let actions = reply
+        .calls
+        .into_iter()
+        .map(|call| match serde_json::from_str(&call.arguments_json) {
             Ok(arguments) => Action::Tool {
                 name: call.name,
                 arguments,
@@ -112,11 +101,9 @@ fn parse_reply(value: Value) -> Result<(Value, Action)> {
                     error,
                 ),
             },
-        }
-    } else {
-        Action::Done
-    };
-    Ok((value, action))
+        })
+        .collect();
+    Ok((value, actions))
 }
 
 pub struct Harness<'a> {
@@ -125,6 +112,7 @@ pub struct Harness<'a> {
     history: Vec<Value>,
     selected_id: Option<Uuid>,
     checked: bool,
+    pending: VecDeque<Action>,
 }
 
 impl<'a> Harness<'a> {
@@ -148,6 +136,7 @@ impl<'a> Harness<'a> {
             history: Vec::new(),
             selected_id: None,
             checked: false,
+            pending: VecDeque::new(),
         }
     }
 
@@ -160,15 +149,9 @@ impl<'a> Harness<'a> {
         } else {
             vec!["--help".into()]
         };
-        let output = process::run(
-            &self.program,
-            &args,
-            work.path(),
-            b"",
-            Duration::from_secs(5),
-        )
-        .await
-        .context("harness capability check failed")?;
+        let output = process::run(&self.program, &args, work.path(), b"")
+            .await
+            .context("harness capability check failed")?;
         let help = String::from_utf8(output.stdout).map_err(|_| anyhow!("invalid harness help"))?;
         let required: &[&str] = if self.config.backend == Kind::Codex {
             &[
@@ -213,7 +196,7 @@ impl<'a> Harness<'a> {
         Ok(match self.config.backend {
             Kind::ClaudeCode => {
                 let empty_mcp = work.write("mcp.json", br#"{"mcpServers":{}}"#)?;
-                let mut args = vec![
+                let args = vec![
                     "--print",
                     "--model",
                     &model,
@@ -241,17 +224,13 @@ impl<'a> Harness<'a> {
                 .into_iter()
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
-                if let Some(budget) = self.config.max_budget_usd {
-                    args.extend(["--max-budget-usd".into(), budget.to_string()]);
-                }
                 args
             }
             Kind::Codex => {
                 let schema = work.write("schema.json", SCHEMA.as_bytes())?;
                 let mut args = vec![
                     "exec".into(),
-                    // Human output echoes the full prompt to stderr, which can
-                    // exceed its diagnostic budget before the model replies.
+                    // Machine output avoids duplicating the complete prompt in diagnostics.
                     "--json".into(),
                     "--ignore-user-config".into(),
                     "--ignore-rules".into(),
@@ -312,10 +291,14 @@ impl<'a> Harness<'a> {
         if self.selected_id != Some(selected.experience.id) {
             self.selected_id = Some(selected.experience.id);
             self.history.clear();
+            self.pending.clear();
         }
         if let Some(result) = last {
             self.history
                 .push(json!({"tool_results":[{"result":result}]}));
+        }
+        if let Some(action) = self.pending.pop_front() {
+            return Ok(action);
         }
         let work = RunDir::new()?;
         self.check_capabilities(&work).await?;
@@ -326,19 +309,11 @@ impl<'a> Harness<'a> {
             "tools":tools,
             "history":self.history,
             "response_schema":serde_json::from_str::<Value>(SCHEMA)?,
-            "protocol":"Return one JSON object matching response_schema. Request at most one tool in calls. arguments_json is a JSON object encoded as a string. Never execute tools directly."
+            "protocol":"Return one JSON object matching response_schema. Calls are executed in array order, and each receives a result. arguments_json is a JSON object encoded as a string. Never execute tools directly."
         });
         let bytes = serde_json::to_vec(&payload)?;
-        ensure!(bytes.len() <= MAX_PAYLOAD, "harness context exceeded limit");
         let args = self.arguments(&work)?;
-        let output = process::run(
-            &self.program,
-            &args,
-            work.path(),
-            &bytes,
-            Duration::from_secs(self.config.timeout_seconds),
-        )
-        .await?;
+        let output = process::run(&self.program, &args, work.path(), &bytes).await?;
         let reply_value = match self.config.backend {
             Kind::ClaudeCode => {
                 let wrapper: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
@@ -371,13 +346,18 @@ impl<'a> Harness<'a> {
             })?,
             Kind::Api => bail!("API backend is not a harness"),
         };
-        let (reply, action) = parse_reply(reply_value)?;
+        let (reply, calls) = parse_reply(reply_value)?;
         self.history.push(json!({"assistant":reply}));
-        Ok(action)
+        self.pending = calls;
+        Ok(self.pending.pop_front().unwrap_or(Action::Done))
     }
 }
 
 impl Backend for Harness<'_> {
+    fn will_call_model(&self, selected: &ExperienceState) -> bool {
+        self.selected_id != Some(selected.experience.id) || self.pending.is_empty()
+    }
+
     fn next<'a>(
         &'a mut self,
         selected: &'a ExperienceState,
@@ -419,7 +399,7 @@ done
 cat > "${0}.payload"
 case "$model" in
   overflow-stdout) head -c 8388609 /dev/zero; exit 0 ;;
-  overflow-stderr) head -c 65537 /dev/zero >&2; exit 0 ;;
+  overflow-stderr) head -c 65537 /dev/zero >&2 ;;
 esac
 if [ "$(wc -c < "${0}.payload")" -gt 65536 ]; then
   reply='{"calls":[]}'
@@ -445,10 +425,7 @@ esac
     }
 
     fn config(backend: &str, model: &str) -> LlmConfig {
-        toml::from_str(&format!(
-            "backend = {backend:?}\nmodel = {model:?}\ntimeout_seconds = 5\n"
-        ))
-        .unwrap()
+        toml::from_str(&format!("backend = {backend:?}\nmodel = {model:?}\n")).unwrap()
     }
 
     fn selected() -> ExperienceState {
@@ -520,63 +497,44 @@ esac
     }
 
     #[tokio::test]
-    async fn capability_checks_preserve_overflow_evidence() {
-        for backend in ["codex", "claude-code"] {
+    async fn diagnostic_volume_does_not_fail_valid_work() {
+        for backend in ["codex", "claude-code", "command"] {
             let work = RunDir::new().unwrap();
-            let program = work
-                .write(
-                    "noisy-help",
-                    b"#!/usr/bin/env bash\nhead -c 65537 /dev/zero >&2\n",
-                )
-                .unwrap();
-            fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-            let config = config(backend, "offline-fixture");
+            let program = fixture(&work);
+            let mut config = config(backend, "overflow-stderr");
+            if backend == "command" {
+                config.args = vec!["--model".into(), config.model.clone()];
+            }
             let mut harness = Harness::with_program(&config, program.to_str().unwrap());
-            let error = match harness.step(&selected(), None, &[]).await {
-                Err(error) => error,
-                Ok(_) => panic!("accepted excessive capability output"),
-            };
-            assert_eq!(error.to_string(), "harness capability check failed");
-            let source = error.downcast_ref::<SourceFailure>().unwrap();
-            assert_eq!(source.stage, "harness stderr output");
-            assert_eq!(source.total_bytes, 65537);
+            assert!(matches!(
+                harness.step(&selected(), None, &[]).await.unwrap(),
+                Action::Tool { .. }
+            ));
         }
     }
 
-    #[tokio::test]
-    async fn adapters_preserve_stream_overflow_diagnostics() {
-        for backend in ["codex", "claude-code", "command"] {
-            for (stream, limit) in [("stdout", 8 * 1024 * 1024), ("stderr", 64 * 1024)] {
-                let work = RunDir::new().unwrap();
-                let program = fixture(&work);
-                let mut config = config(backend, &format!("overflow-{stream}"));
-                if backend == "command" {
-                    config.args = vec!["--model".into(), config.model.clone()];
-                }
-                let mut harness = Harness::with_program(&config, program.to_str().unwrap());
-                let error = match harness.step(&selected(), None, &[]).await {
-                    Err(error) => error,
-                    Ok(_) => panic!("{backend} accepted excessive {stream}"),
-                };
-                let mut report = Report::new("blocked", 1, 0, 0, 1, 0);
-                report.capture_source(&error);
-                let source = report.failure_source.unwrap();
-                assert_eq!(source.stage, format!("harness {stream} output"));
-                assert!(source.detail.contains(&format!("limit of {limit} bytes")));
-                assert_eq!(source.total_bytes, limit + 1);
-                assert_eq!(source.excerpt.len(), 32 * 1024);
-                assert!(!error.to_string().contains('\0'));
-            }
+    #[test]
+    fn complete_call_array_is_queued_in_order() {
+        let calls: Vec<_> = (0..65)
+            .map(|n| json!({"name":"get_experience","arguments_json":json!({"n":n}).to_string()}))
+            .collect();
+        let (_, actions) = parse_reply(json!({"calls":calls})).unwrap();
+        assert_eq!(actions.len(), 65);
+        for (n, action) in actions.into_iter().enumerate() {
+            let Action::Tool { arguments, .. } = action else {
+                panic!("missing queued call")
+            };
+            assert_eq!(arguments["n"], n);
         }
     }
 
     #[test]
     fn malformed_arguments_are_a_recoverable_tool_request() {
-        let (_, action) = parse_reply(json!({
+        let (_, mut actions) = parse_reply(json!({
             "calls": [{"name": "review_experience", "arguments_json": "{\"review\": }"}]
         }))
         .unwrap();
-        let Action::RejectedTool { name, source } = action else {
+        let Action::RejectedTool { name, source } = actions.pop_front().unwrap() else {
             panic!("expected rejected tool call")
         };
         assert_eq!(name, "review_experience");

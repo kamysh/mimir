@@ -33,12 +33,12 @@ impl AgeStore {
         ids: &[Uuid],
     ) -> Result<(Vec<serde_json::Value>, bool)> {
         let client = self.client.lock().await;
-        let rows = client.query("SELECT a.belief_id,a.scope,a.rubric,sum(a.positive),sum(a.negative),sum(a.benefit),sum(a.benefit_weight),count(*),count(*) FILTER (WHERE a.positive+a.negative=0),count(*) FILTER (WHERE a.benefit_weight=0) FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=ANY($2) AND e.review_revision=r.revision AND e.revision=r.experience_revision GROUP BY a.belief_id,a.scope,a.rubric ORDER BY a.belief_id,a.scope,a.rubric LIMIT 101", &[&project,&ids]).await?;
-        let values=rows.iter().take(100).map(|r| {
+        let rows = client.query("SELECT a.belief_id,a.scope,a.rubric,sum(a.positive),sum(a.negative),sum(a.benefit),sum(a.benefit_weight),count(*),count(*) FILTER (WHERE a.positive+a.negative=0),count(*) FILTER (WHERE a.benefit_weight=0) FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=ANY($2) AND e.review_revision=r.revision AND e.revision=r.experience_revision GROUP BY a.belief_id,a.scope,a.rubric ORDER BY a.belief_id,a.scope,a.rubric", &[&project,&ids]).await?;
+        let values=rows.iter().map(|r| {
             let scores=crate::assessment::Scores::from_totals(r.get(3),r.get(4),r.get(5),r.get(6),r.get(7),r.get(8),r.get(9))?;
             Ok(serde_json::json!({"belief_id":r.get::<_,Uuid>(0),"scope":r.get::<_,&str>(1),"rubric":r.get::<_,&str>(2),"scores":scores}))
         }).collect::<Result<Vec<_>>>()?;
-        Ok((values, rows.len() > 100))
+        Ok((values, false))
     }
     pub async fn lesson_assessment(
         &self,
@@ -81,15 +81,15 @@ impl AgeStore {
         limit: usize,
     ) -> Result<serde_json::Value> {
         ensure!(
-            (1..=100).contains(&limit) && offset <= i64::MAX as usize,
+            limit > 0 && offset <= i64::MAX as usize,
             "invalid history page"
         );
         ensure!(!project.trim().is_empty(), "project must be explicit");
         let client = self.client.lock().await;
-        let rows = client.query("SELECT a.experience_id,a.review_revision,r.experience_revision,a.payload::text,r.created_at,(e.review_revision=r.revision AND e.revision=r.experience_revision) AS active FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 ORDER BY r.created_at,a.experience_id,a.review_revision LIMIT $5 OFFSET $6", &[&project,&belief_id,&scope,&rubric,&((limit+1) as i64),&(offset as i64)]).await?;
+        let rows = client.query("SELECT a.experience_id,a.review_revision,r.experience_revision,a.payload::text,r.created_at,(e.review_revision=r.revision AND e.revision=r.experience_revision) AS active FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 ORDER BY r.created_at,a.experience_id,a.review_revision LIMIT $5 OFFSET $6", &[&project,&belief_id,&scope,&rubric,&(i64::try_from(limit)?.checked_add(1).ok_or_else(|| anyhow::anyhow!("page size exceeds PostgreSQL integer range"))?),&(offset as i64)]).await?;
         let entries = rows.iter().take(limit).map(|r| Ok(serde_json::json!({"experience_id":r.get::<_,Uuid>(0),"review_revision":r.get::<_,i64>(1),"experience_revision":r.get::<_,i64>(2),"assessment":serde_json::from_str::<serde_json::Value>(r.get::<_,&str>(3))?,"created_at":r.get::<_,chrono::DateTime<chrono::Utc>>(4),"active":r.get::<_,bool>(5)}))).collect::<Result<Vec<_>>>()?;
         Ok(
-            serde_json::json!({"entries":entries,"next_offset":if rows.len()>limit {Some(offset+limit)}else{None}}),
+            serde_json::json!({"entries":entries,"next_offset":if rows.len()>limit {Some(offset.checked_add(limit).ok_or_else(|| anyhow::anyhow!("page offset exceeds platform range"))?)}else{None}}),
         )
     }
     pub async fn get_experience(&self, id: Uuid) -> Result<Option<ExperienceState>> {
@@ -117,10 +117,9 @@ impl AgeStore {
         limit: usize,
         excluded: &[Uuid],
     ) -> Result<Vec<ExperienceState>> {
-        ensure!((1..=100).contains(&limit), "limit must be in 1..=100");
-        ensure!(excluded.len() <= 1000, "too many excluded experiences");
+        ensure!(limit > 0, "limit must be positive");
         let client = self.client.lock().await;
-        client.query(&format!("{CURRENT} WHERE ($1::text IS NULL OR e.project=$1) AND (NOT $2 OR e.reviewed_revision<e.revision) AND NOT (e.id = ANY($4::uuid[])) ORDER BY e.updated_at,e.id LIMIT $3"), &[&project, &pending, &(limit as i64), &excluded]).await?.iter().map(state).collect()
+        client.query(&format!("{CURRENT} WHERE ($1::text IS NULL OR e.project=$1) AND (NOT $2 OR e.reviewed_revision<e.revision) AND NOT (e.id = ANY($4::uuid[])) ORDER BY e.updated_at,e.id LIMIT $3"), &[&project, &pending, &(i64::try_from(limit)?), &excluded]).await?.iter().map(state).collect()
     }
     /// One snapshot: stale review data is never presented as current coverage.
     pub async fn learning_review(&self, id: Uuid) -> Result<serde_json::Value> {
@@ -828,7 +827,7 @@ impl AgeStore {
         offset: usize,
         limit: usize,
     ) -> Result<serde_json::Value> {
-        ensure!((1..=20).contains(&limit), "limit must be in 1..=20");
+        ensure!(limit > 0, "limit must be positive");
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         let id_text = id.to_string();

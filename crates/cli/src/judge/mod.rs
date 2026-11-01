@@ -83,6 +83,37 @@ pub enum JudgeCommand {
 }
 
 pub async fn dispatch(command: JudgeCommand) -> i32 {
+    if !matches!(
+        &command,
+        JudgeCommand::Run { .. } | JudgeCommand::Watch { .. }
+    ) {
+        return dispatch_inner(command).await;
+    }
+    // Install before polling work. The outer race covers startup, model/tool
+    // requests and watch sleeps; dropping its work future drops owned children.
+    let listeners = (|| {
+        use tokio::signal::unix::{signal, SignalKind};
+        Ok::<_, std::io::Error>((
+            signal(SignalKind::interrupt())?,
+            signal(SignalKind::terminate())?,
+        ))
+    })();
+    let (mut interrupt, mut terminate) = match listeners {
+        Ok(listeners) => listeners,
+        Err(error) => {
+            eprintln!("Cannot install judge stop listeners: {error}");
+            return UNAVAILABLE;
+        }
+    };
+    tokio::select! {
+        biased;
+        _ = interrupt.recv() => 0,
+        _ = terminate.recv() => 0,
+        code = dispatch_inner(command) => code,
+    }
+}
+
+async fn dispatch_inner(command: JudgeCommand) -> i32 {
     match command {
         JudgeCommand::Diagnose { config, state_dir } => {
             match diagnose::show(config.as_deref(), state_dir.as_deref()) {
@@ -114,7 +145,7 @@ pub async fn dispatch(command: JudgeCommand) -> i32 {
             interval_seconds,
             max_consecutive_failures,
         } => {
-            if interval_seconds < 60 || !(1..=100).contains(&max_consecutive_failures) {
+            if interval_seconds == 0 || max_consecutive_failures == 0 {
                 println!(
                     "{}",
                     json!({"status":"invalid_config","reason":"invalid_watch_bounds"})
@@ -154,10 +185,7 @@ pub async fn dispatch(command: JudgeCommand) -> i32 {
                     eprintln!("{message}");
                     eprintln!("Next attempt in {delay} seconds. For cause and recovery steps, run: mimir judge diagnose");
                 }
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => return 0,
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
-                }
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             }
         }
         JudgeCommand::Status { state_dir } => {

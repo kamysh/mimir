@@ -5,6 +5,7 @@
 import Mimir.FloatConversion
 module Mimir.JudgeRecordRead (floatConversion : Mimir.FloatConversion.Contract) where
 
+import Mimir.OptionalLimit as Limit
 open import Data.List using ([]; length)
 open import Data.Maybe using (just)
 open import Data.Nat using (ℕ; _≤_)
@@ -35,7 +36,7 @@ module With (Handle NativeError : Set) (checks : Machine.OverflowChecks) (sizeMa
       (R.Loaded.value accepted) (R.Loaded.position accepted) (R.Loaded.decoded accepted)
 
     boundedInput : (accepted : R.Loaded (Names.limit name)) →
-      length (R.Raw.Read.bytes (R.Loaded.raw accepted)) ≤ Names.limit name
+      Limit.Within (Names.limit name) (length (R.Raw.Read.bytes (R.Loaded.raw accepted)))
     boundedInput accepted = R.Raw.Read.bounded (R.Loaded.raw accepted)
 
     readProvenance : ∀ path events accepted →

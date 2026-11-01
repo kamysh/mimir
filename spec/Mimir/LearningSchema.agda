@@ -40,20 +40,20 @@ checkProbability nothing = accepted tt
 checkProbability (just value) = checkBetween 0ℚ 1ℚ value
 
 PredictionValid : Prediction → Set
-PredictionValid p = NamedText 4000 (Prediction.quantity p) ×
-  (NamedText 4000 (Prediction.unit p) ×
-  (NamedText 4000 (Prediction.horizon p) ×
-  (NamedText 4000 (Prediction.recordedAt p) ×
+PredictionValid p = NamedText (Prediction.quantity p) ×
+  (NamedText (Prediction.unit p) ×
+  (NamedText (Prediction.horizon p) ×
+  (NamedText (Prediction.recordedAt p) ×
   (IsFinite (Prediction.point p) ×
   (OptionalProbability (Prediction.probability p) ×
     Interval (Prediction.point p) (Prediction.lower p) (Prediction.upper p))))))
 
 validatePrediction : ∀ p → Checked (PredictionValid p)
 validatePrediction p = combine
-  (at (key "quantity") (checkNamed 4000 (Prediction.quantity p)))
-  (combine (at (key "unit") (checkNamed 4000 (Prediction.unit p)))
-  (combine (at (key "horizon") (checkNamed 4000 (Prediction.horizon p)))
-  (combine (at (key "recorded_at") (checkNamed 4000 (Prediction.recordedAt p)))
+  (at (key "quantity") (checkNamed (Prediction.quantity p)))
+  (combine (at (key "unit") (checkNamed (Prediction.unit p)))
+  (combine (at (key "horizon") (checkNamed (Prediction.horizon p)))
+  (combine (at (key "recorded_at") (checkNamed (Prediction.recordedAt p)))
   (combine (at (key "value") (checkFinite (Prediction.point p)))
   (combine (at (key "probability") (checkProbability (Prediction.probability p)))
     (checkInterval (Prediction.point p) (Prediction.lower p) (Prediction.upper p)))))))
@@ -71,32 +71,27 @@ sourceProjection i = item (LearningItem.identity i) (LearningItem.reference i)
   (LearningItem.actor i) (LearningItem.statement i)
 
 ItemValid : LearningItem → Set
-ItemValid i = NamedText 4000 (LearningItem.reference i) ×
-  (NamedText 4000 (LearningItem.actor i) ×
-  (NamedText 4000 (LearningItem.statement i) ×
-  (NamedText 4000 (LearningItem.conditions i) ×
-  (length (LearningItem.predictions i) ≤ 16 × All PredictionValid (LearningItem.predictions i)))))
+ItemValid i = NamedText (LearningItem.reference i) ×
+  (NamedText (LearningItem.actor i) ×
+  (NamedText (LearningItem.statement i) ×
+  (NamedText (LearningItem.conditions i) ×
+  All PredictionValid (LearningItem.predictions i))))
 
 validateItem : ∀ i → Checked (ItemValid i)
 validateItem i = combine
-  (at (key "source_ref") (checkNamed 4000 (LearningItem.reference i)))
-  (combine (at (key "actor") (checkNamed 4000 (LearningItem.actor i)))
-  (combine (at (key "statement") (checkNamed 4000 (LearningItem.statement i)))
-  (combine (at (key "conditions") (checkNamed 4000 (LearningItem.conditions i)))
-  (at (key "predictions") (combine
-    (check (fault [] tooMany "at most 16 predictions are permitted")
-      (length (LearningItem.predictions i) ≤? 16))
-    (allChecked validatePrediction (LearningItem.predictions i)))))))
+  (at (key "source_ref") (checkNamed (LearningItem.reference i)))
+  (combine (at (key "actor") (checkNamed (LearningItem.actor i)))
+  (combine (at (key "statement") (checkNamed (LearningItem.statement i)))
+  (combine (at (key "conditions") (checkNamed (LearningItem.conditions i)))
+  (at (key "predictions") (allChecked validatePrediction (LearningItem.predictions i))))))
 
 ItemsValid : List LearningItem → Set
-ItemsValid items = length items ≤ 64 ×
-  (Fresh [] (map sourceProjection items) × All ItemValid items)
+ItemsValid items = Fresh [] (map sourceProjection items) × All ItemValid items
 
 validateItems : ∀ items → Checked (ItemsValid items)
 validateItems items = combine
-  (check (fault [] tooMany "at most 64 learning items are permitted") (length items ≤? 64))
-  (combine (check (fault [] duplicate "learning item IDs must be distinct")
-    (fresh? [] (map sourceProjection items))) (allChecked validateItem items))
+  (check (fault [] duplicate "learning item IDs must be distinct")
+    (fresh? [] (map sourceProjection items))) (allChecked validateItem items)
 
 -- Exact identity sets: repeated evidence/item references cannot multiply weight.
 UniqueIDs : List ℕ → Set
@@ -146,29 +141,23 @@ checkRequired a with weighted a
 ... | true = checkSome (Assessment.evidenceIndices a)
 
 AssessmentValid : Assessment → Set
-AssessmentValid a = NamedText 200 (Assessment.scope a) ×
-  (NamedText 200 (Assessment.rubric a) ×
-  (NamedText 4000 (Assessment.rationale a) ×
+AssessmentValid a = NamedText (Assessment.scope a) ×
+  (NamedText (Assessment.rubric a) ×
+  (NamedText (Assessment.rationale a) ×
   (AxisValid 0ℚ (Assessment.correctness a) ×
   (AxisValid (- 1ℚ) (Assessment.usefulness a) ×
-  (length (Assessment.evidenceIndices a) ≤ 32 ×
-  (length (Assessment.itemIDs a) ≤ 64 ×
   (UniqueIDs (Assessment.evidenceIndices a) ×
-  (UniqueIDs (Assessment.itemIDs a) × EvidenceRequired a))))))))
+  (UniqueIDs (Assessment.itemIDs a) × EvidenceRequired a))))))
 
 validateAssessment : ∀ a → Checked (AssessmentValid a)
 validateAssessment a = combine
-  (at (key "scope") (checkNamed 200 (Assessment.scope a)))
-  (combine (at (key "rubric") (checkNamed 200 (Assessment.rubric a)))
-  (combine (at (key "rationale") (checkNamed 4000 (Assessment.rationale a)))
+  (at (key "scope") (checkNamed (Assessment.scope a)))
+  (combine (at (key "rubric") (checkNamed (Assessment.rubric a)))
+  (combine (at (key "rationale") (checkNamed (Assessment.rationale a)))
   (combine (at (key "correctness") (checkAxis 0ℚ (Assessment.correctness a)))
   (combine (at (key "usefulness") (checkAxis (- 1ℚ) (Assessment.usefulness a)))
-  (combine (at (key "evidence_indices") (check
-    (fault [] tooMany "at most 32 evidence indices are permitted") (length (Assessment.evidenceIndices a) ≤? 32)))
-  (combine (at (key "item_ids") (check
-    (fault [] tooMany "at most 64 item references are permitted") (length (Assessment.itemIDs a) ≤? 64)))
   (combine (at (key "evidence_indices") (checkIDs (Assessment.evidenceIndices a)))
-  (combine (at (key "item_ids") (checkIDs (Assessment.itemIDs a))) (checkRequired a)))))))))
+  (combine (at (key "item_ids") (checkIDs (Assessment.itemIDs a))) (checkRequired a)))))))
 
 lookup : ∀ {A : Set} → ℕ → List A → Maybe A
 lookup zero [] = nothing

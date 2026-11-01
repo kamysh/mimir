@@ -20,7 +20,7 @@ module With (Path Handle NativeError Value : Set) (decode : Flow.Parser Value) w
   module FS = Raw.FS
   module Map = EffectMap.Protocol FS.Operation FS.Reply
 
-  record Loaded (limit : ℕ) : Set where
+  record Loaded (limit : Maybe ℕ) : Set where
     constructor loaded
     field
       raw : Raw.Read limit
@@ -29,7 +29,7 @@ module With (Path Handle NativeError Value : Set) (decode : Flow.Parser Value) w
       decoded : Flow.Productive.result (decode (Raw.Read.bytes raw)) ≡
         Flow.ordinary (Flow.F.success value position)
 
-  data Outcome (limit : ℕ) : Set where
+  data Outcome (limit : Maybe ℕ) : Set where
     returned : FS.Result (Maybe (Loaded limit)) → Outcome limit
     decoderPanicked : (raw : Raw.Read limit) (position : Flow.F.Cursor (Raw.Read.bytes raw)) →
       Flow.Productive.result (decode (Raw.Read.bytes raw)) ≡ Flow.panicked position → Outcome limit
@@ -46,7 +46,7 @@ module With (Path Handle NativeError Value : Set) (decode : Flow.Parser Value) w
   afterRead (inj₂ nothing) = returned (inj₂ nothing)
   afterRead (inj₂ (just raw)) = decoded raw (Flow.Productive.result (decode (Raw.Read.bytes raw))) refl
 
-  readNamed : Path → Path → Maybe (List Path) → (limit : ℕ) → FS.Script (Outcome limit)
+  readNamed : Path → Path → Maybe (List Path) → (limit : Maybe ℕ) → FS.Script (Outcome limit)
   readNamed path filePath ancestors limit = Map.map afterRead (Raw.readNamed path filePath ancestors limit)
 
   sameEvents : ∀ path filePath ancestors limit events response →

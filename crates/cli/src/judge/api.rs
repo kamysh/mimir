@@ -11,11 +11,7 @@ use serde_json::{json, Value};
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Duration;
 use uuid::Uuid;
-
-const MAX_REQUEST: usize = 2 * 1024 * 1024;
-const MAX_RESPONSE: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Wire {
@@ -49,6 +45,8 @@ pub struct ApiBackend<'a> {
     config: &'a LlmConfig,
     wire: Wire,
     url: String,
+    metadata_url: String,
+    native_output_maximum: Option<u64>,
     client: Client,
     selected_id: Option<Uuid>,
     history: Vec<Value>,
@@ -99,16 +97,23 @@ impl<'a> ApiBackend<'a> {
         );
         let base = config.base_url.as_deref().unwrap_or(default_base);
         let url = format!("{}/{}", base.trim_end_matches('/'), endpoint);
+        let mut metadata_url =
+            reqwest::Url::parse(&format!("{}/models/", base.trim_end_matches('/')))?;
+        metadata_url
+            .path_segments_mut()
+            .map_err(|_| anyhow!("invalid model metadata URL"))?
+            .pop_if_empty()
+            .push(&config.model);
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(config.timeout_seconds))
             .build()
             .map_err(|_| anyhow!("unable to initialize API transport"))?;
         Ok(Some(Self {
             config,
             wire,
             url,
+            metadata_url: metadata_url.to_string(),
+            native_output_maximum: None,
             client,
             selected_id: None,
             history: Vec::new(),
@@ -199,7 +204,6 @@ impl<'a> ApiBackend<'a> {
                 "tools":definitions,
                 "parallel_tool_calls":true,
                 "store":false,
-                "max_output_tokens":self.config.max_output_tokens,
                 "truncation":"disabled"
             }),
             Wire::Anthropic => json!({
@@ -207,11 +211,11 @@ impl<'a> ApiBackend<'a> {
                 "system":Self::instructions(selected),
                 "messages":self.history,
                 "tools":definitions,
-                "max_tokens":self.config.max_output_tokens
+                "max_tokens":self.native_output_maximum.ok_or_else(|| anyhow!("missing provider model output capacity"))?
             }),
             Wire::Chat => {
                 let mut request = json!({"model":self.config.model,"messages":self.history,
-                    "tools":definitions,"max_tokens":self.config.max_output_tokens,"stream":false});
+                    "tools":definitions,"stream":false});
                 if self.config.provider == Some(Provider::Openrouter) {
                     request["provider"] =
                         json!({"allow_fallbacks":false,"require_parameters":true});
@@ -219,21 +223,38 @@ impl<'a> ApiBackend<'a> {
                 request
             }
         };
-        // The caller serializes once, so the cap includes replayed reasoning.
-        ensure!(
-            serde_json::to_vec(&request)?.len() <= MAX_REQUEST,
-            "API context exceeded limit"
-        );
         Ok(request)
     }
 
+    async fn model_capacity(&mut self) -> Result<()> {
+        if self.wire != Wire::Anthropic || self.native_output_maximum.is_some() {
+            return Ok(());
+        }
+        let reply = self
+            .send_builder(self.client.get(&self.metadata_url))
+            .await?;
+        self.native_output_maximum = Some(
+            reply["max_tokens"]
+                .as_u64()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| {
+                    anyhow!("provider model metadata is missing a positive max_tokens capacity")
+                })?,
+        );
+        Ok(())
+    }
+
     async fn send(&self, request: Value) -> Result<Value> {
+        self.send_builder(self.client.post(&self.url).json(&request))
+            .await
+    }
+
+    async fn send_builder(&self, mut builder: reqwest::RequestBuilder) -> Result<Value> {
         let key = self
             .config
             .api_key
             .as_deref()
             .ok_or_else(|| anyhow!("missing API key"))?;
-        let mut builder = self.client.post(&self.url).json(&request);
         builder = match self.wire {
             Wire::OpenAi | Wire::Chat => builder.bearer_auth(key),
             Wire::Anthropic => {
@@ -258,10 +279,6 @@ impl<'a> ApiBackend<'a> {
             .await
             .map_err(|_| anyhow!("provider body failed"))?
         {
-            ensure!(
-                bytes.len() + chunk.len() <= MAX_RESPONSE,
-                "provider response exceeded limit"
-            );
             bytes.extend_from_slice(&chunk);
         }
         if !status.is_success() {
@@ -276,12 +293,6 @@ impl<'a> ApiBackend<'a> {
             reply["status"] == "completed",
             "OpenAI response is incomplete"
         );
-        if let Some(usage) = reply["usage"]["output_tokens"].as_u64() {
-            ensure!(
-                usage <= self.config.max_output_tokens as u64,
-                "OpenAI output exceeded token limit"
-            );
-        }
         let output = reply["output"]
             .as_array()
             .ok_or_else(|| anyhow!("invalid OpenAI output"))?;
@@ -315,7 +326,7 @@ impl<'a> ApiBackend<'a> {
                         )),
                     };
                     ensure!(
-                        !id.is_empty() && id.len() <= 128 && seen.insert(id),
+                        !id.is_empty() && seen.insert(id),
                         "invalid OpenAI function call"
                     );
                     calls.push_back(Call {
@@ -328,10 +339,6 @@ impl<'a> ApiBackend<'a> {
                 _ => bail!("unexpected OpenAI output item"),
             }
         }
-        ensure!(
-            calls.len() <= self.config.max_calls,
-            "too many OpenAI calls"
-        );
         // Replay the complete output, including encrypted reasoning items.
         self.history.extend(output.iter().cloned());
         self.pending = calls;
@@ -339,12 +346,6 @@ impl<'a> ApiBackend<'a> {
     }
 
     fn parse_anthropic(&mut self, reply: &Value) -> Result<()> {
-        if let Some(usage) = reply["usage"]["output_tokens"].as_u64() {
-            ensure!(
-                usage <= self.config.max_output_tokens as u64,
-                "Anthropic output exceeded token limit"
-            );
-        }
         let content = reply["content"]
             .as_array()
             .ok_or_else(|| anyhow!("invalid Anthropic content"))?;
@@ -361,7 +362,7 @@ impl<'a> ApiBackend<'a> {
                         .ok_or_else(|| anyhow!("missing Anthropic tool name"))?;
                     let arguments = block["input"].clone();
                     ensure!(
-                        !id.is_empty() && id.len() <= 128 && seen.insert(id),
+                        !id.is_empty() && seen.insert(id),
                         "invalid Anthropic tool call"
                     );
                     let arguments = if arguments.is_object() {
@@ -400,10 +401,6 @@ impl<'a> ApiBackend<'a> {
             Some("end_turn") => ensure!(calls.is_empty(), "Anthropic calls without tool stop"),
             _ => bail!("Anthropic response is incomplete"),
         }
-        ensure!(
-            calls.len() <= self.config.max_calls,
-            "too many Anthropic calls"
-        );
         // Preserve thinking/signatures and their original order verbatim.
         self.history
             .push(json!({"role":"assistant","content":content}));
@@ -412,12 +409,6 @@ impl<'a> ApiBackend<'a> {
     }
 
     fn parse_chat(&mut self, reply: &Value) -> Result<()> {
-        if let Some(usage) = reply["usage"]["completion_tokens"].as_u64() {
-            ensure!(
-                usage <= self.config.max_output_tokens as u64,
-                "provider output exceeded token limit"
-            );
-        }
         let choices = reply["choices"]
             .as_array()
             .ok_or_else(|| anyhow!("invalid chat choices"))?;
@@ -438,10 +429,6 @@ impl<'a> ApiBackend<'a> {
             Some("stop") => ensure!(raw_calls.is_empty(), "chat calls without tool stop"),
             _ => bail!("chat response is incomplete"),
         }
-        ensure!(
-            raw_calls.len() <= self.config.max_calls,
-            "too many chat calls"
-        );
         let mut seen = HashSet::new();
         let mut calls = VecDeque::new();
         for call in raw_calls {
@@ -452,11 +439,7 @@ impl<'a> ApiBackend<'a> {
                 .as_str()
                 .ok_or_else(|| anyhow!("missing chat function name"))?;
             ensure!(
-                call["type"] == "function"
-                    && !id.is_empty()
-                    && id.len() <= 128
-                    && seen.insert(id)
-                    && !name.is_empty(),
+                call["type"] == "function" && !id.is_empty() && seen.insert(id) && !name.is_empty(),
                 "invalid chat function call"
             );
             let arguments = match &call["function"]["arguments"] {
@@ -517,6 +500,7 @@ impl<'a> ApiBackend<'a> {
             return Ok(call.into_action());
         }
         self.flush_results()?;
+        self.model_capacity().await?;
         let request = self.request(selected, tools)?;
         let reply = self.send(request).await?;
         match self.wire {
@@ -604,7 +588,7 @@ mod tests {
                 let mut chunk = [0u8; 4096];
                 let boundary = loop {
                     let read = socket.read(&mut chunk).await.unwrap();
-                    assert!(read > 0 && bytes.len() + read < MAX_REQUEST);
+                    assert!(read > 0);
                     bytes.extend_from_slice(&chunk[..read]);
                     if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
                         break index + 4;
@@ -618,17 +602,21 @@ mod tests {
                             .strip_prefix("content-length: ")
                             .and_then(|value| value.trim().parse().ok())
                     })
-                    .unwrap();
+                    .unwrap_or(0);
                 while bytes.len() - boundary < length {
                     let read = socket.read(&mut chunk).await.unwrap();
-                    assert!(read > 0 && bytes.len() + read < MAX_REQUEST);
+                    assert!(read > 0);
                     bytes.extend_from_slice(&chunk[..read]);
                 }
                 let path = headers.split_whitespace().nth(1).unwrap().to_owned();
                 captured.push(Captured {
                     path,
                     headers,
-                    body: serde_json::from_slice(&bytes[boundary..boundary + length]).unwrap(),
+                    body: if length == 0 {
+                        Value::Null
+                    } else {
+                        serde_json::from_slice(&bytes[boundary..boundary + length]).unwrap()
+                    },
                 });
                 let body = serde_json::to_vec(&body).unwrap();
                 let response = format!(
@@ -648,10 +636,6 @@ mod tests {
             backend: Kind::Api,
             model: "fixture-model".into(),
             reasoning_effort: None,
-            timeout_seconds: 5,
-            max_calls: 8,
-            max_output_tokens: 256,
-            max_budget_usd: None,
             provider: Some(provider),
             api_key: Some("fixture-secret".into()),
             base_url: Some(base_url),
@@ -739,7 +723,7 @@ mod tests {
                     .contains("Authorization: Bearer fixture-secret")
         );
         assert_eq!(requests[0].body["store"], false);
-        assert_eq!(requests[0].body["max_output_tokens"], 256);
+        assert!(requests[0].body.get("max_output_tokens").is_none());
         assert_eq!(requests[0].body["tools"][0]["name"], "get_experience");
         assert!(requests[0].body.get("previous_response_id").is_none());
         let input = requests[1].body["input"].as_array().unwrap();
@@ -762,6 +746,7 @@ mod tests {
         let selected = selected();
         let args = json!({"id":selected.experience.id});
         let (url, server) = fixture(vec![
+            (200, json!({"max_tokens": 64000})),
             (
                 200,
                 json!({"stop_reason":"tool_use","usage":{"output_tokens":25},"content":[
@@ -800,13 +785,16 @@ mod tests {
                 .unwrap(),
             Action::Done
         ));
-        let requests = server.await.unwrap();
+        let captured = server.await.unwrap();
+        assert_eq!(captured.len(), 3);
+        assert_eq!(captured[0].path, "/v1/models/fixture-model");
+        let requests = &captured[1..];
         assert_eq!(requests[0].path, "/v1/messages");
         assert!(requests[0].headers.contains("x-api-key: fixture-secret"));
         assert!(requests[0]
             .headers
             .contains("anthropic-version: 2023-06-01"));
-        assert_eq!(requests[0].body["max_tokens"], 256);
+        assert_eq!(requests[0].body["max_tokens"], 64000);
         let messages = requests[1].body["messages"].as_array().unwrap();
         assert_eq!(messages[1]["content"][0]["signature"], "signed");
         assert_eq!(messages[1]["content"][1]["id"], "toolu_1");
@@ -882,7 +870,7 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("authorization: bearer fixture-secret"));
             assert_eq!(requests[0].body["model"], "fixture-model");
-            assert_eq!(requests[0].body["max_tokens"], 256);
+            assert!(requests[0].body.get("max_tokens").is_none());
             assert_eq!(requests[0].body["stream"], false);
             assert_eq!(
                 requests[0].body["tools"][0]["function"]["name"],
@@ -918,8 +906,6 @@ mod tests {
             json!({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[]}}]}),
             json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","tool_calls":[
                 {"id":"a","type":"function","function":{"name":"get_experience","arguments":"{}"}}]}}]}),
-            json!({"usage":{"completion_tokens":257},"choices":[{"finish_reason":"stop",
-                "message":{"role":"assistant","content":"done"}}]}),
         ] {
             assert!(backend.parse_chat(&reply).is_err());
         }
@@ -1057,7 +1043,7 @@ mod tests {
         ));
         assert!(backend
             .parse_openai(&json!({"status":"completed","usage":{"output_tokens":257},"output":[]}))
-            .is_err());
+            .is_ok());
         assert!(backend
             .parse_openai(&json!({"status":"completed","output":[
                 {"type":"message","status":"incomplete","role":"assistant","content":[]}
@@ -1101,75 +1087,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timeout_and_oversized_body_are_rejected() {
-        let selected = selected();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/v1", listener.local_addr().unwrap());
-        let stalled = tokio::spawn(async move {
-            let (_socket, _) = listener.accept().await.unwrap();
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        });
-        let mut slow_config = config(Provider::Openai, url);
-        slow_config.timeout_seconds = 1;
-        let mut backend = ApiBackend::new(&slow_config).unwrap().unwrap();
-        let error = match backend.next(&selected, None, &tools()).await {
-            Ok(_) => panic!("stalled provider was accepted"),
-            Err(error) => error.to_string(),
-        };
-        assert!(error.contains("timed out"));
-        stalled.abort();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/v1", listener.local_addr().unwrap());
-        let oversized = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            // Consume the complete request before closing the response socket.
-            // A larger judge prompt otherwise leaves unread TCP data and can
-            // produce a reset instead of exercising the response-size guard.
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 4096];
-            let boundary = loop {
-                let count = socket.read(&mut chunk).await.unwrap();
-                assert!(count > 0 && request.len() + count < MAX_REQUEST);
-                request.extend_from_slice(&chunk[..count]);
-                if let Some(end) = request.windows(4).position(|s| s == b"\r\n\r\n") {
-                    break end + 4;
-                }
-            };
-            let headers = String::from_utf8(request[..boundary].to_vec()).unwrap();
-            let length: usize = headers
-                .lines()
-                .find_map(|line| {
-                    line.to_ascii_lowercase()
-                        .strip_prefix("content-length: ")
-                        .and_then(|v| v.trim().parse().ok())
-                })
-                .unwrap();
-            while request.len() - boundary < length {
-                let count = socket.read(&mut chunk).await.unwrap();
-                assert!(count > 0 && request.len() + count < MAX_REQUEST);
-                request.extend_from_slice(&chunk[..count]);
-            }
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                MAX_RESPONSE + 1
-            );
-            socket.write_all(header.as_bytes()).await.unwrap();
-            let chunk = [b'x'; 8192];
-            for _ in 0..=(MAX_RESPONSE / chunk.len()) {
-                if socket.write_all(&chunk).await.is_err() {
-                    break;
-                }
-            }
-        });
+    async fn transports_complete_large_context_and_response() {
+        let mut selected = selected();
+        selected.experience.action = "a".repeat(2 * 1024 * 1024 + 1);
+        let large = "b".repeat(8 * 1024 * 1024 + 1);
+        let (url, server) = fixture(vec![(
+            200,
+            json!({"status":"completed","output":[
+                {"type":"message","status":"completed","role":"assistant","content":large}
+            ]}),
+        )])
+        .await;
         let config = config(Provider::Openai, url);
         let mut backend = ApiBackend::new(&config).unwrap().unwrap();
-        let error = match backend.next(&selected, None, &tools()).await {
-            Ok(_) => panic!("oversized provider body was accepted"),
-            Err(error) => error.to_string(),
-        };
-        assert!(error.contains("exceeded limit"), "{error}");
-        oversized.await.unwrap();
+        assert!(matches!(
+            backend.next(&selected, None, &tools()).await.unwrap(),
+            Action::Done
+        ));
+        let requests = server.await.unwrap();
+        assert!(serde_json::to_vec(&requests[0].body).unwrap().len() > 2 * 1024 * 1024);
+        assert_eq!(backend.history.last().unwrap()["content"], large);
     }
 
     #[tokio::test]
@@ -1239,7 +1176,6 @@ mod tests {
         settings.llm = config(Provider::Openai, url);
         // One provider response supplies both tools. The database receipt ends
         // the review without another model request or completion message.
-        settings.llm.max_calls = 2;
         let mut backend = ApiBackend::new(&settings.llm).unwrap().unwrap();
         let report = super::super::runner::run(&settings, &state, &mut backend).await;
         assert_eq!(report.status, "complete");

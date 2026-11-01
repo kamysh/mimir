@@ -48,10 +48,8 @@ pub struct IndependentProvenance {
 impl IndependentProvenance {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            !self.reference.trim().is_empty()
-                && self.reference.len() <= 2048
-                && self.reference == self.reference.trim(),
-            "independent provenance needs a trimmed reference of at most 2048 bytes"
+            !self.reference.trim().is_empty() && self.reference == self.reference.trim(),
+            "independent provenance needs a trimmed reference"
         );
         Ok(())
     }
@@ -95,16 +93,8 @@ impl Experience {
             "context and action are required"
         );
         ensure!(
-            self.evidence.len() <= 32 && self.belief_ids.len() <= 64,
-            "too many evidence references or beliefs"
-        );
-        ensure!(
             self.outcome == Outcome::Unknown || self.evidence.iter().any(|e| !e.trim().is_empty()),
             "a known outcome requires evidence"
-        );
-        ensure!(
-            serde_json::to_vec(self)?.len() <= 65536,
-            "experience exceeds 64 KiB"
         );
         Ok(())
     }
@@ -169,8 +159,8 @@ impl Candidate {
     fn validate(&self) -> Result<()> {
         let key = self.key();
         ensure!(
-            !key.trim().is_empty() && key.len() <= 128 && key == key.trim(),
-            "candidate key must be a nonempty trimmed string of at most 128 bytes"
+            !key.trim().is_empty() && key == key.trim(),
+            "candidate key must be a nonempty trimmed string"
         );
         match self {
             Self::Belief {
@@ -261,20 +251,6 @@ impl Review {
             !self.reviewer.trim().is_empty() && !self.rationale.trim().is_empty(),
             "reviewer and rationale are required"
         );
-        ensure!(
-            self.feedback.len() <= 64 && self.superseded_beliefs.len() <= 64,
-            "review has too many targets"
-        );
-        ensure!(self.links.len() <= 64, "too many links");
-        ensure!(self.candidates.len() <= 64, "too many candidates");
-        ensure!(
-            self.feedback.len() + self.candidate_feedback.len() <= 64,
-            "too many feedback targets"
-        );
-        ensure!(
-            self.links.len() + self.candidate_links.len() <= 64,
-            "too many links"
-        );
         let mut candidate_keys = std::collections::HashSet::new();
         for candidate in &self.candidates {
             candidate.validate()?;
@@ -303,7 +279,6 @@ impl Review {
             crate::graph::Probability::new(feedback.weight)?;
             validate_target(&feedback.target)?;
         }
-        ensure!(self.assessments.len() <= 64, "too many assessments");
         let mut assessment_keys = std::collections::HashSet::new();
         for assessment in &self.assessments {
             assessment.validate()?;
@@ -368,10 +343,6 @@ impl Review {
                 "one assessment per belief per experience"
             );
         }
-        ensure!(
-            serde_json::to_vec(self)?.len() <= 65536,
-            "review exceeds 64 KiB"
-        );
         Ok(())
     }
 }
@@ -504,7 +475,7 @@ impl crate::MimirService {
         project: &str,
         limit: usize,
     ) -> Result<LearningContext> {
-        ensure!((1..=20).contains(&limit), "limit must be in 1..=20");
+        ensure!(limit > 0, "limit must be positive");
         ensure!(!project.trim().is_empty(), "project must be explicit");
         let beliefs = self
             .query_relevant(context, limit, Some(project), None)

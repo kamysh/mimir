@@ -147,7 +147,7 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
 
   graphArguments : Tools.Query → V.Value → Script (Failure ⊎ V.Value)
   graphArguments Tools.explanation args = chain (require
-    (within 1 20 (looseLimit 0 args)) "invalid explain limit" args) offset
+    (does (1 ≤? (looseLimit 0 args))) "invalid explain limit" args) offset
     where
     offset : V.Value → Script (Failure ⊎ V.Value)
     offset value with Input.unsigned maximum (get "offset" value)
@@ -182,7 +182,7 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
   before (Tools.query Tools.lessonAssessment) args = require (textIs project (get "project" args)) "assessment is outside selected project" args
   before (Tools.query Tools.assessmentHistory) args = chain
     (require (textIs project (get "project" args)) "assessment is outside selected project" args)
-    (λ value → require (within 1 100 (looseLimit 20 value)) "history page too large" value)
+    (λ value → require (does (1 ≤? (looseLimit 20 value))) "history limit must be positive" value)
   before (Tools.query Tools.experience) args = require (textIs canonicalID (get "id" args)) "experience is outside pinned batch" args
   before (Tools.query Tools.learningReview) args = require (textIs canonicalID (get "id" args)) "experience is outside pinned batch" args
   before (Tools.query Tools.experienceHistory) args = chain
@@ -190,7 +190,7 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
   before (Tools.query Tools.contradictions) args = require (textIs project (get "project" args)) "query is outside selected project" args
   before (Tools.query Tools.relevant) args = chain
     (require (textIs project (get "project" args)) "query is outside selected project" args)
-    (λ value → require (within 1 20 (looseLimit 0 value)) "query limit must be 1..=20" value)
+    (λ value → require (does (1 ≤? (looseLimit 0 value))) "query limit must be positive" value)
   before (Tools.query Tools.learningContext) args = before (Tools.query Tools.relevant) args
   before (Tools.query Tools.belief) args = graph Tools.belief args
   before (Tools.query Tools.explanation) args = graph Tools.explanation args
@@ -245,35 +245,28 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
   ...   | false = done (inj₁ (invalidResponse (toList "MCP returned out-of-scope experience")))
   after (Tools.query Tools.relevant) value with array value
   ... | inj₁ error = done (inj₁ error)
-  ... | inj₂ rows with does (length rows ≤? 20) ∧ allVisible project rows
+  ... | inj₂ rows with allVisible project rows
   ...   | true = done (inj₂ value)
   ...   | false = done (inj₁ (invalidResponse (toList "MCP returned out-of-scope beliefs")))
   after (Tools.query Tools.learningContext) value with array (get "beliefs" value) | array (get "patterns" value)
   ... | inj₁ error | _ = done (inj₁ error)
   ... | _ | inj₁ error = done (inj₁ error)
-  ... | inj₂ beliefs | inj₂ patterns with does (length beliefs ≤? 20) ∧ does (length patterns ≤? 20) ∧
-    allVisible project beliefs ∧ allVisible project (Data.List.map (get "pattern") patterns)
+  ... | inj₂ beliefs | inj₂ patterns with allVisible project beliefs ∧ allVisible project (Data.List.map (get "pattern") patterns)
   ...   | true = done (inj₂ value)
   ...   | false = done (inj₁ (invalidResponse (toList "MCP returned out-of-scope learning context")))
   after (Tools.query Tools.explanation) value with array (get "incoming_edges" value)
   ... | inj₁ error = done (inj₁ error)
-  ... | inj₂ edges with does (length edges ≤? 64)
-  ...   | false = done (inj₁ (invalidResponse (toList "explanation is too large")))
-  ...   | true = filterEdges edges then λ where
+  ... | inj₂ edges = filterEdges edges then λ where
     (inj₁ error) → done (inj₁ error)
     (inj₂ filtered) → done (inj₂ (put "incoming_edges" (V.array filtered) value))
   after (Tools.query Tools.intervention) value with array value
   ... | inj₁ error = done (inj₁ error)
-  ... | inj₂ rows with does (length rows ≤? 64)
-  ...   | false = done (inj₁ (invalidResponse (toList "intervention result is too large")))
-  ...   | true = checkTargets rows then λ where
+  ... | inj₂ rows = checkTargets rows then λ where
     (inj₁ error) → done (inj₁ error)
     (inj₂ tt) → done (inj₂ value)
   after (Tools.query Tools.contradictions) value with array value
   ... | inj₁ error = done (inj₁ error)
-  ... | inj₂ rows with does (length rows ≤? 64)
-  ...   | false = done (inj₁ (invalidResponse (toList "contradiction result is too large")))
-  ...   | true = filterPairs rows then λ where
+  ... | inj₂ rows = filterPairs rows then λ where
     (inj₁ error) → done (inj₁ error)
     (inj₂ filtered) → done (inj₂ (V.array filtered))
   after _ value = done (inj₂ value)

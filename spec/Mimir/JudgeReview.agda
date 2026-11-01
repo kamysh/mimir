@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
 -- One selected immutable experience revision. Model completion, tool success,
--- and database confirmation are distinct events. Every retry is budgeted.
+-- and database confirmation are distinct events. Every attempt is counted.
 -- Trace persistence is a barrier before the next external request.
 module Mimir.JudgeReview where
 
@@ -20,7 +20,7 @@ import Mimir.McpErrors as Mcp
 -- Payload is the already parsed wire value; its full schema and scope checks
 -- belong to the tool dispatcher. They must return a typed validation fault.
 module Controller (Payload : Set) (selected : Pin) where
-  open import Mimir.JudgeBudget public using (Budget; budget)
+  open import Mimir.JudgeAccounting public using (Counts; counts)
   open import Mimir.JudgeTools public using (query; review) renaming (Kind to ToolKind)
   record Call : Set where
     constructor call
@@ -35,8 +35,8 @@ module Controller (Payload : Set) (selected : Pin) where
 
   data Result : Set where
     confirmed : Evidence selected → Result
-    sourceChanged unreviewed modelExhausted toolExhausted
-      timedOut transportFailed serviceFailed traceFailed stopped : Result
+    sourceChanged unreviewed
+      transportInterrupted transportFailed serviceFailed traceFailed stopped : Result
 
   data Purpose : Set where
     afterReview afterLoss afterDone : Purpose
@@ -44,7 +44,7 @@ module Controller (Payload : Set) (selected : Pin) where
 
   data Trace : Set where
     modelRequested toolRequested toolReturned modelSaidDone
-      modelLimit toolLimit timeoutObserved transportLost receiptPending
+      interruptionObserved transportLost receiptPending
       receiptConfirmed receiptChanged receiptUnavailable : Trace
     inputRejected : Fault → Trace
     unclassifiedFailure : Mcp.Error → Trace
@@ -52,18 +52,18 @@ module Controller (Payload : Set) (selected : Pin) where
   -- Continuations are finite states, not arbitrary functions supplied by a
   -- worker. A log acknowledgement can only resume the stored continuation.
   data Continue : Set where
-    ask : Budget → Feedback → Continue
-    invoke : Budget → Call → Continue
-    observe : Budget → Purpose → Continue
-    reconsider : Budget → Feedback → Continue
+    ask : Counts → Feedback → Continue
+    invoke : Counts → Call → Continue
+    observe : Counts → Purpose → Continue
+    reconsider : Counts → Feedback → Continue
     finish : Result → Continue
 
   data State : Set where
-    ready : Budget → Feedback → State
+    ready : Counts → Feedback → State
     tracing : Trace → Continue → State
-    modelPending : Budget → State
-    toolPending : Budget → Call → State
-    receiptPending : Budget → Purpose → State
+    modelPending : Counts → State
+    toolPending : Counts → Call → State
+    receiptPending : Counts → Purpose → State
     finished : Result → State
 
   data Effect : Set where
@@ -89,7 +89,7 @@ module Controller (Payload : Set) (selected : Pin) where
     changed pending unavailable : Receipt
 
   data Input : Set where
-    tick traceWritten traceWriteFailed timeout stop : Input
+    tick traceWritten traceWriteFailed interrupted stop : Input
     modelReply : ModelAction → Input
     queuedTool : Call → Input
     queuedMalformed : Fault → Input
@@ -111,7 +111,7 @@ module Controller (Payload : Set) (selected : Pin) where
   resume (reconsider fuel feedback) = next (ready fuel feedback) []
   resume (finish result) = next (finished result) []
 
-  pendingReceipt : Budget → Purpose → Step
+  pendingReceipt : Counts → Purpose → Step
   pendingReceipt fuel afterReview = log receiptPending (reconsider fuel initial)
   pendingReceipt fuel afterLoss = log receiptPending (reconsider fuel uncertainCommit)
   pendingReceipt fuel afterDone = log receiptPending (finish unreviewed)
@@ -121,26 +121,19 @@ module Controller (Payload : Set) (selected : Pin) where
   -- Stop takes precedence in every state, including an outstanding log write.
   step : State → Input → Step
   step state stop = next (finished stopped) (cancelOwnedRequests ∷ [])
-  step (ready (budget zero tools) feedback) tick = log modelLimit (finish modelExhausted)
-  step (ready (budget (suc models) tools) feedback) tick =
-    log modelRequested (ask (budget models tools) feedback)
+  step (ready (counts models tools) feedback) tick =
+    log modelRequested (ask (counts (suc models) tools) feedback)
   step (tracing event continuation) traceWritten = resume continuation
   step (tracing event continuation) traceWriteFailed = next (finished traceFailed) []
   step (modelPending fuel) (modelReply done) = log modelSaidDone (observe fuel afterDone)
-  step (modelPending (budget models zero)) (modelReply (useTool request)) =
-    log toolLimit (finish toolExhausted)
-  step (modelPending (budget models (suc tools))) (modelReply (useTool request)) =
-    log toolRequested (invoke (budget models tools) request)
-  step (modelPending (budget models zero)) (modelReply (malformed failure)) =
-    log toolLimit (finish toolExhausted)
-  step (modelPending (budget models (suc tools))) (modelReply (malformed failure)) =
-    log (inputRejected failure) (reconsider (budget models tools) (rejected failure))
-  step (ready (budget models zero) feedback) (queuedTool request) = log toolLimit (finish toolExhausted)
-  step (ready (budget models (suc tools)) feedback) (queuedTool request) =
-    log toolRequested (invoke (budget models tools) request)
-  step (ready (budget models zero) feedback) (queuedMalformed failure) = log toolLimit (finish toolExhausted)
-  step (ready (budget models (suc tools)) feedback) (queuedMalformed failure) =
-    log (inputRejected failure) (reconsider (budget models tools) (rejected failure))
+  step (modelPending (counts models tools)) (modelReply (useTool request)) =
+    log toolRequested (invoke (counts models (suc tools)) request)
+  step (modelPending (counts models tools)) (modelReply (malformed failure)) =
+    log (inputRejected failure) (reconsider (counts models (suc tools)) (rejected failure))
+  step (ready (counts models tools) feedback) (queuedTool request) =
+    log toolRequested (invoke (counts models (suc tools)) request)
+  step (ready (counts models tools) feedback) (queuedMalformed failure) =
+    log (inputRejected failure) (reconsider (counts models (suc tools)) (rejected failure))
   step (toolPending fuel (call (query operation) arguments)) (toolReply (returned payload)) =
     log toolReturned (reconsider fuel (value payload))
   step (toolPending fuel (call review arguments)) (toolReply (returned payload)) =
@@ -159,11 +152,11 @@ module Controller (Payload : Set) (selected : Pin) where
   step (receiptPending fuel purpose) (receipt changed) = log receiptChanged (finish sourceChanged)
   step (receiptPending fuel purpose) (receipt pending) = pendingReceipt fuel purpose
   step (receiptPending fuel purpose) (receipt unavailable) = log receiptUnavailable (finish transportFailed)
-  step (modelPending fuel) timeout = log timeoutObserved (finish timedOut)
-  step (toolPending fuel (call (query operation) arguments)) timeout = log timeoutObserved (finish timedOut)
-  step (toolPending fuel (call review arguments)) timeout = log timeoutObserved (observe fuel afterLoss)
-  step (receiptPending fuel purpose) timeout = log timeoutObserved (finish timedOut)
-  step (tracing event continuation) timeout = next (finished traceFailed) []
+  step (modelPending fuel) interrupted = log interruptionObserved (finish transportInterrupted)
+  step (toolPending fuel (call (query operation) arguments)) interrupted = log interruptionObserved (finish transportInterrupted)
+  step (toolPending fuel (call review arguments)) interrupted = log interruptionObserved (observe fuel afterLoss)
+  step (receiptPending fuel purpose) interrupted = log interruptionObserved (finish transportInterrupted)
+  step (tracing event continuation) interrupted = next (finished traceFailed) []
   step state input = next state []
 
   after : State → List Input → State
@@ -188,28 +181,29 @@ module Controller (Payload : Set) (selected : Pin) where
   -- A validation refusal reaches the next model call unchanged, after its
   -- diagnostic is persisted. There is no generic-error substitution.
   rejectionDelivered : ∀ models tools request failure →
-    step (after (toolPending (budget (suc models) tools) request)
+    step (after (toolPending (counts models tools) request)
       (toolReply (refused failure) ∷ traceWritten ∷ tick ∷ [])) traceWritten ≡
-    next (modelPending (budget models tools)) (requestModel (rejected failure) ∷ [])
+    next (modelPending (counts (suc models) tools)) (requestModel (rejected failure) ∷ [])
   rejectionDelivered models tools (call (query operation) arguments) failure = refl
   rejectionDelivered models tools (call review arguments) failure = refl
 
-  -- Invalid model arguments consume a tool attempt and a subsequent model
-  -- request consumes a model attempt, exactly as valid requests do.
-  malformedConsumesBoth : ∀ models tools failure →
-    step (after (modelPending (budget (suc models) (suc tools)))
+  -- Invalid model arguments record a tool attempt and a subsequent model
+  -- request records a model attempt, exactly as valid requests do.
+  malformedCountsBoth : ∀ models tools failure →
+    step (after (modelPending (counts models tools))
       (modelReply (malformed failure) ∷ traceWritten ∷ tick ∷ [])) traceWritten ≡
-    next (modelPending (budget models tools)) (requestModel (rejected failure) ∷ [])
-  malformedConsumesBoth models tools failure = refl
+    next (modelPending (counts (suc models) (suc tools))) (requestModel (rejected failure) ∷ [])
+  malformedCountsBoth models tools failure = refl
 
-  noModelAtZero : ∀ tools feedback →
-    step (ready (budget zero tools) feedback) tick ≡ log modelLimit (finish modelExhausted)
-  noModelAtZero tools feedback = refl
+  everyModelRequestAdmitted : ∀ models tools feedback →
+    step (ready (counts models tools) feedback) tick ≡
+      log modelRequested (ask (counts (suc models) tools) feedback)
+  everyModelRequestAdmitted models tools feedback = refl
 
-  noToolAtZero : ∀ models request →
-    step (modelPending (budget models zero)) (modelReply (useTool request)) ≡
-    log toolLimit (finish toolExhausted)
-  noToolAtZero models request = refl
+  everyToolRequestAdmitted : ∀ models tools request →
+    step (modelPending (counts models tools)) (modelReply (useTool request)) ≡
+      log toolRequested (invoke (counts models (suc tools)) request)
+  everyToolRequestAdmitted models tools request = refl
 
   lostCommitReadFirst : ∀ fuel arguments →
     step (after (toolPending fuel (call review arguments)) (toolReply lost ∷ [])) traceWritten ≡
@@ -221,15 +215,15 @@ module Controller (Payload : Set) (selected : Pin) where
     step (tracing event continuation) traceWriteFailed ≡ next (finished traceFailed) []
   failedTraceStops event continuation = refl
 
-  queuedCallPreservesProviderBudget : ∀ models tools feedback request →
-    step (ready (budget models (suc tools)) feedback) (queuedTool request) ≡
-    log toolRequested (invoke (budget models tools) request)
-  queuedCallPreservesProviderBudget models tools feedback request = refl
+  queuedCallPreservesProviderCount : ∀ models tools feedback request →
+    step (ready (counts models tools) feedback) (queuedTool request) ≡
+    log toolRequested (invoke (counts models (suc tools)) request)
+  queuedCallPreservesProviderCount models tools feedback request = refl
 
-  queuedMalformedPreservesProviderBudget : ∀ models tools feedback failure →
-    step (ready (budget models (suc tools)) feedback) (queuedMalformed failure) ≡
-    log (inputRejected failure) (reconsider (budget models tools) (rejected failure))
-  queuedMalformedPreservesProviderBudget models tools feedback failure = refl
+  queuedMalformedPreservesProviderCount : ∀ models tools feedback failure →
+    step (ready (counts models tools) feedback) (queuedMalformed failure) ≡
+    log (inputRejected failure) (reconsider (counts models (suc tools)) (rejected failure))
+  queuedMalformedPreservesProviderCount models tools feedback failure = refl
 
   unclassifiedReviewRequiresReceipt : ∀ fuel arguments failure →
     step (toolPending fuel (call review arguments)) (toolReply (indeterminate failure)) ≡

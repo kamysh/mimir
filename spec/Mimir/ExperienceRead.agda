@@ -72,15 +72,13 @@ sort [] = []
 sort (r ∷ rs) = insert r (sort rs)
 
 data Result : Set where
-  invalidLimit tooManyExclusions : Result
+  invalidLimit : Result
   selected : List Observation.Snapshot → Result
 
 list : Maybe Text → Bool → ℕ → List ℕ → List Row → Result
-list project onlyPending limit excluded rows with does (1 ≤? limit) ∧ does (limit ≤? 100)
+list project onlyPending limit excluded rows with does (1 ≤? limit)
 ... | false = invalidLimit
-... | true with length excluded ≤? 1000
-...   | no tooMany = tooManyExclusions
-...   | yes bounded = selected
+... | true = selected
   (map storedSnapshot (take limit (sort (select project onlyPending excluded rows))))
 
 -- Existing public pending operation is a specialization of the same ordering

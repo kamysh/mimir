@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
 -- One owned MCP client's ordered initialization/catalogue/capability exchange.
--- All requests share its deadline and consume its counter; the initialized
+-- All requests advance its counter; the initialized
 -- notification has no ID and consumes no counter value.
 module Mimir.JudgeHandshakeBinding where
 
@@ -62,7 +62,7 @@ module Bound (conversion : Conversion.Contract) (diagnostics : Transport.Diagnos
   data Receipt (before : Client.Client) : (effect : H.Effect) → H.Reply effect → Client.Client → Set where
     initialized : ∀ events after result → C.Call before (toList "initialize") initializeArgs events after result →
       Receipt before H.initialize (decode result) after
-    notified : ∀ events result → T.E.Runs (T.With.sendBody 1048576 (Client.Client.deadline before) diagnostics
+    notified : ∀ events result → T.E.Runs (T.With.sendBody diagnostics
       (ASCII.literal (toList "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}") tt)) events result →
       Receipt before H.initializedNotification result before
     tools : ∀ events after result → C.Call before (toList "tools/list") (V.object []) events after result →

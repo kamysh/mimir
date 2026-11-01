@@ -53,11 +53,11 @@ candidateKey : Candidate → Text
 candidateKey (belief name content memory) = name
 candidateKey (patternCandidate name situation approach) = name
 
-Trimmed : ℕ → Text → Set
-Trimmed maximum text = NamedText maximum text × text ≡ trim text
+Trimmed : Text → Set
+Trimmed text = NamedText text × text ≡ trim text
 
-checkTrimmed : ∀ maximum text → Checked (Trimmed maximum text)
-checkTrimmed maximum text = combine (checkNamed maximum text)
+checkTrimmed : ∀ text → Checked (Trimmed text)
+checkTrimmed text = combine (checkNamed text)
   (check (fault [] malformedInput "reference must be trimmed") (text ≟Text trim text))
 
 Persistent : Memory → Set
@@ -85,10 +85,10 @@ checkBody (patternCandidate name situation approach) = combine
   (at (key "situation") (checkNonblank situation)) (at (key "approach") (checkNonblank approach))
 
 Valid : Candidate → Set
-Valid c = Trimmed 128 (candidateKey c) × BodyValid c
+Valid c = Trimmed (candidateKey c) × BodyValid c
 
 validate : ∀ c → Checked (Valid c)
-validate c = combine (at (key "key") (checkTrimmed 128 (candidateKey c))) (checkBody c)
+validate c = combine (at (key "key") (checkTrimmed (candidateKey c))) (checkBody c)
 
 beliefKeys : List Candidate → List Text
 beliefKeys [] = []

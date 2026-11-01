@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
 -- Whole review batch: handshake, retained deferrals, selection, one shared
--- account/deadline, every selected revision's final readback, finalization.
+-- account, every selected revision's final readback, finalization.
 -- A revision effect includes its concrete scoped-tool/controller trace.
 module Mimir.JudgeWorkflow where
 
@@ -16,7 +16,7 @@ import Mimir.Effects as Effects
 import Mimir.JudgeHandshake as Handshake
 import Mimir.JudgeSelection as Selection
 import Mimir.JudgeRevision as Revision
-import Mimir.JudgeBudget as Budget
+import Mimir.JudgeAccounting as Budget
 import Mimir.ProviderQueue as Queue
 import Mimir.JudgeBatchReadback as Readback
 import Mimir.JudgeFinalization as Finalization
@@ -31,36 +31,35 @@ import Mimir.Validation as Validation
 module R = Records.Over ℕ
 
 module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
-  (display : Revision.Display) (contract model batchLimit maxCalls timeoutSeconds : ℕ)
+  (display : Revision.Display) (contract model batchLimit : ℕ)
   (project : Maybe Text) where
 
-  initial = Budget.budget maxCalls maxCalls
-  module One deadline selected = Revision.Run conversion format display initial deadline selected
+  initial = Budget.counts 0 0
+  module One selected = Revision.Run conversion format display initial selected
 
-  record RevisionReceipt (deadline : ℕ) (selected : Observation.Snapshot)
+  record RevisionReceipt (selected : Observation.Snapshot)
     (account : Queue.Account initial) (report : R.Report) : Set where
     constructor reviewed
-    module T = One deadline selected
+    module T = One selected
     field outcome : T.Outcome
           events : List (Maybe T.P.Event)
           executed : T.Trace (T.start account report) events (T.finished outcome)
 
   data Effect : Set where
-    clock monotonicClock : Effect
+    clock : Effect
     startClient : Effect
     selection : Selection.Effect → Effect
     beginTrace : R.Report → Effect
-    revision : Handshake.Contract.Ready contract model → ℕ → Observation.Snapshot → Queue.Account initial → R.Report → Effect
+    revision : Handshake.Contract.Ready contract model → Observation.Snapshot → Queue.Account initial → R.Report → Effect
     readback : Readback.Effect → Effect
     finalize : Finalization.Effect → Effect
 
   Reply : Effect → Set
   Reply clock = Maybe ℕ
-  Reply monotonicClock = ℕ
   Reply startClient = Revision.Error ⊎ Handshake.Contract.Ready contract model
   Reply (selection effect) = Selection.Reply effect
   Reply (beginTrace report) = Text ⊎ ℕ
-  Reply (revision ready deadline selected account report) = RevisionReceipt deadline selected account report
+  Reply (revision ready selected account report) = RevisionReceipt selected account report
   Reply (readback effect) = Readback.Reply effect
   Reply (finalize effect) = Finalization.Reply effect
   module P = Effects.Protocol Effect Reply
@@ -92,22 +91,22 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       (R.Report.deferredReviews report))) >>= finish
 
   mutual
-    revisions : Handshake.Contract.Ready contract model → List Observation.Pin → List Observation.Snapshot → ℕ → Queue.Account initial → R.Report → Script R.Report
-    revisions ready original [] deadline account report = finalReads original report false
-    revisions ready original (selected ∷ rest) deadline account report =
-      ask (revision ready deadline selected account report) (afterRevision ready original rest deadline selected account report)
+    revisions : Handshake.Contract.Ready contract model → List Observation.Pin → List Observation.Snapshot → Queue.Account initial → R.Report → Script R.Report
+    revisions ready original [] account report = finalReads original report false
+    revisions ready original (selected ∷ rest) account report =
+      ask (revision ready selected account report) (afterRevision ready original rest selected account report)
 
-    afterRevision : Handshake.Contract.Ready contract model → List Observation.Pin → List Observation.Snapshot → (deadline : ℕ) →
+    afterRevision : Handshake.Contract.Ready contract model → List Observation.Pin → List Observation.Snapshot →
       (selected : Observation.Snapshot) → (account : Queue.Account initial) → (report : R.Report) →
-      RevisionReceipt deadline selected account report → Script R.Report
-    afterRevision ready original rest deadline selected account report receipt
+      RevisionReceipt selected account report → Script R.Report
+    afterRevision ready original rest selected account report receipt
       with One.Outcome.fatal result | One.Outcome.failed result
       where result = RevisionReceipt.outcome receipt
     ... | true | _ = finish (One.Outcome.report result)
       where result = RevisionReceipt.outcome receipt
     ... | false | true = finalReads original (One.Outcome.report result) true
       where result = RevisionReceipt.outcome receipt
-    ... | false | false = revisions ready original rest deadline (One.Outcome.account result) (One.Outcome.report result)
+    ... | false | false = revisions ready original rest (One.Outcome.account result) (One.Outcome.report result)
       where result = RevisionReceipt.outcome receipt
 
   selectedBatch : (ready : Handshake.Contract.Ready contract model) → R.Report →
@@ -116,8 +115,6 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     failed report (toList "mcp_or_configuration_error") error
   selectedBatch ready report (Selection.Select.malformed error) =
     failed report (toList "mcp_or_configuration_error") (Revision.error (Validation.Fault.explanation error) nothing)
-  selectedBatch ready report Selection.Select.tooManyDeferred =
-    failed report (toList "mcp_or_configuration_error") (Revision.error (toList "too many deferred reviews") nothing)
   selectedBatch ready report (Selection.Select.selected prepared) = dispatch (Select.disposition prepared)
     where
     module Select = Selection.Select contract model batchLimit project ready
@@ -133,8 +130,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       { status = toList "blocked" ; blockReason = just (toList "review_deferred") })
     dispatch Select.review = ask (beginTrace updated) λ where
       (inj₁ error) → failed updated (toList "diagnostics_write_error") (Revision.error error nothing)
-      (inj₂ traceID) → ask monotonicClock (λ now → revisions ready pins batch (now + timeoutSeconds)
-        (Queue.startAccount initial) (record updated { diagnosticsId = just traceID }))
+      (inj₂ traceID) → revisions ready pins batch
+        (Queue.startAccount initial) (record updated { diagnosticsId = just traceID })
 
   afterClient : R.Report → Reply startClient → Script R.Report
   afterClient report (inj₁ error) = failed report (toList "mcp_or_configuration_error") error
@@ -146,6 +143,6 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     (afterClient (R.newReport observed (toList "blocked") 0 0 0 0 0)))
 
   -- Every finite prefix is defined, including interruption during a provider
-  -- or transport effect. No deadline or account is recreated between items.
+  -- or transport effect. No or account is recreated between items.
   Runs = P.Runs start
   Prefix = P.Prefix start

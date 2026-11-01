@@ -89,10 +89,10 @@ module Bind (conversion : Conversion.Contract) (format : Encoding.Formatting)
   params tool args = Encoding.object (("name" , V.string (toList (Catalog.wireName tool))) ∷ ("arguments" , args) ∷ [])
 
   data ClientCall (id : ℕ) (tool : Catalog.Tool) (args : V.Value) : Scope.Failure ⊎ V.Value → Set where
-    clientCall : ∀ deadline diagnostics outcome events reply →
-      T.E.Runs (T.With.start 1048576 deadline diagnostics id (toList "tools/call") (params tool args)) events outcome →
+    clientCall : ∀ diagnostics outcome events reply →
+      T.With.Pending.Runs diagnostics id (T.With.Pending.start diagnostics id (toList "tools/call") (params tool args)) events outcome →
       decode tool outcome ≡ reply → ClientCall id tool args reply
-    counterFull : (deadline : ℕ) → 18446744073709551615 ≤ id →
+    counterFull : 18446744073709551615 ≤ id →
       ClientCall id tool args (inj₁ (Scope.transport (toList "MCP request ID overflow")))
 
   -- Successful replies cannot originate solely from a transport transcript.
@@ -108,8 +108,8 @@ module Bind (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   issued : ∀ {id tool args reply} → Receipt id tool args reply → Client.Issued
   issued {id} receipt with Receipt.client receipt
-  ... | clientCall deadline diagnostics outcome events reply execution decoded = Client.issued id deadline
-  ... | counterFull deadline bounded = Client.overflowRejected id deadline
+  ... | clientCall diagnostics outcome events reply execution decoded = Client.issued id
+  ... | counterFull bounded = Client.overflowRejected id
 
   successRequiresExecution : ∀ tool args value → Publication tool args (inj₂ value) →
     Data.Product.Σ (List A.Event) (λ events → H.Operation (Envelope.literal (Catalog.wireName tool)) args events value)

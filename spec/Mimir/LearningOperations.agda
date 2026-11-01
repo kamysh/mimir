@@ -123,9 +123,7 @@ module Protocol (database : ℕ) (request : Request)
 
   afterSerialization : Serialization → E.Script Outcome
   afterSerialization (serializationFailed message) = E.done (invalidRequest (externalFailure message))
-  afterSerialization (encoded bytes) with length bytes ≤? 65536
-  ... | no oversized = E.done (invalidRequest oversizedPayload)
-  ... | yes bounded = lift afterAdmission
+  afterSerialization (encoded bytes) = lift afterAdmission
 
   start : E.Script Outcome
   start with structure request

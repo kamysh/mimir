@@ -36,40 +36,39 @@ open import Data.Product using (_×_)
 module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
   (libraries : Harness.Libraries) (environment : Application.Environment) (errors : Service.Display)
   (config : Config.Llm) (program : Text)
-  (contract model batchLimit maxCalls timeoutSeconds : ℕ) (project : Maybe Text)
+  (contract model batchLimit : ℕ) (project : Maybe Text)
   (mcpProgram : Text) (mcpArguments : List Text) (configurationPath : Path.Path)
   (email : Email.Config) (localTime : ℕ → Text) (sizeMaximum clockMaximum : ℕ)
   (endian : UUID.Endian) (path : Path.Path)
   (json : Codec.JSONLibrary) (buildMessage : SMTP.Message → Delivery.BuildReceipt) where
   private
-    module F = Finalization.Bound conversion format localTime sizeMaximum clockMaximum endian path email project maxCalls json buildMessage
+    module F = Finalization.Bound conversion format localTime sizeMaximum clockMaximum endian path email project json buildMessage
     module S = State.Bound conversion sizeMaximum endian path
     module Batch = BatchService.Bound conversion format (Harness.Libraries.display libraries) errors environment sizeMaximum endian path
   module W = Workflow.Run conversion format (Harness.Libraries.display libraries)
-    contract model batchLimit maxCalls timeoutSeconds project
+    contract model batchLimit project
   private
-    module B (ready : Handshake.Contract.Ready contract model) deadline selected = Backend.Bound conversion format libraries environment errors config program W.initial deadline selected
+    module B (ready : Handshake.Contract.Ready contract model) selected = Backend.Bound conversion format libraries environment errors config program W.initial selected
       (Handshake.CheckedCatalogue.exposed (Handshake.Contract.Ready.catalogue ready))
       sizeMaximum endian path
 
   data External : W.Effect → Set where
     clock : External W.clock
-    monotonicClock : External W.monotonicClock
 
 
   data Receipt : Backend.BackendState → (effect : W.Effect) → W.Reply effect → Backend.BackendState → Set where
     external : ∀ backend effect → External effect → (reply : W.Reply effect) → Receipt backend effect reply backend
     started : ∀ backend diagnostics reply client →
-      ClientStartup.Run.Started conversion diagnostics contract model mcpProgram mcpArguments configurationPath timeoutSeconds reply client →
+      ClientStartup.Run.Started conversion diagnostics contract model mcpProgram mcpArguments configurationPath reply client →
       Receipt backend W.startClient reply backend
-    began : ∀ backend report reply → S.Began report maxCalls reply → Receipt backend (W.beginTrace report) reply backend
+    began : ∀ backend report reply → S.Began report 0 reply → Receipt backend (W.beginTrace report) reply backend
     finalized : ∀ backend effect reply → F.Receipt effect reply → Receipt backend (W.finalize effect) reply backend
     selected : ∀ backend effect reply → Batch.SelectionReceipt effect reply → Receipt backend (W.selection effect) reply backend
     observed : ∀ backend effect reply → Batch.ReadbackReceipt effect reply → Receipt backend (W.readback effect) reply backend
-    revision : ∀ before after ready deadline selected account report events result →
-      (execution : B.Trace ready deadline selected before (W.One.start deadline selected account report) events after (W.One.finished result)) →
-      Receipt before (W.revision ready deadline selected account report)
-        (W.reviewed result events (B.runnerTrace ready deadline selected execution)) after
+    revision : ∀ before after ready selected account report events result →
+      (execution : B.Trace ready selected before (W.One.start selected account report) events after (W.One.finished result)) →
+      Receipt before (W.revision ready selected account report)
+        (W.reviewed result events (B.runnerTrace ready selected execution)) after
 
   Connection : ∀ {before effect reply after} → Maybe Client.Client → Receipt before effect reply after → Maybe Client.Client → Set
   Connection before (started backend diagnostics reply client receipt) after = before ≡ nothing × after ≡ client
@@ -78,8 +77,8 @@ module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
   Connection before (finalized _ _ _ _) after = before ≡ after
   Connection before (selected _ _ _ receipt) after = Client.Chain before (Batch.selectionCalls receipt) after
   Connection before (observed _ _ _ receipt) after = Client.Chain before (Batch.readbackCalls receipt) after
-  Connection before (revision _ _ ready deadline snapshot _ _ _ _ execution) after =
-    Client.Chain before (B.traceIssued ready deadline snapshot execution) after
+  Connection before (revision _ _ ready snapshot _ _ _ _ execution) after =
+    Client.Chain before (B.traceIssued ready snapshot execution) after
 
   data Runs : Backend.BackendState → Maybe Client.Client → W.P.Script Workflow.R.Report → List W.P.Event →
     Backend.BackendState → Maybe Client.Client → Workflow.R.Report → Set where

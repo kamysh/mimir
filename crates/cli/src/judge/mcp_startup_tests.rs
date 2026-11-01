@@ -211,7 +211,6 @@ impl Fixture {
                 self.0.join("pids").to_string_lossy().into_owned(),
             ],
             &self.0.join("unused config.toml"),
-            10,
         )
         .await
     }
@@ -258,10 +257,9 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
-async fn startup_and_calls_share_ids_deadline_and_owned_process_group() {
+async fn startup_and_calls_share_ids_and_owned_process_group() {
     let fixture = Fixture::new();
     let mut client = fixture.start("").await.unwrap();
-    let deadline = client.deadline;
     assert_eq!(client.next_id, 4);
     assert_eq!(
         fs::read_to_string(fixture.0.join("pids.config")).unwrap(),
@@ -278,7 +276,6 @@ async fn startup_and_calls_share_ids_deadline_and_owned_process_group() {
     assert_eq!(client.next_id, 4);
     client.tool("pending_experiences", json!({})).await.unwrap();
     assert_eq!(client.next_id, 5);
-    assert_eq!(client.deadline, deadline);
     client.next_id = u64::MAX;
     assert!(client
         .request("tools/list", json!({}))
@@ -290,24 +287,10 @@ async fn startup_and_calls_share_ids_deadline_and_owned_process_group() {
     client.next_id = u64::MAX - 1;
     client.request("tools/list", json!({})).await.unwrap();
     assert_eq!(client.next_id, u64::MAX);
-    assert_eq!(client.deadline, deadline);
-    client.next_id = 7;
-    client.deadline = Instant::now();
-    assert!(client
-        .request("tools/list", json!({}))
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("deadline exceeded"));
-    assert_eq!(client.next_id, 8);
     drop(client);
     fixture.stopped().await;
     let requests = fixture.requests();
-    assert_eq!(
-        requests.len(),
-        7,
-        "overflow/expired calls must send nothing"
-    );
+    assert_eq!(requests.len(), 7, "overflow calls must send nothing");
     let methods: Vec<_> = requests
         .iter()
         .map(|r| r["method"].as_str().unwrap())
@@ -347,4 +330,17 @@ async fn rejected_capability_stops_before_selection_and_drops_owned_children() {
     let requests = fixture.requests();
     assert_eq!(requests.len(), 4);
     assert_eq!(requests[3]["params"]["name"], "learning_capabilities");
+}
+
+#[tokio::test]
+async fn complete_large_frames_and_notification_sequences_are_accepted() {
+    let fixture = Fixture::new();
+    let mut client = fixture.start("large-notifications").await.unwrap();
+    let result = client
+        .tool("get_experience", json!({"padding":"x".repeat(1048577)}))
+        .await
+        .unwrap();
+    assert_eq!(result["revision"], 1);
+    drop(client);
+    fixture.stopped().await;
 }

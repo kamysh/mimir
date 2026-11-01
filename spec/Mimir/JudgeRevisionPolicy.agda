@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- Candidate-conflict retry and deferral policy around the budgeted controller.
+-- Candidate-conflict retry and deferral policy around the review controller.
 -- This policy never manufactures a confirmed receipt. A successful tool call
 -- stops the local revision loop only after an authoritative read is nonpending;
 -- the later batch read still decides confirmed/corrected/unavailable counts.
@@ -24,8 +24,7 @@ initial = mkState 0 nothing nothing false false
 
 data Event : Set where
   candidateConflict inputRejected : Text → Event
-  modelBudgetExhausted modelError modelTimeout toolBudgetExhausted : Event
-  malformedCallWithoutToolBudget toolInfrastructureError : Event
+  modelError toolInfrastructureError : Event
   modelDone : Event
   reviewed : Judge.Completion.Receipt → Event
 
@@ -41,17 +40,10 @@ conditionalFailure state with State.conflicts state
 ... | suc _ = mkStep state endRevision
 
 step : State → Event → Step
-step state (candidateConflict detail) with suc (State.conflicts state) ≤? 1
-... | Relation.Nullary.yes _ = mkStep
+step state (candidateConflict detail) = mkStep
   (record state { conflicts = suc (State.conflicts state) ; lastConflict = just detail }) retryCandidate
-... | Relation.Nullary.no _ = mkStep
-  (record state { conflicts = suc (State.conflicts state) ; lastConflict = just detail }) endRevision
 step state (inputRejected detail) = mkStep (record state { lastRejection = just detail }) retryInput
-step state modelBudgetExhausted = conditionalFailure state
 step state modelError = conditionalFailure state
-step state modelTimeout = conditionalFailure state
-step state toolBudgetExhausted = conditionalFailure state
-step state malformedCallWithoutToolBudget = mkStep (record state { failed = true }) failBatch
 step state toolInfrastructureError = mkStep (record state { failed = true }) failBatch
 step state modelDone = mkStep state endRevision
 step state (reviewed Judge.Completion.pending) = mkStep state continueRevision
@@ -63,15 +55,12 @@ shouldDefer : State → Bool
 shouldDefer state = does (0 <? State.conflicts state) ∧ not (State.settled state) ∧ not (State.failed state)
 
 data Deferral : Set where
-  tooManyDeferred : Deferral
   retained : List Observation.Deferred → Deferral
 
 finish : Observation.Pin → State → List Observation.Deferred → Deferral
 finish pin state deferred with shouldDefer state
 ... | false = retained deferred
-... | true with length deferred <? 1000
-...   | Relation.Nullary.no _ = tooManyDeferred
-...   | Relation.Nullary.yes _ = retained (deferred ++
+... | true = retained (deferred ++
   (Observation.deferred (Observation.Pin.identity pin) (Observation.Pin.sourceRevision pin) ∷ []))
 
 inputRejectionNotCandidateConflict : ∀ state detail →

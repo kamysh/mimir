@@ -9,6 +9,7 @@ open import Data.List using (List; _++_; _∷_; [])
 open import Data.Nat using (ℕ)
 open import Data.Unit using (tt)
 open import Data.Sum using (_⊎_)
+open import Data.Maybe using (Maybe; nothing; just)
 import Data.Maybe
 open import Mimir.Bits using (Byte)
 open import Mimir.UnixPath using (Path; join)
@@ -29,10 +30,10 @@ filename diagnostics = ASCII.literal (toList "judge-diagnostics.json") tt
 lockFilename : Path
 lockFilename = ASCII.literal (toList "judge.lock") tt
 
-limit : Name → ℕ
-limit status = 262144
-limit failure = 262144
-limit diagnostics = 3145728
+limit : Name → Maybe ℕ
+limit status = nothing
+limit failure = nothing
+limit diagnostics = just 3145728
 
 temporaryName : Name → Groups.UUID → Path
 temporaryName name identifier = ASCII.literal (toList ".judge-") tt ++ filename name ++

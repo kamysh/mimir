@@ -33,12 +33,12 @@ import Mimir.ProviderResponse as Response
 import Mimir.ReviewObservation as Observation
 import Mimir.ExperienceSchema as Experience
 import Mimir.SourceFailure as Source
-import Mimir.BoundedBytes as Bytes
+import Mimir.Binary64
+import Mimir.CompleteBytes as Body
 import Mimir.Effects as Effects
 import Data.Char as Char
 
 module Q = Response.Q
-module Body = Bytes.Reader (8 * 1024 * 1024)
 
 data Wire : Set where responses anthropic chat : Wire
 
@@ -80,10 +80,10 @@ callAction request with Call.arguments request
 record Adapter : Set where
   constructor adapter
   field selectedID : Maybe ℕ; history : List V.Value; pending : List Call
-        awaiting : Maybe Text; results : List V.Value
+        awaiting : Maybe Text; results : List V.Value; nativeOutputMaximum : Maybe ℕ
 
 initial : Adapter
-initial = adapter nothing [] [] nothing []
+initial = adapter nothing [] [] nothing [] nothing
 
 willCallModel : Adapter → ℕ → Bool
 willCallModel state identity with Harness.same (Adapter.selectedID state) identity | Adapter.pending state
@@ -151,7 +151,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   reset : Adapter → Adapter
   reset state with Harness.same (Adapter.selectedID state) identity
   ... | true = state
-  ... | false = adapter (just identity) (initialHistory wire) [] nothing []
+  ... | false = adapter (just identity) (initialHistory wire) [] nothing [] (Adapter.nativeOutputMaximum state)
 
   resultMessage : Wire → Text → V.Value → V.Value
   resultMessage responses id result = Encoding.object (("type" , V.string (toList "function_call_output")) ∷
@@ -192,13 +192,17 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   body state definitions responses = Encoding.object (("model" , V.string (Config.Llm.model config)) ∷
     ("instructions" , V.string instructions) ∷ ("input" , V.array (Adapter.history state)) ∷ ("tools" , V.array definitions) ∷
     ("parallel_tool_calls" , V.boolean true) ∷ ("store" , V.boolean false) ∷
-    ("max_output_tokens" , V.unsigned (Config.Llm.maxOutputTokens config)) ∷ ("truncation" , V.string (toList "disabled")) ∷ [])
-  body state definitions anthropic = Encoding.object (("model" , V.string (Config.Llm.model config)) ∷
-    ("system" , V.string instructions) ∷ ("messages" , V.array (Adapter.history state)) ∷ ("tools" , V.array definitions) ∷
-    ("max_tokens" , V.unsigned (Config.Llm.maxOutputTokens config)) ∷ [])
+    ("truncation" , V.string (toList "disabled")) ∷ [])
+  body state definitions anthropic = Encoding.object ((("model" , V.string (Config.Llm.model config)) ∷
+    ("system" , V.string instructions) ∷ ("messages" , V.array (Adapter.history state)) ∷ ("tools" , V.array definitions) ∷ []) ++
+    nativeTokens (Adapter.nativeOutputMaximum state))
+    where
+    nativeTokens : Maybe ℕ → List (String × V.Value)
+    nativeTokens nothing = []
+    nativeTokens (just maximum) = ("max_tokens" , V.unsigned maximum) ∷ []
   body state definitions chat = Encoding.object ((("model" , V.string (Config.Llm.model config)) ∷
     ("messages" , V.array (Adapter.history state)) ∷ ("tools" , V.array definitions) ∷
-    ("max_tokens" , V.unsigned (Config.Llm.maxOutputTokens config)) ∷ ("stream" , V.boolean false) ∷ []) ++ router provider)
+    ("stream" , V.boolean false) ∷ []) ++ router provider)
 
   rawSource : Wire → V.Value → Validation.Fault → Source.Failure
   rawSource wire raw failure = Source.Current.input (argumentStage wire) (encode raw) (Revision.Display.fault display failure)
@@ -226,10 +230,10 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   allowObject Config.zai = true
   allowObject _ = false
 
-  parse : Wire → V.Value → Validation.Fault ⊎ Response.Reply (Config.Llm.maxCalls config)
-  parse responses = Arguments.Providers.openai (Config.Llm.maxCalls config) (Config.Llm.maxOutputTokens config)
-  parse anthropic = Arguments.Providers.anthropic (Config.Llm.maxCalls config) (Config.Llm.maxOutputTokens config)
-  parse chat = Arguments.Providers.chat (allowObject provider) (Config.Llm.maxCalls config) (Config.Llm.maxOutputTokens config)
+  parse : Wire → V.Value → Validation.Fault ⊎ Response.Reply
+  parse responses = Arguments.Providers.openai
+  parse anthropic = Arguments.Providers.anthropic
+  parse chat = Arguments.Providers.chat (allowObject provider)
 
   classify : ℕ → List Byte → Text
   classify status bytes = reason status code
@@ -276,10 +280,12 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   data Effect : Set where
     headerValid : Text → Effect
     post : Text → List (Text × Text) → V.Value → Effect
+    modelMetadata : Effect
     readChunk : ℕ → Effect
   Reply : Effect → Set
   Reply (headerValid _) = Bool
   Reply (post url headers body) = TransportFailure ⊎ (ℕ × ℕ)
+  Reply modelMetadata = Revision.Error ⊎ V.Value
   Reply (readChunk handle) = Body.Input
   module P = Effects.Protocol Effect Reply
   open P using (Script; ask; done) renaming (_>>=_ to _then_)
@@ -321,7 +327,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   send state request key = ask (post (url config provider) (headers wire key) request) λ where
     (inj₁ transportTimeout) → done (failure state (toList "provider request timed out"))
     (inj₁ transportFailure) → done (failure state (toList "provider transport failed"))
-    (inj₂ (handle , status)) → done (receiving state handle status (Body.begin nothing))
+    (inj₂ (handle , status)) → done (receiving state handle status Body.begin)
 
   withKey : Adapter → V.Value → Wire → Maybe Text → Script State
   withKey state request wire nothing = done (failure state (toList "missing API key"))
@@ -330,12 +336,23 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     true → send state request key
   withKey state request _ (just key) = send state request key
 
-  request : Adapter → State
-  request state with readArray (definition wire) (V.array tools)
+  preparedRequest : Adapter → State
+  preparedRequest state with readArray (definition wire) (V.array tools)
   ... | inj₁ fault = failure state (Revision.Display.fault display fault)
-  ... | inj₂ definitions with length (encode (body state definitions wire)) ≤? 2 * 1024 * 1024
-  ...   | no _ = failure state (toList "API context exceeded limit")
-  ...   | yes _ = executing state (withKey state (body state definitions wire) wire (Config.Llm.apiKey config))
+  ... | inj₂ definitions = executing state (withKey state (body state definitions wire) wire (Config.Llm.apiKey config))
+
+  afterMetadata : Adapter → Revision.Error ⊎ V.Value → State
+  afterMetadata state (inj₁ error) = finished (outcome state (inj₁ error))
+  afterMetadata state (inj₂ raw) with Input.unsigned (Mimir.Binary64.powerMinusOne 64) (get "max_tokens" raw)
+  ... | inj₁ _ = failure state (toList "Anthropic model metadata is missing max_tokens")
+  ... | inj₂ maximum with does (1 ≤? maximum)
+  ...   | false = failure state (toList "Anthropic model metadata has invalid max_tokens")
+  ...   | true = preparedRequest (record state { nativeOutputMaximum = just maximum })
+
+  request : Adapter → State
+  request state with wire | Adapter.nativeOutputMaximum state
+  ... | anthropic | nothing = executing state (ask modelMetadata (λ reply → done (afterMetadata state reply)))
+  ... | _ | _ = preparedRequest state
 
   nextCall : Adapter → State
   nextCall state with Adapter.pending state
@@ -365,9 +382,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   next (receiving state handle status (Body.receiving buffer)) = external (readChunk handle)
     (λ input → receiving state handle status (Body.step (Body.receiving buffer) input))
   next (receiving state handle status (Body.complete buffer)) = internal (afterBody state status (Body.Buffer.bytes buffer))
-  next (receiving state handle status (Body.failed Body.oversized)) = internal (failure state (toList "provider response exceeded limit"))
   next (receiving state handle status (Body.failed Body.transport)) = internal (failure state (toList "provider body failed"))
-  next (receiving state handle status (Body.failed Body.deadline)) = internal (failure state (toList "provider body failed"))
   next (executing saved (done state)) = internal state
   next (executing saved (ask effect k)) = external effect (λ reply → executing saved (k reply))
   next (finished result) = stopped result
@@ -387,7 +402,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   yieldedIdentity state current rest pending rewrite pending = refl
 
 module Construction (config : Config.Llm) where
-  data Effect : Set where buildHTTPClient : Bool → ℕ → ℕ → Effect
+  data Effect : Set where buildHTTPClient : Bool → Effect
   Reply : Effect → Set
   Reply _ = Text ⊎ ⊤
   module P = Effects.Protocol Effect Reply
@@ -400,7 +415,7 @@ module Construction (config : Config.Llm) where
   Result = Text ⊎ Maybe Ready
 
   build : Config.Provider → Script Result
-  build provider = ask (buildHTTPClient false 5 (Config.Llm.timeoutSeconds config)) λ where
+  build provider = ask (buildHTTPClient false) λ where
     (inj₁ _) → done (inj₁ (toList "unable to initialize API transport"))
     (inj₂ tt) → done (inj₂ (just (ready provider (url config provider) (Endpoint.wire (preset provider)))))
 

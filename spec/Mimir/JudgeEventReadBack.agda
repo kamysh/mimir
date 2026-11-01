@@ -84,7 +84,7 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ)
 
   values : R.Event → Slots.Values D.eventFields
   values value = R.Event.at value , R.Event.experience value , R.Event.kind value ,
-    R.Event.modelRemaining value , R.Event.toolRemaining value , R.Event.tool value ,
+    R.Event.modelRequests value , R.Event.toolAttempts value , R.Event.tool value ,
     R.Event.detail value , R.Event.detailBytes value , tt
 
   optionalText : ∀ text (valid : Unicode.Valid text) suffix → Encoding.Delimited suffix →
@@ -122,13 +122,13 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ)
        TextRead.Parser.roundTrip checks (R.Event.kind value)
        (TextBounds.EventText.kind valid) allowance₁)
     $
-    E.emitted
-    (Sizes.size (R.Event.modelRemaining value)
-     (B.EventBounds.model bounded))
+    Build.optionalBounded (toList "model_requests") tt JSON.unsigned D.size
+    (Option.read P.size) Compact.unsigned optionalSize
+    (R.Event.modelRequests value) (B.EventBounds.model bounded)
     $
-    E.emitted
-    (Sizes.size (R.Event.toolRemaining value)
-     (B.EventBounds.tool bounded))
+    Build.optionalBounded (toList "tool_attempts") tt JSON.unsigned D.size
+    (Option.read P.size) Compact.unsigned optionalSize
+    (R.Event.toolAttempts value) (B.EventBounds.tool bounded)
     $
     Build.optional (toList "tool") tt JSON.string JSON.asString
     (Option.read P.A.readText) (λ pairs valid₁ → Compact.string valid₁)

@@ -28,36 +28,31 @@ open Source
 
 optionalTimestamp : Maybe Text → Set
 optionalTimestamp nothing = ⊤
-optionalTimestamp (just text) = Nonempty text × Bounded 100 text
+optionalTimestamp (just text) = Nonempty text
 
 checkTimestamp : (timestamp : Maybe Text) → Checked (optionalTimestamp timestamp)
 checkTimestamp nothing = accepted tt
-checkTimestamp (just text) = combine
-  (check (fault [] emptyText "source timestamp must not be empty") (nonempty? text))
-  (check (fault [] textTooLong "source timestamp exceeds 100 UTF-8 bytes") (bounded? 100 text))
+checkTimestamp (just text) = check
+  (fault [] emptyText "source timestamp must not be empty") (nonempty? text)
 
-NamedText : ℕ → Text → Set
-NamedText limit text = Nonblank text × Bounded limit text
+NamedText : Text → Set
+NamedText = Nonblank
 
-checkNamed : (limit : ℕ) (text : Text) → Checked (NamedText limit text)
-checkNamed limit text = combine
-  (check (fault [] emptyText "text must contain a non-whitespace character") (nonblank? text))
-  (check (fault [] textTooLong "text exceeds the field's UTF-8 byte limit") (bounded? limit text))
+checkNamed : (text : Text) → Checked (NamedText text)
+checkNamed text = check
+  (fault [] emptyText "text must contain a non-whitespace character") (nonblank? text)
 
 SourceValid : Source → Set
 SourceValid s = optionalTimestamp (recordedAt s) ×
-  (NamedText 1000 (reference s) ×
-  (NamedText 200 (actor s) × (Nonempty (text s) × Bounded 12000 (text s))))
+  (NamedText (reference s) × (NamedText (actor s) × Nonempty (text s)))
 
 validateSource : (s : Source) → Checked (SourceValid s)
 validateSource s = combine
   (at (key "recorded_at") (checkTimestamp (recordedAt s)))
-  (combine (at (key "source_ref") (checkNamed 1000 (reference s)))
-  (combine (at (key "actor") (checkNamed 200 (actor s)))
-  (combine (at (key "text") (check
-    (fault [] emptyText "source text must not be empty") (nonempty? (text s))))
+  (combine (at (key "source_ref") (checkNamed (reference s)))
+  (combine (at (key "actor") (checkNamed (actor s)))
     (at (key "text") (check
-      (fault [] textTooLong "source text exceeds 12000 UTF-8 bytes") (bounded? 12000 (text s)))))))
+      (fault [] emptyText "source text must not be empty") (nonempty? (text s))))))
 
 -- Distinctness is checked on the exact source reference, without trimming or
 -- case folding. Whitespace validation does not change source identity.
@@ -86,8 +81,7 @@ distinct? (reference ∷ rest) with notPresent? reference rest
 ...   | no impossible = no (λ { (more _ q) → impossible q })
 
 SourcesValid : List Source → Set
-SourcesValid sources = length sources ≤ 32 ×
-  (All SourceValid sources × Distinct (map reference sources))
+SourcesValid sources = All SourceValid sources × Distinct (map reference sources)
 
 -- Index each error so it can be corrected without guessing which source failed.
 indexedSources : (offset : ℕ) (sources : List Source) → Checked (All SourceValid sources)
@@ -100,10 +94,9 @@ indexedSources offset (s ∷ ss) with at (index offset) (validateSource s)
 
 validateSources : (sources : List Source) → Checked (SourcesValid sources)
 validateSources sources = at (key "source_records") (combine
-  (check (fault [] tooMany "at most 32 source records are permitted") (length sources ≤? 32))
-  (combine (indexedSources 0 sources)
-    (check (fault [] duplicate "source references must be distinct")
-      (distinct? (map reference sources)))))
+  (indexedSources 0 sources)
+  (check (fault [] duplicate "source references must be distinct")
+    (distinct? (map reference sources))))
 
 validSourcesNeverRejected : ∀ sources → SourcesValid sources →
   reported (validateSources sources) ≡ []
@@ -115,9 +108,8 @@ record AcceptedSources : Set where
     raw : List Source
     valid : SourcesValid raw
 
-countBound : ∀ (sources : AcceptedSources) → length (AcceptedSources.raw sources) ≤ 32
-countBound sources = proj₁ (AcceptedSources.valid sources)
+
 
 identityUnique : ∀ (sources : AcceptedSources) →
   Distinct (map reference (AcceptedSources.raw sources))
-identityUnique sources = proj₂ (proj₂ (AcceptedSources.valid sources))
+identityUnique sources = proj₂ (AcceptedSources.valid sources)

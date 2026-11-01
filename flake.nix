@@ -54,7 +54,7 @@
         # Shared attrs for both packages
         commonAttrs = {
           pname = "mimir";
-          version = "2.2.0";
+          version = "2.2.1";
           src = ./.;
           cargoLock = {
             lockFile = ./Cargo.lock;

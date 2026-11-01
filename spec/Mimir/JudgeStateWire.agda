@@ -94,9 +94,9 @@ eventFields : R.Event → Fields
 eventFields value =
   ((toList "at" , JSON.unsigned (R.Event.at value)) ∷
    (toList "experience_id" , UUIDCodec.encode (R.Event.experience value)) ∷
-   (toList "kind" , JSON.string (R.Event.kind value)) ∷
-   (toList "model_remaining" , JSON.unsigned (R.Event.modelRemaining value)) ∷
-   (toList "tool_remaining" , JSON.unsigned (R.Event.toolRemaining value)) ∷ []) ++
+   (toList "kind" , JSON.string (R.Event.kind value)) ∷ []) ++
+  optional (toList "model_requests") JSON.unsigned (R.Event.modelRequests value) ++
+  optional (toList "tool_attempts") JSON.unsigned (R.Event.toolAttempts value) ++
   optional (toList "tool") JSON.string (R.Event.tool value) ++
   optional (toList "detail") JSON.string (R.Event.detail value) ++
   optional (toList "detail_bytes") JSON.unsigned (R.Event.detailBytes value)
@@ -111,10 +111,10 @@ traceFields value =
   optional (toList "finished_at") JSON.unsigned (R.Trace.finishedAt value) ++
   member (toList "status") (JSON.string (R.Trace.status value)) ++
   optional (toList "block_reason") JSON.string (R.Trace.blockReason value) ++
-  ((toList "selected_ids" , JSON.array (map UUIDCodec.encode (R.Trace.selectedIds value))) ∷
-   (toList "model_remaining" , JSON.unsigned (R.Trace.modelRemaining value)) ∷
-   (toList "tool_remaining" , JSON.unsigned (R.Trace.toolRemaining value)) ∷
-   (toList "events" , JSON.array (map event (R.Trace.events value))) ∷
+  member (toList "selected_ids") (JSON.array (map UUIDCodec.encode (R.Trace.selectedIds value))) ++
+  optional (toList "model_requests") JSON.unsigned (R.Trace.modelRequests value) ++
+  optional (toList "tool_attempts") JSON.unsigned (R.Trace.toolAttempts value) ++
+  ((toList "events" , JSON.array (map event (R.Trace.events value))) ∷
    (toList "events_omitted" , JSON.unsigned (R.Trace.eventsOmitted value)) ∷ [])
 
 trace : R.Trace → JSON.Value

@@ -48,7 +48,6 @@ module Select (contract model batchLimit : ℕ) (project : Maybe Text)
   data Result : Set where
     failed : Revision.Error → Result
     malformed : Validation.Fault → Result
-    tooManyDeferred : Result
     selected : Prepared → Result
 
   admit : List Observation.Deferred → List Observation.Snapshot → Script Result
@@ -57,9 +56,7 @@ module Select (contract model batchLimit : ℕ) (project : Maybe Text)
   ... | Validation.accepted valid = done (selected (prepared batch deferred valid))
 
   fetch : List Observation.Deferred → Script Result
-  fetch deferred with length deferred ≤? 1000
-  ... | no _ = done tooManyDeferred
-  ... | yes _ = ask (pending project batchLimit (map Observation.Deferred.identity deferred)) (λ
+  fetch deferred = ask (pending project batchLimit (map Observation.Deferred.identity deferred)) (λ
     { (inj₁ error) → done (failed error) ; (inj₂ batch) → admit deferred batch })
 
   mutual

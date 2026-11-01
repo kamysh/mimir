@@ -48,14 +48,14 @@ record Coverage : Set where
 
 CoverageValid : List Source → Coverage → Set
 CoverageValid sources c = Found (findSource (Coverage.reference c) sources) ×
-  NamedText 4000 (Coverage.reason c)
+  NamedText (Coverage.reason c)
 
 validateCoverage : ∀ sources c → Checked (CoverageValid sources c)
 validateCoverage sources c = combine
   (at (key "source_ref") (check
     (fault [] missingReference "coverage must refer to a recorded source")
     (found? (findSource (Coverage.reference c) sources))))
-  (at (key "reason") (checkNamed 4000 (Coverage.reason c)))
+  (at (key "reason") (checkNamed (Coverage.reason c)))
 
 -- These are the source-relevant projections of a learning item. The immutable
 -- ID is an exact integer representation, never an ordinal in the item array.

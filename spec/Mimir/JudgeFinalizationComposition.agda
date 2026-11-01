@@ -29,11 +29,11 @@ open import Relation.Binary.PropositionalEquality using (_≡_)
 
 module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   (localTime : ℕ → Text) (sizeMaximum clockMaximum : ℕ) (endian : UUID.Endian)
-  (path : Path.Path) (email : Email.Config) (project : Maybe Text) (maxCalls : ℕ)
+  (path : Path.Path) (email : Email.Config) (project : Maybe Text)
   (json : Codec.JSONLibrary) (buildMessage : SMTP.Message → Delivery.BuildReceipt) where
   private
     module S = State.Bound conversion sizeMaximum endian path
-    module N = Notification.Run format localTime email path project maxCalls
+    module N = Notification.Run format localTime email path project
     module Complete service = CompleteNotifier.Bound conversion json buildMessage sizeMaximum clockMaximum endian service
   delivery = Delivery.config (Email.Config.maximumAttempts email) (Email.Config.retrySeconds email) clockMaximum
 

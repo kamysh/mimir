@@ -94,7 +94,7 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ)
   values : R.Trace → Slots.Values D.traceFields
   values value = R.Trace.identity value , R.Trace.startedAt value , R.Trace.finishedAt value ,
     R.Trace.status value , R.Trace.blockReason value , R.Trace.selectedIds value ,
-    R.Trace.modelRemaining value , R.Trace.toolRemaining value , R.Trace.events value ,
+    R.Trace.modelRequests value , R.Trace.toolAttempts value , R.Trace.events value ,
     R.Trace.eventsOmitted value , tt
 
   timestamp : ∀ number → number ≤ Primitive.u64Maximum → ∀ suffix → Encoding.Delimited suffix →
@@ -149,13 +149,13 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ)
        UUIDVector.Parser.roundTrip checks sizeMaximum (suc allowance)
        (R.Trace.selectedIds value) suffix)
     $
-    E.emitted
-    (Sizes.size (R.Trace.modelRemaining value)
-     (B.TraceBounds.model bounded))
+    Build.optionalBounded (toList "model_requests") tt JSON.unsigned D.size
+    (Option.read P.size) Compact.unsigned Events.optionalSize
+    (R.Trace.modelRequests value) (B.TraceBounds.model bounded)
     $
-    E.emitted
-    (Sizes.size (R.Trace.toolRemaining value)
-     (B.TraceBounds.tool bounded))
+    Build.optionalBounded (toList "tool_attempts") tt JSON.unsigned D.size
+    (Option.read P.size) Compact.unsigned Events.optionalSize
+    (R.Trace.toolAttempts value) (B.TraceBounds.tool bounded)
     $
     E.emitted
     (λ suffix delimiter →

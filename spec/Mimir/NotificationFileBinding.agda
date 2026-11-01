@@ -22,7 +22,7 @@ module Bound (library : Codec.JSONLibrary) (sizeMaximum clockMaximum : ℕ) wher
   private
     module R name = F.Decoded (Codec.Value name) Validation.Fault (C.bytes name)
 
-  readResult : ∀ name → F.FS.Result (Maybe (R.R.Read name 1048576)) →
+  readResult : ∀ name → F.FS.Result (Maybe (R.R.Read name (just 1048576))) →
     F.FS.Error ⊎ Maybe (Codec.Value name)
   readResult name (inj₁ failure) = inj₁ failure
   readResult name (inj₂ nothing) = inj₂ nothing

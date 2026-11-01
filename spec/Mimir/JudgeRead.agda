@@ -4,6 +4,9 @@
 -- is a supplied executable function; no decoder-correctness axiom is assumed.
 module Mimir.JudgeRead where
 
+import Mimir.OptionalLimit as Limit
+open import Data.Fin using (toℕ)
+open import Relation.Nullary.Decidable.Core using (_×-dec_)
 open import Data.Bool using (true; false)
 open import Data.List using (List; []; _∷_; length)
 open import Data.Maybe using (Maybe; nothing; just)
@@ -25,43 +28,60 @@ module With (Path Handle NativeError Value DecodeError : Set)
   module Directory = D.With Path Handle NativeError
   open FS
 
-  record Read (limit : ℕ) : Set where
+  Admitted : UserId → Maybe ℕ → Metadata → Set
+  Admitted user limit observed = M.Lock user observed × Limit.Within limit (toℕ (Metadata.size observed))
+
+  admitted? : ∀ user limit observed → Relation.Nullary.Dec (Admitted user limit observed)
+  admitted? user limit observed = M.lock? user observed ×-dec Limit.check limit (toℕ (Metadata.size observed))
+
+  readOperation : Handle → Maybe ℕ → Operation
+  readOperation handle nothing = readComplete handle
+  readOperation handle (just maximum) = readAtMost handle (suc maximum)
+
+  readEvent : Handle → Maybe ℕ → IO (List Byte) → Event
+  readEvent handle nothing response = readComplete handle , response
+  readEvent handle (just maximum) response = readAtMost handle (suc maximum) , response
+
+  record Read (limit : Maybe ℕ) : Set where
     constructor readValue
     field
       observed : Metadata
       user : UserId
-      valid : Report user limit observed
+      valid : Admitted user limit observed
       bytes : List Byte
-      bounded : length bytes ≤ limit
+      bounded : Limit.Within limit (length bytes)
       value : Value
       decoded : decode bytes ≡ inj₂ value
 
-  decodedBytes : ∀ limit observed user → Report user limit observed →
-    (bytes : List Byte) → length bytes ≤ limit →
+  decodedBytes : ∀ limit observed user → Admitted user limit observed →
+    (bytes : List Byte) → Limit.Within limit (length bytes) →
     (reply : DecodeError ⊎ Value) → decode bytes ≡ reply → Result (Maybe (Read limit))
   decodedBytes limit observed user valid bytes bounded (inj₁ _) receipt = inj₁ invalidReport
   decodedBytes limit observed user valid bytes bounded (inj₂ value) receipt =
     inj₂ (just (readValue observed user valid bytes bounded value receipt))
 
-  finishBytes : ∀ limit observed user → Report user limit observed →
+  finishBytes : ∀ limit observed user → Admitted user limit observed →
     List Byte → Result (Maybe (Read limit))
-  finishBytes limit observed user valid bytes with length bytes ≤? limit
+  finishBytes limit observed user valid bytes with Limit.check limit (length bytes)
   ... | no _ = inj₁ oversizedReport
   ... | yes bounded = decodedBytes limit observed user valid bytes bounded (decode bytes) refl
 
-  finishRead : ∀ limit observed user → Report user limit observed →
+  finishRead : ∀ limit observed user → Admitted user limit observed →
     IO (List Byte) → Result (Maybe (Read limit))
   finishRead limit observed user valid (inj₁ error) = inj₁ (native error)
   finishRead limit observed user valid (inj₂ bytes) = finishBytes limit observed user valid bytes
 
-  readBytes : ∀ handle limit observed user → Report user limit observed →
+  readBytes : ∀ handle limit observed user → Admitted user limit observed →
     Script (Result (Maybe (Read limit)))
-  readBytes handle limit observed user valid = ask (readAtMost handle (suc limit))
+  readBytes handle nothing observed user valid = ask (readComplete handle)
     (λ response → ask (close handle)
-      (λ _ → done (finishRead limit observed user valid response)))
+      (λ _ → done (finishRead nothing observed user valid response)))
+  readBytes handle (just maximum) observed user valid = ask (readAtMost handle (suc maximum))
+    (λ response → ask (close handle)
+      (λ _ → done (finishRead (just maximum) observed user valid response)))
 
   checkOwner : ∀ handle limit observed → UserId → Script (Result (Maybe (Read limit)))
-  checkOwner handle limit observed user with M.report? user limit observed
+  checkOwner handle limit observed user with admitted? user limit observed
   ... | no _ = finallyClose handle (inj₁ unsafeReport)
   ... | yes valid = readBytes handle limit observed user valid
 
@@ -83,7 +103,7 @@ module With (Path Handle NativeError Value DecodeError : Set)
   ... | wouldBlock = done (inj₁ (native error))
   ... | other = done (inj₁ (native error))
 
-  readNamed : Path → Path → Maybe (List Path) → (limit : ℕ) →
+  readNamed : Path → Path → Maybe (List Path) → (limit : Maybe ℕ) →
     Script (Result (Maybe (Read limit)))
   readNamed path filePath ancestors limit = ask (pathExists path) λ where
     false → done (inj₂ nothing)
@@ -102,7 +122,7 @@ module With (Path Handle NativeError Value DecodeError : Set)
   finishBytesSound : ∀ limit observed user valid bytes accepted →
     finishBytes limit observed user valid bytes ≡ inj₂ (just accepted) →
     Read.bytes accepted ≡ bytes × Read.observed accepted ≡ observed × Read.user accepted ≡ user
-  finishBytesSound limit observed user valid bytes accepted receipt with length bytes ≤? limit
+  finishBytesSound limit observed user valid bytes accepted receipt with Limit.check limit (length bytes)
   ... | no _ with receipt
   ...   | ()
   finishBytesSound limit observed user valid bytes accepted receipt | yes bounded =
@@ -113,7 +133,9 @@ module With (Path Handle NativeError Value DecodeError : Set)
   readCloses : ∀ handle limit observed user valid events result →
     Runs (readBytes handle limit observed user valid) events result →
     Σ (IO (List Byte)) (λ response →
-      events ≡ ((readAtMost handle (suc limit) , response) ∷ (close handle , tt) ∷ []) ×
+      events ≡ (readEvent handle limit response ∷ (close handle , tt) ∷ []) ×
       result ≡ finishRead limit observed user valid response)
-  readCloses handle limit observed user valid events result
+  readCloses handle nothing observed user valid events result
+    (replied _ _ response (replied _ _ tt (returned _))) = response , refl , refl
+  readCloses handle (just maximum) observed user valid events result
     (replied _ _ response (replied _ _ tt (returned _))) = response , refl , refl

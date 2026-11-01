@@ -39,7 +39,7 @@ absolute? (first ∷ rest) with first ≟ '/'
 ... | no different = no (λ { (tail , refl) → different refl })
 
 LoggingValid : Logging → Set
-LoggingValid l = NamedText 4096 (Logging.directory l) ×
+LoggingValid l = NamedText (Logging.directory l) ×
   (Absolute (Logging.directory l) ×
   ((4096 ≤ Logging.maxFileBytes l × Logging.maxFileBytes l ≤ 16777216) ×
    (1 ≤ Logging.retainedFiles l × Logging.retainedFiles l ≤ 16)))
@@ -49,7 +49,7 @@ Valid s = Settings.version s ≡ formatVersion × LoggingValid (Settings.logs s)
 
 validateLogging : (l : Logging) → Checked (LoggingValid l)
 validateLogging l = combine
-  (at (key "directory") (checkNamed 4096 (Logging.directory l)))
+  (at (key "directory") (checkNamed (Logging.directory l)))
   (combine (at (key "directory") (check
     (fault [] malformedInput "logging.directory must be an absolute path")
     (absolute? (Logging.directory l))))

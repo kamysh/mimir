@@ -95,55 +95,7 @@ module Completion where
     finishWithClaim claim₁ rs failed ≡ finishWithClaim claim₂ rs failed
   model-claim-does-not-acknowledge claim₁ claim₂ rs failed = refl
 
-module Budget where
-  data Action : Set where modelCall toolCall : Action
-  record Remaining : Set where
-    constructor remaining
-    field models tools : ℕ
-
-  spend : Action → Remaining → Maybe Remaining
-  spend modelCall (remaining zero tools) = nothing
-  spend modelCall (remaining (suc models) tools) = just (remaining models tools)
-  spend toolCall (remaining models zero) = nothing
-  spend toolCall (remaining models (suc tools)) = just (remaining models tools)
-
-  no-model-call-without-fuel : ∀ tools → spend modelCall (remaining zero tools) ≡ nothing
-  no-model-call-without-fuel tools = refl
-  no-tool-call-without-fuel : ∀ models → spend toolCall (remaining models zero) ≡ nothing
-  no-tool-call-without-fuel models = refl
-
-  -- Each admitted operation spends exactly one of the two independent bounds.
-  model-spends-one : ∀ models tools → spend modelCall (remaining (suc models) tools)
-    ≡ just (remaining models tools)
-  model-spends-one models tools = refl
-  tool-spends-one : ∀ models tools → spend toolCall (remaining models (suc tools))
-    ≡ just (remaining models tools)
-  tool-spends-one models tools = refl
-
-  permitted : Bool → Action → Remaining → Maybe Remaining
-  permitted false action fuel = nothing
-  permitted true action fuel = spend action fuel
-  refused-tool-cannot-spend : ∀ fuel → permitted false toolCall fuel ≡ nothing
-  refused-tool-cannot-spend fuel = refl
-
-  -- Admitted traces count every attempted model/tool operation, including
-  -- failures. Retries are additional operations, not free recursive steps.
-  data Trace : Remaining → List Action → Remaining → Set where
-    done : ∀ {fuel} → Trace fuel [] fuel
-    model : ∀ {m t actions final} → Trace (remaining m t) actions final →
-      Trace (remaining (suc m) t) (modelCall ∷ actions) final
-    tool : ∀ {m t actions final} → Trace (remaining m t) actions final →
-      Trace (remaining m (suc t)) (toolCall ∷ actions) final
-
-  total : Remaining → ℕ
-  total (remaining m t) = m + t
-
-  trace-conserves-budget : ∀ {initial actions final} → Trace initial actions final →
-    length actions + total final ≡ total initial
-  trace-conserves-budget done = refl
-  trace-conserves-budget (model trace) = cong suc (trace-conserves-budget trace)
-  trace-conserves-budget (tool {m} {t} trace) =
-    trans (cong suc (trace-conserves-budget trace)) (sym (+-suc m t))
+-- Request accounting is specified by Mimir.JudgeAccounting.
 
 -- Diagnostic events are recorded as the runner observes them, before a later
 -- model call or successful batch can replace the status snapshot. The concrete
@@ -151,7 +103,7 @@ module Budget where
 -- bounded number of attempts; those I/O conditions are checked in Rust.
 module Diagnostics where
   data Event : Set where
-    modelRequest modelReply toolRequest toolResult budgetStop : Event
+    modelRequest modelReply toolRequest toolResult operationStopped : Event
 
   data Within (A : Set) : ℕ → Set where
     empty : ∀ {capacity} → Within A capacity

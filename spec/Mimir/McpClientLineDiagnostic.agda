@@ -32,9 +32,6 @@ module With (limit : ℕ) where
   appendDetail text@(_ ∷ _) = toList "MCP stream ended: " ++ text
 
   display : Line.Failure → Text
-  display Line.deadlineExceeded = toList "MCP deadline exceeded"
-  display Line.readTimeout = toList "MCP read timeout"
-  display Line.tooLarge = toList "MCP response exceeds limit"
   display (Line.streamEnded bytes) = appendDetail (detail bytes)
 
   scalarBound : ∀ bytes → length (detail bytes) ≤ limit

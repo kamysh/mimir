@@ -68,7 +68,7 @@ Common cases:
 | --- | --- |
 | Missing/incompatible configuration | Run `mimir config check`; upgrade missing operational settings as above. |
 | Source quotation rejected | The proposed quotation differs from the stored source, including literal JSON escapes. The judge receives the exact field path and correction explanation. Keep exact-quotation validation enabled. Persistent failure belongs in a bug report. |
-| Model deadline/request budget reached | Inspect the preceding rejection in private diagnostics. Check model authentication/availability. Do not increase limits blindly: the timeout may be a consequence of a rejected review. |
+| Historical deadline/request-budget failure | This can appear in retained reports from an older binary. The current judge imposes neither limit. Run `mimir config upgrade`, check configuration, restart the existing application, and inspect a fresh attempt. |
 | Tool/database error | Inspect the private diagnostic trace. Mimir reads the review back to determine what actually committed; an opaque tool error is not proof that nothing changed. |
 
 The diagnostic command prints an exact command for the relevant private trace:
@@ -117,3 +117,20 @@ has a saved review for its current revision. A successful build, configuration
 check, installed version string or attempted retry alone does not establish
 that the judge works. Ordinary Mimir graph operations remain independent of
 the optional judge and of any external agent harness.
+
+### Review limit migration
+
+The judge no longer imposes deadlines, request or retry quotas, transport-size
+caps, or learning-content/count caps. `mimir config check` rejects retired
+`[llm]` keys: `timeout_seconds`, `max_calls`, `max_output_tokens`, and
+`max_budget_usd`. Run `mimir config upgrade` to remove them while preserving
+other settings, then check again and restart the existing application. No
+system service changes are required. Stop/cancel remains available through
+normal process control and releases owned child processes.
+
+Diagnostic logs, excerpts and trace history retain their storage bounds. These
+bounds do not truncate model input or stop a review. New trace fields
+`model_requests` and `tool_attempts` count work performed; for legacy traces they
+are absent. Batch state can contain every selected/deferred revision without a
+fixed file-size ceiling. Provider/platform limits remain external constraints;
+see the runtime guide for Anthropic’s required native capacity lookup.

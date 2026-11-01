@@ -16,8 +16,8 @@ record Provenance : Set where
   constructor provenance
   field basis : Basis; reference : Text
 
-validate : (p : Provenance) → Validation.Checked (Candidates.Trimmed 2048 (Provenance.reference p))
-validate p = Candidates.checkTrimmed 2048 (Provenance.reference p)
+validate : (p : Provenance) → Validation.Checked (Candidates.Trimmed (Provenance.reference p))
+validate p = Candidates.checkTrimmed (Provenance.reference p)
 
 record Stored : Set where
   constructor stored

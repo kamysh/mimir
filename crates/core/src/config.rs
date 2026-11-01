@@ -402,8 +402,6 @@ user   = "mimir"       # PostgreSQL role used by mimir at runtime
 # [llm]
 # backend = "claude-code" # codex | command | api
 # model = "YOUR_MODEL"
-# timeout_seconds = 300
-# max_calls = 20
 #
 # [email]
 # enabled = false
