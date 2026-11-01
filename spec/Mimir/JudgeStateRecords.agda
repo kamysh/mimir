@@ -89,13 +89,13 @@ module Over (Id : Set) where
       at : ℕ
       experience : Id
       kind : Text
-      modelRemaining toolRemaining : ℕ
+      modelRequests toolAttempts : Maybe ℕ
       tool detail : Maybe Text
       detailBytes : Maybe ℕ
 
   newEvent : Maybe ℕ → Id → Text → ℕ → ℕ → Maybe Text → Maybe Text → Event
   newEvent observed identity kind model toolBudget tool detail = eventValue (clock observed) identity
-    (Bounded.bounded 48 kind) model toolBudget (map (Bounded.bounded 64) tool)
+    (Bounded.bounded 48 kind) (just model) (just toolBudget) (map (Bounded.bounded 64) tool)
     (map (Bounded.bounded 3072) detail) (map byteLength detail)
 
   eventOriginalDetailSize : ∀ observed identity kind model toolBudget tool detail →
@@ -119,7 +119,7 @@ module Over (Id : Set) where
       status : Text
       blockReason : Maybe Text
       selectedIds : List Id
-      modelRemaining toolRemaining : ℕ
+      modelRequests toolAttempts : Maybe ℕ
       events : List Event
       eventsOmitted : ℕ
 

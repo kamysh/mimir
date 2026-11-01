@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- Structural review validation. Wire decoding/serialized-size accounting and
+-- Structural review validation. Wire decoding and
 -- database target existence are separate obligations, not implicit premises.
 module Mimir.ReviewSchema where
 
@@ -148,21 +148,7 @@ typedNeverLegacy : ∀ r a → TypedValid r a →
   Targets.Present (Assessment.target a) (legacyTargets r) → ⊥
 typedNeverLegacy r a (valid , target , absent) present = Targets.presentAbsentContradiction present absent
 
-Counts : Review → Set
-Counts r = atMost 64 (Review.superseded r) ×
-  (atMost 64 (Review.candidates r) ×
-  (length (Review.feedbacks r) + length (Review.candidateFeedbacks r) ≤ 64 ×
-  (length (Review.links r) + length (Review.candidateLinks r) ≤ 64 ×
-    atMost 64 (Review.assessments r))))
 
-checkCounts : ∀ r → Checked (Counts r)
-checkCounts r = combine (at (key "superseded_beliefs") (checkCount 64 (Review.superseded r)))
-  (combine (at (key "candidates") (checkCount 64 (Review.candidates r)))
-  (combine (check (fault [] tooMany "at most 64 total feedback targets are permitted")
-    (length (Review.feedbacks r) + length (Review.candidateFeedbacks r) ≤? 64))
-  (combine (check (fault [] tooMany "at most 64 total links are permitted")
-    (length (Review.links r) + length (Review.candidateLinks r) ≤? 64))
-    (at (key "assessments") (checkCount 64 (Review.assessments r))))))
 
 CandidatesValid : Review → Set
 CandidatesValid r = All Valid (Review.candidates r) ×
@@ -192,9 +178,9 @@ ReviewValid : Review → Set
 ReviewValid r = (+ 0 Data.Integer.< Review.experienceRevision r) ×
   (Mimir.Text.Nonblank (Review.reviewer r) ×
   (Mimir.Text.Nonblank (Review.rationale r) ×
-  (Counts r × (CandidatesValid r × (LegacyValid r ×
+  (CandidatesValid r × (LegacyValid r ×
   (All (TypedValid r) (Review.assessments r) ×
-    AssessmentKeys.Unique (map assessmentKey (Review.assessments r))))))))
+    AssessmentKeys.Unique (map assessmentKey (Review.assessments r)))))))
 
 validateReview : ∀ r → Checked (ReviewValid r)
 validateReview r = combine
@@ -202,9 +188,9 @@ validateReview r = combine
     ((+ 0) Integer.<? Review.experienceRevision r)))
   (combine (at (key "reviewer") (checkNonblank (Review.reviewer r)))
   (combine (at (key "rationale") (checkNonblank (Review.rationale r)))
-  (combine (checkCounts r) (combine (checkCandidates r) (combine (checkLegacy r)
+  (combine (checkCandidates r) (combine (checkLegacy r)
   (combine (at (key "assessments") (allChecked (checkTyped r) (Review.assessments r)))
-    (at (key "assessments") (AssessmentKeys.checkUnique (map assessmentKey (Review.assessments r))))))))))
+    (at (key "assessments") (AssessmentKeys.checkUnique (map assessmentKey (Review.assessments r)))))))))
 
 validReviewNeverRejected : ∀ r → ReviewValid r → reported (validateReview r) ≡ []
 validReviewNeverRejected r = noFalseRejection (validateReview r)

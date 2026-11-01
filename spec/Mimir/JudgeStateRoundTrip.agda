@@ -153,14 +153,16 @@ module Size (sizeMaximum : ℕ) where
 
   eventValues : R.Event → S.Values D.eventFields
   eventValues value = more (R.Event.at value) $ more (R.Event.experience value) $ more (R.Event.kind value) $
-    more (R.Event.modelRemaining value) $ more (R.Event.toolRemaining value) $ more (R.Event.tool value) $
+    more (R.Event.modelRequests value) $ more (R.Event.toolAttempts value) $ more (R.Event.tool value) $
     more (R.Event.detail value) $ more (R.Event.detailBytes value) empty
 
   eventEmission : ∀ value → B.EventBounds value → E.Emits D.eventFields (eventValues value) (W.eventFields value)
   eventEmission value bounded = E.emitted (P.uintRoundTrip P.u64Maximum (R.Event.at value) (B.EventBounds.at bounded)) $
     E.emitted (P.uuidRoundTrip (R.Event.experience value)) $ E.emitted refl $
-    E.emitted (P.uintRoundTrip sizeMaximum (R.Event.modelRemaining value) (B.EventBounds.model bounded)) $
-    E.emitted (P.uintRoundTrip sizeMaximum (R.Event.toolRemaining value) (B.EventBounds.tool bounded)) $
+    Build.optional (toList "model_requests") JSON.unsigned D.size (λ value ()) (P.uintRoundTrip sizeMaximum)
+      (R.Event.modelRequests value) (B.EventBounds.model bounded) $
+    Build.optional (toList "tool_attempts") JSON.unsigned D.size (λ value ()) (P.uintRoundTrip sizeMaximum)
+      (R.Event.toolAttempts value) (B.EventBounds.tool bounded) $
     Build.optionalUniform (toList "tool") JSON.string JSON.asString (λ value ()) (λ value → refl) (R.Event.tool value) $
     Build.optionalUniform (toList "detail") JSON.string JSON.asString (λ value ()) (λ value → refl) (R.Event.detail value) $
     Build.optionalLast (toList "detail_bytes") JSON.unsigned D.size (λ value ()) (P.uintRoundTrip sizeMaximum)
@@ -172,7 +174,7 @@ module Size (sizeMaximum : ℕ) where
   traceValues : R.Trace → S.Values D.traceFields
   traceValues value = more (R.Trace.identity value) $ more (R.Trace.startedAt value) $ more (R.Trace.finishedAt value) $
     more (R.Trace.status value) $ more (R.Trace.blockReason value) $ more (R.Trace.selectedIds value) $
-    more (R.Trace.modelRemaining value) $ more (R.Trace.toolRemaining value) $ more (R.Trace.events value) $
+    more (R.Trace.modelRequests value) $ more (R.Trace.toolAttempts value) $ more (R.Trace.events value) $
     more (R.Trace.eventsOmitted value) empty
 
   traceEmission : ∀ value → B.TraceBounds value → E.Emits D.traceFields (traceValues value) (W.traceFields value)
@@ -183,8 +185,10 @@ module Size (sizeMaximum : ℕ) where
     E.emitted refl $
     Build.optionalUniform (toList "block_reason") JSON.string JSON.asString (λ value ()) (λ value → refl) (R.Trace.blockReason value) $
     E.emitted (Array.elementsRoundTrip UUID.encode P.uuid P.uuidRoundTrip 0 (R.Trace.selectedIds value)) $
-    E.emitted (P.uintRoundTrip sizeMaximum (R.Trace.modelRemaining value) (B.TraceBounds.model bounded)) $
-    E.emitted (P.uintRoundTrip sizeMaximum (R.Trace.toolRemaining value) (B.TraceBounds.tool bounded)) $
+    Build.optional (toList "model_requests") JSON.unsigned D.size (λ value ()) (P.uintRoundTrip sizeMaximum)
+      (R.Trace.modelRequests value) (B.TraceBounds.model bounded) $
+    Build.optional (toList "tool_attempts") JSON.unsigned D.size (λ value ()) (P.uintRoundTrip sizeMaximum)
+      (R.Trace.toolAttempts value) (B.TraceBounds.tool bounded) $
     E.emitted (Build.array W.event D.event event (R.Trace.events value) (B.TraceBounds.events bounded)) $
     E.emitted (P.uintRoundTrip sizeMaximum (R.Trace.eventsOmitted value) (B.TraceBounds.omitted bounded)) E.done
 

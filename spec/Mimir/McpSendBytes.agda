@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
--- Outgoing byte layer after serialization: strict body limit, one LF,
--- one deadline check and one write-all/flush attempt. Serialization itself
+-- Outgoing byte layer after serialization: one LF and one write-all/flush
+-- attempt, without an application size or time cutoff. Serialization itself
 -- is a separate obligation; an arbitrary byte list is not a JSON proof.
 module Mimir.McpSendBytes where
 
@@ -26,12 +26,10 @@ data IOReport (bytes : List Byte) : Set where
     Write.Result.reason (Write.step before reply) ≡ just failure → IOReport bytes
 
 data Effect : Set where
-  clockNow : Effect
-  transmit : ℕ → List Byte → Effect
+  transmit : List Byte → Effect
 
 Reply : Effect → Set
-Reply clockNow = ℕ
-Reply (transmit duration bytes) = IOReport bytes
+Reply (transmit bytes) = IOReport bytes
 
 module E = Effects.Protocol Effect Reply
 module Count = E.Counting (λ _ → 1)
@@ -44,7 +42,6 @@ record Sent (bytes : List Byte) : Set where
     trace : Write.Trace (Write.initial bytes) events (Write.complete actual)
 
 data Outcome (bytes : List Byte) : Set where
-  tooLarge deadlineExceeded : Outcome bytes
   ioFailed : Write.Failure → Outcome bytes
   delivered : Sent bytes → Outcome bytes
 
@@ -55,55 +52,15 @@ wireLength : ∀ bytes → length (wire bytes) ≡ suc (length bytes)
 wireLength bytes = trans (length-++ bytes {ys = # 10 ∷ []})
   (trans (+-suc (length bytes) 0) (cong suc (+-identityʳ (length bytes))))
 
-module Send (maximum deadline : ℕ) (body : List Byte) where
+module Send (body : List Byte) where
   Result = Outcome (wire body)
 
   afterIO : IOReport (wire body) → E.Script Result
   afterIO (sent events actual proof) = E.done (delivered (sentReceipt events actual proof))
   afterIO (failed events before reply failure proof exact) = E.done (ioFailed failure)
 
-  afterClock : ℕ → E.Script Result
-  afterClock now with now <? deadline
-  ... | no expired = E.done deadlineExceeded
-  ... | yes available = E.ask (transmit (deadline ∸ now) (wire body)) afterIO
-
   start : E.Script Result
-  start with length body <? maximum
-  ... | no oversized = E.done tooLarge
-  ... | yes fits = E.ask clockNow afterClock
-
-  ioBound : ∀ reply → Count.Bounded 0 (afterIO reply)
-  ioBound (sent events actual proof) = Count.done _
-  ioBound (failed events before reply failure proof exact) = Count.done _
-
-  clockBound : ∀ now → Count.Bounded 1 (afterClock now)
-  clockBound now with now <? deadline
-  ... | no expired = Count.done _
-  ... | yes available = Count.ask (transmit (deadline ∸ now) (wire body)) afterIO 0 ≤-refl ioBound
-
-  bounded : Count.Bounded 2 start
-  bounded with length body <? maximum
-  ... | no oversized = Count.done _
-  ... | yes fits = Count.ask clockNow afterClock 1 ≤-refl clockBound
-
-  finiteSend : ∀ events result → E.Runs start events result → Count.count events ≤ 2
-  finiteSend events result execution = Count.runBounded bounded execution
-
-  finitePrefix : ∀ events residual → E.Prefix start events residual → Count.count events ≤ 2
-  finitePrefix events residual execution = Count.prefixBounded bounded execution
-
-  oversizedStops : maximum ≤ length body → start ≡ E.done tooLarge
-  oversizedStops oversized with length body <? maximum
-  ... | no doesNotFit = refl
-  ... | yes fits = ⊥-elim (1+n≰n (≤-trans fits oversized))
-
-  expiredStops : ∀ now → deadline ≤ now → afterClock now ≡ E.done deadlineExceeded
-  expiredStops now expired with now <? deadline
-  ... | no unavailable = refl
-  ... | yes available = ⊥-elim (1+n≰n (≤-trans available expired))
-
-  wireFits : length body < maximum → length (wire body) ≤ maximum
-  wireFits fits = subst (_≤ maximum) (sym (wireLength body)) fits
+  start = E.ask (transmit (wire body)) afterIO
 
   deliveredExactly : ∀ (receipt : Sent (wire body)) → Sent.actual receipt ≡ wire body
   deliveredExactly receipt = Write.completedBytesExact (wire body) (Sent.events receipt) (Sent.actual receipt) (Sent.trace receipt)
@@ -119,23 +76,11 @@ module Send (maximum deadline : ℕ) (body : List Byte) where
   ioSuccess (failed events before reply failure proof exact) trace receipt ()
 
   data DeliveryTrace (receipt : Sent (wire body)) : List E.Event → Set where
-    deliveredAt : ∀ now → length body < maximum → now < deadline → DeliveryTrace receipt
-      ((clockNow , now) ∷ (transmit (deadline ∸ now) (wire body) ,
-        sent (Sent.events receipt) (Sent.actual receipt) (Sent.trace receipt)) ∷ [])
-
-  clockTrace : ∀ now → length body < maximum → ∀ events receipt →
-    E.Runs (afterClock now) events (delivered receipt) → DeliveryTrace receipt ((clockNow , now) ∷ events)
-  clockTrace now admitted events receipt execution with now <? deadline
-  ... | no expired with execution
-  ...   | ()
-  clockTrace now admitted .((transmit (deadline ∸ now) (wire body) , report) ∷ events) receipt
-    (E.replied .(transmit (deadline ∸ now) (wire body)) _ report {events} execution) | yes available
-    with ioSuccess report events receipt execution
-  ... | refl , refl = deliveredAt now admitted available
+    delivered : DeliveryTrace receipt
+      ((transmit (wire body) , sent (Sent.events receipt) (Sent.actual receipt) (Sent.trace receipt)) ∷ [])
 
   everyDeliveryChecked : ∀ events receipt → E.Runs start events (delivered receipt) → DeliveryTrace receipt events
-  everyDeliveryChecked events receipt execution with length body <? maximum
-  ... | no oversized with execution
-  ...   | ()
-  everyDeliveryChecked .((clockNow , now) ∷ events) receipt
-    (E.replied .clockNow _ now {events} execution) | yes admitted = clockTrace now admitted events receipt execution
+  everyDeliveryChecked .((transmit (wire body) , report) ∷ events) receipt
+    (E.replied .(transmit (wire body)) _ report {events} execution)
+    with ioSuccess report events receipt execution
+  ... | refl , refl = delivered

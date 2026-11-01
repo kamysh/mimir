@@ -42,18 +42,23 @@ record Libraries : Set where
         encode : Text → List Byte
         contains : Text → Text → Bool
         integer : ℤ → Text
-        budget : Binary.Number → Text
 
 record Adapter : Set where
   constructor adapter
-  field selectedID : Maybe ℕ; history : List V.Value; checked : Bool
+  field selectedID : Maybe ℕ; history : List V.Value; checked : Bool; pending : List (Text × Text)
 
 initial : Adapter
-initial = adapter nothing [] false
+initial = adapter nothing [] false []
 
 same : Maybe ℕ → ℕ → Bool
 same nothing identity = false
 same (just previous) identity = does (previous ≟ identity)
+
+willCallModel : Adapter → ℕ → Bool
+willCallModel state identity with same (Adapter.selectedID state) identity | Adapter.pending state
+... | false | _ = true
+... | true | [] = true
+... | true | _ ∷ _ = false
 
 historyFeedback : Maybe V.Value → List V.Value
 historyFeedback nothing = []
@@ -66,14 +71,14 @@ prepare before identity last = record reset { history = Adapter.history reset ++
   reset : Adapter
   reset with same (Adapter.selectedID before) identity
   ... | true = before
-  ... | false = record before { selectedID = just identity ; history = [] }
+  ... | false = record before { selectedID = just identity ; history = [] ; pending = [] }
   feedback = historyFeedback last
 
 schema : V.Value
 schema = Encoding.object
   (("type" , V.string (toList "object")) ∷ ("additionalProperties" , V.boolean false) ∷
    ("properties" , Encoding.object (("calls" , Encoding.object
-      (("type" , V.string (toList "array")) ∷ ("maxItems" , V.unsigned 1) ∷
+      (("type" , V.string (toList "array")) ∷
        ("items" , Encoding.object (("type" , V.string (toList "object")) ∷
          ("additionalProperties" , V.boolean false) ∷ ("properties" , Encoding.object
            (("name" , Encoding.object (("type" , V.string (toList "string")) ∷ [])) ∷
@@ -147,11 +152,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
   failure state detail = done (result state (inj₁ (Revision.error detail nothing)))
 
   processFailure : Process.Failure → Revision.Error
-  processFailure Process.inputTooLarge = Revision.error (toList "harness input exceeded limit") nothing
-  processFailure Process.timedOut = Revision.error (toList "harness timed out") nothing
   processFailure (Process.nativeFailure detail) = Revision.error detail nothing
-  processFailure (Process.overflow stream bytes) = Revision.error (Source.display captured) (just captured)
-    where captured = Process.overflowSource (λ n → Libraries.integer libraries (Data.Integer.+ n)) stream bytes
   processFailure (Process.unsuccessfulExit status stderr) = Revision.error
     (toList "harness exited with " ++ status ++ toList ": " ++
       Diagnostic.bounded 512 (Lossy.text stderr)) nothing
@@ -171,7 +172,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
   check work state with Adapter.checked state | Config.Llm.backend config
   ... | true | _ = done (inj₂ state)
   ... | false | Config.commandMode = done (inj₂ state)
-  ... | false | kind = process (Process.spawnSpec program (helpArgs kind) work [] 5) then (λ where
+  ... | false | kind = process (Process.spawnSpec program (helpArgs kind) work []) then (λ where
       (inj₁ error) → done (inj₁ error)
       (inj₂ output) → inspect output)
     where
@@ -193,7 +194,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
   payload : Adapter → V.Value
   payload state = Encoding.object (("instructions" , V.string instructions) ∷ ("experience" , Encode.snapshot selected) ∷
     ("tools" , V.array tools) ∷ ("history" , V.array (Adapter.history state)) ∷ ("response_schema" , schema) ∷
-    ("protocol" , V.string (toList "Return one JSON object matching response_schema. Request at most one tool in calls. arguments_json is a JSON object encoded as a string. Never execute tools directly.")) ∷ [])
+    ("protocol" , V.string (toList "Return one JSON object matching response_schema. Calls are executed in array order, and each receives a result. arguments_json is a JSON object encoded as a string. Never execute tools directly.")) ∷ [])
 
   codexEffort : Maybe Config.Effort → List Text
   codexEffort nothing = []
@@ -216,12 +217,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
      "--permission-prompts" ∷ "none" ∷ "--settings" ∷ "{\"disableAllHooks\":true}" ∷
      "--disable-slash-commands" ∷ "--mcp-config" ∷ []) ++ ((work ++ toList "/mcp.json") ∷
      (map toList ("--strict-mcp-config" ∷ "--no-session-persistence" ∷ "--output-format" ∷ "json" ∷ "--json-schema" ∷ []) ++
-       (json schema ∷ budgetArgs (Config.Llm.maxBudget config)))))
-    where
-    budgetArgs : Maybe Binary.Number → List Text
-    budgetArgs nothing = []
-    budgetArgs (just amount) = toList "--max-budget-usd" ∷ Libraries.budget libraries amount ∷ []
-
+       (json schema ∷ []))))
   writeArgs : Text → Config.Backend → Script (Revision.Error ⊎ ⊤)
   writeArgs work Config.claudeCode = ask (writeNew600NoFollowCloseExec (work ++ toList "/mcp.json")
     (Libraries.encode libraries (toList "{\"mcpServers\":{}}"))) (done ∘ convert)
@@ -243,16 +239,14 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
     where
     metadata : ℕ → Text ⊎ (Bool × ℕ) → Script (Revision.Error ⊎ List Byte)
     metadata handle (inj₁ detail) = done (inj₁ (Revision.error detail nothing))
-    metadata handle (inj₂ (regular , size)) with regular ∧ does (size ≤? 8 * 1024 * 1024)
+    metadata handle (inj₂ (regular , size)) with regular
     ... | false = done (inj₁ (Revision.error (toList "invalid harness answer") nothing))
     ... | true = ask (readAnswerBytes handle) (λ where
       (inj₁ detail) → done (inj₁ (Revision.error detail nothing))
       (inj₂ bytes) → checked bytes)
       where
       checked : List Byte → Script (Revision.Error ⊎ List Byte)
-      checked bytes with length bytes ≤? 8 * 1024 * 1024
-      ... | no _ = done (inj₁ (Revision.error (toList "harness answer exceeded limit") nothing))
-      ... | yes _ = done (inj₂ bytes)
+      checked bytes = done (inj₂ bytes)
 
   claudeFallback : V.Value → Revision.Error ⊎ V.Value
   claudeFallback wrapper with required "result" V.asString (view wrapper)
@@ -284,35 +278,33 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
   calls : V.Value → Validation.Fault ⊎ List (Text × Text)
   calls = recordOf ("calls" ∷ []) (required "calls" (readArray call))
 
-  action : List (Text × Text) → Revision.Error ⊎ Revision.Action
-  action [] = inj₂ Revision.modelDone
-  action ((name , arguments) ∷ []) with byteLength name ≤? 128
-  ... | no _ = inj₁ (Revision.error (toList "harness tool name is too long") nothing)
-  ... | yes _ with JSON.text (toList "invalid harness tool arguments") arguments
-  ...   | inj₂ value = inj₂ (Revision.tool name value)
-  ...   | inj₁ error with Revision.Error.source error
-  ...     | just source = inj₂ (Revision.malformedTool name source)
-  ...     | nothing = inj₁ error
-  action (_ ∷ _ ∷ _) = inj₁ (Revision.error (toList "harness returned too many calls") nothing)
+  action : Text × Text → Revision.Error ⊎ Revision.Action
+  action (name , arguments) with JSON.text (toList "invalid harness tool arguments") arguments
+  ... | inj₂ value = inj₂ (Revision.tool name value)
+  ... | inj₁ error with Revision.Error.source error
+  ...   | just source = inj₂ (Revision.malformedTool name source)
+  ...   | nothing = inj₁ error
+
+  yield : Adapter → Script Result
+  yield state with Adapter.pending state
+  ... | [] = done (result state (inj₂ Revision.modelDone))
+  ... | current ∷ rest = ask (remember updated) (λ _ → done (result updated (action current)))
+    where updated = record state { pending = rest }
 
   afterReply : Adapter → Revision.Error ⊎ V.Value → Script Result
   afterReply state (inj₁ error) = done (result state (inj₁ error))
   afterReply state (inj₂ reply) with calls reply
   ... | inj₁ fault = done (result state (inj₁ (Revision.error (Source.display captured) (just captured))))
     where captured = Source.Current.input (toList "invalid harness reply") (encode reply) (Revision.Display.fault display fault)
-  ... | inj₂ requests with action requests
-  ...   | inj₁ error = done (result state (inj₁ error))
-  ...   | inj₂ action = ask (remember updated) (λ _ → done (result updated (inj₂ action)))
+  ... | inj₂ requests = ask (remember updated) (λ _ → yield updated)
     where updated = record state { history = Adapter.history state ++
-            (Encoding.object (("assistant" , reply) ∷ []) ∷ []) }
+            (Encoding.object (("assistant" , reply) ∷ []) ∷ []) ; pending = requests }
 
   invoke : Text → Adapter → Script Result
-  invoke work state with length (encode (payload state)) ≤? 2 * 1024 * 1024
-  ... | no _ = failure state (toList "harness context exceeded limit")
-  ... | yes _ = writeArgs work (Config.Llm.backend config) then λ where
+  invoke work state = writeArgs work (Config.Llm.backend config) then λ where
       (inj₁ error) → done (result state (inj₁ error))
       (inj₂ tt) → process (Process.spawnSpec program (args work (Config.Llm.backend config)) work
-        (encode (payload state)) (Config.Llm.timeoutSeconds config)) then λ where
+        (encode (payload state))) then λ where
           (inj₁ error) → done (result state (inj₁ error))
           (inj₂ stdout) → unwrap work (Config.Llm.backend config) stdout then afterReply state
 
@@ -338,7 +330,11 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
     admit true = create state
 
   start : Adapter → Maybe V.Value → Script Result
-  start state last = ask (remember updated) (λ _ → ask rootExists (λ where
+  start state last with Adapter.pending updated
+    where updated = prepare state identity last
+  ... | _ ∷ _ = ask (remember updated) (λ _ → yield updated)
+    where updated = prepare state identity last
+  ... | [] = ask (remember updated) (λ _ → ask rootExists (λ where
     true → inspectRoot updated
     false → ask createRoot700 λ where
       (inj₁ detail) → failure updated detail

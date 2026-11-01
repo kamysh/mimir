@@ -1,7 +1,7 @@
 {-# OPTIONS --safe #-}
 -- Client-side JSON-RPC envelope semantics after syntax decoding. Duplicate
 -- object keys and malformed JSON are handled by the wire decoder, not inferred
--- away here. Notification processing is bounded within each pending request.
+-- away here. Notifications do not impose a cutoff on a pending request.
 module Mimir.RpcReply where
 
 open import Data.Char using (_≟_)
@@ -22,7 +22,7 @@ data Identifier : Set where
   string : Text → Identifier
 
 data Failure : Set where
-  wrongVersion invalidNotification notificationLimit wrongID missingResult : Failure
+  wrongVersion invalidNotification wrongID missingResult : Failure
 
 module Replies (Payload ApplicationError : Set) where
   record Envelope : Set where
@@ -49,9 +49,7 @@ module Replies (Payload ApplicationError : Set) where
   identify expected notifications frame with id frame
   ... | absent with method frame
   ...   | nothing = failed invalidNotification
-  ...   | just method with notifications <? 64
-  ...     | yes _ = notification (suc notifications)
-  ...     | no _ = failed notificationLimit
+  ...   | just method = notification (suc notifications)
   identify expected notifications frame | null = failed wrongID
   identify expected notifications frame | invalid = failed wrongID
   identify expected notifications frame | string text = failed wrongID
@@ -76,50 +74,13 @@ module Replies (Payload ApplicationError : Set) where
   ... | no _ = refl
   ... | yes equal = ⊥-elim (different equal)
 
-  notificationBound : ∀ expected notifications frame count →
-    identify expected notifications frame ≡ notification count → count ≤ 64
-  notificationBound expected notifications frame count proof with id frame
-  ... | absent with method frame
-  ...   | nothing with proof
-  ...     | ()
-  notificationBound expected notifications frame count proof | absent | just method
-    with notifications <? 64
-  ... | yes bound with proof
-  ...   | refl = bound
-  notificationBound expected notifications frame count proof | absent | just method | no bound
-    with proof
-  ... | ()
-  notificationBound expected notifications frame count () | null
-  notificationBound expected notifications frame count () | invalid
-  notificationBound expected notifications frame count () | string text
-  notificationBound expected notifications frame count proof | integer id
-    with id ≟ℕ expected
-  ... | no _ with proof
-  ...   | ()
-  notificationBound expected notifications frame count proof | integer id | yes _
-    with error frame | Envelope.result frame
-  ... | just error | value with proof
-  ...   | ()
-  notificationBound expected notifications frame count proof | integer id | yes _ | nothing | just value
-    with proof
-  ... | ()
-  notificationBound expected notifications frame count proof | integer id | yes _ | nothing | nothing
-    with proof
-  ... | ()
-
   notificationAdvances : ∀ expected notifications frame count →
     identify expected notifications frame ≡ notification count → count ≡ suc notifications
   notificationAdvances expected notifications frame count proof with id frame
   ... | absent with method frame
   ...   | nothing with proof
   ...     | ()
-  notificationAdvances expected notifications frame count proof | absent | just method
-    with notifications <? 64
-  ... | yes bound with proof
-  ...   | refl = refl
-  notificationAdvances expected notifications frame count proof | absent | just method | no bound
-    with proof
-  ... | ()
+  notificationAdvances expected notifications frame .(suc notifications) refl | absent | just method = refl
   notificationAdvances expected notifications frame count () | null
   notificationAdvances expected notifications frame count () | invalid
   notificationAdvances expected notifications frame count () | string text

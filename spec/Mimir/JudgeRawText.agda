@@ -270,6 +270,8 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ) where
 
   eventDefaults : I.Defaults D.eventFields eventProperties
   eventDefaults (suc (suc (suc (suc (suc zero))))) value refl = tt
+  eventDefaults (suc (suc (suc (suc zero)))) value refl = tt
+  eventDefaults (suc (suc (suc zero))) value refl = tt
   eventDefaults (suc (suc (suc (suc (suc (suc zero)))))) value refl = tt
   eventDefaults (suc (suc (suc (suc (suc (suc (suc zero))))))) value refl = tt
   eventDefaults (suc (suc (suc (suc (suc (suc (suc (suc ())))))))) value observed
@@ -330,6 +332,8 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ) where
 
   traceDefaults : I.Defaults D.traceFields traceProperties
   traceDefaults (suc (suc zero)) value refl = tt
+  traceDefaults (suc (suc (suc (suc (suc (suc (suc zero))))))) value refl = tt
+  traceDefaults (suc (suc (suc (suc (suc (suc zero)))))) value refl = tt
   traceDefaults (suc (suc (suc (suc zero)))) value refl = tt
   traceDefaults (suc (suc (suc (suc (suc (suc (suc (suc (suc zero))))))))) value refl = tt
   traceDefaults (suc (suc (suc (suc (suc (suc (suc (suc (suc (suc ())))))))))) value observed

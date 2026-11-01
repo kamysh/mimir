@@ -67,13 +67,6 @@ pub struct LlmConfig {
     pub backend: Backend,
     pub model: String,
     pub reasoning_effort: Option<ReasoningEffort>,
-    #[serde(default = "default_llm_timeout")]
-    pub timeout_seconds: u64,
-    #[serde(default = "default_max_calls")]
-    pub max_calls: usize,
-    #[serde(default = "default_max_output_tokens")]
-    pub max_output_tokens: usize,
-    pub max_budget_usd: Option<f64>,
     pub provider: Option<Provider>,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
@@ -97,15 +90,6 @@ fn default_batch_size() -> usize {
 }
 fn default_mcp_command() -> String {
     "mimir-mcp".into()
-}
-fn default_llm_timeout() -> u64 {
-    300
-}
-fn default_max_calls() -> usize {
-    20
-}
-fn default_max_output_tokens() -> usize {
-    4096
 }
 
 pub fn resolved_path(explicit: Option<&Path>) -> Result<PathBuf> {
@@ -201,7 +185,6 @@ fn nonempty(value: &str, name: &'static str) -> Result<()> {
 }
 
 fn arguments(args: &[String], name: &'static str) -> Result<()> {
-    ensure!(args.len() <= 128, "too many {name}");
     for arg in args {
         nonempty(arg, name)?;
     }
@@ -233,10 +216,7 @@ fn endpoint(raw: &str) -> Result<()> {
 
 impl JudgeConfig {
     fn validate(&self) -> Result<()> {
-        ensure!(
-            (1..=100).contains(&self.batch_size),
-            "judge.batch_size must be 1..=100"
-        );
+        ensure!(self.batch_size > 0, "judge.batch_size must be positive");
         if let Some(project) = &self.project {
             nonempty(project, "judge.project")?;
         }
@@ -256,25 +236,7 @@ impl JudgeConfig {
 impl LlmConfig {
     fn validate(&self) -> Result<()> {
         nonempty(&self.model, "llm.model")?;
-        ensure!(
-            (1..=86400).contains(&self.timeout_seconds),
-            "llm.timeout_seconds must be 1..=86400"
-        );
-        ensure!(
-            (1..=10000).contains(&self.max_calls),
-            "llm.max_calls must be 1..=10000"
-        );
-        ensure!(
-            (1..=1000000).contains(&self.max_output_tokens),
-            "llm.max_output_tokens must be 1..=1000000"
-        );
         arguments(&self.args, "llm.args")?;
-        if let Some(value) = self.max_budget_usd {
-            ensure!(
-                value.is_finite() && value > 0.0,
-                "llm.max_budget_usd must be positive and finite"
-            );
-        }
         if let Some(value) = &self.base_url {
             endpoint(value)?;
         }
@@ -292,10 +254,6 @@ impl LlmConfig {
                         && self.args.is_empty(),
                     "harness backend cannot use API or command settings"
                 );
-                ensure!(
-                    self.backend == Backend::ClaudeCode || self.max_budget_usd.is_none(),
-                    "llm.max_budget_usd is Claude Code only"
-                );
             }
             Backend::Command => {
                 let command = self
@@ -308,11 +266,8 @@ impl LlmConfig {
                     "llm.command must be absolute"
                 );
                 ensure!(
-                    self.provider.is_none()
-                        && self.api_key.is_none()
-                        && self.base_url.is_none()
-                        && self.max_budget_usd.is_none(),
-                    "command backend cannot use API or budget settings"
+                    self.provider.is_none() && self.api_key.is_none() && self.base_url.is_none(),
+                    "command backend cannot use API settings"
                 );
             }
             Backend::Api => {
@@ -325,8 +280,8 @@ impl LlmConfig {
                     .ok_or_else(|| anyhow!("llm.api_key is required"))?;
                 nonempty(key, "llm.api_key")?;
                 ensure!(
-                    self.command.is_none() && self.args.is_empty() && self.max_budget_usd.is_none(),
-                    "API backend cannot use command or harness budget settings"
+                    self.command.is_none() && self.args.is_empty(),
+                    "API backend cannot use command settings"
                 );
                 ensure!(
                     provider != Provider::OpenaiCompatible || self.base_url.is_some(),
@@ -343,6 +298,17 @@ pub fn load(explicit: Option<&Path>) -> Result<RuntimeConfig> {
     validate_file_security(&path)?;
     let (core, operations) = Config::load_with_operations(&path)?;
     let judge: JudgeConfig = section(core.judge.as_ref(), "judge")?;
+    if let Some(llm) = &core.llm {
+        for retired in [
+            "timeout_seconds",
+            "max_calls",
+            "max_output_tokens",
+            "max_budget_usd",
+        ] {
+            ensure!(!llm.contains_key(retired),
+                "llm.{retired} is obsolete: Mimir no longer imposes review budgets. Run `mimir config upgrade` to remove obsolete limits, then `mimir config check`");
+        }
+    }
     let llm: LlmConfig = section(core.llm.as_ref(), "llm")?;
     let email: EmailConfig = match core.email.as_ref() {
         Some(table) => section(Some(table), "email")?,

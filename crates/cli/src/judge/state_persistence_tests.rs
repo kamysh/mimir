@@ -115,7 +115,7 @@ fn encoding_and_size_rejection_leave_the_directory_untouched() {
     names_before.sort();
     assert!(state.write_named(STATUS_FILE, &Fails).is_err());
     assert!(state
-        .write_named_limited(STATUS_FILE, &"oversized", 1)
+        .write_named_limited(STATUS_FILE, &"oversized", Some(1))
         .is_err());
     let mut names_after: Vec<_> = fs::read_dir(&directory.0)
         .unwrap()
@@ -148,7 +148,7 @@ fn restart_retains_committed_report_and_marks_running_trace_interrupted() {
         .unwrap();
     assert_eq!(interrupted.status, "interrupted");
     assert!(interrupted.finished_at.is_some());
-    assert_eq!(interrupted.model_remaining, 7);
+    assert_eq!(interrupted.model_requests, Some(7));
     let current = diagnostics
         .attempts
         .iter()
@@ -156,6 +156,31 @@ fn restart_retains_committed_report_and_marks_running_trace_interrupted() {
         .unwrap();
     assert_eq!(current.status, "running");
     assert!(current.finished_at.is_none());
-    assert_eq!(current.model_remaining, 5);
+    assert_eq!(current.model_requests, Some(5));
     assert_eq!(fs::read(&orphan).unwrap(), b"unfinished JSON {");
+}
+
+#[test]
+fn full_batch_state_is_preserved_while_diagnostic_metadata_is_bounded() {
+    let directory = Directory::new();
+    let state = State::lock(directory.0.clone()).unwrap().unwrap();
+    let mut report = Report::new("blocked", 100_000, 0, 0, 100_000, 0);
+    report.selected_ids = (0..100_000).map(|_| Uuid::new_v4()).collect();
+    state.write(&report).unwrap();
+    let saved = read(&directory.0).unwrap().unwrap();
+    assert_eq!(saved.selected_ids, report.selected_ids);
+    assert!(fs::metadata(directory.0.join(STATUS_FILE)).unwrap().len() > MAX_DIAGNOSTICS);
+    let id = state.begin_trace(&report, 0).unwrap();
+    state.finish_trace(id, &report).unwrap();
+    let traces = read_diagnostics(&directory.0).unwrap();
+    assert_eq!(
+        traces.attempts[0].selected_ids,
+        report.selected_ids[..MAX_TRACE_EVENTS]
+    );
+    assert!(
+        fs::metadata(directory.0.join(DIAGNOSTICS_FILE))
+            .unwrap()
+            .len()
+            < MAX_TRACE as u64
+    );
 }

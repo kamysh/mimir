@@ -71,9 +71,9 @@ module Adapter (Payload : Set) (selected : Pin) where
   ... | refl = refl
 
   queuedUsesNoProviderAttempt : ∀ models tools feedback identity kind arguments →
-    C.step (C.ready (C.budget models (suc tools)) feedback)
-      (input (C.ready (C.budget models (suc tools)) feedback)
+    C.step (C.ready (C.counts models tools) feedback)
+      (input (C.ready (C.counts models tools) feedback)
         (Q.call identity (Tools.name kind) (inj₂ arguments))) ≡
-    C.log C.toolRequested (C.invoke (C.budget models tools) (C.call kind arguments))
+    C.log C.toolRequested (C.invoke (C.counts models (suc tools)) (C.call kind arguments))
   queuedUsesNoProviderAttempt models tools feedback identity kind arguments
     rewrite acceptedCallRoundTrip identity kind arguments = refl

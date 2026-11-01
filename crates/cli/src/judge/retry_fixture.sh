@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local MCP fixture for bounded review correction tests; no network or database.
+# Local MCP fixture for review correction tests; no network or database.
 set -euo pipefail
 experience_id="$1"
 review_log="${2:-}"
@@ -89,6 +89,15 @@ while IFS= read -r request; do
             fi ;;
         *) error='{"code":-32601,"message":"unexpected fixture method"}' ;;
     esac
+    if [[ "$mode" == "large-notifications" ]]; then
+        for ((notice=0; notice<65; notice++)); do
+            printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/progress","params":{}}'
+        done
+        printf '{"jsonrpc":"2.0","id":%s,"padding":"' "$id"
+        head -c 1048577 /dev/zero | tr '\0' x
+        printf '","result":%s}\n' "$result"
+        continue
+    fi
     if [[ -n "$error" ]]; then
         printf '{"jsonrpc":"2.0","id":%s,"error":%s}\n' "$id" "$error"
     else

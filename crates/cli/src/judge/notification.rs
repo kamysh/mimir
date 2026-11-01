@@ -57,7 +57,7 @@ fn project(settings: &RuntimeConfig) -> String {
         .unwrap_or_else(|| "all projects".into())
 }
 
-fn failure_details(project: &str, max_calls: usize, report: &Report) -> String {
+fn failure_details(project: &str, report: &Report) -> String {
     let mut details = format!(
         "Project: {}\nObserved: {}\nReason: {}\nSelected: {}; confirmed: {}; corrected: {}; pending: {}; unavailable: {}\nAffected experience IDs: {}",
         project,
@@ -70,9 +70,6 @@ fn failure_details(project: &str, max_calls: usize, report: &Report) -> String {
         report.unavailable,
         ids(&report.selected_ids),
     );
-    if report.block_reason.as_deref() == Some("model_budget_exhausted") {
-        details.push_str(&format!("\nConfigured model call limit: {max_calls}"));
-    }
     if let Some(id) = report.diagnostics_id {
         details.push_str(&format!(
             "\nDiagnostic ID: {id}\nInspect: mimir judge diagnostics --id {id}"
@@ -157,11 +154,7 @@ pub async fn notify(settings: &RuntimeConfig, state: &State, report: &mut Report
             .unwrap_or_else(|| "all-projects".into()),
         status: learning_status(report),
         details: match report.status.as_str() {
-            "blocked" | "partial" => Some(failure_details(
-                &project(settings),
-                settings.llm.max_calls,
-                report,
-            )),
+            "blocked" | "partial" => Some(failure_details(&project(settings), report)),
             "idle" => state::read_failure(state.path())?
                 .as_ref()
                 .map(|incident| recovery_details(&project(settings), report, incident)),
@@ -186,9 +179,9 @@ mod tests {
         failed.selected_ids.push(affected);
         failed.diagnostics_id = Some(diagnostic);
         failed.recorded_at = 1_792_004_819;
-        let failure = failure_details("agda2sysml", 5, &failed);
+        let failure = failure_details("agda2sysml", &failed);
         assert!(failure.contains("Reason: model call limit reached"));
-        assert!(failure.contains("Configured model call limit: 5"));
+        assert!(!failure.contains("Configured model call limit"));
         assert!(failure.contains(&affected.to_string()));
         assert!(failure.contains(&format!("mimir judge diagnostics --id {diagnostic}")));
 

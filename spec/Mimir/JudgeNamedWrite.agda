@@ -3,6 +3,7 @@
 -- The filesystem program implements the approved creation-ownership correction.
 module Mimir.JudgeNamedWrite where
 
+import Mimir.OptionalLimit as Limit
 open import Data.List using (List; []; _∷_; map; length)
 open import Data.Nat using (_≤_; _≤?_)
 open import Data.Product using (Σ; _,_; _×_)
@@ -77,7 +78,7 @@ module With (Handle NativeError RandomError EncodeError : Set) where
       (join directory (filename name)) directory bytes)
 
   writeBytes : Path → Name → Endian → List Byte → Script Outcome
-  writeBytes directory name endian bytes with length bytes ≤? limit name
+  writeBytes directory name endian bytes with Limit.check (limit name) (length bytes)
   ... | no oversized = done (returned (inj₁ FS.oversizedWrite))
   ... | yes admitted = ask randomBytes16 (afterEntropy directory name endian bytes)
 
@@ -87,8 +88,8 @@ module With (Handle NativeError RandomError EncodeError : Set) where
 
   successRequiresBound : ∀ directory name endian bytes {events} →
     Runs (writeBytes directory name endian bytes) events (returned (inj₂ tt)) →
-    length bytes ≤ limit name
-  successRequiresBound directory name endian bytes run with length bytes ≤? limit name
+    Limit.Within (limit name) (length bytes)
+  successRequiresBound directory name endian bytes run with Limit.check (limit name) (length bytes)
   successRequiresBound directory name endian bytes () | no oversized
   ... | yes admitted = admitted
 
@@ -113,7 +114,7 @@ module With (Handle NativeError RandomError EncodeError : Set) where
   successRequiresReceipts : ∀ directory name endian bytes {events} →
     Runs (writeBytes directory name endian bytes) events (returned (inj₂ tt)) →
     Committed directory name endian bytes events
-  successRequiresReceipts directory name endian bytes run with length bytes ≤? limit name
+  successRequiresReceipts directory name endian bytes run with Limit.check (limit name) (length bytes)
   successRequiresReceipts directory name endian bytes () | no oversized
   successRequiresReceipts directory name endian bytes (P.replied effect continuation (inj₂ random) run) | yes admitted =
     prependEntropy directory name endian bytes random
@@ -130,9 +131,9 @@ module With (Handle NativeError RandomError EncodeError : Set) where
     events ≡ [] × result ≡ panicked error
   entropyFailureNoEffects directory name endian bytes error run = P.completedCannotProduceEffects run
 
-  oversizedNoEffects : ∀ directory name endian bytes → ¬ (length bytes ≤ limit name) →
+  oversizedNoEffects : ∀ directory name endian bytes → ¬ (Limit.Within (limit name) (length bytes)) →
     ∀ {events result} → Runs (writeBytes directory name endian bytes) events result →
     events ≡ [] × result ≡ returned (inj₁ FS.oversizedWrite)
-  oversizedNoEffects directory name endian bytes oversized run with length bytes ≤? limit name
+  oversizedNoEffects directory name endian bytes oversized run with Limit.check (limit name) (length bytes)
   ... | yes admitted = ⊥-elim (oversized admitted)
   ... | no rejected = P.completedCannotProduceEffects run

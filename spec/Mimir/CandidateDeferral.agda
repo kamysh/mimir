@@ -1,12 +1,12 @@
 {-# OPTIONS --safe #-}
 -- Candidate conflict retries and durable exclusion are different decisions.
--- Existing runner policy permits a bounded correction opportunity; persisting
+-- Corrections remain available after every conflict; persisting
 -- an exclusion additionally requires a fresh unchanged/unreviewed observation.
 module Mimir.CandidateDeferral where
 
 open import Data.Bool using (Bool; true; false)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≤_; z≤n; s≤s)
+open import Data.Nat using (ℕ; suc)
 open import Data.Integer using (_<_)
 open import Data.Product using (_×_; _,_; proj₁)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
@@ -17,50 +17,31 @@ import Mimir.DeferredReviews as DeferredReviews
 
 data Conflicts : Set where
   none : Conflicts
-  once : Fault → Conflicts
-  twice : Fault → Fault → Conflicts
+  conflict : Fault → Conflicts → Conflicts
 
 recordConflict : Conflicts → Fault → Conflicts
-recordConflict none detail = once detail
-recordConflict (once first) detail = twice first detail
-recordConflict (twice first second) detail = twice first second
+recordConflict history detail = conflict detail history
 
 count : Conflicts → ℕ
 count none = 0
-count (once first) = 1
-count (twice first second) = 2
+count (conflict detail history) = suc (count history)
 
-countBounded : ∀ history → count history ≤ 2
-countBounded none = z≤n
-countBounded (once first) = s≤s z≤n
-countBounded (twice first second) = s≤s (s≤s z≤n)
+allConflictsCounted : ∀ history detail → count (recordConflict history detail) ≡ suc (count history)
+allConflictsCounted history detail = refl
 
 data Seen : Conflicts → Set where
-  one : ∀ detail → Seen (once detail)
-  two : ∀ first second → Seen (twice first second)
+  present : ∀ detail history → Seen (conflict detail history)
 
-data Next : Set where correctOnce inspectDeferral : Next
-
+data Next : Set where correct : Next
 nextConflict : Conflicts → Fault → Next
-nextConflict none detail = correctOnce
-nextConflict (once first) detail = inspectDeferral
-nextConflict (twice first second) detail = inspectDeferral
+nextConflict history detail = correct
 
--- These distinctions reflect current runner behavior. In particular a
--- malformed tool attempt exhausting its budget remains a failure even after
--- a candidate conflict; a provider limit/error after a conflict can defer it.
 data End : Set where
-  modelLimit toolLimit backendFailure backendTimeout modelDone conflictLimit
-    malformedToolLimit toolFailure traceFailure userStopped resolved : End
+  backendFailure modelDone toolFailure traceFailure userStopped resolved : End
 
 canDefer : End → Bool
-canDefer modelLimit = true
-canDefer toolLimit = true
 canDefer backendFailure = true
-canDefer backendTimeout = true
 canDefer modelDone = true
-canDefer conflictLimit = true
-canDefer malformedToolLimit = false
 canDefer toolFailure = false
 canDefer traceFailure = false
 canDefer userStopped = false
@@ -72,12 +53,9 @@ record Request (selected : Pin) (history : Conflicts) (ending : End) : Set where
 
 propose : ∀ selected history ending → Maybe (Request selected history ending)
 propose selected none ending = nothing
-propose selected (once detail) ending with canDefer ending in allowed
+propose selected (conflict detail history) ending with canDefer ending in allowed
 ... | false = nothing
-... | true = just (request (one detail) allowed)
-propose selected (twice first second) ending with canDefer ending in allowed
-... | false = nothing
-... | true = just (request (two first second) allowed)
+... | true = just (request (present detail history) allowed)
 
 source : Pin → Deferred
 source selected = deferred (Pin.identity selected) (Pin.sourceRevision selected)

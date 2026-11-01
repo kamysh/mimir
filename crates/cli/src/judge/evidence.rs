@@ -109,7 +109,7 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let config = dir.join("config.toml");
         let log = dir.join("review.log");
-        fs::write(&config,format!("config_version=1\n[logging]\ndirectory='/tmp/mimir-fixture-logs'\n[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}','user-feedback']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\ntimeout_seconds=10\nmax_calls=3\n",fixture.display(),id,log.display())).unwrap();
+        fs::write(&config,format!("config_version=1\n[logging]\ndirectory='/tmp/mimir-fixture-logs'\n[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}','user-feedback']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",fixture.display(),id,log.display())).unwrap();
         fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
         let settings = crate::judge::config::load(Some(&config)).unwrap();
         let state = crate::judge::state::State::lock(dir.join("state"))

@@ -54,8 +54,7 @@ record Judge : Set where
 record Llm : Set where
   constructor llmSettings
   field backend : Backend; model : Text; effort : Maybe Effort
-        timeoutSeconds maxCalls maxOutputTokens : ℕ
-        maxBudget : Maybe Binary.Number; provider : Maybe Provider
+        provider : Maybe Provider
         apiKey baseURL command : Maybe Text; args : List Text
 
 record Runtime : Set where
@@ -78,17 +77,13 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     defaulted "mcp_args" [] (readArray V.asString) fields >>= λ args → inj₂ (judgeSettings batch project cmd args))
 
   llm : V.Value → Validation.Fault ⊎ Llm
-  llm = recordOf ("backend" ∷ "model" ∷ "reasoning_effort" ∷ "timeout_seconds" ∷ "max_calls" ∷
-    "max_output_tokens" ∷ "max_budget_usd" ∷ "provider" ∷ "api_key" ∷ "base_url" ∷ "command" ∷ "args" ∷ [])
+  llm = recordOf ("backend" ∷ "model" ∷ "reasoning_effort" ∷ "provider" ∷ "api_key" ∷ "base_url" ∷ "command" ∷ "args" ∷ [])
     (λ fields → required "backend" backend fields >>= λ b → required "model" V.asString fields >>= λ model →
       optional "reasoning_effort" effort fields >>= λ effort →
-      defaulted "timeout_seconds" 300 (unsigned (Binary.powerMinusOne 64)) fields >>= λ timeout →
-      defaulted "max_calls" 20 (unsigned sizeMaximum) fields >>= λ calls →
-      defaulted "max_output_tokens" 4096 (unsigned sizeMaximum) fields >>= λ tokens →
-      optional "max_budget_usd" Num.number fields >>= λ budget → optional "provider" provider fields >>= λ p →
+      optional "provider" provider fields >>= λ p →
       optional "api_key" V.asString fields >>= λ key → optional "base_url" V.asString fields >>= λ url →
       optional "command" V.asString fields >>= λ cmd → defaulted "args" [] (readArray V.asString) fields >>= λ args →
-      inj₂ (llmSettings b model effort timeout calls tokens budget p key url cmd args))
+      inj₂ (llmSettings b model effort p key url cmd args))
 
   section : ∀ {A : Set} → String → (V.Value → Validation.Fault ⊎ A) → Maybe V.Value → Text ⊎ A
   section name decode nothing = inj₁ (toList "missing runtime section")
@@ -127,8 +122,7 @@ optionalCheck check nothing = inj₂ tt
 optionalCheck check (just value) = check value
 
 arguments : List Text → Text ⊎ ⊤
-arguments args = ensure (does (length args ≤? 128)) "too many arguments" >>= λ _ →
-  ensure (all clean args) "invalid argument"
+arguments args = ensure (all clean args) "invalid argument"
 
 fileName : Path.Path → Bool
 fileName path with reverse (Path.components path)
@@ -153,7 +147,7 @@ module Validate (libraries : Libraries) where
       "llm.base_url must not contain credentials, query, or fragment"
 
   judge : Judge → Text ⊎ ⊤
-  judge j = ensure (between 1 100 (Judge.batchSize j)) "judge.batch_size must be 1..=100" >>= λ _ →
+  judge j = ensure (does (1 ≤? Judge.batchSize j)) "judge.batch_size must be positive" >>= λ _ →
     optionalCheck (λ p → ensure (clean p) "invalid judge.project") (Judge.project j) >>= λ _ →
     ensure (clean (Judge.mcpCommand j)) "invalid judge.mcp_command" >>= λ _ →
     ensure (plainCommand (Libraries.path libraries (Judge.mcpCommand j)) ∨ absoluteCommand (Judge.mcpCommand j))
@@ -167,8 +161,8 @@ module Validate (libraries : Libraries) where
   commandBackend l nothing = inj₁ (toList "llm.command is required")
   commandBackend l (just cmd) = ensure (clean cmd) "invalid llm.command" >>= λ _ →
     ensure (absoluteCommand cmd) "llm.command must be absolute" >>= λ _ →
-    ensure (is-nothing (Llm.provider l) ∧ is-nothing (Llm.apiKey l) ∧ is-nothing (Llm.baseURL l) ∧ is-nothing (Llm.maxBudget l))
-      "command backend cannot use API or budget settings"
+    ensure (is-nothing (Llm.provider l) ∧ is-nothing (Llm.apiKey l) ∧ is-nothing (Llm.baseURL l))
+      "command backend cannot use API settings"
 
   providerEndpoint : Provider → Llm → Text ⊎ ⊤
   providerEndpoint compatible l = ensure (is-just (Llm.baseURL l)) "llm.base_url is required for openai-compatible"
@@ -178,12 +172,12 @@ module Validate (libraries : Libraries) where
   apiBackend l nothing _ = inj₁ (toList "llm.provider is required")
   apiBackend l (just p) nothing = inj₁ (toList "llm.api_key is required")
   apiBackend l (just p) (just key) = ensure (clean key) "invalid llm.api_key" >>= λ _ →
-    ensure (is-nothing (Llm.command l) ∧ does (length (Llm.args l) ≤? 0) ∧ is-nothing (Llm.maxBudget l))
-      "API backend cannot use command or harness budget settings" >>= λ _ → providerEndpoint p l
+    ensure (is-nothing (Llm.command l) ∧ does (length (Llm.args l) ≤? 0))
+      "API backend cannot use command settings" >>= λ _ → providerEndpoint p l
 
   specific : Llm → Backend → Text ⊎ ⊤
   specific l claudeCode = harness l
-  specific l codex = harness l >>= λ _ → ensure (is-nothing (Llm.maxBudget l)) "llm.max_budget_usd is Claude Code only"
+  specific l codex = harness l
   specific l commandMode = commandBackend l (Llm.command l)
   specific l api = apiBackend l (Llm.provider l) (Llm.apiKey l)
 
@@ -193,11 +187,7 @@ module Validate (libraries : Libraries) where
 
   llm : Llm → Text ⊎ ⊤
   llm l = ensure (clean (Llm.model l)) "invalid llm.model" >>= λ _ →
-    ensure (between 1 86400 (Llm.timeoutSeconds l)) "llm.timeout_seconds must be 1..=86400" >>= λ _ →
-    ensure (between 1 10000 (Llm.maxCalls l)) "llm.max_calls must be 1..=10000" >>= λ _ →
-    ensure (between 1 1000000 (Llm.maxOutputTokens l)) "llm.max_output_tokens must be 1..=1000000" >>= λ _ →
     arguments (Llm.args l) >>= λ _ →
-    optionalCheck (λ n → ensure (positive n) "llm.max_budget_usd must be positive and finite") (Llm.maxBudget l) >>= λ _ →
     optionalCheck endpoint (Llm.baseURL l) >>= λ _ →
     ensure (is-nothing (Llm.effort l) ∨ codexOnly (Llm.backend l)) "llm.reasoning_effort is Codex only" >>= λ _ →
     specific l (Llm.backend l)

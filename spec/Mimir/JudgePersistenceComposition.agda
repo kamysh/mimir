@@ -18,6 +18,7 @@ open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text using (Text)
 open import Mimir.Bits using (Byte)
+import Mimir.OptionalLimit as Limit
 import Mimir.JudgePersistence as Names
 import Mimir.JudgeStateRecords as Records
 import Mimir.JudgeStateMap as Mapping
@@ -67,9 +68,10 @@ module Storage (conversion : Conversion.Contract) (sizeMaximum : ℕ) (endian : 
   ... | Flow.panicked cursor = ⊥
 
   Clean : Names.Name → FS.Event → Set
-  Clean name (FS.readAtMost handle limit , inj₂ bytes) with length bytes ≤? Names.limit name
+  Clean name (FS.readAtMost handle limit , inj₂ bytes) with Limit.check (Names.limit name) (length bytes)
   ... | yes bounded = OrdinaryDecode name bytes
   ... | no oversized = ⊤
+  Clean name (FS.readComplete handle , inj₂ bytes) = OrdinaryDecode name bytes
   Clean name event = ⊤
 
   module Reading (name : Names.Name) where

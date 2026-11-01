@@ -1555,3 +1555,67 @@ async fn source_coverage_is_atomic_revision_owned_and_preserves_unresolved_items
         item.id.to_string()
     );
 }
+
+#[tokio::test]
+async fn complete_large_source_review_is_stored_and_read_back_without_caps() {
+    use mimir_core::{
+        assessment::{ItemKind, LearningItem},
+        learning_sources::{Coverage, CoverageStatus, SourceRecord},
+    };
+    let svc = service().await;
+    let mut e = experience(&format!("large-review-{}", Uuid::new_v4()));
+    e.source = ObservationSource::AgentReport;
+    e.outcome = Outcome::Unknown;
+    e.source_records = (0..65)
+        .map(|n| SourceRecord {
+            recorded_at: None,
+            source_ref: format!("source-{n}"),
+            actor: "fixture".into(),
+            provenance: ObservationSource::AgentReport,
+            text: format!("Recommendation {n}: {}", "source text ".repeat(1200)),
+        })
+        .collect();
+    e.evidence = e
+        .source_records
+        .iter()
+        .map(|s| s.source_ref.clone())
+        .collect();
+    svc.record_experience(&e, 0).await.unwrap();
+    let mut r = review(&e);
+    r.source_coverage = e
+        .source_records
+        .iter()
+        .map(|s| Coverage {
+            source_ref: s.source_ref.clone(),
+            status: CoverageStatus::Unresolved,
+            reason: "No independent outcome evidence".into(),
+        })
+        .collect();
+    r.extracted_items = e
+        .source_records
+        .iter()
+        .map(|s| LearningItem {
+            id: Uuid::new_v4(),
+            kind: ItemKind::Suggestion,
+            source_ref: s.source_ref.clone(),
+            actor: s.actor.clone(),
+            statement: s.text.clone(),
+            conditions: "Untried suggestion".into(),
+            predictions: vec![],
+        })
+        .collect();
+    assert!(serde_json::to_vec(&r).unwrap().len() > 65536);
+    assert_eq!(
+        svc.review_experience(&r, 0).await.unwrap().review_revision,
+        1
+    );
+    let receipt = svc.learning_review(e.id).await.unwrap();
+    assert_eq!(receipt["review"], serde_json::to_value(&r).unwrap());
+    assert!(!svc
+        .pending_experiences(Some(&e.project), 101)
+        .await
+        .unwrap()
+        .iter()
+        .any(|s| s.experience.id == e.id));
+    svc.delete_project(&e.project).await.unwrap();
+}

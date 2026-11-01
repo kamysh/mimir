@@ -1,14 +1,10 @@
-//! Bounded, process-group-owned subprocess I/O for judge adapters.
-use super::state::SourceFailure;
-use anyhow::{anyhow, ensure, Result};
+//! Complete model I/O, bounded diagnostics, and owned subprocess cleanup.
+use anyhow::{anyhow, Result};
 use std::path::Path;
 use std::process::Stdio;
-use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
-const MAX_INPUT: usize = 2 * 1024 * 1024;
-const MAX_OUTPUT: usize = 8 * 1024 * 1024;
 const MAX_DIAGNOSTIC: usize = 64 * 1024;
 
 pub struct Output {
@@ -39,11 +35,14 @@ impl Drop for GroupChild {
     }
 }
 
-async fn read_limited<R: AsyncRead + Unpin>(
-    mut reader: R,
-    max: usize,
-    stream: &str,
-) -> Result<Vec<u8>> {
+async fn read_complete<R: AsyncRead + Unpin>(mut reader: R) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).await?;
+    Ok(bytes)
+}
+
+// Retention never stops draining the pipe or fails the model operation.
+async fn read_diagnostic<R: AsyncRead + Unpin>(mut reader: R) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
@@ -51,34 +50,13 @@ async fn read_limited<R: AsyncRead + Unpin>(
         if n == 0 {
             break;
         }
-        if bytes.len() + n > max {
-            // Include the triggering read in the observed lower bound. Storage
-            // remains bounded by the stream limit plus one fixed-size chunk;
-            // SourceFailure retains only a private, bounded prefix.
-            bytes.extend_from_slice(&chunk[..n]);
-            return Err(SourceFailure::input(
-                &format!("harness {stream} output"),
-                &bytes,
-                &format!(
-                    "output exceeded limit of {max} bytes (observed at least {} bytes)",
-                    bytes.len()
-                ),
-            )
-            .into());
-        }
-        bytes.extend_from_slice(&chunk[..n]);
+        let retained = n.min(MAX_DIAGNOSTIC.saturating_sub(bytes.len()));
+        bytes.extend_from_slice(&chunk[..retained]);
     }
     Ok(bytes)
 }
 
-pub async fn run(
-    program: &str,
-    args: &[String],
-    cwd: &Path,
-    input: &[u8],
-    timeout: Duration,
-) -> Result<Output> {
-    ensure!(input.len() <= MAX_INPUT, "harness input exceeded limit");
+pub async fn run(program: &str, args: &[String], cwd: &Path, input: &[u8]) -> Result<Output> {
     let mut command = Command::new(program);
     command
         .args(args)
@@ -115,7 +93,7 @@ pub async fn run(
         .stderr
         .take()
         .ok_or_else(|| anyhow!("harness stderr unavailable"))?;
-    let outcome = tokio::time::timeout(timeout, async {
+    let outcome = async {
         let write = async move {
             stdin.write_all(input).await?;
             stdin.shutdown().await?;
@@ -124,8 +102,8 @@ pub async fn run(
         };
         let ((), stdout, stderr) = tokio::try_join!(
             async { write.await.map_err(anyhow::Error::from) },
-            read_limited(stdout, MAX_OUTPUT, "stdout"),
-            read_limited(stderr, MAX_DIAGNOSTIC, "stderr"),
+            read_complete(stdout),
+            read_diagnostic(stderr),
         )?;
         // Kill any descendants while the child PID is still reserved, then reap.
         child.kill_group();
@@ -136,59 +114,36 @@ pub async fn run(
             return Err(anyhow!("harness exited with {exit}: {detail}"));
         }
         Ok::<_, anyhow::Error>(Output { stdout })
-    })
+    }
     .await;
     if child.group.is_some() {
         child.kill_group();
-        let reaped = matches!(
-            tokio::time::timeout(Duration::from_secs(1), child.child.wait()).await,
-            Ok(Ok(_))
-        );
+        let reaped = child.child.wait().await.is_ok();
         // Once reaped, never signal a potentially reused process-group ID.
         if reaped {
             child.group = None;
         }
     }
-    match outcome {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(error)) => Err(error),
-        Err(_) => Err(anyhow!("harness timed out")),
-    }
+    outcome
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::judge::state::Report;
 
     #[tokio::test]
-    async fn output_limits_accept_the_boundary_and_preserve_overflow_evidence() {
-        for (stream, limit) in [("stdout", MAX_OUTPUT), ("stderr", MAX_DIAGNOSTIC)] {
-            let input = vec![b'x'; limit];
-            assert_eq!(
-                read_limited(input.as_slice(), limit, stream).await.unwrap(),
-                input
-            );
-
-            let mut input = input;
-            input.push(b'y');
-            let error = read_limited(input.as_slice(), limit, stream)
-                .await
-                .unwrap_err();
-            let source = error.downcast_ref::<SourceFailure>().unwrap();
-            assert_eq!(source.stage, format!("harness {stream} output"));
-            assert_eq!(source.total_bytes, limit + 1);
-            assert!(source.detail.contains(&format!("limit of {limit} bytes")));
-            assert!(source
-                .detail
-                .contains(&format!("at least {} bytes", limit + 1)));
-            assert_eq!(source.excerpt_start, 0);
-            assert_eq!(source.excerpt, "x".repeat(32 * 1024));
-            assert!(!error.to_string().contains(&"x".repeat(100)));
-
-            let mut report = Report::new("blocked", 1, 0, 0, 1, 0);
-            report.capture_source(&error);
-            assert_eq!(report.failure_source.unwrap().total_bytes, limit + 1);
-        }
+    async fn complete_output_and_drained_diagnostics_have_distinct_retention() {
+        let input = vec![b'x'; 8 * 1024 * 1024 + 1];
+        assert_eq!(read_complete(input.as_slice()).await.unwrap(), input);
+        let (mut writer, reader) = tokio::io::duplex(8192);
+        let writer = tokio::spawn(async move {
+            writer.write_all(&input).await.unwrap();
+            writer.shutdown().await.unwrap();
+        });
+        assert_eq!(
+            read_diagnostic(reader).await.unwrap(),
+            vec![b'x'; MAX_DIAGNOSTIC]
+        );
+        writer.await.unwrap();
     }
 }

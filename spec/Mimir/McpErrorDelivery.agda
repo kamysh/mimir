@@ -63,10 +63,10 @@ module Delivery (Payload : Set) (selected : Pin) (minimum maximum expectedCode :
     (C.step (C.after state (first ∷ intervening)) final)
 
   wireRejectionDelivered : ∀ models tools request failure → W.InRange expectedCode →
-    continue (C.toolPending (C.budget (suc models) tools) request) (C.traceWritten ∷ C.tick ∷ []) C.traceWritten
+    continue (C.toolPending (C.counts models tools) request) (C.traceWritten ∷ C.tick ∷ []) C.traceWritten
       (ordinaryInput (dispatch (encodedRefusal (Errors.refusal Errors.invalidInput failure)))) ≡
-    just (C.next (C.modelPending (C.budget models tools)) (C.requestModel (C.rejected failure) ∷ []))
+    just (C.next (C.modelPending (C.counts (suc models) tools)) (C.requestModel (C.rejected failure) ∷ []))
   wireRejectionDelivered models tools request failure bounded =
-    trans (cong (λ routed → continue (C.toolPending (C.budget (suc models) tools) request) (C.traceWritten ∷ C.tick ∷ []) C.traceWritten
+    trans (cong (λ routed → continue (C.toolPending (C.counts models tools) request) (C.traceWritten ∷ C.tick ∷ []) C.traceWritten
       (ordinaryInput routed)) (validationExact failure bounded))
       (cong just (C.rejectionDelivered models tools request failure))

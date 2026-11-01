@@ -39,6 +39,7 @@ module With (Path Handle NativeError : Set) where
     openFile : Path → Open → Operation
     fileMetadata : Handle → Operation
     exclusiveNonblockingLock unlock : Handle → Operation
+    readComplete : Handle → Operation
     readAtMost : Handle → ℕ → Operation
     writeAll : Handle → List Byte → Operation
     syncAll : Handle → Operation
@@ -56,6 +57,7 @@ module With (Path Handle NativeError : Set) where
   Reply (fileMetadata _) = IO Metadata
   Reply (exclusiveNonblockingLock _) = IO ⊤
   Reply (unlock _) = IO ⊤
+  Reply (readComplete _) = IO (List Byte)
   Reply (readAtMost _ _) = IO (List Byte)
   Reply (writeAll _ _) = IO ⊤
   Reply (syncAll _) = IO ⊤

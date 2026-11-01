@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
 -- Core experience contract and composition of source/assessment validation.
--- The 64 KiB serialized JSON limit belongs to the wire encoder contract.
+-- Serialization failures belong to the wire encoder contract.
 module Mimir.ExperienceSchema where
 
 open import Data.Bool using (Bool; true; false)
@@ -72,9 +72,7 @@ Valid e = Items.ItemsValid (Experience.items e) ×
   (Nonblank (Experience.project e) ×
   (Nonblank (Experience.context e) ×
   (Nonblank (Experience.action e) ×
-  (atMost 32 (Experience.evidence e) ×
-  (atMost 64 (Experience.beliefIDs e) ×
-    OutcomeEvidence (Experience.outcome e) (Experience.evidence e))))))))
+    OutcomeEvidence (Experience.outcome e) (Experience.evidence e))))))
 
 validate : ∀ e → Checked (Valid e)
 validate e = combine (at (key "learning_items") (Items.validateItems (Experience.items e)))
@@ -83,9 +81,7 @@ validate e = combine (at (key "learning_items") (Items.validateItems (Experience
   (combine (at (key "project") (checkNonblank (Experience.project e)))
   (combine (at (key "context") (checkNonblank (Experience.context e)))
   (combine (at (key "action") (checkNonblank (Experience.action e)))
-  (combine (at (key "evidence") (checkCount 32 (Experience.evidence e)))
-  (combine (at (key "belief_ids") (checkCount 64 (Experience.beliefIDs e)))
-    (checkOutcomeEvidence (Experience.outcome e) (Experience.evidence e)))))))))
+    (checkOutcomeEvidence (Experience.outcome e) (Experience.evidence e)))))))
 
 hasLegacy : Reviews.Review → Bool
 hasLegacy r with Reviews.Review.feedbacks r | Reviews.Review.links r |

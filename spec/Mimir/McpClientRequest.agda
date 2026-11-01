@@ -1,7 +1,7 @@
 {-# OPTIONS --safe #-}
 -- One client request. IDs advance before sending, notifications consume a
--- finite allowance, and no failure retries a write. The readLine effect is
--- refined separately into byte reads and a deadline.
+-- no allowance, and no failure retries a write. The readLine effect is
+-- refined separately into an unbounded byte-framing state machine.
 import Mimir.FloatConversion
 module Mimir.McpClientRequest (floatConversion : Mimir.FloatConversion.Contract) where
 
@@ -42,95 +42,53 @@ data Outcome : Set where
   protocolFailure : RPC.Failure → Outcome
   applicationFailure success : V.Value → Outcome
 
-notificationFacts : ∀ expected notices raw next → Wire.receive expected notices raw ≡ R.notification next →
-  next ≡ suc notices × next ≤ 64
-notificationFacts expected notices raw next observed =
-  R.notificationAdvances expected notices (Wire.extract raw) next identified ,
-  R.notificationBound expected notices (Wire.extract raw) next identified
-  where
-  identified = R.receivedNotification expected notices (Wire.extract raw) next observed
-
-exhaustedCannotNotify : ∀ expected notices raw next → notices ≡ 64 →
-  Wire.receive expected notices raw ≡ R.notification next → ⊥
-exhaustedCannotNotify expected notices raw next exhausted observed
-  with notificationFacts expected notices raw next observed
-... | advance , bounded rewrite advance | exhausted = 1+n≰n bounded
-
 module Pending (expected : ℕ) where
-  mutual
-    wait : ∀ remaining notices → remaining + notices ≡ 64 → E.Script Outcome
-    wait remaining notices allowance = E.ask readLine (afterLine remaining notices allowance)
+  data State : Set where
+    sending : Text → V.Value → State
+    waiting : ℕ → State
+    finished : Outcome → State
 
-    afterLine : ∀ remaining notices → remaining + notices ≡ 64 → Reply readLine → E.Script Outcome
-    afterLine remaining notices allowance (inj₁ failure) = E.done (transportFailure failure)
-    afterLine remaining notices allowance (inj₂ bytes) with Wire.line bytes
-    ... | inj₁ failure = E.done (syntaxFailure failure)
-    ... | inj₂ raw = afterFrame remaining notices allowance raw (Wire.receive expected notices raw) refl
+  afterLine : ℕ → Reply readLine → State
+  afterLine notices (inj₁ failure) = finished (transportFailure failure)
+  afterLine notices (inj₂ bytes) with Wire.line bytes
+  ... | inj₁ failure = finished (syntaxFailure failure)
+  ... | inj₂ raw with Wire.receive expected notices raw
+  ...   | R.failed failure = finished (protocolFailure failure)
+  ...   | R.rejected failure = finished (applicationFailure failure)
+  ...   | R.succeeded value = finished (success value)
+  ...   | R.notification next = waiting next
 
-    afterFrame : ∀ remaining notices → remaining + notices ≡ 64 → ∀ raw outcome →
-      Wire.receive expected notices raw ≡ outcome → E.Script Outcome
-    afterFrame remaining notices allowance raw (R.failed failure) observed = E.done (protocolFailure failure)
-    afterFrame remaining notices allowance raw (R.rejected failure) observed = E.done (applicationFailure failure)
-    afterFrame remaining notices allowance raw (R.succeeded value) observed = E.done (success value)
-    afterFrame zero notices allowance raw (R.notification next) observed =
-      ⊥-elim (exhaustedCannotNotify expected notices raw next allowance observed)
-    afterFrame (suc remaining) notices allowance raw (R.notification next) observed
-      with notificationFacts expected notices raw next observed
-    ... | advance , bounded = wait remaining next
-      (trans (subst (λ n → remaining + n ≡ suc (remaining + notices)) (sym advance) (+-suc remaining notices)) allowance)
+  afterSend : Reply (send expected [] V.null) → State
+  afterSend (inj₁ failure) = finished (transportFailure failure)
+  afterSend (inj₂ tt) = waiting 0
 
-  afterSend : Reply (send expected [] V.null) → E.Script Outcome
-  afterSend (inj₁ failure) = E.done (transportFailure failure)
-  afterSend (inj₂ tt) = wait 64 0 refl
+  data Step : Set where
+    external : (effect : Effect) → (Reply effect → State) → Step
+    stopped : Outcome → Step
 
-  start : Text → V.Value → E.Script Outcome
-  start method params = E.ask (send expected method params) afterSend
+  next : State → Step
+  next (sending method params) = external (send expected method params) afterSend
+  next (waiting notices) = external readLine (afterLine notices)
+  next (finished result) = stopped result
 
-  mutual
-    waitBound : ∀ remaining notices allowance → Count.Bounded (suc remaining) (wait remaining notices allowance)
-    waitBound remaining notices allowance = Count.ask readLine _ remaining ≤-refl (lineBound remaining notices allowance)
+  data Runs : State → List E.Event → Outcome → Set where
+    returned : ∀ outcome → Runs (finished outcome) [] outcome
+    replied : ∀ {state effect continuation events outcome} → next state ≡ external effect continuation →
+      (reply : Reply effect) → Runs (continuation reply) events outcome →
+      Runs state ((effect , reply) ∷ events) outcome
 
-    lineBound : ∀ remaining notices allowance reply →
-      Count.Bounded remaining (afterLine remaining notices allowance reply)
-    lineBound remaining notices allowance (inj₁ failure) = Count.done _
-    lineBound remaining notices allowance (inj₂ bytes) with Wire.line bytes
-    ... | inj₁ failure = Count.done _
-    ... | inj₂ raw = frameBound remaining notices allowance raw _ refl
+  start : Text → V.Value → State
+  start = sending
 
-    frameBound : ∀ remaining notices allowance raw outcome observed →
-      Count.Bounded remaining (afterFrame remaining notices allowance raw outcome observed)
-    frameBound remaining notices allowance raw (R.failed failure) observed = Count.done _
-    frameBound remaining notices allowance raw (R.rejected failure) observed = Count.done _
-    frameBound remaining notices allowance raw (R.succeeded value) observed = Count.done _
-    frameBound zero notices allowance raw (R.notification next) observed =
-      ⊥-elim (exhaustedCannotNotify expected notices raw next allowance observed)
-    frameBound (suc remaining) notices allowance raw (R.notification next) observed
-      with notificationFacts expected notices raw next observed
-    ... | advance , bounded = waitBound remaining next _
-
-  sendBound : ∀ reply → Count.Bounded 65 (afterSend reply)
-  sendBound (inj₁ failure) = Count.done _
-  sendBound (inj₂ tt) = waitBound 64 0 refl
-
-  bounded : ∀ method params → Count.Bounded 66 (start method params)
-  bounded method params = Count.ask (send expected method params) afterSend 65 ≤-refl sendBound
-
-  finiteRequest : ∀ method params events outcome → E.Runs (start method params) events outcome → Count.count events ≤ 66
-  finiteRequest method params events outcome execution = Count.runBounded (bounded method params) execution
-
-  finitePrefix : ∀ method params events residual → E.Prefix (start method params) events residual → Count.count events ≤ 66
-  finitePrefix method params events residual execution = Count.prefixBounded (bounded method params) execution
-
-  failedSendStops : ∀ failure events outcome → E.Runs (afterSend (inj₁ failure)) events outcome →
-    events ≡ [] × outcome ≡ transportFailure failure
-  failedSendStops failure events outcome execution = E.completedCannotProduceEffects execution
+  failedSendStops : ∀ failure → afterSend (inj₁ failure) ≡ finished (transportFailure failure)
+  failedSendStops failure = refl
 
 module Counter (maximum : ℕ) where
   module IDs = RPC.IDs maximum
 
   data Launch : Set where
     overflow : Launch
-    started : (current next : ℕ) → E.Script Outcome → Launch
+    started : (current next : ℕ) → Pending.State current → Launch
 
   launch : ℕ → Text → V.Value → Launch
   launch counter method params with IDs.allocate counter

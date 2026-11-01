@@ -124,8 +124,8 @@ module Size (sizeMaximum : ℕ) where
     P.required (toList "at") ℕ u64 ∷
     P.required (toList "experience_id") UUID.UUID P.uuid ∷
     P.required (toList "kind") Text JSON.asString ∷
-    P.required (toList "model_remaining") ℕ size ∷
-    P.required (toList "tool_remaining") ℕ size ∷
+    P.optional (toList "model_requests") ℕ size ∷
+    P.optional (toList "tool_attempts") ℕ size ∷
     P.optional (toList "tool") Text JSON.asString ∷
     P.optional (toList "detail") Text JSON.asString ∷
     P.optional (toList "detail_bytes") ℕ size ∷ []
@@ -145,8 +145,8 @@ module Size (sizeMaximum : ℕ) where
     P.required (toList "status") Text JSON.asString ∷
     P.optional (toList "block_reason") Text JSON.asString ∷
     P.required (toList "selected_ids") (List UUID.UUID) (Array.readArray P.uuid) ∷
-    P.required (toList "model_remaining") ℕ size ∷
-    P.required (toList "tool_remaining") ℕ size ∷
+    P.optional (toList "model_requests") ℕ size ∷
+    P.optional (toList "tool_attempts") ℕ size ∷
     P.required (toList "events") (List R.Event) (Array.readArray event) ∷
     P.defaulted (toList "events_omitted") ℕ size 0 ∷ []
 

@@ -79,25 +79,18 @@ module Details (format : Encoding.Formatting) (localTime : ℕ → Text) where
   ... | no _ = join (toList ", ") (map uuid (take 5 values)) ++
     toList " (+" ++ number (length values ∸ 5) ++ toList " more)"
 
-  modelLimit : ℕ → R.Report → Text
-  modelLimit maximum report with R.Report.blockReason report
-  ... | nothing = []
-  ... | just value with value ≟Text toList "model_budget_exhausted"
-  ...   | no _ = []
-  ...   | yes _ = toList "\nConfigured model call limit: " ++ number maximum
-
   diagnostic : Maybe ℕ → Text
   diagnostic nothing = toList "\nDiagnostic ID: unavailable; inspect mimir judge status"
   diagnostic (just id) = toList "\nDiagnostic ID: " ++ uuid id ++
     toList "\nInspect: mimir judge diagnostics --id " ++ uuid id
 
-  failure : Maybe Text → ℕ → R.Report → Text
-  failure project maximum report = toList "Project: " ++ projectName project ++
+  failure : Maybe Text → R.Report → Text
+  failure project report = toList "Project: " ++ projectName project ++
     toList "\nObserved: " ++ localTime (R.Report.recordedAt report) ++ toList "\nReason: " ++ reason report ++
     toList "\nSelected: " ++ number (R.Report.selected report) ++ toList "; confirmed: " ++ number (R.Report.confirmed report) ++
     toList "; corrected: " ++ number (R.Report.corrected report) ++ toList "; pending: " ++ number (R.Report.pending report) ++
     toList "; unavailable: " ++ number (R.Report.unavailable report) ++ toList "\nAffected experience IDs: " ++
-    ids (R.Report.selectedIds report) ++ modelLimit maximum report ++ diagnostic (R.Report.diagnosticsId report) ++
+    ids (R.Report.selectedIds report) ++ diagnostic (R.Report.diagnosticsId report) ++
     toList "\n" ++ Diagnostics.summary (just report)
 
   find : ℕ → List R.Confirmed → Maybe R.Confirmed
@@ -154,7 +147,7 @@ Reply (submit _) = N.Result
 open Effects.Protocol Effect Reply public
 
 module Run (format : Encoding.Formatting) (localTime : ℕ → Text)
-  (cfg : Config.Config) (path : Path.Path) (project : Maybe Text) (maximum : ℕ) where
+  (cfg : Config.Config) (path : Path.Path) (project : Maybe Text) where
   module D = Details format localTime
 
   submitDetails : R.Report → Maybe Text → Script (Text ⊎ Text)
@@ -167,7 +160,7 @@ module Run (format : Encoding.Formatting) (localTime : ℕ → Text)
   ... | inj₁ _ | _ = done (inj₁ (toList "invalid notification configuration"))
   ... | _ | false = done (inj₁ (toList "notification state path must be absolute"))
   ... | inj₂ _ | true with status report
-  ...   | I.failure _ _ = submitDetails report (just (D.failure project maximum report))
+  ...   | I.failure _ _ = submitDetails report (just (D.failure project report))
   ...   | I.progress = submitDetails report nothing
   ...   | I.recovery = ask readFailure λ where
     (inj₁ error) → done (inj₁ error)

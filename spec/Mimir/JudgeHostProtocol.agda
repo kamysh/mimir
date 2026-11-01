@@ -63,14 +63,13 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   module L = Lock.With Path.Path ℕ Text
   module W (settings : Config.Runtime) program path configPath = Workflow.Compose conversion format libraries environment errors
     (Config.Runtime.llm settings) program contract model (Config.Judge.batchSize (Config.Runtime.judge settings))
-    (Config.Llm.maxCalls (Config.Runtime.llm settings)) (Config.Llm.timeoutSeconds (Config.Runtime.llm settings))
     (Config.Judge.project (Config.Runtime.judge settings))
     (Config.Judge.mcpCommand (Config.Runtime.judge settings)) (Config.Judge.mcpArgs (Config.Runtime.judge settings)) configPath
     (Config.Runtime.email settings) localTime sizeMaximum clockMaximum endian path json buildMessage
   module S path = StateOperations.Bound conversion sizeMaximum endian path
   module F (settings : Config.Runtime) path = FinalizationComposition.Bound conversion format localTime
     sizeMaximum clockMaximum endian path (Config.Runtime.email settings)
-    (Config.Judge.project (Config.Runtime.judge settings)) (Config.Llm.maxCalls (Config.Runtime.llm settings)) json buildMessage
+    (Config.Judge.project (Config.Runtime.judge settings)) json buildMessage
 
   data Built (config : Config.Llm) : Text → Backend.BackendState → Set where
     harness : ∀ program → Harness.construct config ≡ inj₂ program → Built config program (Backend.harness Harness.initial)

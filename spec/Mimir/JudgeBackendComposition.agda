@@ -24,7 +24,7 @@ import Mimir.JudgeServiceBinding as Service
 import Mimir.JudgeScopedTools as Scoped
 import Mimir.ToolCatalog as Catalog
 import Mimir.ApplicationProtocol as Application
-import Mimir.JudgeBudget as Budget
+import Mimir.JudgeAccounting as Budget
 import Mimir.ReviewObservation as Observation
 import Mimir.ExperienceSchema as Experience
 import Mimir.StructuredValue as V
@@ -46,10 +46,10 @@ answer (inj₂ value) = Revision.action value
 
 module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   (libraries : Harness.Libraries) (environment : Application.Environment) (errors : Service.Display) (config : Config.Llm) (program : Text.Text)
-  (initial : Budget.Budget) (deadline : ℕ) (selected : Observation.Snapshot) (tools : List V.Value)
+  (initial : Budget.Counts) (selected : Observation.Snapshot) (tools : List V.Value)
   (sizeMaximum : ℕ) (endian : UUID.Endian) (path : Path.Path) where
   private module Storage = State.Bound conversion sizeMaximum endian path
-  module T = Revision.Run conversion format (Harness.Libraries.display libraries) initial deadline selected
+  module T = Revision.Run conversion format (Harness.Libraries.display libraries) initial selected
   private
     module H = Harness.Run conversion format libraries config program selected tools
     module A provider = API.Run conversion format libraries config provider selected tools
@@ -66,8 +66,6 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
       childEvents : List (Maybe Process.P.Event)
       childState : Process.State
       childPrefix : Process.Trace (Process.start process) childEvents childState
-      observedAt : ℕ
-      expired : deadline ≤ observedAt
       cleanupEvents : List Process.P.Event
       cleaned : Process.P.Runs (Process.cancelOwned (Process.ownerAfter nothing childEvents)) cleanupEvents
         (Process.finished (inj₁ (Process.nativeFailure (toList "cancelled"))))
@@ -90,7 +88,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   ... | inj₂ selected = inj₂ (just selected)
 
   data Receipt : BackendState → (effect : T.Effect) → T.Reply effect → BackendState → Set where
-    harnessCost : ∀ state → Receipt (harness state) T.willCallModel true (harness state)
+    harnessCost : ∀ state → Receipt (harness state) T.willCallModel (Harness.willCallModel state identity) (harness state)
     apiCost : ∀ provider state → Receipt (api provider state) T.willCallModel (API.willCallModel state identity) (api provider state)
     unavailableCost : Receipt unavailable T.willCallModel true unavailable
     harnessResult : ∀ before last events result → H.P.Runs (H.start before last) events result →
@@ -98,12 +96,10 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     apiResult : ∀ provider before last events result →
       A.Trace provider (A.start provider before last) events (A.finished result) →
       Receipt (api provider before) (T.nextModel last) (answer (A.Outcome.answer result)) (api provider (A.Outcome.state result))
-    harnessTimeout : ∀ before last (prefix : HarnessInterruption before last) →
-      Receipt (harness before) (T.nextModel last) Revision.timeout
+    harnessCancelled : ∀ before last (prefix : HarnessInterruption before last) →
+      Receipt (harness before) (T.nextModel last)
+        (Revision.backendError (Revision.error (toList "cancelled") nothing))
         (harness (H.observedState before (HarnessInterruption.events prefix)))
-    apiTimeout : ∀ provider before last events residual now → deadline ≤ now → A.Trace provider (A.start provider before last) events residual →
-      Receipt (api provider before) (T.nextModel last) Revision.timeout (api provider (A.currentAdapter provider residual))
-    deadlineBeforePolling : ∀ before last now → deadline ≤ now → Receipt before (T.nextModel last) Revision.timeout before
     unavailableResult : ∀ last → Receipt unavailable (T.nextModel last)
       (Revision.backendError (Revision.error (toList "configured backend adapter is not installed") nothing)) unavailable
     serviceCall : ∀ before id tool args reply → S.Receipt id tool args reply →
@@ -133,9 +129,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   issued unavailableCost = []
   issued (harnessResult _ _ _ _ _) = []
   issued (apiResult _ _ _ _ _ _) = []
-  issued (harnessTimeout _ _ _) = []
-  issued (apiTimeout _ _ _ _ _ _ _ _) = []
-  issued (deadlineBeforePolling _ _ _ _) = []
+  issued (harnessCancelled _ _ _) = []
   issued (unavailableResult _) = []
   issued (traceRecorded _ _ _ _ _) = []
   issued (ordinary _ _ _ _) = []

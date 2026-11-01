@@ -98,7 +98,7 @@ afterReviews id b parents offset limit tx w = ask (dropTransaction tx) (λ _ →
     (Publication.World.ledger (Learning.World.publication learn)))
 
 afterParents : ℕ → G.BeliefValues → ℕ → ℕ → Store.World → Script Result
-afterParents id b offset limit w with does (1 ≤? limit) ∧ does (limit ≤? 20)
+afterParents id b offset limit w with does (1 ≤? limit)
 ... | false = done invalidPage
 ... | true = ask beginRead (λ
   { (inj₁ error) → done (failed error)

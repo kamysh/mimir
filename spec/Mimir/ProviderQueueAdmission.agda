@@ -21,23 +21,23 @@ import Mimir.ProviderReplay as Replay
 module Q = Response.Q
 
 identityOnly : ∀ request → Response.IdentityValid request → Q.CallValidFor Q.deferred request
-identityOnly request (identity , bounded) = identity , bounded , tt
+identityOnly request identity = identity , tt
 
-deferredAdmission : ∀ {maximum} (response : Response.Reply maximum) →
-  Q.BatchValidFor Q.deferred maximum (Response.Reply.calls response)
+deferredAdmission : (response : Response.Reply) →
+  Q.BatchValidFor Q.deferred (Response.Reply.calls response)
 deferredAdmission response with Response.Reply.valid response
-... | bounded , identities , unique = bounded , All.map (λ {request} → identityOnly request) identities , unique
+... | identities , unique = All.map (λ {request} → identityOnly request) identities , unique
 
 requiredCalls : ∀ {calls} → All Response.IdentityValid calls → All (λ request → Nonempty (Q.Call.name request)) calls →
   All (Q.CallValidFor Q.required) calls
 requiredCalls [] [] = []
-requiredCalls ((identity , bounded) ∷ rest) (name ∷ names) = (identity , bounded , name) ∷ requiredCalls rest names
+requiredCalls (identity ∷ rest) (name ∷ names) = (identity , name) ∷ requiredCalls rest names
 
-requiredAdmission : ∀ {maximum} (response : Response.Reply maximum) →
+requiredAdmission : (response : Response.Reply) →
   All (λ request → Nonempty (Q.Call.name request)) (Response.Reply.calls response) →
-  Q.BatchValidFor Q.required maximum (Response.Reply.calls response)
+  Q.BatchValidFor Q.required (Response.Reply.calls response)
 requiredAdmission response names with Response.Reply.valid response
-... | bounded , identities , unique = bounded , requiredCalls identities names , unique
+... | identities , unique = requiredCalls identities names , unique
 
 module Admission (arguments : Text → Fault ⊎ V.Value) where
   module D = Response.Decode arguments
@@ -64,24 +64,24 @@ module Admission (arguments : Text → Fault ⊎ V.Value) where
     with D.makeCallPreserves identity name (D.chatArguments allowObject (Response.get "arguments" (Response.get "function" input))) request observed
   ... | identityExact , nameExact , argumentsExact = subst Nonempty (sym nameExact) named
 
-  chatAdmission : ∀ allowObject maximum tokens input response → D.chat allowObject maximum tokens input ≡ inj₂ response →
-    Q.BatchValidFor Q.required maximum (Response.Reply.calls response)
-  chatAdmission allowObject maximum tokens input response observed with R.Chat.preserves allowObject maximum tokens input response observed
+  chatAdmission : ∀ allowObject input response → D.chat allowObject input ≡ inj₂ response →
+    Q.BatchValidFor Q.required (Response.Reply.calls response)
+  chatAdmission allowObject input response observed with R.Chat.preserves allowObject input response observed
   ... | choice , rawCalls , selected , rawField , extracted , replay = requiredAdmission response
     (Calls.Extraction.everyOutput (chatName allowObject) (Calls.preservesExtraction extracted))
     where module Calls = C.For (D.chatItem allowObject)
 
-  openaiQueueAccepts : ∀ maximum tokens input response → D.openai maximum tokens input ≡ inj₂ response →
-    reported (Q.checkBatchFor Q.deferred maximum (Response.Reply.calls response)) ≡ []
-  openaiQueueAccepts maximum tokens input response observed = noFalseRejection
-    (Q.checkBatchFor Q.deferred maximum (Response.Reply.calls response)) (deferredAdmission response)
+  openaiQueueAccepts : ∀ input response → D.openai input ≡ inj₂ response →
+    reported (Q.checkBatchFor Q.deferred (Response.Reply.calls response)) ≡ []
+  openaiQueueAccepts input response observed = noFalseRejection
+    (Q.checkBatchFor Q.deferred (Response.Reply.calls response)) (deferredAdmission response)
 
-  anthropicQueueAccepts : ∀ maximum tokens input response → D.anthropic maximum tokens input ≡ inj₂ response →
-    reported (Q.checkBatchFor Q.deferred maximum (Response.Reply.calls response)) ≡ []
-  anthropicQueueAccepts maximum tokens input response observed = noFalseRejection
-    (Q.checkBatchFor Q.deferred maximum (Response.Reply.calls response)) (deferredAdmission response)
+  anthropicQueueAccepts : ∀ input response → D.anthropic input ≡ inj₂ response →
+    reported (Q.checkBatchFor Q.deferred (Response.Reply.calls response)) ≡ []
+  anthropicQueueAccepts input response observed = noFalseRejection
+    (Q.checkBatchFor Q.deferred (Response.Reply.calls response)) (deferredAdmission response)
 
-  chatQueueAccepts : ∀ allowObject maximum tokens input response → D.chat allowObject maximum tokens input ≡ inj₂ response →
-    reported (Q.checkBatchFor Q.required maximum (Response.Reply.calls response)) ≡ []
-  chatQueueAccepts allowObject maximum tokens input response observed = noFalseRejection
-    (Q.checkBatchFor Q.required maximum (Response.Reply.calls response)) (chatAdmission allowObject maximum tokens input response observed)
+  chatQueueAccepts : ∀ allowObject input response → D.chat allowObject input ≡ inj₂ response →
+    reported (Q.checkBatchFor Q.required (Response.Reply.calls response)) ≡ []
+  chatQueueAccepts allowObject input response observed = noFalseRejection
+    (Q.checkBatchFor Q.required (Response.Reply.calls response)) (chatAdmission allowObject input response observed)

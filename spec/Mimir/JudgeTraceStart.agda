@@ -3,7 +3,7 @@
 -- running trace. UUID generation is input and carries no freshness axiom.
 module Mimir.JudgeTraceStart where
 
-open import Data.List using (List; []; _∷_; _++_; length; map)
+open import Data.List using (List; []; _∷_; _++_; length; map; take)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤?_; suc)
@@ -76,7 +76,13 @@ module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) (attemptLimit : �
 
   newTrace : Id → Maybe ℕ → R.Report → ℕ → R.Trace
   newTrace identity observed report budget = R.traceValue identity (Records.clock observed) nothing
-    (toList "running") nothing (R.Report.selectedIds report) budget budget [] 0
+    (toList "running") nothing (take 48 (R.Report.selectedIds report)) (just budget) (just budget) [] 0
+
+  -- The full batch remains in Report; diagnostic metadata has the same
+  -- retention count as events, so arbitrary batch size cannot fill a trace.
+  traceIdsArePrefix : ∀ identity observed report initial →
+    R.Trace.selectedIds (newTrace identity observed report initial) ≡ take 48 (R.Report.selectedIds report)
+  traceIdsArePrefix identity observed report initial = refl
 
   commit : Id → List R.Trace → Script Result
   commit identity values = ask (writeDiagnostics values) λ where

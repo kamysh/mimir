@@ -27,9 +27,7 @@ module Over (Payload : Set) where
   classify selected (Review.Controller.confirmed proof) = Batch.confirmed
   classify selected Review.Controller.sourceChanged = Batch.corrected
   classify selected Review.Controller.unreviewed = Batch.pending
-  classify selected Review.Controller.modelExhausted = Batch.pending
-  classify selected Review.Controller.toolExhausted = Batch.pending
-  classify selected Review.Controller.timedOut = Batch.unavailable
+  classify selected Review.Controller.transportInterrupted = Batch.unavailable
   classify selected Review.Controller.transportFailed = Batch.unavailable
   classify selected Review.Controller.serviceFailed = Batch.unavailable
   classify selected Review.Controller.traceFailed = Batch.unavailable
@@ -47,9 +45,7 @@ module Over (Payload : Set) where
   classifySound selected (Review.Controller.confirmed proof) accepted = proof , refl
   classifySound selected Review.Controller.sourceChanged ()
   classifySound selected Review.Controller.unreviewed ()
-  classifySound selected Review.Controller.modelExhausted ()
-  classifySound selected Review.Controller.toolExhausted ()
-  classifySound selected Review.Controller.timedOut ()
+  classifySound selected Review.Controller.transportInterrupted ()
   classifySound selected Review.Controller.transportFailed ()
   classifySound selected Review.Controller.serviceFailed ()
   classifySound selected Review.Controller.traceFailed ()

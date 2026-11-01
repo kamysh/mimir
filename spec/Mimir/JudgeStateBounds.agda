@@ -53,16 +53,16 @@ module Size (sizeMaximum : ℕ) where
   record EventBounds (value : R.Event) : Set where
     field
       at : R.Event.at value ≤ P.u64Maximum
-      model : R.Event.modelRemaining value ≤ sizeMaximum
-      tool : R.Event.toolRemaining value ≤ sizeMaximum
+      model : Optional (_≤ sizeMaximum) (R.Event.modelRequests value)
+      tool : Optional (_≤ sizeMaximum) (R.Event.toolAttempts value)
       bytes : Optional (_≤ sizeMaximum) (R.Event.detailBytes value)
 
   record TraceBounds (value : R.Trace) : Set where
     field
       started : R.Trace.startedAt value ≤ P.u64Maximum
       finished : Optional (_≤ P.u64Maximum) (R.Trace.finishedAt value)
-      model : R.Trace.modelRemaining value ≤ sizeMaximum
-      tool : R.Trace.toolRemaining value ≤ sizeMaximum
+      model : Optional (_≤ sizeMaximum) (R.Trace.modelRequests value)
+      tool : Optional (_≤ sizeMaximum) (R.Trace.toolAttempts value)
       events : All EventBounds (R.Trace.events value)
       omitted : R.Trace.eventsOmitted value ≤ sizeMaximum
 

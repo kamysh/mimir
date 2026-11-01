@@ -3,6 +3,7 @@
 -- protocol. Unicode and native numeric domains are explicit input evidence.
 module Mimir.JudgeRecordWrite where
 
+import Mimir.OptionalLimit as Limit
 open import Data.List using (List; length)
 open import Data.Nat using (ℕ; _≤_)
 open import Data.Empty using (⊥)
@@ -55,7 +56,7 @@ module Size (sizeMaximum : ℕ) where
 
     successFits : ∀ {name} directory endian (value : Value name) {events} →
       W.P.Runs (write directory endian value) events (W.returned (inj₂ tt)) →
-      length (bytes value) ≤ Names.limit name
+      Limit.Within (Names.limit name) (length (bytes value))
     successFits {name} directory endian value run = W.successRequiresBound directory name endian (bytes value) run
 
     successReceipts : ∀ {name} directory endian (value : Value name) {events} →

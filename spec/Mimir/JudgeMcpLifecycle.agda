@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- Owned MCP child lifecycle and the client-wide request counter/deadline.
+-- Owned MCP child lifecycle and the client-wide request counter.
 -- Creating the client starts a separate process group; dropping it queries
 -- the owned child's current ID before killing the group and direct child.
 module Mimir.JudgeMcpLifecycle where
@@ -34,7 +34,7 @@ data Stream : Set where stdin stdout stderr : Stream
 record Child : Set where constructor child; field handle : ℕ
 record Client : Set where
   constructor client
-  field owner : Child; input output errorPipe : ℕ; nextID deadline : ℕ
+  field owner : Child; input output errorPipe : ℕ; nextID : ℕ
 
 data Effect : Set where
   spawn : Command → Effect
@@ -42,7 +42,6 @@ data Effect : Set where
   currentChildID startKill : Child → Effect
   killGroup : ℕ → Effect
   captureStderr : ℕ → Effect
-  clock : Effect
 
 Reply : Effect → Set
 Reply (spawn _) = Text ⊎ Child
@@ -51,7 +50,6 @@ Reply (currentChildID _) = Maybe ℕ
 Reply (startKill _) = Text ⊎ ⊤
 Reply (killGroup _) = Text ⊎ ⊤
 Reply (captureStderr _) = ⊤
-Reply clock = ℕ
 open Effects.Protocol Effect Reply public
 
 dropClient : Client → Script ⊤
@@ -64,20 +62,19 @@ dropClient owned = ask (currentChildID (Client.owner owned)) λ where
 pipeFailure : Child → Text → Script (Text ⊎ Client)
 pipeFailure owned error = ask (startKill owned) (λ _ → done (inj₁ error))
 
-pipes : Child → ℕ → Script (Text ⊎ Client)
-pipes owned timeout = ask (takePipe owned stdin) λ where
+pipes : Child → Script (Text ⊎ Client)
+pipes owned = ask (takePipe owned stdin) λ where
   (inj₁ error) → pipeFailure owned error
   (inj₂ input) → ask (takePipe owned stdout) λ where
     (inj₁ error) → pipeFailure owned error
     (inj₂ output) → ask (takePipe owned stderr) λ where
       (inj₁ error) → pipeFailure owned error
-      (inj₂ errorPipe) → ask (captureStderr errorPipe) (λ _ → ask clock
-        (λ now → done (inj₂ (client owned input output errorPipe 1 (now + timeout)))))
+      (inj₂ errorPipe) → ask (captureStderr errorPipe) (λ _ → done (inj₂ (client owned input output errorPipe 1)))
 
-start : Text → List Text → Path.Path → ℕ → Script (Text ⊎ Client)
-start program arguments config timeout = ask (spawn (prepare program arguments config)) λ where
+start : Text → List Text → Path.Path → Script (Text ⊎ Client)
+start program arguments config = ask (spawn (prepare program arguments config)) λ where
   (inj₁ error) → done (inj₁ error)
-  (inj₂ owned) → pipes owned timeout
+  (inj₂ owned) → pipes owned
 
 data StderrState : Set where reading closed : List Byte → StderrState
 data StderrInput : Set where bytes : List Byte → StderrInput; eof failure : StderrInput
@@ -101,28 +98,23 @@ module Calls (conversion : Conversion.Contract) (diagnostics : Transport.Diagnos
     List T.E.Event → Client → Outcome → Set where
     full : 18446744073709551615 ≤ Client.nextID before → Call before method params [] before overflow
     exchanged : ∀ events result → Client.nextID before ≤ 18446744073709551614 →
-      T.E.Runs (T.With.start 1048576 (Client.deadline before) diagnostics
-        (Client.nextID before) method params) events result →
+      T.With.Pending.Runs diagnostics (Client.nextID before)
+        (T.With.Pending.start diagnostics (Client.nextID before) method params) events result →
       Call before method params events (record before { nextID = suc (Client.nextID before) }) (response result)
 
-  deadlineUnchanged : ∀ before method params events after result →
-    Call before method params events after result → Client.deadline after ≡ Client.deadline before
-  deadlineUnchanged before method params events after result (full bound) = refl
-  deadlineUnchanged before method params events after result (exchanged _ _ _ _) = refl
-
 -- Projection used when composing scoped calls from independent protocols.
--- A receipt retains the actual request ID and deadline of its transport.
+-- A receipt retains the actual request ID of its transport.
 data Issued : Set where
-  issued overflowRejected : ℕ → ℕ → Issued
+  issued overflowRejected : ℕ → Issued
 
 data Chain : Maybe Client → List Issued → Maybe Client → Set where
   empty : ∀ client → Chain client [] client
   next : ∀ client calls after → Client.nextID client ≤ 18446744073709551614 →
     Chain (just (record client { nextID = suc (Client.nextID client) })) calls after →
-    Chain (just client) (issued (Client.nextID client) (Client.deadline client) ∷ calls) after
+    Chain (just client) (issued (Client.nextID client) ∷ calls) after
   full : ∀ client calls after → 18446744073709551615 ≤ Client.nextID client →
     Chain (just client) calls after →
-    Chain (just client) (overflowRejected (Client.nextID client) (Client.deadline client) ∷ calls) after
+    Chain (just client) (overflowRejected (Client.nextID client) ∷ calls) after
 
 ownerPreserved : ∀ {before calls after} → Chain before calls after →
   Data.Maybe.map Client.owner before ≡ Data.Maybe.map Client.owner after

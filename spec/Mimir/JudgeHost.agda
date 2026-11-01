@@ -100,7 +100,7 @@ delay : ℕ → ℕ → Watch → ℕ
 delay interval threshold state = Judge.Watch.retryDelay threshold (Watch.failures state) interval (interval ⊔ 3600)
 
 admitted : ℕ → ℕ → Bool
-admitted interval threshold = does (60 ≤? interval) ∧ does (1 ≤? threshold) ∧ does (threshold ≤? 100)
+admitted interval threshold = does (1 ≤? interval) ∧ does (1 ≤? threshold)
 
 data Phase : Set where
   running : Watch → Phase

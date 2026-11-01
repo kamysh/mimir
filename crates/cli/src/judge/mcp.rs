@@ -4,12 +4,11 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
-const MAX_MESSAGE: usize = 1024 * 1024;
 const MAX_STDERR: usize = 4096;
 
 #[derive(Debug)]
@@ -61,17 +60,11 @@ pub struct Client {
     output: BufReader<ChildStdout>,
     stderr: Arc<Mutex<Vec<u8>>>,
     next_id: u64,
-    deadline: Instant,
     allowed_tools: Vec<Value>,
 }
 
 impl Client {
-    pub async fn start(
-        command: &str,
-        args: &[String],
-        config: &Path,
-        seconds: u64,
-    ) -> Result<Self> {
+    pub async fn start(command: &str, args: &[String], config: &Path) -> Result<Self> {
         let mut process = Command::new(command);
         process
             .args(args)
@@ -80,7 +73,7 @@ impl Client {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        // A separate process group lets timeout cleanup include grandchildren.
+        // A separate process group lets cancellation cleanup include grandchildren.
         unsafe {
             process.pre_exec(|| {
                 if libc::setpgid(0, 0) == -1 {
@@ -128,7 +121,6 @@ impl Client {
             output,
             stderr,
             next_id: 1,
-            deadline: Instant::now() + Duration::from_secs(seconds),
             allowed_tools: Vec::new(),
         };
         let response = client
@@ -155,23 +147,11 @@ impl Client {
         &self.allowed_tools
     }
 
-    fn remaining(&self) -> Result<Duration> {
-        self.deadline
-            .checked_duration_since(Instant::now())
-            .filter(|time| !time.is_zero())
-            .ok_or_else(|| anyhow!("MCP deadline exceeded"))
-    }
-
     async fn send(&mut self, message: Value) -> Result<()> {
         let mut bytes = serde_json::to_vec(&message)?;
-        ensure!(bytes.len() < MAX_MESSAGE, "MCP request exceeds limit");
         bytes.push(b'\n');
-        tokio::time::timeout(self.remaining()?, async {
-            self.input.write_all(&bytes).await?;
-            self.input.flush().await
-        })
-        .await
-        .map_err(|_| anyhow!("MCP write timeout"))??;
+        self.input.write_all(&bytes).await?;
+        self.input.flush().await?;
         Ok(())
     }
 
@@ -183,9 +163,7 @@ impl Client {
     async fn line(&mut self) -> Result<Value> {
         let mut bytes = Vec::new();
         loop {
-            let byte = tokio::time::timeout(self.remaining()?, self.output.read_u8())
-                .await
-                .map_err(|_| anyhow!("MCP read timeout"))?;
+            let byte = self.output.read_u8().await;
             let byte = match byte {
                 Ok(byte) => byte,
                 Err(_) => {
@@ -201,7 +179,6 @@ impl Client {
             if byte == b'\n' {
                 break;
             }
-            ensure!(bytes.len() < MAX_MESSAGE, "MCP response exceeds limit");
             bytes.push(byte);
         }
         serde_json::from_slice(&bytes).map_err(|error| {
@@ -218,7 +195,6 @@ impl Client {
             .ok_or_else(|| anyhow!("MCP request ID overflow"))?;
         self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .await?;
-        let mut notifications = 0;
         loop {
             let response = self.line().await?;
             ensure!(
@@ -230,8 +206,6 @@ impl Client {
                     response.get("method").and_then(Value::as_str).is_some(),
                     "invalid MCP notification"
                 );
-                notifications += 1;
-                ensure!(notifications <= 64, "too many MCP notifications");
                 continue;
             }
             ensure!(
@@ -517,12 +491,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_malformed_transport_and_kills_descendants_on_timeout() {
+    async fn rejects_malformed_transport_and_kills_descendants_on_cancellation() {
         let crashed = Client::start(
             "bash",
-            &["-c".into(), "echo startup-failure >&2; exit 7".into()],
+            &[
+                "-c".into(),
+                "read -r request; echo startup-failure >&2; exit 7".into(),
+            ],
             Path::new("/var/tmp/mimir/step5/unused-config"),
-            2,
         )
         .await;
         assert!(crashed
@@ -534,7 +510,6 @@ mod tests {
             "bash",
             &["-c".into(), "read -r request; printf 'not-json\\n'".into()],
             Path::new("/var/tmp/mimir/step5/unused-config"),
-            2,
         )
         .await;
         assert!(malformed.is_err());
@@ -545,14 +520,16 @@ mod tests {
             "sleep 30 & child=$!; printf '%s' \"$child\" > '{}'; wait",
             pid_file.display()
         );
-        let timed_out = Client::start(
-            "bash",
-            &["-c".into(), script],
-            Path::new("/var/tmp/mimir/step5/unused-config"),
-            1,
+        let cancelled = tokio::time::timeout(
+            Duration::from_secs(1),
+            Client::start(
+                "bash",
+                &["-c".into(), script],
+                Path::new("/var/tmp/mimir/step5/unused-config"),
+            ),
         )
         .await;
-        assert!(timed_out.is_err());
+        assert!(cancelled.is_err());
         let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
         let mut alive = true;
         for _ in 0..20 {
@@ -563,7 +540,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        assert!(!alive, "timeout left a live descendant");
+        assert!(!alive, "cancellation left a live descendant");
         std::fs::remove_file(pid_file).unwrap();
     }
 }

@@ -98,13 +98,13 @@ record Assessments : Set where
 assessmentPage : (Text → Text → Bool) → Text → List ℕ → Store.World → Assessments
 assessmentPage textBefore project ids state = assessments
   (map (λ k → k , Read.scores (Selection.query project (Key.belief k) (Key.scope k) (Key.rubric k)) view)
-    (take 100 ordered)) (does (100 <? length ordered))
+    ordered) false
   where
   view = View.view state
   ordered = Ranking.sort (keyBefore textBefore) (keys project ids view (Read.World.contributions view))
 
 admitted : Text → ℕ → Bool
-admitted project limit = nonblank project ∧ does (1 ≤? limit) ∧ does (limit ≤? 20)
+admitted project limit = nonblank project ∧ does (1 ≤? limit)
 
 readAssessmentPage : (Text → Text → Bool) → Text → List ℕ → Store.World → Store.World × Assessments
 readAssessmentPage order project ids state = state , assessmentPage order project ids state

@@ -77,9 +77,9 @@ module File (Handle NativeError : Set) where
 
   module Decoded (Value DecodeError : Set) (decode : List Byte → DecodeError ⊎ Value) where
     module R = Read.With Path.Path Handle NativeError Value DecodeError decode
-    read : L.Locked → Name → Script (Result (Maybe (R.Read 1048576)))
+    read : L.Locked → Name → Script (Result (Maybe (R.Read (just 1048576))))
     read held name = ask (openFile (Path.join (L.Locked.path held) (filename name)) readNoFollowCloseOnExec)
-      (R.afterOpen 1048576)
+      (R.afterOpen (just 1048576))
 
   -- Required ownership rule is shared with JudgeWrite: failure to create an
   -- exclusive temporary file grants no right to remove an existing file.

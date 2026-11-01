@@ -1492,7 +1492,7 @@
         "JudgeHandshake",
         "JudgeReview",
         "JudgePersistence",
-        "JudgeBudget",
+        "JudgeAccounting",
         "Retention",
         "BatchReport"
       ],
@@ -1515,7 +1515,7 @@
         "JudgeHandshake",
         "JudgeReview",
         "JudgePersistence",
-        "JudgeBudget",
+        "JudgeAccounting",
         "Retention",
         "BatchReport"
       ],
@@ -1525,7 +1525,8 @@
         "spec/Mimir/JudgeBackendComposition.agda",
         "spec/Mimir/JudgeFinalizationComposition.agda",
         "spec/Mimir/CLI.agda",
-        "spec/Mimir/ApplicationProtocol.agda"
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/JudgeSignal.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
       "baseline_gap": "Compose existing models with command defaults, watch retry/backoff/signal handling, status and diagnostics projections.",
@@ -1540,7 +1541,7 @@
         "JudgeHandshake",
         "JudgeReview",
         "JudgePersistence",
-        "JudgeBudget",
+        "JudgeAccounting",
         "Retention",
         "BatchReport"
       ],
@@ -1550,7 +1551,8 @@
         "spec/Mimir/JudgeDigestSnapshot.agda",
         "spec/Mimir/NotificationComposition.agda",
         "spec/Mimir/CLI.agda",
-        "spec/Mimir/ApplicationProtocol.agda"
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/JudgeSignal.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
       "baseline_gap": "Compose existing models with command defaults, watch retry/backoff/signal handling, status and diagnostics projections.",
@@ -1565,7 +1567,7 @@
         "JudgeHandshake",
         "JudgeReview",
         "JudgePersistence",
-        "JudgeBudget",
+        "JudgeAccounting",
         "Retention",
         "BatchReport"
       ],
@@ -1588,7 +1590,7 @@
         "JudgeHandshake",
         "JudgeReview",
         "JudgePersistence",
-        "JudgeBudget",
+        "JudgeAccounting",
         "Retention",
         "BatchReport"
       ],
@@ -1725,7 +1727,7 @@
       "existing_modules": [
         "spec/Mimir/JudgeHandshake.agda",
         "spec/Mimir/JudgeReview.agda",
-        "spec/Mimir/JudgeControllerBudget.agda",
+        "spec/Mimir/JudgeControllerAccounting.agda",
         "spec/Mimir/ProviderQueue.agda",
         "spec/Mimir/ProviderResponse.agda",
         "spec/Mimir/JudgeLock.agda",

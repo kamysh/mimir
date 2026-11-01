@@ -2062,7 +2062,7 @@
         },
         {
           "kind": "fn",
-          "name": "startup_and_calls_share_ids_deadline_and_owned_process_group",
+          "name": "startup_and_calls_share_ids_and_owned_process_group",
           "specification": [],
           "line": 261
         },
@@ -2330,7 +2330,8 @@
         "spec/Mimir/JudgeHostProtocol.agda",
         "spec/Mimir/JudgeDigestComposition.agda",
         "spec/Mimir/JudgeStatusProtocol.agda",
-        "spec/Mimir/JudgePrompt.agda"
+        "spec/Mimir/JudgePrompt.agda",
+        "spec/Mimir/JudgeSignal.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
@@ -2967,7 +2968,7 @@
           "specification": [
             "Mimir.JudgeReview.Controller.step",
             "Mimir.JudgeReview.Controller.rejectionDelivered",
-            "Mimir.JudgeControllerBudget",
+            "Mimir.JudgeControllerAccounting",
             "Mimir.JudgeTraceBarrier"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
@@ -3068,7 +3069,7 @@
         },
         {
           "kind": "fn",
-          "name": "model_budget_failure_keeps_an_actionable_trace_after_later_success",
+          "name": "requests_beyond_old_budget_are_counted_and_pending_review_keeps_trace",
           "line": 1137,
           "specification": [],
           "status": "test-definition-not-production-behavior"
@@ -16250,6 +16251,14 @@
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "proof_boundary_category": "application_protocol"
+    },
+    {
+      "path": "crates/cli/tests/judge_cancellation.rs",
+      "classification": "verification",
+      "behavioral_specification": [
+        "spec/Mimir/JudgeSignal.agda"
+      ],
+      "purpose": "Actual CLI interrupt/terminate delivery while model work is active; checks only owned child cleanup."
     }
   ],
   "dependency_contracts": [
@@ -16641,14 +16650,14 @@
         ],
         "formal_modules": [
           "Mimir.JudgeReview",
-          "Mimir.JudgeControllerBudget",
+          "Mimir.JudgeControllerAccounting",
           "Mimir.ReviewObservation",
           "Mimir.JudgeReceipt",
           "Mimir.JudgeBatchConfirmation"
         ],
         "required_behavior": [
           "Keep selected experience/project/source revision fixed.",
-          "Budget all model and tool attempts, including malformed replies.",
+          "Count all model and tool attempts, including malformed replies; accounting never refuses work.",
           "Preserve actionable error feedback; reconcile uncertain review commits.",
           "Batch completion requires evidence for every originally selected pin."
         ],

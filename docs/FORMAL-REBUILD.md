@@ -1,5 +1,16 @@
 ## Subsequent Rust implementation alignment
 
+Current amendment: the user subsequently instructed removal of application
+review limits. Historical entries below describing budgets, deadlines, content
+caps or bounded MCP lines are superseded by `JudgeAccounting`,
+`JudgeControllerAccounting`, `CompleteBytes`, the unbounded MCP transition
+systems, and optional diagnostic-only persistence limits. General accounting,
+frame provenance, revision receipts, ownership and cancellation laws remain
+obligations. `ConfigurationUpgrade` specifies removal of exactly the four
+retired LLM keys, with migration and idempotence proofs. See runtime/README.md
+for current behavior; historical verification records do not certify this change.
+
+
 The documented implementation findings have been addressed against the checked
 contracts. Current changes, source mapping and verification are recorded in
 [RUST-CONFORMANCE.md](RUST-CONFORMANCE.md). This includes the earlier judge
@@ -2076,7 +2087,7 @@ coverage-ledger row and not a proof of correspondence with Rust.
   first-failure decomposition, and a composed proof that load failure returns
   without connection, locking, import or SQL effects. File selection/sorting is
   still outside the ordered-file input contract.
-- `JudgeControllerBudget`: exhaustive accounting for the actual review
+- `JudgeControllerAccounting`: exhaustive accounting for the actual review
   controller transition function, exact controller preservation under the
   accounting wrapper, conserved budgets for arbitrary finite input sequences,
   unchanged account on stop, and retention of the existing batch account when
@@ -2210,7 +2221,7 @@ coverage-ledger row and not a proof of correspondence with Rust.
 - `ItemOwners`: successful reservation establishes the requested owner;
   existing provenance is immutable, other item slots are unchanged, and a
   repeated identical claim is idempotent.
-- `JudgeBudget`: separate request/attempt conservation and bounds over finite
+- `JudgeAccounting`: separate request/attempt conservation and bounds over finite
   traces, including concatenated batch traces.
 - `ProviderQueue`: call/result order, per-call correlation, batch call validation,
   absorbing termination, bounded accounting carried by every returned state,

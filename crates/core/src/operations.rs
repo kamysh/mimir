@@ -42,9 +42,7 @@ impl Operations {
             .and_then(toml::Value::as_str)
             .context("logging.directory must be an absolute directory path")?;
         ensure!(
-            !directory.trim().is_empty()
-                && directory.len() <= 4096
-                && Path::new(directory).is_absolute(),
+            !directory.trim().is_empty() && Path::new(directory).is_absolute(),
             "logging.directory must be a nonempty absolute path of at most 4096 UTF-8 bytes"
         );
         let integer = |key: &str, default: i64, min: i64, max: i64| -> Result<i64> {
@@ -104,6 +102,19 @@ pub fn upgrade(path: &Path, directory: Option<&Path>) -> Result<()> {
         );
     }
     document["config_version"] = toml_edit::value(i64::from(CONFIG_VERSION));
+    if let Some(llm) = document
+        .get_mut("llm")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    {
+        for retired in [
+            "timeout_seconds",
+            "max_calls",
+            "max_output_tokens",
+            "max_budget_usd",
+        ] {
+            llm.remove(retired);
+        }
+    }
     if let Some(logging) = document.get("logging") {
         ensure!(
             logging.is_table() || logging.is_inline_table(),
@@ -330,6 +341,31 @@ mod tests {
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn upgrade_removes_only_retired_model_limits() {
+        let dir = directory();
+        let path = dir.join("config.toml");
+        fs::write(&path, format!("{DB}\n[llm]\nbackend='codex'\nmodel='chosen' # keep model\nargs=['a','b']\ntimeout_seconds=300\nmax_calls=20\nmax_output_tokens=4096\nmax_budget_usd=1.0\n")).unwrap();
+        upgrade(&path, Some(&dir.join("logs"))).unwrap();
+        let first = fs::read_to_string(&path).unwrap();
+        let value: toml::Value = toml::from_str(&first).unwrap();
+        assert_eq!(value["llm"]["model"].as_str(), Some("chosen"));
+        assert!(first.contains("# keep model"));
+        assert!(first.contains(DB));
+        assert_eq!(value["llm"]["args"].as_array().unwrap().len(), 2);
+        for key in [
+            "timeout_seconds",
+            "max_calls",
+            "max_output_tokens",
+            "max_budget_usd",
+        ] {
+            assert!(value["llm"].get(key).is_none());
+        }
+        upgrade(&path, None).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), first);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn required_directory_and_retention_bounds_are_enforced() {
         for metadata in [

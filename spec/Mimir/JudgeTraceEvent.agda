@@ -25,7 +25,7 @@ module Over (Id : Set) (maximum eventLimit byteLimit : ℕ) (checks : Machine.Ov
 
   budget : R.Event → R.Trace → R.Trace
   budget event before = record before
-    { modelRemaining = R.Event.modelRemaining event ; toolRemaining = R.Event.toolRemaining event }
+    { modelRequests = R.Event.modelRequests event ; toolAttempts = R.Event.toolAttempts event }
 
   candidate : R.Event → R.Trace → R.Trace
   candidate event before = record (budget event before) { events = R.Trace.events before ++ (event ∷ []) }
@@ -67,8 +67,8 @@ module Over (Id : Set) (maximum eventLimit byteLimit : ℕ) (checks : Machine.Ov
   ... | yes room = ask (serialize (candidate event before)) (λ reply → done (received event before room reply))
 
   budgetPreserved : ∀ {event before after} → Change event before after →
-    R.Trace.modelRemaining after ≡ R.Event.modelRemaining event ×
-    R.Trace.toolRemaining after ≡ R.Event.toolRemaining event
+    R.Trace.modelRequests after ≡ R.Event.modelRequests event ×
+    R.Trace.toolAttempts after ≡ R.Event.toolAttempts event
   budgetPreserved (kept room bytes fits) = refl , refl
   budgetPreserved (dropped count evaluated) = refl , refl
 

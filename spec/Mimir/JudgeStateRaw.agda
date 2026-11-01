@@ -109,7 +109,7 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ) where
   incident = readRecord D.incidentFields D.buildIncident incidentReaders
 
   eventReaders : ℕ → Slots.Readers D.eventFields
-  eventReaders allowance = u64 , A.readUUID , A.readText , size , size ,
+  eventReaders allowance = u64 , A.readUUID , A.readText , Option.read size , Option.read size ,
     Option.read A.readText , Option.read A.readText , Option.read size , tt
 
   event : ℕ → Flow.Parser R.Event
@@ -117,7 +117,7 @@ module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ) where
 
   traceReaders : ℕ → Slots.Readers D.traceFields
   traceReaders allowance = A.readUUID , u64 , Option.read u64 , A.readText ,
-    Option.read A.readText , uuidVector allowance , size , size ,
+    Option.read A.readText , uuidVector allowance , Option.read size , Option.read size ,
     vector event allowance , size , tt
 
   trace : ℕ → Flow.Parser R.Trace

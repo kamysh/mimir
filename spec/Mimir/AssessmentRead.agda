@@ -138,7 +138,7 @@ data HistoryResult : Set where
   found : Page → HistoryResult
 
 history : Selection.Query → World → ℕ → ℕ → HistoryResult
-history q w offset limit with does (1 ≤? limit) ∧ does (limit ≤? 100) ∧ does (offset ≤? Bounds.i64Maximum)
+history q w offset limit with does (1 ≤? limit) ∧ does (offset ≤? Bounds.i64Maximum)
 ... | false = invalidPage
 ... | true with nonblank (Selection.Query.project q)
 ...   | false = missingProject

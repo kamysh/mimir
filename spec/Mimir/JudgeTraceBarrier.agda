@@ -22,13 +22,13 @@ module Barrier (Payload : Set) (selected : Pin) where
   Permission state input (C.persist event) = ⊤
   Permission state input C.cancelOwnedRequests = ⊤
   Permission state input (C.requestModel feedback) =
-    Σ C.Trace λ event → Σ C.Budget λ fuel →
+    Σ C.Trace λ event → Σ C.Counts λ fuel →
       state ≡ C.tracing event (C.ask fuel feedback) × input ≡ C.traceWritten
   Permission state input (C.requestTool request) =
-    Σ C.Trace λ event → Σ C.Budget λ fuel →
+    Σ C.Trace λ event → Σ C.Counts λ fuel →
       state ≡ C.tracing event (C.invoke fuel request) × input ≡ C.traceWritten
   Permission state input C.readSelectedRevision =
-    Σ C.Trace λ event → Σ C.Budget λ fuel → Σ C.Purpose λ purpose →
+    Σ C.Trace λ event → Σ C.Counts λ fuel → Σ C.Purpose λ purpose →
       state ≡ C.tracing event (C.observe fuel purpose) × input ≡ C.traceWritten
 
   resumePermission : ∀ event continuation →
@@ -76,8 +76,8 @@ module Barrier (Payload : Set) (selected : Pin) where
   requestsLogged : ∀ state input →
     All (Permission state input) (C.Step.effects (C.step state input))
   requestsLogged state C.stop = tt ∷ []
-  requestsLogged (C.ready (C.budget zero tools) feedback) C.tick = tt ∷ []
-  requestsLogged (C.ready (C.budget (suc models) tools) feedback) C.tick = tt ∷ []
+  requestsLogged (C.ready (C.counts zero tools) feedback) C.tick = tt ∷ []
+  requestsLogged (C.ready (C.counts (suc models) tools) feedback) C.tick = tt ∷ []
   requestsLogged (C.tracing event continuation) C.tick = []
   requestsLogged (C.modelPending actual) C.tick = []
   requestsLogged (C.toolPending actual request) C.tick = []
@@ -95,32 +95,32 @@ module Barrier (Payload : Set) (selected : Pin) where
   requestsLogged (C.toolPending actual request) C.traceWriteFailed = []
   requestsLogged (C.receiptPending actual purpose) C.traceWriteFailed = []
   requestsLogged (C.finished result) C.traceWriteFailed = []
-  requestsLogged (C.ready actual feedback) C.timeout = []
-  requestsLogged (C.tracing event continuation) C.timeout = []
-  requestsLogged (C.modelPending actual) C.timeout = tt ∷ []
-  requestsLogged (C.toolPending actual (C.call (C.query operation) arguments)) C.timeout = tt ∷ []
-  requestsLogged (C.toolPending actual (C.call C.review arguments)) C.timeout = tt ∷ []
-  requestsLogged (C.receiptPending actual purpose) C.timeout = tt ∷ []
-  requestsLogged (C.finished result) C.timeout = []
+  requestsLogged (C.ready actual feedback) C.interrupted = []
+  requestsLogged (C.tracing event continuation) C.interrupted = []
+  requestsLogged (C.modelPending actual) C.interrupted = tt ∷ []
+  requestsLogged (C.toolPending actual (C.call (C.query operation) arguments)) C.interrupted = tt ∷ []
+  requestsLogged (C.toolPending actual (C.call C.review arguments)) C.interrupted = tt ∷ []
+  requestsLogged (C.receiptPending actual purpose) C.interrupted = tt ∷ []
+  requestsLogged (C.finished result) C.interrupted = []
   requestsLogged (C.modelPending actual) (C.modelReply C.done) = tt ∷ []
-  requestsLogged (C.modelPending (C.budget models zero)) (C.modelReply (C.useTool request)) = tt ∷ []
-  requestsLogged (C.modelPending (C.budget models (suc tools))) (C.modelReply (C.useTool request)) = tt ∷ []
-  requestsLogged (C.modelPending (C.budget models zero)) (C.modelReply (C.malformed faultValue)) = tt ∷ []
-  requestsLogged (C.modelPending (C.budget models (suc tools))) (C.modelReply (C.malformed faultValue)) = tt ∷ []
+  requestsLogged (C.modelPending (C.counts models zero)) (C.modelReply (C.useTool request)) = tt ∷ []
+  requestsLogged (C.modelPending (C.counts models (suc tools))) (C.modelReply (C.useTool request)) = tt ∷ []
+  requestsLogged (C.modelPending (C.counts models zero)) (C.modelReply (C.malformed faultValue)) = tt ∷ []
+  requestsLogged (C.modelPending (C.counts models (suc tools))) (C.modelReply (C.malformed faultValue)) = tt ∷ []
   requestsLogged (C.ready actual feedback) (C.modelReply action) = []
   requestsLogged (C.tracing event continuation) (C.modelReply action) = []
   requestsLogged (C.toolPending actual request) (C.modelReply action) = []
   requestsLogged (C.receiptPending actual purpose) (C.modelReply action) = []
   requestsLogged (C.finished result) (C.modelReply action) = []
-  requestsLogged (C.ready (C.budget models zero) feedback) (C.queuedTool request) = tt ∷ []
-  requestsLogged (C.ready (C.budget models (suc tools)) feedback) (C.queuedTool request) = tt ∷ []
+  requestsLogged (C.ready (C.counts models zero) feedback) (C.queuedTool request) = tt ∷ []
+  requestsLogged (C.ready (C.counts models (suc tools)) feedback) (C.queuedTool request) = tt ∷ []
   requestsLogged (C.tracing event continuation) (C.queuedTool request) = []
   requestsLogged (C.modelPending actual) (C.queuedTool request) = []
   requestsLogged (C.toolPending actual current) (C.queuedTool request) = []
   requestsLogged (C.receiptPending actual purpose) (C.queuedTool request) = []
   requestsLogged (C.finished result) (C.queuedTool request) = []
-  requestsLogged (C.ready (C.budget models zero) feedback) (C.queuedMalformed faultValue) = tt ∷ []
-  requestsLogged (C.ready (C.budget models (suc tools)) feedback) (C.queuedMalformed faultValue) = tt ∷ []
+  requestsLogged (C.ready (C.counts models zero) feedback) (C.queuedMalformed faultValue) = tt ∷ []
+  requestsLogged (C.ready (C.counts models (suc tools)) feedback) (C.queuedMalformed faultValue) = tt ∷ []
   requestsLogged (C.tracing event continuation) (C.queuedMalformed faultValue) = []
   requestsLogged (C.modelPending actual) (C.queuedMalformed faultValue) = []
   requestsLogged (C.toolPending actual current) (C.queuedMalformed faultValue) = []
@@ -152,8 +152,8 @@ module Barrier (Payload : Set) (selected : Pin) where
   supportsNext : ∀ state input history → Supported state history →
     Supported (C.Step.state (C.step state input)) (logs (C.Step.effects (C.step state input)) ++ history)
   supportsNext state C.stop history supported = tt
-  supportsNext (C.ready (C.budget zero tools) feedback) C.tick history supported = here refl
-  supportsNext (C.ready (C.budget (suc models) tools) feedback) C.tick history supported = here refl
+  supportsNext (C.ready (C.counts zero tools) feedback) C.tick history supported = here refl
+  supportsNext (C.ready (C.counts (suc models) tools) feedback) C.tick history supported = here refl
   supportsNext (C.tracing event continuation) C.tick history supported = supported
   supportsNext (C.modelPending actual) C.tick history supported = tt
   supportsNext (C.toolPending actual request) C.tick history supported = tt
@@ -172,32 +172,32 @@ module Barrier (Payload : Set) (selected : Pin) where
   supportsNext (C.toolPending actual request) C.traceWriteFailed history supported = tt
   supportsNext (C.receiptPending actual purpose) C.traceWriteFailed history supported = tt
   supportsNext (C.finished result) C.traceWriteFailed history supported = tt
-  supportsNext (C.ready actual feedback) C.timeout history supported = tt
-  supportsNext (C.tracing event continuation) C.timeout history supported = tt
-  supportsNext (C.modelPending actual) C.timeout history supported = here refl
-  supportsNext (C.toolPending actual (C.call (C.query operation) arguments)) C.timeout history supported = here refl
-  supportsNext (C.toolPending actual (C.call C.review arguments)) C.timeout history supported = here refl
-  supportsNext (C.receiptPending actual purpose) C.timeout history supported = here refl
-  supportsNext (C.finished result) C.timeout history supported = tt
+  supportsNext (C.ready actual feedback) C.interrupted history supported = tt
+  supportsNext (C.tracing event continuation) C.interrupted history supported = tt
+  supportsNext (C.modelPending actual) C.interrupted history supported = here refl
+  supportsNext (C.toolPending actual (C.call (C.query operation) arguments)) C.interrupted history supported = here refl
+  supportsNext (C.toolPending actual (C.call C.review arguments)) C.interrupted history supported = here refl
+  supportsNext (C.receiptPending actual purpose) C.interrupted history supported = here refl
+  supportsNext (C.finished result) C.interrupted history supported = tt
   supportsNext (C.modelPending actual) (C.modelReply C.done) history supported = here refl
-  supportsNext (C.modelPending (C.budget models zero)) (C.modelReply (C.useTool request)) history supported = here refl
-  supportsNext (C.modelPending (C.budget models (suc tools))) (C.modelReply (C.useTool request)) history supported = here refl
-  supportsNext (C.modelPending (C.budget models zero)) (C.modelReply (C.malformed faultValue)) history supported = here refl
-  supportsNext (C.modelPending (C.budget models (suc tools))) (C.modelReply (C.malformed faultValue)) history supported = here refl
+  supportsNext (C.modelPending (C.counts models zero)) (C.modelReply (C.useTool request)) history supported = here refl
+  supportsNext (C.modelPending (C.counts models (suc tools))) (C.modelReply (C.useTool request)) history supported = here refl
+  supportsNext (C.modelPending (C.counts models zero)) (C.modelReply (C.malformed faultValue)) history supported = here refl
+  supportsNext (C.modelPending (C.counts models (suc tools))) (C.modelReply (C.malformed faultValue)) history supported = here refl
   supportsNext (C.ready actual feedback) (C.modelReply action) history supported = tt
   supportsNext (C.tracing event continuation) (C.modelReply action) history supported = supported
   supportsNext (C.toolPending actual request) (C.modelReply action) history supported = tt
   supportsNext (C.receiptPending actual purpose) (C.modelReply action) history supported = tt
   supportsNext (C.finished result) (C.modelReply action) history supported = tt
-  supportsNext (C.ready (C.budget models zero) feedback) (C.queuedTool request) history supported = here refl
-  supportsNext (C.ready (C.budget models (suc tools)) feedback) (C.queuedTool request) history supported = here refl
+  supportsNext (C.ready (C.counts models zero) feedback) (C.queuedTool request) history supported = here refl
+  supportsNext (C.ready (C.counts models (suc tools)) feedback) (C.queuedTool request) history supported = here refl
   supportsNext (C.tracing event continuation) (C.queuedTool request) history supported = supported
   supportsNext (C.modelPending actual) (C.queuedTool request) history supported = tt
   supportsNext (C.toolPending actual current) (C.queuedTool request) history supported = tt
   supportsNext (C.receiptPending actual purpose) (C.queuedTool request) history supported = tt
   supportsNext (C.finished result) (C.queuedTool request) history supported = tt
-  supportsNext (C.ready (C.budget models zero) feedback) (C.queuedMalformed faultValue) history supported = here refl
-  supportsNext (C.ready (C.budget models (suc tools)) feedback) (C.queuedMalformed faultValue) history supported = here refl
+  supportsNext (C.ready (C.counts models zero) feedback) (C.queuedMalformed faultValue) history supported = here refl
+  supportsNext (C.ready (C.counts models (suc tools)) feedback) (C.queuedMalformed faultValue) history supported = here refl
   supportsNext (C.tracing event continuation) (C.queuedMalformed faultValue) history supported = supported
   supportsNext (C.modelPending actual) (C.queuedMalformed faultValue) history supported = tt
   supportsNext (C.toolPending actual current) (C.queuedMalformed faultValue) history supported = tt

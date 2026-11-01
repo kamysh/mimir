@@ -7,7 +7,7 @@ module Mimir.JudgeRevision where
 open import Data.Bool using (Bool; true; false; not)
 open import Data.List using (List; []; _∷_; _++_; map)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; zero; suc; _≤_)
+open import Data.Nat using (ℕ; zero; suc; _+_)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (String; toList)
@@ -18,7 +18,7 @@ open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.Bits using (Byte)
 import Mimir.Effects as Effects
-import Mimir.JudgeBudget as Budget
+import Mimir.JudgeAccounting as Budget
 import Mimir.ProviderQueue as Queue
 import Mimir.JudgeRevisionPolicy as Policy
 import Mimir.JudgeScopedTools as Scoped
@@ -55,7 +55,6 @@ data Action : Set where
 data Answer : Set where
   action : Action → Answer
   backendError : Error → Answer
-  timeout : Answer
 
 record Rejection : Set where
   constructor rejection
@@ -72,7 +71,7 @@ candidateFeedback = Encoding.object
    ("guidance" , V.string (toList "A candidate key from an earlier review has a different declaration. Inspect experience_history. Reuse a key only with its exact original kind and declaration; use a new key for a revised claim.")) ∷ [])
 
 module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
-  (display : Display) (initial : Budget.Budget) (deadline : ℕ)
+  (display : Display) (initial : Budget.Counts)
   (selected : Observation.Snapshot) where
 
   module Scope = Scoped.For conversion format selected
@@ -122,8 +121,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   ... | nothing = next
   ... | just id = ask clock (λ observed →
     ask (appendTrace id (R.newEvent observed identity (toList kind)
-      (Budget.Budget.models (Queue.Account.remaining (Work.account w)))
-      (Budget.Budget.tools (Queue.Account.remaining (Work.account w))) name detail)) λ where
+      (Budget.Counts.models (Queue.Account.totals (Work.account w)))
+      (Budget.Counts.tools (Queue.Account.totals (Work.account w))) name detail)) λ where
         (inj₁ failure) → done (fatal w (toList "diagnostics_write_error") (error failure nothing))
         (inj₂ tt) → next)
 
@@ -142,8 +141,6 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   deferred w with Policy.finish pin (Work.policy w)
     (map (λ d → Observation.deferred (R.Deferred.identity d) (R.Deferred.revision d))
       (R.Report.deferredReviews (Work.report w)))
-  ... | Policy.tooManyDeferred = done (fatal w (toList "mcp_or_configuration_error")
-      (error (toList "too many deferred reviews") nothing))
   ... | Policy.retained retained = done (finished (outcome (Work.account w)
       (record (Work.report w) { deferredReviews = map
         (λ d → R.deferred (Observation.Deferred.identity d) (Observation.Deferred.revision d)) retained })
@@ -255,29 +252,19 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     ... | false = done (loop updated)
 
   attempt : Work → Text → V.Value → Script State
-  attempt w name arguments with Queue.charge (Work.account w) Budget.tool
-  ... | nothing = trace w "tool_budget_exhausted" (just name) nothing
-      (end (conditional w Policy.toolBudgetExhausted "tool_budget_exhausted" nothing nothing))
-  ... | just charged = fromScoped (Scope.run name arguments) >>=
-      afterTool (record w { account = charged }) name
+  attempt w name arguments = fromScoped (Scope.run name arguments) >>=
+    afterTool (record w { account = Queue.charge (Work.account w) Budget.tool }) name
 
   malformedAttempt : Work → Text → Source.Failure → Script State
-  malformedAttempt w name source with Queue.charge (Work.account w) Budget.tool
-  ... | nothing = trace w "tool_budget_exhausted" (just name) nothing
-      (end (record w
-        { policy = Policy.Step.state (Policy.step (Work.policy w) Policy.malformedCallWithoutToolBudget)
-        ; report = record (Work.report w) { blockReason = just (toList "tool_budget_exhausted") } }))
-  ... | just charged = done (loop (record w
-      { account = charged
-      ; last = just (feedback "invalid_tool_arguments" (Source.Failure.detail source)
-          "Correct the tool arguments using the supplied schema and resend the call.")
-      ; lastRejection = just (rejection name (Source.display source) (just source)) }))
+  malformedAttempt w name source = done (loop (record w
+    { account = Queue.charge (Work.account w) Budget.tool
+    ; last = just (feedback "invalid_tool_arguments" (Source.Failure.detail source)
+        "Correct the tool arguments using the supplied schema and resend the call.")
+    ; lastRejection = just (rejection name (Source.display source) (just source)) }))
 
   afterModel : Work → Answer → Script State
   afterModel w (backendError failure) = trace w "model_error" nothing (just (Error.detail failure))
     (end (conditional w Policy.modelError "backend_error" (just (Error.detail failure)) (Error.source failure)))
-  afterModel w timeout = trace w "model_timeout" nothing nothing
-    (end (conditional w Policy.modelTimeout "backend_timeout" (just (toList "backend response timed out")) nothing))
   afterModel w (action modelDone) = trace w "model_done" nothing nothing
     (end (record w { policy = Policy.Step.state (Policy.step (Work.policy w) Policy.modelDone) }))
   afterModel w (action (tool name arguments)) = trace w "tool_request" (just name)
@@ -290,12 +277,9 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   admitModel : Work → Bool → Script State
   admitModel w false = provider w
-  admitModel w true with Queue.charge (Work.account w) Budget.provider
-  ... | nothing = trace w "model_budget_exhausted" nothing nothing
-      (end (conditional w Policy.modelBudgetExhausted "model_budget_exhausted" nothing nothing))
-  ... | just charged = trace updated "model_request" nothing
-      (Data.Maybe.map (Display.json display) (Work.last w)) (provider updated)
-    where updated = record w { account = charged }
+  admitModel w true = trace updated "model_request" nothing
+    (Data.Maybe.map (Display.json display) (Work.last w)) (provider updated)
+    where updated = record w { account = Queue.charge (Work.account w) Budget.provider }
 
   data Step : Set where
     internal : State → Step
@@ -323,17 +307,12 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   -- Applies to every outcome, including fatal diagnostic or transport errors.
   -- Account construction itself contains the original, shared charge trace.
-  providerRequestsBounded : ∀ result → Budget.count Budget.modelCost
-    (Queue.Account.charges (Outcome.account result)) ≤ Budget.Budget.models initial
-  providerRequestsBounded result = Queue.requestsBounded (Outcome.account result)
+  providerRequestsCounted : ∀ result →
+    Budget.Counts.models (Queue.Account.totals (Outcome.account result)) ≡
+    Budget.count Budget.modelCost (Queue.Account.charges (Outcome.account result)) + Budget.Counts.models initial
+  providerRequestsCounted result = Queue.requestsCounted (Outcome.account result)
 
-  toolAttemptsBounded : ∀ result → Budget.count Budget.toolCost
-    (Queue.Account.charges (Outcome.account result)) ≤ Budget.Budget.tools initial
-  toolAttemptsBounded result = Queue.attemptsBounded (Outcome.account result)
-
-  nextUsesSharedDeadline : Effect → Maybe ℕ
-  nextUsesSharedDeadline (nextModel _) = just deadline
-  nextUsesSharedDeadline _ = nothing
-
-  fixedDeadline : ∀ last → nextUsesSharedDeadline (nextModel last) ≡ just deadline
-  fixedDeadline last = refl
+  toolAttemptsCounted : ∀ result →
+    Budget.Counts.tools (Queue.Account.totals (Outcome.account result)) ≡
+    Budget.count Budget.toolCost (Queue.Account.charges (Outcome.account result)) + Budget.Counts.tools initial
+  toolAttemptsCounted result = Queue.attemptsCounted (Outcome.account result)

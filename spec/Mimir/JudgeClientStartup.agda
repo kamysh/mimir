@@ -19,20 +19,20 @@ import Mimir.UnixPath as Path
 import Mimir.Validation as Validation
 
 module Run (conversion : Conversion.Contract) (diagnostics : Transport.Diagnostics conversion)
-  (contract model : ℕ) (program : Text) (arguments : List Text) (config : Path.Path) (seconds : ℕ) where
+  (contract model : ℕ) (program : Text) (arguments : List Text) (config : Path.Path) where
   private
     module H = Handshake.Contract contract model
     module B = Binding.Bound conversion diagnostics contract model
 
   data Started : Revision.Error ⊎ H.Ready → Data.Maybe.Maybe Client.Client → Set where
-    spawnFailed : ∀ events detail → Client.Runs (Client.start program arguments config seconds) events (inj₁ detail) →
+    spawnFailed : ∀ events detail → Client.Runs (Client.start program arguments config) events (inj₁ detail) →
       Started (inj₁ (Revision.error detail nothing)) nothing
     handshakeFailed : ∀ events owned calls after failure cleanup →
-      Client.Runs (Client.start program arguments config seconds) events (inj₂ owned) →
+      Client.Runs (Client.start program arguments config) events (inj₂ owned) →
       B.Runs owned H.start calls after (inj₁ failure) →
       Client.Runs (Client.dropClient after) cleanup tt →
       Started (inj₁ (Revision.error (Validation.Fault.explanation failure) nothing)) nothing
     ready : ∀ events owned calls after result →
-      Client.Runs (Client.start program arguments config seconds) events (inj₂ owned) →
+      Client.Runs (Client.start program arguments config) events (inj₂ owned) →
       B.Runs owned H.start calls after (inj₂ result) →
       Started (inj₂ result) (Data.Maybe.just after)

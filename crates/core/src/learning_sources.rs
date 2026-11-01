@@ -31,22 +31,14 @@ pub struct Coverage {
     pub reason: String,
 }
 pub fn validate_sources(sources: &[SourceRecord]) -> Result<()> {
-    ensure!(sources.len() <= 32, "too many source records");
     let mut seen = HashSet::new();
     for s in sources {
         ensure!(
-            s.recorded_at
-                .as_ref()
-                .is_none_or(|t| !t.is_empty() && t.len() <= 100),
+            s.recorded_at.as_ref().is_none_or(|t| !t.is_empty()),
             "invalid source timestamp"
         );
         ensure!(
-            !s.source_ref.trim().is_empty()
-                && s.source_ref.len() <= 1000
-                && !s.actor.trim().is_empty()
-                && s.actor.len() <= 200
-                && !s.text.is_empty()
-                && s.text.len() <= 12000,
+            !s.source_ref.trim().is_empty() && !s.actor.trim().is_empty() && !s.text.is_empty(),
             "invalid learning source"
         );
         ensure!(seen.insert(&s.source_ref), "duplicate learning source");
@@ -84,10 +76,7 @@ pub fn validate_review(review: &Review, experience: &Experience) -> Result<()> {
             sources.contains_key(&c.source_ref) && seen.insert(&c.source_ref),
             "invalid or duplicate coverage reference"
         );
-        ensure!(
-            !c.reason.trim().is_empty() && c.reason.len() <= 4000,
-            "coverage needs a reason"
-        );
+        ensure!(!c.reason.trim().is_empty(), "coverage needs a reason");
     }
     let mut ids: HashSet<_> = experience.learning_items.iter().map(|i| i.id).collect();
     for (index, item) in review.extracted_items.iter().enumerate() {
@@ -125,4 +114,64 @@ pub fn validate_review(review: &Review, experience: &Experience) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod complete_input_tests {
+    use super::*;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn full_review_survives_former_size_and_count_caps_without_relaxing_provenance() {
+        let sources: Vec<_> = (0..65)
+            .map(|n| SourceRecord {
+                source_ref: format!("source-{n}-{}", "r".repeat(1001)),
+                actor: "a".repeat(201),
+                provenance: ObservationSource::AgentReport,
+                text: "statement ".repeat(1500),
+                recorded_at: None,
+            })
+            .collect();
+        let experience = Experience {
+            id: Uuid::new_v4(),
+            project: "large-review".into(),
+            context: "complete source".into(),
+            action: "review all recommendations".into(),
+            outcome: crate::learning::Outcome::Unknown,
+            source: ObservationSource::AgentReport,
+            evidence: sources.iter().map(|s| s.source_ref.clone()).collect(),
+            belief_ids: Vec::new(),
+            pattern_id: None,
+            learning_items: Vec::new(),
+            source_records: sources,
+        };
+        experience.validate().unwrap();
+        let items: Vec<_> = experience
+            .source_records
+            .iter()
+            .map(|s| {
+                json!({
+                    "id":Uuid::new_v4(), "kind":"suggestion", "statement":s.text,
+                    "actor":s.actor, "source_ref":s.source_ref, "conditions":"context".repeat(1000),
+                    "predictions":[]
+                })
+            })
+            .collect();
+        let coverage: Vec<_> = experience.source_records.iter().map(|s| json!({
+            "source_ref":s.source_ref,"status":"unresolved","reason":"Awaiting independent evidence. ".repeat(200)
+        })).collect();
+        let mut review: Review = serde_json::from_value(json!({
+            "experience_id":experience.id,"experience_revision":1,"reviewer":"fixture","rationale":"complete input",
+            "extracted_items":items,"source_coverage":coverage
+        })).unwrap();
+        review.validate().unwrap();
+        validate_review(&review, &experience).unwrap();
+        assert!(serde_json::to_vec(&review).unwrap().len() > 65536);
+        review.extracted_items[0].statement = "This quotation never occurred.".into();
+        assert!(validate_review(&review, &experience).is_err());
+        let mut duplicated = experience.source_records.clone();
+        duplicated.push(duplicated[0].clone());
+        assert!(validate_sources(&duplicated).is_err());
+    }
 }

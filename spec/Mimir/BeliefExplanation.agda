@@ -97,7 +97,7 @@ origin id w with Numeric.lookup id (Store.World.independentOrigins w)
 get : ℕ → ℕ → ℕ → Store.World → Result
 get id offset limit w with findBelief id (Publication.World.nodes (Store.World.publication w))
 ... | nothing = beliefMissing
-... | just b with does (1 ≤? limit) ∧ does (limit ≤? 20)
+... | just b with does (1 ≤? limit)
 ...   | false = invalidLimit
 ...   | true with origin id w
 ...     | Independent.malformed = invalidStoredProvenance

@@ -109,17 +109,15 @@ start (history id) = ask (readHistoryRows RawHistory.sources id) λ where
   (inj₂ sources) → ask (readHistoryRows RawHistory.reviews id) λ where
     (inj₁ error) → done (failed error)
     (inj₂ reviews) → done (rawHistoryResult sources reviews)
-start (pending project limit excluded) with does (1 ≤? limit) ∧ does (limit ≤? 100)
+start (pending project limit excluded) with does (1 ≤? limit)
 ... | false = done (pendingResult Experiences.invalidLimit)
-... | true with does (length excluded ≤? 1000)
-...   | false = done (pendingResult Experiences.tooManyExclusions)
-...   | true = read nothing (pendingRows project limit excluded) (λ observed →
+... | true = read nothing (pendingRows project limit excluded) (λ observed →
   done (pendingResult (Experiences.pendingExperiences project limit excluded (Store.World.current observed))))
 start (score q) with nonblank (Selection.Query.project q) ∧
   nonblank (Selection.Query.scope q) ∧ nonblank (Selection.Query.rubric q)
 ... | false = done (scoreResult Assessment.missingScope)
 ... | true = ask beginRead (scoreAfterBegin q)
-start (assessmentHistory q offset limit) with does (1 ≤? limit) ∧ does (limit ≤? 100) ∧ does (offset ≤? Bounds.i64Maximum)
+start (assessmentHistory q offset limit) with does (1 ≤? limit) ∧ does (offset ≤? Bounds.i64Maximum)
 ... | false = done (assessmentHistoryResult Assessment.invalidPage)
 ... | true with nonblank (Selection.Query.project q)
 ...   | false = done (assessmentHistoryResult Assessment.missingProject)

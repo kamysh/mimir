@@ -63,49 +63,38 @@ nonempty : ∀ {A : Set} → List A → Bool
 nonempty [] = false
 nonempty (_ ∷ _) = true
 
--- serde_json::Value::as_u64 ignores absent/noninteger/out-of-range usage.
-usage : ℕ → String → V.Value → Fault ⊎ ⊤
-usage maximum message raw with V.uint (Binary.powerMinusOne 64) raw
-... | rejected failure invalid = inj₂ tt
-... | accepted (amount , representation) =
-  mapResult (λ _ → tt) (result (check (fault [] invalidNumber message) (amount ≤? maximum)))
-
 IdentityValid : Q.Call → Set
-IdentityValid request = Nonempty (Q.Call.identity request) × Bounded 128 (Q.Call.identity request)
+IdentityValid request = Nonempty (Q.Call.identity request)
 
 checkIdentity : ∀ request → Checked (IdentityValid request)
-checkIdentity request = combine
-  (check (fault [] emptyText "provider call ID is empty") (nonempty? (Q.Call.identity request)))
-  (check (fault [] textTooLong "provider call ID exceeds 128 UTF-8 bytes") (bounded? 128 (Q.Call.identity request)))
+checkIdentity request = check (fault [] emptyText "provider call ID is empty") (nonempty? (Q.Call.identity request))
 
-Valid : ℕ → List Q.Call → Set
-Valid maximum calls = length calls ≤ maximum ×
-  (All IdentityValid calls × Provider.IDs.Unique (map Q.Call.identity calls))
+Valid : List Q.Call → Set
+Valid calls = All IdentityValid calls × Provider.IDs.Unique (map Q.Call.identity calls)
 
-checkCalls : ∀ maximum calls → Checked (Valid maximum calls)
-checkCalls maximum calls = combine (Collections.checkCount maximum calls)
-  (combine (allChecked checkIdentity calls) (Provider.IDs.checkUnique (map Q.Call.identity calls)))
+checkCalls : ∀ calls → Checked (Valid calls)
+checkCalls calls = combine (allChecked checkIdentity calls) (Provider.IDs.checkUnique (map Q.Call.identity calls))
 
-record Reply (maximum : ℕ) : Set where
+record Reply : Set where
   constructor reply
   field
     replay : List V.Value
     calls : List Q.Call
-    valid : Valid maximum calls
+    valid : Valid calls
 
 anthropicReplay : List V.Value → List V.Value
 anthropicReplay content =
   V.object ((toList "role" , V.string (toList "assistant")) ∷ (toList "content" , V.array content) ∷ []) ∷ []
 
-finish : ∀ maximum replay calls → Fault ⊎ Reply maximum
-finish maximum replay calls = result (checkCalls maximum calls) >>= λ valid → inj₂ (reply replay calls valid)
+finish : ∀ replay calls → Fault ⊎ Reply
+finish replay calls = result (checkCalls calls) >>= λ valid → inj₂ (reply replay calls valid)
 
-finishPreserves : ∀ maximum replay calls response → finish maximum replay calls ≡ inj₂ response →
+finishPreserves : ∀ replay calls response → finish replay calls ≡ inj₂ response →
   Reply.replay response ≡ replay × Reply.calls response ≡ calls
-finishPreserves maximum replay calls response observed with checkCalls maximum calls
+finishPreserves replay calls response observed with checkCalls calls
 ... | rejected failure invalid with observed
 ...   | ()
-finishPreserves maximum replay calls .(reply replay calls valid) refl | accepted valid = refl , refl
+finishPreserves replay calls .(reply replay calls valid) refl | accepted valid = refl , refl
 
 -- Envelope validation is atomic: history and pending calls are published
 -- together only after every item and final stop condition has been checked.
@@ -113,11 +102,11 @@ record State : Set where
   constructor state
   field history : List V.Value; pending : List Q.Call
 
-commit : ∀ {maximum} → State → Fault ⊎ Reply maximum → Fault ⊎ State
+commit : State → Fault ⊎ Reply → Fault ⊎ State
 commit before (inj₁ failure) = inj₁ failure
 commit before (inj₂ response) = inj₂ (state (State.history before ++ Reply.replay response) (Reply.calls response))
 
-failureCannotPublish : ∀ {maximum} before failure → commit {maximum} before (inj₁ failure) ≡ inj₁ failure
+failureCannotPublish : ∀ before failure → commit before (inj₁ failure) ≡ inj₁ failure
 failureCannotPublish before failure = refl
 
 module Decode (arguments : Text → Fault ⊎ V.Value) where
@@ -198,11 +187,10 @@ module Decode (arguments : Text → Fault ⊎ V.Value) where
       (Provider.IDs.absent? (Q.Call.identity request) seen)) >>= λ _ →
       mapResult (request ∷_) (collect read (Q.Call.identity request ∷ seen) rest)
 
-  openai : (maximum tokens : ℕ) → V.Value → Fault ⊎ Reply maximum
-  openai maximum tokens input = ensure (isText "completed" (get "status" input)) "OpenAI response is incomplete" >>= λ _ →
-    usage tokens "OpenAI output exceeded token limit" (get "output_tokens" (get "usage" input)) >>= λ _ →
+  openai : V.Value → Fault ⊎ Reply
+  openai input = ensure (isText "completed" (get "status" input)) "OpenAI response is incomplete" >>= λ _ →
     array "invalid OpenAI output" (get "output" input) >>= λ output →
-    collect openaiItem [] output >>= λ calls → finish maximum output calls
+    collect openaiItem [] output >>= λ calls → finish output calls
 
   stopReason : ∀ {A : Set} → String → String → String → V.Value → List A → Fault ⊎ ⊤
   stopReason toolStop finishedStop message reason calls with isText toolStop reason
@@ -211,13 +199,12 @@ module Decode (arguments : Text → Fault ⊎ V.Value) where
   ...   | true = ensure (not (nonempty calls)) message
   ...   | false = inj₁ (fault [] malformedInput message)
 
-  anthropic : (maximum tokens : ℕ) → V.Value → Fault ⊎ Reply maximum
-  anthropic maximum tokens input =
-    usage tokens "Anthropic output exceeded token limit" (get "output_tokens" (get "usage" input)) >>= λ _ →
+  anthropic : V.Value → Fault ⊎ Reply
+  anthropic input =
     array "invalid Anthropic content" (get "content" input) >>= λ content →
     collect anthropicItem [] content >>= λ calls →
     stopReason "tool_use" "end_turn" "Anthropic response is incomplete" (get "stop_reason" input) calls >>= λ _ →
-    finish maximum (anthropicReplay content) calls
+    finish (anthropicReplay content) calls
 
   rawChatCalls : V.Value → Fault ⊎ List V.Value
   rawChatCalls V.null = inj₂ []
@@ -231,15 +218,13 @@ module Decode (arguments : Text → Fault ⊎ V.Value) where
   chatChoice : V.Value → Fault ⊎ V.Value
   chatChoice input = array "invalid chat choices" (get "choices" input) >>= onlyChoice
 
-  chat : (allowObject : Bool) (maximum tokens : ℕ) → V.Value → Fault ⊎ Reply maximum
-  chat allowObject maximum tokens input =
-    usage tokens "provider output exceeded token limit" (get "completion_tokens" (get "usage" input)) >>= λ _ →
+  chat : (allowObject : Bool) → V.Value → Fault ⊎ Reply
+  chat allowObject input =
     chatChoice input >>= λ choice →
     let message = get "message" choice in
     ensure (isText "assistant" (get "role" message)) "invalid chat assistant message" >>= λ _ →
     ensure (isObject message) "invalid chat assistant message" >>= λ _ →
     rawChatCalls (get "tool_calls" message) >>= λ rawCalls →
     stopReason "tool_calls" "stop" "chat response is incomplete" (get "finish_reason" choice) rawCalls >>= λ _ →
-    result (Collections.checkCount maximum rawCalls) >>= λ _ →
     collect (chatItem allowObject) [] rawCalls >>= λ calls →
-    finish maximum (message ∷ []) calls
+    finish (message ∷ []) calls

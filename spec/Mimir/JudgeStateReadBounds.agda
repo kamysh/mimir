@@ -110,8 +110,8 @@ module Size (sizeMaximum : ℕ) where
   eventRules : O.Rules D.eventFields
   eventRules = O.Rules.next (L.required (toList "at") D.u64 (L.unsigned P.u64Maximum)) $
     O.Rules.next (O.trivial _) $ O.Rules.next (O.trivial _) $
-    O.Rules.next (L.required (toList "model_remaining") D.size (L.unsigned sizeMaximum)) $
-    O.Rules.next (L.required (toList "tool_remaining") D.size (L.unsigned sizeMaximum)) $
+    O.Rules.next (L.optional (toList "model_requests") D.size (L.unsigned sizeMaximum)) $
+    O.Rules.next (L.optional (toList "tool_attempts") D.size (L.unsigned sizeMaximum)) $
     O.Rules.next (O.trivial _) $ O.Rules.next (O.trivial _) $
     O.Rules.next (L.optional (toList "detail_bytes") D.size (L.unsigned sizeMaximum)) O.Rules.done
 
@@ -127,8 +127,8 @@ module Size (sizeMaximum : ℕ) where
   traceRules = O.Rules.next (O.trivial _) $ O.Rules.next (L.required (toList "started_at") D.u64 (L.unsigned P.u64Maximum)) $
     O.Rules.next (L.optional (toList "finished_at") D.u64 (L.unsigned P.u64Maximum)) $
     O.Rules.next (O.trivial _) $ O.Rules.next (O.trivial _) $ O.Rules.next (O.trivial _) $
-    O.Rules.next (L.required (toList "model_remaining") D.size (L.unsigned sizeMaximum)) $
-    O.Rules.next (L.required (toList "tool_remaining") D.size (L.unsigned sizeMaximum)) $
+    O.Rules.next (L.optional (toList "model_requests") D.size (L.unsigned sizeMaximum)) $
+    O.Rules.next (L.optional (toList "tool_attempts") D.size (L.unsigned sizeMaximum)) $
     O.Rules.next (L.required (toList "events") (Array.readArray D.event) (L.array D.event event)) $
     O.Rules.next (L.defaulted (toList "events_omitted") D.size 0 (L.unsigned sizeMaximum) z≤n) O.Rules.done
 

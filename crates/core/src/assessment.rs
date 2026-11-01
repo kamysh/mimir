@@ -42,8 +42,8 @@ pub struct LearningItem {
 
 fn nonempty(s: &str) -> Result<()> {
     ensure!(
-        !s.trim().is_empty() && s.len() <= 4000,
-        "text must contain 1..=4000 bytes"
+        !s.trim().is_empty(),
+        "text must contain a non-whitespace character"
     );
     Ok(())
 }
@@ -55,7 +55,6 @@ fn range(x: f64, min: f64, max: f64) -> Result<()> {
     Ok(())
 }
 pub fn validate_items(items: &[LearningItem]) -> Result<()> {
-    ensure!(items.len() <= 64, "too many learning items");
     let mut ids = HashSet::new();
     for item in items {
         ensure!(ids.insert(item.id), "duplicate learning item ID");
@@ -67,7 +66,6 @@ pub fn validate_items(items: &[LearningItem]) -> Result<()> {
         ] {
             nonempty(text)?;
         }
-        ensure!(item.predictions.len() <= 16, "too many predictions");
         for p in &item.predictions {
             for text in [&p.quantity, &p.unit, &p.horizon, &p.recorded_at] {
                 nonempty(text)?;
@@ -131,16 +129,8 @@ impl Assessment {
         nonempty(&self.scope)?;
         nonempty(&self.rubric)?;
         nonempty(&self.rationale)?;
-        ensure!(
-            self.scope.len() <= 200 && self.rubric.len() <= 200,
-            "scope and rubric keys exceed 200 bytes"
-        );
         self.correctness.validate(0.)?;
         self.usefulness.validate(-1.)?;
-        ensure!(
-            self.evidence_indices.len() <= 32 && self.item_ids.len() <= 64,
-            "too many assessment references"
-        );
         ensure!(
             self.evidence_indices.iter().collect::<HashSet<_>>().len()
                 == self.evidence_indices.len(),
