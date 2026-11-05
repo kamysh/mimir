@@ -15,6 +15,41 @@ The inventory contains **34 MCP tools, 30 CLI leaf commands, seven lifecycle gro
 
 Protocols distinguish application decisions from external observations. Database, filesystem, network and subprocess replies retain failure and uncertain outcomes. Their concrete application meanings are supplied by the storage, transaction, publication, codec and lifecycle modules listed below; they are not unrestricted successful application callbacks. A `Runs` control transcript alone is not a Rust conformance proof or proof that real I/O happened.
 
+## Stored belief evidence
+
+[EvidenceValidity](../spec/Mimir/EvidenceValidity.agda) defines valid stored
+beliefs. Both current evidence counts and the original prior counts must be
+finite and nonnegative, and each pair must have a finite total. Displayed
+probability and confidence must stay between zero and one. Empty evidence is
+allowed: its probability is one half and its confidence is zero. A normal
+displayed probability cannot make negative or overflowing counts valid.
+
+[StoreRows](../spec/Mimir/StoreRows.agda) proves that every successful belief
+read satisfies these rules. Only absent legacy evidence fields use the
+documented fallback: missing original counts come from the stored probability
+and confidence; missing current counts use those original counts. A supplied
+malformed, negative, infinite or NaN count is refused. A pair whose addition
+overflows is also refused. This specifies refusal, not repair of stored data.
+
+[PosteriorComputation](../spec/Mimir/PosteriorComputation.agda) checks inputs,
+each calculated update before change detection, and the final state. Numeric
+failure is distinct from an empty successful update. Decay checks its result
+before deciding whether the change is large enough to save. The propagation
+and review paths refuse numeric failures instead of reporting success.
+
+[LearningRecompute](../spec/Mimir/LearningRecompute.agda) proves that applying
+valid updates preserves valid beliefs and retains every original prior count.
+[StorageSemantics](../spec/Mimir/StorageSemantics.agda) requires valid evidence
+for inserted beliefs and posterior writes. Its preservation laws cover commit,
+abort and either possible outcome after a lost acknowledgement. These laws
+assume the unchanged starting beliefs were valid; they do not claim that an
+update repairs unrelated damaged records.
+
+Arithmetic and parsing remain supplied library operations. These are checks
+and general laws about Mimir's accepted values and updates, not proofs of
+floating-point arithmetic or a parser implementation. The change is confined
+to the specification; it does not certify or change the installed application.
+
 ## Behavioral areas
 
 | Area | Detailed behavior |

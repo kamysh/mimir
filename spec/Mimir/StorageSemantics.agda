@@ -36,6 +36,8 @@ import Mimir.GroundingPublication as Ground
 import Mimir.GroundingProtocol as AutoGround
 import Mimir.GraphDeletion as Deletion
 import Mimir.DatabaseTransaction as DB
+import Mimir.EvidenceValidity as Evidence
+open import Data.List.Relation.Unary.All using (All)
 
 edges : Store.World → List Edge.Edge
 edges state = Publication.World.edges (Learning.World.publication (Store.World.learning state))
@@ -143,8 +145,36 @@ apply (beliefVector id vector) state = record state
   { beliefVectors = Store.putVector id vector (Store.World.beliefVectors state) }
 apply (posterior writes) state = Store.setNodes (Recompute.apply writes (Store.nodes state)) state
 
-StatementPublication : Statement → Store.World → DB.Receipt → Store.World → Set
-StatementPublication statement before receipt after = DB.Atomic before (apply statement before) receipt after
+AdmittedStatement : Statement → Set
+AdmittedStatement (insertBelief belief origin) = Evidence.ValidBelief belief
+AdmittedStatement (beliefVector id vector) = ⊤
+AdmittedStatement (posterior writes) = Posterior.ValidState writes
+
+record StatementPublication (statement : Statement) (before : Store.World)
+  (receipt : DB.Receipt) (after : Store.World) : Set where
+  field
+    admitted : AdmittedStatement statement
+    publication : DB.Atomic before (apply statement before) receipt after
+
+-- A failed/lost acknowledgement has the same invariant on either possible
+-- published state. Admission never licenses replacing the original priors.
+posteriorPublicationPreservesValidity : ∀ writes before receipt after →
+  StatementPublication (posterior writes) before receipt after →
+  All Evidence.ValidNode (Store.nodes before) → All Evidence.ValidNode (Store.nodes after)
+posteriorPublicationPreservesValidity writes before receipt after evidence valid =
+  DB.invariantPreserved (λ state → All Evidence.ValidNode (Store.nodes state))
+    (StatementPublication.publication evidence) valid
+    (Recompute.applyPreservesValidity writes (Store.nodes before)
+      (StatementPublication.admitted evidence) valid)
+
+posteriorPublicationPreservesOriginals : ∀ writes before receipt after →
+  StatementPublication (posterior writes) before receipt after →
+  Recompute.originals (Store.nodes after) ≡ Recompute.originals (Store.nodes before)
+posteriorPublicationPreservesOriginals writes before receipt after evidence =
+  DB.invariantPreserved
+    (λ state → Recompute.originals (Store.nodes state) ≡ Recompute.originals (Store.nodes before))
+    (StatementPublication.publication evidence) refl
+    (Recompute.applyPreservesOriginals writes (Store.nodes before))
 
 -- A learning-only proposed state never overwrites document/vector/grounding
 -- storage. These physical writes remain in the same database transaction.
