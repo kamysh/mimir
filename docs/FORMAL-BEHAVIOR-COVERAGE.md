@@ -4,6 +4,9 @@ Current scope: **Mimir application behavior, with standard libraries supplied ex
 The [value audit](FORMAL-VALUE-AUDIT.md) records the removal of library
 implementation proofs and unused support. The verification dates and module
 counts in the historical sections below describe those earlier snapshots.
+The [outside-guarantees guide](FORMAL-EXTERNAL-GUARANTEES.md) identifies the
+accepted database and library premises and the application responsibilities
+that remain with Mimir.
 
 This extends the existing specification for the current Mimir product. It covers public inputs and defaults, validation, output projections, state transitions, partial failures, persistence and background protocols. The specification-only completion receipt remains in FORMAL-BEHAVIOR-VERIFICATION.json. Subsequent Rust alignment is documented in [RUST-CONFORMANCE.md](RUST-CONFORMANCE.md); the checked model must not be described as a verified installed binary.
 
