@@ -66,6 +66,14 @@ class IsolationTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             fixture.validate({"MIMIR_CONFIG": "/deployment/config.toml"})
 
+    def test_harness_config_refuses_custom_command_settings(self):
+        for backend in ("codex", "claude-code"):
+            argv = ["fixture.py", "config", str(self.root / "invalid.toml"),
+                    "--backend", backend, "--command", "/fixture/custom"]
+            with self.subTest(backend=backend), patch.dict(os.environ, self.env, clear=True), patch("sys.argv", argv):
+                with self.assertRaises(ValueError):
+                    fixture.main()
+
     def test_connection_and_config_overrides_are_refused(self):
         for key, value in {"MIMIR_HOST": "deployment", "MIMIR_PORT": "5450",
                            "MIMIR_DBNAME": "mimir", "MIMIR_USER": "mimir",
