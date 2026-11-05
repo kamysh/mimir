@@ -445,6 +445,7 @@ import Mimir.EmbeddingService
 import Mimir.OAuthRefreshRaw
 
 import Mimir.JudgeDigestSnapshot
+import Mimir.LocalCalendar
 
 import Mimir.JudgeClientStartup
 
