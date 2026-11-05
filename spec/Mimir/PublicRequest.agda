@@ -1,0 +1,182 @@
+{-# OPTIONS --safe #-}
+-- All 34 MCP tools decode to these concrete application operations. Unknown
+-- fields at the outer hand-written dispatcher are ignored; typed nested
+-- learning records retain their own strict serde rules.
+module Mimir.PublicRequest where
+
+open import Data.Bool using (Bool; true; false)
+open import Data.Float.Base using (Float; _*_)
+open import Data.Integer using (ℤ; +_) renaming (_*_ to _*ℤ_)
+open import Data.List using (List; []; _∷_)
+open import Data.Maybe using (Maybe; just; nothing)
+open import Data.Nat using (ℕ)
+open import Data.Product using (_,_)
+open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.String using (toList)
+open import Mimir.Text using (Text)
+open import Mimir.Validation using (Fault)
+open import Mimir.RecordDecoding using (_>>=_; mapResult; readArray)
+open import Mimir.PublicInput
+import Mimir.StructuredValue as V
+import Mimir.Binary64 as Binary
+import Mimir.ApplicationFloat as Numeric
+import Mimir.FloatConversion as Conversion
+import Mimir.ToolCatalog as Tools
+import Mimir.GraphMutationProtocol as Mutation
+import Mimir.GraphReadProtocol as Read
+import Mimir.GraphDeletion as Delete
+import Mimir.InferenceProtocol as Inference
+import Mimir.LearningOperations as Learning
+import Mimir.LearningQueryProtocol as Query
+import Mimir.LearningWire as Wire
+import Mimir.LearningCandidates as C
+import Mimir.ReviewSchema as R
+import Mimir.AssessmentSelection as Assessment
+import Mimir.IndependentProvenance as Origin
+import Mimir.Validation as Validation
+
+data Request : Set where
+  mutation : Mutation.Request → Request
+  read : Read.Request → Request
+  delete : Delete.Kind → ℕ → Request
+  deleteProject : Text → Request
+  inference : Inference.Request → Request
+  sweepHours : Maybe Text → Float → Float → Request
+  relevant : Text → ℕ → Maybe Text → Maybe C.Memory → Bool → ℕ → Request
+  addEvidence : ℕ → ℕ → Float → Request -- belief, chunk, weight
+  removeEvidence : ℕ → ℕ → Request -- existing core-library API; no new MCP tool
+  evidence : ℕ → Request
+  loadDocument : Text → Maybe Text → Request
+  queryDocument : Text → Maybe Text → ℕ → Request
+  clearDocument : Text → Request
+  learning : Learning.Request → Request
+  learningQuery : Query.Request → Request
+  learningContext : Text → Text → ℕ → Request
+  capabilities : Request
+
+memory : V.Value → Fault ⊎ C.Memory
+memory = enum (("fact" , C.fact) ∷ ("experiential" , C.experiential) ∷ ("working" , C.working) ∷ [])
+
+-- A missing or non-string memory field is absent; a string with an unknown
+-- spelling is an error. This differs from the nested candidate enum grammar.
+memoryField : Text → V.Object.View → Fault ⊎ Maybe C.Memory
+memoryField name fields with fields name
+... | just (V.string text) = mapResult just (memory (V.string text))
+... | _ = inj₂ nothing
+
+defaultMemory : Maybe C.Memory → C.Memory
+defaultMemory nothing = C.fact
+defaultMemory (just kind) = kind
+
+module Decode (conversion : Conversion.Contract) where
+  open Numbers conversion
+  sizeMaximum = Binary.powerMinusOne 64 -- installed 64-bit target
+  module L = Wire.Decode conversion sizeMaximum
+
+  float : V.Value → Fault ⊎ Float
+  float raw = number raw >>= λ n → fromNumber n
+    where
+    fromNumber : Binary.Number → Fault ⊎ Float
+    fromNumber n with Numeric.number n
+    ... | nothing = bad "nonfinite JSON number"
+    ... | just value = inj₂ value
+
+  project : V.Object.View → Maybe Text
+  project = looseOptional "project" V.asString
+
+  integer : V.Value → Fault ⊎ ℕ
+  integer = unsigned sizeMaximum
+
+  assessmentQuery : V.Object.View → Fault ⊎ Assessment.Query
+  assessmentQuery fields = required "project" V.asString fields >>= λ project →
+    required "belief_id" uuid fields >>= λ id → required "scope" V.asString fields >>= λ scope →
+    required "rubric" V.asString fields >>= λ rubric → inj₂ (Assessment.query project id scope rubric)
+
+  listRequest : V.Object.View → Maybe C.Memory → Fault ⊎ Request
+  listRequest fields memory with fields (toList "limit")
+  ... | nothing with fields (toList "offset")
+  ...   | nothing = inj₂ (read (Read.listBeliefs (project fields) memory))
+  ...   | just _ = bad "offset requires limit"
+  listRequest fields memory | just raw = integer raw >>= λ limit →
+    defaulted "offset" 0 integer fields >>= λ offset →
+    inj₂ (read (Read.beliefPage (project fields) memory limit offset))
+
+  edgeRequest : R.Relation → V.Object.View → Fault ⊎ Request
+  edgeRequest relation fields = required "from_id" V.asString fields >>= λ fromText →
+    required "to_id" V.asString fields >>= λ toText → required "weight" number fields >>= λ weight →
+    uuid (V.string fromText) >>= λ from → uuid (V.string toText) >>= λ to →
+    inj₂ (mutation (Mutation.edge from to relation weight))
+
+  validOrigin : V.Value → Fault ⊎ Origin.Provenance
+  validOrigin raw = Wire.origin raw >>= check
+    where
+    check : Origin.Provenance → Fault ⊎ Origin.Provenance
+    check origin with Origin.validate origin
+    ... | Validation.rejected fault invalid = inj₁ fault
+    ... | Validation.accepted valid = inj₂ origin
+
+  decode : Tools.Tool → V.Object.View → Fault ⊎ Request
+  decode Tools.insertBelief fields = required "provenance" validOrigin fields >>= λ origin →
+    required "content" V.asString fields >>= λ content → required "probability" float fields >>= λ probability →
+    required "confidence" float fields >>= λ confidence → memoryField (toList "memory_type") fields >>= λ kind →
+    inj₂ (mutation (Mutation.belief content probability confidence (project fields) (defaultMemory kind) (just origin)))
+  decode Tools.deleteBelief fields = mapResult (delete Delete.belief) (required "id" uuid fields)
+  decode Tools.deletePattern fields = mapResult (delete Delete.patternNode) (required "id" uuid fields)
+  decode Tools.deleteProject fields = mapResult deleteProject (required "project" V.asString fields)
+  decode Tools.insertPattern fields = required "situation" V.asString fields >>= λ situation →
+    required "approach" V.asString fields >>= λ approach → required "success_rate" float fields >>= λ success →
+    present "project" V.asString fields >>= λ project → inj₂ (mutation (Mutation.patternNode situation approach success project))
+  decode Tools.recordSupport fields = edgeRequest R.supports fields
+  decode Tools.recordCause fields = edgeRequest R.causes fields
+  decode Tools.recordDefeat fields = edgeRequest R.defeats fields
+  decode Tools.recordContradiction fields = required "id_a" V.asString fields >>= λ fromText →
+    required "id_b" V.asString fields >>= λ toText → castNatural 1 >>= λ one →
+    uuid (V.string fromText) >>= λ from → uuid (V.string toText) >>= λ to →
+    inj₂ (mutation (Mutation.edge from to R.contradicts (loose "weight" one number fields)))
+  decode Tools.getBelief fields = mapResult (λ id → read (Read.getBelief id)) (required "id" uuid fields)
+  decode Tools.listBeliefs fields = memoryField (toList "memory_type") fields >>= listRequest fields
+  decode Tools.listPatterns fields = inj₂ (read (Read.listPatterns (project fields)))
+  decode Tools.getContradictions fields = inj₂ (inference (Inference.contradictions (project fields)))
+  decode Tools.decayAll fields = inj₂ (inference (Inference.decay (project fields) (loose "decay_factor" 0.99 float fields)))
+  decode Tools.sweepExpiredDefeated fields = inj₂ (sweepHours (project fields)
+    (loose "prob_threshold" 0.3 float fields) (loose "grace_hours" 24.0 float fields))
+  decode Tools.queryRelevant fields = required "context" V.asString fields >>= λ context →
+    memoryField (toList "prefer_type") fields >>= λ preference →
+    inj₂ (relevant context (loose "limit" 10 integer fields) (project fields) preference
+      (loose "include_evidence" false V.asBoolean fields) (loose "evidence_per_belief" 3 integer fields))
+  decode Tools.addEvidence fields = required "belief_id" V.asString fields >>= λ beliefText →
+    required "chunk_id" V.asString fields >>= λ chunkText →
+    uuid (V.string beliefText) >>= λ belief → uuid (V.string chunkText) >>= λ chunk →
+    inj₂ (addEvidence belief chunk (loose "weight" 1.0 float fields))
+  decode Tools.getEvidence fields = mapResult evidence (required "belief_id" uuid fields)
+  decode Tools.propagateFrom fields = mapResult (λ id → inference (Inference.propagate id)) (required "id" uuid fields)
+  decode Tools.queryIntervention fields = required "id" V.asString fields >>= λ text → required "value" float fields >>= λ value →
+    uuid (V.string text) >>= λ id → inj₂ (inference (Inference.intervention id value))
+  decode Tools.loadDocument fields = required "path" V.asString fields >>= λ path → inj₂ (loadDocument path (project fields))
+  decode Tools.queryDocument fields = required "context" V.asString fields >>= λ context →
+    inj₂ (queryDocument context (project fields) (loose "limit" 5 integer fields))
+  decode Tools.clearDocument fields = mapResult clearDocument (required "path" V.asString fields)
+  decode Tools.getLearningReview fields = mapResult (λ id → learningQuery (Query.currentReview id)) (required "id" uuid fields)
+  decode Tools.learningCapabilities fields = inj₂ capabilities
+  decode Tools.getLessonAssessment fields = mapResult (λ q → learningQuery (Query.score q)) (assessmentQuery fields)
+  decode Tools.lessonAssessmentHistory fields = assessmentQuery fields >>= λ q →
+    defaulted "offset" 0 integer fields >>= λ offset → defaulted "limit" 20 integer fields >>= λ limit →
+    inj₂ (learningQuery (Query.assessmentHistory q offset limit))
+  decode Tools.explainBelief fields = required "id" uuid fields >>= λ id →
+    defaulted "offset" 0 integer fields >>= λ offset → defaulted "limit" 10 integer fields >>= λ limit →
+    inj₂ (read (Read.explain id offset limit))
+  decode Tools.recordExperience fields = required "experience" L.experience fields >>= λ experience →
+    required "expected_revision" i64 fields >>= λ expected → inj₂ (learning (Learning.recordExperience experience expected))
+  decode Tools.reviewExperience fields = required "review" L.review fields >>= λ review →
+    required "expected_review_revision" i64 fields >>= λ expected → inj₂ (learning (Learning.reviewExperience review expected))
+  decode Tools.pendingExperiences fields = present "project" V.asString fields >>= λ project →
+    defaulted "limit" 10 integer fields >>= λ limit → defaulted "exclude_ids" [] (readArray uuid) fields >>= λ excluded →
+    inj₂ (learningQuery (Query.pending project limit excluded))
+  decode Tools.getExperience fields = mapResult (λ id → learningQuery (Query.experience id)) (required "id" uuid fields)
+  decode Tools.experienceHistory fields = mapResult (λ id → learningQuery (Query.history id)) (required "id" uuid fields)
+  decode Tools.queryLearningContext fields = required "context" V.asString fields >>= λ context →
+    required "project" V.asString fields >>= λ project → defaulted "limit" 5 integer fields >>= λ limit →
+    inj₂ (learningContext context project limit)
+
+  readTool : Tools.Tool → V.Value → Fault ⊎ Request
+  readTool tool raw = decode tool (view raw)

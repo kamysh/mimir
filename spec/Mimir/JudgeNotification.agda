@@ -1,0 +1,168 @@
+{-# OPTIONS --safe #-}
+-- Judge-to-notifier translation. Only explicitly selected report facts enter
+-- mail; raw input excerpts, backend replies and failure details are excluded.
+module Mimir.JudgeNotification where
+
+open import Data.Bool using (Bool; true; false; _∨_)
+open import Data.List using (List; []; _∷_; _++_; map; take; length; filterᵇ)
+open import Data.Maybe using (Maybe; just; nothing)
+open import Data.Nat using (ℕ; _≟_; _∸_; _≤?_)
+import Data.Nat.Show as Nat
+open import Data.String using (toList)
+open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.Product using (_,_)
+open import Relation.Nullary using (yes; no; does)
+open import Mimir.Text using (Text)
+open import Mimir.SourceReview using (_≟Text_)
+import Mimir.DiagnosticText as Bounded
+import Mimir.OperationalDiagnostics as Diagnostics
+import Mimir.NotificationConfig as Config
+import Mimir.NotificationIncident as I
+import Mimir.NotificationDelivery as Delivery
+import Mimir.NotificationRuntime as N
+import Mimir.JudgeStateRecords as Records
+import Mimir.PublicEncoding as Encoding
+import Mimir.Validation as V
+import Mimir.UnixPath as Path
+import Mimir.Effects as Effects
+
+module R = Records.Over ℕ
+number : ℕ → Text
+number value = toList (Nat.show value)
+
+reason : R.Report → Text
+reason report with R.Report.blockReason report
+... | nothing = toList "review incomplete"
+... | just value = choose value
+  where
+  choose : Text → Text
+  choose value with does (value ≟Text toList "model_budget_exhausted")
+  ... | true = toList "model call limit reached"
+  ... | false with does (value ≟Text toList "tool_budget_exhausted")
+  ...   | true = toList "tool call limit reached"
+  ...   | false with does (value ≟Text toList "backend_timeout")
+  ...     | true = toList "model response timed out"
+  ...     | false with does (value ≟Text toList "backend_error")
+  ...       | true = toList "model backend failed"
+  ...       | false with does (value ≟Text toList "review_deferred")
+  ...         | true = toList "review deferred after a rejected candidate"
+  ...         | false = toList "review incomplete (" ++ Bounded.bounded 64 value ++ toList ")"
+
+join : Text → List Text → Text
+join separator [] = []
+join separator (x ∷ []) = x
+join separator (x ∷ y ∷ rest) = x ++ separator ++ join separator (y ∷ rest)
+
+projectName : Maybe Text → Text
+projectName nothing = toList "all projects"
+projectName (just project) = Bounded.bounded 80 project
+incidentKey : Maybe Text → Text
+incidentKey nothing = toList "all-projects"
+incidentKey (just project) = project
+
+status : R.Report → I.Status
+status report with does (R.Report.status report ≟Text toList "blocked") ∨
+  does (R.Report.status report ≟Text toList "partial")
+... | true = I.failure (toList "judge_failure") (toList "Review batch did not complete: " ++ reason report)
+... | false with does (R.Report.status report ≟Text toList "idle")
+...   | true = I.recovery
+...   | false = I.progress
+
+module Details (format : Encoding.Formatting) (localTime : ℕ → Text) where
+  -- localTime uses chrono's local zone and "%Y-%m-%d %H:%M:%S %:z";
+  -- unrepresentable u64 timestamps use "Unix time <seconds>".
+  uuid = Encoding.Formatting.uuidText format
+  ids : List ℕ → Text
+  ids [] = toList "none"
+  ids values@(_ ∷ _) with length values ≤? 5
+  ... | yes _ = join (toList ", ") (map uuid values)
+  ... | no _ = join (toList ", ") (map uuid (take 5 values)) ++
+    toList " (+" ++ number (length values ∸ 5) ++ toList " more)"
+
+  diagnostic : Maybe ℕ → Text
+  diagnostic nothing = toList "\nDiagnostic ID: unavailable; inspect mimir judge status"
+  diagnostic (just id) = toList "\nDiagnostic ID: " ++ uuid id ++
+    toList "\nInspect: mimir judge diagnostics --id " ++ uuid id
+
+  failure : Maybe Text → R.Report → Text
+  failure project report = toList "Project: " ++ projectName project ++
+    toList "\nObserved: " ++ localTime (R.Report.recordedAt report) ++ toList "\nReason: " ++ reason report ++
+    toList "\nSelected: " ++ number (R.Report.selected report) ++ toList "; confirmed: " ++ number (R.Report.confirmed report) ++
+    toList "; corrected: " ++ number (R.Report.corrected report) ++ toList "; pending: " ++ number (R.Report.pending report) ++
+    toList "; unavailable: " ++ number (R.Report.unavailable report) ++ toList "\nAffected experience IDs: " ++
+    ids (R.Report.selectedIds report) ++ diagnostic (R.Report.diagnosticsId report) ++
+    toList "\n" ++ Diagnostics.summary (just report)
+
+  find : ℕ → List R.Confirmed → Maybe R.Confirmed
+  find id [] = nothing
+  find id (item ∷ rest) with id ≟ R.Confirmed.identity item
+  ... | yes _ = just item
+  ... | no _ = find id rest
+
+  confirmed : List R.Confirmed → ℕ → Bool
+  confirmed values id with find id values
+  ... | nothing = false
+  ... | just _ = true
+
+  itemLine : List R.Confirmed → ℕ → Text
+  itemLine values id with find id values
+  ... | nothing = toList "\n" ++ uuid id ++ toList ": completion unverified"
+  ... | just item = toList "\n" ++ uuid id ++ toList ": confirmed at " ++ localTime (R.Confirmed.recordedAt item)
+
+  previousDiagnostic : Maybe ℕ → Text
+  previousDiagnostic nothing = []
+  previousDiagnostic (just id) = toList "\nPrevious diagnostic ID: " ++ uuid id
+
+  extra : List ℕ → Text
+  extra values with length values ≤? 5
+  ... | yes _ = []
+  ... | no _ = toList "\nAdditional affected reviews: " ++ number (length values ∸ 5)
+
+  recovery : Maybe Text → R.Report → R.Incident → Text
+  recovery project report incident = toList "Project: " ++ projectName project ++
+    toList "\nPrevious failure: " ++ localTime (R.Report.recordedAt first) ++
+    toList "\nPrevious reason: " ++ reason first ++ toList "\nQueue: idle at " ++ localTime (R.Report.recordedAt report) ++
+    toList "; no pending reviews were selected\nAffected reviews: " ++ number count ++
+    toList " confirmed by completed batches; " ++ number (length selected ∸ count) ++ toList " unverified" ++
+    previousDiagnostic (R.Report.diagnosticsId first) ++ join [] (map (itemLine reviews) (take 5 selected)) ++ extra selected
+    where
+    first = R.Incident.first incident
+    selected = R.Report.selectedIds first
+    reviews = R.Incident.confirmedReviews incident
+    count = length (filterᵇ (confirmed reviews) selected)
+
+outcomeText : I.Outcome → Text
+outcomeText I.disabled = toList "disabled"
+outcomeText I.notNeeded = toList "not_needed"
+outcomeText I.sent = toList "sent"
+outcomeText I.retryPending = toList "retry_pending"
+outcomeText I.exhausted = toList "exhausted"
+outcomeText I.authRequired = toList "auth_required"
+outcomeText I.unavailable = toList "unavailable"
+
+data Effect : Set where readFailure : Effect; submit : I.Event → Effect
+Reply : Effect → Set
+Reply readFailure = Text ⊎ Maybe R.Incident
+Reply (submit _) = N.Result
+open Effects.Protocol Effect Reply public
+
+module Run (format : Encoding.Formatting) (localTime : ℕ → Text)
+  (cfg : Config.Config) (path : Path.Path) (project : Maybe Text) where
+  module D = Details format localTime
+
+  submitDetails : R.Report → Maybe Text → Script (Text ⊎ Text)
+  submitDetails report details = ask (submit (I.event (toList "judge") (incidentKey project) (status report) details)) λ where
+    (inj₁ _) → done (inj₁ (toList "notification unavailable"))
+    (inj₂ value) → done (inj₂ (outcomeText value))
+
+  notify : R.Report → Script (Text ⊎ Text)
+  notify report with V.result (Config.validate cfg) | Path.absolute path
+  ... | inj₁ _ | _ = done (inj₁ (toList "invalid notification configuration"))
+  ... | _ | false = done (inj₁ (toList "notification state path must be absolute"))
+  ... | inj₂ _ | true with status report
+  ...   | I.failure _ _ = submitDetails report (just (D.failure project report))
+  ...   | I.progress = submitDetails report nothing
+  ...   | I.recovery = ask readFailure λ where
+    (inj₁ error) → done (inj₁ error)
+    (inj₂ nothing) → submitDetails report nothing
+    (inj₂ (just incident)) → submitDetails report (just (D.recovery project report incident))

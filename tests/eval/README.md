@@ -16,7 +16,7 @@ model with `[llm].model` and, for Codex, may select
 `[llm].reasoning_effort`. The runner requires `backend = "codex"`, a loopback
 `mimir_learning_test*` database, and explicit absolute binary paths. It rejects
 the installed `~/.config/mimir/config.toml`; use two private comparison files.
-The files must use the same database, embeddings, and timeout, and select
+The files must use the same database and embeddings, and select
 different models or effort settings.
 
 ```sh
@@ -27,13 +27,13 @@ different models or effort settings.
 ```
 
 Without `--live`, this only checks the configs and prints their model selectors.
-`--live` makes account-backed Codex calls. The runner caps initial reviews at
-two model turns and corrected reviews at two more; it reads exact-retry state
-through MCP and makes one fresh-session action call per scenario. Each model
-turn may also start a `codex exec --help` capability check. The runner does not
-enforce an aggregate Codex process limit; use an external process cap when one
-is required. Two turns can commit a review but leave the runner status `partial`
-because there is no final completion turn.
+`--live` makes account-backed Codex calls. The runner uses at most two judge
+subprocesses for the initial review and two more for a correction; each judge
+subprocess can make multiple model and tool calls. It reads exact-retry state
+through MCP and makes one fresh-session action call per scenario. Model turns
+may also start `codex exec --help` capability checks. Review model/tool calls,
+aggregate Codex processes and provider charges are not capped or metered.
+Use an external process cap when one is required.
 Codex may make provider-internal requests that the runner cannot meter. The
 actor records chosen actions for a related
 keyboard situation and an unrelated disk-quota situation. It disables email,

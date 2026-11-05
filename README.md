@@ -198,7 +198,7 @@ chmod 600 ~/.pgpass
 Run the setup script (creates the role, database, extensions, and grants):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.0.3/mimir-setup/create-db-user.sh \
+curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.2.2/mimir-setup/create-db-user.sh \
   | bash -s -- --container postgres-ai --host localhost --port 5432 --user mimir --db mimir
 ```
 
@@ -223,7 +223,7 @@ psql -h localhost -U mimir -d mimir -c '\conninfo' >/dev/null && echo OK
 
 This step installs the two mimir binaries to `~/.local/bin`. It is one of three pieces — see Step 5 for the MCP server registration.
 
-Install the **2.0.3** release. This block selects one archive for your platform:
+Install the **2.2.2** release. This block selects one archive for your platform:
 
 ```bash
 mkdir -p "$HOME/.local/bin"
@@ -233,11 +233,11 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)  TARBALL=mimir-darwin-arm64.tar.gz ;;
   *) echo "Use Building from source for this platform" >&2; exit 1 ;;
 esac
-curl -fL "https://github.com/kamysh/mimir/releases/download/v2.0.3/${TARBALL}" \
+curl -fL "https://github.com/kamysh/mimir/releases/download/v2.2.2/${TARBALL}" \
   | tar -xz -C "$HOME/.local/bin"
 chmod +x "$HOME/.local/bin/mimir" "$HOME/.local/bin/mimir-mcp"
 export PATH="$HOME/.local/bin:$PATH"
-mimir --version  # must report 2.0.3
+mimir --version  # must report 2.2.2
 ```
 
 The release workflow builds Linux x86_64, Linux ARM64 and Apple Silicon.
@@ -257,13 +257,40 @@ xattr -d com.apple.quarantine ~/.local/bin/mimir ~/.local/bin/mimir-mcp
 mimir --help >/dev/null && echo OK
 ```
 
+### Updating an existing installation
+
+**Upgrading to 2.2.0 requires configuration format 1 and an explicit log directory.**
+After replacing binaries, run `mimir config check`. Missing required settings
+must be resolved before application work starts. For a legacy configuration:
+
+```sh
+mimir config upgrade --log-directory "$HOME/.local/state/mimir/logs"
+mimir config check
+```
+
+Version 2.2.1 also removes the old `[llm]` review limits: `timeout_seconds`,
+`max_calls`, `max_output_tokens`, and `max_budget_usd`. Run `mimir config upgrade`
+to remove these retired keys; other settings and comments are preserved.
+
+Version 2.2.2 moves learning-item UUID allocation into PostgreSQL. New items
+use experience-local `key` values and assessment `item_keys`; existing stored
+UUIDs remain valid for corrections. Back up the database before startup applies
+the additive ownership migration. Upgrade `mimir` and `mimir-mcp` together:
+the judge requires learning contract 3. See the
+[item identity contract](docs/learning-assessments.md#postgresql-owned-item-identities).
+
+Restart the existing
+judge process and reconnect MCP clients so they use the updated executable.
+See [operations and troubleshooting](docs/operations.md) for log limits and
+`mimir judge diagnose`, the plain-English failure report.
+
 ### Step 4: Configure mimir
 
 ```bash
 mimir init
 ```
 
-This creates `~/.config/mimir/config.toml` and opens it in `$EDITOR`. Fill in the database section:
+This creates `~/.config/mimir/config.toml` and opens it in `$EDITOR`. It includes the required configuration format and log directory. Keep those settings and fill in the database section:
 
 ```toml
 [database]
@@ -529,15 +556,31 @@ learning infrastructure.
 
 ### Verification
 
-The Rust learning integration tests require an isolated database whose name
-starts with `mimir_learning_test`. Provision its application role through
-`mimir-setup/create-db-user.sh`; `postgres` is for administration inside the
-container, not the external application connection. Set `MIMIR_HOST`,
-`MIMIR_PORT`, `MIMIR_DBNAME` and `MIMIR_USER`, then run:
+Run the maintained release checks with Docker available:
 
 ```sh
-cargo test --workspace --lib --bins --test learning_integration --test store_integration -- --test-threads=1
+nix develop --command python3 scripts/test-isolated.py
 ```
+
+The runner creates a private home, configuration, credentials, logs, state and
+build outputs, plus a uniquely labelled PostgreSQL container on a dynamically
+allocated loopback port. It uses the digest-pinned `postgres-ai` image already
+used by the connection fixtures; that image must be available to Docker.
+It builds and invokes the checkout's binaries. It never installs them, changes
+the deployment's configuration, or controls deployment services. Model adapters
+use fake harnesses; deployment credentials and provider keys are excluded from
+the test environment.
+
+Database tests require the runner's matching ownership manifest, connection and
+private password file. Missing or conflicting settings fail before connecting;
+setting `MIMIR_DBNAME` alone cannot select a deployment database. The runner
+removes only its own labelled container on completion or failure, and retains
+complete command logs and exit statuses in the printed artifact directory.
+
+The default runs formatting, Clippy, the workspace build/tests and doc tests,
+the aggregate Agda specification, and the adapter/evaluator fixtures.
+Use `--check workspace`, `--check fixtures`, `--check formal`, `--check lint`,
+or `--check format` for a focused local check. Publication uses the full default.
 
 The tests cover causal projection/retraction, retry idempotence, stale and
 concurrent reviews, reversible supersession, project isolation, corrected

@@ -1,3 +1,4 @@
+mod conformance;
 mod learning;
 use anyhow::{bail, Result};
 use chrono::DateTime;
@@ -10,6 +11,17 @@ use uuid::Uuid;
 
 use crate::documents::DocumentChunk;
 use crate::graph::{Belief, Edge, EdgeType, MemoryType, Pattern, Probability};
+
+// The approved READ COMMITTED contract requires the application to select
+// isolation explicitly. Inheriting REPEATABLE READ could freeze a snapshot
+// before the learning advisory lock becomes available.
+async fn learning_transaction(client: &mut Client) -> Result<tokio_postgres::Transaction<'_>> {
+    Ok(client
+        .build_transaction()
+        .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+        .start()
+        .await?)
+}
 
 // ---------------------------------------------------------------------------
 // AGE PREPARE/EXECUTE helpers
@@ -497,8 +509,13 @@ impl AgeStore {
             },
         );
 
-        let client = self.client.lock().await;
-        age_execute(&client, &stmt, &prepare, &agtype_json).await
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        age_execute(tx.client(), &stmt, &prepare, &agtype_json).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Delete a belief and all its edges by ID. Returns true if found and deleted.
@@ -506,7 +523,7 @@ impl AgeStore {
         let g = &self.graph_name;
         let id_str = id.to_string();
         let mut client = self.client.lock().await;
-        let tx = client.transaction().await?;
+        let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
         let exists = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief {{id:'{id_str}'}}) RETURN n.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
@@ -558,7 +575,11 @@ $$) AS (ok ag_catalog.agtype)"#
         );
         let exec_count = format!("EXECUTE {stmt_count}('{}')", sql_esc(&agtype_json));
 
-        let client = self.client.lock().await;
+        let mut connection = self.client.lock().await;
+        let tx = learning_transaction(&mut connection).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let client = tx.client();
         client.simple_query(&prepare_count).await?;
         let msgs = client.simple_query(&exec_count).await;
         let _ = client
@@ -588,8 +609,16 @@ $$) AS (ok ag_catalog.agtype)"#
              MATCH (n:Belief) WHERE n.project = $project DETACH DELETE n RETURN 1 \
              $$, $1) AS (ok agtype)"
         );
-        age_execute(&client, &stmt_del, &prepare_del, &agtype_json).await?;
+        age_execute(client, &stmt_del, &prepare_del, &agtype_json).await?;
 
+        tx.commit().await?;
+
+        // Preserve separate publication of the pattern deletion while making
+        // both independent graph writers participate in the learning lock.
+        let tx = learning_transaction(&mut connection).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let client = tx.client();
         // Also purge Pattern nodes tagged with the same project.
         let stmt_pat = format!("age_delproj_pat_{}", Uuid::new_v4().simple());
         let prepare_pat = format!(
@@ -598,14 +627,20 @@ $$) AS (ok ag_catalog.agtype)"#
              MATCH (p:Pattern) WHERE p.project = $project DETACH DELETE p RETURN 1 \
              $$, $1) AS (ok agtype)"
         );
-        age_execute(&client, &stmt_pat, &prepare_pat, &agtype_json).await?;
+        age_execute(client, &stmt_pat, &prepare_pat, &agtype_json).await?;
 
-        drop(client);
+        tx.commit().await?;
+        drop(connection);
         self.delete_belief_embeddings(&ids).await?;
         Ok(count)
     }
 
     pub async fn get_belief(&self, id: Uuid) -> Result<Option<Belief>> {
+        let client = self.client.lock().await;
+        self.get_belief_on(&client, id).await
+    }
+
+    async fn get_belief_on(&self, client: &Client, id: Uuid) -> Result<Option<Belief>> {
         let g = &self.graph_name;
         let id_str = id.to_string();
         let sql = format!(
@@ -628,7 +663,6 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(None);
@@ -675,26 +709,45 @@ $$) AS (id ag_catalog.agtype)"#
         if updates.is_empty() {
             return Ok(());
         }
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.update_beliefs_beta_on(tx.client(), updates).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn update_beliefs_beta_on(
+        &self,
+        client: &Client,
+        updates: &[(Uuid, f64, f64)],
+    ) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
         // Build all statements first so a finiteness/derivation error aborts
         // before any write is issued.
         let mut stmts = Vec::with_capacity(updates.len());
         for &(id, alpha, beta) in updates {
             stmts.push((id, self.update_belief_beta_sql(id, alpha, beta)?));
         }
-        let mut client = self.client.lock().await;
-        let tx = client.transaction().await?;
         for (id, sql) in &stmts {
-            let rows = tx.query(sql, &[]).await?;
+            let rows = client.query(sql, &[]).await?;
             if rows.is_empty() {
                 // Belief missing — roll the whole sweep back.
                 bail!("belief {} not found", id);
             }
         }
-        tx.commit().await?;
         Ok(())
     }
 
     pub async fn list_beliefs(&self) -> Result<Vec<Belief>> {
+        let client = self.client.lock().await;
+        self.list_beliefs_on(&client).await
+    }
+
+    async fn list_beliefs_on(&self, client: &Client) -> Result<Vec<Belief>> {
         let g = &self.graph_name;
         let sql = format!(
             r#"SELECT
@@ -716,7 +769,6 @@ FROM ag_catalog.cypher('{g}', $$
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -729,6 +781,15 @@ $$) {BELIEF_RETURN_COLUMNS}"#
     /// `project` matches, plus untagged beliefs (`project` unset), which are
     /// treated as global and always included alongside any project's beliefs.
     pub async fn list_beliefs_by_project(&self, project: &str) -> Result<Vec<Belief>> {
+        let client = self.client.lock().await;
+        self.list_beliefs_by_project_on(&client, project).await
+    }
+
+    async fn list_beliefs_by_project_on(
+        &self,
+        client: &Client,
+        project: &str,
+    ) -> Result<Vec<Belief>> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
         let stmt = format!("age_list_beliefs_proj_{}", Uuid::new_v4().simple());
@@ -743,8 +804,7 @@ $$) {BELIEF_RETURN_COLUMNS}"#
              $$, $1) {BELIEF_RETURN_COLUMNS}"
         );
 
-        let client = self.client.lock().await;
-        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let rows = age_query_rows(client, &stmt, &prepare, &agtype_json).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
             beliefs.push(belief_from_simple_row(row)?);
@@ -924,8 +984,13 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
              RETURN p.id $$, $1) AS (id ag_catalog.agtype)"
         );
 
-        let client = self.client.lock().await;
-        age_execute(&client, &stmt, &prepare, &agtype_json).await
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        age_execute(tx.client(), &stmt, &prepare, &agtype_json).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn get_pattern(&self, id: Uuid) -> Result<Option<Pattern>> {
@@ -959,7 +1024,7 @@ $$) {PATTERN_RETURN_COLUMNS}"#
         let g = &self.graph_name;
         let id_str = id.to_string();
         let mut client = self.client.lock().await;
-        let tx = client.transaction().await?;
+        let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
         let exists = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (p:Pattern {{id:'{id_str}'}}) RETURN p.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
@@ -1039,6 +1104,16 @@ $$) {PATTERN_RETURN_COLUMNS}"#
     // -----------------------------------------------------------------------
 
     pub async fn insert_edge(&self, edge: &Edge) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_edge_on(tx.client(), edge).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_edge_on(&self, client: &Client, edge: &Edge) -> Result<()> {
         let g = &self.graph_name;
         let from_id = edge.from_id.to_string();
         let to_id = edge.to_id.to_string();
@@ -1054,7 +1129,6 @@ $$) {PATTERN_RETURN_COLUMNS}"#
 $$) AS (weight ag_catalog.agtype)"#
         );
 
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             bail!(
@@ -1073,6 +1147,23 @@ $$) AS (weight ag_catalog.agtype)"#
         to_id: Uuid,
         weight: Probability,
     ) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_contradicts_on(tx.client(), from_id, to_id, weight)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_contradicts_on(
+        &self,
+        client: &Client,
+        from_id: Uuid,
+        to_id: Uuid,
+        weight: Probability,
+    ) -> Result<()> {
         let g = &self.graph_name;
         let a = from_id.to_string();
         let b = to_id.to_string();
@@ -1087,7 +1178,6 @@ $$) AS (weight ag_catalog.agtype)"#
 $$) AS (weight ag_catalog.agtype)"#
         );
 
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             bail!(
@@ -1227,6 +1317,15 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
         &self,
         ids: &[Uuid],
     ) -> Result<Vec<(Uuid, Uuid, EdgeType, Probability, f64)>> {
+        let client = self.client.lock().await;
+        self.get_incoming_edges_on(&client, ids).await
+    }
+
+    async fn get_incoming_edges_on(
+        &self,
+        client: &Client,
+        ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Uuid, EdgeType, Probability, f64)>> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -1263,7 +1362,6 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
             cau = arm("CAUSES"),
         );
 
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut edges = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -1295,6 +1393,16 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
     /// Insert a DocumentChunk vertex into AGE.
     /// If the chunk has a parent_id, also inserts a CONTAINS edge from parent→child.
     pub async fn insert_document_chunk(&self, chunk: &DocumentChunk) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_document_chunk_on(tx.client(), chunk).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_document_chunk_on(&self, client: &Client, chunk: &DocumentChunk) -> Result<()> {
         let g = &self.graph_name;
         let id = chunk.id.to_string();
 
@@ -1345,8 +1453,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
              RETURN c.id $$, $1) AS (id ag_catalog.agtype)"
         );
 
-        let client = self.client.lock().await;
-        age_execute(&client, &stmt, &prepare, &agtype_json).await?;
+        age_execute(client, &stmt, &prepare, &agtype_json).await?;
 
         // Insert CONTAINS edge from parent → child when parent exists.
         if let Some(parent_id) = chunk.parent_id {
@@ -1365,8 +1472,23 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Insert one row into public.chunk_embeddings.
     pub async fn insert_chunk_embedding(&self, chunk_id: Uuid, embedding: &[f32]) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_chunk_embedding_on(tx.client(), chunk_id, embedding)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_chunk_embedding_on(
+        &self,
+        client: &Client,
+        chunk_id: Uuid,
+        embedding: &[f32],
+    ) -> Result<()> {
         let vec = Vector::from(embedding.to_vec());
-        let client = self.client.lock().await;
         client
             .execute(
                 "INSERT INTO public.chunk_embeddings (chunk_id, embedding) \
@@ -1380,6 +1502,15 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Return chunk IDs for a given document path (used by clear_document).
     pub async fn get_chunk_ids_for_document(&self, path: &str) -> Result<Vec<Uuid>> {
+        let client = self.client.lock().await;
+        self.get_chunk_ids_for_document_on(&client, path).await
+    }
+
+    async fn get_chunk_ids_for_document_on(
+        &self,
+        client: &Client,
+        path: &str,
+    ) -> Result<Vec<Uuid>> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"documentPath": "{}"}}"#, json_esc(path));
         let stmt = format!("age_chunk_ids_by_path_{}", Uuid::new_v4().simple());
@@ -1390,7 +1521,6 @@ $$) AS (ok ag_catalog.agtype)"#
              $$, $1) AS (id agtype)"
         );
         let exec = format!("EXECUTE {stmt}('{}')", sql_esc(&agtype_json));
-        let client = self.client.lock().await;
         client.simple_query(&prepare).await?;
         let msgs = client.simple_query(&exec).await;
         let _ = client.simple_query(&format!("DEALLOCATE {stmt}")).await;
@@ -1441,6 +1571,23 @@ $$) AS (ok ag_catalog.agtype)"#
         if ids.is_empty() {
             return Ok(());
         }
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.delete_document_chunks_in(&tx, ids).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn delete_document_chunks_in(
+        &self,
+        tx: &tokio_postgres::Transaction<'_>,
+        ids: &[Uuid],
+    ) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
         let g = &self.graph_name;
         let id_list = ids
             .iter()
@@ -1454,18 +1601,13 @@ $$) AS (ok ag_catalog.agtype)"#
   RETURN 1
 $$) AS (ok ag_catalog.agtype)"#
         );
-        let mut client = self.client.lock().await;
-        let tx = client.transaction().await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
         let grounded = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (c:DocumentChunk)-[:GROUNDS]->(b:Belief) WHERE c.id IN [{id_list}] RETURN DISTINCT b.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
         let affected: std::collections::HashSet<Uuid> = grounded
             .iter()
             .map(|row| Uuid::parse_str(row.get::<_, &str>(0)))
             .collect::<std::result::Result<_, _>>()?;
         tx.query(&sql, &[]).await?;
-        self.recompute_learning(&tx, None, affected).await?;
-        tx.commit().await?;
+        self.recompute_learning(tx, None, affected).await?;
         Ok(())
     }
 
@@ -1474,7 +1616,19 @@ $$) AS (ok ag_catalog.agtype)"#
         if ids.is_empty() {
             return Ok(());
         }
-        let client = self.client.lock().await;
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.delete_chunk_embeddings_on(tx.client(), ids).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn delete_chunk_embeddings_on(&self, client: &Client, ids: &[Uuid]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
         client
             .execute(
                 "DELETE FROM public.chunk_embeddings WHERE chunk_id = ANY($1)",
@@ -1759,7 +1913,7 @@ $$) {CHUNK_RETURN_COLUMNS}"#
 $$) AS (weight ag_catalog.agtype)"#
         );
         let mut client = self.client.lock().await;
-        let tx = client.transaction().await?;
+        let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
 
@@ -1787,6 +1941,11 @@ $$) AS (weight ag_catalog.agtype)"#
     /// (spec Mimir.Beta CCoupling.coupling-increases-strength).
     /// Returns only beliefs that have at least one GROUNDS edge.
     pub async fn get_grounding_mass_all(&self) -> Result<HashMap<Uuid, f64>> {
+        let client = self.client.lock().await;
+        self.get_grounding_mass_all_on(&client).await
+    }
+
+    async fn get_grounding_mass_all_on(&self, client: &Client) -> Result<HashMap<Uuid, f64>> {
         let g = &self.graph_name;
         let sql = format!(
             r#"SELECT belief_id::text, total_weight::text
@@ -1795,7 +1954,6 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN b.id, sum(r.weight)
 $$) AS (belief_id ag_catalog.agtype, total_weight ag_catalog.agtype)"#
         );
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut out = HashMap::with_capacity(rows.len());
         for row in &rows {
@@ -1853,7 +2011,7 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
 $$) AS (v ag_catalog.agtype)"#
         );
         let mut client = self.client.lock().await;
-        let tx = client.transaction().await?;
+        let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
         tx.execute(&sql, &[]).await?;
@@ -1872,47 +2030,16 @@ $$) AS (v ag_catalog.agtype)"#
     /// affected descendant is excluded by a depth cap. CONTRADICTS is excluded
     /// (it is detected, never propagated).
     ///
-    /// AGE 1.x has no `[:A|B|C]` relationship-type OR syntax, so three MATCH
-    /// clauses are UNION'd; `*1..` is the unbounded variable-length path (length
-    /// ≥ 1, so the seed itself is excluded; AGE's VLE does not revisit a node
-    /// within one path, so cycles terminate).
+    /// A frontier of direct edges permits mixed relation paths. Expanded
+    /// identities are visited once, with no depth limit and no duplicate rows.
     pub async fn get_downstream_beliefs(&self, start_id: Uuid) -> Result<Vec<Belief>> {
-        let g = &self.graph_name;
-        let id_str = start_id.to_string();
-
-        let sql = format!(
-            r#"SELECT
-  id::text,
-  content::text,
-  probability::text,
-  confidence::text,
-  alpha::text,
-  beta::text,
-  alpha0::text,
-  beta0::text,
-  created_at::text,
-  last_activated_at::text,
-  memory_type::text,
-  project::text
-FROM ag_catalog.cypher('{g}', $$
-  MATCH (s:Belief {{id: '{id_str}'}})-[:SUPPORTS*1..]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
-  UNION
-  MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES*1..]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
-  UNION
-  MATCH (s:Belief {{id: '{id_str}'}})-[:DEFEATS*1..]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
-$$) {BELIEF_RETURN_COLUMNS}"#
-        );
-
-        let client = self.client.lock().await;
-        let rows = client.query(&sql, &[]).await?;
-        let mut beliefs = Vec::with_capacity(rows.len());
-        for row in &rows {
-            beliefs.push(belief_from_row(row)?);
-        }
-        Ok(beliefs)
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let result = self.downstream_on(tx.client(), start_id, false).await?;
+        tx.commit().await?;
+        Ok(result)
     }
 
     /// Direct (1-hop) SUPPORTS/CAUSES/DEFEATS successors of `start_id`, scoped
@@ -1969,42 +2096,16 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         Ok(beliefs)
     }
 
-    /// Beliefs reachable from `start_id` along CAUSES edges only — the causal
-    /// descendants, i.e. the candidate set for an intervention `do(start = v)`.
-    /// Mirrors `get_downstream_beliefs` but keeps only the causal branch
-    /// (no SUPPORTS UNION), since an intervention propagates along causal
-    /// edges alone. Excludes the seed itself (the `*1..10` path has length ≥ 1).
+    /// Complete distinct causal descendants, using the same unbounded
+    /// frontier as propagation but admitting only CAUSES edges.
     pub async fn get_causal_downstream_beliefs(&self, start_id: Uuid) -> Result<Vec<Belief>> {
-        let g = &self.graph_name;
-        let id_str = start_id.to_string();
-
-        let sql = format!(
-            r#"SELECT
-  id::text,
-  content::text,
-  probability::text,
-  confidence::text,
-  alpha::text,
-  beta::text,
-  alpha0::text,
-  beta0::text,
-  created_at::text,
-  last_activated_at::text,
-  memory_type::text,
-  project::text
-FROM ag_catalog.cypher('{g}', $$
-  MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES*1..10]->(n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
-$$) {BELIEF_RETURN_COLUMNS}"#
-        );
-
-        let client = self.client.lock().await;
-        let rows = client.query(&sql, &[]).await?;
-        let mut beliefs = Vec::with_capacity(rows.len());
-        for row in &rows {
-            beliefs.push(belief_from_row(row)?);
-        }
-        Ok(beliefs)
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let result = self.downstream_on(tx.client(), start_id, true).await?;
+        tx.commit().await?;
+        Ok(result)
     }
 }
 

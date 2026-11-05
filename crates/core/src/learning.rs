@@ -48,10 +48,8 @@ pub struct IndependentProvenance {
 impl IndependentProvenance {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            !self.reference.trim().is_empty()
-                && self.reference.len() <= 2048
-                && self.reference == self.reference.trim(),
-            "independent provenance needs a trimmed reference of at most 2048 bytes"
+            !self.reference.trim().is_empty() && self.reference == self.reference.trim(),
+            "independent provenance needs a trimmed reference"
         );
         Ok(())
     }
@@ -70,25 +68,33 @@ pub struct Experience {
     #[serde(default)]
     pub belief_ids: Vec<Uuid>,
     pub pattern_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub learning_items: Vec<crate::assessment::LearningItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_records: Vec<crate::learning_sources::SourceRecord>,
 }
 impl Experience {
     pub fn validate(&self) -> Result<()> {
+        crate::assessment::validate_items(&self.learning_items)?;
+        crate::learning_sources::validate_sources(&self.source_records)?;
+        ensure!(
+            self.source_records.is_empty()
+                || (self.source_records.len() == self.evidence.len()
+                    && self
+                        .source_records
+                        .iter()
+                        .zip(&self.evidence)
+                        .all(|(s, e)| s.source_ref == *e)),
+            "source evidence indices must correspond to source references"
+        );
         ensure!(!self.project.trim().is_empty(), "project must be explicit");
         ensure!(
             !self.context.trim().is_empty() && !self.action.trim().is_empty(),
             "context and action are required"
         );
         ensure!(
-            self.evidence.len() <= 32 && self.belief_ids.len() <= 64,
-            "too many evidence references or beliefs"
-        );
-        ensure!(
             self.outcome == Outcome::Unknown || self.evidence.iter().any(|e| !e.trim().is_empty()),
             "a known outcome requires evidence"
-        );
-        ensure!(
-            serde_json::to_vec(self)?.len() <= 65536,
-            "experience exceeds 64 KiB"
         );
         Ok(())
     }
@@ -153,8 +159,8 @@ impl Candidate {
     fn validate(&self) -> Result<()> {
         let key = self.key();
         ensure!(
-            !key.trim().is_empty() && key.len() <= 128 && key == key.trim(),
-            "candidate key must be a nonempty trimmed string of at most 128 bytes"
+            !key.trim().is_empty() && key == key.trim(),
+            "candidate key must be a nonempty trimmed string"
         );
         match self {
             Self::Belief {
@@ -228,9 +234,16 @@ pub struct Review {
     pub candidate_feedback: Vec<CandidateFeedback>,
     #[serde(default)]
     pub candidate_links: Vec<CandidateLink>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assessments: Vec<crate::assessment::Assessment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extracted_items: Vec<crate::assessment::LearningItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_coverage: Vec<crate::learning_sources::Coverage>,
 }
 impl Review {
     pub fn validate(&self) -> Result<()> {
+        crate::assessment::validate_items(&self.extracted_items)?;
         ensure!(
             self.experience_revision > 0,
             "experience_revision must be positive"
@@ -238,20 +251,6 @@ impl Review {
         ensure!(
             !self.reviewer.trim().is_empty() && !self.rationale.trim().is_empty(),
             "reviewer and rationale are required"
-        );
-        ensure!(
-            self.feedback.len() <= 64 && self.superseded_beliefs.len() <= 64,
-            "review has too many targets"
-        );
-        ensure!(self.links.len() <= 64, "too many links");
-        ensure!(self.candidates.len() <= 64, "too many candidates");
-        ensure!(
-            self.feedback.len() + self.candidate_feedback.len() <= 64,
-            "too many feedback targets"
-        );
-        ensure!(
-            self.links.len() + self.candidate_links.len() <= 64,
-            "too many links"
         );
         let mut candidate_keys = std::collections::HashSet::new();
         for candidate in &self.candidates {
@@ -271,16 +270,52 @@ impl Review {
             .collect();
         let validate_target = |target: &BeliefTarget| -> Result<()> {
             if let BeliefTarget::Candidate { candidate_key } = target {
-                ensure!(
-                    belief_candidates.contains(candidate_key.as_str()),
-                    "candidate belief reference must be declared in this review"
-                );
+                if !belief_candidates.contains(candidate_key.as_str()) {
+                    return Err(crate::validation::Refusal::undeclared_candidate().into());
+                }
             }
             Ok(())
         };
         for feedback in &self.candidate_feedback {
             crate::graph::Probability::new(feedback.weight)?;
             validate_target(&feedback.target)?;
+        }
+        let mut assessment_keys = std::collections::HashSet::new();
+        for assessment in &self.assessments {
+            assessment.validate()?;
+            validate_target(&assessment.target)?;
+            ensure!(
+                assessment_keys.insert((
+                    serde_json::to_string(&assessment.target)?,
+                    &assessment.scope,
+                    &assessment.rubric
+                )),
+                "duplicate incident assessment"
+            );
+            ensure!(
+                !self
+                    .candidate_feedback
+                    .iter()
+                    .any(|f| f.target == assessment.target),
+                "typed and legacy feedback overlap"
+            );
+            if let BeliefTarget::Existing { belief_id } = assessment.target {
+                ensure!(
+                    !self.feedback.iter().any(|f| f.belief_id == belief_id)
+                        && !self
+                            .links
+                            .iter()
+                            .any(|l| l.to_id == belief_id || l.from_id == belief_id),
+                    "typed and legacy evidence overlap"
+                );
+            }
+            ensure!(
+                !self
+                    .candidate_links
+                    .iter()
+                    .any(|l| l.from == assessment.target || l.to == assessment.target),
+                "typed and legacy evidence overlap"
+            );
         }
         for link in &self.candidate_links {
             crate::graph::Probability::new(link.weight)?;
@@ -309,10 +344,6 @@ impl Review {
                 "one assessment per belief per experience"
             );
         }
-        ensure!(
-            serde_json::to_vec(self)?.len() <= 65536,
-            "review exceeds 64 KiB"
-        );
         Ok(())
     }
 }
@@ -326,6 +357,9 @@ pub struct ExperienceState {
     /// Resolved identities for candidates declared by the active review.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub candidate_ids: std::collections::HashMap<String, Uuid>,
+    /// PostgreSQL-assigned identities for experience-local learning item keys.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub item_ids: std::collections::HashMap<String, Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,9 +385,35 @@ pub struct PatternResult {
 pub struct LearningContext {
     pub beliefs: Vec<Belief>,
     pub patterns: Vec<PatternResult>,
+    pub assessments: Vec<serde_json::Value>,
+    pub assessments_truncated: bool,
 }
 
 impl crate::MimirService {
+    pub async fn lesson_assessment(
+        &self,
+        project: &str,
+        belief_id: Uuid,
+        scope: &str,
+        rubric: &str,
+    ) -> Result<serde_json::Value> {
+        self.store
+            .lesson_assessment(project, belief_id, scope, rubric)
+            .await
+    }
+    pub async fn lesson_assessment_history(
+        &self,
+        project: &str,
+        belief_id: Uuid,
+        scope: &str,
+        rubric: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<serde_json::Value> {
+        self.store
+            .lesson_assessment_history(project, belief_id, scope, rubric, offset, limit)
+            .await
+    }
     pub async fn record_experience(
         &self,
         experience: &Experience,
@@ -374,6 +434,9 @@ impl crate::MimirService {
     }
     pub async fn get_experience(&self, id: Uuid) -> Result<Option<ExperienceState>> {
         self.store.get_experience(id).await
+    }
+    pub async fn learning_review(&self, id: Uuid) -> Result<serde_json::Value> {
+        self.store.learning_review(id).await
     }
     pub async fn experience_history(&self, id: Uuid) -> Result<serde_json::Value> {
         self.store.experience_history(id).await
@@ -416,7 +479,7 @@ impl crate::MimirService {
         project: &str,
         limit: usize,
     ) -> Result<LearningContext> {
-        ensure!((1..=20).contains(&limit), "limit must be in 1..=20");
+        ensure!(limit > 0, "limit must be positive");
         ensure!(!project.trim().is_empty(), "project must be explicit");
         let beliefs = self
             .query_relevant(context, limit, Some(project), None)
@@ -448,9 +511,15 @@ impl crate::MimirService {
                 })
                 .then_with(|| x.pattern.id.cmp(&y.pattern.id))
         });
+        let (assessments, assessments_truncated) = self
+            .store
+            .assessments_for_beliefs(project, &beliefs.iter().map(|b| b.id).collect::<Vec<_>>())
+            .await?;
         Ok(LearningContext {
             beliefs,
             patterns: ranked.into_iter().take(limit).map(|(_, p)| p).collect(),
+            assessments,
+            assessments_truncated,
         })
     }
 }
@@ -504,6 +573,9 @@ mod review_validation_tests {
                 weight: 0.8,
             }],
             candidate_links: vec![],
+            assessments: vec![],
+            extracted_items: vec![],
+            source_coverage: vec![],
         };
         let undeclared = "candidate belief reference must be declared in this review";
         assert!(review

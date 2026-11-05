@@ -1,0 +1,1910 @@
+{
+  "generated_at": "2026-10-30T23:15:09.123259+00:00",
+  "scope": "Completed detailed existing Mimir behavioral specification; Rust conformance and deployment are separate.",
+  "counts": {
+    "mcp": 34,
+    "cli_leaves": 30,
+    "lifecycle_groups": 7
+  },
+  "mcp": [
+    {
+      "name": "insert_belief",
+      "source": "crates/mcp/src/main.rs:408",
+      "step": 3,
+      "group": "creation",
+      "interface_evidence": "provenance, content, probability, confidence required; memory_type defaults; optional project",
+      "existing_modules": [
+        "spec/Mimir/CandidateGraph.agda",
+        "spec/Mimir/CandidateRegistry.agda",
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/LearningSchema.agda",
+        "spec/Mimir/SourceSchema.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/GraphRecords.agda",
+        "spec/Mimir/GraphWrites.agda",
+        "spec/Mimir/GraphMutationProtocol.agda",
+        "spec/Mimir/BeliefEmbedding.agda",
+        "spec/Mimir/BeliefEmbeddingStorage.agda",
+        "spec/Mimir/EmbeddingService.agda",
+        "spec/Mimir/GroundingStorageBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/auto-ground success and failure sequences."
+    },
+    {
+      "name": "delete_belief",
+      "source": "crates/mcp/src/main.rs:443",
+      "step": 3,
+      "group": "deletion",
+      "interface_evidence": "UUID id; returns deleted boolean",
+      "existing_modules": [
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/DocumentStore.agda",
+        "spec/Mimir/ReviewEdges.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/GraphDeletion.agda",
+        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/StorageSemantics.agda",
+        "spec/Mimir/ApplicationStore.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
+    },
+    {
+      "name": "delete_project",
+      "source": "crates/mcp/src/main.rs:452",
+      "step": 3,
+      "group": "deletion",
+      "interface_evidence": "project; returns deleted count",
+      "existing_modules": [
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/DocumentStore.agda",
+        "spec/Mimir/ReviewEdges.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/GraphDeletion.agda",
+        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/StorageSemantics.agda",
+        "spec/Mimir/ApplicationStore.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
+    },
+    {
+      "name": "delete_pattern",
+      "source": "crates/mcp/src/main.rs:460",
+      "step": 3,
+      "group": "deletion",
+      "interface_evidence": "UUID id; returns deleted boolean",
+      "existing_modules": [
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/DocumentStore.agda",
+        "spec/Mimir/ReviewEdges.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/GraphDeletion.agda",
+        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/StorageSemantics.agda",
+        "spec/Mimir/ApplicationStore.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
+    },
+    {
+      "name": "insert_pattern",
+      "source": "crates/mcp/src/main.rs:469",
+      "step": 3,
+      "group": "creation",
+      "interface_evidence": "situation, approach, success_rate; optional string project",
+      "existing_modules": [
+        "spec/Mimir/CandidateGraph.agda",
+        "spec/Mimir/CandidateRegistry.agda",
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/LearningSchema.agda",
+        "spec/Mimir/SourceSchema.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/GraphRecords.agda",
+        "spec/Mimir/GraphWrites.agda",
+        "spec/Mimir/GraphMutationProtocol.agda",
+        "spec/Mimir/BeliefEmbedding.agda",
+        "spec/Mimir/BeliefEmbeddingStorage.agda",
+        "spec/Mimir/EmbeddingService.agda",
+        "spec/Mimir/GroundingStorageBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/auto-ground success and failure sequences."
+    },
+    {
+      "name": "record_support",
+      "source": "crates/mcp/src/main.rs:495",
+      "step": 3,
+      "group": "edges",
+      "interface_evidence": "from_id,to_id,weight required",
+      "existing_modules": [
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/ReviewEdges.agda",
+        "spec/Mimir/Beta.agda",
+        "spec/Mimir/ReviewRecomputeTraversal.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/GraphMutationProtocol.agda",
+        "spec/Mimir/GraphWrites.agda",
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/PosteriorComputation.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
+    },
+    {
+      "name": "record_cause",
+      "source": "crates/mcp/src/main.rs:513",
+      "step": 3,
+      "group": "edges",
+      "interface_evidence": "from_id,to_id,weight required",
+      "existing_modules": [
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/ReviewEdges.agda",
+        "spec/Mimir/Beta.agda",
+        "spec/Mimir/ReviewRecomputeTraversal.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/GraphMutationProtocol.agda",
+        "spec/Mimir/GraphWrites.agda",
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/PosteriorComputation.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
+    },
+    {
+      "name": "record_defeat",
+      "source": "crates/mcp/src/main.rs:531",
+      "step": 3,
+      "group": "edges",
+      "interface_evidence": "from_id,to_id,weight required; automatic propagation",
+      "existing_modules": [
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/ReviewEdges.agda",
+        "spec/Mimir/Beta.agda",
+        "spec/Mimir/ReviewRecomputeTraversal.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/GraphMutationProtocol.agda",
+        "spec/Mimir/GraphWrites.agda",
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/PosteriorComputation.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
+    },
+    {
+      "name": "record_contradiction",
+      "source": "crates/mcp/src/main.rs:550",
+      "step": 3,
+      "group": "edges",
+      "interface_evidence": "id_a,id_b; weight defaults 1",
+      "existing_modules": [
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/ReviewEdges.agda",
+        "spec/Mimir/Beta.agda",
+        "spec/Mimir/ReviewRecomputeTraversal.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/GraphMutationProtocol.agda",
+        "spec/Mimir/GraphWrites.agda",
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/PosteriorComputation.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
+    },
+    {
+      "name": "get_belief",
+      "source": "crates/mcp/src/main.rs:566",
+      "step": 3,
+      "group": "read",
+      "interface_evidence": "UUID id; nullable result",
+      "existing_modules": [
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/CandidateGraph.agda",
+        "spec/Mimir/Collections.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/GraphReadProtocol.agda",
+        "spec/Mimir/GraphRecords.agda",
+        "spec/Mimir/StorageReadBinding.agda",
+        "spec/Mimir/StoreRows.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes."
+    },
+    {
+      "name": "list_beliefs",
+      "source": "crates/mcp/src/main.rs:575",
+      "step": 3,
+      "group": "read",
+      "interface_evidence": "optional project/type; absent limit means unbounded; supplied limit 1..10; offset requires limit",
+      "existing_modules": [
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/CandidateGraph.agda",
+        "spec/Mimir/Collections.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/GraphReadProtocol.agda",
+        "spec/Mimir/GraphRecords.agda",
+        "spec/Mimir/StorageReadBinding.agda",
+        "spec/Mimir/StoreRows.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes."
+    },
+    {
+      "name": "list_patterns",
+      "source": "crates/mcp/src/main.rs:614",
+      "step": 3,
+      "group": "read",
+      "interface_evidence": "optional project; returns pattern array",
+      "existing_modules": [
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/CandidateGraph.agda",
+        "spec/Mimir/Collections.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/GraphReadProtocol.agda",
+        "spec/Mimir/GraphRecords.agda",
+        "spec/Mimir/StorageReadBinding.agda",
+        "spec/Mimir/StoreRows.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes."
+    },
+    {
+      "name": "get_contradictions",
+      "source": "crates/mcp/src/main.rs:620",
+      "step": 3,
+      "group": "inference",
+      "interface_evidence": "optional project; array of UUID pairs",
+      "existing_modules": [
+        "spec/Mimir/Beta.agda",
+        "spec/Mimir/Inference.agda",
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/ReviewRecomputeTraversal.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/PosteriorComputation.agda",
+        "spec/Mimir/GraphPaths.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
+    },
+    {
+      "name": "decay_all",
+      "source": "crates/mcp/src/main.rs:630",
+      "step": 3,
+      "group": "inference",
+      "interface_evidence": "optional decay_factor and project; returns decayed count",
+      "existing_modules": [
+        "spec/Mimir/Beta.agda",
+        "spec/Mimir/Inference.agda",
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/ReviewRecomputeTraversal.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/PosteriorComputation.agda",
+        "spec/Mimir/GraphPaths.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
+    },
+    {
+      "name": "sweep_expired_defeated",
+      "source": "crates/mcp/src/main.rs:637",
+      "step": 3,
+      "group": "inference",
+      "interface_evidence": "prob_threshold default 0.3; grace_hours default 24; optional project",
+      "existing_modules": [
+        "spec/Mimir/Beta.agda",
+        "spec/Mimir/Inference.agda",
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/ReviewRecomputeTraversal.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/PosteriorComputation.agda",
+        "spec/Mimir/GraphPaths.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
+    },
+    {
+      "name": "query_relevant",
+      "source": "crates/mcp/src/main.rs:647",
+      "step": 3,
+      "group": "retrieval",
+      "interface_evidence": "context; limit default 10; optional project/prefer_type; include_evidence false; evidence_per_belief 3",
+      "existing_modules": [
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/Evidence.agda",
+        "spec/Mimir/Beta.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/RetrievalProtocol.agda",
+        "spec/Mimir/RetrievalRanking.agda",
+        "spec/Mimir/RetrievalReadContract.agda",
+        "spec/Mimir/StorageReadBinding.agda",
+        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Executable candidate selection, weighted RRF (k=60), memory preference, deterministic ordering/limits, project scope and evidence joins; comments and percentage sorting are insufficient."
+    },
+    {
+      "name": "add_evidence",
+      "source": "crates/mcp/src/main.rs:694",
+      "step": 5,
+      "group": "evidence",
+      "interface_evidence": "belief_id,chunk_id; weight default 1",
+      "existing_modules": [
+        "spec/Mimir/Evidence.agda",
+        "spec/Mimir/Beta.agda",
+        "spec/Mimir/DocumentStore.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/GroundingPublication.agda",
+        "spec/Mimir/GroundingProtocol.agda",
+        "spec/Mimir/StorageReadBinding.agda",
+        "spec/Mimir/StorageSemantics.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Concrete evidence lookup/add admission, result fields, grounding association and numerical recomputation/failure composition.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "get_evidence",
+      "source": "crates/mcp/src/main.rs:708",
+      "step": 5,
+      "group": "evidence",
+      "interface_evidence": "belief_id; unlimited evidence lookup",
+      "existing_modules": [
+        "spec/Mimir/Evidence.agda",
+        "spec/Mimir/Beta.agda",
+        "spec/Mimir/DocumentStore.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/GroundingPublication.agda",
+        "spec/Mimir/GroundingProtocol.agda",
+        "spec/Mimir/StorageReadBinding.agda",
+        "spec/Mimir/StorageSemantics.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Concrete evidence lookup/add admission, result fields, grounding association and numerical recomputation/failure composition.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "propagate_from",
+      "source": "crates/mcp/src/main.rs:732",
+      "step": 3,
+      "group": "inference",
+      "interface_evidence": "UUID id; new_probability updates",
+      "existing_modules": [
+        "spec/Mimir/Beta.agda",
+        "spec/Mimir/Inference.agda",
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/ReviewRecomputeTraversal.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/PosteriorComputation.agda",
+        "spec/Mimir/GraphPaths.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
+    },
+    {
+      "name": "query_intervention",
+      "source": "crates/mcp/src/main.rs:747",
+      "step": 3,
+      "group": "inference",
+      "interface_evidence": "UUID id,value; projected_probability; read only",
+      "existing_modules": [
+        "spec/Mimir/Beta.agda",
+        "spec/Mimir/Inference.agda",
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/ReviewRecomputeTraversal.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/PosteriorComputation.agda",
+        "spec/Mimir/GraphPaths.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
+    },
+    {
+      "name": "load_document",
+      "source": "crates/mcp/src/main.rs:765",
+      "step": 5,
+      "group": "documents",
+      "interface_evidence": "path; optional project; loaded count",
+      "existing_modules": [
+        "spec/Mimir/Documents.agda",
+        "spec/Mimir/DocumentStore.agda",
+        "spec/Mimir/EmbeddingBatch.agda",
+        "spec/Mimir/Markdown.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentPublication.agda",
+        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/GroundingProtocol.agda",
+        "spec/Mimir/EmbeddingService.agda",
+        "spec/Mimir/StorageSemantics.agda",
+        "spec/Mimir/StorageReadBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "query_document",
+      "source": "crates/mcp/src/main.rs:774",
+      "step": 5,
+      "group": "documents",
+      "interface_evidence": "context; optional project; limit default 5",
+      "existing_modules": [
+        "spec/Mimir/Documents.agda",
+        "spec/Mimir/DocumentStore.agda",
+        "spec/Mimir/EmbeddingBatch.agda",
+        "spec/Mimir/Markdown.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentPublication.agda",
+        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/GroundingProtocol.agda",
+        "spec/Mimir/EmbeddingService.agda",
+        "spec/Mimir/StorageSemantics.agda",
+        "spec/Mimir/StorageReadBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "clear_document",
+      "source": "crates/mcp/src/main.rs:784",
+      "step": 5,
+      "group": "documents",
+      "interface_evidence": "path; cleared count",
+      "existing_modules": [
+        "spec/Mimir/Documents.agda",
+        "spec/Mimir/DocumentStore.agda",
+        "spec/Mimir/EmbeddingBatch.agda",
+        "spec/Mimir/Markdown.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentPublication.agda",
+        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/GroundingProtocol.agda",
+        "spec/Mimir/EmbeddingService.agda",
+        "spec/Mimir/StorageSemantics.agda",
+        "spec/Mimir/StorageReadBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "get_learning_review",
+      "source": "crates/mcp/src/learning.rs:147",
+      "step": 2,
+      "group": "review",
+      "interface_evidence": "UUID id; active/latest review result",
+      "existing_modules": [
+        "spec/Mimir/ReviewPlanning.agda",
+        "spec/Mimir/ReviewLedger.agda",
+        "spec/Mimir/ReviewPreparation.agda",
+        "spec/Mimir/ReviewPreparationPublication.agda",
+        "spec/Mimir/AssessmentWrites.agda",
+        "spec/Mimir/AssessmentHistory.agda",
+        "spec/Mimir/ReviewEdges.agda",
+        "spec/Mimir/ReviewRecomputeTraversal.agda",
+        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningQueryProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/LearningOperations.agda",
+        "spec/Mimir/ReviewNumericalPublication.agda",
+        "spec/Mimir/ReviewPreparationPublication.agda",
+        "spec/Mimir/LearningTransaction.agda",
+        "spec/Mimir/LearningTransactionReceipt.agda",
+        "spec/Mimir/LearningQueryProtocol.agda",
+        "spec/Mimir/LearningQueryBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "learning_capabilities",
+      "source": "crates/mcp/src/learning.rs:88",
+      "step": 6,
+      "group": "capabilities",
+      "interface_evidence": "contract_version=2, assessment_model_version=1 and advertised flags",
+      "existing_modules": [
+        "spec/Mimir/LearningCapabilities.agda",
+        "spec/Mimir/JudgeToolCatalogue.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/LearningCapabilities.agda",
+        "spec/Mimir/JudgeToolCatalogue.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Bind the server result to the exact current capability document and catalog, with complete wire argument/result semantics.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "get_lesson_assessment",
+      "source": "crates/mcp/src/learning.rs:91",
+      "step": 2,
+      "group": "assessment",
+      "interface_evidence": "project,belief_id,scope,rubric",
+      "existing_modules": [
+        "spec/Mimir/Assessment.agda",
+        "spec/Mimir/AssessmentSelection.agda",
+        "spec/Mimir/AssessmentWrites.agda",
+        "spec/Mimir/AssessmentHistory.agda",
+        "spec/Mimir/LearningSchema.agda",
+        "spec/Mimir/ApplicationFloat.agda",
+        "spec/Mimir/AssessmentEvaluation.agda",
+        "spec/Mimir/AssessmentScores.agda",
+        "spec/Mimir/AssessmentRead.agda",
+        "spec/Mimir/LearningAssessmentQueries.agda",
+        "spec/Mimir/LearningQueryProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/LearningAssessmentQueries.agda",
+        "spec/Mimir/AssessmentScores.agda",
+        "spec/Mimir/AssessmentSelection.agda",
+        "spec/Mimir/AssessmentHistory.agda",
+        "spec/Mimir/LearningQueryProtocol.agda",
+        "spec/Mimir/LearningQueryBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "lesson_assessment_history",
+      "source": "crates/mcp/src/learning.rs:100",
+      "step": 2,
+      "group": "assessment",
+      "interface_evidence": "same key; offset default 0; limit default 20",
+      "existing_modules": [
+        "spec/Mimir/Assessment.agda",
+        "spec/Mimir/AssessmentSelection.agda",
+        "spec/Mimir/AssessmentWrites.agda",
+        "spec/Mimir/AssessmentHistory.agda",
+        "spec/Mimir/LearningSchema.agda",
+        "spec/Mimir/AssessmentRead.agda",
+        "spec/Mimir/LearningAssessmentQueries.agda",
+        "spec/Mimir/LearningQueryProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/LearningAssessmentQueries.agda",
+        "spec/Mimir/AssessmentScores.agda",
+        "spec/Mimir/AssessmentSelection.agda",
+        "spec/Mimir/AssessmentHistory.agda",
+        "spec/Mimir/LearningQueryProtocol.agda",
+        "spec/Mimir/LearningQueryBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "explain_belief",
+      "source": "crates/mcp/src/learning.rs:118",
+      "step": 2,
+      "group": "explain",
+      "interface_evidence": "UUID id; offset default 0; limit default 10",
+      "existing_modules": [
+        "spec/Mimir/ReviewLedger.agda",
+        "spec/Mimir/CandidateRegistry.agda",
+        "spec/Mimir/AssessmentSelection.agda",
+        "spec/Mimir/BeliefExplanation.agda",
+        "spec/Mimir/CandidateProvenance.agda",
+        "spec/Mimir/IndependentProvenance.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/LearningQueryProtocol.agda",
+        "spec/Mimir/LearningStore.agda",
+        "spec/Mimir/IndependentProvenance.agda",
+        "spec/Mimir/CandidateRegistry.agda",
+        "spec/Mimir/LearningQueryBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "record_experience",
+      "source": "crates/mcp/src/learning.rs:133",
+      "step": 2,
+      "group": "experience",
+      "interface_evidence": "experience; expected_revision",
+      "existing_modules": [
+        "spec/Mimir/ExperienceSchema.agda",
+        "spec/Mimir/LearningCorrections.agda",
+        "spec/Mimir/ItemOwners.agda",
+        "spec/Mimir/ItemOwnerBatch.agda",
+        "spec/Mimir/LearningRevision.agda",
+        "spec/Mimir/LearningTransaction.agda",
+        "spec/Mimir/LearningTransactionReceipt.agda",
+        "spec/Mimir/ExperienceRecord.agda",
+        "spec/Mimir/LearningStore.agda",
+        "spec/Mimir/LearningOperations.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/LearningOperations.agda",
+        "spec/Mimir/LearningPublication.agda",
+        "spec/Mimir/LearningRevision.agda",
+        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningTransaction.agda",
+        "spec/Mimir/LearningTransactionReceipt.agda",
+        "spec/Mimir/LearningQueryProtocol.agda",
+        "spec/Mimir/LearningHistoryWire.agda",
+        "spec/Mimir/LearningQueryBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "pending_experiences",
+      "source": "crates/mcp/src/learning.rs:152",
+      "step": 2,
+      "group": "pending",
+      "interface_evidence": "optional project; limit default 10; exclude_ids default empty",
+      "existing_modules": [
+        "spec/Mimir/PendingSelection.agda",
+        "spec/Mimir/ReviewObservation.agda",
+        "spec/Mimir/ExperienceRead.agda",
+        "spec/Mimir/LearningQueryProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/PendingSelection.agda",
+        "spec/Mimir/LearningQueryProtocol.agda",
+        "spec/Mimir/LearningHistoryWire.agda",
+        "spec/Mimir/LearningQueryBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "review_experience",
+      "source": "crates/mcp/src/learning.rs:140",
+      "step": 2,
+      "group": "review",
+      "interface_evidence": "review; expected_review_revision",
+      "existing_modules": [
+        "spec/Mimir/ReviewPlanning.agda",
+        "spec/Mimir/ReviewLedger.agda",
+        "spec/Mimir/ReviewPreparation.agda",
+        "spec/Mimir/ReviewPreparationPublication.agda",
+        "spec/Mimir/AssessmentWrites.agda",
+        "spec/Mimir/AssessmentHistory.agda",
+        "spec/Mimir/ReviewEdges.agda",
+        "spec/Mimir/ReviewRecomputeTraversal.agda",
+        "spec/Mimir/ReviewRecord.agda",
+        "spec/Mimir/ReviewNumericalPublication.agda",
+        "spec/Mimir/LearningRecompute.agda",
+        "spec/Mimir/PosteriorComputation.agda",
+        "spec/Mimir/LearningOperations.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/LearningOperations.agda",
+        "spec/Mimir/ReviewNumericalPublication.agda",
+        "spec/Mimir/ReviewPreparationPublication.agda",
+        "spec/Mimir/LearningTransaction.agda",
+        "spec/Mimir/LearningTransactionReceipt.agda",
+        "spec/Mimir/LearningQueryProtocol.agda",
+        "spec/Mimir/LearningQueryBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "get_experience",
+      "source": "crates/mcp/src/learning.rs:148",
+      "step": 2,
+      "group": "experience",
+      "interface_evidence": "UUID id; nullable snapshot",
+      "existing_modules": [
+        "spec/Mimir/ExperienceSchema.agda",
+        "spec/Mimir/LearningCorrections.agda",
+        "spec/Mimir/ItemOwners.agda",
+        "spec/Mimir/ItemOwnerBatch.agda",
+        "spec/Mimir/LearningRevision.agda",
+        "spec/Mimir/LearningTransaction.agda",
+        "spec/Mimir/LearningTransactionReceipt.agda",
+        "spec/Mimir/ExperienceRead.agda",
+        "spec/Mimir/LearningQueryProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/LearningOperations.agda",
+        "spec/Mimir/LearningPublication.agda",
+        "spec/Mimir/LearningRevision.agda",
+        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningTransaction.agda",
+        "spec/Mimir/LearningTransactionReceipt.agda",
+        "spec/Mimir/LearningQueryProtocol.agda",
+        "spec/Mimir/LearningHistoryWire.agda",
+        "spec/Mimir/LearningQueryBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "experience_history",
+      "source": "crates/mcp/src/learning.rs:151",
+      "step": 2,
+      "group": "experience",
+      "interface_evidence": "UUID id; immutable history",
+      "existing_modules": [
+        "spec/Mimir/ExperienceSchema.agda",
+        "spec/Mimir/LearningCorrections.agda",
+        "spec/Mimir/ItemOwners.agda",
+        "spec/Mimir/ItemOwnerBatch.agda",
+        "spec/Mimir/LearningRevision.agda",
+        "spec/Mimir/LearningTransaction.agda",
+        "spec/Mimir/LearningTransactionReceipt.agda",
+        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningQueryProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/LearningOperations.agda",
+        "spec/Mimir/LearningPublication.agda",
+        "spec/Mimir/LearningRevision.agda",
+        "spec/Mimir/LearningHistory.agda",
+        "spec/Mimir/LearningTransaction.agda",
+        "spec/Mimir/LearningTransactionReceipt.agda",
+        "spec/Mimir/LearningQueryProtocol.agda",
+        "spec/Mimir/LearningHistoryWire.agda",
+        "spec/Mimir/LearningQueryBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "query_learning_context",
+      "source": "crates/mcp/src/learning.rs:166",
+      "step": 3,
+      "group": "context",
+      "interface_evidence": "context,project; limit default 5; service requires 1..20",
+      "existing_modules": [
+        "spec/Mimir/Graph.agda",
+        "spec/Mimir/AssessmentSelection.agda",
+        "spec/Mimir/LearningContracts.agda",
+        "spec/Mimir/PatternOutcomes.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "rust_correspondence": "open; separate from behavioral specification",
+      "completion_modules": [
+        "spec/Mimir/LearningContextProtocol.agda",
+        "spec/Mimir/LearningContext.agda",
+        "spec/Mimir/LearningAssessmentQueries.agda",
+        "spec/Mimir/RetrievalProtocol.agda",
+        "spec/Mimir/RetrievalRanking.agda",
+        "spec/Mimir/StorageReadBinding.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/McpApplicationComposition.agda"
+      ],
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "baseline_gap": "Pattern statistics and provenance defined; ranking and belief/assessment assembly compose in step 3."
+    }
+  ],
+  "cli": [
+    {
+      "name": "init",
+      "source": "crates/cli/src/main.rs",
+      "step": 6,
+      "existing_modules": [
+        "ConfigurationPath",
+        "ConfigurationInput",
+        "ConfigurationValues",
+        "ConfigurationIO"
+      ],
+      "completion_modules": [
+        "spec/Mimir/ConfigurationInput.agda",
+        "spec/Mimir/ConfigurationValues.agda",
+        "spec/Mimir/ConfigurationProtocol.agda",
+        "spec/Mimir/ConfigurationIO.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Finish CLI KEY=VALUE parsing, override errors and editor invocation composition.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "stats",
+      "source": "crates/cli/src/main.rs",
+      "step": 6,
+      "existing_modules": [
+        "Types"
+      ],
+      "completion_modules": [
+        "spec/Mimir/GraphReadProtocol.agda",
+        "spec/Mimir/GraphRecords.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Exact graph/edge/vector count projection and errors.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "list",
+      "source": "crates/cli/src/main.rs",
+      "step": 3,
+      "existing_modules": [
+        "Graph"
+      ],
+      "completion_modules": [
+        "spec/Mimir/GraphReadProtocol.agda",
+        "spec/Mimir/GraphRecords.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse list_beliefs domain semantics; CLI limit 0 means unlimited.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "patterns",
+      "source": "crates/cli/src/main.rs",
+      "step": 3,
+      "existing_modules": [
+        "Graph"
+      ],
+      "completion_modules": [
+        "spec/Mimir/GraphReadProtocol.agda",
+        "spec/Mimir/GraphRecords.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse list_patterns semantics; CLI limit 0 means unlimited.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "query",
+      "source": "crates/cli/src/main.rs",
+      "step": 3,
+      "existing_modules": [
+        "Graph",
+        "Evidence"
+      ],
+      "completion_modules": [
+        "spec/Mimir/RetrievalProtocol.agda",
+        "spec/Mimir/RetrievalRanking.agda",
+        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse retrieval semantics; CLI argument/default and output projection.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "forget",
+      "source": "crates/cli/src/main.rs",
+      "step": 3,
+      "existing_modules": [
+        "Graph"
+      ],
+      "completion_modules": [
+        "spec/Mimir/ProjectDeletion.agda",
+        "spec/Mimir/GraphWrites.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse project deletion semantics including full store cleanup.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "decay",
+      "source": "crates/cli/src/main.rs",
+      "step": 3,
+      "existing_modules": [
+        "Beta",
+        "Inference"
+      ],
+      "completion_modules": [
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse current decay semantics; factor default .99.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "contradictions",
+      "source": "crates/cli/src/main.rs",
+      "step": 3,
+      "existing_modules": [
+        "Graph",
+        "Inference"
+      ],
+      "completion_modules": [
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse contradiction semantics and output projection.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "sweep-defeated",
+      "source": "crates/cli/src/main.rs",
+      "step": 3,
+      "existing_modules": [
+        "Graph"
+      ],
+      "completion_modules": [
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/GraphDeletion.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse sweep semantics; threshold .3, grace 24 hours.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "reembed",
+      "source": "crates/cli/src/main.rs",
+      "step": 5,
+      "existing_modules": [
+        "EmbeddingBatch",
+        "Evidence"
+      ],
+      "completion_modules": [
+        "spec/Mimir/CLIReembed.agda",
+        "spec/Mimir/BeliefEmbedding.agda",
+        "spec/Mimir/BeliefEmbeddingStorage.agda",
+        "spec/Mimir/EmbeddingService.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Missing-vector scan, batching, existing-vector skip, per-item outcomes and partial failure.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "intervene",
+      "source": "crates/cli/src/main.rs",
+      "step": 3,
+      "existing_modules": [
+        "Inference",
+        "Beta"
+      ],
+      "completion_modules": [
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/PosteriorComputation.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse counterfactual semantics; read-only projected output.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "evidence add",
+      "source": "crates/cli/src/main.rs",
+      "step": 5,
+      "existing_modules": [
+        "Evidence",
+        "Beta"
+      ],
+      "completion_modules": [
+        "spec/Mimir/GroundingPublication.agda",
+        "spec/Mimir/GroundingProtocol.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse evidence operations; CLI argument/result projection.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "evidence list",
+      "source": "crates/cli/src/main.rs",
+      "step": 5,
+      "existing_modules": [
+        "Evidence",
+        "Beta"
+      ],
+      "completion_modules": [
+        "spec/Mimir/EvidenceRead.agda",
+        "spec/Mimir/StorageReadBinding.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse evidence operations; CLI argument/result projection.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "delete belief",
+      "source": "crates/cli/src/main.rs",
+      "step": 3,
+      "existing_modules": [
+        "Graph"
+      ],
+      "completion_modules": [
+        "spec/Mimir/GraphDeletion.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse identity deletion; CLI argument/result projection.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "delete pattern",
+      "source": "crates/cli/src/main.rs",
+      "step": 3,
+      "existing_modules": [
+        "Graph"
+      ],
+      "completion_modules": [
+        "spec/Mimir/GraphDeletion.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse identity deletion; CLI argument/result projection.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "doc load",
+      "source": "crates/cli/src/main.rs",
+      "step": 5,
+      "existing_modules": [
+        "Documents",
+        "DocumentStore",
+        "EmbeddingBatch"
+      ],
+      "completion_modules": [
+        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentPublication.agda",
+        "spec/Mimir/EmbeddingService.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse document operations; CLI file/error/output composition.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "doc query",
+      "source": "crates/cli/src/main.rs",
+      "step": 5,
+      "existing_modules": [
+        "Documents",
+        "DocumentStore",
+        "EmbeddingBatch"
+      ],
+      "completion_modules": [
+        "spec/Mimir/DocumentQuery.agda",
+        "spec/Mimir/StorageReadBinding.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse document operations; CLI file/error/output composition.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "doc clear",
+      "source": "crates/cli/src/main.rs",
+      "step": 5,
+      "existing_modules": [
+        "Documents",
+        "DocumentStore",
+        "EmbeddingBatch"
+      ],
+      "completion_modules": [
+        "spec/Mimir/DocumentLoading.agda",
+        "spec/Mimir/DocumentPublication.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse document operations; CLI file/error/output composition.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "hook prompt",
+      "source": "crates/cli/src/main.rs",
+      "step": 6,
+      "existing_modules": [
+        "Session",
+        "Graph"
+      ],
+      "completion_modules": [
+        "spec/Mimir/HookProtocol.agda",
+        "spec/Mimir/CLIServiceBinding.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Session scope, stdin shapes, output/exit conventions and errors; describe existing optional Stop behavior without adding or enabling enforcement.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "hook pretooluse",
+      "source": "crates/cli/src/main.rs",
+      "step": 6,
+      "existing_modules": [
+        "Session",
+        "Graph"
+      ],
+      "completion_modules": [
+        "spec/Mimir/HookProtocol.agda",
+        "spec/Mimir/CLIServiceBinding.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Session scope, stdin shapes, output/exit conventions and errors; describe existing optional Stop behavior without adding or enabling enforcement.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "hook stop",
+      "source": "crates/cli/src/main.rs",
+      "step": 6,
+      "existing_modules": [
+        "Session",
+        "Graph"
+      ],
+      "completion_modules": [
+        "spec/Mimir/HookProtocol.agda",
+        "spec/Mimir/CLIServiceBinding.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Session scope, stdin shapes, output/exit conventions and errors; describe existing optional Stop behavior without adding or enabling enforcement.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "hook set-project",
+      "source": "crates/cli/src/main.rs",
+      "step": 6,
+      "existing_modules": [
+        "Session",
+        "Graph"
+      ],
+      "completion_modules": [
+        "spec/Mimir/HookProtocol.agda",
+        "spec/Mimir/CLIServiceBinding.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Session scope, stdin shapes, output/exit conventions and errors; describe existing optional Stop behavior without adding or enabling enforcement.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "judge check-config",
+      "source": "crates/cli/src/judge/mod.rs",
+      "step": 4,
+      "existing_modules": [
+        "Judge",
+        "JudgeHandshake",
+        "JudgeReview",
+        "JudgePersistence",
+        "JudgeAccounting",
+        "Retention",
+        "BatchReport"
+      ],
+      "completion_modules": [
+        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeConfigurationComposition.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Compose existing models with command defaults, watch retry/backoff/signal handling, status and diagnostics projections.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "judge run",
+      "source": "crates/cli/src/judge/mod.rs",
+      "step": 4,
+      "existing_modules": [
+        "Judge",
+        "JudgeHandshake",
+        "JudgeReview",
+        "JudgePersistence",
+        "JudgeAccounting",
+        "Retention",
+        "BatchReport"
+      ],
+      "completion_modules": [
+        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeWorkflowComposition.agda",
+        "spec/Mimir/JudgeBackendComposition.agda",
+        "spec/Mimir/JudgeFinalizationComposition.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/JudgeSignal.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Compose existing models with command defaults, watch retry/backoff/signal handling, status and diagnostics projections.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "judge watch",
+      "source": "crates/cli/src/judge/mod.rs",
+      "step": 4,
+      "existing_modules": [
+        "Judge",
+        "JudgeHandshake",
+        "JudgeReview",
+        "JudgePersistence",
+        "JudgeAccounting",
+        "Retention",
+        "BatchReport"
+      ],
+      "completion_modules": [
+        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeDigestComposition.agda",
+        "spec/Mimir/JudgeDigestSnapshot.agda",
+        "spec/Mimir/NotificationComposition.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/JudgeSignal.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Compose existing models with command defaults, watch retry/backoff/signal handling, status and diagnostics projections.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "judge status",
+      "source": "crates/cli/src/judge/mod.rs",
+      "step": 4,
+      "existing_modules": [
+        "Judge",
+        "JudgeHandshake",
+        "JudgeReview",
+        "JudgePersistence",
+        "JudgeAccounting",
+        "Retention",
+        "BatchReport"
+      ],
+      "completion_modules": [
+        "spec/Mimir/JudgeStatusProtocol.agda",
+        "spec/Mimir/JudgeStateOperations.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Compose existing models with command defaults, watch retry/backoff/signal handling, status and diagnostics projections.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "judge diagnostics",
+      "source": "crates/cli/src/judge/mod.rs",
+      "step": 4,
+      "existing_modules": [
+        "Judge",
+        "JudgeHandshake",
+        "JudgeReview",
+        "JudgePersistence",
+        "JudgeAccounting",
+        "Retention",
+        "BatchReport"
+      ],
+      "completion_modules": [
+        "spec/Mimir/JudgeStatusProtocol.agda",
+        "spec/Mimir/JudgeStateOperations.agda",
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Compose existing models with command defaults, watch retry/backoff/signal handling, status and diagnostics projections.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "config check",
+      "source": "crates/cli/src/configuration.rs",
+      "step": 4,
+      "existing_modules": [],
+      "completion_modules": [
+        "spec/Mimir/OperationalConfiguration.agda",
+        "spec/Mimir/ConfigurationSchema.agda",
+        "spec/Mimir/ConfigurationProtocol.agda",
+        "spec/Mimir/CLI.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "remaining": "See operational repair verification receipt; no machine-checked Rust refinement claim."
+    },
+    {
+      "name": "config upgrade",
+      "source": "crates/cli/src/configuration.rs",
+      "step": 4,
+      "existing_modules": [],
+      "completion_modules": [
+        "spec/Mimir/ConfigurationUpgrade.agda",
+        "spec/Mimir/OperationalConfiguration.agda",
+        "spec/Mimir/ConfigurationProtocol.agda",
+        "spec/Mimir/CLI.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "remaining": "See operational repair verification receipt; no machine-checked Rust refinement claim."
+    },
+    {
+      "name": "judge diagnose",
+      "source": "crates/cli/src/judge/diagnose.rs",
+      "step": 4,
+      "existing_modules": [],
+      "completion_modules": [
+        "spec/Mimir/OperationalDiagnostics.agda",
+        "spec/Mimir/OperationalLifecycle.agda",
+        "spec/Mimir/JudgeStatusProtocol.agda",
+        "spec/Mimir/CLI.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "remaining": "See operational repair verification receipt; no machine-checked Rust refinement claim."
+    }
+  ],
+  "lifecycles": [
+    {
+      "name": "MCP startup and request loop",
+      "step": 6,
+      "existing_modules": [
+        "spec/Mimir/Startup.agda",
+        "spec/Mimir/McpRuntime.agda",
+        "spec/Mimir/McpEnvelope.agda",
+        "spec/Mimir/McpExchange.agda",
+        "spec/Mimir/McpToolAdvertisement.agda"
+      ],
+      "completion_modules": [
+        "spec/Mimir/McpServiceProcess.agda",
+        "spec/Mimir/McpRuntimeComposition.agda",
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/ApplicationOutput.agda",
+        "spec/Mimir/PublicEncoding.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Replace handleTool opaque boundary with the concrete per-tool typed operations; retain request/notification and write/flush failure models.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "Configuration, connection and credentials",
+      "step": 6,
+      "existing_modules": [
+        "spec/Mimir/ConfigurationPath.agda",
+        "spec/Mimir/ConfigurationInput.agda",
+        "spec/Mimir/ConfigurationValues.agda",
+        "spec/Mimir/ConfigurationIO.agda",
+        "spec/Mimir/Connection.agda",
+        "spec/Mimir/Password.agda",
+        "spec/Mimir/TLS.agda"
+      ],
+      "completion_modules": [
+        "spec/Mimir/ConfigurationProtocol.agda",
+        "spec/Mimir/ConfigurationSchema.agda",
+        "spec/Mimir/ConfigurationValues.agda",
+        "spec/Mimir/ConnectionProtocol.agda",
+        "spec/Mimir/Password.agda",
+        "spec/Mimir/TLS.agda",
+        "spec/Mimir/ServiceStartup.agda",
+        "spec/Mimir/ServiceConnection.agda",
+        "spec/Mimir/CoreLibrary.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Compose source precedence, backend settings, validation and connection failure outcomes; dependency internals stay at contracts.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "Database bootstrap and nine schema migrations",
+      "step": 6,
+      "existing_modules": [
+        "spec/Mimir/Migrations.agda",
+        "spec/Mimir/MigrationBootstrap.agda",
+        "spec/Mimir/MigrationDriver.agda",
+        "spec/Mimir/MigrationComposition.agda",
+        "spec/Mimir/MigrationHistory.agda"
+      ],
+      "completion_modules": [
+        "spec/Mimir/MigrationSchema.agda",
+        "spec/Mimir/MigrationScriptBinding.agda",
+        "spec/Mimir/MigrationRuntime.agda",
+        "spec/Mimir/MigrationComposition.agda",
+        "spec/Mimir/MigrationHistory.agda",
+        "spec/Mimir/MigrationDependencies.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Migration framework exists; map each actual SQL schema/data transition and constraints, not only migration file/checksum bookkeeping.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "Judge host, provider and subprocess lifecycle",
+      "step": 4,
+      "existing_modules": [
+        "spec/Mimir/JudgeHandshake.agda",
+        "spec/Mimir/JudgeReview.agda",
+        "spec/Mimir/JudgeControllerAccounting.agda",
+        "spec/Mimir/ProviderQueue.agda",
+        "spec/Mimir/ProviderResponse.agda",
+        "spec/Mimir/JudgeLock.agda",
+        "spec/Mimir/JudgeFilesystem.agda",
+        "spec/Mimir/JudgePersistence.agda"
+      ],
+      "completion_modules": [
+        "spec/Mimir/JudgeHostProtocol.agda",
+        "spec/Mimir/JudgeWorkflowComposition.agda",
+        "spec/Mimir/JudgeBackendComposition.agda",
+        "spec/Mimir/JudgeClientStartup.agda",
+        "spec/Mimir/JudgeMcpLifecycle.agda",
+        "spec/Mimir/JudgeAPIAdapter.agda",
+        "spec/Mimir/JudgeHarnessAdapter.agda",
+        "spec/Mimir/JudgePersistenceComposition.agda",
+        "spec/Mimir/JudgeFinalizationComposition.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse startup, trace barrier, budgets, fresh completion receipt, retained state and child cleanup; connect configuration/provider execution and watch orchestration.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "Notification, digest and OAuth lifecycle",
+      "step": 6,
+      "existing_modules": [
+        "spec/Mimir/NotificationConfig.agda",
+        "spec/Mimir/NotificationIncident.agda",
+        "spec/Mimir/NotificationDelivery.agda",
+        "spec/Mimir/NotificationSchema.agda",
+        "spec/Mimir/DigestDelivery.agda",
+        "spec/Mimir/OAuthCache.agda",
+        "spec/Mimir/OAuthHTTP.agda",
+        "spec/Mimir/OAuthWire.agda",
+        "spec/Mimir/SMTPAuth.agda"
+      ],
+      "completion_modules": [
+        "spec/Mimir/JudgeDigestComposition.agda",
+        "spec/Mimir/JudgeDigestSnapshot.agda",
+        "spec/Mimir/NotificationComposition.agda",
+        "spec/Mimir/NotificationRuntime.agda",
+        "spec/Mimir/NotificationFileBinding.agda",
+        "spec/Mimir/NotificationCodec.agda",
+        "spec/Mimir/NotificationWire.agda",
+        "spec/Mimir/NotificationMail.agda",
+        "spec/Mimir/OAuthComposition.agda",
+        "spec/Mimir/OAuthResponseBinding.agda",
+        "spec/Mimir/SMTPProtocol.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Reuse bounded reservation/send/save and ambiguous delivery outcomes; connect judge digest assembly, persisted retry selection and configuration errors.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "Embedding backend and automatic grounding",
+      "step": 5,
+      "existing_modules": [
+        "spec/Mimir/EmbeddingBatch.agda",
+        "spec/Mimir/DocumentStore.agda",
+        "spec/Mimir/Evidence.agda",
+        "spec/Mimir/Beta.agda"
+      ],
+      "completion_modules": [
+        "spec/Mimir/EmbeddingService.agda",
+        "spec/Mimir/EmbeddingLifecycle.agda",
+        "spec/Mimir/EmbeddingBackend.agda",
+        "spec/Mimir/EmbeddingBatch.agda",
+        "spec/Mimir/BeliefEmbeddingStorage.agda",
+        "spec/Mimir/GroundingStorageBinding.agda",
+        "spec/Mimir/DocumentLoading.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Compose backend readiness, output cardinality/dimension, belief/document association, scope threshold and side effects, including reembed.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    },
+    {
+      "name": "Experience/review concurrency and recovery",
+      "step": 2,
+      "existing_modules": [
+        "spec/Mimir/DatabaseTransaction.agda",
+        "spec/Mimir/DatabaseAdvisoryLock.agda",
+        "spec/Mimir/DatabaseReadCommitted.agda",
+        "spec/Mimir/LearningTransactionReceipt.agda",
+        "spec/Mimir/ReviewPlanning.agda",
+        "spec/Mimir/ReviewPreparationPublication.agda"
+      ],
+      "completion_modules": [
+        "spec/Mimir/LearningTransaction.agda",
+        "spec/Mimir/LearningTransactionReceipt.agda",
+        "spec/Mimir/LearningOperations.agda",
+        "spec/Mimir/LearningPublication.agda",
+        "spec/Mimir/ReviewNumericalPublication.agda",
+        "spec/Mimir/ReviewPreparationPublication.agda",
+        "spec/Mimir/DatabaseTransaction.agda",
+        "spec/Mimir/DatabaseAdvisoryLock.agda",
+        "spec/Mimir/DatabaseReadCommitted.agda",
+        "spec/Mimir/LearningQueryBinding.agda"
+      ],
+      "status": "behavior-defined-and-aggregate-checked",
+      "baseline_gap": "Approved DB axioms remain external; concretely represent the full Mimir write set and snapshot/lock usage rather than assuming application correctness.",
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+    }
+  ],
+  "verification": {
+    "catalog_exact": true,
+    "cli_enums_exact": true,
+    "referenced_modules_exist": true,
+    "advertised_tools_exact": true,
+    "structural_audit": "/tmp/mimir-spec-structural-audit.json",
+    "final_receipt": "docs/FORMAL-BEHAVIOR-VERIFICATION.json",
+    "aggregate_exit_status": 0,
+    "coverage_check_exit_status": 0
+  },
+  "excluded": [
+    "Rust correspondence proof completion",
+    "Rust edits/build/install",
+    "dependency implementation proofs",
+    "new features or system changes"
+  ],
+  "step2_receipt": {
+    "interactive_log": "/tmp/mimir-formal-interactive-record-composition-bULU7ecG.log",
+    "source_audit": "/tmp/mimir-formal-source-audit-wnej_f8d.json",
+    "safe_modules": 537,
+    "aggregate": "pending step 7"
+  },
+  "core_library": [
+    {
+      "name": "delete_evidence",
+      "modules": [
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/GroundingPublication.agda",
+        "spec/Mimir/GroundingProtocol.agda"
+      ],
+      "note": "Existing core API; no new MCP tool."
+    },
+    {
+      "name": "get_pattern, unscoped creation, scalar graph/inference helpers",
+      "modules": [
+        "spec/Mimir/GraphReadProtocol.agda",
+        "spec/Mimir/GraphRecords.agda",
+        "spec/Mimir/GraphMutationProtocol.agda",
+        "spec/Mimir/CoreLibrary.agda"
+      ]
+    },
+    {
+      "name": "legacy AGE row decoding and prepared-query lifecycle",
+      "modules": [
+        "spec/Mimir/StoreRows.agda",
+        "spec/Mimir/AgeQueryProtocol.agda"
+      ]
+    },
+    {
+      "name": "physical vector writes, automatic grounding and reembedding",
+      "modules": [
+        "spec/Mimir/BeliefEmbeddingStorage.agda",
+        "spec/Mimir/EmbeddingService.agda",
+        "spec/Mimir/GroundingStorageBinding.agda",
+        "spec/Mimir/CLIReembed.agda"
+      ]
+    },
+    {
+      "name": "configuration diagnostic projection",
+      "modules": [
+        "spec/Mimir/CoreLibrary.agda"
+      ]
+    },
+    {
+      "name": "operational configuration and bounded logs",
+      "modules": [
+        "spec/Mimir/OperationalConfiguration.agda",
+        "spec/Mimir/OperationalLogRetention.agda",
+        "spec/Mimir/OperationalLifecycle.agda",
+        "spec/Mimir/ConfigurationUpgrade.agda"
+      ]
+    }
+  ],
+  "updated_at": "2026-10-31T03:50:09.149598+00:00",
+  "completed_utc": "2026-10-31T03:59:41.624081+00:00",
+  "operational_update_checked_at": "2026-10-31T20:24:20.743313+00:00"
+}

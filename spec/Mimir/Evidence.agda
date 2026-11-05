@@ -138,15 +138,16 @@ record GroundingEntry : Set where
     geEmbedding : Embedding
     geProject   : Maybe String
 
--- similarEnough is not expressible in --safe Agda (requires real arithmetic).
--- It is threaded as a parameter so callers supply the concrete predicate
--- (the Rust implementation uses 1 − cosine_distance ≥ GROUND_THRESHOLD = 0.80).
+-- This legacy structural model abstracts similarity. GroundingProtocol and
+-- GroundingStorageBinding give the current predicate and actual score weight:
+-- 1 - the standard pgvector cosine distance >= GROUND_THRESHOLD = 0.80.
 
 -- autoGroundChunk: given one chunk (id, embedding, project), a similarity
 -- predicate, and a list of belief grounding entries, produce GROUNDS edges
 -- for all beliefs that are project-compatible and similar enough.
 -- The Rust side passes the actual cosine similarity score as weight; here we
--- use a unit Prob (80) as a placeholder not expressible in safe Agda.
+-- use the abstract structural weight Prob (80); it is not the current numeric
+-- weight. GroundingProtocol retains the actual returned similarity score.
 autoGroundChunk : (Embedding → Embedding → Bool)
                 → NodeId → Embedding → Maybe String
                 → List GroundingEntry

@@ -1,4 +1,9 @@
 {-# OPTIONS --safe #-}
+-- Legacy abstract model. The summary operations below belong to an unimplemented
+-- proposal; they are not part of the current MCP tool catalog. The complete
+-- rebuild tracks this mismatch in docs/FORMAL-REBUILD.md. DocumentStore supplies
+-- coupled storage laws. Current operations are DocumentLoading, DocumentQuery,
+-- DocumentPublication and StorageReadBinding; Markdown supplies the parser.
 module Mimir.Documents where
 
 open import Mimir.Types
@@ -33,8 +38,11 @@ SectionPath = List String
 chunkDepth : SectionPath → ℕ
 chunkDepth = length
 
-rootDepth-zero : chunkDepth [] ≡ 0
-rootDepth-zero = refl
+zeroDepthImpliesRoot : ∀ path → chunkDepth path ≡ 0 → path ≡ []
+zeroDepthImpliesRoot [] zeroDepth = refl
+
+rootHasZeroDepth : ∀ path → path ≡ [] → chunkDepth path ≡ 0
+rootHasZeroDepth path refl = refl
 
 nestedDepth-suc : ∀ (h : String) (rest : SectionPath) →
   chunkDepth (h ∷ rest) ≡ Data.Nat.suc (chunkDepth rest)
@@ -68,9 +76,9 @@ record DocumentChunk : Set where
     sectionPath  : SectionPath    -- [] for root chunks; h ∷ rest for nested chunks
     content      : String         -- raw markdown text of this chunk, OR (when
                                   -- isSummary ≡ true) LLM-generated summary text
-    parentId     : Maybe NodeId   -- nothing for root chunks; just p otherwise
-                                  -- invariant: parentId ≡ nothing ↔ sectionPath ≡ []
-                                  -- (enforced by parser, not by this record type)
+    parentId     : Maybe NodeId   -- nothing for preamble and top-level headings;
+                                  -- just p for a nested heading. A nonempty
+                                  -- sectionPath does not imply a parent exists.
     project      : Maybe String   -- propagated from load_document's project argument
     isSummary    : Bool           -- false for every chunk load_document parses.
                                   -- true only for a chunk written by
@@ -366,8 +374,9 @@ loadDocument-from-empty path newChunks = ++-identityʳ newChunks
 -- parentContent is the parent chunk's content (heading + immediate text),
 -- present for all non-root results; absent for root chunks.
 --
--- Cosine similarity ranking is not modelable in --safe Agda (requires
--- real-valued arithmetic).  The limit bound is provable:
+-- Current cosine-distance ordering is the explicit standard-dependency
+-- contract in StorageReadBinding; DocumentQuery defines its use. The legacy
+-- structural limit law below remains independently valid:
 -- ---------------------------------------------------------------------------
 
 -- query_document result length ≤ limit.

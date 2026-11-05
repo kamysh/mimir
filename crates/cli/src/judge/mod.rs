@@ -1,6 +1,8 @@
 mod api;
 pub mod config;
+mod diagnose;
 mod digest;
+mod evidence;
 mod harness;
 mod mcp;
 mod notification;
@@ -10,8 +12,12 @@ mod state;
 
 /// Shared policy for both provider APIs and external harnesses. The host still
 /// validates scope and revisions; these instructions govern evidence attribution.
-fn review_guidance() -> &'static str {
-    "Treat the experience as one incident, not independent confirmation of a belief created from that same report. Distinguish tool_result, user_feedback and agent_report; unknown or agent-reported outcomes do not prove success. For a new hypothesis or procedure use review_experience candidates with stable keys, not a separate insert_belief or insert_pattern call. Every candidate_key in candidate_feedback or candidate_links must name a belief candidate declared in the candidates array of this same review; use belief_id for an existing belief. Reuse a pre-existing scoped belief only for genuinely independent evidence. If a standalone belief appears to rest on this incident already, flag possible duplicate provenance in the rationale; do not count it as a second observation. A user requirement is an authoritative constraint, not a causal hypothesis to score. Identify confounding and keep unsupported causal claims tentative. A correction replaces the prior review for this same experience ID. Inspect experience_history when correcting a source: a candidate key may be reused only with its exact original kind and declaration; give a revised claim a new key."
+fn review_guidance(selected: &mimir_core::learning::ExperienceState) -> String {
+    format!(
+        "{}\n{}",
+        include_str!("review-guidance.txt"),
+        evidence::guidance(&selected.experience)
+    )
 }
 
 use clap::Subcommand;
@@ -25,6 +31,13 @@ const ALREADY_RUNNING: i32 = 4;
 
 #[derive(Subcommand)]
 pub enum JudgeCommand {
+    /// Explain the current failure and recovery action without database/model access.
+    Diagnose {
+        #[arg(long)]
+        config: Option<PathBuf>,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+    },
     /// Validate judge, LLM and optional email settings without network or database I/O.
     CheckConfig {
         /// Config file; defaults to MIMIR_CONFIG, then the XDG config path.
@@ -70,7 +83,47 @@ pub enum JudgeCommand {
 }
 
 pub async fn dispatch(command: JudgeCommand) -> i32 {
+    if !matches!(
+        &command,
+        JudgeCommand::Run { .. } | JudgeCommand::Watch { .. }
+    ) {
+        return dispatch_inner(command).await;
+    }
+    // Install before polling work. The outer race covers startup, model/tool
+    // requests and watch sleeps; dropping its work future drops owned children.
+    let listeners = (|| {
+        use tokio::signal::unix::{signal, SignalKind};
+        Ok::<_, std::io::Error>((
+            signal(SignalKind::interrupt())?,
+            signal(SignalKind::terminate())?,
+        ))
+    })();
+    let (mut interrupt, mut terminate) = match listeners {
+        Ok(listeners) => listeners,
+        Err(error) => {
+            eprintln!("Cannot install judge stop listeners: {error}");
+            return UNAVAILABLE;
+        }
+    };
+    tokio::select! {
+        biased;
+        _ = interrupt.recv() => 0,
+        _ = terminate.recv() => 0,
+        code = dispatch_inner(command) => code,
+    }
+}
+
+async fn dispatch_inner(command: JudgeCommand) -> i32 {
     match command {
+        JudgeCommand::Diagnose { config, state_dir } => {
+            match diagnose::show(config.as_deref(), state_dir.as_deref()) {
+                Ok(()) => 0,
+                Err(error) => {
+                    eprintln!("Cannot read diagnostic state: {error}");
+                    UNAVAILABLE
+                }
+            }
+        }
         JudgeCommand::CheckConfig { config } => match config::load(config.as_deref()) {
             Ok(_settings) => {
                 println!("{}", json!({"status":"valid","schema_version":1}));
@@ -92,7 +145,7 @@ pub async fn dispatch(command: JudgeCommand) -> i32 {
             interval_seconds,
             max_consecutive_failures,
         } => {
-            if interval_seconds < 60 || !(1..=100).contains(&max_consecutive_failures) {
+            if interval_seconds == 0 || max_consecutive_failures == 0 {
                 println!(
                     "{}",
                     json!({"status":"invalid_config","reason":"invalid_watch_bounds"})
@@ -119,13 +172,20 @@ pub async fn dispatch(command: JudgeCommand) -> i32 {
                 }
                 let (delay, transition) =
                     watch.advance(outcome, interval_seconds, max_consecutive_failures);
+                let next_attempt = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |t| t.as_secs())
+                    .saturating_add(delay);
+                if let Ok(path) = state::resolve(state_dir.as_deref()) {
+                    if let Ok(Some(state)) = state::State::lock(path) {
+                        let _ = state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"waiting","next_attempt_unix":next_attempt,"delay_seconds":delay,"consecutive_failures":watch.consecutive_failures}));
+                    }
+                }
                 if let Some(message) = transition {
                     eprintln!("{message}");
+                    eprintln!("Next attempt in {delay} seconds. For cause and recovery steps, run: mimir judge diagnose");
                 }
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => return 0,
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(delay)) => {}
-                }
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             }
         }
         JudgeCommand::Status { state_dir } => {
@@ -362,6 +422,31 @@ async fn run_once(
             };
         }
     };
+    if let Err(error) = settings.operations.logging.prepare().and_then(|()| {
+        settings.operations.logging.event(
+            "judge",
+            &format!(
+                "starting batch; version={}; config_format={}; pid={}",
+                env!("CARGO_PKG_VERSION"),
+                settings.operations.config_version,
+                std::process::id()
+            ),
+        )
+    }) {
+        let mut report = state::Report::new("blocked", 0, 0, 0, 0, 0);
+        report.block_reason = Some("invalid_config".into());
+        report.failure_detail = Some(format!("logging.directory is unavailable: {error}"));
+        let _ = state.write(&report);
+        if !watch_mode {
+            eprintln!("Cannot write configured operational logs: {error}");
+        }
+        return RunOutcome {
+            code: INVALID_CONFIG,
+            degraded: true,
+            idle: false,
+        };
+    }
+    let _=state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"reviewing","config_format":settings.operations.config_version}));
     let report = match settings.llm.backend {
         config::Backend::Api => match api::ApiBackend::new(&settings.llm) {
             Ok(Some(mut backend)) => runner::run(&settings, &state, &mut backend).await,
@@ -377,6 +462,21 @@ async fn run_once(
             }
         },
     };
+    let _ = settings.operations.logging.event(
+        "judge",
+        &format!(
+            "batch {}; confirmed={}; pending={}; unavailable={}; reason={}; diagnostics={}",
+            report.status,
+            report.confirmed,
+            report.pending,
+            report.unavailable,
+            report.block_reason.as_deref().unwrap_or("none"),
+            report
+                .diagnostics_id
+                .map_or_else(|| "none".into(), |id| id.to_string())
+        ),
+    );
+    let _=state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"batch_finished","outcome":report.status,"config_format":settings.operations.config_version}));
     let code = match report.status.as_str() {
         "idle" | "complete" => 0,
         "partial" | "blocked" => INCOMPLETE,

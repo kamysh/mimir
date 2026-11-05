@@ -1,0 +1,42 @@
+{
+  "status": "complete",
+  "scope": "Rust judge startup, MCP handshake, shared counter/deadline and owned-child cleanup",
+  "tests_passed": 14,
+  "tests_failed": 0,
+  "installed": false,
+  "formal_sources_changed": false,
+  "crate_version": "2.1.0",
+  "sha256": {
+    "crates/cli/src/judge/mcp.rs": "bc64941f68ff5b344acc63eb1b18e3af60452f73ce2729fd547ba19c6b9db53e",
+    "crates/cli/src/judge/retry_fixture.sh": "d48f26f2e2c53701e941c1eafcb7ccd637e8bac610e19bc44ba909aa7726a4ee",
+    "crates/cli/src/judge/mcp_startup_tests.rs": "bbae53ff39eef9ecf1d8e6f34fc512238658a45a76f80ffb22ccb9872584fd35",
+    "docs/JUDGE-STARTUP-CONFORMANCE.md": "c083c2c2ef0be6840cd55dd551cc0cba86cef1caed1fd2b94f93af0fc85cec6c"
+  },
+  "checks": [
+    {
+      "name": "format",
+      "log": "/tmp/mimir-judge-format-2cxeiRdL.log",
+      "exit_status": 0
+    },
+    {
+      "name": "mcp",
+      "log": "/tmp/mimir-judge-mcp-sJQJuSxd.log",
+      "exit_status": 0
+    },
+    {
+      "name": "runner",
+      "log": "/tmp/mimir-judge-runner-sEDJcnDy.log",
+      "exit_status": 0
+    },
+    {
+      "name": "evidence",
+      "log": "/tmp/mimir-judge-evidence-6PIrvO8y.log",
+      "exit_status": 0
+    },
+    {
+      "name": "format-check",
+      "log": "/tmp/mimir-judge-format-check-s5NCyPo0.log",
+      "exit_status": 0
+    }
+  ]
+}
