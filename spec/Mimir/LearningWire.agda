@@ -77,8 +77,11 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     inj₂ (L.prediction quantity unit horizon recorded value probability lower upper inferred))
 
   item : V.Value → Fault ⊎ L.LearningItem
-  item = recordOf ("id" ∷ "kind" ∷ "source_ref" ∷ "actor" ∷ "statement" ∷ "conditions" ∷ "predictions" ∷ [])
-    (λ fields → required "id" uuid fields >>= λ id → required "kind" kind fields >>= λ kind →
+  -- Canonical projection after ItemAllocation: id is assigned, while a stored
+  -- local key remains metadata in the allocation ledger rather than identity.
+  item = recordOf ("id" ∷ "key" ∷ "kind" ∷ "source_ref" ∷ "actor" ∷ "statement" ∷ "conditions" ∷ "predictions" ∷ [])
+    (λ fields → required "id" uuid fields >>= λ id → optional "key" V.asString fields >>= λ localKey →
+    required "kind" kind fields >>= λ kind →
     required "source_ref" V.asString fields >>= λ reference → required "actor" V.asString fields >>= λ actor →
     required "statement" V.asString fields >>= λ statement → required "conditions" V.asString fields >>= λ conditions →
     defaulted "predictions" [] (readArray prediction) fields >>= λ predictions →
@@ -89,6 +92,7 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     optional "value" number fields >>= λ value → required "weight" number fields >>= λ weight → inj₂ (N.axis value weight))
 
   assessment : V.Value → Fault ⊎ L.Assessment
+  -- ItemAllocation resolves item_keys to item_ids before this canonical read.
   assessment = recordOf ("target" ∷ "scope" ∷ "rubric" ∷ "correctness" ∷ "usefulness" ∷ "evidence_indices" ∷
     "item_ids" ∷ "rationale" ∷ []) (λ fields →
     required "target" target fields >>= λ target → required "scope" V.asString fields >>= λ scope →

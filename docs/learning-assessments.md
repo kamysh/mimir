@@ -2,14 +2,14 @@
 
 Mimir stores typed estimates, decisions and suggestions on experience versions,
 and separate correctness and usefulness contributions on review versions.
-`learning_capabilities` advertises contract version 1 and assessment model 1.
+`learning_capabilities` advertises contract version 3 and assessment model 1.
 These APIs support the harness learning extension; this checkout does not install
 the harness capture loop or activate a judge.
 
 ## Recording and reviewing
 
 `record_experience` accepts an optional `learning_items` array. Each item has a
-UUID, kind (`estimate`, `decision`, `suggestion`), `source_ref`, `actor`, original
+local `key` for PostgreSQL UUID allocation, kind (`estimate`, `decision`, `suggestion`), `source_ref`, `actor`, original
 `statement`, `conditions`, and optional `predictions`. A prediction contains
 `quantity`, numeric `value`, `unit`, `horizon`, `recorded_at`, and `inferred`.
 Optional `probability`, `lower`, and `upper` preserve the stated uncertainty.
@@ -100,7 +100,51 @@ queries join the active revision pointers so obsolete evidence cannot contribute
 
 ## Compatibility and formal contract
 
-Old JSON requests need no new fields. Empty optional fields are omitted from
+### PostgreSQL-owned item identities
+
+New learning items and review-extracted items declare an experience-local
+`key`, such as `estimate-1`, and omit `id`. PostgreSQL generates their persistent
+UUID with the ownership ledger's `gen_random_uuid()` default. Neither the model
+nor Rust allocates these UUIDs. The same key can be used by different experiences
+without sharing an item identity.
+
+An assessment can use `item_keys` for these local references. Allocation resolves
+them to `item_ids` before source validation and persistence. Stored items and
+review readbacks include both the key and the allocated UUID. Review receipts
+include the extracted key-to-UUID mapping in `item_ids`.
+
+The reservation and the enclosing experience/review share one transaction.
+Repeated keys reuse their committed allocation and immutable source/actor;
+conflicting provenance, stale revisions, invalid references and failed reviews
+cannot publish partial reservations. Corrections retain extracted UUIDs, kinds
+and exact original quotations. Existing UUID-only items remain valid for
+corrections when their ownership is already recorded. A supplied UUID cannot
+create a new ownership row; new declarations must use a key and omit `id`.
+
+An extracted item's `actor` must exactly match its cited `source_records`
+entry's actor. Speakers named inside that source's text or embedded JSON belong
+in `conditions`; they do not replace the recorded actor. A `wrong_actor`
+refusal reports the exact `extracted_items[index].actor` path, stable item key,
+source reference, expected actor and received actor. Identity conflicts are
+reported separately, and rejection rolls back any tentative allocation.
+
+The additive migration preserves historical payloads and UUIDs, imports missing
+ownership reservations from existing history, adds nullable local keys, and
+sets the PostgreSQL UUID default. Old clients that invent new item UUIDs need
+to adopt local keys; existing no-item requests retain their prior shape. Server
+and judge deployment must be coordinated because older binaries cannot read
+the new keyed payloads. This change does not modify any live installation.
+
+`Mimir.ItemAllocation` specifies the allocation boundary before the canonical
+learning/source validators. Its general laws cover database-originated new
+identities, stable key retries, refusal of unreserved caller UUIDs, isolation of
+experience-local keys and rollback of reservations. UUID freshness is checked;
+random generation is not assumed infallible. Existing ownership and item
+retention laws continue to govern the allocated canonical items.
+
+Requests without new item declarations need no new fields. Learning contract
+version 3 requires PostgreSQL-owned IDs; the judge refuses a version 2 peer
+before reviewing. Empty optional fields are omitted from
 serialized experiences and reviews, preserving legacy payload shape for retries.
 The judge discovers the two new assessment read tools optionally, so older MCP
 peers still work. Its review guidance supports typed assessment fields when the

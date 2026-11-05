@@ -397,7 +397,7 @@ fn checked_tools(result: &Value) -> Result<Vec<Value>> {
     Ok(allowed)
 }
 
-// Mimir.LearningCapabilities.admit 2 1. Compatibility is independent of the
+// Mimir.LearningCapabilities.admit 3 1. Compatibility is independent of the
 // user-controlled package version, and only gates the optional judge client.
 fn validate_learning_capabilities(capabilities: &Value) -> Result<()> {
     ensure!(capabilities.is_object(), "expected an object");
@@ -435,7 +435,7 @@ fn validate_learning_capabilities(capabilities: &Value) -> Result<()> {
             .as_bool()
             .ok_or_else(|| anyhow!("expected a boolean: {key}"))?;
     }
-    ensure!(contract == 2, "unsupported learning contract version");
+    ensure!(contract == 3, "unsupported learning contract version");
     ensure!(model == 1, "unsupported assessment model version");
     for (supported, (_, message)) in flags.into_iter().zip(requirements) {
         ensure!(supported, "{message}");

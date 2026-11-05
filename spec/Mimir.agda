@@ -207,6 +207,7 @@ import Mimir.CandidateGraph
 import Mimir.CandidatePublication
 import Mimir.ReviewPreparation
 import Mimir.ItemOwners
+import Mimir.ItemAllocation
 import Mimir.JudgeAccounting
 import Mimir.ReviewObservation
 import Mimir.SemanticKey

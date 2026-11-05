@@ -78,22 +78,45 @@ pub fn validate_review(review: &Review, experience: &Experience) -> Result<()> {
         );
         ensure!(!c.reason.trim().is_empty(), "coverage needs a reason");
     }
-    let mut ids: HashSet<_> = experience.learning_items.iter().map(|i| i.id).collect();
+    let mut ids: HashSet<_> = experience
+        .learning_items
+        .iter()
+        .filter_map(|i| i.id)
+        .collect();
     for (index, item) in review.extracted_items.iter().enumerate() {
+        use crate::validation::{Code, Refusal, Segment};
         let source = sources
             .get(&item.source_ref)
             .ok_or_else(|| anyhow::anyhow!("extracted item has no source"))?;
-        ensure!(
-            source.actor == item.actor && ids.insert(item.id),
-            "extracted item provenance or identity conflict"
-        );
+        // Keyed UUIDs remain tentative until commit. Identify the stable key
+        // in correction feedback, including when allocation is rolled back.
+        let identity = item
+            .key
+            .clone()
+            .unwrap_or_else(|| item.id.map(|id| id.to_string()).unwrap_or_default());
+        if source.actor != item.actor {
+            return Err(Refusal::invalid(
+                Code::WrongActor,
+                vec![Segment::Key("extracted_items".into()), Segment::Index(index), Segment::Key("actor".into())],
+                format!("extracted_items[{index}].actor (item {identity:?}, source {:?}): expected {:?}, received {:?}. Copy actor exactly from the cited source_records entry's actor field. A speaker named inside its text or embedded JSON does not replace that recorded actor; explain nested authorship in conditions.", item.source_ref, source.actor, item.actor),
+            ).into());
+        }
+        if !item.id.is_some_and(|id| ids.insert(id)) {
+            return Err(Refusal::invalid(
+                Code::Duplicate,
+                vec![Segment::Key("extracted_items".into()), Segment::Index(index), Segment::Key("id".into())],
+                format!("extracted_items[{index}].id (item {identity:?}, source {:?}) must be allocated and distinct from existing and other extracted items. Reference an already recorded item in the assessment instead of extracting it again.", item.source_ref),
+            ).into());
+        }
         // Statement is an exact quotation. Interpretations belong in conditions/rationale.
         if !source.text.contains(&item.statement) {
-            use crate::validation::{Code, Refusal, Segment};
+            // New PostgreSQL UUIDs are still tentative until review commit.
+            // Feedback must identify their stable caller key, not invite a
+            // correction to reuse an identity that this refusal rolls back.
             return Err(Refusal::invalid(
                 Code::QuotationMismatch,
                 vec![Segment::Key("extracted_items".into()), Segment::Index(index), Segment::Key("statement".into())],
-                format!("extracted statement is not in its cited source: extracted_items[{index}].statement (item {}, source {}). Copy an exact contiguous substring of that source record's text. Preserve literal backslashes, escaped quotes and whitespace when the text contains serialized JSON; put interpretation in conditions.", item.id, item.source_ref),
+                format!("extracted statement is not in its cited source: extracted_items[{index}].statement (item {}, source {}). Copy an exact contiguous substring of that source record's text. Preserve literal backslashes, escaped quotes and whitespace when the text contains serialized JSON; put interpretation in conditions.", identity, item.source_ref),
             ).into());
         }
     }
@@ -109,7 +132,7 @@ pub fn validate_review(review: &Review, experience: &Experience) -> Result<()> {
                 || review
                     .assessments
                     .iter()
-                    .any(|a| a.item_ids.contains(&item.id)),
+                    .any(|a| item.id.is_some_and(|id| a.item_ids.contains(&id))),
             "extracted item has neither assessment nor unresolved coverage"
         );
     }

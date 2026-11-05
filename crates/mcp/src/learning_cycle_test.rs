@@ -40,6 +40,10 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         capabilities["source_coverage"] == true,
         "missing source contract"
     );
+    ensure!(
+        capabilities["contract_version"] == 3,
+        "PostgreSQL item allocation contract missing"
+    );
     let source_id = Uuid::new_v4();
     let source = json!({"id":source_id,"project":"isolated-source-mcp","context":"source fixture","action":"extract all","outcome":"unknown","source":"agent_report","evidence":["event/1"],"source_records":[{"source_ref":"event/1","actor":"agent","provenance":"agent_report","text":"I suggest checking first."}]});
     handle_tool_call(
@@ -54,13 +58,30 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
             .is_null(),
         "new source must await review"
     );
-    let receipt = json!({"experience_id":source_id,"experience_revision":1,"reviewer":"offline-fixture","rationale":"retain suggestion without inferred outcome","extracted_items":[{"id":Uuid::new_v4(),"kind":"suggestion","source_ref":"event/1","actor":"agent","statement":"I suggest checking first.","conditions":"untried"}],"source_coverage":[{"source_ref":"event/1","status":"unresolved","reason":"Untried suggestion requires later outcome"}]});
-    handle_tool_call(
+    let receipt = json!({"experience_id":source_id,"experience_revision":1,"reviewer":"offline-fixture","rationale":"retain suggestion without inferred outcome","extracted_items":[{"key":"checking-first","kind":"suggestion","source_ref":"event/1","actor":"agent","statement":"I suggest checking first.","conditions":"untried"}],"source_coverage":[{"source_ref":"event/1","status":"unresolved","reason":"Untried suggestion requires later outcome"}]});
+    let allocated = handle_tool_call(
         &service,
         "review_experience",
         &json!({"review":receipt,"expected_review_revision":0}),
     )
     .await?;
+    let item_id = allocated["item_ids"]["checking-first"].clone();
+    ensure!(
+        item_id
+            .as_str()
+            .is_some_and(|id| Uuid::parse_str(id).is_ok()),
+        "PostgreSQL item ID missing"
+    );
+    let replay = handle_tool_call(
+        &service,
+        "review_experience",
+        &json!({"review":receipt,"expected_review_revision":0}),
+    )
+    .await?;
+    ensure!(
+        replay["item_ids"]["checking-first"] == item_id,
+        "review retry reallocated the item"
+    );
     ensure!(
         handle_tool_call(&service, "get_learning_review", &json!({"id":source_id})).await?
             ["review"]["source_coverage"][0]["status"]

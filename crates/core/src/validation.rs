@@ -148,6 +148,77 @@ mod tests {
     }
 
     #[test]
+    fn recorded_actor_refusal_locates_nested_speaker_and_survives_mcp_round_trip() {
+        let id = uuid::Uuid::new_v4();
+        let mut experience: crate::learning::Experience = serde_json::from_value(json!({
+            "id":id,"project":"actor-fixture","context":"nested source authorship",
+            "action":"extract source-bound suggestions","outcome":"unknown","source":"agent_report",
+            "evidence":["event/0","wrapped/1"],
+            "source_records":[
+                {"source_ref":"event/0","actor":"agent","provenance":"agent_report","text":"Proceed carefully."},
+                {"source_ref":"wrapped/1","actor":"controller","provenance":"tool_result",
+                 "text":"{\"actor\":\"agent\",\"message\":\"Check first.\"}"}
+            ]
+        })).unwrap();
+        let allocated = uuid::Uuid::new_v4();
+        let mut review: crate::learning::Review = serde_json::from_value(json!({
+            "experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"unobserved suggestions",
+            "extracted_items":[
+                {"id":uuid::Uuid::new_v4(),"key":"careful","kind":"suggestion","actor":"agent",
+                 "source_ref":"event/0","statement":"Proceed carefully.","conditions":"untried"},
+                {"id":allocated,"key":"check-first","kind":"suggestion","actor":"agent",
+                 "source_ref":"wrapped/1","statement":"Check first.","conditions":"nested suggestion"}
+            ],
+            "source_coverage":[
+                {"source_ref":"event/0","status":"unresolved","reason":"No outcome yet"},
+                {"source_ref":"wrapped/1","status":"unresolved","reason":"No outcome yet"}
+            ]
+        })).unwrap();
+        let error = crate::learning_sources::validate_review(&review, &experience).unwrap_err();
+        let failure = error.downcast_ref::<Refusal>().unwrap();
+        assert_eq!(failure.fault.code, Code::WrongActor);
+        assert_eq!(
+            failure.fault.path,
+            vec![
+                Segment::Key("extracted_items".into()),
+                Segment::Index(1),
+                Segment::Key("actor".into())
+            ]
+        );
+        for expected in [
+            "check-first",
+            "wrapped/1",
+            "expected \"controller\"",
+            "received \"agent\"",
+        ] {
+            assert!(failure.fault.message.contains(expected));
+        }
+        assert!(
+            !failure.fault.message.contains(&allocated.to_string()),
+            "tentative UUID must not replace the stable key in correction feedback"
+        );
+        let wire = json!({"code":-32000,"message":failure.to_string(),"data":failure});
+        assert_eq!(Refusal::from_mcp(&wire).as_ref(), Some(failure));
+        review.extracted_items[1].actor = "controller".into();
+        crate::learning_sources::validate_review(&review, &experience).unwrap();
+        // A matching actor must not suppress the independent identity guard.
+        experience
+            .learning_items
+            .push(review.extracted_items[1].clone());
+        let conflict = crate::learning_sources::validate_review(&review, &experience).unwrap_err();
+        let failure = conflict.downcast_ref::<Refusal>().unwrap();
+        assert_eq!(failure.fault.code, Code::Duplicate);
+        assert_eq!(
+            failure.fault.path,
+            vec![
+                Segment::Key("extracted_items".into()),
+                Segment::Index(1),
+                Segment::Key("id".into())
+            ]
+        );
+    }
+
+    #[test]
     fn unclassified_errors_never_claim_validation_or_rollback() {
         assert!(
             Refusal::from_mcp(&json!({"code":-32000,"message":"database password=secret"}))

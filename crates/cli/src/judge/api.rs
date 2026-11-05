@@ -663,6 +663,7 @@ mod tests {
             review_revision: 0,
             reviewed_revision: 0,
             candidate_ids: Default::default(),
+            item_ids: Default::default(),
         }
     }
 

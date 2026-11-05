@@ -62,7 +62,7 @@ while IFS= read -r request; do
         tools/call)
             case "$(jq -r '.params.name' <<< "$request")" in
                 learning_capabilities)
-                    value='{"contract_version":2,"assessment_model_version":1,"source_coverage":true,"typed_learning_items":true,"revision_owned_assessments":true,"legacy_graph_probability_unchanged":true}'
+                    value='{"contract_version":3,"assessment_model_version":1,"source_coverage":true,"typed_learning_items":true,"revision_owned_assessments":true,"legacy_graph_probability_unchanged":true}'
                     if [[ "$mode" == "bad-capabilities" ]]; then
                         value=$(jq -c '.source_coverage=false' <<< "$value")
                     fi ;;

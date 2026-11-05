@@ -5,13 +5,23 @@ use std::collections::HashSet;
 use tokio_postgres::Transaction;
 
 fn state(row: &Row) -> Result<ExperienceState> {
+    let experience: Experience = serde_json::from_str(row.get::<_, &str>("payload"))?;
+    let item_ids = local_item_ids(&experience.learning_items);
     Ok(ExperienceState {
-        experience: serde_json::from_str(row.get::<_, &str>("payload"))?,
+        experience,
         revision: row.get("revision"),
         review_revision: row.get("review_revision"),
         reviewed_revision: row.get("reviewed_revision"),
         candidate_ids: HashMap::new(),
+        item_ids,
     })
+}
+
+fn local_item_ids(items: &[crate::assessment::LearningItem]) -> HashMap<String, Uuid> {
+    items
+        .iter()
+        .filter_map(|item| Some((item.key.clone()?, item.id?)))
+        .collect()
 }
 const CURRENT: &str = "SELECT e.revision,e.review_revision,e.reviewed_revision,v.payload::text AS payload FROM mimir_experiences e JOIN mimir_experience_versions v ON v.experience_id=e.id AND v.revision=e.revision";
 const ACTIVE_REVIEWS: &str = "SELECT r.payload::text FROM mimir_experiences e JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=e.review_revision AND r.experience_revision=e.revision";
@@ -27,6 +37,66 @@ fn uuid_list(ids: &HashSet<Uuid>) -> String {
 }
 
 impl AgeStore {
+    /// Only INSERT's PostgreSQL default may allocate a persistent item UUID.
+    /// The enclosing learning transaction owns both allocation and publication.
+    async fn resolve_item_ids(
+        tx: &Transaction<'_>,
+        experience_id: Uuid,
+        items: &mut [crate::assessment::LearningItem],
+    ) -> Result<()> {
+        for item in items {
+            let row = if let Some(key) = &item.key {
+                match tx.query_opt(
+                    "SELECT item_id,source_ref,actor FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_key=$2",
+                    &[&experience_id, key],
+                ).await? {
+                    Some(row) => row,
+                    None => {
+                        ensure!(item.id.is_none(), "new learning items must omit id; PostgreSQL allocates their UUIDs");
+                        tx.query_one(
+                            "INSERT INTO mimir_learning_item_owners(experience_id,item_key,source_ref,actor) VALUES($1,$2,$3,$4) RETURNING item_id,source_ref,actor",
+                            &[&experience_id, key, &item.source_ref, &item.actor],
+                        ).await?
+                    }
+                }
+            } else {
+                let id = item.id.ok_or_else(|| {
+                    anyhow::anyhow!("learning item requires a local key or existing ID")
+                })?;
+                tx.query_opt(
+                    "SELECT item_id,source_ref,actor FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_id=$2",
+                    &[&experience_id, &id],
+                ).await?.ok_or_else(|| anyhow::anyhow!("unreserved learning item UUID; new items require a local key and PostgreSQL allocates their UUIDs"))?
+            };
+            let assigned: Uuid = row.get("item_id");
+            ensure!(
+                item.id.is_none_or(|id| id == assigned),
+                "learning item key and UUID disagree"
+            );
+            ensure!(
+                row.get::<_, &str>("source_ref") == item.source_ref
+                    && row.get::<_, &str>("actor") == item.actor,
+                "learning item identity or provenance conflict"
+            );
+            item.id = Some(assigned);
+        }
+        Ok(())
+    }
+
+    async fn resolve_item_references(tx: &Transaction<'_>, review: &mut Review) -> Result<()> {
+        for assessment in &mut review.assessments {
+            for key in &assessment.item_keys {
+                let row = tx.query_opt(
+                    "SELECT item_id FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_key=$2",
+                    &[&review.experience_id, key],
+                ).await?.ok_or_else(|| anyhow::anyhow!("unknown learning item key: {key}"))?;
+                assessment.item_ids.push(row.get(0));
+            }
+            assessment.item_keys.clear();
+        }
+        Ok(())
+    }
+
     pub async fn assessments_for_beliefs(
         &self,
         project: &str,
@@ -311,7 +381,6 @@ impl AgeStore {
             (0..i64::MAX).contains(&expected),
             "expected_revision must be nonnegative"
         );
-        let payload = serde_json::to_string(experience)?;
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
@@ -322,6 +391,20 @@ impl AgeStore {
             .as_ref()
             .map(state)
             .transpose()?;
+        if prior.is_none() {
+            ensure!(expected == 0, "new experience requires expected_revision=0");
+            // The ownership FK needs its experience row. All validation and
+            // allocation below still roll back together on any refusal.
+            tx.execute(
+                "INSERT INTO mimir_experiences(id,project,revision) VALUES($1,$2,1)",
+                &[&experience.id, &experience.project],
+            )
+            .await?;
+        }
+        let mut allocated = experience.clone();
+        Self::resolve_item_ids(&tx, experience.id, &mut allocated.learning_items).await?;
+        let experience = &allocated;
+        let payload = serde_json::to_string(experience)?;
         if let Some(ref p) = prior {
             ensure!(
                 p.experience.project == experience.project,
@@ -368,16 +451,6 @@ impl AgeStore {
         let affected = review_targets(old_review.iter());
         let revision = expected + 1;
         tx.execute("INSERT INTO mimir_experiences(id,project,revision) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET revision=$3,updated_at=now()", &[&experience.id,&experience.project,&revision]).await?;
-        for item in &experience.learning_items {
-            tx.execute("INSERT INTO mimir_learning_item_owners(item_id,experience_id,source_ref,actor) VALUES($1,$2,$3,$4) ON CONFLICT(item_id) DO NOTHING", &[&item.id,&experience.id,&item.source_ref,&item.actor]).await?;
-            let owner=tx.query_one("SELECT experience_id,source_ref,actor FROM mimir_learning_item_owners WHERE item_id=$1", &[&item.id]).await?;
-            ensure!(
-                owner.get::<_, Uuid>(0) == experience.id
-                    && owner.get::<_, &str>(1) == item.source_ref
-                    && owner.get::<_, &str>(2) == item.actor,
-                "learning item identity or provenance conflict"
-            );
-        }
         tx.execute("INSERT INTO mimir_experience_versions(experience_id,revision,payload) VALUES($1,$2,$3::text::jsonb)", &[&experience.id,&revision,&payload]).await?;
         self.replace_review_edges(&tx, experience.id, &[]).await?;
         self.recompute_learning(&tx, Some(&experience.project), affected)
@@ -425,6 +498,11 @@ impl AgeStore {
                 let mut result = current;
                 result.candidate_ids =
                     Self::candidate_ids(&tx, review.experience_id, &review.candidates).await?;
+                if let Some(applied) = Self::active_review(&tx, review.experience_id).await? {
+                    result
+                        .item_ids
+                        .extend(local_item_ids(&applied.extracted_items));
+                }
                 return Ok(result);
             }
         }
@@ -433,6 +511,11 @@ impl AgeStore {
             "stale review revision: current is {}",
             current.review_revision
         );
+        let request = serde_json::to_string(review)?;
+        let mut allocated = review.clone();
+        Self::resolve_item_ids(&tx, review.experience_id, &mut allocated.extracted_items).await?;
+        Self::resolve_item_references(&tx, &mut allocated).await?;
+        let review = &allocated;
         crate::learning_sources::validate_review(review, &current.experience)
             .map_err(crate::validation::Refusal::validation)?;
         if let Some(prior)=tx.query_opt("SELECT payload::text FROM mimir_review_versions WHERE experience_id=$1 AND revision=$2", &[&review.experience_id,&current.review_revision]).await? {
@@ -442,16 +525,6 @@ impl AgeStore {
             }
         }
 
-        for item in &review.extracted_items {
-            tx.execute("INSERT INTO mimir_learning_item_owners(item_id,experience_id,source_ref,actor) VALUES($1,$2,$3,$4) ON CONFLICT(item_id) DO NOTHING", &[&item.id,&review.experience_id,&item.source_ref,&item.actor]).await?;
-            let owner=tx.query_one("SELECT experience_id,source_ref,actor FROM mimir_learning_item_owners WHERE item_id=$1", &[&item.id]).await?;
-            ensure!(
-                owner.get::<_, Uuid>(0) == review.experience_id
-                    && owner.get::<_, &str>(1) == item.source_ref
-                    && owner.get::<_, &str>(2) == item.actor,
-                "extracted item identity or provenance conflict"
-            );
-        }
         let old_review = Self::active_review(&tx, review.experience_id).await?;
         let candidate_ids = self
             .reserve_candidates(
@@ -499,7 +572,6 @@ impl AgeStore {
         affected.extend(review_targets(std::iter::once(&applied)));
         let revision = expected + 1;
         let payload = serde_json::to_string(&applied)?;
-        let request = serde_json::to_string(review)?;
         tx.execute("INSERT INTO mimir_review_versions(experience_id,revision,experience_revision,payload,request) VALUES($1,$2,$3,$4::text::jsonb,$5::text::jsonb)", &[&review.experience_id,&revision,&review.experience_revision,&payload,&request]).await?;
         tx.execute("UPDATE mimir_experiences SET review_revision=$2,reviewed_revision=revision WHERE id=$1", &[&review.experience_id,&revision]).await?;
         for a in &applied.assessments {
@@ -525,6 +597,9 @@ impl AgeStore {
             .await?,
         )?;
         result.candidate_ids = candidate_ids;
+        result
+            .item_ids
+            .extend(local_item_ids(&applied.extracted_items));
         tx.commit().await?;
         Ok(result)
     }

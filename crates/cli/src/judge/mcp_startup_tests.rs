@@ -135,7 +135,7 @@ fn catalogue_keeps_first_match_and_optional_advertised_definitions() {
 }
 
 fn capabilities() -> Value {
-    json!({"contract_version":2,"assessment_model_version":1,"source_coverage":true,
+    json!({"contract_version":3,"assessment_model_version":1,"source_coverage":true,
         "typed_learning_items":true,"revision_owned_assessments":true,
         "legacy_graph_probability_unchanged":true})
 }
@@ -149,7 +149,7 @@ fn capabilities_require_exact_versions_and_all_boolean_support_flags() {
             Value::Null,
             json!(-1),
             json!(0),
-            json!(3),
+            json!(2),
             json!(2.0),
             json!("2"),
             json!(true),
