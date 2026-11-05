@@ -222,9 +222,16 @@ mod tests {
     #[test]
     fn document_admission_checks_count_shape_path_and_duplicate_id() {
         let chunk = DocumentChunk::new("document".into(), vec![], "text".into(), None, None);
-        assert!(validate_document_batch("document", &[chunk.clone()], &[vec![1.0, 0.0]]).is_ok());
-        assert!(validate_document_batch("document", &[chunk.clone()], &[]).is_err());
-        assert!(validate_document_batch("other", &[chunk.clone()], &[vec![1.0]]).is_err());
+        assert!(validate_document_batch(
+            "document",
+            std::slice::from_ref(&chunk),
+            &[vec![1.0, 0.0]]
+        )
+        .is_ok());
+        assert!(validate_document_batch("document", std::slice::from_ref(&chunk), &[]).is_err());
+        assert!(
+            validate_document_batch("other", std::slice::from_ref(&chunk), &[vec![1.0]]).is_err()
+        );
         assert!(validate_document_batch(
             "document",
             &[chunk.clone(), chunk.clone()],

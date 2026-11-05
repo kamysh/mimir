@@ -97,12 +97,12 @@ async fn replacement_rejects_bad_preparation_and_rolls_back_late_vector_failure(
     let path = format!("/fixture/{}", Uuid::new_v4());
     let old = DocumentChunk::new(path.clone(), vec![], "old".into(), None, None);
     store
-        .replace_document(&path, &[old.clone()], &[vec![1.0, 0.0]])
+        .replace_document(&path, std::slice::from_ref(&old), &[vec![1.0, 0.0]])
         .await
         .unwrap();
     let new = DocumentChunk::new(path.clone(), vec![], "new".into(), None, None);
     assert!(store
-        .replace_document(&path, &[new.clone()], &[])
+        .replace_document(&path, std::slice::from_ref(&new), &[])
         .await
         .is_err());
     assert!(store
@@ -112,7 +112,7 @@ async fn replacement_rejects_bad_preparation_and_rolls_back_late_vector_failure(
     // pgvector rejects NaN after the old graph/vector pair has been removed
     // inside the still-uncommitted transaction. The old pair must survive.
     assert!(store
-        .replace_document(&path, &[new.clone()], &[vec![f32::NAN, 0.0]])
+        .replace_document(&path, std::slice::from_ref(&new), &[vec![f32::NAN, 0.0]])
         .await
         .is_err());
     assert_eq!(
@@ -137,7 +137,11 @@ async fn replacement_rejects_bad_preparation_and_rolls_back_late_vector_failure(
         None,
     );
     store
-        .replace_document(&other.document_path, &[other.clone()], &[vec![0.0, 1.0]])
+        .replace_document(
+            &other.document_path,
+            std::slice::from_ref(&other),
+            &[vec![0.0, 1.0]],
+        )
         .await
         .unwrap();
     let mut collision = new.clone();
@@ -147,7 +151,7 @@ async fn replacement_rejects_bad_preparation_and_rolls_back_late_vector_failure(
         .await
         .is_err());
     store
-        .replace_document(&path, &[new.clone()], &[vec![0.5, 0.5]])
+        .replace_document(&path, std::slice::from_ref(&new), &[vec![0.5, 0.5]])
         .await
         .unwrap();
     assert!(store.get_chunk_by_id(old.id).await.unwrap().is_none());
