@@ -3,6 +3,8 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
+import time
 import tomllib
 
 
@@ -45,10 +47,48 @@ def validate(env=None):
     return data
 
 
+def cancel(data, args):
+    root = Path(data["root"])
+    command = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+    if not command or command[0] != data["mimir"]:
+        raise ValueError("cancellation must use the fixture's own binary")
+    for path in (args.ready, args.report):
+        if not path.is_absolute() or not path.parent.resolve().is_relative_to(root):
+            raise ValueError("cancellation evidence must stay in the test root")
+    stderr = args.report.with_suffix(".stderr")
+    with args.report.open("xb") as output, stderr.open("xb") as error:
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=output, stderr=error)
+        try:
+            deadline = time.monotonic() + 60
+            while not args.ready.exists() or (args.stderr_ready and args.stderr_ready not in stderr.read_text()):
+                if process.poll() is not None:
+                    raise RuntimeError(f"judge exited before fixture readiness; inspect {stderr}")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"fixture readiness deadline exceeded; inspect {stderr}")
+                time.sleep(0.05)
+            process.terminate()
+            if process.wait(timeout=10) != 0:
+                raise RuntimeError(f"judge did not stop cleanly; inspect {stderr}")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            args.report.with_suffix(".exit").write_text(str(process.returncode) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="operation", required=True)
     sub.add_parser("check")
+    cancellation = sub.add_parser("cancel")
+    cancellation.add_argument("--ready", type=Path, required=True)
+    cancellation.add_argument("--report", type=Path, required=True)
+    cancellation.add_argument("--stderr-ready")
+    cancellation.add_argument("argv", nargs=argparse.REMAINDER)
     config = sub.add_parser("config")
     config.add_argument("path", type=Path)
     config.add_argument("--backend", required=True)
@@ -59,6 +99,8 @@ def main():
     data = validate()
     if args.operation == "check":
         return
+    if args.operation == "cancel":
+        return cancel(data, args)
     root = Path(data["root"])
     if args.command and args.backend != "command":
         raise ValueError("only the command backend accepts a custom command")

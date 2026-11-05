@@ -6,6 +6,12 @@ use std::process::{self, Command};
 use std::thread;
 use std::time::Duration;
 
+fn ready() {
+    if let Ok(path) = std::env::var("MIMIR_JUDGE_FIXTURE_READY_FILE") {
+        fs::write(path, "ready").unwrap();
+    }
+}
+
 fn main() {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).unwrap();
@@ -13,11 +19,15 @@ fn main() {
         Ok("crash") => process::exit(7),
         Ok("malformed") => println!("not-json"),
         Ok("oversized") => println!("{}", "x".repeat(8 * 1024 * 1024 + 1)),
-        Ok("slow") => thread::sleep(Duration::from_secs(30)),
+        Ok("slow") => {
+            ready();
+            thread::sleep(Duration::from_secs(30));
+        }
         Ok("fork") => {
             let child = Command::new("sleep").arg("30").spawn().unwrap();
             let path = std::env::var("MIMIR_JUDGE_FIXTURE_PID_FILE").unwrap();
             fs::write(path, child.id().to_string()).unwrap();
+            ready();
             thread::sleep(Duration::from_secs(30));
         }
         _ => println!("{}", r#"{"calls":[]}"#),
