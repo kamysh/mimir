@@ -12,7 +12,7 @@ open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Data.String using (toList)
-open import Relation.Binary.PropositionalEquality using (_≡_; _≢_)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
 open import Mimir.Text using (Text)
 import Mimir.StandardLibrary as Conversion
 import Mimir.PublicEncoding as Encoding
@@ -41,12 +41,16 @@ import Mimir.JudgeMcpLifecycle as Client
 import Mimir.NotificationCodec as Codec
 import Mimir.NotificationDelivery as Delivery
 import Mimir.SMTPProtocol as SMTP
+import Mimir.OperationalLifecycle as Operational
+import Mimir.OperationalLogProtocol as OperationalLog
+import Mimir.ConfigurationSchema as Core
 
 module R = Records.Over ℕ
 
 data Output : Set where
   valid invalidStatePath alreadyRunning stateUnavailable : Output
   invalidConfig : Text → Output
+  logUnavailable : Text → Output
   reportOutput : R.Report → Output
 
 module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
@@ -99,8 +103,13 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     setupFailure : ∀ detail observed events report → BuildFailed (Config.Runtime.llm settings) detail →
       F.Runs settings (L.Locked.path held) (Finalization.finish (setupReport observed detail)) events report → Executed settings held configPath report
 
+  coreOf : C.Loaded → Core.Config
+  coreOf loadedConfiguration = Config.Runtime.core
+    (Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration))
+
   data Effect : Set where
     loadConfig resolveState clock : Effect
+    prepareLog : C.Loaded → Effect
     acquire : Path.Path → Effect
     release : L.Locked → Effect
     execute : Config.Runtime → L.Locked → Path.Path → Effect
@@ -110,6 +119,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   Reply : Effect → Set
   Reply loadConfig = C.Result
+  Reply (prepareLog loadedConfiguration) = Operational.LogAttempt (coreOf loadedConfiguration)
   Reply resolveState = SP.Result
   Reply clock = Maybe ℕ
   Reply (acquire _) = L.FS.Result (Maybe L.Locked)
@@ -150,15 +160,38 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     emit watch (reportOutput result) >>= λ _ → ask (release held) (λ _ → done (Host.outcomeOf watch result)))
     where settings = Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration)
 
+  afterLog : Bool → (loadedConfiguration : C.Loaded) → Reply (prepareLog loadedConfiguration) → Script Host.Outcome
+  afterLog watch loadedConfiguration observed with Operational.LogAttempt.outcome observed
+  ... | OperationalLog.For.failed detail files = failed watch (logUnavailable detail) Host.unavailable
+  ... | OperationalLog.For.written files = ask resolveState λ where
+    (inj₁ _) → failed watch invalidStatePath Host.invalidConfig
+    (inj₂ resolvedPaths) → ask (acquire (StatePath.Resolved.path resolvedPaths)) (afterLock watch loadedConfiguration)
+
+  logFailureStops : ∀ watch loadedConfiguration observed detail files →
+    Operational.LogAttempt.outcome observed ≡ Operational.LogAt.failed
+      {coreOf loadedConfiguration} {Operational.LogAttempt.archives observed} detail files →
+    afterLog watch loadedConfiguration observed ≡ failed watch (logUnavailable detail) Host.unavailable
+  logFailureStops watch loadedConfiguration observed detail files failure rewrite failure = refl
+
+  logFailureEvents : ∀ watch loadedConfiguration observed detail files events result →
+    Operational.LogAttempt.outcome observed ≡ Operational.LogAt.failed
+      {coreOf loadedConfiguration} {Operational.LogAttempt.archives observed} detail files →
+    P.Runs (afterLog watch loadedConfiguration observed) events result →
+    (events ≡ []) ⊎ (events ≡ ((stdout (logUnavailable detail) , tt) ∷ []))
+  logFailureEvents true loadedConfiguration observed detail files events result failure execution
+    rewrite logFailureStops true loadedConfiguration observed detail files failure with execution
+  ... | P.returned _ = inj₁ refl
+  logFailureEvents false loadedConfiguration observed detail files events result failure execution
+    rewrite logFailureStops false loadedConfiguration observed detail files failure with execution
+  ... | P.replied _ _ tt (P.returned _) = inj₂ refl
+
   afterConfig : Bool → C.Result → Script Host.Outcome
   afterConfig watch (inj₁ detail) = persistInvalid detail >>= λ _ → announce watch
     where
     announce : Bool → Script Host.Outcome
     announce true = done (Host.outcome Host.invalidConfig true false)
     announce false = ask (configurationDiagnostic detail) (λ _ → failed false (invalidConfig detail) Host.invalidConfig)
-  afterConfig watch (inj₂ loadedConfiguration) = ask resolveState λ where
-    (inj₁ _) → failed watch invalidStatePath Host.invalidConfig
-    (inj₂ resolvedPaths) → ask (acquire (StatePath.Resolved.path resolvedPaths)) (afterLock watch loadedConfiguration)
+  afterConfig watch (inj₂ loadedConfiguration) = ask (prepareLog loadedConfiguration) (afterLog watch loadedConfiguration)
 
   once : Bool → Script Host.Outcome
   once watch = ask loadConfig (afterConfig watch)
@@ -170,6 +203,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   data Receipt : (effect : Effect) → Reply effect → Set where
     configuration : ∀ events result → CC.Runs (C.start explicitConfig defaultConfig) events result → Receipt loadConfig result
+    logging : ∀ loadedConfiguration observed → Receipt (prepareLog loadedConfiguration) observed
     path : ∀ events result → SP.Runs (SP.resolve explicitState) events result → Receipt resolveState result
     locked : ∀ path events result → L.FS.Runs (FS.acquire path) events result → Receipt (acquire path) result
     unlocked : ∀ held events → L.FS.Runs (L.release held) events tt → Receipt (release held) tt
