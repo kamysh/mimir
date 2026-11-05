@@ -17,13 +17,18 @@ import Mimir.PosteriorComputation as P
 import Mimir.GraphNumerics as N
 import Mimir.RetrievalRanking as R
 import Mimir.RevisionBounds as Bounds
+import Mimir.EvidenceValidity as Evidence
 
 newBelief : ℕ → ℤ → Text → Float → Float → Maybe Text → C.Memory → Maybe G.BeliefValues
-newBelief id now content probability confidence project memory with N.probability probability ∧ N.probability confidence
-... | false = nothing
-... | true = just (G.beliefValues id content project memory now now probability confidence
-  (P.Beta.alpha prior) (P.Beta.negative prior) (P.Beta.alpha prior) (P.Beta.negative prior))
+newBelief id now content probability confidence project memory = Evidence.admit
+  (G.beliefValues id content project memory now now probability confidence
+    (P.Beta.alpha prior) (P.Beta.negative prior) (P.Beta.alpha prior) (P.Beta.negative prior))
   where prior = P.prior probability confidence
+
+newBeliefHasValidEvidence : ∀ id now content probability confidence project memory value →
+  newBelief id now content probability confidence project memory ≡ just value → Evidence.ValidBelief value
+newBeliefHasValidEvidence id now content probability confidence project memory value =
+  Evidence.admitSound _ value
 
 newPattern : ℕ → ℤ → Text → Text → Float → Maybe G.PatternValues
 newPattern id now situation approach success with N.probability success

@@ -6,12 +6,15 @@ module Mimir.StoreRows where
 
 open import Data.Bool using (true; false; _∧_)
 open import Data.Float.Base using (Float)
+import Data.Float.Base as Float
 open import Data.Integer using (ℤ)
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (toList)
+open import Relation.Nullary using (yes; no)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.PublicInput as Input
 import Mimir.StructuredValue as JSON
@@ -22,6 +25,8 @@ import Mimir.PosteriorComputation as Beta
 import Mimir.GraphNumerics as Numeric
 import Mimir.DocumentStore as Document
 import Mimir.Unsigned as UInt
+import Mimir.AssessmentScores as Scores
+import Mimir.EvidenceValidity as Evidence
 
 Row = Text → Maybe Text
 
@@ -35,6 +40,12 @@ record Libraries : Set where
 data Error : Set where
   missing malformed driverPanic : Text → Error
   invalidDerivedProbability invalidPatternProbability : Error
+  invalidEvidenceNumber : Text → Error
+  invalidStoredEvidence : Error
+
+record DecodedBelief : Set where
+  constructor decodedBelief
+  field value : Graph.BeliefValues; valid : Evidence.ValidBelief value
 
 infixl 1 _>>=_
 _>>=_ : ∀ {A B : Set} → Error ⊎ A → (A → Error ⊎ B) → Error ⊎ B
@@ -69,31 +80,43 @@ module Decode (libraries : Libraries) where
   uuid : Text → Maybe ℕ
   uuid = Libraries.uuid libraries
 
-  reconstruct : ℕ → Text → Float → Float → ℤ → ℤ → Row → Error ⊎ Graph.BeliefValues
-  reconstruct id content probability confidence created activated row
-    with Numeric.probability mean ∧ Numeric.probability certainty
-    where
-    prior = Beta.prior probability confidence
-    a₀ = fallback (Beta.Beta.alpha prior) (optional (Libraries.float libraries) (row (toList "alpha0")))
-    b₀ = fallback (Beta.Beta.negative prior) (optional (Libraries.float libraries) (row (toList "beta0")))
-    a = fallback a₀ (optional (Libraries.float libraries) (row (toList "alpha")))
-    b = fallback b₀ (optional (Libraries.float libraries) (row (toList "beta")))
-    mean = Beta.mean (Beta.beta a b)
-    certainty = Beta.confidence (Beta.beta a b)
-  ... | false = inj₁ invalidDerivedProbability
-  ... | true = inj₂ (Graph.beliefValues id content (row (toList "project")) (memory (row (toList "memory_type")))
-    created activated mean certainty a b a₀ b₀)
-    where
-    prior = Beta.prior probability confidence
-    a₀ = fallback (Beta.Beta.alpha prior) (optional (Libraries.float libraries) (row (toList "alpha0")))
-    b₀ = fallback (Beta.Beta.negative prior) (optional (Libraries.float libraries) (row (toList "beta0")))
-    a = fallback a₀ (optional (Libraries.float libraries) (row (toList "alpha")))
-    b = fallback b₀ (optional (Libraries.float libraries) (row (toList "beta")))
-    mean = Beta.mean (Beta.beta a b)
-    certainty = Beta.confidence (Beta.beta a b)
+  -- Only an absent legacy column uses its fallback. A present malformed,
+  -- negative or nonfinite value is rejected, never silently replaced.
+  counter : Text → Float → Row → Error ⊎ Float
+  counter name default row with row name
+  ... | nothing = inj₂ default
+  ... | just text with parse name (Libraries.float libraries) text
+  ...   | inj₁ error = inj₁ error
+  ...   | inj₂ value with Scores.finite value ∧ (0.0 Float.≤ᵇ value)
+  ...     | false = inj₁ (invalidEvidenceNumber name)
+  ...     | true = inj₂ value
 
-  belief : Row → Error ⊎ Graph.BeliefValues
-  belief row = column (toList "id") row >>= λ idText → column (toList "content") row >>= λ content →
+  inspectBelief : Graph.BeliefValues → Error ⊎ DecodedBelief
+  inspectBelief value with Evidence.validBelief? value
+  ... | no invalid = inj₁ invalidStoredEvidence
+  ... | yes valid = inj₂ (decodedBelief value valid)
+
+  reconstructChecked : ℕ → Text → Float → Float → ℤ → ℤ → Row → Error ⊎ DecodedBelief
+  reconstructChecked id content probability confidence created activated row
+    with Numeric.probability probability ∧ Numeric.probability confidence
+  ... | false = inj₁ invalidDerivedProbability
+  ... | true = counter (toList "alpha0") (Beta.Beta.alpha prior) row >>= λ a₀ →
+    counter (toList "beta0") (Beta.Beta.negative prior) row >>= λ b₀ →
+    counter (toList "alpha") a₀ row >>= λ a → counter (toList "beta") b₀ row >>= λ b →
+    inspectBelief (Graph.beliefValues id content (row (toList "project")) (memory (row (toList "memory_type")))
+      created activated (Beta.mean (Beta.beta a b)) (Beta.confidence (Beta.beta a b)) a b a₀ b₀)
+    where prior = Beta.prior probability confidence
+
+  forgetProof : Error ⊎ DecodedBelief → Error ⊎ Graph.BeliefValues
+  forgetProof (inj₁ error) = inj₁ error
+  forgetProof (inj₂ checked) = inj₂ (DecodedBelief.value checked)
+
+  reconstruct : ℕ → Text → Float → Float → ℤ → ℤ → Row → Error ⊎ Graph.BeliefValues
+  reconstruct id content probability confidence created activated row = forgetProof
+    (reconstructChecked id content probability confidence created activated row)
+
+  beliefChecked : Row → Error ⊎ DecodedBelief
+  beliefChecked row = column (toList "id") row >>= λ idText → column (toList "content") row >>= λ content →
     column (toList "probability") row >>= λ probabilityText → column (toList "confidence") row >>= λ confidenceText →
     column (toList "created_at") row >>= λ createdText → column (toList "last_activated_at") row >>= λ activatedText →
     parse (toList "id") uuid idText >>= λ id →
@@ -101,7 +124,23 @@ module Decode (libraries : Libraries) where
     parse (toList "confidence") (Libraries.float libraries) confidenceText >>= λ confidence →
     parse (toList "created_at") (Libraries.rfc3339UTCNanoseconds libraries) createdText >>= λ created →
     parse (toList "last_activated_at") (Libraries.rfc3339UTCNanoseconds libraries) activatedText >>= λ activated →
-    reconstruct id content probability confidence created activated row
+    reconstructChecked id content probability confidence created activated row
+
+  belief : Row → Error ⊎ Graph.BeliefValues
+  belief row = forgetProof (beliefChecked row)
+
+  beliefHasValidEvidence : ∀ row value → belief row ≡ inj₂ value → Evidence.ValidBelief value
+  beliefHasValidEvidence row value observed with beliefChecked row
+  ... | inj₁ error with observed
+  ...   | ()
+  beliefHasValidEvidence row value refl | inj₂ (decodedBelief .value valid) = valid
+
+  missingCounterUsesFallback : ∀ name default row → row name ≡ nothing → counter name default row ≡ inj₂ default
+  missingCounterUsesFallback name default row absent rewrite absent = refl
+
+  malformedCounterRefused : ∀ name default row text → row name ≡ just text → Libraries.float libraries text ≡ nothing →
+    counter name default row ≡ inj₁ (malformed name)
+  malformedCounterRefused name default row text present badParse rewrite present | badParse = refl
 
   unsigned32 : Text → Maybe ℕ
   unsigned32 text with UInt.parse (Libraries.unsigned libraries) 4294967295 text
