@@ -204,6 +204,8 @@ exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_prel
 
     def checks(self, selected):
         self.command("isolation-regressions", ["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_isolated_runner.py"])
+        if selected == "all":
+            self.command("release-source-regressions", ["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_release_source.py"])
         if selected in ("all", "format"):
             self.command("format", ["cargo", "fmt", "--all", "--", "--check"])
         if selected in ("all", "lint"):
