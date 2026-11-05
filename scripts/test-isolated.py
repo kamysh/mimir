@@ -221,6 +221,7 @@ exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_prel
             self.command("evaluator-tests", ["cargo", "test", "--manifest-path", "tests/eval/Cargo.toml", "--locked", "--offline"])
             self.command("learning-comparator-fixture", ["bash", "tests/eval/learning-compare-fixture.sh"])
         if selected in ("all", "formal"):
+            self.command("formal-source-regressions", ["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_formal_coverage.py"])
             self.command("formal-inventory", ["python3", "scripts/formal/check-coverage.py"])
             self.command("aggregate-formal-specification", ["agda", "Mimir.agda"], cwd=REPO / "spec")
 

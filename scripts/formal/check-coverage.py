@@ -25,6 +25,40 @@ def kebab(name):
     return re.sub(r'(?<!^)(?=[A-Z])', '-', name).lower()
 
 
+def embedded_sql_body(source):
+    """Read our single-migration files without removing SQL body comments.
+
+    The loader ends metadata at its terminating semicolon, not at the first
+    non-comment line. Refuse unsupported headers rather than guessing where
+    SQL begins. This checker supports the maintained JSON-valued header form.
+    """
+    lines = source.splitlines(keepends=True)
+    if not lines or lines[0].strip() != '-- #!migration':
+        raise ValueError('Expected a migration header')
+    fields = {}
+    for index, line in enumerate(lines[1:], 1):
+        match = re.fullmatch(r'\s*--\s*(name|description|requires):\s*(.+)\s*([,;])\s*', line)
+        if not match:
+            raise ValueError('Unsupported or unterminated migration header')
+        key, raw, separator = match.groups()
+        value = json.loads(raw)
+        if key in fields:
+            raise ValueError('Repeated migration metadata field')
+        if not isinstance(value, str) and not (
+                key == 'requires' and isinstance(value, list)
+                and all(isinstance(item, str) for item in value)):
+            raise ValueError('Invalid migration metadata value')
+        fields[key] = value
+        if separator == ';':
+            if not {'name', 'description'} <= fields.keys():
+                raise ValueError('Missing migration name or description')
+            body = ''.join(lines[index + 1:])
+            if body.startswith('-- #!') or '\n-- #!' in body:
+                raise ValueError('Expected one migration per embedded file')
+            return body.strip()
+    raise ValueError('Unterminated migration header')
+
+
 def check():
     coverage = json.loads(read('docs/FORMAL-BEHAVIOR-COVERAGE.json'))
     inventory = json.loads(read('docs/FORMAL-INVENTORY.json'))
@@ -96,10 +130,7 @@ def check():
     sql_files = sorted((ROOT / 'crates/core/migrations').glob('*.sql'))
     assert len(sql_files) == len(migration_keys) == len(bound_sources) == 10
     for path, key in zip(sql_files, migration_keys):
-        lines = path.read_text().splitlines()
-        while lines and (not lines[0].strip() or lines[0].lstrip().startswith('--')):
-            lines.pop(0)
-        assert '\n'.join(lines).strip() == bound_sources[key], path
+        assert embedded_sql_body(path.read_text()) == bound_sources[key], path
 
     return {
         'result': 'passed', 'mcp_operations': len(operation_names),
