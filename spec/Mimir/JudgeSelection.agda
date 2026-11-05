@@ -57,7 +57,7 @@ module Select (contract model batchLimit : ℕ) (project : Maybe Text)
 
   fetch : List Observation.Deferred → Script Result
   fetch deferred = ask (pending project batchLimit (map Observation.Deferred.identity deferred)) (λ
-    { (inj₁ error) → done (failed error) ; (inj₂ batch) → admit deferred batch })
+    { (inj₁ failureValue) → done (failed failureValue) ; (inj₂ batch) → admit deferred batch })
 
   mutual
     reconcile : List Observation.Deferred → List Observation.Deferred → Script Result
@@ -67,7 +67,7 @@ module Select (contract model batchLimit : ℕ) (project : Maybe Text)
 
     afterCurrent : Observation.Deferred → List Observation.Deferred → List Observation.Deferred →
       Revision.Error ⊎ Maybe Observation.Snapshot → Script Result
-    afterCurrent item remaining retained (inj₁ error) = done (failed error)
+    afterCurrent item remaining retained (inj₁ failureValue) = done (failed failureValue)
     afterCurrent item remaining retained (inj₂ nothing) = reconcile remaining retained
     afterCurrent item remaining retained (inj₂ (just observed)) with Observation.checkSnapshot observed
     ... | Validation.rejected fault invalid = done (malformed fault)
@@ -77,7 +77,7 @@ module Select (contract model batchLimit : ℕ) (project : Maybe Text)
 
   start : Script Result
   start = ask previousDeferred (λ
-    { (inj₁ error) → done (failed error) ; (inj₂ retained) → reconcile retained [] })
+    { (inj₁ failureValue) → done (failed failureValue) ; (inj₂ retained) → reconcile retained [] })
 
   pins : Prepared → List Observation.Pin
   pins chosen = map Observation.pinSnapshot (Prepared.batch chosen)

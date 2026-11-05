@@ -5,7 +5,8 @@
 module Mimir.JudgeAPIAdapter where
 
 open import Data.Bool using (Bool; true; false; _∧_; _∨_; not)
-open import Data.List using (List; []; _∷_; _++_; map; any; length; reverse; dropWhileᵇ)
+open import Data.List using (List; []; _∷_; _++_; map; length; reverse; dropWhileᵇ)
+open import Data.Bool.ListAction using (any)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≟_; _≤?_; _*_)
 open import Data.Product using (_×_; _,_)
@@ -209,7 +210,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   textSource : Wire → Text → Validation.Fault → Source.Failure
   textSource wire text failure with JSON.text (argumentStage wire) text
-  ... | inj₁ error with Revision.Error.source error
+  ... | inj₁ failureValue with Revision.Error.source failureValue
   ...   | just captured = captured
   ...   | nothing = rawSource wire (V.string text) failure
   textSource wire text failure | inj₂ _ = rawSource wire (V.string text) failure
@@ -315,7 +316,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   afterBody state status bytes with Config.between 200 299 status
   ... | false = failure state (classify status bytes)
   ... | true with JSON.read (toList "invalid provider JSON") bytes
-  ...   | inj₁ error = finished (outcome state (inj₁ error))
+  ...   | inj₁ failureValue = finished (outcome state (inj₁ failureValue))
   ...   | inj₂ value = afterJSON state value
 
   headers : Wire → Text → List (Text × Text)
@@ -342,7 +343,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   ... | inj₂ definitions = executing state (withKey state (body state definitions wire) wire (Config.Llm.apiKey config))
 
   afterMetadata : Adapter → Revision.Error ⊎ V.Value → State
-  afterMetadata state (inj₁ error) = finished (outcome state (inj₁ error))
+  afterMetadata state (inj₁ failureValue) = finished (outcome state (inj₁ failureValue))
   afterMetadata state (inj₂ raw) with Input.unsigned (Mimir.Binary64.powerMinusOne 64) (get "max_tokens" raw)
   ... | inj₁ _ = failure state (toList "Anthropic model metadata is missing max_tokens")
   ... | inj₂ maximum with does (1 ≤? maximum)
@@ -379,9 +380,9 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     external : (effect : Effect) → (Reply effect → State) → Step
     stopped : Outcome → Step
   next : State → Step
-  next (receiving state handle status (Body.receiving buffer)) = external (readChunk handle)
-    (λ input → receiving state handle status (Body.step (Body.receiving buffer) input))
-  next (receiving state handle status (Body.complete buffer)) = internal (afterBody state status (Body.Buffer.bytes buffer))
+  next (receiving state handle status (Body.receiving pendingBytes)) = external (readChunk handle)
+    (λ input → receiving state handle status (Body.step (Body.receiving pendingBytes) input))
+  next (receiving state handle status (Body.complete pendingBytes)) = internal (afterBody state status (Body.Buffer.bytes pendingBytes))
   next (receiving state handle status (Body.failed Body.transport)) = internal (failure state (toList "provider body failed"))
   next (executing saved (done state)) = internal state
   next (executing saved (ask effect k)) = external effect (λ reply → executing saved (k reply))

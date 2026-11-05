@@ -23,12 +23,12 @@ import Mimir.MigrationRuntime as Migration
 import Mimir.ApplicationProtocol as Application
 
 enabled : Values.Config → Bool
-enabled config with Values.Config.embed config
+enabled configurationValue with Values.Config.embed configurationValue
 ... | nothing = false
 ... | just _ = true
 
 Compatible : Values.Config → Application.Environment → Set
-Compatible config environment = Application.Environment.embeddingsEnabled environment ≡ enabled config ×
+Compatible configurationValue environment = Application.Environment.embeddingsEnabled environment ≡ enabled configurationValue ×
   Application.Environment.dimension environment ≡ 768
 
 module Bound (sizeMaximum : ℕ) (path : Path.Path) (environment : Connection.Environment)
@@ -36,21 +36,21 @@ module Bound (sizeMaximum : ℕ) (path : Path.Path) (environment : Connection.En
   private
     module C = Configuration.Run sizeMaximum
     module M = Migration.Runtime Text Text
-    module S config = Startup.Run (Config.Config.core config) environment decimalPort certificateBlocks unix
+    module S configurationValue = Startup.Run (Config.Config.core configurationValue) environment decimalPort certificateBlocks unix
 
   data Result : Set where
     configurationFailure : Configuration.Failure → Result
-    startupFailure : (config : Config.Config) → S.Failure config → Result
-    connected : (config : Config.Config) → S.Service config → Result
+    startupFailure : (configurationValue : Config.Config) → S.Failure configurationValue → Result
+    connected : (configurationValue : Config.Config) → S.Service configurationValue → Result
 
   data Receipt (migrations : M.Inputs) : Result → Set where
     badConfig : ∀ events failure → Configuration.P.Runs (C.load path) events (inj₁ failure) →
       Receipt migrations (configurationFailure failure)
-    badService : ∀ configurationEvents config startupEvents failure →
-      Configuration.P.Runs (C.load path) configurationEvents (inj₂ config) →
-      S.Trace config (S.start config migrations) startupEvents (S.failed {config = config} failure) →
-      Receipt migrations (startupFailure config failure)
-    ready : ∀ configurationEvents config startupEvents service →
-      Configuration.P.Runs (C.load path) configurationEvents (inj₂ config) →
-      S.Trace config (S.start config migrations) startupEvents (S.ready {config = config} service) →
-      Receipt migrations (connected config service)
+    badService : ∀ configurationEvents configurationValue startupEvents failure →
+      Configuration.P.Runs (C.load path) configurationEvents (inj₂ configurationValue) →
+      S.Trace configurationValue (S.start configurationValue migrations) startupEvents (S.failed {configurationValue = configurationValue} failure) →
+      Receipt migrations (startupFailure configurationValue failure)
+    ready : ∀ configurationEvents configurationValue startupEvents service →
+      Configuration.P.Runs (C.load path) configurationEvents (inj₂ configurationValue) →
+      S.Trace configurationValue (S.start configurationValue migrations) startupEvents (S.ready {configurationValue = configurationValue} service) →
+      Receipt migrations (connected configurationValue service)

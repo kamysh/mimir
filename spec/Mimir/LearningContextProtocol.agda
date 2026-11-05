@@ -59,7 +59,7 @@ validAssessments : List (Context.Key × Evaluation.Result) → Bool
 validAssessments [] = true
 validAssessments ((_ , Evaluation.invalidStoredNumber) ∷ rest) = false
 validAssessments ((_ , Evaluation.scored (Scores.rejected why)) ∷ rest) = false
-validAssessments ((_ , Evaluation.scored (Scores.accepted scores)) ∷ rest) = validAssessments rest
+validAssessments ((_ , Evaluation.scored (Scores.accepted acceptedScores)) ∷ rest) = validAssessments rest
 
 module Run (ops : R.F32) (unicode : R.Unicode) (textBefore : Text → Text → Bool) where
   module Retrieve = Retrieval.Run ops unicode
@@ -83,9 +83,9 @@ module Run (ops : R.F32) (unicode : R.Unicode) (textBefore : Text → Text → B
   ... | suc hits = countPattern request beliefs remaining ranked (suc hits) p
 
   finishAssessments : Request → List G.BeliefValues → List Patterns.Result → Context.Assessments → State
-  finishAssessments request beliefs patterns assessments with validAssessments (Context.Assessments.values assessments)
+  finishAssessments request beliefs patterns assessmentValues with validAssessments (Context.Assessments.values assessmentValues)
   ... | false = invalidAssessment
-  ... | true = finished (output beliefs patterns assessments)
+  ... | true = finished (output beliefs patterns assessmentValues)
 
   advance : (state : State) → Reply state → State
   advance (retrieving request phase) reply = afterRetrieval request (Retrieve.advance phase reply)
