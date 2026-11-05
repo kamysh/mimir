@@ -1,0 +1,212 @@
+{-# OPTIONS --safe #-}
+-- Provider batch sequencing is separate from tool interpretation. Every call,
+-- including malformed arguments, is yielded once and receives its own result.
+-- Draining an existing batch records a tool attempt, not a provider request.
+module Mimir.ProviderQueue where
+
+open import Data.List using (List; []; _∷_; _++_; map)
+open import Data.List.Properties using (++-assoc; ++-identityʳ; map-++)
+open import Data.List.Relation.Unary.All using (All)
+open import Data.Maybe using (Maybe; just; nothing)
+open import Data.Nat using (ℕ; _+_)
+open import Data.Product using (_×_; _,_; proj₁; proj₂)
+open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.Unit using (⊤; tt)
+open import Data.Empty using (⊥)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; trans; sym; cong)
+open import Mimir.Text using (Text; Nonempty; Bounded; nonempty?; bounded?)
+open import Mimir.SourceReview using (_≟Text_)
+open import Mimir.Validation
+open import Mimir.Collections using (module Equality; atMost; checkCount)
+import Mimir.JudgeAccounting as Budget
+
+module IDs = Equality Text _≟Text_
+
+record Account (initial : Budget.Counts) : Set where
+  constructor account
+  field
+    totals : Budget.Counts
+    charges : List Budget.Charge
+    trace : Budget.Trace initial charges totals
+
+startAccount : ∀ initial → Account initial
+startAccount initial = account initial [] Budget.empty
+
+charge : ∀ {initial} → Account initial → Budget.Charge → Account initial
+charge (account before charges trace) kind = account (Budget.recordCharge before kind)
+  (charges ++ (kind ∷ [])) (Budget.join trace (Budget.recorded refl Budget.empty))
+
+requestsCounted : ∀ {initial} (a : Account initial) →
+  Budget.Counts.models (Account.totals a) ≡
+    Budget.count Budget.modelCost (Account.charges a) + Budget.Counts.models initial
+requestsCounted a = Budget.modelTotal (Account.trace a)
+
+attemptsCounted : ∀ {initial} (a : Account initial) →
+  Budget.Counts.tools (Account.totals a) ≡
+    Budget.count Budget.toolCost (Account.charges a) + Budget.Counts.tools initial
+attemptsCounted a = Budget.toolTotal (Account.trace a)
+
+module Queue (Payload : Set) where
+  record Call : Set where
+    constructor call
+    field identity name : Text; arguments : Fault ⊎ Payload
+
+  data NamePolicy : Set where required deferred : NamePolicy
+
+  NameValid : NamePolicy → Text → Set
+  NameValid required name = Nonempty name
+  NameValid deferred name = ⊤
+
+  checkName : ∀ policy name → Checked (NameValid policy name)
+  checkName required name = check (fault [] emptyText "provider function name is empty") (nonempty? name)
+  checkName deferred name = accepted tt
+
+  CallValidFor : NamePolicy → Call → Set
+  CallValidFor policy c = Nonempty (Call.identity c) ×
+    NameValid policy (Call.name c)
+
+  CallValid : Call → Set
+  CallValid = CallValidFor required
+
+  checkCallFor : ∀ policy c → Checked (CallValidFor policy c)
+  checkCallFor policy c = combine
+    (check (fault [] emptyText "provider call ID is empty") (nonempty? (Call.identity c)))
+    (checkName policy (Call.name c))
+
+  checkCall : ∀ c → Checked (CallValid c)
+  checkCall = checkCallFor required
+
+  BatchValidFor : NamePolicy → List Call → Set
+  BatchValidFor policy calls = All (CallValidFor policy) calls × IDs.Unique (map Call.identity calls)
+
+  BatchValid : List Call → Set
+  BatchValid = BatchValidFor required
+
+  checkBatchFor : ∀ policy calls → Checked (BatchValidFor policy calls)
+  checkBatchFor policy calls = combine (allChecked (checkCallFor policy) calls) (IDs.checkUnique (map Call.identity calls))
+
+  checkBatch : ∀ calls → Checked (BatchValid calls)
+  checkBatch = checkBatchFor required
+
+  -- An independent sequence relation records exactly which call each result
+  -- answers; argument validity does not remove a call from this relation.
+  data Progress (original : List Call) : List (Text × Payload) → List Call → Set where
+    begin : Progress original [] original
+    answered : ∀ {results current rest} → Progress original results (current ∷ rest) →
+      (value : Payload) → Progress original (results ++ ((Call.identity current , value) ∷ [])) rest
+
+  partition : ∀ {original results pending} → Progress original results pending →
+    map proj₁ results ++ map Call.identity pending ≡ map Call.identity original
+  partition begin = refl
+  partition (answered {results} {current} {rest} previous value) =
+    trans (cong (_++ map Call.identity rest) (map-++ proj₁ results ((Call.identity current , value) ∷ [])))
+      (trans (++-assoc (map proj₁ results) (Call.identity current ∷ []) (map Call.identity rest))
+        (partition previous))
+
+  allResultsInOrder : ∀ {original results} → Progress original results [] →
+    map proj₁ results ≡ map Call.identity original
+  allResultsInOrder {results = results} progress = trans (sym (++-identityʳ (map proj₁ results))) (partition progress)
+
+  record Turn : Set where
+    constructor turn
+    field message : Payload; results : List (Text × Payload)
+
+  data StopReason : Set where
+    complete cancelled sequenceFailure transportFailure : StopReason
+    invalidBatch : Fault → StopReason
+
+  data Phase : Set where
+    ready requesting : List Turn → Phase
+    waiting : (history : List Turn) (message : Payload) (original : List Call)
+      (results : List (Text × Payload)) (current : Call) (rest : List Call) →
+      Progress original results (current ∷ rest) → Phase
+    stopped : StopReason → Phase
+
+  data Input : Set where
+    next stop transportLost : Input
+    reply : Payload → List Call → Input
+    feedback : Payload → Input
+
+  data Effect : Set where
+    request : List Turn → Effect
+    yieldCall : Call → Effect
+    yieldDone cancelOwned : Effect
+    failed : StopReason → Effect
+
+  record Machine (initial : Budget.Counts) : Set where
+    constructor machine
+    field phase : Phase; accounting : Account initial
+
+  record Step (initial : Budget.Counts) : Set where
+    constructor stepResult
+    field state : Machine initial; effects : List Effect
+
+  fail : ∀ {initial} → Account initial → StopReason → Step initial
+  fail accounting reason = stepResult (machine (stopped reason) accounting) (failed reason ∷ [])
+
+  dispatch : ∀ {initial} → Account initial → (history : List Turn) (message : Payload)
+    (original : List Call) (results : List (Text × Payload)) (pending : List Call) →
+    Progress original results pending → Step initial
+  dispatch accounting history message original results [] progress =
+    stepResult (machine (ready (history ++ (turn message results ∷ []))) accounting) []
+  dispatch accounting history message original results (current ∷ rest) progress = stepResult
+    (machine (waiting history message original results current rest progress) (charge accounting Budget.tool)) (yieldCall current ∷ [])
+
+  NoProviderRequest : Effect → Set
+  NoProviderRequest (request history) = ⊥
+  NoProviderRequest _ = ⊤
+
+  dispatchHasNoProviderRequest : ∀ {initial} (accounting : Account initial) history message original results pending progress →
+    All NoProviderRequest (Step.effects (dispatch accounting history message original results pending progress))
+  dispatchHasNoProviderRequest accounting history message original results [] progress = All.[]
+  dispatchHasNoProviderRequest accounting history message original results (current ∷ rest) progress = tt All.∷ All.[]
+
+  dispatchPreservesProviderCount : ∀ {initial} (accounting : Account initial) history message original results pending progress →
+    Budget.Counts.models (Account.totals (Machine.accounting
+      (Step.state (dispatch accounting history message original results pending progress)))) ≡
+    Budget.Counts.models (Account.totals accounting)
+  dispatchPreservesProviderCount accounting history message original results [] progress = refl
+  dispatchPreservesProviderCount (account (Budget.counts models tools) charges trace)
+    history message original results (current ∷ rest) progress = refl
+
+  stepWithPolicy : ∀ {initial} → NamePolicy → Machine initial → Input → Step initial
+  stepWithPolicy policy s@(machine (stopped reason) accounting) input = stepResult s []
+  stepWithPolicy policy (machine phase accounting) stop =
+    stepResult (machine (stopped cancelled) accounting) (cancelOwned ∷ [])
+  stepWithPolicy policy (machine (ready history) accounting) next =
+    stepResult (machine (requesting history) (charge accounting Budget.provider)) (request history ∷ [])
+  stepWithPolicy policy (machine (requesting history) accounting) (reply message calls) with checkBatchFor policy calls
+  ... | rejected failure invalid = fail accounting (invalidBatch failure)
+  ... | accepted valid with calls
+  ...   | [] = stepResult (machine (stopped complete) accounting) (yieldDone ∷ [])
+  ...   | current ∷ rest = dispatch accounting history message (current ∷ rest) [] (current ∷ rest) begin
+  stepWithPolicy policy (machine (waiting history message original results current rest progress) accounting) (feedback value) =
+    dispatch accounting history message original (results ++ ((Call.identity current , value) ∷ [])) rest
+      (answered progress value)
+  stepWithPolicy policy (machine phase accounting) transportLost = fail accounting transportFailure
+  stepWithPolicy policy (machine phase accounting) input = fail accounting sequenceFailure
+
+  step : ∀ {initial} → Machine initial → Input → Step initial
+  step = stepWithPolicy required
+
+  stoppedNeverRestarts : ∀ {initial} reason (accounting : Account initial) input →
+    step (machine (stopped reason) accounting) input ≡
+      stepResult (machine (stopped reason) accounting) []
+  stoppedNeverRestarts reason accounting input = refl
+
+  initialMachine : ∀ initial → Machine initial
+  initialMachine initial = machine (ready []) (startAccount initial)
+
+  -- Every returned state retains its cumulative accounting, including after
+  -- cancellation or refusal. No counter value disables a future request.
+  everyStepRequestsCounted : ∀ {initial} (s : Machine initial) input →
+    Budget.Counts.models (Account.totals (Machine.accounting (Step.state (step s input)))) ≡
+    Budget.count Budget.modelCost (Account.charges (Machine.accounting (Step.state (step s input)))) +
+      Budget.Counts.models initial
+  everyStepRequestsCounted s input = requestsCounted (Machine.accounting (Step.state (step s input)))
+
+  everyStepAttemptsCounted : ∀ {initial} (s : Machine initial) input →
+    Budget.Counts.tools (Account.totals (Machine.accounting (Step.state (step s input)))) ≡
+    Budget.count Budget.toolCost (Account.charges (Machine.accounting (Step.state (step s input)))) +
+      Budget.Counts.tools initial
+  everyStepAttemptsCounted s input = attemptsCounted (Machine.accounting (Step.state (step s input)))

@@ -397,10 +397,14 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
         "explain_belief"
         | "record_experience"
         | "review_experience"
+        | "get_learning_review"
         | "get_experience"
         | "experience_history"
         | "pending_experiences"
-        | "query_learning_context" => learning::call(svc, name, args).await,
+        | "query_learning_context"
+        | "learning_capabilities"
+        | "get_lesson_assessment"
+        | "lesson_assessment_history" => learning::call(svc, name, args).await,
         "insert_belief" => {
             let provenance: IndependentProvenance = serde_json::from_value(
                 args.get("provenance")
@@ -819,23 +823,23 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Init tracing to stderr (stdout is reserved for JSON-RPC responses).
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::WARN.into()),
-        )
-        .init();
-
-    // Read config from ~/.config/mimir/config.toml.
-    let cfg = match Config::load() {
+    let (cfg, operations) = match Config::load_with_operations(&Config::config_path()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
     };
+    operations.logging.prepare()?;
+    let logging = operations.logging.clone();
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || mimir_core::operations::LogWriter::new(logging.clone()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::WARN.into()),
+        )
+        .init();
 
     // Connect to database (and embedding client if configured).
     let svc = MimirService::connect(&cfg).await?;
@@ -903,7 +907,13 @@ async fn main() -> Result<()> {
                         &id,
                         json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
                     ),
-                    Err(e) => err_response(&id, -32000, &e.to_string()),
+                    Err(e) => {
+                        let mut response = err_response(&id, -32000, &e.to_string());
+                        if let Some(refusal) = e.downcast_ref::<mimir_core::validation::Refusal>() {
+                            response["error"]["data"] = serde_json::to_value(refusal)?;
+                        }
+                        response
+                    }
                 }
             }
 

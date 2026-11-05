@@ -22,6 +22,18 @@ mkdir -p "$BIN_DIR"
 install -m 755 "${OUT}/bin/mimir" "${BIN_DIR}/mimir"
 install -m 755 "${OUT}/bin/mimir-mcp" "${BIN_DIR}/mimir-mcp"
 
+CONFIG_PATH="${MIMIR_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/mimir/config.toml}"
+if [[ -f "$CONFIG_PATH" ]]; then
+  if ! "${BIN_DIR}/mimir" config check --config "$CONFIG_PATH"; then
+    echo "Binaries installed, but configuration needs attention before use." >&2
+    echo "For missing operational settings: mimir config upgrade --config \"$CONFIG_PATH\" --log-directory /absolute/path/to/logs" >&2
+    echo "Then run mimir config check. Existing settings have not been changed." >&2
+    exit 2
+  fi
+else
+  echo "No existing configuration: run mimir init, then mimir config check."
+fi
+
 if [[ "$CLIENT" != none ]]; then
   if "$CLIENT" mcp get mimir >/dev/null 2>&1; then
     echo "Existing mimir registration preserved. Check its executable path with: $CLIENT mcp get mimir"

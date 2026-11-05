@@ -1,6 +1,10 @@
 //! Run only against a disposable database; intentionally uses real AGE and migrations.
+#[allow(dead_code)] // Shared guard exposes helpers for several test targets.
+#[path = "../../../tests/support/isolation.rs"]
+mod isolation;
+
 use mimir_core::{
-    config::{Config, DatabaseConfig, SslMode},
+    config::Config,
     db,
     graph::{EdgeType, MemoryType},
     learning::*,
@@ -14,24 +18,8 @@ use uuid::Uuid;
 static PAGE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn service() -> MimirService {
-    let dbname = std::env::var("MIMIR_DBNAME").expect("isolated MIMIR_DBNAME required");
-    assert!(
-        dbname.starts_with("mimir_learning_test"),
-        "refusing non-test database"
-    );
     MimirService::connect(&Config {
-        database: DatabaseConfig {
-            host: std::env::var("MIMIR_HOST").unwrap(),
-            port: std::env::var("MIMIR_PORT").unwrap().parse().unwrap(),
-            user: std::env::var("MIMIR_USER").unwrap(),
-            dbname,
-            password: None,
-            pgpassfile: None,
-            ssl_mode: SslMode::Disable,
-            ssl_root_cert: None,
-            ssl_client_cert: None,
-            ssl_client_key: None,
-        },
+        database: isolation::fixture().database_config(),
         embeddings: None,
         llm: None,
         judge: None,
@@ -51,6 +39,8 @@ fn experience(project: &str) -> Experience {
         evidence: vec!["test receipt: new process loaded changed configuration".into()],
         belief_ids: vec![],
         pattern_id: None,
+        learning_items: vec![],
+        source_records: vec![],
     }
 }
 
@@ -198,7 +188,214 @@ fn review(e: &Experience) -> Review {
         candidates: vec![],
         candidate_feedback: vec![],
         candidate_links: vec![],
+        assessments: vec![],
+        extracted_items: vec![],
+        source_coverage: vec![],
     }
+}
+
+#[tokio::test]
+async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
+    use mimir_core::assessment::{Assessment, Axis, ItemKind, LearningItem, Prediction};
+    let svc = service().await;
+    let project = format!("assessment-{}", Uuid::new_v4());
+    let mut e = experience(&project);
+    e.learning_items.push(LearningItem {
+        id: None,
+        key: Some("duration-estimate".into()),
+        kind: ItemKind::Estimate,
+        source_ref: "task/event/1#span0".into(),
+        actor: "worker".into(),
+        statement: "complete within 30 minutes".into(),
+        conditions: "fixed scope".into(),
+        predictions: vec![Prediction {
+            quantity: "duration".into(),
+            value: 30.,
+            unit: "minutes".into(),
+            probability: Some(0.8),
+            lower: None,
+            upper: None,
+            horizon: "this task".into(),
+            recorded_at: "2026-10-28T00:00:00Z".into(),
+            inferred: false,
+        }],
+    });
+    let recorded = svc.record_experience(&e, 0).await.unwrap();
+    let item_id = recorded.item_ids["duration-estimate"];
+    e = recorded.experience;
+    let mut duplicate = e.clone();
+    duplicate.id = Uuid::new_v4();
+    assert!(svc.record_experience(&duplicate, 0).await.is_err());
+    assert!(svc.get_experience(duplicate.id).await.unwrap().is_none());
+    let mut moved = e.clone();
+    moved.learning_items[0].actor = "another actor".into();
+    assert!(svc.record_experience(&moved, 1).await.is_err());
+    let mut r = review(&e);
+    r.candidates.push(Candidate::Belief {
+        key: "lesson".into(),
+        content: "30 minutes suffices under fixed scope".into(),
+        memory_type: MemoryType::Experiential,
+    });
+    r.assessments.push(Assessment {
+        target: BeliefTarget::Candidate {
+            candidate_key: "lesson".into(),
+        },
+        scope: "fixed-scope-v1".into(),
+        rubric: "benefit-v1".into(),
+        correctness: Axis {
+            value: Some(1.),
+            weight: 1.,
+        },
+        usefulness: Axis {
+            value: Some(1.),
+            weight: 1.,
+        },
+        evidence_indices: vec![0],
+        item_ids: vec![item_id],
+        item_keys: vec![],
+        rationale: "observed completion with clear net benefit".into(),
+    });
+    let first = svc.review_experience(&r, 0).await.unwrap();
+    let id = first.candidate_ids["lesson"];
+    let score = svc
+        .lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+        .await
+        .unwrap();
+    assert!((score["scores"]["correctness"].as_f64().unwrap() - 2. / 3.).abs() < 1e-12);
+    assert_eq!(score["scores"]["usefulness"], 0.5);
+    let retrieved = svc
+        .query_learning_context("30 minutes fixed scope", &project, 5)
+        .await
+        .unwrap();
+    assert!(retrieved
+        .assessments
+        .iter()
+        .any(|a| a["belief_id"] == id.to_string() && a["scores"]["usefulness"] == 0.5));
+    assert!(!retrieved.assessments_truncated);
+    assert_eq!(
+        svc.review_experience(&r, 0).await.unwrap().review_revision,
+        1
+    );
+    assert_eq!(
+        svc.lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+            .await
+            .unwrap(),
+        score
+    );
+    assert_eq!(
+        svc.get_belief(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .probability
+            .value(),
+        0.5
+    );
+    assert!(svc
+        .lesson_assessment("foreign", id, "fixed-scope-v1", "benefit-v1")
+        .await
+        .is_err());
+    // A later judgment corrects the SAME incident, rather than adding a failure.
+    r.assessments[0].correctness.value = Some(0.);
+    r.assessments[0].usefulness.value = Some(-0.5);
+    assert!(svc.review_experience(&r, 0).await.is_err());
+    svc.review_experience(&r, 1).await.unwrap();
+    let corrected = svc
+        .lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+        .await
+        .unwrap();
+    assert!((corrected["scores"]["correctness"].as_f64().unwrap() - 1. / 3.).abs() < 1e-12);
+    assert_eq!(corrected["scores"]["usefulness"], -0.25);
+    assert_eq!(corrected["scores"]["incidents"], 1);
+    let page = svc
+        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 0, 1)
+        .await
+        .unwrap();
+    assert_eq!(page["entries"][0]["active"], false);
+    assert_eq!(page["next_offset"], 1);
+    let page = svc
+        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 1, 1)
+        .await
+        .unwrap();
+    assert_eq!(page["entries"][0]["active"], true);
+    // Reconnect proves persistence; correcting source invalidates its old review.
+    let reopened = service().await;
+    assert_eq!(
+        reopened
+            .lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+            .await
+            .unwrap(),
+        corrected
+    );
+    e.evidence[0] = "original measurement used wrong run; outcome unresolved".into();
+    e.outcome = Outcome::Unknown;
+    reopened.record_experience(&e, 1).await.unwrap();
+    assert!(reopened.review_experience(&r, 2).await.is_err());
+    let prior = reopened
+        .lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+        .await
+        .unwrap();
+    assert_eq!(prior["scores"]["correctness"], 0.5);
+    assert_eq!(prior["scores"]["usefulness"], 0.0);
+    assert_eq!(prior["scores"]["incidents"], 0);
+    r.experience_revision = 2;
+    r.assessments[0].correctness = Axis {
+        value: None,
+        weight: 0.,
+    };
+    r.assessments[0].usefulness = Axis {
+        value: None,
+        weight: 0.,
+    };
+    reopened.review_experience(&r, 2).await.unwrap();
+    let unresolved = reopened
+        .lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+        .await
+        .unwrap();
+    assert_eq!(unresolved["scores"]["correctness"], 0.5);
+    assert_eq!(unresolved["scores"]["usefulness"], 0.0);
+    assert_eq!(unresolved["scores"]["unresolved_correctness"], 1);
+    let mut bad = r.clone();
+    bad.assessments[0].evidence_indices = vec![99];
+    assert!(reopened.review_experience(&bad, 3).await.is_err());
+    bad = r.clone();
+    bad.assessments.push(bad.assessments[0].clone());
+    assert!(reopened.review_experience(&bad, 3).await.is_err());
+    bad = r.clone();
+    bad.feedback.push(Feedback {
+        belief_id: id,
+        verdict: Verdict::Support,
+        weight: 1.,
+    });
+    assert!(reopened.review_experience(&bad, 3).await.is_err());
+    // Failed writes did not advance the review pointer or change assessment.
+    assert_eq!(
+        reopened
+            .get_experience(e.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .review_revision,
+        3
+    );
+    assert_eq!(
+        reopened
+            .lesson_assessment(&project, id, "fixed-scope-v1", "benefit-v1")
+            .await
+            .unwrap(),
+        unresolved
+    );
+    // Legacy JSON keeps exactly the old shape when typed fields are absent.
+    let legacy = experience(&project);
+    assert!(serde_json::to_value(&legacy)
+        .unwrap()
+        .get("learning_items")
+        .is_none());
+    assert!(serde_json::to_value(review(&legacy))
+        .unwrap()
+        .get("assessments")
+        .is_none());
+    reopened.delete_project(&project).await.unwrap();
 }
 
 /// Fixed Step-11 scenarios exercise the real ledger, candidate ownership, and
@@ -231,6 +428,8 @@ async fn offline_learning_scenario_matrix() {
             evidence: vec![evidence.into()],
             belief_ids: vec![],
             pattern_id: None,
+            learning_items: vec![],
+            source_records: vec![],
         };
     let assess = |e: &Experience, verdict: Option<Verdict>| {
         let mut r = review(e);
@@ -938,18 +1137,7 @@ async fn grounding_removal_recomputes_without_erasing_independent_support() {
         Some(project.clone()),
     );
     let config = Config {
-        database: DatabaseConfig {
-            host: std::env::var("MIMIR_HOST").unwrap(),
-            port: std::env::var("MIMIR_PORT").unwrap().parse().unwrap(),
-            user: std::env::var("MIMIR_USER").unwrap(),
-            dbname: std::env::var("MIMIR_DBNAME").unwrap(),
-            password: None,
-            pgpassfile: None,
-            ssl_mode: SslMode::Disable,
-            ssl_root_cert: None,
-            ssl_client_cert: None,
-            ssl_client_key: None,
-        },
+        database: isolation::fixture().database_config(),
         embeddings: None,
         llm: None,
         judge: None,
@@ -1227,4 +1415,479 @@ async fn contradiction_review_changes_detection_without_triggering_evidence_prop
         .unwrap()
         .is_empty());
     svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
+async fn source_coverage_is_atomic_revision_owned_and_preserves_unresolved_items() {
+    use mimir_core::{
+        assessment::{ItemKind, LearningItem},
+        learning_sources::{Coverage, CoverageStatus, SourceRecord},
+    };
+    let svc = service().await;
+    let mut e = experience(&format!("sources-{}", Uuid::new_v4()));
+    e.source = ObservationSource::AgentReport;
+    e.outcome = Outcome::Unknown;
+    e.source_records = vec![SourceRecord {
+        recorded_at: None,
+        source_ref: "event/1".into(),
+        actor: "agent".into(),
+        provenance: ObservationSource::AgentReport,
+        text: "I suggest testing first. Estimate: 30 minutes.".into(),
+    }];
+    e.evidence = vec!["event/1".into()];
+    svc.record_experience(&e, 0).await.unwrap();
+    let mut r = review(&e);
+    assert!(
+        svc.review_experience(&r, 0).await.is_err(),
+        "legacy reviewer must not silently skip source extraction"
+    );
+    let item = LearningItem {
+        id: None,
+        key: Some("testing-suggestion".into()),
+        kind: ItemKind::Suggestion,
+        source_ref: "event/1".into(),
+        actor: "agent".into(),
+        statement: "I suggest testing first.".into(),
+        conditions: "untried".into(),
+        predictions: vec![],
+    };
+    r.extracted_items.push(item.clone());
+    let mut legacy = r.clone();
+    legacy.feedback.push(Feedback {
+        belief_id: Uuid::new_v4(),
+        verdict: Verdict::Support,
+        weight: 1.0,
+    });
+    // Supply coverage so the rejection specifically concerns legacy evidence.
+    legacy.source_coverage.push(Coverage {
+        source_ref: "event/1".into(),
+        status: CoverageStatus::Unresolved,
+        reason: "pending".into(),
+    });
+    assert!(svc
+        .review_experience(&legacy, 0)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("source reviews use typed"));
+
+    r.source_coverage.push(Coverage {
+        source_ref: "event/1".into(),
+        status: CoverageStatus::Complete,
+        reason: "extracted suggestion".into(),
+    });
+    assert!(
+        svc.review_experience(&r, 0).await.is_err(),
+        "complete item needs an assessment"
+    );
+    r.source_coverage[0].status = CoverageStatus::Unresolved;
+    r.source_coverage[0].reason = "Suggestion is untried; estimate still needs analysis".into();
+    let first = svc.review_experience(&r, 0).await.unwrap();
+    assert_eq!(first.review_revision, 1);
+    assert_eq!(
+        svc.review_experience(&r, 0).await.unwrap().review_revision,
+        1
+    );
+    let receipt = svc.learning_review(e.id).await.unwrap();
+    assert_eq!(
+        receipt["review"]["source_coverage"][0]["status"],
+        "unresolved"
+    );
+    assert!(
+        !svc.pending_experiences(Some(&e.project), 10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|s| s.experience.id == e.id),
+        "unresolved review must not hot-loop unchanged evidence"
+    );
+    let mut changed = e.clone();
+    changed.source_records[0].text = "Rewritten original".into();
+    assert!(svc.record_experience(&changed, 1).await.is_err());
+    e.source_records.push(SourceRecord {
+        recorded_at: None,
+        source_ref: "correction/1".into(),
+        actor: "human".into(),
+        provenance: ObservationSource::UserFeedback,
+        text: "Testing was not attempted; actual duration unknown".into(),
+    });
+    e.evidence.push("correction/1".into());
+    svc.record_experience(&e, 1).await.unwrap();
+    assert!(svc.learning_review(e.id).await.unwrap()["review"].is_null());
+    assert!(svc.review_experience(&r, 1).await.is_err());
+    r.experience_revision = 2;
+    r.source_coverage.push(Coverage {
+        source_ref: "correction/1".into(),
+        status: CoverageStatus::Complete,
+        reason: "No additional decision, suggestion or estimate".into(),
+    });
+    let mut omitted = r.clone();
+    omitted.extracted_items.clear();
+    assert!(
+        svc.review_experience(&omitted, 1).await.is_err(),
+        "correction cannot discard extracted item"
+    );
+    let mut invented = r.clone();
+    invented.extracted_items[0].statement = "Never said".into();
+    assert!(svc.review_experience(&invented, 1).await.is_err());
+    svc.review_experience(&r, 1).await.unwrap();
+    assert_eq!(
+        svc.learning_review(e.id).await.unwrap()["review"]["extracted_items"][0]["id"],
+        first.item_ids["testing-suggestion"].to_string()
+    );
+}
+
+#[tokio::test]
+async fn complete_large_source_review_is_stored_and_read_back_without_caps() {
+    use mimir_core::{
+        assessment::{ItemKind, LearningItem},
+        learning_sources::{Coverage, CoverageStatus, SourceRecord},
+    };
+    let svc = service().await;
+    let mut e = experience(&format!("large-review-{}", Uuid::new_v4()));
+    e.source = ObservationSource::AgentReport;
+    e.outcome = Outcome::Unknown;
+    e.source_records = (0..65)
+        .map(|n| SourceRecord {
+            recorded_at: None,
+            source_ref: format!("source-{n}"),
+            actor: "fixture".into(),
+            provenance: ObservationSource::AgentReport,
+            text: format!("Recommendation {n}: {}", "source text ".repeat(1200)),
+        })
+        .collect();
+    e.evidence = e
+        .source_records
+        .iter()
+        .map(|s| s.source_ref.clone())
+        .collect();
+    svc.record_experience(&e, 0).await.unwrap();
+    let mut r = review(&e);
+    r.source_coverage = e
+        .source_records
+        .iter()
+        .map(|s| Coverage {
+            source_ref: s.source_ref.clone(),
+            status: CoverageStatus::Unresolved,
+            reason: "No independent outcome evidence".into(),
+        })
+        .collect();
+    r.extracted_items = e
+        .source_records
+        .iter()
+        .map(|s| LearningItem {
+            id: None,
+            key: Some(s.source_ref.clone()),
+            kind: ItemKind::Suggestion,
+            source_ref: s.source_ref.clone(),
+            actor: s.actor.clone(),
+            statement: s.text.clone(),
+            conditions: "Untried suggestion".into(),
+            predictions: vec![],
+        })
+        .collect();
+    assert!(serde_json::to_vec(&r).unwrap().len() > 65536);
+    let applied = svc.review_experience(&r, 0).await.unwrap();
+    assert_eq!(applied.review_revision, 1);
+    for item in &mut r.extracted_items {
+        item.id = Some(applied.item_ids[item.key.as_ref().unwrap()]);
+    }
+    let receipt = svc.learning_review(e.id).await.unwrap();
+    assert_eq!(receipt["review"], serde_json::to_value(&r).unwrap());
+    assert!(!svc
+        .pending_experiences(Some(&e.project), 101)
+        .await
+        .unwrap()
+        .iter()
+        .any(|s| s.experience.id == e.id));
+    svc.delete_project(&e.project).await.unwrap();
+}
+
+async fn item_database_client() -> tokio_postgres::Client {
+    db::connect(&isolation::fixture().database_config())
+        .await
+        .unwrap()
+}
+
+fn postgres_item_fixture(project: &str) -> (Experience, Review) {
+    use mimir_core::learning_sources::SourceRecord;
+    let mut e = experience(project);
+    e.outcome = Outcome::Unknown;
+    e.source = ObservationSource::AgentReport;
+    e.evidence = vec!["event/1".into()];
+    e.source_records = vec![SourceRecord {
+        source_ref: "event/1".into(),
+        actor: "agent".into(),
+        provenance: ObservationSource::AgentReport,
+        text: "I estimate 30 minutes.".into(),
+        recorded_at: None,
+    }];
+    let r = serde_json::from_value(serde_json::json!({
+        "experience_id":e.id,"experience_revision":1,"reviewer":"postgres-item-fixture",
+        "rationale":"Retain an estimate without inventing observed correctness",
+        "extracted_items":[{"key":"estimate-1","kind":"estimate","source_ref":"event/1",
+            "actor":"agent","statement":"I estimate 30 minutes.","conditions":"Unobserved"}],
+        "candidates":[{"kind":"belief","key":"lesson","content":"An estimate needs outcome evidence"}],
+        "assessments":[{"target":{"candidate_key":"lesson"},"scope":"task","rubric":"observed-outcome",
+            "correctness":{"value":null,"weight":0},"usefulness":{"value":null,"weight":0},
+            "evidence_indices":[0],"item_keys":["estimate-1"],"rationale":"Outcome absent"}],
+        "source_coverage":[{"source_ref":"event/1","status":"complete","reason":"Retained the estimate"}]
+    })).unwrap();
+    (e, r)
+}
+
+#[tokio::test]
+async fn postgres_item_ids_isolate_keys_and_keep_concurrent_retries_stable() {
+    let svc = service().await;
+    let other = service().await;
+    let project = format!("postgres-items-{}", Uuid::new_v4());
+    let (e, r) = postgres_item_fixture(&project);
+    svc.record_experience(&e, 0).await.unwrap();
+    let (a, b) = tokio::join!(svc.review_experience(&r, 0), other.review_experience(&r, 0));
+    let a = a.unwrap();
+    let b = b.unwrap();
+    let assigned = a.item_ids["estimate-1"];
+    assert_eq!(b.item_ids["estimate-1"], assigned);
+    assert_eq!(a.review_revision, 1);
+    assert_eq!(b.review_revision, 1);
+    assert_eq!(
+        service()
+            .await
+            .review_experience(&r, 0)
+            .await
+            .unwrap()
+            .item_ids["estimate-1"],
+        assigned
+    );
+
+    let canonical = svc.learning_review(e.id).await.unwrap()["review"].clone();
+    assert_eq!(canonical["extracted_items"][0]["id"], assigned.to_string());
+    assert_eq!(canonical["extracted_items"][0]["key"], "estimate-1");
+    assert_eq!(
+        canonical["assessments"][0]["item_ids"][0],
+        assigned.to_string()
+    );
+    assert!(canonical["assessments"][0].get("item_keys").is_none());
+    let mut correction: Review = serde_json::from_value(canonical).unwrap();
+    correction.extracted_items[0].conditions = "Still waiting for independent evidence".into();
+    let corrected = svc.review_experience(&correction, 1).await.unwrap();
+    assert_eq!(corrected.item_ids["estimate-1"], assigned);
+    assert_eq!(corrected.review_revision, 2);
+    let history = svc.experience_history(e.id).await.unwrap();
+    assert_eq!(history["reviews"].as_array().unwrap().len(), 2);
+
+    let (e2, r2) = postgres_item_fixture(&project);
+    svc.record_experience(&e2, 0).await.unwrap();
+    let second = svc.review_experience(&r2, 0).await.unwrap();
+    assert_ne!(second.item_ids["estimate-1"], assigned);
+    let client = item_database_client().await;
+    let rows = client.query("SELECT item_id FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_key='estimate-1'", &[&e.id]).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get::<_, Uuid>(0), assigned);
+    let default: String = client.query_one("SELECT pg_get_expr(d.adbin,d.adrelid) FROM pg_attrdef d JOIN pg_attribute a ON a.attrelid=d.adrelid AND a.attnum=d.adnum WHERE d.adrelid='mimir_learning_item_owners'::regclass AND a.attname='item_id'", &[]).await.unwrap().get(0);
+    assert!(default.contains("gen_random_uuid()"));
+    svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
+async fn postgres_item_ids_roll_back_allocations_and_reject_invented_uuids() {
+    let svc = service().await;
+    let client = item_database_client().await;
+    let project = format!("postgres-items-{}", Uuid::new_v4());
+    let (e, mut r) = postgres_item_fixture(&project);
+    svc.record_experience(&e, 0).await.unwrap();
+    r.extracted_items[0].statement = "An invented quotation".into();
+    let rejected = svc.review_experience(&r, 0).await.unwrap_err();
+    assert!(
+        rejected.to_string().contains("item estimate-1"),
+        "feedback must use the stable key of the rolled-back allocation"
+    );
+    let count: i64 = client
+        .query_one(
+            "SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1",
+            &[&e.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        count, 0,
+        "quotation refusal must roll back PostgreSQL allocation"
+    );
+    assert_eq!(
+        svc.get_experience(e.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .review_revision,
+        0
+    );
+    r.extracted_items[0].statement = "I estimate 30 minutes.".into();
+    r.extracted_items[0].actor = "nested-speaker".into();
+    let rejected = svc.review_experience(&r, 0).await.unwrap_err();
+    let refusal = rejected
+        .downcast_ref::<mimir_core::validation::Refusal>()
+        .unwrap();
+    assert_eq!(refusal.fault.code, mimir_core::validation::Code::WrongActor);
+    assert_eq!(
+        refusal.fault.path,
+        vec![
+            mimir_core::validation::Segment::Key("extracted_items".into()),
+            mimir_core::validation::Segment::Index(0),
+            mimir_core::validation::Segment::Key("actor".into())
+        ]
+    );
+    assert!(refusal.fault.message.contains("estimate-1"));
+    assert!(refusal.fault.message.contains("expected \"agent\""));
+    let count: i64 = client
+        .query_one(
+            "SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1",
+            &[&e.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        count, 0,
+        "actor refusal must roll back PostgreSQL allocation"
+    );
+    r.extracted_items[0].actor = "agent".into();
+    r.assessments[0].item_keys.push("missing-key".into());
+    assert!(svc.review_experience(&r, 0).await.is_err());
+    let count: i64 = client
+        .query_one(
+            "SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1",
+            &[&e.id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(count, 0, "reference refusal must roll back allocation");
+    r.assessments[0].item_keys.pop();
+    let supplied = Uuid::new_v4();
+    r.extracted_items[0].id = Some(supplied);
+    assert!(svc.review_experience(&r, 0).await.is_err());
+    r.extracted_items[0].key = None;
+    assert!(svc.review_experience(&r, 0).await.is_err());
+    assert_eq!(
+        svc.get_experience(e.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .review_revision,
+        0
+    );
+    r.extracted_items[0].id = None;
+    r.extracted_items[0].key = Some("estimate-1".into());
+    let applied = svc.review_experience(&r, 0).await.unwrap();
+    let assigned = applied.item_ids["estimate-1"];
+    let mut wrong_id = r.clone();
+    wrong_id.extracted_items[0].id = Some(supplied);
+    assert!(svc.review_experience(&wrong_id, 1).await.is_err());
+    let mut wrong_owner = r.clone();
+    wrong_owner.extracted_items[0].actor = "another actor".into();
+    assert!(svc.review_experience(&wrong_owner, 1).await.is_err());
+    let mut omitted = r.clone();
+    omitted.extracted_items.clear();
+    assert!(svc.review_experience(&omitted, 1).await.is_err());
+    assert_eq!(
+        svc.learning_review(e.id).await.unwrap()["review"]["extracted_items"][0]["id"],
+        assigned.to_string()
+    );
+    svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
+async fn postgres_item_ids_record_and_correct_experiences_without_reallocation() {
+    use mimir_core::assessment::{ItemKind, LearningItem};
+    let svc = service().await;
+    let project = format!("postgres-items-{}", Uuid::new_v4());
+    let mut e = experience(&project);
+    e.learning_items.push(LearningItem {
+        id: None,
+        key: Some("estimate-1".into()),
+        kind: ItemKind::Estimate,
+        source_ref: "task/1".into(),
+        actor: "agent".into(),
+        statement: "30 minutes".into(),
+        conditions: "Pending".into(),
+        predictions: vec![],
+    });
+    let first = svc.record_experience(&e, 0).await.unwrap();
+    let assigned = first.item_ids["estimate-1"];
+    let retry = service().await.record_experience(&e, 0).await.unwrap();
+    assert_eq!(retry.revision, 1);
+    assert_eq!(retry.item_ids["estimate-1"], assigned);
+    let mut another = e.clone();
+    another.id = Uuid::new_v4();
+    assert_ne!(
+        svc.record_experience(&another, 0).await.unwrap().item_ids["estimate-1"],
+        assigned
+    );
+    let mut correction = first.experience;
+    correction.learning_items[0].conditions = "Outcome still unknown".into();
+    correction.learning_items[0].key = None; // Legacy UUID-only correction.
+    let corrected = svc.record_experience(&correction, 1).await.unwrap();
+    assert_eq!(corrected.experience.learning_items[0].id, Some(assigned));
+    assert_eq!(corrected.revision, 2);
+    svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
+async fn postgres_item_ids_migration_preserves_historical_uuid_ownership() {
+    let client = item_database_client().await;
+    // Temporary relations shadow only this connection's test-database tables.
+    // Exercise the additive migration against historical rows without changing
+    // the real test ledger or rewriting/deleting any migration history.
+    client.batch_execute("CREATE TEMP TABLE mimir_experience_versions(experience_id uuid,payload jsonb); CREATE TEMP TABLE mimir_review_versions(experience_id uuid,payload jsonb); CREATE TEMP TABLE mimir_learning_item_owners(item_id uuid PRIMARY KEY,experience_id uuid NOT NULL,source_ref text NOT NULL,actor text NOT NULL);").await.unwrap();
+    let row = client
+        .query_one(
+            "SELECT gen_random_uuid(),gen_random_uuid(),gen_random_uuid()",
+            &[],
+        )
+        .await
+        .unwrap();
+    let experience: Uuid = row.get(0);
+    let original: Uuid = row.get(1);
+    let extracted: Uuid = row.get(2);
+    let payload = serde_json::json!({"learning_items":[{"id":original,"source_ref":"original","actor":"agent"}]}).to_string();
+    client
+        .execute(
+            "INSERT INTO mimir_experience_versions VALUES($1,$2::text::jsonb)",
+            &[&experience, &payload],
+        )
+        .await
+        .unwrap();
+    let payload = serde_json::json!({"extracted_items":[{"id":extracted,"source_ref":"extracted","actor":"agent"}]}).to_string();
+    client
+        .execute(
+            "INSERT INTO mimir_review_versions VALUES($1,$2::text::jsonb)",
+            &[&experience, &payload],
+        )
+        .await
+        .unwrap();
+    // Existing reservations take precedence over conflicting historical text.
+    client
+        .execute(
+            "INSERT INTO mimir_learning_item_owners VALUES($1,$2,'reserved','owner')",
+            &[&original, &experience],
+        )
+        .await
+        .unwrap();
+    client
+        .batch_execute(include_str!("../migrations/010_postgres_item_ids.sql"))
+        .await
+        .unwrap();
+    let rows = client.query("SELECT item_id,source_ref,actor,item_key FROM mimir_learning_item_owners ORDER BY source_ref", &[]).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get::<_, Uuid>(0), extracted);
+    assert_eq!(rows[1].get::<_, Uuid>(0), original);
+    assert_eq!(rows[1].get::<_, &str>(1), "reserved");
+    assert_eq!(rows[1].get::<_, &str>(2), "owner");
+    assert!(rows
+        .iter()
+        .all(|row| row.get::<_, Option<String>>(3).is_none()));
+    let generated: Uuid = client.query_one("INSERT INTO mimir_learning_item_owners(experience_id,source_ref,actor,item_key) VALUES($1,'new','agent','estimate-1') RETURNING item_id", &[&experience]).await.unwrap().get(0);
+    assert_ne!(generated, original);
+    assert_ne!(generated, extracted);
 }

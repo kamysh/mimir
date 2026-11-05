@@ -159,10 +159,22 @@ impl Config {
     /// Load an explicitly selected file without changing process-global
     /// environment. The judge uses this before spawning any MCP child.
     pub fn load_from_path(path: &std::path::Path) -> anyhow::Result<Self> {
+        Self::load_with_operations(path).map(|(config, _)| config)
+    }
+
+    pub fn load_with_operations(
+        path: &std::path::Path,
+    ) -> anyhow::Result<(Self, crate::operations::Operations)> {
         let content = std::fs::read_to_string(path)
-            .map_err(|_| anyhow::anyhow!("unable to read Mimir config"))?;
-        // TOML diagnostics can contain the offending source line, including secrets.
-        toml::from_str(&content).map_err(|_| anyhow::anyhow!("invalid Mimir config TOML"))
+            .map_err(|_| anyhow::anyhow!("unable to read Mimir config at {}", path.display()))?;
+        let value: toml::Value = toml::from_str(&content).map_err(|_| {
+            anyhow::anyhow!("invalid Mimir config TOML (source omitted to protect credentials)")
+        })?;
+        let operations = crate::operations::Operations::decode(&value)?;
+        let config = value
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invalid Mimir database/embedding configuration"))?;
+        Ok((config, operations))
     }
 
     /// Write a template config at the default path and return the path.
@@ -172,7 +184,8 @@ impl Config {
         if path.exists() {
             anyhow::bail!("config already exists at {}", path.display());
         }
-        write_private_config(&path, CONFIG_TEMPLATE)?;
+        let content = crate::operations::Operations::defaults()?.header()? + CONFIG_TEMPLATE;
+        write_private_config(&path, &content)?;
         Ok(path)
     }
 
@@ -308,7 +321,8 @@ impl Config {
             judge: None,
             email: None,
         };
-        let content = toml::to_string_pretty(&config)?;
+        let content = crate::operations::Operations::defaults()?.header()?
+            + &toml::to_string_pretty(&config)?;
 
         write_private_config(&path, &content)?;
         Ok(path)
@@ -388,8 +402,6 @@ user   = "mimir"       # PostgreSQL role used by mimir at runtime
 # [llm]
 # backend = "claude-code" # codex | command | api
 # model = "YOUR_MODEL"
-# timeout_seconds = 300
-# max_calls = 20
 #
 # [email]
 # enabled = false

@@ -37,6 +37,21 @@ settings
 remain usable, and the Rust judge stays opt-in. A binary rollback does not
 retract reviews that have already changed the graph.
 
+## Configuration compatibility after updates
+
+Run `mimir config check` after every binary update, before database/model work.
+For a legacy configuration, use `mimir config upgrade --log-directory PATH`
+with the agreed absolute application log directory, then check again. Preserve
+all other settings; do not change the package version or system services as an
+incidental part of this upgrade. New processes and each watcher batch enforce
+required configuration compatibility. An already-running old process must be
+restarted separately to use the new binary.
+
+Use `mimir judge diagnose` for a human-readable failure report. See
+[operations](docs/operations.md) for log bounds, private diagnostics, and actual
+review verification. A version string or successful check is not evidence that
+the judge completed a review.
+
 ## What a complete install consists of
 
 The application needs PostgreSQL, the `mimir` / `mimir-mcp` binaries and an MCP
@@ -179,7 +194,7 @@ Run the setup script (creates role, DB, extensions, grants — but
 **not** the AGE graph, which mimir's migrations create on first run):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.0.3/mimir-setup/create-db-user.sh \
+curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.2.2/mimir-setup/create-db-user.sh \
   | bash -s -- --container "$CONTAINER" --port "$PORT" \
                 --user "$DB_USER" --db "$DB_NAME"
 ```
@@ -199,12 +214,12 @@ case "$(uname -s)-$(uname -m)" in
   Linux-aarch64) TARBALL=mimir-linux-arm64.tar.gz ;;
   *) echo "Unsupported platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
-curl -fsSL "https://github.com/kamysh/mimir/releases/download/v2.0.3/${TARBALL}" \
+curl -fsSL "https://github.com/kamysh/mimir/releases/download/v2.2.2/${TARBALL}" \
   | tar -xz -C "$HOME/.local/bin"
 chmod +x "$HOME/.local/bin/mimir" "$HOME/.local/bin/mimir-mcp"
 ```
 
-(The 2.0.3 release workflow builds Apple Silicon, Linux x86_64 and Linux ARM64.
+(The 2.2.2 release workflow builds Apple Silicon, Linux x86_64 and Linux ARM64.
 Intel Macs require a source build.)
 
 Do **not** run `xattr -d com.apple.quarantine` on these files. The

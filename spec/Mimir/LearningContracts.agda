@@ -3,14 +3,16 @@
 -- abstract natural identities, not an encoding of UUID parsing or SQL I/O.
 module Mimir.LearningContracts where
 
-open import Data.Nat using (ℕ; zero; suc; _≟_)
-open import Data.Nat.Properties using (suc-injective)
+open import Data.Nat using (ℕ; zero; suc; _≟_; _≤_; s≤s)
+open import Data.Nat.Properties using (suc-injective; ≤-refl; m≤n⇒m≤1+n; <⇒≢)
 open import Data.Bool using (Bool; true; false)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.Definitions using (DecidableEquality)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; sym; trans)
 open import Data.Empty using (⊥-elim)
+open import Mimir.Text using (Text)
+open import Mimir.SourceReview using (_≟Text_)
 
 not-successor : ∀ n → n ≢ suc n
 not-successor zero ()
@@ -131,16 +133,20 @@ module Revision (Payload : Set) (same : DecidableEquality Payload) where
   record Cell : Set where
     constructor cell
     field
-      project current review acknowledged : ℕ
+      project : Text
+      current review acknowledged : ℕ
       contribution : Maybe Payload
+      -- A future acknowledgement cannot be loaded as an admitted state.
+      ordered : acknowledged ≤ current
   open Cell
 
   commit : Cell → Payload → Cell
   commit s payload = cell (project s) (current s) (suc (review s))
-    (current s) (just payload)
+    (current s) (just payload) ≤-refl
 
   correct : Cell → Cell
-  correct s = cell (project s) (suc (current s)) (review s) (current s) nothing
+  correct s = cell (project s) (suc (current s)) (review s) (acknowledged s) nothing
+    (m≤n⇒m≤1+n (ordered s))
 
   active : Cell → Maybe Payload
   active s with acknowledged s ≟ current s
@@ -159,9 +165,9 @@ module Revision (Payload : Set) (same : DecidableEquality Payload) where
   ...       | yes _ = true
   ...       | no _ = false
 
-  submit : Cell → ℕ → ℕ → ℕ → Payload → Bool → Maybe Cell
+  submit : Cell → Text → ℕ → ℕ → Payload → Bool → Maybe Cell
   submit s owner source expected payload validTargets
-    with owner ≟ project s | source ≟ current s
+    with owner ≟Text project s | source ≟ current s
   ... | no _ | _ = nothing
   ... | yes _ | no _ = nothing
   ... | yes _ | yes _ with replay s expected payload
@@ -174,7 +180,7 @@ module Revision (Payload : Set) (same : DecidableEquality Payload) where
   stale-source-refused : ∀ s owner source expected payload valid → source ≢ current s →
     submit s owner source expected payload valid ≡ nothing
   stale-source-refused s owner source expected payload valid neq
-    with owner ≟ project s | source ≟ current s
+    with owner ≟Text project s | source ≟ current s
   ... | no _ | _ = refl
   ... | yes _ | no _ = refl
   ... | yes _ | yes eq = ⊥-elim (neq eq)
@@ -182,7 +188,7 @@ module Revision (Payload : Set) (same : DecidableEquality Payload) where
   foreign-project-refused : ∀ s owner source expected payload valid → owner ≢ project s →
     submit s owner source expected payload valid ≡ nothing
   foreign-project-refused s owner source expected payload valid neq
-    with owner ≟ project s | source ≟ current s
+    with owner ≟Text project s | source ≟ current s
   ... | no _ | _ = refl
   ... | yes eq | _ = ⊥-elim (neq eq)
 
@@ -197,7 +203,10 @@ module Revision (Payload : Set) (same : DecidableEquality Payload) where
   correction-retracts s = refl
 
   correction-is-pending : ∀ s → acknowledged (correct s) ≢ current (correct s)
-  correction-is-pending s = not-successor (current s)
+  correction-is-pending s = <⇒≢ (s≤s (ordered s))
+
+  correction-preserves-acknowledged : ∀ s → acknowledged (correct s) ≡ acknowledged s
+  correction-preserves-acknowledged s = refl
 
   stale-contribution-inactive : ∀ s → acknowledged s ≢ current s → active s ≡ nothing
   stale-contribution-inactive s neq with acknowledged s ≟ current s
@@ -216,7 +225,7 @@ module Revision (Payload : Set) (same : DecidableEquality Payload) where
     submit (commit s payload) (project s) (current s) (review s) payload valid ≡
     just (commit s payload)
   exact-retry-no-new-commit s payload valid
-    with project s ≟ project s | current s ≟ current s
+    with project s ≟Text project s | current s ≟ current s
   ... | no neq | _ = ⊥-elim (neq refl)
   ... | yes _ | no neq = ⊥-elim (neq refl)
   ... | yes _ | yes _ rewrite replay-after-commit s payload = refl
@@ -225,7 +234,7 @@ module Revision (Payload : Set) (same : DecidableEquality Payload) where
     replay s expected payload ≡ false → expected ≢ review s →
     submit s owner source expected payload valid ≡ nothing
   stale-review-refused s owner source expected payload valid noReplay neq
-    with owner ≟ project s | source ≟ current s
+    with owner ≟Text project s | source ≟ current s
   ... | no _ | _ = refl
   ... | yes _ | no _ = refl
   ... | yes _ | yes _ rewrite noReplay with expected ≟ review s | valid
@@ -236,7 +245,7 @@ module Revision (Payload : Set) (same : DecidableEquality Payload) where
     replay s expected payload ≡ false →
     submit s owner source expected payload false ≡ nothing
   invalid-targets-refused s owner source expected payload noReplay
-    with owner ≟ project s | source ≟ current s
+    with owner ≟Text project s | source ≟ current s
   ... | no _ | _ = refl
   ... | yes _ | no _ = refl
   ... | yes _ | yes _ rewrite noReplay with expected ≟ review s

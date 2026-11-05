@@ -5,6 +5,18 @@ The experiential judge is part of the Rust `mimir` CLI. Configure it with
 Keep that file and its directory private if it contains credentials. See
 `config.example.toml` for the supported settings.
 
+## Updates and failures
+
+Run `mimir config check` after each binary update. Existing configurations need
+`config_version = 1` and `[logging].directory`; use
+`mimir config upgrade --log-directory "$HOME/.local/state/mimir/logs"` to add
+these while preserving other settings. Restart the existing watcher after
+updating its binary. An old running process continues to use its old code.
+
+When an email reports a failure, run `mimir judge diagnose` on that computer.
+See [operations and troubleshooting](../docs/operations.md) for exact recovery
+steps, bounded log retention and private diagnostic handling.
+
 ## Configure a scheduled judge
 
 The supported job runs `mimir judge run` from the installed CLI. The model
@@ -25,8 +37,6 @@ mcp_args = []
 [llm]
 backend = "claude-code"
 model = "YOUR_MODEL"
-timeout_seconds = 300
-max_calls = 20
 ```
 
 For an agreed Codex setup, keep `[judge]` above and use this `[llm]` section
@@ -38,8 +48,6 @@ do not substitute models merely because another one is newer:
 backend = "codex"
 model = "YOUR_CODEX_MODEL"
 reasoning_effort = "medium" # use the selected effort, or omit for the CLI default
-timeout_seconds = 300
-max_calls = 20
 ```
 
 Check Codex authentication with `codex login status`; use `codex login` when
@@ -137,37 +145,38 @@ but does not verify provider authentication or model/review behavior. For a
 nonempty batch, verify committed database review receipts. Do not manufacture
 an experience merely to make an installation test write to memory. Use
 `mimir judge diagnostics` for a failed batch, and report authentication, network,
-model, timeout and review failures separately. Keep the installation incomplete
+model and review failures separately. Keep the installation incomplete
 when a required account or permission step remains unresolved.
 
 ## Runtime behavior
 
 `mimir judge check-config` validates settings locally. `mimir judge run` reviews
-one bounded batch through `mimir-mcp`; `mimir judge watch` repeats bounded runs
-every five minutes by default (`--interval-seconds`, minimum 60) until interrupted.
+one selected batch through `mimir-mcp`; `mimir judge watch` repeats batches
+every five minutes by default (`--interval-seconds`, positive values) until interrupted.
 After three consecutive incomplete or unavailable runs by default
 (`--max-consecutive-failures`), it backs off to hourly runs. An empty queue
 makes no model call. `mimir judge status` reads the last local report and gives
 the ID of a retained failure trace. `mimir judge diagnostics` reads the first
 failure trace of the current incident; `--list` shows retained attempt IDs and
 `--id UUID` selects a specific attempt. The private trace records ordered model
-requests, tool requests and outcomes, remaining call budgets, and the final
+requests, tool requests and outcomes, cumulative model-request and tool-attempt counts, and the final
 failure reason. It retains at
-most eight attempts, 48 events and 256 KiB per attempt, and truncates event
+most eight attempts, 48 events, the first 48 selected IDs, and 256 KiB per attempt, and truncates event
 details to 3,072 characters. Later successful runs do not erase an earlier
 failure trace. The database review receipt is authoritative; a local status
 snapshot or model claim does not establish completion. The runner restricts
 tool calls to the selected experience and project.
 After a committed review, it checks the pinned database revision and finishes
-that item without requiring a separate model "done" turn. A failed or
-budget-limited run leaves the revision pending for the next run and reports a
+that item without requiring a separate model "done" turn. A failed or interrupted run leaves the revision pending for the next run and reports a
 bounded `block_reason` without exposing provider or experience text.
 
 The `claude-code`, `codex`, and `command` LLM backends are implemented. Claude
 Code and Codex use explicit CLI flags for structured output and isolation, and
 reject installed versions whose help lacks required flags. Each model turn is
-one bounded subprocess. The Claude Code `max_budget_usd` setting is per
-invocation; `max_calls` and the runner deadline bound the whole review run.
+one subprocess owned by the judge. Mimir imposes no review deadline, model/tool
+request quota, correction-retry ceiling, or subprocess input/output size ceiling.
+Ctrl-C or SIGTERM stops active `run` and `watch` work, including model/tool waits; it cleans up
+its owned model and MCP children. Provider-native limits still apply.
 Select the model with `[llm].model`; for Codex, optional
 `[llm].reasoning_effort` passes an explicit effort to each invocation. Omitting
 it leaves Codex's normal default in effect. Model-specific effort support is
@@ -177,15 +186,29 @@ Codex runs with `--json` and reads its structured answer from
 `--output-last-message`; Claude Code uses `--output-format json` and reads the
 structured reply from that wrapper. Codex's human-readable mode echoes the prompt
 to stderr, so it is unsuitable for the judge's potentially large history payloads.
-All subprocess adapters retain the same per-invocation limits: 2 MiB input,
-8 MiB stdout and 64 KiB stderr. Crossing an output limit still fails the attempt
-and terminates its process group. The error names stdout or stderr, its limit,
-and the observed byte count (a lower bound because reading stops at overflow).
-The local failure report retains at most 32 KiB of that stream's prefix as a
-private `failure_source`; ordinary error text and email omit the excerpt.
-This is an I/O contract enforced by runtime tests, outside the abstract Agda
-diagnostic-retention proofs. Successful process output alone never acknowledges
-a review; the existing database-receipt rule remains in force.
+Subprocess stdin, stdout and structured answer files are read completely. Stderr
+is continuously drained, with only 64 KiB retained for diagnostics; a noisy
+stderr stream does not fail useful work. MCP frames and notification sequences
+have no Mimir-imposed byte/count ceiling. Model call arrays are executed in order,
+with one result per call. Successful process output alone never acknowledges a
+review; the database-receipt rule remains in force.
+
+After updating, run `mimir config check`. Retired `[llm]` settings
+`timeout_seconds`, `max_calls`, `max_output_tokens`, and `max_budget_usd` are
+rejected with migration instructions. `mimir config upgrade` removes those four
+settings, preserves the other settings and comments, and creates no backup.
+Run `mimir config check` again, then restart your existing application process.
+No service definitions need changing. Batch/page sizes remain caller-selected
+positive work granularity, with no arbitrary upper bound in the learning APIs.
+
+Review and experience content, source records, extracted items, predictions,
+assessment references, candidate declarations and text fields have no application
+size/count ceilings. Required fields, exact quotations, numeric domains,
+provenance, unique identities, transactions and revision checks remain enforced.
+Native integer/storage limits can still produce explicit errors. Complete batch
+state is retained; private diagnostic history and operational logs remain bounded.
+Legacy diagnostic files load, but their remaining-budget values are not presented
+as cumulative work counts: new count fields are absent for old records.
 
 The `api` backend requires an explicit model, provider, and API key. OpenAI
 Responses calls use stateless `store: false`
@@ -193,8 +216,8 @@ requests and replay response output, including encrypted reasoning items, with
 function results. Anthropic calls replay signed thinking/content blocks unchanged
 and pair each `tool_result` with its `tool_use` ID. Multiple calls in one provider
 response are executed one at a time through the same scoped host gate. Provider
-redirects, incomplete responses, malformed calls, and response limits block the
-run. `watch` supplies recurring local polling; no service or timer is installed
+redirects, incomplete responses and provider errors block the run. Malformed tool
+arguments return correction feedback. Transport bodies are read completely. `watch` supplies recurring local polling; no service or timer is installed
 by the source change. The Step 11 Codex comparison exercised live judge calls,
 but the new watch mode and API-provider accounts have not been exercised live.
 
@@ -202,9 +225,11 @@ The other API providers use non-streaming Chat Completions and function tools.
 The host replays complete assistant messages before all tool results, retaining
 DeepSeek `reasoning_content` and Gemini tool-call thought signatures. A provider
 or model that rejects those requests fails the review; Mimir does not substitute
-another model. `max_output_tokens` maps to Chat Completions `max_tokens` and
-reported completion usage is checked against it. Choose a model that supports
-function tools and the configured output limit.
+another model. OpenAI Responses and Chat Completions omit optional output-token
+limits. Anthropic Messages requires `max_tokens`: Mimir obtains the configured
+model’s actual capacity from `GET /v1/models/{model_id}` and caches it for that
+adapter. Missing or invalid capacity metadata is an explicit provider error.
+Choose a model that supports function tools.
 
 | `llm.provider` | Default API base | Protocol and local verification | Live account |
 | --- | --- | --- | --- |

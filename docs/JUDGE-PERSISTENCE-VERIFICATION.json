@@ -1,0 +1,45 @@
+{
+  "status": "complete",
+  "scope": "Rust judge trace/report persistence, temporary-file ownership, failure cleanup and recovery",
+  "tests_passed": 14,
+  "tests_failed": 0,
+  "installed": false,
+  "formal_sources_changed": false,
+  "checked_formal_modules_unchanged": 638,
+  "crate_version": "2.1.0",
+  "sha256": {
+    "crates/cli/src/judge/state.rs": "bbe928503488edd1754a83c6107d643543cada36f5c902d40b67d5c84e8b5e6c",
+    "crates/cli/src/judge/state_persistence_tests.rs": "616f502778c7dc2690a53a52cbadeb177d65950a2b7ca25ce4f7924042cd6202",
+    "docs/JUDGE-PERSISTENCE-CONFORMANCE.md": "ae87bca710a93aaa4b346cf1541c569cdbf5ef8ac67ae67f496fcd36d5a7e7a6"
+  },
+  "checks": [
+    {
+      "name": "format",
+      "log": "/tmp/mimir-persistence-format-UuxJIjZt.log",
+      "exit_status": 0
+    },
+    {
+      "name": "state",
+      "log": "/tmp/mimir-persistence-state-ncO0c3Fx.log",
+      "exit_status": 0
+    },
+    {
+      "name": "runner",
+      "log": "/tmp/mimir-persistence-runner-PWyL3cM5.log",
+      "exit_status": 0
+    },
+    {
+      "name": "format-check",
+      "log": "/tmp/mimir-persistence-format-check-yt7JYHjg.log",
+      "exit_status": 0
+    },
+    {
+      "name": "diff-check",
+      "log": "/tmp/mimir-persistence-diff-check-993j0v_c.log",
+      "exit_status": 0
+    }
+  ],
+  "source_diff": "/tmp/mimir-persistence-source-diff-15oei53r.log",
+  "scope_audit": "/tmp/mimir-persistence-final-audit-20261031.log",
+  "verification_limits": "No machine-checked Rust refinement. File-write, file-sync and directory-sync failures reviewed against checked contracts but not induced in tests. No installed-binary verification."
+}

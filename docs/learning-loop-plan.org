@@ -4,6 +4,10 @@
 
 * Status and fixed requirements
 
+The historical judge budgets and configuration fields below were superseded in
+2.2.1: application review deadlines and request/content quotas were removed.
+See [[file:../runtime/README.md][the runtime guide]] for the current configuration and behavior.
+
 This plan is being executed in separately approved stages; it does not authorize
 the whole series. Step 1 is complete, including the subsequently approved Rust
 evaluator port and removal of the legacy synthetic task fixtures. Step 2 is

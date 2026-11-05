@@ -5,8 +5,8 @@
 module Mimir.Judge where
 
 open import Data.Bool using (Bool; true; false; _∧_; _∨_)
-open import Data.Nat using (ℕ; zero; suc; _+_; _≟_)
-open import Data.Nat.Properties using (+-suc)
+open import Data.Nat using (ℕ; zero; suc; _+_; _≟_; _≤_; _<_; z≤n; s≤s)
+open import Data.Nat.Properties using (+-suc; ≤-refl)
 open import Data.List using (List; []; _∷_; length)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
@@ -95,55 +95,7 @@ module Completion where
     finishWithClaim claim₁ rs failed ≡ finishWithClaim claim₂ rs failed
   model-claim-does-not-acknowledge claim₁ claim₂ rs failed = refl
 
-module Budget where
-  data Action : Set where modelCall toolCall : Action
-  record Remaining : Set where
-    constructor remaining
-    field models tools : ℕ
-
-  spend : Action → Remaining → Maybe Remaining
-  spend modelCall (remaining zero tools) = nothing
-  spend modelCall (remaining (suc models) tools) = just (remaining models tools)
-  spend toolCall (remaining models zero) = nothing
-  spend toolCall (remaining models (suc tools)) = just (remaining models tools)
-
-  no-model-call-without-fuel : ∀ tools → spend modelCall (remaining zero tools) ≡ nothing
-  no-model-call-without-fuel tools = refl
-  no-tool-call-without-fuel : ∀ models → spend toolCall (remaining models zero) ≡ nothing
-  no-tool-call-without-fuel models = refl
-
-  -- Each admitted operation spends exactly one of the two independent bounds.
-  model-spends-one : ∀ models tools → spend modelCall (remaining (suc models) tools)
-    ≡ just (remaining models tools)
-  model-spends-one models tools = refl
-  tool-spends-one : ∀ models tools → spend toolCall (remaining models (suc tools))
-    ≡ just (remaining models tools)
-  tool-spends-one models tools = refl
-
-  permitted : Bool → Action → Remaining → Maybe Remaining
-  permitted false action fuel = nothing
-  permitted true action fuel = spend action fuel
-  refused-tool-cannot-spend : ∀ fuel → permitted false toolCall fuel ≡ nothing
-  refused-tool-cannot-spend fuel = refl
-
-  -- Admitted traces count every attempted model/tool operation, including
-  -- failures. Retries are additional operations, not free recursive steps.
-  data Trace : Remaining → List Action → Remaining → Set where
-    done : ∀ {fuel} → Trace fuel [] fuel
-    model : ∀ {m t actions final} → Trace (remaining m t) actions final →
-      Trace (remaining (suc m) t) (modelCall ∷ actions) final
-    tool : ∀ {m t actions final} → Trace (remaining m t) actions final →
-      Trace (remaining m (suc t)) (toolCall ∷ actions) final
-
-  total : Remaining → ℕ
-  total (remaining m t) = m + t
-
-  trace-conserves-budget : ∀ {initial actions final} → Trace initial actions final →
-    length actions + total final ≡ total initial
-  trace-conserves-budget done = refl
-  trace-conserves-budget (model trace) = cong suc (trace-conserves-budget trace)
-  trace-conserves-budget (tool {m} {t} trace) =
-    trans (cong suc (trace-conserves-budget trace)) (sym (+-suc m t))
+-- Request accounting is specified by Mimir.JudgeAccounting.
 
 -- Diagnostic events are recorded as the runner observes them, before a later
 -- model call or successful batch can replace the status snapshot. The concrete
@@ -151,7 +103,7 @@ module Budget where
 -- bounded number of attempts; those I/O conditions are checked in Rust.
 module Diagnostics where
   data Event : Set where
-    modelRequest modelReply toolRequest toolResult budgetStop : Event
+    modelRequest modelReply toolRequest toolResult operationStopped : Event
 
   data Within (A : Set) : ℕ → Set where
     empty : ∀ {capacity} → Within A capacity
@@ -340,20 +292,41 @@ module Watch where
   ... | true = backedOff
   ... | false = normal
 
-  threshold-switches-to-slow-retry : ∀ normal backedOff →
-    retryDelay 3 3 normal backedOff ≡ backedOff
-  threshold-switches-to-slow-retry normal backedOff = refl
+  reached-complete : ∀ {limit current} → limit ≤ current → reached limit current ≡ true
+  reached-complete z≤n = refl
+  reached-complete (s≤s bound) = reached-complete bound
+
+  reached-sound : ∀ limit current → reached limit current ≡ true → limit ≤ current
+  reached-sound zero current proof = z≤n
+  reached-sound (suc limit) zero ()
+  reached-sound (suc limit) (suc current) proof = s≤s (reached-sound limit current proof)
+
+  below-threshold : ∀ {limit current} → current < limit → reached limit current ≡ false
+  below-threshold {suc limit} {zero} (s≤s bound) = refl
+  below-threshold {suc limit} {suc current} (s≤s bound) = below-threshold bound
+
+  threshold-switches-to-slow-retry : ∀ threshold normal backedOff →
+    retryDelay threshold threshold normal backedOff ≡ backedOff
+  threshold-switches-to-slow-retry threshold normal backedOff rewrite reached-complete (≤-refl {x = threshold}) = refl
+
+  after-threshold-keeps-slow-retry : ∀ threshold current normal backedOff → threshold ≤ current →
+    retryDelay threshold current normal backedOff ≡ backedOff
+  after-threshold-keeps-slow-retry threshold current normal backedOff bound rewrite reached-complete bound = refl
+
+  before-threshold-keeps-normal-retry : ∀ threshold current normal backedOff → current < threshold →
+    retryDelay threshold current normal backedOff ≡ normal
+  before-threshold-keeps-normal-retry threshold current normal backedOff bound rewrite below-threshold bound = refl
 
   retryDeferred : RevisionCheck → Bool
   retryDeferred unchanged = false
   retryDeferred corrected = true
   retryDeferred resolved = false
 
-  unchanged-rejection-is-not-retried : retryDeferred unchanged ≡ false
-  unchanged-rejection-is-not-retried = refl
+  retryRequiresCorrection : ∀ revision → retryDeferred revision ≡ true → revision ≡ corrected
+  retryRequiresCorrection corrected allowed = refl
 
-  corrected-revision-can-be-reviewed : retryDeferred corrected ≡ true
-  corrected-revision-can-be-reviewed = refl
+  correctionPermitsRetry : ∀ revision → revision ≡ corrected → retryDeferred revision ≡ true
+  correctionPermitsRetry revision refl = refl
 
   failures : Outcome → ℕ → ℕ
   failures success previous = zero

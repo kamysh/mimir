@@ -7,7 +7,6 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
-const MAX_REPORT: u64 = 256 * 1024;
 const MAX_DIAGNOSTICS: u64 = 3 * 1024 * 1024;
 const MAX_TRACE: usize = 256 * 1024;
 const MAX_TRACE_EVENTS: usize = 48;
@@ -175,8 +174,10 @@ pub struct DiagnosticTrace {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_reason: Option<String>,
     pub selected_ids: Vec<Uuid>,
-    pub model_remaining: usize,
-    pub tool_remaining: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_requests: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_attempts: Option<usize>,
     pub events: Vec<DiagnosticEvent>,
     #[serde(default)]
     pub events_omitted: usize,
@@ -187,8 +188,10 @@ pub struct DiagnosticEvent {
     pub at: u64,
     pub experience_id: Uuid,
     pub kind: String,
-    pub model_remaining: usize,
-    pub tool_remaining: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_requests: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_attempts: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -207,8 +210,8 @@ impl DiagnosticEvent {
     pub fn new(
         experience_id: Uuid,
         kind: &str,
-        model_remaining: usize,
-        tool_remaining: usize,
+        model_requests: usize,
+        tool_attempts: usize,
         tool: Option<&str>,
         detail: Option<&str>,
     ) -> Self {
@@ -216,8 +219,8 @@ impl DiagnosticEvent {
             at: now(),
             experience_id,
             kind: bounded(kind, 48),
-            model_remaining,
-            tool_remaining,
+            model_requests: Some(model_requests),
+            tool_attempts: Some(tool_attempts),
             tool: tool.map(|value| bounded(value, 64)),
             detail: detail.map(|value| bounded(value, MAX_EVENT_DETAIL)),
             detail_bytes: detail.map(str::len),
@@ -394,7 +397,11 @@ impl State {
         self.write_named(STATUS_FILE, report)
     }
 
-    pub fn begin_trace(&self, report: &Report, budget: usize) -> Result<Uuid> {
+    pub fn write_runtime(&self, value: &serde_json::Value) -> Result<()> {
+        self.write_named("judge-runtime.json", value)
+    }
+
+    pub fn begin_trace(&self, report: &Report, initial_count: usize) -> Result<Uuid> {
         let mut diagnostics = read_diagnostics(&self.path)?;
         for trace in &mut diagnostics.attempts {
             if trace.status == "running" {
@@ -409,9 +416,14 @@ impl State {
             finished_at: None,
             status: "running".into(),
             block_reason: None,
-            selected_ids: report.selected_ids.clone(),
-            model_remaining: budget,
-            tool_remaining: budget,
+            selected_ids: report
+                .selected_ids
+                .iter()
+                .take(MAX_TRACE_EVENTS)
+                .copied()
+                .collect(),
+            model_requests: Some(initial_count),
+            tool_attempts: Some(initial_count),
             events: Vec::new(),
             events_omitted: 0,
         });
@@ -425,7 +437,7 @@ impl State {
                 .unwrap_or(0);
             diagnostics.attempts.remove(oldest_unpinned);
         }
-        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, MAX_DIAGNOSTICS)?;
+        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, Some(MAX_DIAGNOSTICS))?;
         Ok(id)
     }
 
@@ -436,8 +448,8 @@ impl State {
             .iter_mut()
             .find(|trace| trace.id == id && trace.status == "running")
             .ok_or_else(|| anyhow!("active diagnostic trace is missing"))?;
-        trace.model_remaining = event.model_remaining;
-        trace.tool_remaining = event.tool_remaining;
+        trace.model_requests = event.model_requests;
+        trace.tool_attempts = event.tool_attempts;
         if trace.events.len() < MAX_TRACE_EVENTS {
             trace.events.push(event);
             if serde_json::to_vec(trace)?.len() > MAX_TRACE {
@@ -447,7 +459,7 @@ impl State {
         } else {
             trace.events_omitted += 1;
         }
-        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, MAX_DIAGNOSTICS)
+        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, Some(MAX_DIAGNOSTICS))
     }
 
     pub fn finish_trace(&self, id: Uuid, report: &Report) -> Result<()> {
@@ -473,7 +485,7 @@ impl State {
                 trace.events_omitted += 1;
             }
         }
-        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, MAX_DIAGNOSTICS)
+        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, Some(MAX_DIAGNOSTICS))
     }
 
     pub fn record_incident(&self, report: &Report) -> Result<()> {
@@ -545,33 +557,51 @@ impl State {
     }
 
     fn write_named<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
-        self.write_named_limited(name, value, MAX_REPORT)
+        self.write_named_limited(name, value, None)
     }
 
-    fn write_named_limited<T: Serialize>(&self, name: &str, value: &T, limit: u64) -> Result<()> {
+    fn write_named_limited<T: Serialize>(
+        &self,
+        name: &str,
+        value: &T,
+        limit: Option<u64>,
+    ) -> Result<()> {
         let bytes = serde_json::to_vec(value)?;
-        ensure!(bytes.len() <= limit as usize, "state file is too large");
+        ensure!(
+            limit.is_none_or(|maximum| bytes.len() as u64 <= maximum),
+            "state file is too large"
+        );
         let temp = self
             .path
             .join(format!(".judge-{}-{}.tmp", name, Uuid::new_v4()));
-        let result = (|| -> Result<()> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(&temp)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            fs::rename(&temp, self.path.join(name))?;
-            File::open(&self.path)?.sync_all()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temp);
-        }
-        result
+        replace_state_file(&temp, &self.path.join(name), &self.path, &bytes)
     }
+}
+
+// Mimir.JudgeWrite.replace: only successful exclusive creation grants cleanup
+// ownership, and successful rename ends ownership of the temporary pathname.
+fn replace_state_file(temp: &Path, target: &Path, directory: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(temp)?;
+    let publication = (|| -> Result<()> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(temp, target)?;
+        Ok(())
+    })();
+    if let Err(error) = publication {
+        drop(file);
+        let _ = fs::remove_file(temp);
+        return Err(error);
+    }
+    // A directory error can occur after replacement. It is not rollback and
+    // must not remove a pathname which this operation no longer owns.
+    File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 impl Drop for State {
@@ -582,6 +612,10 @@ impl Drop for State {
 
 pub fn read(path: &Path) -> Result<Option<Report>> {
     read_named(path, STATUS_FILE)
+}
+
+pub fn read_runtime(path: &Path) -> Result<Option<serde_json::Value>> {
+    read_named(path, "judge-runtime.json")
 }
 
 pub fn read_failure(path: &Path) -> Result<Option<FailureIncident>> {
@@ -596,17 +630,17 @@ pub fn read_failure(path: &Path) -> Result<Option<FailureIncident>> {
 }
 
 pub fn read_diagnostics(path: &Path) -> Result<Diagnostics> {
-    Ok(read_named_limited(path, DIAGNOSTICS_FILE, MAX_DIAGNOSTICS)?.unwrap_or_default())
+    Ok(read_named_limited(path, DIAGNOSTICS_FILE, Some(MAX_DIAGNOSTICS))?.unwrap_or_default())
 }
 
 fn read_named<T: for<'de> Deserialize<'de>>(path: &Path, name: &str) -> Result<Option<T>> {
-    read_named_limited(path, name, MAX_REPORT)
+    read_named_limited(path, name, None)
 }
 
 fn read_named_limited<T: for<'de> Deserialize<'de>>(
     path: &Path,
     name: &str,
-    limit: u64,
+    limit: Option<u64>,
 ) -> Result<Option<T>> {
     if !path.exists() {
         return Ok(None);
@@ -628,16 +662,31 @@ fn read_named_limited<T: for<'de> Deserialize<'de>>(
         metadata.is_file()
             && metadata.uid() == unsafe { libc::geteuid() }
             && metadata.permissions().mode() & 0o077 == 0
-            && metadata.len() <= limit,
+            && limit.is_none_or(|maximum| metadata.len() <= maximum),
         "unsafe or oversized state report"
     );
     let mut bytes = Vec::new();
-    file.take(limit + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= limit as usize, "oversized state report");
+    match limit {
+        Some(maximum) => {
+            file.take(maximum + 1).read_to_end(&mut bytes)?;
+        }
+        None => {
+            let mut file = file;
+            file.read_to_end(&mut bytes)?;
+        }
+    }
+    ensure!(
+        limit.is_none_or(|maximum| bytes.len() as u64 <= maximum),
+        "oversized state report"
+    );
     Ok(Some(
         serde_json::from_slice(&bytes).map_err(|_| anyhow!("invalid state report"))?,
     ))
 }
+
+#[cfg(test)]
+#[path = "state_persistence_tests.rs"]
+mod persistence_tests;
 
 #[cfg(test)]
 mod tests {
@@ -686,11 +735,7 @@ mod tests {
 
     #[test]
     fn lock_and_atomic_report() {
-        let dir = PathBuf::from(format!("/var/tmp/mimir/step5/state-{}", std::process::id()));
-        fs::create_dir_all(dir.parent().unwrap()).unwrap();
-        if dir.exists() {
-            fs::remove_dir_all(&dir).unwrap();
-        }
+        let dir = std::env::temp_dir().join(format!("mimir-state-{}", Uuid::new_v4()));
         let state = State::lock(dir.clone()).unwrap().unwrap();
         assert!(State::lock(dir.clone()).unwrap().is_none());
         assert!(read(&dir).unwrap().is_none());
@@ -804,6 +849,20 @@ mod tests {
         assert!(failure.excerpt.len() <= MAX_FAILURE_SOURCE);
         assert!(failure.excerpt_start > 0);
         assert!(failure.excerpt.contains("]}"));
+    }
+
+    #[test]
+    fn legacy_remaining_budget_is_not_reported_as_work_performed() {
+        let id = Uuid::new_v4();
+        let event = DiagnosticEvent::new(id, "model_request", 25, 26, None, None);
+        let mut wire = serde_json::to_value(event).unwrap();
+        wire.as_object_mut().unwrap().remove("model_requests");
+        wire.as_object_mut().unwrap().remove("tool_attempts");
+        wire["model_remaining"] = serde_json::json!(5);
+        wire["tool_remaining"] = serde_json::json!(6);
+        let decoded: DiagnosticEvent = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded.model_requests, None);
+        assert_eq!(decoded.tool_attempts, None);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use super::{
     config::RuntimeConfig,
-    mcp::{CandidateConflict, Client, McpApplicationError},
+    mcp::{CandidateConflict, Client, McpApplicationError, UndeclaredBeliefCandidate},
     notification,
     state::{
         self, DeferredReview, DiagnosticEvent, FailureDiagnostic, Report, SourceFailure, State,
@@ -11,7 +11,6 @@ use mimir_core::learning::{ExperienceState, Review};
 use serde_json::{json, Value};
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Duration;
 use uuid::Uuid;
 
 #[cfg_attr(not(test), allow(dead_code))] // Step 6/7 adapters will construct actions.
@@ -116,7 +115,17 @@ async fn scoped_tool(
     let project = project_for(selected);
     let id = selected.experience.id.to_string();
     match name {
-        "get_experience" | "experience_history" => {
+        "get_lesson_assessment" | "lesson_assessment_history" => {
+            input_ensure!(
+                args["project"] == project,
+                "assessment is outside selected project"
+            );
+            if name == "lesson_assessment_history" {
+                let limit = args["limit"].as_u64().unwrap_or(20);
+                input_ensure!(limit > 0, "history limit must be positive");
+            }
+        }
+        "get_experience" | "experience_history" | "get_learning_review" => {
             input_ensure!(args["id"] == id, "experience is outside pinned batch");
             if name == "experience_history" {
                 let current = client.tool("get_experience", json!({"id":id})).await?;
@@ -147,9 +156,14 @@ async fn scoped_tool(
             );
             // The model never chooses reviewer identity.
             review.reviewer = "mimir-judge".into();
-            review
-                .validate()
-                .map_err(|error| InputRejected(error.to_string()))?;
+            review.validate().map_err(|error| {
+                InputRejected(format!(
+                    "{error}. {}",
+                    super::evidence::guidance(&selected.experience)
+                ))
+            })?;
+            mimir_core::learning_sources::validate_review(&review, &selected.experience)
+                .map_err(mimir_core::validation::Refusal::validation)?;
             args["review"] = serde_json::to_value(review)?;
         }
         "query_relevant" | "query_learning_context" | "get_contradictions" => {
@@ -159,14 +173,14 @@ async fn scoped_tool(
             );
             if name != "get_contradictions" {
                 let limit = args["limit"].as_u64().unwrap_or(0);
-                input_ensure!((1..=20).contains(&limit), "query limit must be 1..=20");
+                input_ensure!(limit > 0, "query limit must be positive");
             }
         }
         "get_belief" | "explain_belief" | "query_intervention" => {
             let belief_id = args["id"]
                 .as_str()
                 .ok_or_else(|| InputRejected("missing belief id".into()))?;
-            // Provenance lookup is host-only and not charged to the model tool budget.
+            // Provenance lookup is host-only and not counted as a model tool attempt.
             input_ensure!(
                 visible_belief(client, belief_id, project).await?,
                 "belief is outside selected project"
@@ -212,10 +226,9 @@ async fn scoped_tool(
                 .as_array()
                 .ok_or_else(|| anyhow!("invalid belief search result"))?;
             ensure!(
-                beliefs.len() <= 20
-                    && beliefs
-                        .iter()
-                        .all(|b| b["project"] == project || b["project"].is_null()),
+                beliefs
+                    .iter()
+                    .all(|b| b["project"] == project || b["project"].is_null()),
                 "MCP returned out-of-scope beliefs"
             );
         }
@@ -227,11 +240,9 @@ async fn scoped_tool(
                 .as_array()
                 .ok_or_else(|| anyhow!("invalid learning context"))?;
             ensure!(
-                beliefs.len() <= 20
-                    && patterns.len() <= 20
-                    && beliefs
-                        .iter()
-                        .all(|b| b["project"] == project || b["project"].is_null())
+                beliefs
+                    .iter()
+                    .all(|b| b["project"] == project || b["project"].is_null())
                     && patterns
                         .iter()
                         .all(|p| p["pattern"]["project"] == project
@@ -243,7 +254,6 @@ async fn scoped_tool(
             let edges = value["incoming_edges"]
                 .as_array()
                 .ok_or_else(|| anyhow!("invalid explanation"))?;
-            ensure!(edges.len() <= 64, "explanation is too large");
             let mut filtered = Vec::new();
             for edge in edges {
                 let source = edge["from_id"]
@@ -259,7 +269,6 @@ async fn scoped_tool(
             let rows = value
                 .as_array()
                 .ok_or_else(|| anyhow!("invalid intervention result"))?;
-            ensure!(rows.len() <= 64, "intervention result is too large");
             for row in rows {
                 let target = row["id"]
                     .as_str()
@@ -274,7 +283,6 @@ async fn scoped_tool(
             let pairs = value
                 .as_array()
                 .ok_or_else(|| anyhow!("invalid contradiction result"))?;
-            ensure!(pairs.len() <= 64, "contradiction result is too large");
             let mut filtered = Vec::new();
             for pair in pairs {
                 let pair = pair
@@ -348,7 +356,7 @@ fn trace(
     report: &Report,
     selected: &ExperienceState,
     kind: &str,
-    (model_left, tool_left): (usize, usize),
+    (model_used, tool_used): (usize, usize),
     tool: Option<&str>,
     detail: Option<&str>,
 ) -> Result<()> {
@@ -359,8 +367,8 @@ fn trace(
                 DiagnosticEvent::new(
                     selected.experience.id,
                     kind,
-                    model_left,
-                    tool_left,
+                    model_used,
+                    tool_used,
                     tool,
                     detail,
                 ),
@@ -430,7 +438,6 @@ async fn run_inner<B: Backend>(
         &settings.judge.mcp_command,
         &settings.judge.mcp_args,
         &settings.path,
-        settings.llm.timeout_seconds,
     )
     .await?;
     // A rejected source revision is held until it is corrected or reviewed by
@@ -456,10 +463,6 @@ async fn run_inner<B: Backend>(
             report.deferred_reviews.push(deferred);
         }
     }
-    ensure!(
-        report.deferred_reviews.len() <= 1000,
-        "too many deferred reviews"
-    );
     let mut arguments = json!({"limit":settings.judge.batch_size});
     arguments["exclude_ids"] = json!(report
         .deferred_reviews
@@ -505,13 +508,12 @@ async fn run_inner<B: Backend>(
         }
         return Ok(());
     }
-    report.diagnostics_id = Some(state.begin_trace(report, settings.llm.max_calls).map_err(
-        |error| DiagnosticWriteError(format!("diagnostic trace start failed: {error:#}")),
-    )?);
-    let mut model_left = settings.llm.max_calls;
-    let mut tool_left = settings.llm.max_calls;
+    report.diagnostics_id = Some(state.begin_trace(report, 0).map_err(|error| {
+        DiagnosticWriteError(format!("diagnostic trace start failed: {error:#}"))
+    })?);
+    let mut model_used: usize = 0;
+    let mut tool_used: usize = 0;
     let mut failed = false;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(settings.llm.timeout_seconds);
     for selected in &batch {
         let mut last: Option<Value> = None;
         let mut candidate_rejections = 0;
@@ -520,49 +522,31 @@ async fn run_inner<B: Backend>(
         let mut confirmed_review = false;
         loop {
             let will_call_model = backend.will_call_model(selected);
-            if will_call_model && model_left == 0 {
-                trace(
-                    state,
-                    report,
-                    selected,
-                    "model_budget_exhausted",
-                    (model_left, tool_left),
-                    None,
-                    None,
-                )?;
-                if candidate_rejections == 0 {
-                    failed = true;
-                    report.block_reason = Some("model_budget_exhausted".into());
-                }
-                break;
-            }
             if will_call_model {
-                model_left -= 1;
+                model_used = model_used.saturating_add(1);
                 let detail = last.as_ref().map(Value::to_string);
                 trace(
                     state,
                     report,
                     selected,
                     "model_request",
-                    (model_left, tool_left),
+                    (model_used, tool_used),
                     None,
                     detail.as_deref(),
                 )?;
             }
-            let action = match tokio::time::timeout_at(
-                deadline,
-                backend.next(selected, last.as_ref(), client.allowed_tools()),
-            )
-            .await
+            let action = match backend
+                .next(selected, last.as_ref(), client.allowed_tools())
+                .await
             {
-                Ok(Ok(action)) => action,
-                Ok(Err(error)) => {
+                Ok(action) => action,
+                Err(error) => {
                     trace(
                         state,
                         report,
                         selected,
                         "model_error",
-                        (model_left, tool_left),
+                        (model_used, tool_used),
                         None,
                         Some(&format!("{error:#}")),
                     )?;
@@ -574,23 +558,6 @@ async fn run_inner<B: Backend>(
                     }
                     break;
                 }
-                Err(_) => {
-                    trace(
-                        state,
-                        report,
-                        selected,
-                        "model_timeout",
-                        (model_left, tool_left),
-                        None,
-                        None,
-                    )?;
-                    if candidate_rejections == 0 {
-                        failed = true;
-                        report.block_reason = Some("backend_timeout".into());
-                        report.failure_detail = Some("backend response timed out".into());
-                    }
-                    break;
-                }
             };
             match action {
                 Action::Done => {
@@ -599,7 +566,7 @@ async fn run_inner<B: Backend>(
                         report,
                         selected,
                         "model_done",
-                        (model_left, tool_left),
+                        (model_used, tool_used),
                         None,
                         None,
                     )?;
@@ -611,25 +578,11 @@ async fn run_inner<B: Backend>(
                         report,
                         selected,
                         "tool_parse_rejection",
-                        (model_left, tool_left),
+                        (model_used, tool_used),
                         Some(&name),
                         Some(&source.excerpt),
                     )?;
-                    if tool_left == 0 {
-                        trace(
-                            state,
-                            report,
-                            selected,
-                            "tool_budget_exhausted",
-                            (model_left, tool_left),
-                            Some(&name),
-                            None,
-                        )?;
-                        failed = true;
-                        report.block_reason = Some("tool_budget_exhausted".into());
-                        break;
-                    }
-                    tool_left -= 1;
+                    tool_used = tool_used.saturating_add(1);
                     // The model already knows its input. Return only the parser's
                     // location and a fixed correction instruction, never the input.
                     last = Some(json!({"error":"invalid_tool_arguments",
@@ -643,27 +596,12 @@ async fn run_inner<B: Backend>(
                         report,
                         selected,
                         "tool_request",
-                        (model_left, tool_left),
+                        (model_used, tool_used),
                         Some(&name),
                         Some(&arguments.to_string()),
                     )?;
-                    if tool_left == 0 {
-                        trace(
-                            state,
-                            report,
-                            selected,
-                            "tool_budget_exhausted",
-                            (model_left, tool_left),
-                            Some(&name),
-                            None,
-                        )?;
-                        if candidate_rejections == 0 {
-                            failed = true;
-                            report.block_reason = Some("tool_budget_exhausted".into());
-                        }
-                        break;
-                    }
-                    tool_left -= 1;
+                    tool_used = tool_used.saturating_add(1);
+                    let attempted_review = arguments.get("review").cloned();
                     match scoped_tool(&mut client, selected, &name, arguments).await {
                         Ok(value) => {
                             trace(
@@ -671,7 +609,7 @@ async fn run_inner<B: Backend>(
                                 report,
                                 selected,
                                 "tool_result",
-                                (model_left, tool_left),
+                                (model_used, tool_used),
                                 Some(&name),
                                 Some(&value.to_string()),
                             )?;
@@ -694,21 +632,22 @@ async fn run_inner<B: Backend>(
                                 report,
                                 selected,
                                 "candidate_conflict",
-                                (model_left, tool_left),
+                                (model_used, tool_used),
                                 Some(&name),
                                 Some(&format!("{error:#}")),
                             )?;
                             candidate_rejections += 1;
                             candidate_rejection_detail = Some(format!("{error:#}"));
-                            if candidate_rejections >= 2 {
-                                break;
-                            }
                             last = Some(json!({"error":"candidate_key_conflict",
                                 "guidance":"A candidate key from an earlier review has a different declaration. Inspect experience_history. Reuse a key only with its exact original kind and declaration; use a new key for a revised claim."}));
                         }
                         Err(error)
                             if error.downcast_ref::<InputRejected>().is_some()
                                 || error.downcast_ref::<McpApplicationError>().is_some()
+                                || error.downcast_ref::<UndeclaredBeliefCandidate>().is_some()
+                                || error
+                                    .downcast_ref::<mimir_core::validation::Refusal>()
+                                    .is_some()
                                 || error.downcast_ref::<SourceFailure>().is_some_and(
                                     |source| source.stage == "invalid review arguments",
                                 ) =>
@@ -718,28 +657,53 @@ async fn run_inner<B: Backend>(
                                 report,
                                 selected,
                                 "tool_rejection",
-                                (model_left, tool_left),
+                                (model_used, tool_used),
                                 Some(&name),
                                 Some(&format!("{error:#}")),
                             )?;
-                            // Tool-level rejection is feedback to the model, not
-                            // a service failure. Never forward MCP error text.
+                            // Only typed validation faults are correction feedback.
+                            // Preserve the exact path, code and explanation.
+                            let fault = error
+                                .downcast_ref::<McpApplicationError>()
+                                .map(|e| &e.0)
+                                .or_else(|| {
+                                    error
+                                        .downcast_ref::<UndeclaredBeliefCandidate>()
+                                        .map(|e| &e.0)
+                                })
+                                .or_else(|| {
+                                    error
+                                        .downcast_ref::<mimir_core::validation::Refusal>()
+                                        .map(|e| &e.fault)
+                                });
                             let message = if let Some(input) = error.downcast_ref::<InputRejected>()
                             {
                                 input.to_string()
                             } else if let Some(source) = error.downcast_ref::<SourceFailure>() {
                                 source.detail.clone()
+                            } else if let Some(fault) = fault {
+                                fault.message.clone()
                             } else {
-                                "Mimir rejected this tool call. Check the tool schema and arguments."
-                                    .into()
+                                unreachable!("only classified validation failures reach correction")
                             };
                             last = Some(json!({"error":"invalid_tool_arguments",
                                 "message":message,
+                                "fault":fault,
                                 "guidance":"Correct the tool arguments and resubmit the request. The rejected call changed nothing."}));
+                            let focused = fault.and_then(|fault| {
+                                use mimir_core::validation::{Code, Segment};
+                                if fault.code != Code::QuotationMismatch { return None; }
+                                let index = fault.path.iter().find_map(|part| match part { Segment::Index(n)=>Some(*n), _=>None })?;
+                                let item = attempted_review.as_ref()?.get("extracted_items")?.get(index)?;
+                                let source_ref = item.get("source_ref")?.as_str()?;
+                                let source = selected.experience.source_records.iter().find(|s|s.source_ref==source_ref)?;
+                                let payload = json!({"fault":fault,"rejected_item":item,"cited_source":source}).to_string();
+                                Some(SourceFailure::input("quotation_mismatch",payload.as_bytes(),&fault.message))
+                            });
                             last_rejection = Some((
                                 name,
                                 state::bounded(&format!("{error:#}"), 512),
-                                error.downcast_ref::<SourceFailure>().cloned(),
+                                focused.or_else(|| error.downcast_ref::<SourceFailure>().cloned()),
                             ));
                         }
                         Err(error) => {
@@ -748,7 +712,7 @@ async fn run_inner<B: Backend>(
                                 report,
                                 selected,
                                 "tool_error",
-                                (model_left, tool_left),
+                                (model_used, tool_used),
                                 Some(&name),
                                 Some(&format!("{error:#}")),
                             )?;
@@ -793,10 +757,6 @@ async fn run_inner<B: Backend>(
                         .unwrap_or("review correction was not confirmed"),
                 ));
             }
-            ensure!(
-                report.deferred_reviews.len() < 1000,
-                "too many deferred reviews"
-            );
             report.deferred_reviews.push(DeferredReview {
                 id: selected.experience.id,
                 revision: selected.revision,
@@ -856,6 +816,13 @@ async fn run_inner<B: Backend>(
 
 #[cfg(test)]
 mod tests {
+    #[allow(dead_code)] // Shared guard also serves integration-test crates.
+    mod isolation {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/support/isolation.rs"
+        ));
+    }
     use super::*;
     use mimir_core::{
         config::Config,
@@ -950,6 +917,9 @@ mod tests {
                         .is_some_and(|text| text.contains("declared in this review")));
                 }
                 self.calls += 1;
+                if !self.correct && self.calls == 4 {
+                    return Ok(Action::Done);
+                }
                 let candidates = if self.calls == 2 && self.correct {
                     json!([{"kind":"belief","key":"fixture-key","content":"fixture conclusion"}])
                 } else {
@@ -999,6 +969,9 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<Action>> + Send + 'a>> {
             Box::pin(async move {
                 self.calls += 1;
+                if self.calls == 26 {
+                    return Ok(Action::Done);
+                }
                 Ok(Action::Tool {
                     name: "get_experience".into(),
                     arguments: json!({"id":selected.experience.id}),
@@ -1031,6 +1004,9 @@ mod tests {
                     }
                 }
                 self.calls += 1;
+                if matches!(self.case, RejectionCase::Exhausted) && self.calls == 26 {
+                    return Ok(Action::Done);
+                }
                 if self.calls == 1 || matches!(self.case, RejectionCase::Exhausted) {
                     return Ok(match self.case {
                         RejectionCase::MalformedJson | RejectionCase::Exhausted => {
@@ -1073,7 +1049,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_tool_requests_return_feedback_and_have_bounded_retries() {
+    async fn invalid_tool_requests_remain_correctable_until_backend_stops() {
         use std::os::unix::fs::PermissionsExt;
 
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/judge/retry_fixture.sh");
@@ -1092,8 +1068,8 @@ mod tests {
             std::fs::write(
                 &config_path,
                 format!(
-                    "[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\ntimeout_seconds=10\nmax_calls=3\n",
-                    fixture.display(), id
+                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                    dir.join("logs").display(), fixture.display(), id
                 ),
             )
             .unwrap();
@@ -1104,15 +1080,19 @@ mod tests {
             let report = run(&settings, &state, &mut backend).await;
             if matches!(case, RejectionCase::Exhausted) {
                 assert_eq!(report.status, "blocked");
-                assert_eq!(backend.calls, 3);
-                assert_eq!(
-                    report.block_reason.as_deref(),
-                    Some("model_budget_exhausted")
-                );
+                assert_eq!(backend.calls, 26);
+                assert_eq!(report.block_reason.as_deref(), Some("tool_rejected"));
                 assert_eq!(
                     report.failure_source.as_ref().unwrap().excerpt,
                     "{\"review\": }"
                 );
+            } else if matches!(case, RejectionCase::MimirError) {
+                assert_eq!(report.status, "blocked");
+                assert_eq!(
+                    backend.calls, 1,
+                    "unclassified database failures are not argument-correction feedback"
+                );
+                assert_eq!(report.block_reason.as_deref(), Some("tool_error"));
             } else {
                 assert_eq!(report.status, "complete");
                 assert_eq!(backend.calls, 2);
@@ -1124,7 +1104,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_budget_failure_keeps_an_actionable_trace_after_later_success() {
+    async fn requests_beyond_old_budget_are_counted_and_pending_review_keeps_trace() {
         use std::os::unix::fs::PermissionsExt;
 
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/judge/retry_fixture.sh");
@@ -1135,8 +1115,8 @@ mod tests {
         std::fs::write(
             &config_path,
             format!(
-                "[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\ntimeout_seconds=10\nmax_calls=5\n",
-                fixture.display(), Uuid::new_v4()
+                "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                dir.join("logs").display(), fixture.display(), Uuid::new_v4()
             ),
         )
         .unwrap();
@@ -1148,10 +1128,10 @@ mod tests {
         assert_eq!(failed.status, "blocked");
         assert_eq!(
             failed.block_reason.as_deref(),
-            Some("model_budget_exhausted")
+            Some("revision_not_confirmed")
         );
         assert!(failed.diagnostic.is_none());
-        assert_eq!(backend.calls, 5);
+        assert_eq!(backend.calls, 26);
         let id = failed.diagnostics_id.unwrap();
         let diagnostics = state::read_diagnostics(state.path()).unwrap();
         let trace = diagnostics
@@ -1159,25 +1139,17 @@ mod tests {
             .iter()
             .find(|trace| trace.id == id)
             .unwrap();
-        assert_eq!(trace.model_remaining, 0);
-        assert_eq!(trace.tool_remaining, 0);
-        assert_eq!(
-            trace
-                .events
-                .iter()
-                .filter(|event| event.kind == "model_request")
-                .count(),
-            5
+        assert_eq!(trace.model_requests, Some(26));
+        assert_eq!(trace.tool_attempts, Some(25));
+        assert!(trace
+            .events
+            .iter()
+            .any(|event| event.kind == "model_request"));
+        assert!(trace.events.iter().any(|event| event.kind == "tool_result"));
+        assert!(
+            trace.events_omitted > 0,
+            "bounded diagnostics must not stop the review"
         );
-        assert_eq!(
-            trace
-                .events
-                .iter()
-                .filter(|event| event.kind == "tool_result")
-                .count(),
-            5
-        );
-        assert_eq!(trace.events.last().unwrap().kind, "model_budget_exhausted");
         assert_eq!(trace.events[1].tool.as_deref(), Some("get_experience"));
         let mut recovery = ToolCorrection {
             case: RejectionCase::LocalValidation,
@@ -1217,8 +1189,8 @@ mod tests {
             std::fs::write(
                 &config_path,
                 format!(
-                    "[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\ntimeout_seconds=10\nmax_calls=4\n",
-                    fixture.display(), id, review_log.display()
+                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                    dir.join("logs").display(), fixture.display(), id, review_log.display()
                 ),
             )
             .unwrap();
@@ -1239,10 +1211,7 @@ mod tests {
                 "invalid review must not reach MCP"
             );
             if !correct {
-                assert_eq!(
-                    report.block_reason.as_deref(),
-                    Some("model_budget_exhausted")
-                );
+                assert_eq!(report.block_reason.as_deref(), Some("tool_rejected"));
                 assert_eq!(report.pending, 1);
                 assert!(report.deferred_reviews.is_empty());
                 assert!(report
@@ -1259,18 +1228,20 @@ mod tests {
 
     #[tokio::test]
     async fn isolated_mcp_review_cycle() {
-        let Ok(path) = std::env::var("MIMIR_STEP5_TEST_CONFIG") else {
-            return;
-        };
-        let binary = std::env::var("MIMIR_STEP5_MCP_BIN").expect("MCP binary path");
+        let fixture = isolation::fixture();
+        let path = fixture.root.join("config.toml");
+        let binary = fixture.mcp.clone();
         let project = format!("step5-{}", Uuid::new_v4());
-        let mut settings = super::super::config::load(Some(std::path::Path::new(&path))).unwrap();
+        let mut settings = super::super::config::load(Some(&path)).unwrap();
         settings.judge.project = Some(project.clone());
         settings.judge.mcp_command = binary;
         settings.judge.batch_size = 1;
         let core = Config::load_from_path(&settings.path).unwrap();
+        fixture.assert_database(&core.database);
         let service = Arc::new(MimirService::connect(&core).await.unwrap());
-        let state_path = PathBuf::from(format!("/var/tmp/mimir/step5/state-{}", Uuid::new_v4()));
+        let state_path = fixture
+            .root
+            .join(format!("runner-state-{}", Uuid::new_v4()));
         let state = State::lock(state_path.clone()).unwrap().unwrap();
         let make_experience = || Experience {
             id: Uuid::new_v4(),
@@ -1282,6 +1253,8 @@ mod tests {
             evidence: vec!["isolated test receipt".into()],
             belief_ids: vec![],
             pattern_id: None,
+            learning_items: vec![],
+            source_records: vec![],
         };
         let e = make_experience();
         service.record_experience(&e, 0).await.unwrap();
@@ -1354,6 +1327,9 @@ mod tests {
                 candidates: vec![],
                 candidate_feedback: vec![],
                 candidate_links: vec![],
+                assessments: vec![],
+                extracted_items: vec![],
+                source_coverage: vec![],
             };
             service
                 .review_experience(&review, latest.review_revision)

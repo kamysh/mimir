@@ -2,16 +2,11 @@
 # Local end-to-end check of the learning comparator. Fake Codex; disposable DB.
 set -euo pipefail
 
-base=/var/tmp/mimir/step11-fixture-$(uuidgen)
+repo="$(cd "$(dirname "$0")/../.." && pwd)"
+python3 "$repo/tests/support/fixture.py" check
+base="$(mktemp -d "$MIMIR_TEST_ROOT/comparator.XXXXXXXX")"
 mkdir -m 700 -p "$base/bin"
-result_dir=
-cleanup() {
-    if [[ -n "$result_dir" && "$result_dir" == /var/tmp/mimir/learning-compare-* ]]; then
-        rm -rf -- "$result_dir"
-    fi
-    rm -rf -- "$base"
-}
-trap cleanup EXIT
+# The outer runner retains this private directory and its complete evidence.
 
 cat > "$base/bin/codex" <<'SH'
 #!/usr/bin/env bash
@@ -47,29 +42,11 @@ printf '%s\n' "$reply" > "$answer"
 SH
 chmod 700 "$base/bin/codex"
 
-mimir=/var/tmp/mimir/step5/target/debug/mimir
-mcp=/var/tmp/mimir/step5/target/debug/mimir-mcp
+mimir="$MIMIR_TEST_MIMIR"
+mcp="$MIMIR_TEST_MCP"
 for arm in a b; do
-    cat > "$base/$arm.toml" <<EOF
-[database]
-host = "127.0.0.1"
-port = 32885
-dbname = "mimir_learning_test_series"
-user = "mimir_learning_test"
-ssl_mode = "disable"
-[judge]
-batch_size = 1
-mcp_command = "$mcp"
-[llm]
-backend = "codex"
-model = "fixture-$arm"
-reasoning_effort = "high"
-timeout_seconds = 15
-max_calls = 3
-[email]
-enabled = false
-EOF
-    chmod 600 "$base/$arm.toml"
+    python3 "$repo/tests/support/fixture.py" config "$base/$arm.toml" \
+        --backend codex --model "fixture-$arm"
 done
 
 export PATH="$base/bin:$PATH"
@@ -79,6 +56,5 @@ jq -e '.status == "preflight" and .selectors.arm_a.model == "fixture-a" and .sel
 
 summary="$("$eval_cmd" learning-compare --arm-a "$base/a.toml" --arm-b "$base/b.toml" --mimir "$mimir" --mcp "$mcp" --live)"
 result="$(jq -er '.results' <<< "$summary")"
-result_dir="$(dirname "$result")"
 jq -e '.status == "complete" and (.cases | length == 12) and all(.cases[]; (.result.safety | all(.[]; . == true)))' "$result" >/dev/null
 printf '%s\n' 'learning comparator fixture passed: 12 isolated cases, selected models, receipts, actor decisions, cleanup'

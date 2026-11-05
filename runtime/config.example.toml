@@ -1,3 +1,11 @@
+# Required global operational settings; put config_version before any table.
+# For an existing file use: mimir config upgrade --log-directory /absolute/path/to/logs
+config_version = 1
+[logging]
+directory = "/ABSOLUTE/HOME/.local/state/mimir/logs"
+max_file_bytes = 1048576
+retained_files = 4
+
 # Merge these optional sections into ~/.config/mimir/config.toml.
 # Keep [database] and optional [embeddings]. Directory 0700; file 0600.
 # Select a model available to your account; no provider/model fallback occurs.
@@ -7,17 +15,15 @@ batch_size = 5
 # project = "my-project" # omit to process pending experiences across projects
 mcp_command = "mimir-mcp"
 mcp_args = []
-# Run once with `mimir judge run`; `mimir judge watch` repeats bounded runs.
+# Run once with `mimir judge run`; `mimir judge watch` repeats batches.
 # No service or timer is installed by this configuration.
 
 [llm]
 backend = "claude-code" # claude-code | codex | command | api
 model = "YOUR_MODEL"
 # reasoning_effort = "high" # Codex only; minimal | low | medium | high | xhigh
-timeout_seconds = 300
-max_calls = 20 # caps both model invocations and total tool executions
-max_output_tokens = 4096 # direct APIs only; includes reasoning where provider supports it
-# max_budget_usd = 1.0 # Claude Code only, PER invocation, not the whole run
+# Reviews have no application deadline or request/content quota.
+# Stop active work with Ctrl+C or SIGTERM. Provider-native limits still apply.
 
 # For backend = "api", add:
 # provider = "openai" # openai | anthropic | openrouter | deepseek | zai | gemini | openai-compatible
