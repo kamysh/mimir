@@ -92,9 +92,9 @@ def check():
     bound_sources = {key: json.loads(value).strip() for key, value in re.findall(
         r'^source Schema\.(\w+) = toList (".*")$', read('spec/Mimir/MigrationScriptBinding.agda'), re.M)}
     migration_keys = ['initial', 'searchPath', 'embeddingTable', 'evidenceEdges',
-                      'betaBeliefs', 'learning', 'candidates', 'assessment', 'owners']
+                      'betaBeliefs', 'learning', 'candidates', 'assessment', 'owners', 'allocation']
     sql_files = sorted((ROOT / 'crates/core/migrations').glob('*.sql'))
-    assert len(sql_files) == len(migration_keys) == len(bound_sources) == 9
+    assert len(sql_files) == len(migration_keys) == len(bound_sources) == 10
     for path, key in zip(sql_files, migration_keys):
         lines = path.read_text().splitlines()
         while lines and (not lines[0].strip() or lines[0].lstrip().startswith('--')):
