@@ -8,9 +8,11 @@ import secrets
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 REPO = Path(__file__).resolve().parents[1]
@@ -163,6 +165,43 @@ exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_prel
         self.command("remove-owned-database", ["docker", "rm", "--force", self.container])
         self.container = None
 
+    def guard_regression(self):
+        # A decoy endpoint proves the Rust guard refuses conflicting settings
+        # before networking. It never uses the actual deployment's endpoint.
+        binaries = [p for p in (self.root / "target/debug/deps").glob("store_integration-*")
+                    if p.is_file() and os.access(p, os.X_OK)]
+        if len(binaries) != 1:
+            raise RuntimeError("expected one compiled store integration test binary")
+        attempts = []
+        stop = threading.Event()
+        with socket.socket() as decoy:
+            decoy.bind(("127.0.0.1", 0))
+            decoy.listen()
+            decoy.settimeout(0.1)
+            def listen():
+                while not stop.is_set():
+                    try:
+                        connection, _ = decoy.accept()
+                        attempts.append(True)
+                        connection.close()
+                    except socket.timeout:
+                        pass
+            thread = threading.Thread(target=listen, daemon=True)
+            thread.start()
+            env = {**self.env, "MIMIR_PORT": str(decoy.getsockname()[1]), "MIMIR_DBNAME": "mimir"}
+            try:
+                code, _ = self.command("refuse-conflicting-database", [str(binaries[0]),
+                    "--exact", "test_insert_and_get_belief", "--nocapture"], env=env, check=False)
+            finally:
+                stop.set()
+                thread.join(timeout=2)
+        log = (self.root / f"{self.count:03}-refuse-conflicting-database.log").read_text()
+        passed = code == 101 and "MIMIR_PORT does not match this test fixture" in log and not attempts and not thread.is_alive()
+        (self.root / "connection-guard.json").write_text(json.dumps({
+            "rejected_before_connect": passed, "connection_attempts": len(attempts)}, indent=2) + "\n")
+        if not passed:
+            raise RuntimeError("Rust connection guard did not reject conflicting settings before networking")
+
     def checks(self, selected):
         self.command("isolation-regressions", ["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_isolated_runner.py"])
         if selected in ("all", "format"):
@@ -175,6 +214,7 @@ exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_prel
             self.command("initialize-test-schema", [self.env["MIMIR_TEST_MIMIR"], "stats"])
         if selected in ("all", "workspace"):
             self.command("workspace-tests", ["cargo", "test", "--workspace", "--all-targets", "--locked", "--offline", "--", "--test-threads=1"])
+            self.guard_regression()
             self.command("documentation-tests", ["cargo", "test", "--workspace", "--doc", "--locked", "--offline"])
         if selected in ("all", "fixtures"):
             self.command("judge-adapter-fixtures", ["bash", "tests/judge-adapters.sh"])

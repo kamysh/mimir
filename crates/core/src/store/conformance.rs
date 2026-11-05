@@ -218,6 +218,14 @@ fn validate_document_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(dead_code)] // Test-only adapter for the shared integration guard.
+    mod isolation {
+        use crate as mimir_core;
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/support/isolation.rs"
+        ));
+    }
 
     #[test]
     fn document_admission_checks_count_shape_path_and_duplicate_id() {
@@ -249,22 +257,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires explicit disposable database selection"]
     async fn candidate_allocation_rejects_live_and_retired_occupied_ids() {
-        let dbname = std::env::var("MIMIR_DBNAME").unwrap();
-        assert!(dbname.starts_with("mimir_learning_test_"));
-        let cfg = crate::config::DatabaseConfig {
-            host: std::env::var("MIMIR_HOST").unwrap(),
-            port: std::env::var("MIMIR_PORT").unwrap().parse().unwrap(),
-            user: std::env::var("MIMIR_USER").unwrap(),
-            dbname: dbname.clone(),
-            password: None,
-            pgpassfile: None,
-            ssl_mode: crate::config::SslMode::Disable,
-            ssl_root_cert: None,
-            ssl_client_cert: None,
-            ssl_client_key: None,
-        };
+        let cfg = isolation::fixture().database_config();
+        let dbname = cfg.dbname.clone();
         crate::db::migrate(&cfg).await.unwrap();
         let store = AgeStore::new(crate::db::connect(&cfg).await.unwrap(), dbname).unwrap();
         let project = format!("identity-fixture-{}", Uuid::new_v4());

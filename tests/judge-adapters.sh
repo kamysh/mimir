@@ -71,7 +71,7 @@ make_config() {
     local kind="$1" project="$2" config="$3" command="${4:-}"
     local -a args=(python3 "$repo/tests/support/fixture.py" config "$config"
         --backend "$kind" --project "$project")
-    if [[ -n "$command" ]]; then args+=(--command "$command"); fi
+    if [[ "$kind" == command ]]; then args+=(--command "$command"); fi
     "${args[@]}"
 }
 

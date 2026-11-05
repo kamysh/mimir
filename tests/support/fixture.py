@@ -60,6 +60,8 @@ def main():
     if args.operation == "check":
         return
     root = Path(data["root"])
+    if args.command and args.backend != "command":
+        raise ValueError("only the command backend accepts a custom command")
     if not args.path.is_absolute() or not args.path.parent.resolve().is_relative_to(root):
         raise ValueError("generated configuration must stay in the isolated test root")
     text = (root / "database.toml").read_text()
