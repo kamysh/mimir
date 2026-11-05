@@ -31,6 +31,7 @@ import Mimir.RetrievalRanking as Ranking
 import Mimir.StructuredValue as V
 import Mimir.Effects as Effects
 import Mimir.Validation as Validation
+import Mimir.StandardLibrary as Library
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
 
 data JudgeCommand : Set where
@@ -87,24 +88,24 @@ validateBeforeConnect (deletePattern _) = true
 validateBeforeConnect (intervene _ _) = true
 validateBeforeConnect _ = false
 
-request : ServiceCommand → Validation.Fault ⊎ Public.Request
-request stats = inj₂ (Public.read Read.stats)
-request (list project limit) = inj₂ (Public.read (Read.listBeliefs project nothing))
-request (patterns project limit) = inj₂ (Public.read (Read.listPatterns project))
-request (query text limit evidence project prefer) = inj₂ (Public.relevant text limit project prefer evidence 3)
-request (evidenceAdd chunk belief weight) = Input.uuid (V.string chunk) >>= λ chunkID →
-  Input.uuid (V.string belief) >>= λ beliefID → inj₂ (Public.addEvidence beliefID chunkID weight)
-request (evidenceList belief) = mapResult Public.evidence (Input.uuid (V.string belief))
-request (deleteBelief id) = mapResult (Public.delete Delete.belief) (Input.uuid (V.string id))
-request (deletePattern id) = mapResult (Public.delete Delete.patternNode) (Input.uuid (V.string id))
-request (forget project) = inj₂ (Public.deleteProject project)
-request (decay factor project) = inj₂ (Public.inference (Inference.decay project factor))
-request (contradictions project) = inj₂ (Public.inference (Inference.contradictions project))
-request (sweep threshold grace project) = inj₂ (Public.sweepHours project threshold grace)
-request (docLoad path project) = inj₂ (Public.loadDocument path project)
-request (docQuery text project limit) = inj₂ (Public.queryDocument text project limit)
-request (docClear path) = inj₂ (Public.clearDocument path)
-request (intervene id value) = mapResult (λ target → Public.inference (Inference.intervention target value)) (Input.uuid (V.string id))
+request : Library.Contract → ServiceCommand → Validation.Fault ⊎ Public.Request
+request conversion stats = inj₂ (Public.read Read.stats)
+request conversion (list project limit) = inj₂ (Public.read (Read.listBeliefs project nothing))
+request conversion (patterns project limit) = inj₂ (Public.read (Read.listPatterns project))
+request conversion (query text limit evidence project prefer) = inj₂ (Public.relevant text limit project prefer evidence 3)
+request conversion (evidenceAdd chunk belief weight) = Input.readUUID conversion (V.string chunk) >>= λ chunkID →
+  Input.readUUID conversion (V.string belief) >>= λ beliefID → inj₂ (Public.addEvidence beliefID chunkID weight)
+request conversion (evidenceList belief) = mapResult Public.evidence (Input.readUUID conversion (V.string belief))
+request conversion (deleteBelief id) = mapResult (Public.delete Delete.belief) (Input.readUUID conversion (V.string id))
+request conversion (deletePattern id) = mapResult (Public.delete Delete.patternNode) (Input.readUUID conversion (V.string id))
+request conversion (forget project) = inj₂ (Public.deleteProject project)
+request conversion (decay factor project) = inj₂ (Public.inference (Inference.decay project factor))
+request conversion (contradictions project) = inj₂ (Public.inference (Inference.contradictions project))
+request conversion (sweep threshold grace project) = inj₂ (Public.sweepHours project threshold grace)
+request conversion (docLoad path project) = inj₂ (Public.loadDocument path project)
+request conversion (docQuery text project limit) = inj₂ (Public.queryDocument text project limit)
+request conversion (docClear path) = inj₂ (Public.clearDocument path)
+request conversion (intervene id value) = mapResult (λ target → Public.inference (Inference.intervention target value)) (Input.readUUID conversion (V.string id))
 
 -- Rust's trunc counts Unicode scalars, trims first, and replaces the last
 -- permitted scalar with an ellipsis. Every native call has a positive bound.
@@ -157,7 +158,7 @@ parseExit version = just 0
 parseExit (invalid _) = just 2
 parseExit (parsedCommand _) = nothing
 
-module Run (environment : Application.Environment) (format : Encoding.Formatting) where
+module Run (conversion : Library.Contract) (environment : Application.Environment) (format : Encoding.Formatting) where
   module A = Application.Run environment
   module O = Output.Project environment format
 
@@ -233,7 +234,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   ... | O.success _ = success command value
 
   dispatch : ServiceCommand → Script (Failure ⊎ ⊤)
-  dispatch command with request command
+  dispatch command with request conversion command
   ... | inj₁ error = done (inj₁ (arguments error))
   ... | inj₂ request = ask (execute request) (after command)
 
@@ -245,7 +246,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   start : ServiceCommand → Script (Failure ⊎ ⊤)
   start command with validateBeforeConnect command
   ... | false = connectThen command
-  ... | true with request command
+  ... | true with request conversion command
   ...   | inj₁ error = done (inj₁ (arguments error))
   ...   | inj₂ _ = connectThen command
 

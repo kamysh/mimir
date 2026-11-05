@@ -22,7 +22,7 @@ import Mimir.StructuredValue as V
 import Mimir.PublicEncoding as Encoding
 import Mimir.PublicInput as Input
 import Mimir.Validation as Validation
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.JudgeConfiguration as Config
 import Mimir.JudgeHarnessAdapter as Harness
 import Mimir.JudgeRevision as Revision
@@ -205,7 +205,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     ("stream" , V.boolean false) ∷ []) ++ router provider)
 
   rawSource : Wire → V.Value → Validation.Fault → Source.Failure
-  rawSource wire raw failure = Source.Current.input (argumentStage wire) (encode raw) (Revision.Display.fault display failure)
+  rawSource wire raw failure = Source.Current.input conversion (argumentStage wire) (encode raw) (Revision.Display.fault display failure)
 
   textSource : Wire → Text → Validation.Fault → Source.Failure
   textSource wire text failure with JSON.text (argumentStage wire) text

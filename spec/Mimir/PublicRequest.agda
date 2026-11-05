@@ -20,7 +20,7 @@ open import Mimir.PublicInput
 import Mimir.StructuredValue as V
 import Mimir.Binary64 as Binary
 import Mimir.ApplicationFloat as Numeric
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.ToolCatalog as Tools
 import Mimir.GraphMutationProtocol as Mutation
 import Mimir.GraphReadProtocol as Read

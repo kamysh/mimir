@@ -9,28 +9,28 @@ open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (just; nothing)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 import Data.List.Relation.Binary.Permutation.Propositional as Perm
-import Mimir.JsonStoredValue as JSON
+import Mimir.StructuredValue as JSON
 import Mimir.McpEnvelope as Envelope
-import Mimir.ByteKeyOrder as Key
+open import Mimir.Text using (Text)
 import Mimir.PriorityFields as Priority
 
 module P = Priority.For JSON.Value
 
-firstFields : List Key.Key
+firstFields : List Text
 firstFields = Envelope.literal "content" ∷ Envelope.literal "id" ∷ Envelope.literal "project" ∷
   Envelope.literal "memory_type" ∷ Envelope.literal "probability" ∷ Envelope.literal "confidence" ∷
   Envelope.literal "created_at" ∷ Envelope.literal "last_activated_at" ∷ Envelope.literal "evidence" ∷ []
 
-posteriorFields : List Key.Key
+posteriorFields : List Text
 posteriorFields = Envelope.literal "alpha" ∷ Envelope.literal "beta" ∷
   Envelope.literal "alpha0" ∷ Envelope.literal "beta0" ∷ []
 
-contains : Key.Key → JSON.Map.Fields → Bool
-contains name fields with JSON.Map.lookup name fields
+contains : Text → JSON.Object.Fields → Bool
+contains name fields with JSON.Object.normalize fields name
 ... | nothing = false
 ... | just value = true
 
-isBelief : JSON.Map.Fields → Bool
+isBelief : JSON.Object.Fields → Bool
 isBelief fields = contains (Envelope.literal "content") fields ∧ contains (Envelope.literal "id") fields ∧
   contains (Envelope.literal "alpha") fields ∧ contains (Envelope.literal "beta") fields
 

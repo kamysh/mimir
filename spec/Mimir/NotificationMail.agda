@@ -11,7 +11,7 @@ open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_)
 open import Mimir.Text using (Text)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.NotificationConfig as Config
 import Mimir.NotificationCodec as Codec
 import Mimir.NotificationFileBinding as Files
@@ -22,7 +22,6 @@ import Mimir.OAuthComposition as OAuth
 import Mimir.OAuthResponseBinding as HTTP
 import Mimir.SMTPProtocol as SMTP
 import Mimir.SMTPAuth as Auth
-import Mimir.JsonCompactRecords as Compact
 
 mailResult : Auth.Result → Delivery.MailReceipt
 mailResult Auth.sent = Delivery.accepted
@@ -43,7 +42,7 @@ data SMTPCall (cfg : Config.Config) (token : Maybe Text) (message : SMTP.Message
 
 module Bound (conversion : Conversion.Contract) (library : Codec.JSONLibrary) (sizeMaximum clockMaximum : ℕ) where
   private
-    module F = Files.Bound library sizeMaximum clockMaximum
+    module F = Files.Bound conversion library sizeMaximum clockMaximum
     module H = HTTP.Decode conversion clockMaximum
 
   cacheResult : F.F.FS.Error ⊎ Maybe Cache.Cache → Cache.AuthError ⊎ Maybe Cache.Cache
@@ -73,7 +72,7 @@ module Bound (conversion : Conversion.Contract) (library : Codec.JSONLibrary) (s
       Sent held cfg message (mailResult (Auth.withoutOAuth reply))
     oauthMissing : Config.Config.auth cfg ≡ just Config.oauth2 → Config.Config.oauth cfg ≡ nothing →
       Sent held cfg message Delivery.authRequired
-    oauth : ∀ settings (supported : Compact.Supported (OAuth.identityMaterial cfg settings)) events result →
+    oauth : ∀ settings events result →
       Config.Config.auth cfg ≡ just Config.oauth2 → Config.Config.oauth cfg ≡ just settings →
-      Runs held cfg message (OAuth.Configured.send cfg settings supported clockMaximum) events result →
+      Runs held cfg message (OAuth.Configured.send conversion cfg settings clockMaximum) events result →
       Sent held cfg message (mailResult result)

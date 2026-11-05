@@ -1,8 +1,8 @@
 {-# OPTIONS --safe #-}
 -- JSON-RPC application error extraction. Typed fault data is retained beside
 -- the legacy code/message pair; absent data never invents a typed refusal.
-import Mimir.FloatConversion
-module Mimir.McpErrorWire (floatConversion : Mimir.FloatConversion.Contract) where
+import Mimir.StandardLibrary
+module Mimir.McpErrorWire (library : Mimir.StandardLibrary.Contract) where
 
 open import Data.Integer using (ℤ; +_; -[1+_]; _≤_; _≤?_)
 open import Data.List using ([]; _∷_)
@@ -17,7 +17,7 @@ import Mimir.StructuredValue as V
 import Mimir.McpErrors as Errors
 import Mimir.McpClientWire as WireDependency
 private
-  module Wire = WireDependency floatConversion
+  module Wire = WireDependency library
 import Mimir.ProviderResponse as Fields
 import Mimir.SignedMachine as Machine
 

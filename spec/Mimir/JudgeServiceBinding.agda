@@ -16,7 +16,7 @@ open import Data.String using (toList)
 open import Relation.Nullary using (does)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.PublicEncoding as Encoding
 import Mimir.ToolCatalog as Catalog
 import Mimir.JudgeScopedTools as Scope

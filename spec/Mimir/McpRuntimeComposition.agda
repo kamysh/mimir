@@ -8,12 +8,11 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationProtocol as Application
 import Mimir.PublicEncoding as Encoding
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.McpRuntime as Runtime
 import Mimir.McpExchange as Exchange
 import Mimir.McpApplicationComposition as Composition
 import Mimir.ReadLine as Lines
-import Mimir.SignedMachine as Machine
 
 module Run (environment : Application.Environment) (format : Encoding.Formatting)
   (conversion : Conversion.Contract) where
@@ -28,18 +27,18 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
       readError : Text → Event
       exchange : List Bound.Event → Exchange.Outcome → Event
 
-    data Step (checks : Machine.OverflowChecks) : R.State → Event → R.State → Set where
+    data Step : R.State → Event → R.State → Set where
       received : ∀ input wholeLine after →
-        R.Step checks R.reading (R.read input wholeLine) after →
-        Step checks R.reading (read input wholeLine) after
-      failedRead : ∀ message → Step checks R.reading (readError message) (R.exited (R.readFailure message))
+        R.Step R.reading (R.read input wholeLine) after →
+        Step R.reading (read input wholeLine) after
+      failedRead : ∀ message → Step R.reading (readError message) (R.exited (R.readFailure message))
       exchanged : ∀ program events result → Bound.Runs program events result →
-        Step checks (R.executing program) (exchange events result) (R.finish result)
+        Step (R.executing program) (exchange events result) (R.finish result)
 
-    data Trace (checks : Machine.OverflowChecks) : R.State → List Event → R.State → Set where
-      empty : ∀ state → Trace checks state [] state
-      more : ∀ before event middle events after → Step checks before event middle → Trace checks middle events after →
-        Trace checks before (event ∷ events) after
+    data Trace : R.State → List Event → R.State → Set where
+      empty : ∀ state → Trace state [] state
+      more : ∀ before event middle events after → Step before event middle → Trace middle events after →
+        Trace before (event ∷ events) after
 
     -- The underlying transport theorem applies to every admitted exchange;
     -- a fabricated successful tool response cannot satisfy Bound.Runs.

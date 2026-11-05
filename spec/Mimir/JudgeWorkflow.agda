@@ -23,7 +23,7 @@ import Mimir.JudgeFinalization as Finalization
 import Mimir.JudgeStateRecords as Records
 import Mimir.ReviewObservation as Observation
 import Mimir.PublicEncoding as Encoding
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.SourceFailure as Source
 import Mimir.DiagnosticText as Bounded
 import Mimir.Validation as Validation

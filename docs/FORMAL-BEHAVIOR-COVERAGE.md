@@ -1,6 +1,9 @@
 # Mimir behavioral specification coverage
 
-Status: **completed and checked**, 2026-10-31 03:59 UTC.
+Current scope: **Mimir application behavior, with standard libraries supplied externally**.
+The [value audit](FORMAL-VALUE-AUDIT.md) records the removal of library
+implementation proofs and unused support. The verification dates and module
+counts in the historical sections below describe those earlier snapshots.
 
 This extends the existing specification for the current Mimir product. It covers public inputs and defaults, validation, output projections, state transitions, partial failures, persistence and background protocols. The specification-only completion receipt remains in FORMAL-BEHAVIOR-VERIFICATION.json. Subsequent Rust alignment is documented in [RUST-CONFORMANCE.md](RUST-CONFORMANCE.md); the checked model must not be described as a verified installed binary.
 
@@ -114,7 +117,7 @@ Every operation below also uses the shared input/dispatch/output/MCP composition
 | --- | --- |
 | MCP startup and request loop | [McpServiceProcess](../spec/Mimir/McpServiceProcess.agda), [McpRuntimeComposition](../spec/Mimir/McpRuntimeComposition.agda), [McpApplicationComposition](../spec/Mimir/McpApplicationComposition.agda), [McpToolExecution](../spec/Mimir/McpToolExecution.agda), [PublicRequest](../spec/Mimir/PublicRequest.agda), [ApplicationProtocol](../spec/Mimir/ApplicationProtocol.agda), [ApplicationOutput](../spec/Mimir/ApplicationOutput.agda), [PublicEncoding](../spec/Mimir/PublicEncoding.agda) |
 | Configuration, connection and credentials | [ConfigurationProtocol](../spec/Mimir/ConfigurationProtocol.agda), [ConfigurationSchema](../spec/Mimir/ConfigurationSchema.agda), [ConfigurationValues](../spec/Mimir/ConfigurationValues.agda), [ConnectionProtocol](../spec/Mimir/ConnectionProtocol.agda), [Password](../spec/Mimir/Password.agda), [TLS](../spec/Mimir/TLS.agda), [ServiceStartup](../spec/Mimir/ServiceStartup.agda), [ServiceConnection](../spec/Mimir/ServiceConnection.agda), [CoreLibrary](../spec/Mimir/CoreLibrary.agda) |
-| Database bootstrap and ten schema migrations | [MigrationSchema](../spec/Mimir/MigrationSchema.agda), [MigrationScriptBinding](../spec/Mimir/MigrationScriptBinding.agda), [ItemOwnerBackfill](../spec/Mimir/ItemOwnerBackfill.agda), [MigrationRuntime](../spec/Mimir/MigrationRuntime.agda), [MigrationComposition](../spec/Mimir/MigrationComposition.agda), [MigrationHistory](../spec/Mimir/MigrationHistory.agda), [MigrationDependencies](../spec/Mimir/MigrationDependencies.agda) |
+| Database bootstrap and ten schema migrations | [MigrationSchema](../spec/Mimir/MigrationSchema.agda), [MigrationScriptBinding](../spec/Mimir/MigrationScriptBinding.agda), [ItemOwnerBackfill](../spec/Mimir/ItemOwnerBackfill.agda), [MigrationRuntime](../spec/Mimir/MigrationRuntime.agda), [MigrationComposition](../spec/Mimir/MigrationComposition.agda), [MigrationHistory](../spec/Mimir/MigrationHistory.agda) |
 | Judge host, provider and subprocess lifecycle | [JudgeHostProtocol](../spec/Mimir/JudgeHostProtocol.agda), [JudgeWorkflowComposition](../spec/Mimir/JudgeWorkflowComposition.agda), [JudgeBackendComposition](../spec/Mimir/JudgeBackendComposition.agda), [JudgeClientStartup](../spec/Mimir/JudgeClientStartup.agda), [JudgeMcpLifecycle](../spec/Mimir/JudgeMcpLifecycle.agda), [JudgeAPIAdapter](../spec/Mimir/JudgeAPIAdapter.agda), [JudgeHarnessAdapter](../spec/Mimir/JudgeHarnessAdapter.agda), [JudgePersistenceComposition](../spec/Mimir/JudgePersistenceComposition.agda), [JudgeFinalizationComposition](../spec/Mimir/JudgeFinalizationComposition.agda) |
 | Notification, digest and OAuth lifecycle | [JudgeDigestComposition](../spec/Mimir/JudgeDigestComposition.agda), [JudgeDigestSnapshot](../spec/Mimir/JudgeDigestSnapshot.agda), [NotificationComposition](../spec/Mimir/NotificationComposition.agda), [NotificationRuntime](../spec/Mimir/NotificationRuntime.agda), [NotificationFileBinding](../spec/Mimir/NotificationFileBinding.agda), [NotificationCodec](../spec/Mimir/NotificationCodec.agda), [NotificationWire](../spec/Mimir/NotificationWire.agda), [NotificationMail](../spec/Mimir/NotificationMail.agda), [OAuthComposition](../spec/Mimir/OAuthComposition.agda), [OAuthResponseBinding](../spec/Mimir/OAuthResponseBinding.agda), [SMTPProtocol](../spec/Mimir/SMTPProtocol.agda) |
 | Embedding backend and automatic grounding | [EmbeddingService](../spec/Mimir/EmbeddingService.agda), [EmbeddingLifecycle](../spec/Mimir/EmbeddingLifecycle.agda), [EmbeddingBackend](../spec/Mimir/EmbeddingBackend.agda), [EmbeddingBatch](../spec/Mimir/EmbeddingBatch.agda), [BeliefEmbeddingStorage](../spec/Mimir/BeliefEmbeddingStorage.agda), [GroundingStorageBinding](../spec/Mimir/GroundingStorageBinding.agda), [DocumentLoading](../spec/Mimir/DocumentLoading.agda) |
@@ -157,7 +160,7 @@ declarations, the first observed declaration is retained.
 
 ## Operational repair (2026-10-31)
 
-The aggregate now checks **643 safe modules**. `OperationalConfiguration`,
+That snapshot checked **643 safe modules**. `OperationalConfiguration`,
 `ConfigurationUpgrade`, `OperationalLogRetention`, `OperationalDiagnostics`
 and `OperationalLifecycle` cover required configuration compatibility, bounded
 logs, public failure explanations and per-batch startup/retry. CLI coverage is

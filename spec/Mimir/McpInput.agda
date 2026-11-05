@@ -1,70 +1,55 @@
 {-# OPTIONS --safe #-}
--- Server ingress composition: native line framing and UTF-8 admission precede
--- Unicode trimming, then complete JSON decoding and envelope extraction.
-import Mimir.FloatConversion
-module Mimir.McpInput (floatConversion : Mimir.FloatConversion.Contract) where
+-- Mimir frames one line and trims its text before asking the standard JSON
+-- parser. The supplied library owns UTF-8 admission and complete JSON syntax.
+import Mimir.StandardLibrary
+module Mimir.McpInput (library : Mimir.StandardLibrary.Contract) where
 
 open import Data.List using (List; []; _∷_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Bits using (Byte)
+open import Mimir.Text using (Text; trim)
+import Mimir.StandardLibrary as Library
 import Mimir.ReadLine as Lines
-import Mimir.UTF8Text as UTF8
-import Mimir.UTF8Packet as Packet
-import Mimir.ScalarText as Text
-import Mimir.JsonDecode as JSONDependency
-private
-  module JSON = JSONDependency floatConversion
-import Mimir.JsonFlow as Flow
-import Mimir.JsonCompletion as CompletionDependency
-private
-  module Completion = CompletionDependency floatConversion
+import Mimir.StructuredValue as JSON
 import Mimir.McpEnvelope as Envelope
-import Mimir.SignedMachine as Machine
 
-module F = Flow.F
-
-data BodyOutcome (input : List Byte) : Set where
+data BodyOutcome (input : Text) : Set where
   blank : input ≡ [] → BodyOutcome input
-  accepted : JSON.Decoded → (position : F.Cursor input) →
-    F.Cursor.remaining position ≡ [] → BodyOutcome input
-  rejected : F.Rejected input → BodyOutcome input
-  panicked : F.Cursor input → BodyOutcome input
+  accepted : JSON.Value → BodyOutcome input
+  rejected : Library.JSONError → BodyOutcome input
+  panicked : Text → BodyOutcome input
 
-fromJSON : ∀ {input} (result : Flow.Result JSON.Decoded input) →
-  Completion.Complete result → BodyOutcome input
-fromJSON (Flow.ordinary (F.success value position)) complete = accepted value position complete
-fromJSON (Flow.ordinary (F.failure error)) complete = rejected error
-fromJSON (Flow.panicked position) complete = panicked position
+fromJSON : ∀ {input} → Library.JSONResult → BodyOutcome input
+fromJSON (Library.parsed value) = accepted value
+fromJSON (Library.rejected error) = rejected error
+fromJSON (Library.panicked message) = panicked message
 
-body : List Packet.Scalar → List Byte
-body values = UTF8.encode (Text.trim values)
+body : Text → Text
+body = trim
 
 data Outcome (input : List Byte) : Set where
   eof : input ≡ [] → Outcome input
-  invalidUTF8 : Lines.Line input → Packet.Error → Outcome input
-  line : (framed : Lines.Line input) → (decoded : UTF8.Decoded (Lines.Line.bytes framed)) →
-    BodyOutcome (body (UTF8.Decoded.values decoded)) → Outcome input
+  invalidUTF8 : Lines.Line input → Text → Outcome input
+  line : (framed : Lines.Line input) → (text : Text) → BodyOutcome (body text) → Outcome input
 
-module Parser (checks : Machine.OverflowChecks) where
-  module P = JSON.Parser checks
-
-  trimmed : ∀ values → BodyOutcome (UTF8.encode values)
+module Parser where
+  trimmed : ∀ text → BodyOutcome text
   trimmed [] = blank refl
-  trimmed (first ∷ rest) = fromJSON (Flow.Productive.result (P.read (UTF8.encode (first ∷ rest))))
-    (P.consumesCompleteDocument (UTF8.encode (first ∷ rest)))
+  trimmed text@(_ ∷ _) = fromJSON
+    (Library.Contract.jsonValue library (Library.Contract.encodeUTF8 library text))
 
-  readBody : ∀ values → BodyOutcome (body values)
-  readBody values = trimmed (Text.trim values)
+  readBody : ∀ text → BodyOutcome (body text)
+  readBody text = trimmed (trim text)
 
   read : ∀ input → Outcome input
-  read input with Lines.decode input
+  read input with Lines.decode library input
   ... | Lines.eof empty = eof empty
   ... | Lines.invalidUTF8 framed error = invalidUTF8 framed error
-  ... | Lines.success framed textValue = line framed textValue (readBody (UTF8.Decoded.values textValue))
+  ... | Lines.success framed text = line framed text (readBody text)
 
-request : JSON.Decoded → Envelope.Request
-request document = Envelope.extract (JSON.Decoded.value document)
+request : JSON.Value → Envelope.Request
+request = Envelope.extract
 
-command : JSON.Decoded → Envelope.Command
-command document = Envelope.dispatch (request document)
+command : JSON.Value → Envelope.Command
+command value = Envelope.dispatch (request value)
 

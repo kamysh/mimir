@@ -12,12 +12,11 @@ open import Mimir.Text using (Text)
 import Mimir.McpExchange as Exchange
 import Mimir.McpEnvelope as Envelope
 import Mimir.McpToolExecution as Handler
-import Mimir.JsonStoredValue as JSON
-import Mimir.JsonSchemaValue as Convert
+import Mimir.StructuredValue as JSON
 import Mimir.StructuredValue as Schema
 import Mimir.ApplicationProtocol as Application
 import Mimir.PublicEncoding as Encoding
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 
 data External : Exchange.Effect → Set where
   format : ∀ value → External (Exchange.formatTool value)
@@ -35,8 +34,7 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
   module WithDiagnostic (render : H.Diagnostic → Text) where
     data Materialized : H.Result → Text ⊎ JSON.Value → Set where
       error : ∀ cause → Materialized (inj₁ cause) (inj₁ (render cause))
-      value : ∀ schema stored → JSON.Stored stored → Convert.Represents stored schema →
-        Materialized (inj₂ schema) (inj₂ stored)
+      value : ∀ schema → Materialized (inj₂ schema) (inj₂ schema)
 
     data Event : Set where
       external : (effect : Exchange.Effect) → External effect → Exchange.Reply effect → Event
@@ -51,8 +49,8 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
       external : ∀ effect permitted continuation reply events result →
         Runs (continuation reply) events result →
         Runs (Exchange.ask effect continuation) (external effect permitted reply ∷ events) result
-      tool : ∀ name args continuation raw applicationEvents applicationResult reply events result →
-        Convert.Represents args raw → H.Handled name raw applicationEvents applicationResult →
+      tool : ∀ name args continuation applicationEvents applicationResult reply events result →
+        H.Handled name args applicationEvents applicationResult →
         Materialized applicationResult reply → Runs (continuation reply) events result →
         Runs (Exchange.ask (Exchange.handleTool name args) continuation)
           (tool name args applicationEvents reply ∷ events) result
@@ -62,5 +60,5 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
     transportPreserved program events result (returned result₁) = Exchange.returned result
     transportPreserved program events result (external effect permitted continuation reply events₁ result₁ proof) =
       Exchange.replied effect continuation reply (transportPreserved (continuation reply) events₁ result proof)
-    transportPreserved program events result (tool name args continuation raw applicationEvents applicationResult reply events₁ result₁ converted handled materialized proof) =
+    transportPreserved program events result (tool name args continuation applicationEvents applicationResult reply events₁ result₁ handled materialized proof) =
       Exchange.replied (Exchange.handleTool name args) continuation reply (transportPreserved (continuation reply) events₁ result proof)

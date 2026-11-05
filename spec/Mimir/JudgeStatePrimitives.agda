@@ -20,7 +20,8 @@ import Mimir.Validation as V
 import Mimir.Binary64 as Binary
 import Mimir.SignedMachine as Signed
 import Mimir.UUIDGroups as UUID
-import Mimir.UUIDSchema as UUIDCodec
+import Mimir.UUIDSchema as UUIDCodecDependency
+import Mimir.StandardLibrary as Library
 import Mimir.SerdeSequence as Sequence
 import Mimir.SerdeStruct as Struct
 
@@ -70,13 +71,16 @@ signedNumberSound number result observed | yes above with number ≤? I64.maximu
 ...   | ()
 signedNumberSound number .number refl | yes above | yes below = refl , above , below
 
-uuid : JSON.Value → V.Fault ⊎ UUID.UUID
-uuid raw with UUIDCodec.decode raw
-... | inj₁ failure = inj₁ (V.fault [] V.malformedInput "invalid UUID field")
-... | inj₂ value = inj₂ value
+module UUIDFields (library : Library.Contract) where
+  module UUIDCodec = UUIDCodecDependency library
+  uuid : JSON.Value → V.Fault ⊎ UUID.UUID
+  uuid raw with UUIDCodec.decode raw
+  ... | inj₁ failure = inj₁ (V.fault [] V.malformedInput "invalid UUID field")
+  ... | inj₂ value = inj₂ value
 
-uuidRoundTrip : ∀ value → uuid (UUIDCodec.encode value) ≡ inj₂ value
-uuidRoundTrip value rewrite UUIDCodec.roundTrip value = refl
+  uuidRoundTrip : ∀ value → uuid (UUIDCodec.encode value) ≡ inj₂ value
+  uuidRoundTrip value rewrite UUIDCodec.roundTrip value = refl
+
 
 optionResult : ∀ {A : Set} → V.Fault ⊎ A → V.Fault ⊎ Maybe A
 optionResult (inj₁ failure) = inj₁ failure

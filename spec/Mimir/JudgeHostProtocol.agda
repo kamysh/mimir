@@ -14,7 +14,7 @@ open import Data.Unit using (⊤; tt)
 open import Data.String using (toList)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_)
 open import Mimir.Text using (Text)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.PublicEncoding as Encoding
 import Mimir.ApplicationProtocol as Application
 import Mimir.JudgeConfiguration as Config

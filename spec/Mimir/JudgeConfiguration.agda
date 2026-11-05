@@ -21,7 +21,7 @@ open import Mimir.LearningWire using (recordOf)
 import Mimir.StructuredValue as V
 import Mimir.Validation as Validation
 import Mimir.Binary64 as Binary
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.ApplicationFloat as Float
 open import Data.Float.Base using (_<ᵇ_)
 import Mimir.UnixPath as Path

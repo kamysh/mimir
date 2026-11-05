@@ -25,9 +25,8 @@ import Mimir.JudgeStateMap as Mapping
 import Mimir.JudgeStateDocument as Document
 import Mimir.JudgeRecordWrite as Write
 import Mimir.JudgeFilesystem as Filesystem
-import Mimir.FloatConversion as Conversion
-import Mimir.SerdeFlow as Flow
-import Mimir.SignedMachine as Machine
+import Mimir.StandardLibrary as Conversion
+import Mimir.StandardLibrary as Library
 import Mimir.UnixPath as Path
 import Mimir.UUIDV4 as UUID
 
@@ -41,10 +40,10 @@ Logical Names.diagnostics = R.Diagnostics
 
 module Storage (conversion : Conversion.Contract) (sizeMaximum : ℕ) (endian : UUID.Endian) where
   module D = Document conversion
-  module Parser = D.Parser Machine.disabled sizeMaximum
+  module Parser = D.Parser sizeMaximum
   module File = Names.With ℕ Text
   module FS = Filesystem.With Path.Path ℕ Text
-  module W = Write.Size sizeMaximum
+  module W = Write.Size conversion sizeMaximum
   module Writer = W.With ℕ Text Text
 
   convert : (name : Names.Name) → D.Value name → Logical name
@@ -54,18 +53,21 @@ module Storage (conversion : Conversion.Contract) (sizeMaximum : ℕ) (endian : 
 
   data DecodeError : Set where invalid panicked : DecodeError
 
-  decoded : ∀ {A input} → Flow.Result A input → DecodeError ⊎ A
-  decoded (Flow.ordinary (Flow.F.success value cursor)) = inj₂ value
-  decoded (Flow.ordinary (Flow.F.failure failure)) = inj₁ invalid
-  decoded (Flow.panicked cursor) = inj₁ panicked
+  decoded : ∀ name → Library.ReadResult (Parser.recordReader name) → DecodeError ⊎ D.Value name
+  decoded name (Library.decoded raw value observed) = inj₂ value
+  decoded name (Library.syntaxError error) = inj₁ invalid
+  decoded name (Library.schemaError error) = inj₁ invalid
+  decoded name (Library.decodePanicked message) = inj₁ panicked
 
   decode : (name : Names.Name) → List Byte → DecodeError ⊎ D.Value name
-  decode name bytes = decoded (Flow.Productive.result (Parser.read name bytes))
+  decode name bytes = decoded name (Parser.read name bytes)
 
   OrdinaryDecode : Names.Name → List Byte → Set
-  OrdinaryDecode name bytes with Flow.Productive.result (Parser.read name bytes)
-  ... | Flow.ordinary result = ⊤
-  ... | Flow.panicked cursor = ⊥
+  OrdinaryDecode name bytes with Parser.read name bytes
+  ... | Library.decoded raw value observed = ⊤
+  ... | Library.syntaxError error = ⊤
+  ... | Library.schemaError error = ⊤
+  ... | Library.decodePanicked message = ⊥
 
   Clean : Names.Name → FS.Event → Set
   Clean name (FS.readAtMost handle limit , inj₂ bytes) with Limit.check (Names.limit name) (length bytes)
@@ -91,9 +93,9 @@ module Storage (conversion : Conversion.Contract) (sizeMaximum : ℕ) (endian : 
             exact : project result ≡ reply
 
   nativeValue : ∀ {name} → W.Value name → D.Value name
-  nativeValue (W.report value bounded valid) = value
-  nativeValue (W.incident value bounded valid) = value
-  nativeValue (W.diagnostics value bounded valid) = value
+  nativeValue (W.report value bounded) = value
+  nativeValue (W.incident value bounded) = value
+  nativeValue (W.diagnostics value bounded) = value
 
   data Acknowledges : Writer.W.Outcome → Text ⊎ ⊤ → Set where
     succeeded : Acknowledges (Writer.W.returned (inj₂ tt)) (inj₂ tt)

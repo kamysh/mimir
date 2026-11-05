@@ -18,6 +18,7 @@ import Mimir.ConfigurationPath as Path
 import Mimir.ConfigurationIO as IO
 import Mimir.ConfigurationValues as Values
 import Mimir.ConfigurationInput as Input
+import Mimir.Unsigned as Unsigned
 import Mimir.ConfigurationSchema as Schema
 import Mimir.StructuredValue as V
 import Mimir.OperationalConfiguration as Operations
@@ -63,7 +64,6 @@ open P using (Script; done; ask; _>>=_)
 
 module Run (sizeMaximum : ℕ) where
   module Decode = Schema.Decode sizeMaximum
-  module Overrides = Input.Read sizeMaximum
 
   caseDecoded : Validation.Fault ⊎ Schema.Config → Script (Failure ⊎ Schema.Config)
   caseDecoded (inj₁ fault) = done (inj₁ (validation fault))
@@ -103,50 +103,53 @@ module Run (sizeMaximum : ℕ) where
       WriteRun settings path content (writing state (effect ∷ []))
         ((filesystem path content effect , reply) ∷ events) result
 
-  -- Creation checks existence before decoding overrides. The actual writer
-  -- is the WriteRun relation above, preserving O_EXCL and partial-write states.
-  afterCheck : Operations.Admitted → List (String × Text) → Script (Failure ⊎ Content)
-  afterCheck operations [] = done (inj₂ (template operations))
-  afterCheck operations pairs@(_ ∷ _) with Overrides.create pairs
-  ... | inj₁ error = done (inj₁ (override error))
-  ... | inj₂ config = ask (prettyTOML config) λ where
-    (inj₁ error) → done (inj₁ (file error))
-    (inj₂ _) → done (inj₂ (configured operations config))
+  module Creation (parser : Unsigned.Parser) where
+    module Overrides = Input.Read parser sizeMaximum
 
-  prepare : Path.Path → List (String × Text) → Script (Failure ⊎ Content)
-  prepare path pairs = ask (exists path) λ where
-    true → done (inj₁ (file IO.alreadyExists))
-    false → ask defaultOperations λ where
+    -- Creation checks existence before decoding overrides. The actual writer
+    -- is the WriteRun relation above, preserving O_EXCL and partial-write states.
+    afterCheck : Operations.Admitted → List (String × Text) → Script (Failure ⊎ Content)
+    afterCheck operations [] = done (inj₂ (template operations))
+    afterCheck operations pairs@(_ ∷ _) with Overrides.create pairs
+    ... | inj₁ error = done (inj₁ (override error))
+    ... | inj₂ config = ask (prettyTOML config) λ where
       (inj₁ error) → done (inj₁ (file error))
-      (inj₂ operations) → afterCheck operations pairs
+      (inj₂ _) → done (inj₂ (configured operations config))
 
-  selectEditor : Maybe Text → Text
-  selectEditor nothing = toList "vi"
-  selectEditor (just value) = value
+    prepare : Path.Path → List (String × Text) → Script (Failure ⊎ Content)
+    prepare path pairs = ask (exists path) λ where
+      true → done (inj₁ (file IO.alreadyExists))
+      false → ask defaultOperations λ where
+        (inj₁ error) → done (inj₁ (file error))
+        (inj₂ operations) → afterCheck operations pairs
 
-  afterCreation : Path.Path → Content → Maybe Text → Script (Failure ⊎ ⊤)
-  afterCreation path (configured _ _) editorValue = ask (announceCreated path) λ _ →
-    ask announceRestart λ _ → done (inj₂ tt)
-  afterCreation path (template _) editorValue = ask (announceCreated path) λ _ →
-    ask announceEditor λ _ → ask (editor (selectEditor editorValue) path) λ where
-      (inj₁ _) → done (inj₁ editorLaunch)
-      (inj₂ _) → ask announceRestart λ _ → done (inj₂ tt)
+    selectEditor : Maybe Text → Text
+    selectEditor nothing = toList "vi"
+    selectEditor (just value) = value
+
+    afterCreation : Path.Path → Content → Maybe Text → Script (Failure ⊎ ⊤)
+    afterCreation path (configured _ _) editorValue = ask (announceCreated path) λ _ →
+      ask announceRestart λ _ → done (inj₂ tt)
+    afterCreation path (template _) editorValue = ask (announceCreated path) λ _ →
+      ask announceEditor λ _ → ask (editor (selectEditor editorValue) path) λ where
+        (inj₁ _) → done (inj₁ editorLaunch)
+        (inj₂ _) → ask announceRestart λ _ → done (inj₂ tt)
 
 
-  -- Full create command, including early failure, partial file creation and
-  -- editor exit handling. The joined trace retains every actual filesystem
-  -- response; failed writes never reach the editor or success announcements.
-  data Created (settings : IO.Settings) (path : Path.Path)
-    (pairs : List (String × Text)) (editorValue : Maybe Text) :
-    List P.Event → Failure ⊎ ⊤ → Set where
-    preparationFailed : ∀ events failure → P.Runs (prepare path pairs) events (inj₁ failure) →
-      Created settings path pairs editorValue events (inj₁ failure)
-    writeFailed : ∀ prepared content written failure →
-      P.Runs (prepare path pairs) prepared (inj₂ content) →
-      WriteRun settings path content (initialWrite settings) written (IO.failed failure) →
-      Created settings path pairs editorValue (prepared Data.List.++ written) (inj₁ (file failure))
-    afterWrite : ∀ prepared content written announcements result →
-      P.Runs (prepare path pairs) prepared (inj₂ content) →
-      WriteRun settings path content (initialWrite settings) written IO.success →
-      P.Runs (afterCreation path content editorValue) announcements result →
-      Created settings path pairs editorValue (prepared Data.List.++ written Data.List.++ announcements) result
+    -- Full create command, including early failure, partial file creation and
+    -- editor exit handling. The joined trace retains every actual filesystem
+    -- response; failed writes never reach the editor or success announcements.
+    data Created (settings : IO.Settings) (path : Path.Path)
+      (pairs : List (String × Text)) (editorValue : Maybe Text) :
+      List P.Event → Failure ⊎ ⊤ → Set where
+      preparationFailed : ∀ events failure → P.Runs (prepare path pairs) events (inj₁ failure) →
+        Created settings path pairs editorValue events (inj₁ failure)
+      writeFailed : ∀ prepared content written failure →
+        P.Runs (prepare path pairs) prepared (inj₂ content) →
+        WriteRun settings path content (initialWrite settings) written (IO.failed failure) →
+        Created settings path pairs editorValue (prepared Data.List.++ written) (inj₁ (file failure))
+      afterWrite : ∀ prepared content written announcements result →
+        P.Runs (prepare path pairs) prepared (inj₂ content) →
+        WriteRun settings path content (initialWrite settings) written IO.success →
+        P.Runs (afterCreation path content editorValue) announcements result →
+        Created settings path pairs editorValue (prepared Data.List.++ written Data.List.++ announcements) result

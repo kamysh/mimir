@@ -9,7 +9,7 @@ open import Data.Nat using (ℕ)
 open import Data.Product using (_,_)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.String using (toList)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.JudgeConfiguration as Judge
 import Mimir.ConfigurationProtocol as Core
 import Mimir.ConfigurationPath as Path

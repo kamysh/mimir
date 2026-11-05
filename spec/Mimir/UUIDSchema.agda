@@ -1,74 +1,27 @@
 {-# OPTIONS --safe #-}
--- The human-readable UUID visitor accepts JSON strings only. The explicit
--- invalid-scalar branch covers the wider Agda Char domain; admitted Rust
--- strings cannot take that branch. UUID parse failures retain their source.
-module Mimir.UUIDSchema where
+-- Mimir accepts UUID-valued string fields through the supplied UUID library.
+-- The 128-bit value carrier is retained; spelling, parsing and formatting
+-- correctness are external library guarantees.
+import Mimir.StandardLibrary
+module Mimir.UUIDSchema (library : Mimir.StandardLibrary.Contract) where
 
-open import Data.Char using (toℕ)
-open import Data.List using ([]; _∷_)
-import Data.List.Relation.Unary.All as All
+open import Data.List using ([])
+open import Data.Maybe using (just; nothing)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
-import Data.Sum.Properties
-open import Data.Empty using (⊥-elim)
-open import Relation.Nullary using (yes; no)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; cong₂; trans)
-import Mimir.Text as Text
-import Mimir.UnicodeText as Unicode
-import Mimir.UnicodeScalar as Scalar
-import Mimir.UnicodeCursorBytes as Bytes
-import Mimir.DecodedText as Decoded
-import Mimir.UTF8Text as UTF8
-import Mimir.UUIDGroups as G
-import Mimir.UUIDHyphenated as H
-import Mimir.UUIDParse as P
-import Mimir.UUIDJson as JSON
-import Mimir.StructuredValue as Schema
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Mimir.Validation using (Fault; fault; malformedInput)
+import Mimir.StructuredValue as V
+import Mimir.StandardLibrary as Library
+import Mimir.UUIDGroups as UUID
 
-data Error : Set where
-  expectedString : Schema.Value → Error
-  invalidScalar : Text.Text → Error
-  invalidUUID : P.Failure → Error
+decode : V.Value → Fault ⊎ UUID.UUID
+decode (V.string text) with Library.Contract.parseUUID library text
+... | nothing = inj₁ (fault [] malformedInput "invalid UUID")
+... | just value = inj₂ value
+decode _ = inj₁ (fault [] malformedInput "expected a UUID string")
 
-result : P.Result → Error ⊎ G.UUID
-result (P.accepted value) = inj₂ value
-result (P.rejected diagnostic) = inj₁ (invalidUUID diagnostic)
-
-decodeText : Text.Text → Error ⊎ G.UUID
-decodeText text with Unicode.valid? text
-... | no invalid = inj₁ (invalidScalar text)
-... | yes admitted = result (P.read (Bytes.encoded text admitted))
-
-decode : Schema.Value → Error ⊎ G.UUID
-decode (Schema.string text) = decodeText text
-decode other = inj₁ (expectedString other)
-
-text : G.UUID → Text.Text
-text value = Decoded.text (UTF8.Decoded.values (JSON.decoded value))
-
-valid : ∀ value → Unicode.Valid (text value)
-valid value = Decoded.valid (UTF8.Decoded.values (JSON.decoded value))
-
-encode : G.UUID → Schema.Value
-encode value = Schema.string (text value)
-
-validIrrelevant : ∀ {text} (first second : Unicode.Valid text) → first ≡ second
-validIrrelevant = Unicode.validIrrelevant
-
-encodingExact : ∀ value (admitted : Unicode.Valid (text value)) → Bytes.encoded (text value) admitted ≡ H.encode value
-encodingExact value admitted = trans (cong (Bytes.encoded (text value)) (validIrrelevant admitted (valid value)))
-  (Bytes.decodedBytesExact (JSON.decoded value))
+encode : UUID.UUID → V.Value
+encode value = V.string (Library.Contract.formatUUID library value)
 
 roundTrip : ∀ value → decode (encode value) ≡ inj₂ value
-roundTrip value with Unicode.valid? (text value)
-... | no impossible = ⊥-elim (impossible (valid value))
-... | yes admitted = cong result (trans (cong P.read (encodingExact value admitted)) (P.canonicalRoundTrip value))
-
-admittedText : ∀ input (admitted : Unicode.Valid input) →
-  decodeText input ≡ result (P.read (Bytes.encoded input admitted))
-admittedText input admitted with Unicode.valid? input
-... | no impossible = ⊥-elim (impossible admitted)
-... | yes actual = cong (λ proof → result (P.read (Bytes.encoded input proof))) (validIrrelevant actual admitted)
-
-encodeInjective : ∀ {left right} → encode left ≡ encode right → left ≡ right
-encodeInjective {left} {right} same = Data.Sum.Properties.inj₂-injective
-  (trans (Relation.Binary.PropositionalEquality.sym (roundTrip left)) (trans (cong decode same) (roundTrip right)))
+roundTrip value rewrite Library.Contract.uuidRoundTrip library value = refl

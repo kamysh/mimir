@@ -14,7 +14,6 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.ExactBytes as Bytes
-import Mimir.LowerHex as Hex
 import Mimir.MigrationLedger as Ledger
 import Mimir.MigrationHistory as History
 import Mimir.MigrationImport as Import
@@ -29,12 +28,14 @@ record Receipt : Set where
   constructor receipt
   field entries : List H.Entry; newlyConverted : ℕ; alreadyImported : Bool
 
+-- The PostgreSQL/library adapter supplies the lowercase hex checksum.
+-- Its byte-to-hex conversion is external; equality/admission stays below.
 record DatabaseRow : Set where
   constructor databaseRow
-  field version : ℤ; description : Text; checksum : List Bytes.Byte
+  field version : ℤ; description : Text; checksum : Text
 
 row : DatabaseRow → H.Row
-row observed = H.row (DatabaseRow.version observed) (Hex.encode (DatabaseRow.checksum observed))
+row observed = H.row (DatabaseRow.version observed) (DatabaseRow.checksum observed)
 
 rows : List DatabaseRow → List H.Row
 rows = map row

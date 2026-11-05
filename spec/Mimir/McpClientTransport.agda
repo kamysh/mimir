@@ -2,8 +2,8 @@
 -- Unbounded request supervision composed with concrete serialization,
 -- write-all/flush and LF-framing receipts. Each finite execution is checked;
 -- a still-running request has no fabricated completion or timeout receipt.
-import Mimir.FloatConversion
-module Mimir.McpClientTransport (floatConversion : Mimir.FloatConversion.Contract) where
+import Mimir.StandardLibrary
+module Mimir.McpClientTransport (library : Mimir.StandardLibrary.Contract) where
 
 open import Data.Bool using (true)
 open import Data.List using (List; []; _∷_; _++_)
@@ -19,7 +19,7 @@ open import Mimir.Text using (Text)
 open import Mimir.Validation using (Fault)
 import Mimir.StructuredValue as V
 import Mimir.McpClientRequest as RequestDependency
-private module Request = RequestDependency floatConversion
+private module Request = RequestDependency library
 import Mimir.McpClientLine as Line
 import Mimir.McpSendBytes as Send
 import Mimir.WriteAllFlush as Write

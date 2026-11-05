@@ -13,8 +13,8 @@ open import Data.Product using (_×_; _,_)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; trans)
 open import Mimir.Bits using (Byte)
-import Mimir.UTF8Text as UTF8
-import Mimir.UTF8Packet as Packet
+open import Mimir.Text using (Text)
+import Mimir.StandardLibrary as Library
 open import Data.Sum using (inj₁; inj₂)
 import Data.Empty
 
@@ -84,13 +84,13 @@ boundaryOfNonempty (beforeLF byte input .(next ∷ prefix) rest ordinary (before
 
 data Read (input : List Byte) : Set where
   eof : input ≡ [] → Read input
-  success : (result : Line input) → UTF8.Decoded (Line.bytes result) → Read input
-  invalidUTF8 : (result : Line input) → Packet.Error → Read input
+  success : (result : Line input) → Text → Read input
+  invalidUTF8 : (result : Line input) → Text → Read input
 
-decode : ∀ input → Read input
-decode input with scan input
+decode : Library.Contract → ∀ input → Read input
+decode library input with scan input
 ... | scanned [] rest meaning = eof (Data.Product.proj₁ (onlyEOFIsEmpty meaning))
-... | scanned (first ∷ prefix) rest meaning with UTF8.decode (first ∷ prefix)
+... | scanned (first ∷ prefix) rest meaning with Library.Contract.decodeUTF8 library (first ∷ prefix)
 ...   | inj₁ failure = invalidUTF8 result failure
   where result = line (first ∷ prefix) rest (exactSplit meaning) (boundaryOfNonempty meaning)
           (λ same ordinary → noLFMeansEOF meaning ordinary)

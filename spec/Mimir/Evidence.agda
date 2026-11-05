@@ -22,13 +22,19 @@ module Mimir.Evidence where
 
 open import Mimir.Types     using (NodeId; Prob; mkProb)
 open import Mimir.Inference using (Edge)
-open import Mimir.Documents using (Embedding)
 open import Data.Bool       using (Bool; true; false; _∧_)
 open import Data.List       using (List; []; _∷_; _++_)
 open import Data.Maybe      using (Maybe; just; nothing)
 open import Data.String     using (String; _≟_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
 open import Relation.Nullary using (does)
+open import Data.Nat using (ℕ)
+
+-- Abstract vector carrier for these structural grounding laws. Current
+-- backend/vector validation and publication live in EmbeddingService and
+-- DocumentStore; the unused document-summary proposal has been removed.
+Embedding : Set
+Embedding = List ℕ
 
 -- A GROUNDS edge: a DocumentChunk (source) grounds a Belief (target) with a
 -- weight. Deliberately a SEPARATE type from Edge — it carries no inference

@@ -15,7 +15,7 @@ open import Data.Empty using (⊥)
 open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text using (Text)
 open import Mimir.Bits using (Byte)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.JudgePersistenceComposition as Persistence
 import Mimir.JudgePersistence as Names
 import Mimir.JudgeIncident as Incident
@@ -23,8 +23,6 @@ import Mimir.JudgeTraceStart as Start
 import Mimir.JudgeTraceMutation as Mutation
 import Mimir.JudgeStateMap as Mapping
 import Mimir.JudgeStateWire as Native
-import Mimir.JudgeStateSerialize as Serialize
-import Mimir.JudgeStateText as TextBounds
 import Mimir.JudgeStateRecords as Records
 import Mimir.PublicInput as Input
 import Mimir.UUIDGroups as UUID
@@ -108,8 +106,8 @@ module Bound (conversion : Conversion.Contract) (sizeMaximum : ℕ)
   Serialized : R.Trace → Text ⊎ List Byte → Set
   Serialized trace (inj₁ _) = ⊥
   Serialized trace (inj₂ bytes) = Σ Native.R.Trace (λ native →
-    Σ (TextBounds.TraceText native) (λ valid → Mapping.Native.trace native ≡ trace ×
-      bytes ≡ Serialize.traceBytes native valid))
+    Mapping.Native.trace native ≡ trace ×
+      bytes ≡ Conversion.Contract.compactJSON conversion (Native.With.trace conversion native))
 
   MutationReceipt : (effect : M.Operation) → M.Reply effect → Set
   MutationReceipt M.readDiagnostics reply = ReadDiagnostics reply

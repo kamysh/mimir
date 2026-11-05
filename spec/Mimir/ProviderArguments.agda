@@ -1,62 +1,37 @@
 {-# OPTIONS --safe #-}
--- Instantiate the provider envelopes with concrete UTF-8/JSON argument
--- decoding with an explicit numeric-conversion dependency. Ordinary argument
--- errors retain the exact parser diagnostic rather than a generic replacement.
-import Mimir.FloatConversion
-module Mimir.ProviderArguments (floatConversion : Mimir.FloatConversion.Contract) where
+-- Provider arguments use the standard JSON reader. Mimir retains the exact
+-- supplied diagnostic and the original ordered provider-call structure.
+import Mimir.StandardLibrary
+module Mimir.ProviderArguments (library : Mimir.StandardLibrary.Contract) where
 
 open import Data.List using ([])
-open import Data.Maybe using (just)
-open import Data.Product using (Σ; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
-open import Data.Empty using (⊥-elim)
-open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
-open import Mimir.Validation using (Fault; problem; fault; malformedInput)
+open import Mimir.Validation using (Fault; problem; malformedInput)
+import Mimir.StandardLibrary as Library
 import Mimir.StructuredValue as Value
-import Mimir.SchemaDocument as SchemaDependency
-private
-  module Schema = SchemaDependency floatConversion
-import Mimir.JsonReleaseDocument as JSONDependency
-private
-  module JSON = JSONDependency floatConversion
-import Mimir.JsonDiagnosticCode as Diagnostic
-import Mimir.JsonErrorDisplay as Display
-import Mimir.UnicodeText as Unicode
 import Mimir.ProviderResponse as Response
 import Mimir.ProviderReplay as Replay
 import Mimir.ProviderQueueAdmission as Admission
 
-syntaxFailure : ∀ {input} (failure : JSON.F.Rejected input) → Diagnostic.Rejection failure → Fault
-syntaxFailure failure safe with Diagnostic.renderAvailable failure safe
-... | detail , exact = problem [] malformedInput detail
+syntaxFailure : Library.JSONError → Fault
+syntaxFailure error = problem [] malformedInput (Library.JSONError.message error)
 
-failureMessageExact : ∀ {input} (failure : JSON.F.Rejected input) safe →
-  Display.renderRejected failure ≡ just (Fault.explanation (syntaxFailure failure safe))
-failureMessageExact failure safe with Diagnostic.renderAvailable failure safe
-... | detail , exact = exact
+failureMessageExact : ∀ error →
+  Fault.explanation (syntaxFailure error) ≡ Library.JSONError.message error
+failureMessageExact error = refl
 
-convert : ∀ {input} → JSON.Result input → Fault ⊎ Value.Value
-convert (JSON.accepted parsedDocument position complete) = inj₂ (Schema.Document.value parsedDocument)
-convert (JSON.rejected failure safe) = inj₁ (syntaxFailure failure safe)
+convert : Library.JSONResult → Fault ⊎ Value.Value
+convert (Library.parsed value) = inj₂ value
+convert (Library.rejected error) = inj₁ (syntaxFailure error)
+convert (Library.panicked message) = inj₁ (problem [] malformedInput message)
 
 decode : Text → Fault ⊎ Value.Value
-decode text with Unicode.valid? text
-... | no invalid = inj₁ (fault [] malformedInput "argument text contains a non-scalar character")
-... | yes valid = convert (JSON.readAdmitted text valid)
+decode text = convert (Library.Contract.jsonValue library (Library.Contract.encodeUTF8 library text))
 
--- Every admitted text selects its actual UTF-8/JSON path. The rejection for
--- non-scalar Agda characters cannot substitute for parsing a Rust string.
-admittedUsesConcreteParser : ∀ text → Unicode.Valid text →
-  Σ (Unicode.Valid text) (λ valid → decode text ≡ convert (JSON.readAdmitted text valid))
-admittedUsesConcreteParser text admitted with Unicode.valid? text
-... | no invalid = ⊥-elim (invalid admitted)
-... | yes valid = valid , refl
-
-acceptedValueUnchanged : ∀ {input} parsedDocument (position : JSON.F.Cursor input) complete →
-  convert (JSON.accepted parsedDocument position complete) ≡ inj₂ (Schema.Document.value parsedDocument)
-acceptedValueUnchanged parsedDocument position complete = refl
+acceptedValueUnchanged : ∀ value → convert (Library.parsed value) ≡ inj₂ value
+acceptedValueUnchanged value = refl
 
 module Providers = Response.Decode decode
 module Preservation = Replay.Replay decode

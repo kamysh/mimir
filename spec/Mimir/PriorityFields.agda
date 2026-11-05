@@ -9,24 +9,24 @@ open import Data.Product using (_×_; _,_; proj₁)
 open import Relation.Nullary using (does)
 import Data.List.Relation.Binary.Permutation.Propositional as Perm
 import Data.List.Relation.Binary.Permutation.Propositional.Properties as Perm
-import Mimir.ByteKeyOrder as Key
-import Mimir.OrderedObject as Objects
+open import Mimir.Text using (Text)
+open import Mimir.SourceReview using (_≟Text_)
 import Mimir.StablePartition as Partition
 
 module For (Value : Set) where
-  Field = Key.Key × Value
+  Field = Text × Value
   Fields = List Field
 
-  matches : Key.Key → Field → Bool
-  matches name entry = does (name Objects.≟Key proj₁ entry)
+  matches : Text → Field → Bool
+  matches name entry = does (name ≟Text proj₁ entry)
 
-  module P (name : Key.Key) = Partition.For Field (matches name)
+  module P (name : Text) = Partition.For Field (matches name)
 
   record Selected (input : Fields) : Set where
     constructor selected
     field chosen remainder : Fields; exact : (chosen ++ remainder) Perm.↭ input
 
-  select : List Key.Key → ∀ input → Selected input
+  select : List Text → ∀ input → Selected input
   select [] input = selected [] input Perm.refl
   select (name ∷ names) input with P.partition name input
   ... | P.partitioned chosen remainder exact included excluded with select names remainder
@@ -38,7 +38,7 @@ module For (Value : Set) where
     constructor reordered
     field fields : Fields; exact : fields Perm.↭ input
 
-  reorder : List Key.Key → List Key.Key → ∀ input → Reordered input
+  reorder : List Text → List Text → ∀ input → Reordered input
   reorder first last input with select first input
   ... | selected front rest frontExact with select last rest
   ...   | selected back middle backExact = reordered (front ++ (middle ++ back))

@@ -20,16 +20,15 @@ import Mimir.ServiceStartup as Startup
 import Mimir.MigrationRuntime as Migration
 import Mimir.ApplicationProtocol as Application
 import Mimir.PublicEncoding as Encoding
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.McpRuntimeComposition as Runtime
-import Mimir.SignedMachine as Machine
 import Mimir.ServiceConnection as CoreConnection
 
 module Process (sizeMaximum : ℕ) (configurationPath : Path.Path)
   (connectionEnvironment : Connection.Environment) (decimalPort : ℕ → Text)
   (certificateBlocks : Text → List Text) (unix : Bool)
   (environment : Application.Environment) (format : Encoding.Formatting) (conversion : Conversion.Contract)
-  (checks : Machine.OverflowChecks) where
+  where
   module C = Configuration.Run sizeMaximum
   module S config = Startup.Run (Config.Config.core config) connectionEnvironment decimalPort certificateBlocks unix
   module M = Migration.Runtime Text Text
@@ -75,7 +74,7 @@ module Process (sizeMaximum : ℕ) (configurationPath : Path.Path)
       failed : ∀ config failure → Step migrations (starting config (S.failed {config = config} failure)) serviceReturned (exited (serviceFailure config failure))
       ready : ∀ config service → CoreConnection.Compatible (Config.Config.core config) environment →
         Step migrations (starting config (S.ready {config = config} service)) serviceReturned (serving config service R.R.reading)
-      request : ∀ config service before event after → Loop.Step checks before event after →
+      request : ∀ config service before event after → Loop.Step before event after →
         Step migrations (serving config service before) (exchange event) (serving config service after)
       finished : ∀ config service reason → Step migrations (serving config service (R.R.exited reason)) serviceReturned (exited (runtimeExit reason))
 

@@ -1,22 +1,19 @@
 {-# OPTIONS --safe #-}
--- File-level decoding for the three persisted judge names. The native depth
--- allowance and whitespace-only suffix rule are fixed at this boundary.
-import Mimir.FloatConversion
-module Mimir.JudgeStateDocument (floatConversion : Mimir.FloatConversion.Contract) where
+-- Mimir's three persisted record schemas. The supplied typed JSON library
+-- performs syntax decoding; the exact Mimir field/default reader is retained.
+import Mimir.StandardLibrary
+module Mimir.JudgeStateDocument (library : Mimir.StandardLibrary.Contract) where
 
-open import Data.List using ([])
+open import Data.List using (List)
 open import Data.Nat using (ℕ)
-open import Relation.Binary.PropositionalEquality using (_≡_)
+open import Data.Sum using (_⊎_)
+open import Mimir.Bits using (Byte)
+import Mimir.StandardLibrary as Library
+import Mimir.Validation as Validation
+import Mimir.StructuredValue as JSON
 import Mimir.JudgePersistence as Names
 import Mimir.JudgeStateWire as Wire
-import Mimir.JudgeStateRaw as RawDependency
-private
-  module Raw = RawDependency floatConversion
-import Mimir.SerdeDocument as DocumentDependency
-private
-  module Document = DocumentDependency floatConversion
-import Mimir.SerdeFlow as Flow
-import Mimir.SignedMachine as Machine
+import Mimir.JudgeStateDecode as Decode
 module R = Wire.R
 
 Value : Names.Name → Set
@@ -24,19 +21,13 @@ Value Names.status = R.Report
 Value Names.failure = R.Incident
 Value Names.diagnostics = R.Diagnostics
 
-module Parser (checks : Machine.OverflowChecks) (sizeMaximum : ℕ) where
-  module D = Document.Parser checks
-  module P = Raw.Parser checks sizeMaximum
+module Parser (sizeMaximum : ℕ) where
+  module D = Decode.Size library sizeMaximum
 
-  recordReader : (name : Names.Name) → ℕ → Flow.Parser (Value name)
-  recordReader Names.status = P.report
-  recordReader Names.failure = P.incident
-  recordReader Names.diagnostics = P.diagnostics
+  recordReader : (name : Names.Name) → JSON.Value → Validation.Fault ⊎ Value name
+  recordReader Names.status = D.report
+  recordReader Names.failure = D.incident
+  recordReader Names.diagnostics = D.diagnostics
 
-  read : (name : Names.Name) → Flow.Parser (Value name)
-  read name = D.read (recordReader name 127)
-
-  successExhausts : ∀ name input value position →
-    Flow.Productive.result (read name input) ≡ Flow.ordinary (Flow.F.success value position) →
-    Flow.F.Cursor.remaining position ≡ []
-  successExhausts name input value position observed = D.successExhausts (recordReader name 127) input value position observed
+  read : (name : Names.Name) → List Byte → Library.ReadResult (recordReader name)
+  read name = Library.readRecord library (recordReader name)

@@ -24,7 +24,7 @@ import Mimir.JudgeLock as Lock
 import Mimir.JudgeRead as Read
 import Mimir.JudgeWrite as Write
 import Mimir.UUIDGroups as UUID
-import Mimir.UUIDHyphenated as UUIDText
+import Mimir.StandardLibrary as Library
 
 data Name : Set where outbox oauth digest : Name
 filename : Name → Path.Path
@@ -32,8 +32,9 @@ filename outbox = ASCII.literal (toList "notification-outbox.json") tt
 filename oauth = ASCII.literal (toList "notification-oauth.json") tt
 filename digest = ASCII.literal (toList "notification-digest.json") tt
 
-temporary : UUID.UUID → Path.Path
-temporary id = ASCII.literal (toList ".notification-") tt ++ UUIDText.encode id ++
+temporary : Library.Contract → UUID.UUID → Path.Path
+temporary library id = ASCII.literal (toList ".notification-") tt ++
+  Library.Contract.encodeUTF8 library (Library.Contract.formatUUID library id) ++
   ASCII.literal (toList ".tmp") tt
 
 ancestors : Path.Path → List Path.Path
@@ -41,7 +42,7 @@ ancestors path with Parent.parents path
 ... | nothing = path ∷ []
 ... | just parents = path ∷ parents
 
-module File (Handle NativeError : Set) where
+module File (library : Library.Contract) (Handle NativeError : Set) where
   module FS = Filesystem.With Path.Path Handle NativeError
   module D = Directory.With Path.Path Handle NativeError
   module L = Lock.With Path.Path Handle NativeError
@@ -90,6 +91,6 @@ module File (Handle NativeError : Set) where
   write : L.Locked → Name → UUID.UUID → List Byte → Script WriteResult
   write held name id bytes with length bytes ≤? 1048576
   ... | no _ = done oversized
-  ... | yes _ = W.replace (Path.join directory (temporary id))
+  ... | yes _ = W.replace (Path.join directory (temporary library id))
       (Path.join directory (filename name)) directory bytes >>= λ outcome → done (replaced outcome)
     where directory = L.Locked.path held
