@@ -1,7 +1,9 @@
 {-# OPTIONS --safe #-}
 -- Complete typed learning request decoding, including nested records and
--- default/null/unknown-field distinctions. Semantic validation remains in
--- ExperienceSchema and ReviewSchema and runs before their transaction.
+-- default/null/unknown-field distinctions. Stored responses require IDs;
+-- public inputs retain optional IDs and keys until locked allocation. The
+-- resulting canonical payload passes ExperienceSchema/ReviewSchema checks
+-- inside the same operation before its proposed world is published.
 module Mimir.LearningWire where
 
 open import Data.List using (List; []; _∷_; map)
@@ -24,6 +26,7 @@ import Mimir.SourceReview as Coverage
 import Mimir.SourceWire as Source
 import Mimir.CandidateWire as Candidate
 import Mimir.IndependentProvenance as Origin
+import Mimir.LearningInput as Input
 
 recordOf : ∀ {A : Set} → List String → (V.Object.View → Fault ⊎ A) → V.Value → Fault ⊎ A
 recordOf names = readRecord Objects.forbid Objects.keepLast (map toList names)
@@ -77,15 +80,23 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     inj₂ (L.prediction quantity unit horizon recorded value probability lower upper inferred))
 
   item : V.Value → Fault ⊎ L.LearningItem
-  -- Canonical projection after ItemAllocation: id is assigned, while a stored
-  -- local key remains metadata in the allocation ledger rather than identity.
+  -- Stored responses require the assigned ID and retain the optional key.
   item = recordOf ("id" ∷ "key" ∷ "kind" ∷ "source_ref" ∷ "actor" ∷ "statement" ∷ "conditions" ∷ "predictions" ∷ [])
     (λ fields → required "id" uuid fields >>= λ id → optional "key" V.asString fields >>= λ localKey →
     required "kind" kind fields >>= λ kind →
     required "source_ref" V.asString fields >>= λ reference → required "actor" V.asString fields >>= λ actor →
     required "statement" V.asString fields >>= λ statement → required "conditions" V.asString fields >>= λ conditions →
     defaulted "predictions" [] (readArray prediction) fields >>= λ predictions →
-    inj₂ (L.learningItem id kind reference actor statement conditions predictions))
+    inj₂ (L.learningItem id localKey kind reference actor statement conditions predictions))
+
+  itemInput : V.Value → Fault ⊎ Input.Item
+  itemInput = recordOf ("id" ∷ "key" ∷ "kind" ∷ "source_ref" ∷ "actor" ∷ "statement" ∷ "conditions" ∷ "predictions" ∷ [])
+    (λ fields → optional "id" uuid fields >>= λ id → optional "key" V.asString fields >>= λ localKey →
+    required "kind" kind fields >>= λ kind →
+    required "source_ref" V.asString fields >>= λ reference → required "actor" V.asString fields >>= λ actor →
+    required "statement" V.asString fields >>= λ statement → required "conditions" V.asString fields >>= λ conditions →
+    defaulted "predictions" [] (readArray prediction) fields >>= λ predictions →
+    inj₂ (Input.item id localKey kind reference actor statement conditions predictions))
 
   axis : V.Value → Fault ⊎ N.Axis
   axis = recordOf ("value" ∷ "weight" ∷ []) (λ fields →
@@ -102,6 +113,17 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     defaulted "item_ids" [] (readArray uuid) fields >>= λ items → required "rationale" V.asString fields >>= λ rationale →
     inj₂ (L.assessment target scope rubric rationale correctness usefulness evidence items))
 
+  assessmentInput : V.Value → Fault ⊎ Input.Assessment
+  assessmentInput = recordOf ("target" ∷ "scope" ∷ "rubric" ∷ "correctness" ∷ "usefulness" ∷ "evidence_indices" ∷
+    "item_ids" ∷ "item_keys" ∷ "rationale" ∷ []) (λ fields →
+    required "target" (target conversion) fields >>= λ target → required "scope" V.asString fields >>= λ scope →
+    required "rubric" V.asString fields >>= λ rubric → required "correctness" axis fields >>= λ correctness →
+    required "usefulness" axis fields >>= λ usefulness →
+    required "evidence_indices" (readArray (unsigned sizeMaximum)) fields >>= λ evidence →
+    defaulted "item_ids" [] (readArray uuid) fields >>= λ items → required "rationale" V.asString fields >>= λ rationale →
+    defaulted "item_keys" [] (readArray V.asString) fields >>= λ names →
+    inj₂ (Input.assessment (L.assessment target scope rubric rationale correctness usefulness evidence items) names))
+
   experience : V.Value → Fault ⊎ X.Experience
   experience = recordOf ("id" ∷ "project" ∷ "context" ∷ "action" ∷ "outcome" ∷ "source" ∷ "evidence" ∷
     "belief_ids" ∷ "pattern_id" ∷ "learning_items" ∷ "source_records" ∷ []) (λ fields →
@@ -113,6 +135,18 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     defaulted "learning_items" [] (readArray item) fields >>= λ items →
     defaulted "source_records" [] (readArray (Source.decode Objects.keepLast)) fields >>= λ sources →
     inj₂ (X.experience id project context action outcome provenance evidence beliefs patternID items sources))
+
+  experienceInput : V.Value → Fault ⊎ Input.Experience
+  experienceInput = recordOf ("id" ∷ "project" ∷ "context" ∷ "action" ∷ "outcome" ∷ "source" ∷ "evidence" ∷
+    "belief_ids" ∷ "pattern_id" ∷ "learning_items" ∷ "source_records" ∷ []) (λ fields →
+    required "id" uuid fields >>= λ id → required "project" V.asString fields >>= λ project →
+    required "context" V.asString fields >>= λ context → required "action" V.asString fields >>= λ action →
+    required "outcome" outcome fields >>= λ outcome → required "source" Source.readProvenance fields >>= λ provenance →
+    required "evidence" (readArray V.asString) fields >>= λ evidence →
+    defaulted "belief_ids" [] (readArray uuid) fields >>= λ beliefs → optional "pattern_id" uuid fields >>= λ patternID →
+    defaulted "learning_items" [] (readArray itemInput) fields >>= λ items →
+    defaulted "source_records" [] (readArray (Source.decode Objects.keepLast)) fields >>= λ sources →
+    inj₂ (Input.experience id project context action outcome provenance evidence beliefs patternID items sources))
 
   feedback : V.Value → Fault ⊎ R.Feedback
   feedback = recordOf ("belief_id" ∷ "verdict" ∷ "weight" ∷ []) (λ fields →
@@ -152,4 +186,22 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     defaulted "extracted_items" [] (readArray item) fields >>= λ extracted →
     defaulted "source_coverage" [] (readArray coverage) fields >>= λ coverage →
     inj₂ (R.review id revision reviewer rationale feedbacks links superseded candidates
+      candidateFeedbacks candidateLinks assessments extracted coverage))
+
+  reviewInput : V.Value → Fault ⊎ Input.Review
+  reviewInput = recordOf ("experience_id" ∷ "experience_revision" ∷ "reviewer" ∷ "rationale" ∷ "feedback" ∷ "links" ∷
+    "superseded_beliefs" ∷ "candidates" ∷ "candidate_feedback" ∷ "candidate_links" ∷ "assessments" ∷
+    "extracted_items" ∷ "source_coverage" ∷ []) (λ fields →
+    required "experience_id" uuid fields >>= λ id → required "experience_revision" i64 fields >>= λ revision →
+    required "reviewer" V.asString fields >>= λ reviewer → required "rationale" V.asString fields >>= λ rationale →
+    defaulted "feedback" [] (readArray feedback) fields >>= λ feedbacks →
+    defaulted "links" [] (readArray link) fields >>= λ links →
+    defaulted "superseded_beliefs" [] (readArray uuid) fields >>= λ superseded →
+    defaulted "candidates" [] (readArray (Candidate.decode Objects.keepLast)) fields >>= λ candidates →
+    defaulted "candidate_feedback" [] (readArray candidateFeedback) fields >>= λ candidateFeedbacks →
+    defaulted "candidate_links" [] (readArray candidateLink) fields >>= λ candidateLinks →
+    defaulted "assessments" [] (readArray assessmentInput) fields >>= λ assessments →
+    defaulted "extracted_items" [] (readArray itemInput) fields >>= λ extracted →
+    defaulted "source_coverage" [] (readArray coverage) fields >>= λ coverage →
+    inj₂ (Input.review id revision reviewer rationale feedbacks links superseded candidates
       candidateFeedbacks candidateLinks assessments extracted coverage))

@@ -115,6 +115,7 @@ module Encode (format : Formatting) where
 
   item : L.LearningItem → V.Value
   item i = object (("id" , uuid (L.LearningItem.identity i)) ∷ ("kind" , V.string (kindText (L.LearningItem.kind i))) ∷
+    ("key" , optional V.string (L.LearningItem.localKey i)) ∷
     ("source_ref" , V.string (L.LearningItem.reference i)) ∷ ("actor" , V.string (L.LearningItem.actor i)) ∷
     ("statement" , V.string (L.LearningItem.statement i)) ∷ ("conditions" , V.string (L.LearningItem.conditions i)) ∷
     ("predictions" , V.array (map prediction (L.LearningItem.predictions i))) ∷ [])
