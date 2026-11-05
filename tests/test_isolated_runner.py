@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -73,6 +74,28 @@ class IsolationTests(unittest.TestCase):
             with self.subTest(backend=backend), patch.dict(os.environ, self.env, clear=True), patch("sys.argv", argv):
                 with self.assertRaises(ValueError):
                     fixture.main()
+
+    def test_cancellation_waits_for_fixture_readiness_before_signalling(self):
+        binary = Path(self.data["mimir"])
+        binary.parent.mkdir(parents=True)
+        binary.write_text('#!' + sys.executable + '\n' +
+            'import os,signal,sys,time\nfrom pathlib import Path\n' +
+            'signal.signal(signal.SIGTERM, lambda *_: exit(0))\n' +
+            'time.sleep(0.3)\n' +
+            'Path(os.environ["MIMIR_JUDGE_FIXTURE_READY_FILE"]).write_text("ready")\n' +
+            'time.sleep(0.1)\nprint("fixture waiting", file=sys.stderr, flush=True)\n' +
+            'time.sleep(30)\n')
+        binary.chmod(0o700)
+        ready = self.root / "child.ready"
+        report = self.root / "cancel.json"
+        env = {**self.env, "MIMIR_JUDGE_FIXTURE_READY_FILE": str(ready)}
+        argv = ["fixture.py", "cancel", "--ready", str(ready), "--stderr-ready", "fixture waiting", "--report", str(report), "--", str(binary)]
+        with patch.dict(os.environ, env, clear=True), patch("sys.argv", argv):
+            fixture.main()
+        self.assertTrue(ready.exists())
+        self.assertEqual(report.read_bytes(), b"")
+        self.assertEqual(report.with_suffix(".exit").read_text(), "0\n")
+        self.assertIn("fixture waiting", report.with_suffix(".stderr").read_text())
 
     def test_connection_and_config_overrides_are_refused(self):
         for key, value in {"MIMIR_HOST": "deployment", "MIMIR_PORT": "5450",
