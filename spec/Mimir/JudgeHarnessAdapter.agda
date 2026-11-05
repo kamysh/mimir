@@ -4,7 +4,8 @@
 module Mimir.JudgeHarnessAdapter where
 
 open import Data.Bool using (Bool; true; false; _∧_; not)
-open import Data.List using (List; []; _∷_; _++_; map; all; length)
+open import Data.List using (List; []; _∷_; _++_; map; length)
+open import Data.Bool.ListAction using (all)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≟_; _≤?_; _*_)
 open import Data.Integer using (ℤ)
@@ -160,7 +161,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
   process request = ask (runProcess request) (λ receipt → done (convert (ProcessReceipt.outcome receipt)))
     where
     convert : Process.Result → Revision.Error ⊎ List Byte
-    convert (inj₁ error) = inj₁ (processFailure error)
+    convert (inj₁ failureValue) = inj₁ (processFailure failureValue)
     convert (inj₂ output) = inj₂ output
 
   helpArgs : Config.Backend → List Text
@@ -172,7 +173,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
   ... | true | _ = done (inj₂ state)
   ... | false | Config.commandMode = done (inj₂ state)
   ... | false | kind = process (Process.spawnSpec program (helpArgs kind) work []) then (λ where
-      (inj₁ error) → done (inj₁ error)
+      (inj₁ failureValue) → done (inj₁ failureValue)
       (inj₂ output) → inspect output)
     where
     inspect : List Byte → Script (Revision.Error ⊎ Adapter)
@@ -262,12 +263,12 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
 
   unwrap : Text → Config.Backend → List Byte → Script (Revision.Error ⊎ V.Value)
   unwrap work Config.codex stdout = readAnswer work then λ where
-    (inj₁ error) → done (inj₁ error)
+    (inj₁ failureValue) → done (inj₁ failureValue)
     (inj₂ bytes) → done (JSON.read (toList "invalid Codex structured result") bytes)
   unwrap work Config.commandMode stdout = done (JSON.read (toList "invalid command result") stdout)
   unwrap work Config.api stdout = done (inj₁ (Revision.error (toList "API backend is not a harness") nothing))
   unwrap work Config.claudeCode stdout with JSON.read (toList "invalid Claude result") stdout
-  ... | inj₁ error = done (inj₁ error)
+  ... | inj₁ failureValue = done (inj₁ failureValue)
   ... | inj₂ wrapper = done (unwrapClaude wrapper)
 
   call : V.Value → Validation.Fault ⊎ (Text × Text)
@@ -280,9 +281,9 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
   action : Text × Text → Revision.Error ⊎ Revision.Action
   action (name , arguments) with JSON.text (toList "invalid harness tool arguments") arguments
   ... | inj₂ value = inj₂ (Revision.tool name value)
-  ... | inj₁ error with Revision.Error.source error
+  ... | inj₁ failureValue with Revision.Error.source failureValue
   ...   | just source = inj₂ (Revision.malformedTool name source)
-  ...   | nothing = inj₁ error
+  ...   | nothing = inj₁ failureValue
 
   yield : Adapter → Script Result
   yield state with Adapter.pending state
@@ -291,7 +292,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
     where updated = record state { pending = rest }
 
   afterReply : Adapter → Revision.Error ⊎ V.Value → Script Result
-  afterReply state (inj₁ error) = done (result state (inj₁ error))
+  afterReply state (inj₁ failureValue) = done (result state (inj₁ failureValue))
   afterReply state (inj₂ reply) with calls reply
   ... | inj₁ fault = done (result state (inj₁ (Revision.error (Source.display captured) (just captured))))
     where captured = Source.Current.input conversion (toList "invalid harness reply") (encode reply) (Revision.Display.fault display fault)
@@ -301,15 +302,15 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
 
   invoke : Text → Adapter → Script Result
   invoke work state = writeArgs work (Config.Llm.backend config) then λ where
-      (inj₁ error) → done (result state (inj₁ error))
+      (inj₁ failureValue) → done (result state (inj₁ failureValue))
       (inj₂ tt) → process (Process.spawnSpec program (args work (Config.Llm.backend config)) work
         (encode (payload state))) then λ where
-          (inj₁ error) → done (result state (inj₁ error))
+          (inj₁ failureValue) → done (result state (inj₁ failureValue))
           (inj₂ stdout) → unwrap work (Config.Llm.backend config) stdout then afterReply state
 
   inDirectory : Text → Adapter → Script Result
   inDirectory work state = (check work state then λ where
-    (inj₁ error) → done (result state (inj₁ error))
+    (inj₁ failureValue) → done (result state (inj₁ failureValue))
     (inj₂ checked) → invoke work checked) then λ outcome →
       ask (removeRun work) (λ _ → done outcome)
 

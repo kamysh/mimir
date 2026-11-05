@@ -33,32 +33,32 @@ module Run (sizeMaximum : ℕ) (path : Path.Path) (environment : Connection.Envi
   (decimalPort : ℕ → Text) (certificateBlocks : Text → List Text) (unix : Bool) where
   private
     module C = Configuration.Run sizeMaximum
-    module S config = Startup.Run (Config.Config.core config) environment decimalPort certificateBlocks unix
+    module S configurationValue = Startup.Run (Config.Config.core configurationValue) environment decimalPort certificateBlocks unix
     module M = Migration.Runtime Text Text
 
   data Failure : Set where
     configurationFailure : Configuration.Failure → Failure
     disabled : Failure
-    startupFailure : (config : Config.Config) → S.Failure config → Failure
+    startupFailure : (configurationValue : Config.Config) → S.Failure configurationValue → Failure
     backfillFailure : B.Counts → B.Failure → Failure
     outputFailure : Text → Failure
 
   data State : Set where
     loading : Configuration.P.Script (Configuration.Failure Data.Sum.⊎ Config.Config) → State
-    starting : (config : Config.Config) → S.State config → State
-    embedding : (config : Config.Config) → S.Service config → B.E.Script B.Backfill → State
+    starting : (configurationValue : Config.Config) → S.State configurationValue → State
+    embedding : (configurationValue : Config.Config) → S.Service configurationValue → B.E.Script B.Backfill → State
     printing : Summary → State
     finished : State
     failed : Failure → State
 
   configured : M.Inputs → Config.Config → State
-  configured migrations config with Values.Config.embed (Config.Config.core config)
+  configured migrations configurationValue with Values.Config.embed (Config.Config.core configurationValue)
   ... | nothing = failed disabled
-  ... | just _ = starting config (S.start config migrations)
+  ... | just _ = starting configurationValue (S.start configurationValue migrations)
 
   data Event : Set where
     configuration : Configuration.P.Event → Event
-    service : (config : Config.Config) → S.Event config → Event
+    service : (configurationValue : Config.Config) → S.Event configurationValue → Event
     backfill : B.E.Event → Event
     returned : Event
     output : Text Data.Sum.⊎ Data.Unit.⊤ → Event
@@ -67,16 +67,16 @@ module Run (sizeMaximum : ℕ) (path : Path.Path) (environment : Connection.Envi
     configReply : ∀ effect next reply → Step migrations (loading (Configuration.P.ask effect next))
       (configuration (effect , reply)) (loading (next reply))
     badConfig : ∀ error → Step migrations (loading (Configuration.P.done (inj₁ error))) returned (failed (configurationFailure error))
-    configLoaded : ∀ config → Step migrations (loading (Configuration.P.done (inj₂ config))) returned (configured migrations config)
-    startup : ∀ config before event after → S.Step config before event after →
-      Step migrations (starting config before) (service config event) (starting config after)
-    badService : ∀ config error → Step migrations (starting config (S.failed {config = config} error)) returned (failed (startupFailure config error))
-    ready : ∀ config service → Step migrations (starting config (S.ready {config = config} service)) returned
-      (embedding config service (B.reembed true))
-    embedded : ∀ config service effect next reply → Step migrations (embedding config service (B.E.ask effect next))
-      (backfill (effect , reply)) (embedding config service (next reply))
-    completed : ∀ config service count → Step migrations (embedding config service (B.E.done (B.complete count))) returned (printing (summary count))
-    interrupted : ∀ config service count error → Step migrations (embedding config service (B.E.done (B.interrupted count error))) returned
+    configLoaded : ∀ configurationValue → Step migrations (loading (Configuration.P.done (inj₂ configurationValue))) returned (configured migrations configurationValue)
+    startup : ∀ configurationValue before event after → S.Step configurationValue before event after →
+      Step migrations (starting configurationValue before) (service configurationValue event) (starting configurationValue after)
+    badService : ∀ configurationValue error → Step migrations (starting configurationValue (S.failed {configurationValue = configurationValue} error)) returned (failed (startupFailure configurationValue error))
+    ready : ∀ configurationValue service → Step migrations (starting configurationValue (S.ready {configurationValue = configurationValue} service)) returned
+      (embedding configurationValue service (B.reembed true))
+    embedded : ∀ configurationValue service effect next reply → Step migrations (embedding configurationValue service (B.E.ask effect next))
+      (backfill (effect , reply)) (embedding configurationValue service (next reply))
+    completed : ∀ configurationValue service count → Step migrations (embedding configurationValue service (B.E.done (B.complete count))) returned (printing (summary count))
+    interrupted : ∀ configurationValue service count error → Step migrations (embedding configurationValue service (B.E.done (B.interrupted count error))) returned
       (failed (backfillFailure count error))
     printed : ∀ value → Step migrations (printing value) (output (inj₂ Data.Unit.tt)) finished
     outputFailed : ∀ value error → Step migrations (printing value) (output (inj₁ error)) (failed (outputFailure error))

@@ -25,23 +25,23 @@ retired state = Ranking.unique (concatMap Review.Review.superseded
   where learn = Store.World.learning state; pub = Learning.World.publication learn
 
 ReadMeaning : (phase : Protocol.State) → Store.World → Protocol.Reply phase → Set
-ReadMeaning (Protocol.overlay request) state (inj₁ error) = ⊤
-ReadMeaning (Protocol.overlay request) state (inj₂ ids) = ids ↭ retired state
-ReadMeaning (Protocol.beliefs request superseded) state (inj₁ error) = ⊤
-ReadMeaning (Protocol.beliefs request superseded) state (inj₂ rows) = rows ↭
-  Records.listBeliefs (Protocol.Request.project request) nothing (Store.beliefs state)
-ReadMeaning (Protocol.closure context seed remaining) state (inj₁ error) = ⊤
-ReadMeaning (Protocol.closure context seed remaining) state (inj₂ rows) =
+ReadMeaning (Protocol.overlay requestValue) state (inj₁ error) = ⊤
+ReadMeaning (Protocol.overlay requestValue) state (inj₂ ids) = ids ↭ retired state
+ReadMeaning (Protocol.beliefs requestValue superseded) state (inj₁ error) = ⊤
+ReadMeaning (Protocol.beliefs requestValue superseded) state (inj₂ rows) = rows ↭
+  Records.listBeliefs (Protocol.Request.project requestValue) nothing (Store.beliefs state)
+ReadMeaning (Protocol.closure retrievalContext seed remaining) state (inj₁ error) = ⊤
+ReadMeaning (Protocol.closure retrievalContext seed remaining) state (inj₂ rows) =
   Paths.Returned (Paths.allDownstream seed) (Store.beliefs state)
     (Publication.World.edges (Learning.World.publication (Store.World.learning state))) rows
-ReadMeaning (Protocol.neighbors context project seed remaining frontier next) state (inj₁ error) = ⊤
-ReadMeaning (Protocol.neighbors context project seed remaining frontier next) state (inj₂ rows) =
+ReadMeaning (Protocol.neighbors retrievalContext project seed remaining frontier next) state (inj₁ error) = ⊤
+ReadMeaning (Protocol.neighbors retrievalContext project seed remaining frontier next) state (inj₂ rows) =
   Paths.Returned (Paths.directScoped seed project) (Store.beliefs state)
     (Publication.World.edges (Learning.World.publication (Store.World.learning state))) rows
 -- Model generation, pgvector approximate retrieval and terminal states have
 -- their own external boundaries; this predicate does not purport to constrain
 -- their replies. The machine still fixes query, filter, pool and failure use.
-ReadMeaning (Protocol.embedding request superseded all token) state reply = ⊤
-ReadMeaning (Protocol.vectorQuery request superseded all token vector) state reply = ⊤
+ReadMeaning (Protocol.embedding requestValue superseded all token) state reply = ⊤
+ReadMeaning (Protocol.vectorQuery requestValue superseded all token vector) state reply = ⊤
 ReadMeaning (Protocol.finished result) state reply = ⊤
 ReadMeaning (Protocol.failed message) state reply = ⊤

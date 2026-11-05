@@ -41,7 +41,7 @@ data BackendState : Set where
   unavailable : BackendState
 
 answer : Revision.Error ⊎ Revision.Action → Revision.Answer
-answer (inj₁ error) = Revision.backendError error
+answer (inj₁ failureValue) = Revision.backendError failureValue
 answer (inj₂ value) = Revision.action value
 
 module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)

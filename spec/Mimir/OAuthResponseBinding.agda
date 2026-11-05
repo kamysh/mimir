@@ -28,9 +28,9 @@ module Decode (conversion : Conversion.Contract) (clockMaximum : ℕ) where
   parse = RawReader.parse
 
   Allowed : H.State → H.Input → Set
-  Allowed (H.decoding buffer) (H.decoded value) = parse (H.B.Buffer.bytes buffer) ≡ inj₂ value
-  Allowed (H.decoding buffer) H.malformed = Σ Cache.AuthError
-    (λ error → parse (H.B.Buffer.bytes buffer) ≡ inj₁ error)
+  Allowed (H.decoding pendingBytes) (H.decoded value) = parse (H.B.Buffer.bytes pendingBytes) ≡ inj₂ value
+  Allowed (H.decoding pendingBytes) H.malformed = Σ Cache.AuthError
+    (λ error → parse (H.B.Buffer.bytes pendingBytes) ≡ inj₁ error)
   Allowed _ (H.decoded _) = ⊥
   Allowed _ H.malformed = ⊥
   Allowed _ _ = ⊤

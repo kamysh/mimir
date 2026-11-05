@@ -69,7 +69,7 @@ module API (service : Notifier) (clockMaximum : ℕ) where
   delivery = D.config (Config.Config.maximumAttempts cfg) (Config.Config.retrySeconds cfg) clockMaximum
 
   submit : I.Event → Script N.Result
-  submit event = lift (N.submit (Config.Config.enabled cfg) delivery event)
+  submit notificationEvent = lift (N.submit (Config.Config.enabled cfg) delivery notificationEvent)
 
   retry : ℕ → Script N.RetryResult
   retry limit = lift (N.retryDue (Config.Config.enabled cfg) delivery limit)
@@ -117,8 +117,8 @@ module Bound (conversion : Conversion.Contract) (library : Codec.JSONLibrary)
   cursorResult (inj₂ (just value)) = inj₂ value
 
   built : F.F.L.Locked → Text → SMTP.Message → D.BuildReceipt → State
-  built lock host message D.built = held lock (just (host , message))
-  built lock host message D.invalid = held lock nothing
+  built lock host mailMessage D.built = held lock (just (host , mailMessage))
+  built lock host mailMessage D.invalid = held lock nothing
 
   data Receipt : State → (effect : Effect) → Reply effect → State → Set where
     clock : ∀ state now → Receipt state (notification N.clock) now state
@@ -128,18 +128,18 @@ module Bound (conversion : Conversion.Contract) (library : Codec.JSONLibrary)
       Receipt unlocked (notification N.lock) false unlocked
     lockBusy : ∀ events → F.F.FS.Runs (F.F.acquire (Notifier.path service)) events (inj₂ nothing) →
       Receipt unlocked (notification N.lock) false unlocked
-    released : ∀ lock message events → F.F.FS.Runs (F.F.L.release lock) events tt →
-      Receipt (held lock message) (notification N.release) tt unlocked
-    read : ∀ lock message reply → F.Read lock Names.outbox reply →
-      Receipt (held lock message) (notification N.readOutbox) (outboxResult reply) (held lock message)
-    cursor : ∀ lock message reply → F.Read lock Names.digest reply →
-      Receipt (held lock message) readCursor (cursorResult reply) (held lock message)
-    written : ∀ lock message value reply → F.Written lock Names.outbox value reply →
-      Receipt (held lock message) (notification (N.writeOutbox value)) reply (held lock message)
-    cursorWritten : ∀ lock message value reply → F.Written lock Names.digest value reply →
-      Receipt (held lock message) (digest (Digest.saveCursor value)) reply (held lock message)
-    identity : ∀ lock message entropy → Receipt (held lock message) (notification N.freshAlert)
-      (Conversion.Contract.formatUUID conversion (UUID.fromRandom conversion endian entropy)) (held lock message)
+    released : ∀ lock mailMessage events → F.F.FS.Runs (F.F.L.release lock) events tt →
+      Receipt (held lock mailMessage) (notification N.release) tt unlocked
+    read : ∀ lock mailMessage reply → F.Read lock Names.outbox reply →
+      Receipt (held lock mailMessage) (notification N.readOutbox) (outboxResult reply) (held lock mailMessage)
+    cursor : ∀ lock mailMessage reply → F.Read lock Names.digest reply →
+      Receipt (held lock mailMessage) readCursor (cursorResult reply) (held lock mailMessage)
+    written : ∀ lock mailMessage value reply → F.Written lock Names.outbox value reply →
+      Receipt (held lock mailMessage) (notification (N.writeOutbox value)) reply (held lock mailMessage)
+    cursorWritten : ∀ lock mailMessage value reply → F.Written lock Names.digest value reply →
+      Receipt (held lock mailMessage) (digest (Digest.saveCursor value)) reply (held lock mailMessage)
+    identity : ∀ lock mailMessage entropy → Receipt (held lock mailMessage) (notification N.freshAlert)
+      (Conversion.Contract.formatUUID conversion (UUID.fromRandom conversion endian entropy)) (held lock mailMessage)
     alertBuilt : ∀ lock previous hostname alert →
       Receipt (held lock previous) (notification (N.build alert))
         (buildMessage (SMTP.alertMessage cfg (SMTP.computer hostname) alert))
@@ -150,10 +150,10 @@ module Bound (conversion : Conversion.Contract) (library : Codec.JSONLibrary)
         (buildMessage (SMTP.digestMessage cfg (SMTP.computer hostname) value))
         (built lock (SMTP.computer hostname) (SMTP.digestMessage cfg (SMTP.computer hostname) value)
           (buildMessage (SMTP.digestMessage cfg (SMTP.computer hostname) value)))
-    alertSent : ∀ lock host message alert reply → message ≡ SMTP.alertMessage cfg host alert → M.Sent lock cfg message reply →
-      Receipt (held lock (just (host , message))) (notification (N.send alert)) reply (held lock (just (host , message)))
-    digestSent : ∀ lock host message value reply → message ≡ SMTP.digestMessage cfg host value → M.Sent lock cfg message reply →
-      Receipt (held lock (just (host , message))) (digest (Digest.sendMessage value)) reply (held lock (just (host , message)))
+    alertSent : ∀ lock host mailMessage alert reply → mailMessage ≡ SMTP.alertMessage cfg host alert → M.Sent lock cfg mailMessage reply →
+      Receipt (held lock (just (host , mailMessage))) (notification (N.send alert)) reply (held lock (just (host , mailMessage)))
+    digestSent : ∀ lock host mailMessage value reply → mailMessage ≡ SMTP.digestMessage cfg host value → M.Sent lock cfg mailMessage reply →
+      Receipt (held lock (just (host , mailMessage))) (digest (Digest.sendMessage value)) reply (held lock (just (host , mailMessage)))
 
   data Runs {A : Set} : State → Script A → List Event → State → A → Set where
     returned : ∀ state value → Runs state (done value) [] state value

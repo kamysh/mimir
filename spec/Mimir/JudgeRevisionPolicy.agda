@@ -58,10 +58,10 @@ data Deferral : Set where
   retained : List Observation.Deferred → Deferral
 
 finish : Observation.Pin → State → List Observation.Deferred → Deferral
-finish pin state deferred with shouldDefer state
+finish selectedPin state deferred with shouldDefer state
 ... | false = retained deferred
 ... | true = retained (deferred ++
-  (Observation.deferred (Observation.Pin.identity pin) (Observation.Pin.sourceRevision pin) ∷ []))
+  (Observation.deferred (Observation.Pin.identity selectedPin) (Observation.Pin.sourceRevision selectedPin) ∷ []))
 
 inputRejectionNotCandidateConflict : ∀ state detail →
   State.conflicts (Step.state (step state (inputRejected detail))) ≡ State.conflicts state

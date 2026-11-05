@@ -28,21 +28,21 @@ data Event : Set where
   retry : Event
 
 data Step : State → Event → State → Set where
-  compatible : ∀ config → Step reading (configuration (inj₂ config)) (logging config)
+  compatible : ∀ configurationValue → Step reading (configuration (inj₂ configurationValue)) (logging configurationValue)
   rejected : ∀ error → Step reading (configuration (inj₁ error)) (blocked error)
-  ready : ∀ config → Step (logging config) logReady (reviewing config)
-  failed : ∀ config error → Step (logging config) (logFailed error) (blocked error)
-  completed : ∀ config delay → Step (reviewing config) (batchFinished delay) (waiting delay)
+  ready : ∀ configurationValue → Step (logging configurationValue) logReady (reviewing configurationValue)
+  failed : ∀ configurationValue error → Step (logging configurationValue) (logFailed error) (blocked error)
+  completed : ∀ configurationValue delay → Step (reviewing configurationValue) (batchFinished delay) (waiting delay)
   retryBlocked : ∀ error → Step (blocked error) retry reading
   retryWaiting : ∀ delay → Step (waiting delay) retry reading
 
-reviewRequiresLog : ∀ before event config → Step before event (reviewing config) →
-  before ≡ logging config
-reviewRequiresLog .(logging config) .logReady config (ready .config) = refl
+reviewRequiresLog : ∀ before event configurationValue → Step before event (reviewing configurationValue) →
+  before ≡ logging configurationValue
+reviewRequiresLog .(logging configurationValue) .logReady configurationValue (ready .configurationValue) = refl
 
-reviewRequiresCompatible : ∀ before event config → Step before event (reviewing config) →
-  C.Settings.version (C.Admitted.value (Schema.Config.operations config)) ≡ C.formatVersion
-reviewRequiresCompatible before event config step = C.acceptedVersion (Schema.Config.operations config)
+reviewRequiresCompatible : ∀ before event configurationValue → Step before event (reviewing configurationValue) →
+  C.Settings.version (C.Admitted.value (Schema.Config.operations configurationValue)) ≡ C.formatVersion
+reviewRequiresCompatible before event configurationValue step = C.acceptedVersion (Schema.Config.operations configurationValue)
 
 -- A wait/retry never reuses an already-loaded configuration. This matters
 -- when settings change while a long-lived watcher is sleeping.

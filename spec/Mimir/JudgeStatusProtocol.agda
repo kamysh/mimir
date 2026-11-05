@@ -52,7 +52,7 @@ emit : Output → ℕ → Script ℕ
 emit output code = ask (stdout output) (λ _ → done code)
 
 statusResult : Reply readReport → Reply readIncident → Script ℕ
-statusResult (inj₂ report) (inj₂ incident) = emit (snapshot report incident) 0
+statusResult (inj₂ report) (inj₂ savedIncident) = emit (snapshot report savedIncident) 0
 statusResult _ _ = emit stateUnavailable 5
 
 status : Script ℕ
@@ -73,7 +73,7 @@ latest traces with reverse traces
 
 firstFailure : Maybe R.Incident → Maybe ℕ
 firstFailure nothing = nothing
-firstFailure (just incident) = R.Report.diagnosticsId (R.Incident.first incident)
+firstFailure (just savedIncident) = R.Report.diagnosticsId (R.Incident.first savedIncident)
 
 select : Maybe ℕ → Maybe ℕ → R.Diagnostics → Maybe R.Trace
 select (just explicit) _ traces = find explicit traces
@@ -85,7 +85,7 @@ afterDiagnostics list id (inj₁ error) = emit stateUnavailable 5
 afterDiagnostics true id (inj₂ traces) = emit (attempts (map summarize traces)) 0
 afterDiagnostics false id (inj₂ traces) = ask readIncident λ where
   (inj₁ error) → emit stateUnavailable 5
-  (inj₂ incident) → emit (traceOutput (select id (firstFailure incident) traces)) 0
+  (inj₂ savedIncident) → emit (traceOutput (select id (firstFailure savedIncident) traces)) 0
 
 diagnostics : Bool → Maybe ℕ → Script ℕ
 diagnostics list id = ask resolve λ where

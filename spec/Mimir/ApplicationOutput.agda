@@ -51,9 +51,9 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     failure : A.Result → Projection
 
   flag : String → Bool → V.Value
-  flag key value = object ((key , V.boolean value) ∷ [])
+  flag fieldKey value = object ((fieldKey , V.boolean value) ∷ [])
   count : String → ℕ → V.Value
-  count key value = object ((key , V.unsigned value) ∷ [])
+  count fieldKey value = object ((fieldKey , V.unsigned value) ∷ [])
 
   provenance : Provenance.Provenance → V.Value
   provenance p = object (("experience_id" , uuid (Provenance.Provenance.experienceID p)) ∷
@@ -115,9 +115,9 @@ module Project (environment : Application.Environment) (format : Encoding.Format
 
   contextAssessments : List (Context.Key × Evaluation.Result) → Maybe (List V.Value)
   contextAssessments [] = just []
-  contextAssessments ((key , evaluated) ∷ rest) with evaluation evaluated | contextAssessments rest
-  ... | just s | just later = just (object (("belief_id" , uuid (Context.Key.belief key)) ∷
-    ("scope" , V.string (Context.Key.scope key)) ∷ ("rubric" , V.string (Context.Key.rubric key)) ∷ ("scores" , s) ∷ []) ∷ later)
+  contextAssessments ((fieldKey , evaluated) ∷ rest) with evaluation evaluated | contextAssessments rest
+  ... | just s | just later = just (object (("belief_id" , uuid (Context.Key.belief fieldKey)) ∷
+    ("scope" , V.string (Context.Key.scope fieldKey)) ∷ ("rubric" , V.string (Context.Key.rubric fieldKey)) ∷ ("scores" , s) ∷ []) ∷ later)
   ... | _ | _ = nothing
 
   projectRead : A.Result → Read.Result → Projection
@@ -139,15 +139,15 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   projectRead original Read.invalidProvenance = failure original
 
   rawCurrent : ℕ → RawHistory.Current → V.Value
-  rawCurrent id current = object (("experience_id" , uuid id) ∷
-    ("revision" , V.signed (RawHistory.Current.revision current)) ∷
-    ("review_revision" , V.signed (RawHistory.Current.reviewRevision current)) ∷
-    ("reviewed_revision" , V.signed (RawHistory.Current.reviewedRevision current)) ∷
-    ("review" , optional (λ value → value) (RawHistory.Current.review current)) ∷ [])
+  rawCurrent id currentRecord = object (("experience_id" , uuid id) ∷
+    ("revision" , V.signed (RawHistory.Current.revision currentRecord)) ∷
+    ("review_revision" , V.signed (RawHistory.Current.reviewRevision currentRecord)) ∷
+    ("reviewed_revision" , V.signed (RawHistory.Current.reviewedRevision currentRecord)) ∷
+    ("review" , optional (λ value → value) (RawHistory.Current.review currentRecord)) ∷ [])
 
   rawHistoryEntry : RawHistory.Entry → V.Value
-  rawHistoryEntry entry = object (("revision" , V.signed (RawHistory.Entry.revision entry)) ∷
-    ("payload" , RawHistory.Entry.payload entry) ∷ ("created_at" , timestamp (RawHistory.Entry.createdAt entry)) ∷ [])
+  rawHistoryEntry storedEntry = object (("revision" , V.signed (RawHistory.Entry.revision storedEntry)) ∷
+    ("payload" , RawHistory.Entry.payload storedEntry) ∷ ("created_at" , timestamp (RawHistory.Entry.createdAt storedEntry)) ∷ [])
 
   projectQuery : A.Result → Query.Result → Projection
   projectQuery original (Query.experienceResult s) = success (optional snapshot s)
