@@ -39,7 +39,7 @@ impl RunDir {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/var/tmp/mimir"));
         ensure!(
-            base.is_dir() && !fs::symlink_metadata(base)?.file_type().is_symlink(),
+            base.is_dir() && !fs::symlink_metadata(&base)?.file_type().is_symlink(),
             "unsafe temporary root"
         );
         let path = base.join(format!("learning-compare-{}", Uuid::new_v4()));
