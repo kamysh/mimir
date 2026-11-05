@@ -5,12 +5,15 @@
 // embedding/query side (belief ranks low) or the rrf×probability fusion/sort
 // (belief ranks high here but gets buried in the full query_relevant).
 //
-// Run (no Anthropic API; uses the live graph + local BGE model):
-//   MIMIR_HOST=localhost MIMIR_PORT=5450 MIMIR_DBNAME=mimir MIMIR_USER=mimir \
-//     cargo test -p mimir-core --test vector_probe -- --nocapture --ignored
+// Diagnostic probes require the owned fixture from scripts/test-isolated.py.
+// They never accept deployment database settings.
+
+#[allow(dead_code)] // Shared guard exposes helpers for several test targets.
+#[path = "../../../tests/support/isolation.rs"]
+mod isolation;
 
 use mimir_core::{
-    config::{Config, DatabaseConfig, EmbeddingBackend, EmbeddingsConfig, SslMode},
+    config::{Config, DatabaseConfig, EmbeddingBackend, EmbeddingsConfig},
     db,
     embed::make_backend,
     store::AgeStore,
@@ -28,21 +31,7 @@ fn local_embeddings() -> EmbeddingsConfig {
 }
 
 fn test_db_config() -> DatabaseConfig {
-    DatabaseConfig {
-        host: std::env::var("MIMIR_HOST").expect("MIMIR_HOST"),
-        port: std::env::var("MIMIR_PORT")
-            .expect("MIMIR_PORT")
-            .parse()
-            .unwrap(),
-        dbname: std::env::var("MIMIR_DBNAME").expect("MIMIR_DBNAME"),
-        user: std::env::var("MIMIR_USER").expect("MIMIR_USER"),
-        password: None,
-        pgpassfile: None,
-        ssl_mode: SslMode::default(),
-        ssl_root_cert: None,
-        ssl_client_cert: None,
-        ssl_client_key: None,
-    }
+    isolation::fixture().database_config()
 }
 
 const VERBOSE_PROMPT: &str = "# Fix the artifact download\n\n`./fetch.sh` is supposed to download a build artifact by calling the local\n`./artifact_server` tool, producing a file `artifact.bin` in this directory.\nRunning `./fetch.sh` currently fails.\n\nMake `./fetch.sh` succeed so that `artifact.bin` is created. You may edit\n`fetch.sh`. Do **not** modify `artifact_server`.";
@@ -111,8 +100,7 @@ async fn vector_leg_ranking() {
 // Acceptance test for the two-stage rerank: the FULL query_relevant must surface
 // the seeded eval-hidden-ua belief near the top for BOTH the verbose prompt and
 // the curated query. (Downloads the reranker ONNX on first run; no Anthropic API.)
-//   MIMIR_HOST=localhost MIMIR_PORT=5450 MIMIR_DBNAME=mimir MIMIR_USER=mimir \
-//     cargo test -p mimir-core --test vector_probe -- --nocapture --ignored full_query
+// Requires a seeded disposable fixture; excluded from ordinary release checks.
 #[tokio::test]
 #[ignore]
 async fn full_query_relevant_ranking() {

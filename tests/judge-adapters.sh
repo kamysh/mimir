@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-base=/var/tmp/mimir/step6
-bin=/var/tmp/mimir/step5/target/debug/mimir
-mcp=/var/tmp/mimir/step5/target/debug/mimir-mcp
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+python3 "$repo/tests/support/fixture.py" check
+base="$(mktemp -d "$MIMIR_TEST_ROOT/adapters.XXXXXXXX")"
+bin="$MIMIR_TEST_MIMIR"
+mcp="$MIMIR_TEST_MCP"
+export MIMIR_ADAPTER_FIXTURE_ROOT="$base"
 mkdir -p "$base/bin"
 rustc --edition=2021 tests/judge_process_fixture.rs -o "$base/judge-process-fixture"
 
@@ -25,7 +28,7 @@ if [[ " $* " == *" --help "* ]]; then
     exit 0
 fi
 if [[ "${MIMIR_JUDGE_FIXTURE_MODE:-}" == incompatible ]]; then
-    touch /var/tmp/mimir/step6/incompatible-invoked-model
+    touch "$MIMIR_ADAPTER_FIXTURE_ROOT/incompatible-invoked-model"
     exit 9
 fi
 if [[ "$kind" == codex ]]; then
@@ -65,36 +68,24 @@ ln -sf fake-harness "$base/bin/codex"
 ln -sf fake-harness "$base/bin/custom"
 
 make_config() {
-    local kind="$1" project="$2" config="$3" timeout="$4" command="${5:-}"
-    cat > "$config" <<EOF
-[database]
-host = "127.0.0.1"
-port = 32885
-dbname = "mimir_learning_test_series"
-user = "mimir_learning_test"
-ssl_mode = "disable"
-[judge]
-project = "$project"
-batch_size = 1
-mcp_command = "$mcp"
-[llm]
-backend = "$kind"
-model = "fixture-model"
-timeout_seconds = $timeout
-max_calls = 6
-EOF
-    if [[ "$kind" == codex ]]; then
-        printf '%s\n' 'reasoning_effort = "high"' >> "$config"
-    fi
-    if [[ "$kind" == command ]]; then
-        printf 'command = "%s"\n' "$command" >> "$config"
-    fi
-    chmod 600 "$config"
+    local kind="$1" project="$2" config="$3" command="${4:-}"
+    local -a args=(python3 "$repo/tests/support/fixture.py" config "$config"
+        --backend "$kind" --project "$project")
+    if [[ -n "$command" ]]; then args+=(--command "$command"); fi
+    "${args[@]}"
 }
 
 call_tool() {
     local config="$1" name="$2" args="$3"
-    jq -cn --arg name "$name" --argjson args "$args" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$name,arguments:$args}}' | MIMIR_CONFIG="$config" "$mcp" | jq -er '.result.content[0].text | fromjson'
+    local capture="$base/rpc-$(uuidgen)" result=0
+    jq -cn --arg name "$name" --argjson args "$args" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$name,arguments:$args}}' > "$capture.request"
+    MIMIR_CONFIG="$config" "$mcp" < "$capture.request" > "$capture.stdout" 2> "$capture.stderr" || result=$?
+    printf '%s\n' "$result" > "$capture.exit"
+    if [[ "$result" -ne 0 ]]; then
+        cat "$capture.stderr" >&2
+        return "$result"
+    fi
+    jq -er '.result.content[0].text | fromjson' "$capture.stdout"
 }
 
 current_config=
@@ -119,9 +110,10 @@ for kind in claude-code codex command; do
     config="$base/${kind}.toml"
     current_config="$config"
     current_project="$project"
-    make_config "$kind" "$project" "$config" 10 "$base/bin/custom"
+    make_config "$kind" "$project" "$config" "$base/bin/custom"
     seed "$config" "$project" "$id"
-    PATH="$base/bin:$PATH" "$bin" judge run --config "$config" --state-dir "$base/state-${kind}" | jq -e '.status == "complete" and .confirmed == 1' >/dev/null
+    PATH="$base/bin:$PATH" "$bin" judge run --config "$config" --state-dir "$base/state-${kind}" > "$base/${kind}-report.json"
+    jq -e '.status == "complete" and .confirmed == 1' "$base/${kind}-report.json" >/dev/null
     history="$(call_tool "$config" experience_history "$(jq -nc --arg id "$id" '{id:$id}')")"
     jq -e '.reviews[0].payload.reviewer == "mimir-judge"' <<< "$history" >/dev/null
     call_tool "$config" delete_project "$(jq -nc --arg project "$project" '{project:$project}')" >/dev/null
@@ -134,14 +126,23 @@ for mode in crash malformed oversized slow fork 'done'; do
     config="$base/${mode}.toml"
     current_config="$config"
     current_project="$project"
-    make_config command "$project" "$config" 2 "$base/judge-process-fixture"
+    make_config command "$project" "$config" "$base/judge-process-fixture"
     seed "$config" "$project" "$id"
     export MIMIR_JUDGE_FIXTURE_MODE="$mode"
     export MIMIR_JUDGE_FIXTURE_PID_FILE="$base/descendant.pid"
     status=0
-    "$bin" judge run --config "$config" --state-dir "$base/state-${mode}" > "$base/${mode}-report.json" || status=$?
-    test "$status" -eq 3
-    jq -e '.status == "blocked" and .confirmed == 0' "$base/${mode}-report.json" >/dev/null
+    if [[ "$mode" == slow || "$mode" == fork ]]; then
+        # The test driver cancels deliberately stalled fixtures. Mimir itself
+        # does not impose model/tool-call budgets or review timeouts.
+        timeout --signal=TERM --kill-after=5s 5s "$bin" judge run --config "$config" \
+            --state-dir "$base/state-${mode}" > "$base/${mode}-report.json" || status=$?
+        test "$status" -eq 124
+        test ! -s "$base/${mode}-report.json"
+    else
+        "$bin" judge run --config "$config" --state-dir "$base/state-${mode}" > "$base/${mode}-report.json" || status=$?
+        test "$status" -eq 3
+        jq -e '.status == "blocked" and .confirmed == 0' "$base/${mode}-report.json" >/dev/null
+    fi
     if [[ "$mode" == fork ]]; then
         pid="$(cat "$base/descendant.pid")"
         for _ in $(seq 1 30); do
@@ -160,7 +161,7 @@ id="$(uuidgen)"
 config="$base/incompatible.toml"
 current_config="$config"
 current_project="$project"
-make_config claude-code "$project" "$config" 5
+make_config claude-code "$project" "$config"
 seed "$config" "$project" "$id"
 rm -f "$base/incompatible-invoked-model"
 status=0
@@ -176,7 +177,7 @@ id="$(uuidgen)"
 config="$base/watch.toml"
 current_config="$config"
 current_project="$project"
-make_config command "$project" "$config" 2 "$base/judge-process-fixture"
+make_config command "$project" "$config" "$base/judge-process-fixture"
 seed "$config" "$project" "$id"
 status=0
 MIMIR_JUDGE_FIXTURE_MODE=crash timeout 20s "$bin" judge watch --config "$config" \

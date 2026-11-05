@@ -560,6 +560,13 @@ fn classify_error(status: StatusCode, bytes: &[u8]) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[allow(dead_code)] // Shared guard also serves integration-test crates.
+    mod isolation {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/support/isolation.rs"
+        ));
+    }
     use super::*;
     use mimir_core::learning::{Experience, ObservationSource, Outcome};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1112,16 +1119,16 @@ mod tests {
 
     #[tokio::test]
     async fn isolated_runner_requires_database_receipt_after_api_claim() {
-        let Ok(path) = std::env::var("MIMIR_STEP5_TEST_CONFIG") else {
-            return;
-        };
-        let mcp = std::env::var("MIMIR_STEP5_MCP_BIN").expect("isolated MCP binary");
+        let database_fixture = isolation::fixture();
+        let path = database_fixture.root.join("config.toml");
+        let mcp = database_fixture.mcp.clone();
         let project = format!("step7-{}", Uuid::new_v4());
-        let mut settings = super::super::config::load(Some(std::path::Path::new(&path))).unwrap();
+        let mut settings = super::super::config::load(Some(&path)).unwrap();
         settings.judge.project = Some(project.clone());
         settings.judge.mcp_command = mcp;
         settings.judge.batch_size = 1;
         let core = mimir_core::config::Config::load_from_path(&settings.path).unwrap();
+        database_fixture.assert_database(&core.database);
         let service = mimir_core::MimirService::connect(&core).await.unwrap();
         let mut selected = selected();
         selected.experience.project = project.clone();
@@ -1129,8 +1136,9 @@ mod tests {
             .record_experience(&selected.experience, 0)
             .await
             .unwrap();
-        let state_path =
-            std::path::PathBuf::from(format!("/var/tmp/mimir/step7/state-{}", Uuid::new_v4()));
+        let state_path = database_fixture
+            .root
+            .join(format!("api-state-{}", Uuid::new_v4()));
         let state = super::super::state::State::lock(state_path.clone())
             .unwrap()
             .unwrap();
