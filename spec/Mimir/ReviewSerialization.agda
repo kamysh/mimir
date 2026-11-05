@@ -2,6 +2,7 @@
 -- Two reviews based on the same revision cannot both append history once the
 -- second reads the first publication. Lock participation and that fresh read
 -- remain explicit native obligations; atomicity alone does not supply them.
+-- ReviewCompetition connects the public review programs to native receipts.
 module Mimir.ReviewSerialization where
 
 open import Data.Bool using (true; false)

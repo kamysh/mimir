@@ -45,6 +45,9 @@ import Mimir.LearningInput
 import Mimir.LearningNormalization
 import Mimir.ReviewTransaction
 import Mimir.ReviewSerialization
+import Mimir.LearningTransactionDatabase
+import Mimir.ReviewCompetition
+import Mimir.NativeLockOrder
 import Mimir.DatabaseAdvisoryLock
 import Mimir.AssessmentSelection
 
