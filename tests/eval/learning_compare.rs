@@ -30,13 +30,14 @@ struct Arm {
     document: toml::Value,
     model: String,
     effort: Option<String>,
-    timeout_seconds: u64,
 }
 
 struct RunDir(PathBuf);
 impl RunDir {
     fn new() -> Result<Self> {
-        let base = Path::new("/var/tmp/mimir");
+        let base = std::env::var_os("MIMIR_TEST_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/var/tmp/mimir"));
         ensure!(
             base.is_dir() && !fs::symlink_metadata(base)?.file_type().is_symlink(),
             "unsafe temporary root"
@@ -100,17 +101,6 @@ fn load_arm(path: &Path, mimir: &Path) -> Result<Arm> {
         .get("reasoning_effort")
         .and_then(toml::Value::as_str)
         .map(str::to_owned);
-    let timeout_seconds = llm
-        .get("timeout_seconds")
-        .and_then(toml::Value::as_integer)
-        .unwrap_or(300) as u64;
-    ensure!(
-        llm.get("max_calls")
-            .and_then(toml::Value::as_integer)
-            .unwrap_or(20)
-            >= 3,
-        "comparison requires llm.max_calls of at least 3"
-    );
     let db = document
         .get("database")
         .and_then(toml::Value::as_table)
@@ -132,18 +122,10 @@ fn load_arm(path: &Path, mimir: &Path) -> Result<Arm> {
         document,
         model,
         effort,
-        timeout_seconds,
     })
 }
 
-fn variant(
-    arm: &Arm,
-    run: &RunDir,
-    name: &str,
-    project: &str,
-    mcp: &Path,
-    max_calls: i64,
-) -> Result<PathBuf> {
+fn variant(arm: &Arm, run: &RunDir, name: &str, project: &str, mcp: &Path) -> Result<PathBuf> {
     let mut config = arm.document.clone();
     let judge = config
         .get_mut("judge")
@@ -156,18 +138,6 @@ fn variant(
         toml::Value::String(mcp.to_string_lossy().into_owned()),
     );
     judge.insert("mcp_args".into(), toml::Value::Array(vec![]));
-    let llm = config
-        .get_mut("llm")
-        .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| anyhow!("missing llm section"))?;
-    let configured = llm
-        .get("max_calls")
-        .and_then(toml::Value::as_integer)
-        .unwrap_or(20);
-    llm.insert(
-        "max_calls".into(),
-        toml::Value::Integer(configured.min(max_calls)),
-    );
     let root = config
         .as_table_mut()
         .ok_or_else(|| anyhow!("invalid config root"))?;
@@ -282,7 +252,7 @@ fn actor(arm: &Arm, run: &RunDir, name: &str, context: &Value) -> Result<Value> 
         .take()
         .ok_or_else(|| anyhow!("actor stdin missing"))?
         .write_all(prompt.as_bytes())?;
-    let deadline = Instant::now() + Duration::from_secs(arm.timeout_seconds.min(300));
+    let deadline = Instant::now() + Duration::from_secs(300);
     loop {
         if let Some(status) = child.try_wait()? {
             ensure!(status.success(), "later-action actor failed");
@@ -380,7 +350,7 @@ fn run_case(
 ) -> Result<Value> {
     let project = format!("step11-{}-{arm_name}-{}", Uuid::new_v4(), scenario.name());
     let base = format!("{arm_name}-{}", scenario.name());
-    let config = variant(arm, run, &format!("{base}.toml"), &project, mcp, 2)?;
+    let config = variant(arm, run, &format!("{base}.toml"), &project, mcp)?;
     let state = run.0.join(format!("{base}-state"));
     let work = (|| -> Result<Value> {
         let initial = experience(id, &project, scenario, false);
@@ -418,14 +388,7 @@ fn run_case(
                 json!({"experience":changed,"expected_revision":1}),
             )?;
             ensure!(updated["revision"] == 2, "correction revision mismatch");
-            let correction = variant(
-                arm,
-                run,
-                &format!("{base}-correction.toml"),
-                &project,
-                mcp,
-                2,
-            )?;
+            let correction = variant(arm, run, &format!("{base}-correction.toml"), &project, mcp)?;
             second = judge(mimir, &correction, &state)?;
         }
         if matches!(scenario, Scenario::Repeated) {
@@ -493,9 +456,8 @@ fn main() -> Result<()> {
     );
     ensure!(
         a.document.get("database") == b.document.get("database")
-            && a.document.get("embeddings") == b.document.get("embeddings")
-            && a.timeout_seconds == b.timeout_seconds,
-        "comparison arms must use the same database, embeddings, and timeout"
+            && a.document.get("embeddings") == b.document.get("embeddings"),
+        "comparison arms must use the same database and embeddings"
     );
     let selectors = json!({"arm_a":{"model":a.model,"reasoning_effort":a.effort},
         "arm_b":{"model":b.model,"reasoning_effort":b.effort}});
@@ -522,7 +484,7 @@ fn main() -> Result<()> {
         }
     }
     let report = json!({"status":"complete","selectors":selectors,"cases":results,
-        "limits":"At most two model-bearing judge subprocesses for initial review, two more for correction, and one later-action subprocess per scenario. Exact retry is checked through MCP history. Codex help checks are additional. Judge max_calls also bounds tool calls. Provider-internal requests and charges are not metered."});
+        "limits":"At most two model-bearing judge subprocesses for initial review, two more for correction, and one later-action subprocess per scenario. Exact retry is checked through MCP history. Codex help checks are additional. Review model/tool calls and provider-internal requests and charges are not capped or metered."});
     let file = run.write(
         "results.json",
         serde_json::to_string_pretty(&report)?.as_bytes(),

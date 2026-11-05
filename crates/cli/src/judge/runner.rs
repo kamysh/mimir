@@ -816,6 +816,13 @@ async fn run_inner<B: Backend>(
 
 #[cfg(test)]
 mod tests {
+    #[allow(dead_code)] // Shared guard also serves integration-test crates.
+    mod isolation {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/support/isolation.rs"
+        ));
+    }
     use super::*;
     use mimir_core::{
         config::Config,
@@ -1061,8 +1068,8 @@ mod tests {
             std::fs::write(
                 &config_path,
                 format!(
-                    "config_version=1\n[logging]\ndirectory='/tmp/mimir-fixture-logs'\n[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
-                    fixture.display(), id
+                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                    dir.join("logs").display(), fixture.display(), id
                 ),
             )
             .unwrap();
@@ -1108,8 +1115,8 @@ mod tests {
         std::fs::write(
             &config_path,
             format!(
-                "config_version=1\n[logging]\ndirectory='/tmp/mimir-fixture-logs'\n[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
-                fixture.display(), Uuid::new_v4()
+                "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                dir.join("logs").display(), fixture.display(), Uuid::new_v4()
             ),
         )
         .unwrap();
@@ -1182,8 +1189,8 @@ mod tests {
             std::fs::write(
                 &config_path,
                 format!(
-                    "config_version=1\n[logging]\ndirectory='/tmp/mimir-fixture-logs'\n[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
-                    fixture.display(), id, review_log.display()
+                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                    dir.join("logs").display(), fixture.display(), id, review_log.display()
                 ),
             )
             .unwrap();
@@ -1221,18 +1228,20 @@ mod tests {
 
     #[tokio::test]
     async fn isolated_mcp_review_cycle() {
-        let Ok(path) = std::env::var("MIMIR_STEP5_TEST_CONFIG") else {
-            return;
-        };
-        let binary = std::env::var("MIMIR_STEP5_MCP_BIN").expect("MCP binary path");
+        let fixture = isolation::fixture();
+        let path = fixture.root.join("config.toml");
+        let binary = fixture.mcp.clone();
         let project = format!("step5-{}", Uuid::new_v4());
-        let mut settings = super::super::config::load(Some(std::path::Path::new(&path))).unwrap();
+        let mut settings = super::super::config::load(Some(&path)).unwrap();
         settings.judge.project = Some(project.clone());
         settings.judge.mcp_command = binary;
         settings.judge.batch_size = 1;
         let core = Config::load_from_path(&settings.path).unwrap();
+        fixture.assert_database(&core.database);
         let service = Arc::new(MimirService::connect(&core).await.unwrap());
-        let state_path = PathBuf::from(format!("/var/tmp/mimir/step5/state-{}", Uuid::new_v4()));
+        let state_path = fixture
+            .root
+            .join(format!("runner-state-{}", Uuid::new_v4()));
         let state = State::lock(state_path.clone()).unwrap().unwrap();
         let make_experience = || Experience {
             id: Uuid::new_v4(),

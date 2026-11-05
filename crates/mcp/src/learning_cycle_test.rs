@@ -1,34 +1,19 @@
 //! Rust replacement for the old Python MCP learning-cycle check.
 //! Uses the real MCP tool dispatcher and a disposable AGE database.
+#[allow(dead_code)] // Shared guard exposes helpers for several test targets.
+#[path = "../../../tests/support/isolation.rs"]
+mod isolation;
+
 use super::{handle_tool_call, tools_list};
 use anyhow::{ensure, Result};
-use mimir_core::{
-    config::{Config, DatabaseConfig, SslMode},
-    MimirService,
-};
+use mimir_core::{config::Config, MimirService};
 use serde_json::json;
 use uuid::Uuid;
 
 #[tokio::test]
 async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> {
-    let dbname = std::env::var("MIMIR_DBNAME")?;
-    ensure!(
-        dbname.starts_with("mimir_learning_test"),
-        "test DB required"
-    );
     let service = MimirService::connect(&Config {
-        database: DatabaseConfig {
-            host: std::env::var("MIMIR_HOST")?,
-            port: std::env::var("MIMIR_PORT")?.parse()?,
-            user: std::env::var("MIMIR_USER")?,
-            dbname,
-            password: None,
-            pgpassfile: None,
-            ssl_mode: SslMode::Disable,
-            ssl_root_cert: None,
-            ssl_client_cert: None,
-            ssl_client_key: None,
-        },
+        database: isolation::fixture().database_config(),
         embeddings: None,
         llm: None,
         judge: None,

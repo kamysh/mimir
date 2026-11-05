@@ -1,6 +1,10 @@
 //! Run only against a disposable database; intentionally uses real AGE and migrations.
+#[allow(dead_code)] // Shared guard exposes helpers for several test targets.
+#[path = "../../../tests/support/isolation.rs"]
+mod isolation;
+
 use mimir_core::{
-    config::{Config, DatabaseConfig, SslMode},
+    config::Config,
     db,
     graph::{EdgeType, MemoryType},
     learning::*,
@@ -14,24 +18,8 @@ use uuid::Uuid;
 static PAGE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn service() -> MimirService {
-    let dbname = std::env::var("MIMIR_DBNAME").expect("isolated MIMIR_DBNAME required");
-    assert!(
-        dbname.starts_with("mimir_learning_test"),
-        "refusing non-test database"
-    );
     MimirService::connect(&Config {
-        database: DatabaseConfig {
-            host: std::env::var("MIMIR_HOST").unwrap(),
-            port: std::env::var("MIMIR_PORT").unwrap().parse().unwrap(),
-            user: std::env::var("MIMIR_USER").unwrap(),
-            dbname,
-            password: None,
-            pgpassfile: None,
-            ssl_mode: SslMode::Disable,
-            ssl_root_cert: None,
-            ssl_client_cert: None,
-            ssl_client_key: None,
-        },
+        database: isolation::fixture().database_config(),
         embeddings: None,
         llm: None,
         judge: None,
@@ -1149,18 +1137,7 @@ async fn grounding_removal_recomputes_without_erasing_independent_support() {
         Some(project.clone()),
     );
     let config = Config {
-        database: DatabaseConfig {
-            host: std::env::var("MIMIR_HOST").unwrap(),
-            port: std::env::var("MIMIR_PORT").unwrap().parse().unwrap(),
-            user: std::env::var("MIMIR_USER").unwrap(),
-            dbname: std::env::var("MIMIR_DBNAME").unwrap(),
-            password: None,
-            pgpassfile: None,
-            ssl_mode: SslMode::Disable,
-            ssl_root_cert: None,
-            ssl_client_cert: None,
-            ssl_client_key: None,
-        },
+        database: isolation::fixture().database_config(),
         embeddings: None,
         llm: None,
         judge: None,
@@ -1627,22 +1604,9 @@ async fn complete_large_source_review_is_stored_and_read_back_without_caps() {
 }
 
 async fn item_database_client() -> tokio_postgres::Client {
-    let dbname = std::env::var("MIMIR_DBNAME").unwrap();
-    assert!(dbname.starts_with("mimir_learning_test"));
-    db::connect(&DatabaseConfig {
-        host: std::env::var("MIMIR_HOST").unwrap(),
-        port: std::env::var("MIMIR_PORT").unwrap().parse().unwrap(),
-        user: std::env::var("MIMIR_USER").unwrap(),
-        dbname,
-        password: None,
-        pgpassfile: None,
-        ssl_mode: SslMode::Disable,
-        ssl_root_cert: None,
-        ssl_client_cert: None,
-        ssl_client_key: None,
-    })
-    .await
-    .unwrap()
+    db::connect(&isolation::fixture().database_config())
+        .await
+        .unwrap()
 }
 
 fn postgres_item_fixture(project: &str) -> (Experience, Review) {

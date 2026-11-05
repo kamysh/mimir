@@ -1,3 +1,7 @@
+#[allow(dead_code)] // Shared guard exposes helpers for several test targets.
+#[path = "../../../tests/support/isolation.rs"]
+mod isolation;
+
 use mimir_core::{
     config::{Config, DatabaseConfig},
     db,
@@ -9,22 +13,7 @@ use mimir_core::{
 use uuid::Uuid;
 
 fn test_db_config() -> DatabaseConfig {
-    DatabaseConfig {
-        host: std::env::var("MIMIR_HOST").expect("MIMIR_HOST must be set to run integration tests"),
-        port: std::env::var("MIMIR_PORT")
-            .expect("MIMIR_PORT must be set to run integration tests")
-            .parse()
-            .expect("MIMIR_PORT must be a valid port number"),
-        dbname: std::env::var("MIMIR_DBNAME")
-            .expect("MIMIR_DBNAME must be set to run integration tests"),
-        user: std::env::var("MIMIR_USER").expect("MIMIR_USER must be set to run integration tests"),
-        password: None,
-        pgpassfile: None,
-        ssl_mode: mimir_core::config::SslMode::default(),
-        ssl_root_cert: None,
-        ssl_client_cert: None,
-        ssl_client_key: None,
-    }
+    isolation::fixture().database_config()
 }
 
 // ---------------------------------------------------------------------------

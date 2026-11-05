@@ -556,15 +556,31 @@ learning infrastructure.
 
 ### Verification
 
-The Rust learning integration tests require an isolated database whose name
-starts with `mimir_learning_test`. Provision its application role through
-`mimir-setup/create-db-user.sh`; `postgres` is for administration inside the
-container, not the external application connection. Set `MIMIR_HOST`,
-`MIMIR_PORT`, `MIMIR_DBNAME` and `MIMIR_USER`, then run:
+Run the maintained release checks with Docker available:
 
 ```sh
-cargo test --workspace --lib --bins --test learning_integration --test store_integration -- --test-threads=1
+nix develop --command python3 scripts/test-isolated.py
 ```
+
+The runner creates a private home, configuration, credentials, logs, state and
+build outputs, plus a uniquely labelled PostgreSQL container on a dynamically
+allocated loopback port. It uses the digest-pinned `postgres-ai` image already
+used by the connection fixtures; that image must be available to Docker.
+It builds and invokes the checkout's binaries. It never installs them, changes
+the deployment's configuration, or controls deployment services. Model adapters
+use fake harnesses; deployment credentials and provider keys are excluded from
+the test environment.
+
+Database tests require the runner's matching ownership manifest, connection and
+private password file. Missing or conflicting settings fail before connecting;
+setting `MIMIR_DBNAME` alone cannot select a deployment database. The runner
+removes only its own labelled container on completion or failure, and retains
+complete command logs and exit statuses in the printed artifact directory.
+
+The default runs formatting, Clippy, the workspace build/tests and doc tests,
+the aggregate Agda specification, and the adapter/evaluator fixtures.
+Use `--check workspace`, `--check fixtures`, `--check formal`, `--check lint`,
+or `--check format` for a focused local check. Publication uses the full default.
 
 The tests cover causal projection/retraction, retry idempotence, stale and
 concurrent reviews, reversible supersession, project isolation, corrected

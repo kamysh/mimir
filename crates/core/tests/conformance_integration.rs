@@ -1,6 +1,10 @@
 //! Requires an explicitly selected disposable AGE/pgvector database.
+#[allow(dead_code)] // Shared guard exposes helpers for several test targets.
+#[path = "../../../tests/support/isolation.rs"]
+mod isolation;
+
 use mimir_core::{
-    config::{Config, DatabaseConfig, SslMode},
+    config::Config,
     db,
     documents::DocumentChunk,
     graph::{Belief, Edge, EdgeType, EVIDENCE_UNIT},
@@ -11,21 +15,8 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 fn config() -> Config {
-    let dbname = std::env::var("MIMIR_DBNAME").expect("disposable database required");
-    assert!(dbname.starts_with("mimir_learning_test_"));
     Config {
-        database: DatabaseConfig {
-            host: std::env::var("MIMIR_HOST").unwrap(),
-            port: std::env::var("MIMIR_PORT").unwrap().parse().unwrap(),
-            dbname,
-            user: std::env::var("MIMIR_USER").unwrap(),
-            password: None,
-            pgpassfile: None,
-            ssl_mode: SslMode::Disable,
-            ssl_root_cert: None,
-            ssl_client_cert: None,
-            ssl_client_key: None,
-        },
+        database: isolation::fixture().database_config(),
         embeddings: None,
         llm: None,
         judge: None,
