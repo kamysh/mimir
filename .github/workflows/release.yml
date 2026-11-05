@@ -5,8 +5,28 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
+  source:
+    name: Check release source
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      publish: ${{ steps.source.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Check the exact source before building
+        id: source
+        run: bash scripts/check-release-source.sh
+
   build:
+    needs: source
     strategy:
       matrix:
         include:
@@ -20,6 +40,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.commit }}
 
       - uses: DeterminateSystems/nix-installer-action@v14
         with:
@@ -40,9 +62,9 @@ jobs:
           path: mimir-${{ matrix.artifact }}.tar.gz
 
   release:
-    needs: build
+    needs: [source, build]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: needs.source.outputs.publish == 'true'
     permissions:
       contents: write   # publish the release + assets
       actions: write    # delete superseded Actions artifacts (prune step)
