@@ -41,6 +41,8 @@ import Mimir.DatabaseTransaction
 import Mimir.DatabaseReadCommitted
 import Mimir.LearningTransaction
 import Mimir.LearningTransactionReceipt
+import Mimir.LearningInput
+import Mimir.LearningNormalization
 import Mimir.ReviewTransaction
 import Mimir.ReviewSerialization
 import Mimir.DatabaseAdvisoryLock

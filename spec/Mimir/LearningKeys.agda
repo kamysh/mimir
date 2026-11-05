@@ -68,7 +68,7 @@ prediction p = fields (text (Prediction.quantity p) ∷ number (Prediction.point
   text (Prediction.horizon p) ∷ text (Prediction.recordedAt p) ∷ boolean (Prediction.inferred p) ∷ [])
 
 item : LearningItem → Key
-item i = fields (natural (LearningItem.identity i) ∷ kind (LearningItem.kind i) ∷
+item i = fields (natural (LearningItem.identity i) ∷ optional text (LearningItem.localKey i) ∷ kind (LearningItem.kind i) ∷
   text (LearningItem.reference i) ∷ text (LearningItem.actor i) ∷ text (LearningItem.statement i) ∷
   text (LearningItem.conditions i) ∷ many prediction (LearningItem.predictions i) ∷ [])
 
