@@ -5,6 +5,7 @@ module Mimir.JudgeDigest where
 
 open import Data.Bool using (Bool; true; false; _∧_)
 open import Data.List using (List; []; _∷_; _++_; length; filterᵇ; replicate)
+open import Data.List.Relation.Unary.Any using (Any; here)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc; _∸_; _≤?_)
 open import Data.Integer using (ℤ; +_; _+_; _-_; _<?_; _≤?_; _≟_)
@@ -15,6 +16,7 @@ open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Data.String using (toList)
 open import Relation.Nullary using (yes; no; does)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.LearningHistoryWire as Ledger
@@ -29,13 +31,34 @@ import Mimir.DigestDelivery as Delivery
 import Mimir.NotificationIncident as Notification
 import Mimir.UnixPath as Path
 import Mimir.Effects as Effects
+open import Mimir.LocalCalendar public using (Calendar; Now; localDay; localHour; localZone)
+import Mimir.LocalCalendar as Local
 
 record Counts : Set where
   constructor counts
   field newExperiences sourceRevisions judgeReviews : ℤ
 
+record CountedDay (calendar : Calendar) : Set where
+  constructor countedDay
+  field day : ℤ; range : Local.Window calendar day; observed : Counts
+
+countedDayLabel : ∀ {calendar} (row : CountedDay calendar) →
+  Calendar.parse calendar (Calendar.showDay calendar (CountedDay.day row)) ≡ just (CountedDay.day row)
+countedDayLabel row = Local.windowLabel (CountedDay.range row)
+
 within : ℤ → ℤ → Ledger.Row → Bool
 within start end reviewRow = does (start Integer.≤? Ledger.Row.createdAt reviewRow) ∧ does (Ledger.Row.createdAt reviewRow <? end)
+
+withinMatchesDisplayedDay : ∀ calendar day (range : Local.Window calendar day) storedRow →
+  within (Local.Window.start range) (Local.Window.end range) storedRow ≡ true →
+  Local.Local.day (Calendar.localAt calendar (Ledger.Row.createdAt storedRow)) ≡ day
+withinMatchesDisplayedDay calendar day range storedRow observed
+  with Local.Window.start range Integer.≤? Ledger.Row.createdAt storedRow | Ledger.Row.createdAt storedRow <? Local.Window.end range
+... | yes lower | yes upper = Data.Product.proj₁ (Local.windowContainsExactlyDay range (Ledger.Row.createdAt storedRow)) (lower , upper)
+... | no different | _ with observed
+...   | ()
+withinMatchesDisplayedDay calendar day range storedRow observed | yes lower | no different with observed
+... | ()
 
 selectedCounts : Ledger.Database → ℤ → ℤ → Counts
 selectedCounts db start end = counts
@@ -54,19 +77,6 @@ add first second = counts (I64.wrapValue (Counts.newExperiences first + Counts.n
   (I64.wrapValue (Counts.sourceRevisions first + Counts.sourceRevisions second))
   (I64.wrapValue (Counts.judgeReviews first + Counts.judgeReviews second))
 
--- Standard chrono/local-zone contracts: epoch-day numbers, strict ISO parsing,
--- representable date range, earliest UTC instant for an ambiguous midnight;
--- nonexistent local midnight has no value. No new calendar axioms are used.
-record Calendar : Set where
-  field minimumDay maximumDay : ℤ
-        parse : Text → Maybe ℤ
-        showDay : ℤ → Text
-        midnight : ℤ → Maybe ℤ
-
-record Now : Set where
-  constructor timeSample
-  field day : ℤ; hour : ℕ; unixSeconds : ℕ; timezone : Text
-
 number : ℤ → Text
 number value = toList (IntegerShow.show value)
 pad : ℕ → Text → Text
@@ -81,9 +91,9 @@ latestStatus run with Host.Outcome.degraded run
 ...     | Host.success = toList "batch complete"
 ...     | _ = toList "unavailable"
 
-rows : Calendar → List (ℤ × Counts) → Counts → Text
+rows : ∀ calendar → List (CountedDay calendar) → Counts → Text
 rows calendar [] cumulative = []
-rows calendar ((day , daily) ∷ remaining) cumulative = Calendar.showDay calendar day ++ toList "   " ++
+rows calendar (countedDay day range daily ∷ remaining) cumulative = Calendar.showDay calendar day ++ toList "   " ++
   pad 15 (number (Counts.newExperiences daily)) ++ toList "  " ++
   pad 16 (number (Counts.sourceRevisions daily)) ++ toList "  " ++
   pad 13 (number (Counts.judgeReviews daily)) ++ toList "  " ++
@@ -91,7 +101,7 @@ rows calendar ((day , daily) ∷ remaining) cumulative = Calendar.showDay calend
   toList " / " ++ number (Counts.judgeReviews updated) ++ toList "\n" ++ rows calendar remaining updated
   where updated = add cumulative daily
 
-render : Calendar → List (ℤ × Counts) → Counts → ℤ → Host.Outcome → Text → Text
+render : ∀ calendar → List (CountedDay calendar) → Counts → ℤ → Host.Outcome → Text → Text
 render calendar daily cumulative pending run zone =
   toList "Mimir judge daily statistics\nCalendar days use this computer's local time (" ++ zone ++
   toList ").\nCounts come from the configured Mimir database.\n\nDate         New experiences  Source revisions  Judge reviews  Running totals (new / revisions / reviews)\n" ++
@@ -125,6 +135,23 @@ Reply (send _ _ _) = Text ⊎ Notification.Outcome
 open Effects.Protocol Effect Reply public
 
 module Run (calendar : Calendar) where
+  countDay : ∀ connection day → Local.Window calendar day → Script (Text ⊎ CountedDay calendar)
+  countDay connection day range = ask (countBetween connection (Local.Window.start range) (Local.Window.end range)) λ where
+    (inj₁ error) → done (inj₁ error)
+    (inj₂ observed) → done (inj₂ (countedDay day range observed))
+
+  -- A returned row retains the very calendar interval used by its query.
+  countDayUsesItsWindow : ∀ connection day range events observed →
+    Runs (countDay connection day range) events (inj₂ observed) →
+    CountedDay.day observed ≡ day ×
+    Local.Window.start (CountedDay.range observed) ≡ Local.Window.start range ×
+    Local.Window.end (CountedDay.range observed) ≡ Local.Window.end range ×
+    Any (_≡ (countBetween connection (Local.Window.start range) (Local.Window.end range) ,
+      inj₂ (CountedDay.observed observed))) events
+  countDayUsesItsWindow connection day range events observed (replied _ _ (inj₁ error) ())
+  countDayUsesItsWindow connection day range events observed (replied _ _ (inj₂ counted) (returned _)) =
+    refl , refl , refl , here refl
+
   next : ℤ → Text ⊎ ℤ
   next day with day <? Calendar.maximumDay calendar
   ... | yes _ = inj₂ (day + + 1)
@@ -140,18 +167,22 @@ module Run (calendar : Calendar) where
   ...     | yes _ = inj₂ (just following)
   ...     | no _ = inj₂ nothing
 
-  daily : ℕ → ℕ → ℤ → Script (Text ⊎ List (ℤ × Counts))
+  daily : ℕ → ℕ → ℤ → Script (Text ⊎ List (CountedDay calendar))
   daily connection zero day = done (inj₂ [])
   daily connection (suc remaining) day with next day
   ... | inj₁ error = done (inj₁ error)
-  ... | inj₂ following with Calendar.midnight calendar day | Calendar.midnight calendar following
-  ...   | nothing | _ = done (inj₁ (toList "local midnight is unavailable"))
-  ...   | _ | nothing = done (inj₁ (toList "local midnight is unavailable"))
-  ...   | just start | just end = ask (countBetween connection start end) λ where
+  ... | inj₂ following with Local.windowFor calendar day
+  ...   | nothing = done (inj₁ (toList "local midnight is unavailable"))
+  ...   | just range = countDay connection day range >>= λ where
     (inj₁ error) → done (inj₁ error)
     (inj₂ observed) → daily connection remaining following >>= λ where
       (inj₁ error) → done (inj₁ error)
-      (inj₂ rest) → done (inj₂ ((day , observed) ∷ rest))
+      (inj₂ rest) → done (inj₂ (observed ∷ rest))
+
+  unavailableDayCannotQuery : ∀ connection remaining day following → next day ≡ inj₂ following →
+    Local.windowFor calendar day ≡ nothing →
+    daily connection (suc remaining) day ≡ done (inj₁ (toList "local midnight is unavailable"))
+  unavailableDayCannotQuery connection remaining day following nextDay absent rewrite nextDay | absent = refl
 
   afterBaseline : ℕ → ℤ → ℤ → Host.Outcome → Text → Reply (countBetween 0 (+ 0) (+ 0)) → Script (Text ⊎ Text)
   afterBaseline connection first through run zone (inj₁ error) = done (inj₁ error)
@@ -185,7 +216,7 @@ module Run (calendar : Calendar) where
   collect : Config.Runtime → Path.Path → ℤ → ℤ → Now → Host.Outcome → Script (Text ⊎ Bool)
   collect settings path first through now run = ask (connect settings) λ where
     (inj₁ error) → done (inj₁ error)
-    (inj₂ connection) → content connection first through run (Now.timezone now) >>= λ where
+    (inj₂ connection) → content connection first through run (localZone calendar now) >>= λ where
       (inj₁ error) → ask (close connection) (λ _ → done (inj₁ error))
       (inj₂ body) → ask (readReport path) λ report →
         ask (send settings path (Delivery.digest (Calendar.showDay calendar through) (body ++ Diagnostics.summary report ++ toList "The watcher retries automatically while running, with hourly backoff after repeated failures. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/v2.2.1/docs/operations.md\n")))
@@ -209,11 +240,11 @@ module Run (calendar : Calendar) where
     (inj₂ path) → ask (readCursor (Config.Runtime.email settings) path) (cursor settings path through now run)
 
   observed : Host.Outcome → Now → Script (Text ⊎ Bool)
-  observed run now with 9 Data.Nat.≤? Now.hour now
+  observed run now with 9 Data.Nat.≤? localHour calendar now
   ... | no _ = done (inj₂ false)
-  ... | yes _ with Calendar.minimumDay calendar <? Now.day now
+  ... | yes _ with Calendar.minimumDay calendar <? localDay calendar now
   ...   | no _ = done (inj₂ false)
-  ...   | yes _ = ask loadConfig (configured (Now.day now - + 1) now run)
+  ...   | yes _ = ask loadConfig (configured (localDay calendar now - + 1) now run)
 
   tick : Host.Outcome → Script (Text ⊎ Bool)
   tick run = ask localNow (observed run)
