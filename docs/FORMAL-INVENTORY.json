@@ -8599,7 +8599,10 @@
         "spec/Mimir/LearningHistoryWire.agda",
         "spec/Mimir/LearningAssessmentQueries.agda",
         "spec/Mimir/LearningContextProtocol.agda",
-        "spec/Mimir/LearningPublication.agda"
+        "spec/Mimir/LearningPublication.agda",
+        "spec/Mimir/LearningInput.agda",
+        "spec/Mimir/LearningNormalization.agda",
+        "spec/Mimir/ItemAllocation.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
@@ -12617,7 +12620,10 @@
         "spec/Mimir/ReviewNumericalPublication.agda",
         "spec/Mimir/LearningRecompute.agda",
         "spec/Mimir/CandidateRegistry.agda",
-        "spec/Mimir/AssessmentHistory.agda"
+        "spec/Mimir/AssessmentHistory.agda",
+        "spec/Mimir/LearningInput.agda",
+        "spec/Mimir/LearningNormalization.agda",
+        "spec/Mimir/ItemAllocation.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -13452,7 +13458,10 @@
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/ApplicationOutput.agda",
-        "spec/Mimir/McpToolExecution.agda"
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/LearningInput.agda",
+        "spec/Mimir/LearningNormalization.agda",
+        "spec/Mimir/ItemAllocation.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },

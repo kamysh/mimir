@@ -17,6 +17,7 @@ import Mimir.ReviewObservation as Observation
 import Mimir.ExperienceRead as Read
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.IndependentProvenance as Independent
+import Mimir.ItemAllocation as Allocation
 
 record SourceVersion : Set where
   constructor sourceVersion
@@ -35,6 +36,7 @@ record World : Set where
     reviewTimes : List ReviewTime
     grounding : List (ℕ × Float)
     independentOrigins : List (ℕ × Independent.Stored)
+    itemKeys : Allocation.Keys
 
 identities : World → List ℕ
 identities w = map Read.identity (World.current w)

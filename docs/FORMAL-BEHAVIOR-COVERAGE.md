@@ -158,6 +158,32 @@ behavior. `MigrationSchema` connects those rules to the migration's data change;
 observation order is explicit: when an unreserved ID has conflicting old
 declarations, the first observed declaration is retained.
 
+### Incoming items and saved IDs
+
+`LearningInput` separates an incoming item, whose ID may be absent, from a
+saved item with its assigned ID. `LearningWire` uses these incoming types for
+record/review requests and keeps IDs required when reading stored results.
+Both the saved payload and its retry comparison retain the optional local key.
+
+`LearningNormalization` connects the request to the saved key and ownership
+tables. For example, a new item named `estimate-a` can omit its ID. The normalizer
+uses the held learning transaction to ask PostgreSQL for the ID, retains that
+returned ID in the item and key table, then resolves assessment `item_keys`
+before the existing whole-payload validation. A supplied ID can reuse an
+existing reservation; it cannot create a new item. Unknown names, a mismatched
+ID/key or changed provenance refuse the operation. An acknowledged transaction
+abort preserves the old keys and owners under the existing database contract;
+an uncertain commit is not reported as a successful write.
+Project deletion clears the keys of the deleted experiences while preserving
+every unrelated experience's lookup.
+
+`LearningOperations.Protocol.start` now includes that allocation phase in the
+actual public operation. Its general `publicSuccessRequiresCommit` and scope
+laws require an observed commit and the same held transaction. The named-request
+retry laws derive each item from its saved key/owner observations, preserve IDs
+and resolve to replay without another allocation or data write. PostgreSQL's
+UUID generation remains an external operation; no uniqueness proof is added.
+
 ## Operational repair (2026-10-31)
 
 That snapshot checked **643 safe modules**. `OperationalConfiguration`,
