@@ -23,7 +23,7 @@ import Mimir.JudgeHarnessAdapter as Harness
 import Mimir.JudgeServiceBinding as Service
 import Mimir.ApplicationProtocol as Application
 import Mimir.PublicEncoding as Encoding
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.NotificationConfig as Email
 import Mimir.NotificationComposition as Notification
 import Mimir.NotificationRuntime as N

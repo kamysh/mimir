@@ -13,7 +13,7 @@ open import Data.Product using (Σ; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.PublicEncoding as Encoding
 import Mimir.JudgeConfiguration as Config
 import Mimir.JudgeRevision as Revision

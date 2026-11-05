@@ -20,7 +20,7 @@ open import Mimir.RecordDecoding using (_>>=_; readArray)
 open import Mimir.PublicInput using (required; view)
 open import Mimir.LearningWire using (recordOf)
 import Mimir.Validation as Validation
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.StructuredValue as V
 import Mimir.PublicEncoding as Encoding
 import Mimir.JudgeConfiguration as Config
@@ -34,7 +34,6 @@ import Mimir.SourceFailure as Source
 import Mimir.Effects as Effects
 import Mimir.Binary64 as Binary
 import Mimir.DiagnosticText as Diagnostic
-import Mimir.UTF8LossyText as Lossy
 
 record Libraries : Set where
   field display : Revision.Display
@@ -155,7 +154,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
   processFailure (Process.nativeFailure detail) = Revision.error detail nothing
   processFailure (Process.unsuccessfulExit status stderr) = Revision.error
     (toList "harness exited with " ++ status ++ toList ": " ++
-      Diagnostic.bounded 512 (Lossy.text stderr)) nothing
+      Diagnostic.bounded 512 (Conversion.Contract.lossyUTF8 conversion stderr)) nothing
 
   process : Process.Spawn → Script (Revision.Error ⊎ List Byte)
   process request = ask (runProcess request) (λ receipt → done (convert (ProcessReceipt.outcome receipt)))
@@ -295,7 +294,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
   afterReply state (inj₁ error) = done (result state (inj₁ error))
   afterReply state (inj₂ reply) with calls reply
   ... | inj₁ fault = done (result state (inj₁ (Revision.error (Source.display captured) (just captured))))
-    where captured = Source.Current.input (toList "invalid harness reply") (encode reply) (Revision.Display.fault display fault)
+    where captured = Source.Current.input conversion (toList "invalid harness reply") (encode reply) (Revision.Display.fault display fault)
   ... | inj₂ requests = ask (remember updated) (λ _ → yield updated)
     where updated = record state { history = Adapter.history state ++
             (Encoding.object (("assistant" , reply) ∷ []) ∷ []) ; pending = requests }

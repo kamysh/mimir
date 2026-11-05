@@ -23,7 +23,7 @@ import Mimir.StructuredValue as V
 import Mimir.UUIDSchema as UUID
 import Mimir.UUIDGroups as UUIDValue
 import Mimir.Binary64 as B
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.FloatValue as Float
 
 bad : ∀ {A : Set} → String → Fault ⊎ A
@@ -32,8 +32,8 @@ bad message = inj₁ (fault [] malformedInput message)
 uuidNumber : UUIDValue.UUID → ℕ
 uuidNumber id = foldl (λ n byte → 256 * n + toℕ byte) 0 (Vec.toList id)
 
-uuid : V.Value → Fault ⊎ ℕ
-uuid raw with UUID.decode raw
+readUUID : Conversion.Contract → V.Value → Fault ⊎ ℕ
+readUUID conversion raw with UUID.decode conversion raw
 ... | inj₁ error = bad "invalid UUID"
 ... | inj₂ id = inj₂ (uuidNumber id)
 
@@ -91,6 +91,9 @@ looseOptional : ∀ {A : Set} → String → (V.Value → Fault ⊎ A) → V.Obj
 looseOptional name decode = loose name nothing (λ raw → mapResult just (decode raw))
 
 module Numbers (conversion : Conversion.Contract) where
+  uuid : V.Value → Fault ⊎ ℕ
+  uuid = readUUID conversion
+
   castNatural : ℕ → Fault ⊎ B.Number
   castNatural n with n <? B.power 64
   ... | no _ = bad "JSON integer exceeds u64 range"

@@ -9,7 +9,7 @@ open import Data.Nat using (ℕ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (tt)
 open import Mimir.Text using (Text)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.McpClientTransport as Transport
 import Mimir.JudgeMcpLifecycle as Client
 import Mimir.JudgeHandshake as Handshake

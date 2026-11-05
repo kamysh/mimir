@@ -2,8 +2,8 @@
 -- One client request. IDs advance before sending, notifications consume a
 -- no allowance, and no failure retries a write. The readLine effect is
 -- refined separately into an unbounded byte-framing state machine.
-import Mimir.FloatConversion
-module Mimir.McpClientRequest (floatConversion : Mimir.FloatConversion.Contract) where
+import Mimir.StandardLibrary
+module Mimir.McpClientRequest (library : Mimir.StandardLibrary.Contract) where
 
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (just; nothing)
@@ -19,7 +19,7 @@ open import Mimir.Validation using (Fault)
 import Mimir.StructuredValue as V
 import Mimir.McpClientWire as WireDependency
 private
-  module Wire = WireDependency floatConversion
+  module Wire = WireDependency library
 import Mimir.RpcReply as RPC
 import Mimir.Bits as Bits
 import Mimir.Effects as Effects

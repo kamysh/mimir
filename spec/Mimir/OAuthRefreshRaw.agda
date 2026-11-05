@@ -1,38 +1,24 @@
 {-# OPTIONS --safe #-}
--- Direct typed Serde decoding retains duplicate known fields. Converting to
--- serde_json::Value first would erase them and admit a different protocol.
+-- The standard typed decoder handles raw JSON, including ignored values.
+-- Mimir retains its required fields, optional refresh token, integer bound
+-- and rejection of repeated known fields at the record/schema boundary.
 module Mimir.OAuthRefreshRaw where
 
 open import Data.List using (List; []; _∷_)
-open import Data.Maybe using (Maybe)
 open import Data.Nat using (ℕ)
-open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
-open import Data.Unit using (tt)
 open import Data.String using (toList)
 open import Mimir.Text using (Text)
 open import Mimir.Bits using (Byte)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Library
 import Mimir.SerdeSequence as Sequence
-import Mimir.SerdeSlots as Slots
-import Mimir.SerdeFlow as Flow
-import Mimir.SerdeRecord as Record
-import Mimir.SerdeDocument as Document
-import Mimir.SerdeOption as Option
-import Mimir.JudgeStateAtoms as Atoms
+import Mimir.SerdeStruct as Struct
 import Mimir.JudgeStatePrimitives as P
 import Mimir.StructuredValue as V
 import Mimir.OAuthCache as Cache
-import Mimir.SignedMachine as Machine
 import Mimir.Validation as Validation
 
-module Decode (conversion : Conversion.Contract) (clockMaximum : ℕ) where
-  private
-    module R = Record conversion
-    module D = Document conversion
-    module O = Option conversion
-    module A = Atoms.Parser conversion Machine.disabled
-
+module Decode (conversion : Library.Contract) (clockMaximum : ℕ) where
   fields : List Sequence.Field
   fields = P.required (toList "access_token") Text V.asString ∷
     P.required (toList "token_type") Text V.asString ∷
@@ -43,16 +29,14 @@ module Decode (conversion : Conversion.Contract) (clockMaximum : ℕ) where
   build (Sequence.more access (Sequence.more tokenType (Sequence.more expires
     (Sequence.more refresh Sequence.empty)))) = Cache.refresh tokenType access refresh expires
 
-  readers : ℕ → Slots.Readers fields
-  readers allowance = A.readText , A.readText , A.readUint clockMaximum , O.read A.readText , tt
-
-  parser : Flow.Parser Cache.Refresh
-  parser input = Flow.mapProductive (λ value → build (Slots.toSequence fields value))
-    (R.Parser.read Machine.disabled fields readers
-      (Validation.fault [] Validation.malformedInput "invalid OAuth refresh response") 128 input)
+  schema : V.Value → Validation.Fault ⊎ Cache.Refresh
+  schema raw with Struct.read fields raw
+  ... | inj₁ failure = inj₁ (Validation.fault [] Validation.malformedInput "invalid OAuth refresh response")
+  ... | inj₂ fields = inj₂ (build fields)
 
   parse : List Byte → Cache.AuthError ⊎ Cache.Refresh
-  parse input with Flow.Productive.result (D.Parser.read Machine.disabled parser input)
-  ... | Flow.ordinary (Flow.F.success value position) = inj₂ value
-  ... | Flow.ordinary (Flow.F.failure error) = inj₁ Cache.needsAttention
-  ... | Flow.panicked position = inj₁ Cache.needsAttention
+  parse input with Library.readRecord conversion schema input
+  ... | Library.decoded raw value observed = inj₂ value
+  ... | Library.syntaxError error = inj₁ Cache.needsAttention
+  ... | Library.schemaError error = inj₁ Cache.needsAttention
+  ... | Library.decodePanicked message = inj₁ Cache.needsAttention

@@ -5,25 +5,22 @@
 module Mimir.McpEnvelope where
 
 open import Data.Bool using (Bool; true; false)
-open import Data.Char using (toℕ)
-open import Data.List using (List; []; _∷_; map)
+open import Data.List using (List; []; _∷_; _++_; map)
 import Data.List.Properties as List
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
 open import Data.Product using (_,_)
 open import Data.String using (String; toList)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
-import Mimir.JsonStoredValue as JSON
-import Mimir.UTF8Packet as Packet
-
-Text = List ℕ
+import Mimir.StructuredValue as JSON
+open import Mimir.Text public using (Text)
+open import Mimir.SourceReview using (_≟Text_)
 
 literal : String → Text
-literal text = map toℕ (toList text)
+literal = toList
 
 get : Text → JSON.Value → Maybe JSON.Value
-get name (JSON.object fields) = JSON.Map.lookup name fields
+get name (JSON.object fields) = JSON.Object.normalize fields name
 get name _ = nothing
 
 orDefault : JSON.Value → Maybe JSON.Value → JSON.Value
@@ -31,7 +28,7 @@ orDefault fallback nothing = fallback
 orDefault fallback (just value) = value
 
 asText : Maybe JSON.Value → Text
-asText (just (JSON.string values)) = map (λ scalar → Packet.codePoint (Packet.Scalar.raw scalar)) values
+asText (just (JSON.string values)) = values
 asText _ = []
 
 record Identity : Set where
@@ -46,10 +43,13 @@ record Request : Set where
   constructor request
   field identityValue : Identity; method : Text; params : JSON.Value
 
+extractFields : JSON.Object.View → Request
+extractFields fields = request (identify (fields (literal "id")))
+  (asText (fields (literal "method"))) (orDefault (JSON.object []) (fields (literal "params")))
+
 extract : JSON.Value → Request
-extract value = request (identify (get (literal "id") value))
-  (asText (get (literal "method") value))
-  (orDefault (JSON.object []) (get (literal "params") value))
+extract (JSON.object fields) = extractFields (JSON.Object.normalize fields)
+extract _ = extractFields (λ _ → nothing)
 
 data Command : Set where
   initialize listTools : Command
@@ -57,11 +57,11 @@ data Command : Set where
   unknownMethod : Text → Command
 
 route : Text → JSON.Value → Command
-route method params with List.≡-dec _≟_ method (literal "initialize")
+route method params with method ≟Text literal "initialize"
 ... | yes matched = initialize
-... | no other with List.≡-dec _≟_ method (literal "tools/list")
+... | no other with method ≟Text literal "tools/list"
 ...   | yes matched = listTools
-...   | no otherList with List.≡-dec _≟_ method (literal "tools/call")
+...   | no otherList with method ≟Text literal "tools/call"
 ...     | yes matched = callTool (asText (get (literal "name") params))
         (orDefault (JSON.object []) (get (literal "arguments") params))
 ...     | no otherCall = unknownMethod method
@@ -96,5 +96,5 @@ presentParamsPreserved value = refl
 
 lastIDRetained : ∀ id fields →
   Identity.value (Request.identityValue (extract (JSON.object
-    (JSON.Map.insert (literal "id") id fields)))) ≡ id
-lastIDRetained id fields rewrite JSON.Map.insertedLookup (literal "id") id fields = refl
+    (fields ++ ((literal "id" , id) ∷ []))))) ≡ id
+lastIDRetained id fields rewrite JSON.Object.lastOccurrenceWins fields (literal "id") id = refl

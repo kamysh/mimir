@@ -16,7 +16,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.Bits using (Byte)
 import Mimir.UnixPath as Path
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.McpClientTransport as Transport
 import Mimir.McpClientRequest as Request
 import Mimir.StructuredValue as V

@@ -30,7 +30,7 @@ import Mimir.SourceFailure as Source
 import Mimir.DiagnosticText as Bounded
 import Mimir.StructuredValue as V
 import Mimir.PublicEncoding as Encoding
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.Validation as Validation
 import Mimir.JudgePrompt as Prompt
 
@@ -179,7 +179,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   sourceError : String → V.Value → Validation.Fault → Error
   sourceError stage value failure = error (Source.display source) (just source)
-    where source = Source.Current.input (toList stage) (Display.bytes display value) (Display.fault display failure)
+    where source = Source.Current.input conversion (toList stage) (Display.bytes display value) (Display.fault display failure)
 
   scopedError : Scoped.Failure → Error
   scopedError (Scoped.rejected detail) = error detail nothing

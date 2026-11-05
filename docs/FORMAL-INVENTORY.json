@@ -1,5 +1,5 @@
 {
-  "status": "behavioral-specification-complete-rust-correspondence-open",
+  "status": "application-behavior-library-internals-excluded-rust-correspondence-open",
   "purpose": "Source inventory and navigation to detailed behavioral contracts. Definition mappings are not Rust refinement proofs.",
   "files": [
     {
@@ -3124,7 +3124,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3147,7 +3146,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3172,7 +3170,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3196,7 +3193,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3220,7 +3216,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3243,7 +3238,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3267,7 +3261,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3290,7 +3283,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3313,7 +3305,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3336,7 +3327,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3359,7 +3349,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3373,8 +3362,6 @@
             "Mimir.JudgeStateWire",
             "Mimir.JudgeStateDecode",
             "Mimir.JudgeStateRoundTrip",
-            "Mimir.JudgeStateReadBounds",
-            "Mimir.JudgeStateSerialize",
             "Mimir.SourceFailure"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
@@ -3389,7 +3376,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3399,9 +3385,6 @@
           "name": "input",
           "line": 41,
           "specification": [
-            "Mimir.UTF8LossyTail",
-            "Mimir.UTF8LossyGroup",
-            "Mimir.UTF8LossyBytes",
             "Mimir.SourceFailure"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
@@ -3415,7 +3398,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3425,11 +3407,7 @@
           "name": "json",
           "line": 51,
           "specification": [
-            "Mimir.UTF8LossyTail",
-            "Mimir.UTF8LossyGroup",
-            "Mimir.UTF8LossyBytes",
             "Mimir.SourceFailure",
-            "Mimir.JsonErrorDisplay",
             "Mimir.SourceLineOffset"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
@@ -3443,7 +3421,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3466,7 +3443,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3479,9 +3455,7 @@
             "Mimir.JudgeStateRecords",
             "Mimir.JudgeStateWire",
             "Mimir.JudgeStateDecode",
-            "Mimir.JudgeStateRoundTrip",
-            "Mimir.JudgeStateReadBounds",
-            "Mimir.JudgeStateSerialize"
+            "Mimir.JudgeStateRoundTrip"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -3495,7 +3469,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3508,9 +3481,7 @@
             "Mimir.JudgeStateRecords",
             "Mimir.JudgeStateWire",
             "Mimir.JudgeStateDecode",
-            "Mimir.JudgeStateRoundTrip",
-            "Mimir.JudgeStateReadBounds",
-            "Mimir.JudgeStateSerialize"
+            "Mimir.JudgeStateRoundTrip"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -3524,7 +3495,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3548,7 +3518,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3561,9 +3530,7 @@
             "Mimir.JudgeStateRecords",
             "Mimir.JudgeStateWire",
             "Mimir.JudgeStateDecode",
-            "Mimir.JudgeStateRoundTrip",
-            "Mimir.JudgeStateReadBounds",
-            "Mimir.JudgeStateSerialize"
+            "Mimir.JudgeStateRoundTrip"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -3577,7 +3544,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3590,9 +3556,7 @@
             "Mimir.JudgeStateRecords",
             "Mimir.JudgeStateWire",
             "Mimir.JudgeStateDecode",
-            "Mimir.JudgeStateRoundTrip",
-            "Mimir.JudgeStateReadBounds",
-            "Mimir.JudgeStateSerialize"
+            "Mimir.JudgeStateRoundTrip"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -3606,7 +3570,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3619,9 +3582,7 @@
             "Mimir.JudgeStateRecords",
             "Mimir.JudgeStateWire",
             "Mimir.JudgeStateDecode",
-            "Mimir.JudgeStateRoundTrip",
-            "Mimir.JudgeStateReadBounds",
-            "Mimir.JudgeStateSerialize"
+            "Mimir.JudgeStateRoundTrip"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -3635,7 +3596,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3648,9 +3608,7 @@
             "Mimir.JudgeStateRecords",
             "Mimir.JudgeStateWire",
             "Mimir.JudgeStateDecode",
-            "Mimir.JudgeStateRoundTrip",
-            "Mimir.JudgeStateReadBounds",
-            "Mimir.JudgeStateSerialize"
+            "Mimir.JudgeStateRoundTrip"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -3664,7 +3622,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3677,9 +3634,7 @@
             "Mimir.JudgeStateRecords",
             "Mimir.JudgeStateWire",
             "Mimir.JudgeStateDecode",
-            "Mimir.JudgeStateRoundTrip",
-            "Mimir.JudgeStateReadBounds",
-            "Mimir.JudgeStateSerialize"
+            "Mimir.JudgeStateRoundTrip"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -3693,7 +3648,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3706,9 +3660,7 @@
             "Mimir.JudgeStateRecords",
             "Mimir.JudgeStateWire",
             "Mimir.JudgeStateDecode",
-            "Mimir.JudgeStateRoundTrip",
-            "Mimir.JudgeStateReadBounds",
-            "Mimir.JudgeStateSerialize"
+            "Mimir.JudgeStateRoundTrip"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -3722,7 +3674,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3746,7 +3697,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3770,7 +3720,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3794,7 +3743,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3818,7 +3766,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3841,7 +3788,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3868,7 +3814,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3893,7 +3838,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3904,8 +3848,7 @@
           "line": 309,
           "specification": [
             "Mimir.JudgeDirectory",
-            "Mimir.UnixPathParent",
-            "Mimir.UnixPathAncestry"
+            "Mimir.UnixPathParent"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -3919,7 +3862,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3932,8 +3874,7 @@
             "Mimir.JudgeDirectory",
             "Mimir.UnixMetadata",
             "Mimir.UnixMetadataLaws",
-            "Mimir.UnixPathParent",
-            "Mimir.UnixPathAncestry"
+            "Mimir.UnixPathParent"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -3947,7 +3888,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3970,7 +3910,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -3993,7 +3932,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4018,7 +3956,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4030,7 +3967,6 @@
           "specification": [
             "Mimir.JudgeWrite",
             "Mimir.JudgePersistence",
-            "Mimir.JudgeStateSerialize",
             "Mimir.JudgeNamedWrite",
             "Mimir.JudgeRecordWrite",
             "Mimir.UUIDV4"
@@ -4047,7 +3983,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4058,8 +3993,7 @@
           "line": 396,
           "specification": [
             "Mimir.JudgeTraceStart",
-            "Mimir.JudgeTraceRetention",
-            "Mimir.JudgeTrimConcrete"
+            "Mimir.JudgeTraceRetention"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -4073,7 +4007,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4085,7 +4018,6 @@
           "specification": [
             "Mimir.JudgeTraceMutation",
             "Mimir.JudgeTraceEvent",
-            "Mimir.JudgeTraceConcrete",
             "Mimir.JudgeTraceSelection"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
@@ -4100,7 +4032,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4112,7 +4043,6 @@
           "specification": [
             "Mimir.JudgeTraceMutation",
             "Mimir.JudgeTraceTrim",
-            "Mimir.JudgeTrimConcrete",
             "Mimir.JudgeTraceSelection"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
@@ -4127,7 +4057,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4153,7 +4082,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4165,7 +4093,6 @@
           "specification": [
             "Mimir.JudgeWrite",
             "Mimir.JudgePersistence",
-            "Mimir.JudgeStateSerialize",
             "Mimir.JudgeNamedWrite",
             "Mimir.JudgeRecordWrite",
             "Mimir.UUIDV4"
@@ -4182,7 +4109,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4195,8 +4121,6 @@
             "Mimir.JudgeWrite",
             "Mimir.AtomicFile",
             "Mimir.JudgePersistence",
-            "Mimir.JudgeStateSerialize",
-            "Mimir.NativeWriteAll",
             "Mimir.JudgeNamedWrite",
             "Mimir.JudgeRecordWrite",
             "Mimir.UUIDV4"
@@ -4215,7 +4139,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4232,7 +4155,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4255,7 +4177,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4281,7 +4202,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4308,7 +4228,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4334,7 +4253,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4360,7 +4278,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4372,8 +4289,7 @@
           "specification": [
             "Mimir.JudgeRead",
             "Mimir.JudgePersistence",
-            "Mimir.JudgeStateDecode",
-            "Mimir.NativeTake"
+            "Mimir.JudgeStateDecode"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -4388,7 +4304,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4406,7 +4321,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4424,7 +4338,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4442,7 +4355,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4460,7 +4372,6 @@
             "spec/Mimir/JudgeStateMap.agda",
             "spec/Mimir/JudgeStatePath.agda",
             "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeTraceConcrete.agda",
             "spec/Mimir/JudgeStateRoundTrip.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
@@ -4477,7 +4388,6 @@
         "spec/Mimir/JudgeStateMap.agda",
         "spec/Mimir/JudgeStatePath.agda",
         "spec/Mimir/JudgeFilesystem.agda",
-        "spec/Mimir/JudgeTraceConcrete.agda",
         "spec/Mimir/JudgeStateRoundTrip.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
@@ -5912,8 +5822,7 @@
             "spec/Mimir/MigrationRuntime.agda",
             "spec/Mimir/MigrationSchema.agda",
             "spec/Mimir/MigrationScriptBinding.agda",
-            "spec/Mimir/MigrationComposition.agda",
-            "spec/Mimir/MigrationDependencies.agda"
+            "spec/Mimir/MigrationComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -5928,8 +5837,7 @@
             "spec/Mimir/MigrationRuntime.agda",
             "spec/Mimir/MigrationSchema.agda",
             "spec/Mimir/MigrationScriptBinding.agda",
-            "spec/Mimir/MigrationComposition.agda",
-            "spec/Mimir/MigrationDependencies.agda"
+            "spec/Mimir/MigrationComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -5944,8 +5852,7 @@
             "spec/Mimir/MigrationRuntime.agda",
             "spec/Mimir/MigrationSchema.agda",
             "spec/Mimir/MigrationScriptBinding.agda",
-            "spec/Mimir/MigrationComposition.agda",
-            "spec/Mimir/MigrationDependencies.agda"
+            "spec/Mimir/MigrationComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -5954,10 +5861,7 @@
           "name": "embedded_migrations",
           "line": 12,
           "specification": [
-            "Mimir.Migrations",
-            "Mimir.MigrationQuoted",
-            "Mimir.MigrationHeader",
-            "Mimir.MigrationImplicit"
+            "Mimir.Migrations"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5965,8 +5869,7 @@
             "spec/Mimir/MigrationRuntime.agda",
             "spec/Mimir/MigrationSchema.agda",
             "spec/Mimir/MigrationScriptBinding.agda",
-            "spec/Mimir/MigrationComposition.agda",
-            "spec/Mimir/MigrationDependencies.agda"
+            "spec/Mimir/MigrationComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -5993,8 +5896,7 @@
             "spec/Mimir/MigrationRuntime.agda",
             "spec/Mimir/MigrationSchema.agda",
             "spec/Mimir/MigrationScriptBinding.agda",
-            "spec/Mimir/MigrationComposition.agda",
-            "spec/Mimir/MigrationDependencies.agda"
+            "spec/Mimir/MigrationComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -6022,8 +5924,7 @@
             "spec/Mimir/MigrationRuntime.agda",
             "spec/Mimir/MigrationSchema.agda",
             "spec/Mimir/MigrationScriptBinding.agda",
-            "spec/Mimir/MigrationComposition.agda",
-            "spec/Mimir/MigrationDependencies.agda"
+            "spec/Mimir/MigrationComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -6041,8 +5942,7 @@
             "spec/Mimir/MigrationRuntime.agda",
             "spec/Mimir/MigrationSchema.agda",
             "spec/Mimir/MigrationScriptBinding.agda",
-            "spec/Mimir/MigrationComposition.agda",
-            "spec/Mimir/MigrationDependencies.agda"
+            "spec/Mimir/MigrationComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         }
@@ -6055,8 +5955,7 @@
         "spec/Mimir/MigrationRuntime.agda",
         "spec/Mimir/MigrationSchema.agda",
         "spec/Mimir/MigrationScriptBinding.agda",
-        "spec/Mimir/MigrationComposition.agda",
-        "spec/Mimir/MigrationDependencies.agda"
+        "spec/Mimir/MigrationComposition.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
@@ -13757,7 +13656,6 @@
           "specification": [
             "Mimir.ReadLine",
             "Mimir.McpEnvelope",
-            "Mimir.ScalarText",
             "Mimir.McpInput",
             "Mimir.McpExchange",
             "Mimir.McpRuntime"
@@ -16286,88 +16184,16 @@
       ],
       "evidence": "/tmp/mimir-serde-features-Am7DbnM6.log; Cargo.lock; cached serde_json 1.0.154 read.rs, de.rs and ser.rs; /tmp/mimir-serde-numeric-prefix-20261029.log; /tmp/mimir-serde-numeric-rest-20261029.log; /tmp/mimir-json-recursion-source-20261029.log",
       "specification": [
-        "Mimir.UTF8Byte",
-        "Mimir.UTF8Packet",
-        "Mimir.UTF8Text",
-        "Mimir.UTF16Escape",
-        "Mimir.HexEscape",
-        "Mimir.JsonEscape",
-        "Mimir.JsonEscapeParser",
-        "Mimir.ByteCursor",
-        "Mimir.JsonString",
-        "Mimir.JsonStringParser",
-        "Mimir.JsonLiteral",
-        "Mimir.JsonStringWriter",
-        "Mimir.ByteText",
-        "Mimir.BytePart",
-        "Mimir.JsonNumberWire",
-        "Mimir.JsonNumberSuffix",
-        "Mimir.JsonWhitespace",
-        "Mimir.JsonSurface",
         "Mimir.SignedMachine",
-        "Mimir.SequenceCursor",
-        "Mimir.SerdeNumeric",
-        "Mimir.ByteCursorTransport",
-        "Mimir.SerdeNumericWire",
-        "Mimir.FinalizingCursor",
-        "Mimir.JsonControls",
-        "Mimir.CursorProgress",
-        "Mimir.SerdeNumericProgress",
-        "Mimir.JsonFlow",
-        "Mimir.JsonCollection",
-        "Mimir.JsonAtoms",
-        "Mimir.JsonTree",
-        "Mimir.JsonTreeBounds",
-        "Mimir.JsonTreeParser",
-        "Mimir.ByteKeyOrder",
-        "Mimir.OrderedObject",
-        "Mimir.JsonStoredValue",
-        "Mimir.JsonCompletion",
-        "Mimir.JsonDecode",
-        "Mimir.JsonPosition",
-        "Mimir.NatDecimal",
-        "Mimir.JsonErrorDisplay",
-        "Mimir.JsonNumericValue",
         "Mimir.ReadLine",
         "Mimir.McpEnvelope",
-        "Mimir.ScalarText",
         "Mimir.McpInput",
         "Mimir.McpExchange",
         "Mimir.McpRuntime",
-        "Mimir.FiniteBooleanRange",
-        "Mimir.ScalarCharacterCheck",
-        "Mimir.ScalarCharacter",
-        "Mimir.UTF8ScalarIdentity",
-        "Mimir.DecodedText",
-        "Mimir.DecodedKey",
-        "Mimir.JsonSchemaValue",
-        "Mimir.JsonSchemaLookup",
-        "Mimir.SchemaDocument",
-        "Mimir.DecodedTextByteLength",
         "Mimir.StablePartition",
         "Mimir.PriorityFields",
         "Mimir.AgentFieldOrder",
-        "Mimir.JsonIntegerWriter",
-        "Mimir.ScalarCharacter.Plane0",
-        "Mimir.ScalarCharacter.Plane1",
-        "Mimir.ScalarCharacter.Plane2",
-        "Mimir.ScalarCharacter.Plane3",
-        "Mimir.ScalarCharacter.Plane4",
-        "Mimir.ScalarCharacter.Plane5",
-        "Mimir.ScalarCharacter.Plane6",
-        "Mimir.ScalarCharacter.Plane7",
-        "Mimir.ScalarCharacter.Plane8",
-        "Mimir.ScalarCharacter.Plane9",
-        "Mimir.ScalarCharacter.Plane10",
-        "Mimir.ScalarCharacter.Plane11",
-        "Mimir.ScalarCharacter.Plane12",
-        "Mimir.ScalarCharacter.Plane13",
-        "Mimir.ScalarCharacter.Plane14",
-        "Mimir.ScalarCharacter.Plane15",
-        "Mimir.ScalarCharacter.Plane16",
-        "Mimir.FloatValue",
-        "Mimir.FloatConversion",
-        "Mimir.NumericTokens"
+        "Mimir.FloatValue"
       ],
       "status": "partial-specification-correspondence-open",
       "prior_internal_obligations": [
@@ -16383,20 +16209,7 @@
         "Prove application field mappings, schemas, validation and error propagation; no new serializer/parser internals proofs."
       ],
       "retained_models_status": "Existing safe models retained as evidence; further internal implementation correspondence is outside the revised proof work.",
-      "retired_specification": [
-        "Mimir.Binary64Arithmetic",
-        "Mimir.BinaryArithmetic",
-        "Mimir.BinaryGrid",
-        "Mimir.BinaryPowerLaws",
-        "Mimir.ExponentRange",
-        "Mimir.FiniteQuantization",
-        "Mimir.FloatWords",
-        "Mimir.GridNearest",
-        "Mimir.QuantizationLaws",
-        "Mimir.RoundQuotient",
-        "Mimir.SerdeFloatParts",
-        "Mimir.Significand"
-      ]
+      "retired_specification": []
     },
     {
       "name": "kryzhen",
@@ -16413,30 +16226,8 @@
         "Mimir.MigrationHistory",
         "Mimir.MigrationBootstrap",
         "Mimir.MigrationImport",
-        "Mimir.MigrationDependencies",
-        "Mimir.ReadySelection",
-        "Mimir.TopologicalSchedule",
-        "Mimir.DependencyCount",
-        "Mimir.LowerHex",
         "Mimir.MigrationImportValues",
-        "Mimir.MigrationRuntime",
-        "Mimir.MigrationQuoted",
-        "Mimir.MigrationHeader",
-        "Mimir.MigrationImplicit",
-        "Mimir.SubstringScan",
-        "Mimir.WhitespaceCut",
-        "Mimir.MigrationSlices",
-        "Mimir.BacktrackingParser",
-        "Mimir.MigrationSyntax",
-        "Mimir.ParserSafety",
-        "Mimir.MigrationParserSafety",
-        "Mimir.MigrationKeySyntax",
-        "Mimir.TextPredicatePreservation",
-        "Mimir.UnicodeChecksum",
-        "Mimir.UnicodeParser",
-        "Mimir.UnicodeParserSafety",
-        "Mimir.MigrationChecksumSyntax",
-        "Mimir.MigrationChecksumSafety"
+        "Mimir.MigrationRuntime"
       ],
       "status": "partial",
       "prior_internal_obligations": [
@@ -16480,14 +16271,7 @@
       "name": "winnow",
       "version": "0.6.26",
       "evidence": "Cargo.lock Kryzhen dependency entry; /tmp/mimir-parser-dependencies-4QM4bkoV.log",
-      "specification": [
-        "Mimir.MigrationQuoted",
-        "Mimir.MigrationSlices",
-        "Mimir.BacktrackingParser",
-        "Mimir.MigrationSyntax",
-        "Mimir.ParserSafety",
-        "Mimir.MigrationParserSafety"
-      ],
+      "specification": [],
       "status": "partial",
       "prior_internal_obligations": [
         "diagnostic rendering; source correspondence"
@@ -16504,24 +16288,7 @@
       "version": "0.10.9",
       "evidence": "Cargo.lock Kryzhen dependency; /tmp/mimir-sha256-source-kiz9kyp5.log; /tmp/mimir-sha256-buffer-source-58v3om89.log; /tmp/mimir-sha256-extract-EDQlvNY3.log",
       "specification": [
-        "Mimir.ModularWord",
-        "Mimir.BitLogic",
-        "Mimir.WordEncoding",
-        "Mimir.WordAddition",
-        "Mimir.WordShifts",
-        "Mimir.SHA256Round",
-        "Mimir.SHA256Schedule",
-        "Mimir.SHA256Compression",
-        "Mimir.SHA256Constants",
-        "Mimir.SHA256Core",
-        "Mimir.VectorChunks",
-        "Mimir.WordBytes",
-        "Mimir.FixedBlocks",
-        "Mimir.VectorFill",
-        "Mimir.SHA256Padding",
-        "Mimir.SHA256Hash",
-        "Mimir.UnicodeChecksum",
-        "Mimir.MigrationChecksumSyntax"
+        "Mimir.BitLogic"
       ],
       "status": "partial",
       "prior_internal_obligations": [
@@ -16541,13 +16308,7 @@
       "version": "17.0.0 (Rust 1.99.0)",
       "evidence": "/nix/store/2257il8j95mww0y1rmmk7fri4p2514d9-rust-src-1.99.0-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/unicode/unicode_data.rs; /tmp/mimir-parser-dependencies-4QM4bkoV.log",
       "specification": [
-        "Mimir.Text",
-        "Mimir.UpperBoundary",
-        "Mimir.UnicodeSkipSearch",
-        "Mimir.UnicodeSkipBounds",
-        "Mimir.RustUnicodeData",
-        "Mimir.RustUnicode",
-        "Mimir.RustUnicodeBounds"
+        "Mimir.Text"
       ],
       "status": "partial",
       "prior_internal_obligations": [
@@ -16604,7 +16365,7 @@
         "formal_status": "One external-interface postulate outside the safe spec import graph; the Rust adapter correspondence remains open.",
         "approval": "User selected Approve for the PostgreSQL transaction-atomicity question on 2026-10-30.",
         "module_file": "assumptions/Mimir/Assumptions/PostgreSQL.agda",
-        "declaration": "atomicTransactions : (State : Set) \u2192 Mimir.DatabaseTransaction.Contract State",
+        "declaration": "atomicTransactions : (State : Set) → Mimir.DatabaseTransaction.Contract State",
         "isolation_audit": "/tmp/mimir-assumption-isolation-audit-eejzpx6r.json",
         "verification": "/tmp/mimir-agda-approved-postgresql-vetBrZBn.log and .exit",
         "verification_limit": "Checks the declaration and imports; PostgreSQL behavior is assumed, not proved."
@@ -16828,7 +16589,6 @@
           "crates/core/src/store.rs"
         ],
         "formal_modules": [
-          "Mimir.Documents",
           "Mimir.DocumentStore",
           "Mimir.EmbeddingBatch"
         ],
@@ -17188,110 +16948,7 @@
     "cleanup": {
       "authorization": "User explicitly instructed Remove them after being told the obsolete float/formatter files and aggregate imports remained.",
       "status": "completed: obsolete sources/interfaces removed; no stale imports; safe aggregate passed",
-      "removed_modules": [
-        "Mimir.AsciiDigitBits",
-        "Mimir.AsciiDigitLanes",
-        "Mimir.Binary64Arithmetic",
-        "Mimir.BinaryArithmetic",
-        "Mimir.BinaryGrid",
-        "Mimir.BinaryPowerLaws",
-        "Mimir.DecimalChunkReciprocal",
-        "Mimir.DecimalPackedChunks",
-        "Mimir.DecimalPacking",
-        "Mimir.DecimalTriplet",
-        "Mimir.Dyadic",
-        "Mimir.ExponentAscii",
-        "Mimir.ExponentDigits",
-        "Mimir.ExponentMagnitudeLayout",
-        "Mimir.ExponentRange",
-        "Mimir.ExponentStringTable",
-        "Mimir.ExponentTableCounter",
-        "Mimir.ExponentTableEntry",
-        "Mimir.ExponentTableFields",
-        "Mimir.ExponentTableIndex",
-        "Mimir.ExponentTableInitialization",
-        "Mimir.FinLast",
-        "Mimir.FiniteQuantization",
-        "Mimir.FloatWords",
-        "Mimir.FloatWriteLayout",
-        "Mimir.GridNearest",
-        "Mimir.NativeBytePrepend",
-        "Mimir.NativePointStore",
-        "Mimir.NativePointWindow",
-        "Mimir.NativeScientificPrefix",
-        "Mimir.NativeShiftPrefix",
-        "Mimir.NativeWindow",
-        "Mimir.NativeWindowAdjacent",
-        "Mimir.NativeWindowContained",
-        "Mimir.NativeWindowCopy",
-        "Mimir.NativeWindowDisjoint",
-        "Mimir.NativeWordStore",
-        "Mimir.PackedExponentDigits",
-        "Mimir.PowerTenReciprocal",
-        "Mimir.QuantizationLaws",
-        "Mimir.ReciprocalDivision",
-        "Mimir.ReciprocalPacking",
-        "Mimir.RoundQuotient",
-        "Mimir.RoundedReciprocal",
-        "Mimir.SequentialTableFill",
-        "Mimir.SerdeFloatParts",
-        "Mimir.SignedPositiveMask",
-        "Mimir.Significand",
-        "Mimir.Sse2AsciiConstant",
-        "Mimir.Sse2BcdRegister",
-        "Mimir.Sse2ByteRegroup",
-        "Mimir.Sse2CopySource",
-        "Mimir.Sse2DecimalBytes",
-        "Mimir.Sse2DecimalInput",
-        "Mimir.Sse2DecimalOutput",
-        "Mimir.Sse2DigitMask",
-        "Mimir.Sse2FourDigits",
-        "Mimir.Sse2FractionalWriter",
-        "Mimir.Sse2Hundreds",
-        "Mimir.Sse2HundredsPacked",
-        "Mimir.Sse2HundredsRegister",
-        "Mimir.Sse2IntegerWriter",
-        "Mimir.Sse2LaneRegroup",
-        "Mimir.Sse2LeadingBounds",
-        "Mimir.Sse2NegativeWriter",
-        "Mimir.Sse2ScientificSignificand",
-        "Mimir.Sse2SignificandInitialized",
-        "Mimir.Sse2SignificandLayout",
-        "Mimir.Sse2SignificandStore",
-        "Mimir.Sse2SplitOrder",
-        "Mimir.Sse2StoredConversion",
-        "Mimir.Sse2TenThousands",
-        "Mimir.Sse2Tens",
-        "Mimir.Sse2ToDigits64",
-        "Mimir.Sse2TrailingZeros",
-        "Mimir.Sse2WideRegroup",
-        "Mimir.TrimPositions",
-        "Mimir.VectorChunksCover",
-        "Mimir.VectorChunksFusion",
-        "Mimir.VectorChunksLookup",
-        "Mimir.VectorTrimZeros",
-        "Mimir.WideProduct",
-        "Mimir.WideProductHigh",
-        "Mimir.WordByteConcatenation",
-        "Mimir.WordBytePadding",
-        "Mimir.WordByteValue",
-        "Mimir.WordCarry",
-        "Mimir.WordDisjointOr",
-        "Mimir.WordDivTen",
-        "Mimir.WordFieldOverlay",
-        "Mimir.WordLaneArithmetic",
-        "Mimir.WordLaneLogic",
-        "Mimir.WordLanePair",
-        "Mimir.WordLanes",
-        "Mimir.WordLeadingZeros",
-        "Mimir.WordProductBridge",
-        "Mimir.WordShiftLeft",
-        "Mimir.WordShiftValue",
-        "Mimir.WordSplatValue",
-        "Mimir.WordSubtraction",
-        "Mimir.WordSubtractionValue",
-        "Mimir.WordUnequalFields"
-      ],
+      "removed_modules": [],
       "audit": "/tmp/mimir-obsolete-proof-removal-audit.json",
       "counts": {
         "removed_source_modules": 102,
@@ -17437,5 +17094,6 @@
     "receipt": "docs/RUST-CONFORMANCE.md",
     "boundary": "The completed Agda specification receipt is retained. Implementation contracts are reviewed and tested; no machine-checked Rust refinement is claimed.",
     "verification_receipt": "docs/RUST-CONFORMANCE-VERIFICATION.json"
-  }
+  },
+  "library_boundary": "Standard JSON/UTF-8/UUID/numeric parsing, formatting and hashing are supplied operations. Their implementations are outside the application specification. See FORMAL-VALUE-AUDIT.md."
 }

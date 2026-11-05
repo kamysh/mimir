@@ -12,20 +12,13 @@ open import Data.String using (toList)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Bits using (Byte)
 open import Mimir.Text using (Text; byteLength)
-import Mimir.UTF8LossyText as Lossy
+import Mimir.StandardLibrary as Library
 import Mimir.DiagnosticText as Bounded
 import Mimir.McpClientLine as Line
-import Mimir.UnicodeText as Unicode
 
-subsequenceAll : ∀ {Predicate : Char → Set} {small large} →
-  Bounded.Subsequence small large → All Predicate large → All Predicate small
-subsequenceAll (Bounded.empty source) valid = All.[]
-subsequenceAll (Bounded.keep character selected) (head All.∷ rest) = head All.∷ subsequenceAll selected rest
-subsequenceAll (Bounded.skip character selected) (head All.∷ rest) = subsequenceAll selected rest
-
-module With (limit : ℕ) where
+module With (limit : ℕ) (library : Library.Contract) where
   detail : List Byte → Text
-  detail bytes = Bounded.bounded limit (Lossy.text bytes)
+  detail bytes = Bounded.bounded limit (Library.Contract.lossyUTF8 library bytes)
 
   appendDetail : Text → Text
   appendDetail [] = toList "MCP stream ended"
@@ -35,19 +28,16 @@ module With (limit : ℕ) where
   display (Line.streamEnded bytes) = appendDetail (detail bytes)
 
   scalarBound : ∀ bytes → length (detail bytes) ≤ limit
-  scalarBound bytes = Bounded.scalarBound limit (Lossy.text bytes)
+  scalarBound bytes = Bounded.scalarBound limit (Library.Contract.lossyUTF8 library bytes)
 
   byteBound : ∀ bytes → byteLength (detail bytes) ≤ 4 * limit
-  byteBound bytes = Bounded.byteBound limit (Lossy.text bytes)
+  byteBound bytes = Bounded.byteBound limit (Library.Contract.lossyUTF8 library bytes)
 
   noControls : ∀ bytes → All Bounded.NonControl (detail bytes)
-  noControls bytes = Bounded.boundedNonControl limit (Lossy.text bytes)
+  noControls bytes = Bounded.boundedNonControl limit (Library.Contract.lossyUTF8 library bytes)
 
-  preservesOrder : ∀ bytes → Bounded.Subsequence (detail bytes) (Lossy.text bytes)
-  preservesOrder bytes = Bounded.preservesOrder limit (Lossy.text bytes)
-
-  validDetail : ∀ bytes → Unicode.Valid (detail bytes)
-  validDetail bytes = subsequenceAll (preservesOrder bytes) (Lossy.valid bytes)
+  preservesOrder : ∀ bytes → Bounded.Subsequence (detail bytes) (Library.Contract.lossyUTF8 library bytes)
+  preservesOrder bytes = Bounded.preservesOrder limit (Library.Contract.lossyUTF8 library bytes)
 
   emptyDetail : ∀ bytes → detail bytes ≡ [] → display (Line.streamEnded bytes) ≡ toList "MCP stream ended"
   emptyDetail bytes empty rewrite empty = refl

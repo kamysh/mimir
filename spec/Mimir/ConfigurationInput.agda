@@ -42,14 +42,14 @@ data Error : Set where
   unknownKey invalidMode invalidBackend : Error
   invalidPort invalidBatchSize : U.Error → Error
 
-module Read (sizeMaximum : ℕ) where
+module Read (parser : U.Parser) (sizeMaximum : ℕ) where
   open Overrides sizeMaximum
 
   decode : Key → Text → Error ⊎ Setting
   decode hostKey value = inj₂ (host value)
-  decode portKey value with U.parse 65535 value
+  decode portKey value with U.parse parser 65535 value
   ... | inj₁ error = inj₁ (invalidPort error)
-  ... | inj₂ parsed = inj₂ (port (U.Number.result parsed))
+  ... | inj₂ parsed = inj₂ (port parsed)
   decode databaseKey value = inj₂ (dbname value)
   decode userKey value = inj₂ (user value)
   decode passwordKey value = inj₂ (password value)
@@ -65,9 +65,9 @@ module Read (sizeMaximum : ℕ) where
   ... | just parsed = inj₂ (backend parsed)
   decode modelKey value = inj₂ (model value)
   decode apiKeyKey value = inj₂ (apiKey value)
-  decode batchKey value with U.parse sizeMaximum value
+  decode batchKey value with U.parse parser sizeMaximum value
   ... | inj₁ error = inj₁ (invalidBatchSize error)
-  ... | inj₂ parsed = inj₂ (batchSize (U.Number.result parsed))
+  ... | inj₂ parsed = inj₂ (batchSize parsed)
   decode cacheKey value = inj₂ (cacheDirectory value)
 
   pair : String × Text → Error ⊎ Setting

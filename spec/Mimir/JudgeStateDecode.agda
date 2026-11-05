@@ -11,6 +11,7 @@ open import Data.String using (toList)
 open import Data.Sum using (_⊎_)
 open import Mimir.Text using (Text)
 import Mimir.Validation as V
+import Mimir.StandardLibrary as Library
 import Mimir.StructuredValue as JSON
 import Mimir.RecordDecoding as Array
 import Mimir.SerdeSequence as Sequence
@@ -22,7 +23,9 @@ import Mimir.SourceFailure as Source
 open Sequence using (Field; Values; empty; more)
 module R = Wire.R
 
-module Size (sizeMaximum : ℕ) where
+module Size (library : Library.Contract) (sizeMaximum : ℕ) where
+  module UUIDFields = P.UUIDFields library
+
   size : JSON.Value → V.Fault ⊎ ℕ
   size = P.uint sizeMaximum
 
@@ -45,7 +48,7 @@ module Size (sizeMaximum : ℕ) where
 
   deferredFields : List Field
   deferredFields =
-    P.required (toList "id") UUID.UUID P.uuid ∷
+    P.required (toList "id") UUID.UUID UUIDFields.uuid ∷
     P.required (toList "revision") ℤ P.signed ∷ []
 
   buildDeferred : Values deferredFields → R.Deferred
@@ -57,7 +60,7 @@ module Size (sizeMaximum : ℕ) where
   diagnosticFields : List Field
   diagnosticFields =
     P.defaulted (toList "observed_at") ℕ u64 0 ∷
-    P.required (toList "experience_id") UUID.UUID P.uuid ∷
+    P.required (toList "experience_id") UUID.UUID UUIDFields.uuid ∷
     P.required (toList "tool") Text JSON.asString ∷
     P.required (toList "detail") Text JSON.asString ∷ []
 
@@ -74,8 +77,8 @@ module Size (sizeMaximum : ℕ) where
     P.optional (toList "diagnostic") R.FailureDiagnostic diagnostic ∷
     P.optional (toList "failure_detail") Text JSON.asString ∷
     P.optional (toList "failure_source") Source.Failure source ∷
-    P.optional (toList "diagnostics_id") UUID.UUID P.uuid ∷
-    P.defaulted (toList "selected_ids") (List UUID.UUID) (Array.readArray P.uuid) [] ∷
+    P.optional (toList "diagnostics_id") UUID.UUID UUIDFields.uuid ∷
+    P.defaulted (toList "selected_ids") (List UUID.UUID) (Array.readArray UUIDFields.uuid) [] ∷
     P.required (toList "selected") ℕ size ∷
     P.required (toList "confirmed") ℕ size ∷
     P.required (toList "corrected") ℕ size ∷
@@ -97,7 +100,7 @@ module Size (sizeMaximum : ℕ) where
 
   confirmedFields : List Field
   confirmedFields =
-    P.required (toList "id") UUID.UUID P.uuid ∷
+    P.required (toList "id") UUID.UUID UUIDFields.uuid ∷
     P.required (toList "recorded_at") ℕ u64 ∷ []
 
   buildConfirmed : Values confirmedFields → R.Confirmed
@@ -122,7 +125,7 @@ module Size (sizeMaximum : ℕ) where
   eventFields : List Field
   eventFields =
     P.required (toList "at") ℕ u64 ∷
-    P.required (toList "experience_id") UUID.UUID P.uuid ∷
+    P.required (toList "experience_id") UUID.UUID UUIDFields.uuid ∷
     P.required (toList "kind") Text JSON.asString ∷
     P.optional (toList "model_requests") ℕ size ∷
     P.optional (toList "tool_attempts") ℕ size ∷
@@ -139,12 +142,12 @@ module Size (sizeMaximum : ℕ) where
 
   traceFields : List Field
   traceFields =
-    P.required (toList "id") UUID.UUID P.uuid ∷
+    P.required (toList "id") UUID.UUID UUIDFields.uuid ∷
     P.required (toList "started_at") ℕ u64 ∷
     P.optional (toList "finished_at") ℕ u64 ∷
     P.required (toList "status") Text JSON.asString ∷
     P.optional (toList "block_reason") Text JSON.asString ∷
-    P.required (toList "selected_ids") (List UUID.UUID) (Array.readArray P.uuid) ∷
+    P.required (toList "selected_ids") (List UUID.UUID) (Array.readArray UUIDFields.uuid) ∷
     P.optional (toList "model_requests") ℕ size ∷
     P.optional (toList "tool_attempts") ℕ size ∷
     P.required (toList "events") (List R.Event) (Array.readArray event) ∷

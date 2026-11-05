@@ -14,7 +14,7 @@ open import Mimir.RecordDecoding using (_>>=_; mapResult; readRecord; readArray)
 open import Mimir.PublicInput
 import Mimir.StructuredValue as V
 import Mimir.JsonObjects as Objects
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.ExperienceSchema as X
 import Mimir.ReviewSchema as R
 import Mimir.LearningSchema as L
@@ -54,8 +54,8 @@ origin = recordOf ("basis" ∷ "reference" ∷ []) (λ fields →
 
 -- serde's untagged variants try Existing first, then Candidate. These two
 -- variant records permit unrelated members; the enclosing records do not.
-target : V.Value → Fault ⊎ L.Target
-target raw with required "belief_id" uuid (view raw)
+target : Conversion.Contract → V.Value → Fault ⊎ L.Target
+target conversion raw with required "belief_id" (readUUID conversion) (view raw)
 ... | inj₂ id = inj₂ (L.existing id)
 ... | inj₁ first = mapResult L.candidate (required "candidate_key" V.asString (view raw))
 
@@ -95,7 +95,7 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
   -- ItemAllocation resolves item_keys to item_ids before this canonical read.
   assessment = recordOf ("target" ∷ "scope" ∷ "rubric" ∷ "correctness" ∷ "usefulness" ∷ "evidence_indices" ∷
     "item_ids" ∷ "rationale" ∷ []) (λ fields →
-    required "target" target fields >>= λ target → required "scope" V.asString fields >>= λ scope →
+    required "target" (target conversion) fields >>= λ target → required "scope" V.asString fields >>= λ scope →
     required "rubric" V.asString fields >>= λ rubric → required "correctness" axis fields >>= λ correctness →
     required "usefulness" axis fields >>= λ usefulness →
     required "evidence_indices" (readArray (unsigned sizeMaximum)) fields >>= λ evidence →
@@ -127,12 +127,12 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
 
   candidateFeedback : V.Value → Fault ⊎ R.CandidateFeedback
   candidateFeedback = recordOf ("target" ∷ "verdict" ∷ "weight" ∷ []) (λ fields →
-    required "target" target fields >>= λ target → required "verdict" verdict fields >>= λ verdict →
+    required "target" (target conversion) fields >>= λ target → required "verdict" verdict fields >>= λ verdict →
     required "weight" number fields >>= λ weight → inj₂ (R.candidateFeedback target verdict weight))
 
   candidateLink : V.Value → Fault ⊎ R.CandidateLink
   candidateLink = recordOf ("from" ∷ "to" ∷ "relation" ∷ "weight" ∷ []) (λ fields →
-    required "from" target fields >>= λ from → required "to" target fields >>= λ to →
+    required "from" (target conversion) fields >>= λ from → required "to" (target conversion) fields >>= λ to →
     required "relation" relation fields >>= λ relation → required "weight" number fields >>= λ weight →
     inj₂ (R.candidateLink from to relation weight))
 

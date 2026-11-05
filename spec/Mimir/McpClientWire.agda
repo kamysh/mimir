@@ -1,8 +1,8 @@
 {-# OPTIONS --safe #-}
 -- Client extraction from normalized JSON. Missing and explicit null fields
 -- remain distinct; application errors retain the original server value.
-import Mimir.FloatConversion
-module Mimir.McpClientWire (floatConversion : Mimir.FloatConversion.Contract) where
+import Mimir.StandardLibrary
+module Mimir.McpClientWire (library : Mimir.StandardLibrary.Contract) where
 
 open import Data.Bool using (Bool; true; false)
 open import Data.List using (List; []; _∷_)
@@ -22,10 +22,7 @@ import Mimir.Binary64 as Binary
 import Mimir.ProviderResponse as Fields
 import Mimir.ProviderArguments as JSONDependency
 private
-  module JSON = JSONDependency floatConversion
-import Mimir.JsonReleaseDocument as DocumentDependency
-private
-  module Document = DocumentDependency floatConversion
+  module JSON = JSONDependency library
 import Mimir.Bits as Bits
 
 module Replies = RPC.Replies V.Value V.Value
@@ -197,4 +194,4 @@ toolComplete raw source value (toolEvidence notMarked (contentEvidence item sing
   rewrite notMarked | singleton | kind | exact | parsed = refl
 
 line : List Bits.Byte → Fault ⊎ V.Value
-line bytes = JSON.convert (Document.read bytes)
+line bytes = JSON.convert (Mimir.StandardLibrary.Contract.jsonValue library bytes)

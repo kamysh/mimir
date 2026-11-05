@@ -17,7 +17,7 @@ import Mimir.UnixPathParent as Parent
 import Mimir.ASCIIPath as ASCII
 import Mimir.JudgeLock as Lock
 import Mimir.JudgeRead as Read
-import Mimir.UUIDHyphenated as UUID
+import Mimir.StandardLibrary as Library
 import Mimir.UUIDGroups as Groups
 
 data Name : Set where status failure diagnostics : Name
@@ -35,9 +35,10 @@ limit status = nothing
 limit failure = nothing
 limit diagnostics = just 3145728
 
-temporaryName : Name → Groups.UUID → Path
-temporaryName name identifier = ASCII.literal (toList ".judge-") tt ++ filename name ++
-  ASCII.literal (toList "-") tt ++ UUID.encode identifier ++ ASCII.literal (toList ".tmp") tt
+temporaryName : Library.Contract → Name → Groups.UUID → Path
+temporaryName library name identifier = ASCII.literal (toList ".judge-") tt ++ filename name ++
+  ASCII.literal (toList "-") tt ++ Library.Contract.encodeUTF8 library (Library.Contract.formatUUID library identifier) ++
+  ASCII.literal (toList ".tmp") tt
 
 module With (Handle NativeError : Set) where
   module L = Lock.With Path Handle NativeError

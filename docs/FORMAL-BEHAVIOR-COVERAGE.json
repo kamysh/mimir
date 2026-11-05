@@ -1,6 +1,6 @@
 {
   "generated_at": "2026-10-30T23:15:09.123259+00:00",
-  "scope": "Completed detailed existing Mimir behavioral specification; Rust conformance and deployment are separate.",
+  "scope": "Application behavior, with standard libraries supplied externally; see the current value audit and historical verification receipt separately.",
   "counts": {
     "mcp": 34,
     "cli_leaves": 30,
@@ -605,7 +605,6 @@
       "group": "documents",
       "interface_evidence": "path; optional project; loaded count",
       "existing_modules": [
-        "spec/Mimir/Documents.agda",
         "spec/Mimir/DocumentStore.agda",
         "spec/Mimir/EmbeddingBatch.agda",
         "spec/Mimir/Markdown.agda"
@@ -637,7 +636,6 @@
       "group": "documents",
       "interface_evidence": "context; optional project; limit default 5",
       "existing_modules": [
-        "spec/Mimir/Documents.agda",
         "spec/Mimir/DocumentStore.agda",
         "spec/Mimir/EmbeddingBatch.agda",
         "spec/Mimir/Markdown.agda"
@@ -669,7 +667,6 @@
       "group": "documents",
       "interface_evidence": "path; cleared count",
       "existing_modules": [
-        "spec/Mimir/Documents.agda",
         "spec/Mimir/DocumentStore.agda",
         "spec/Mimir/EmbeddingBatch.agda",
         "spec/Mimir/Markdown.agda"
@@ -1715,7 +1712,6 @@
         "spec/Mimir/MigrationRuntime.agda",
         "spec/Mimir/MigrationComposition.agda",
         "spec/Mimir/MigrationHistory.agda",
-        "spec/Mimir/MigrationDependencies.agda",
         "spec/Mimir/ItemOwnerBackfill.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
@@ -1907,5 +1903,6 @@
   ],
   "updated_at": "2026-10-31T03:50:09.149598+00:00",
   "completed_utc": "2026-10-31T03:59:41.624081+00:00",
-  "operational_update_checked_at": "2026-10-31T20:24:20.743313+00:00"
+  "operational_update_checked_at": "2026-10-31T20:24:20.743313+00:00",
+  "library_boundary": "Standard JSON/UTF-8/UUID/numeric parsing, formatting and hashing are supplied operations. Their implementations are outside the application specification. See FORMAL-VALUE-AUDIT.md."
 }
