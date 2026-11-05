@@ -30,7 +30,11 @@ pub struct Prediction {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LearningItem {
-    pub id: Uuid,
+    /// Present on stored/read-back items; new declarations use a local key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     pub kind: ItemKind,
     pub source_ref: String,
     pub actor: String,
@@ -56,8 +60,22 @@ fn range(x: f64, min: f64, max: f64) -> Result<()> {
 }
 pub fn validate_items(items: &[LearningItem]) -> Result<()> {
     let mut ids = HashSet::new();
+    let mut keys = HashSet::new();
     for item in items {
-        ensure!(ids.insert(item.id), "duplicate learning item ID");
+        ensure!(
+            item.id.is_some() || item.key.is_some(),
+            "learning item requires a key or an existing ID"
+        );
+        if let Some(id) = item.id {
+            ensure!(ids.insert(id), "duplicate learning item ID");
+        }
+        if let Some(key) = &item.key {
+            ensure!(
+                !key.is_empty() && key == key.trim(),
+                "item key must be a nonempty trimmed string"
+            );
+            ensure!(keys.insert(key), "duplicate learning item key");
+        }
         for text in [
             &item.source_ref,
             &item.actor,
@@ -122,6 +140,9 @@ pub struct Assessment {
     pub evidence_indices: Vec<usize>,
     #[serde(default)]
     pub item_ids: Vec<Uuid>,
+    /// Experience-local references, resolved to UUIDs before persistence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub item_keys: Vec<String>,
     pub rationale: String,
 }
 impl Assessment {
@@ -140,6 +161,16 @@ impl Assessment {
             self.item_ids.iter().collect::<HashSet<_>>().len() == self.item_ids.len(),
             "duplicate item reference"
         );
+        ensure!(
+            self.item_keys
+                .iter()
+                .all(|key| !key.is_empty() && key == key.trim()),
+            "item references require nonempty trimmed keys"
+        );
+        ensure!(
+            self.item_keys.iter().collect::<HashSet<_>>().len() == self.item_keys.len(),
+            "duplicate item key reference"
+        );
         if self.correctness.weight > 0. || self.usefulness.weight > 0. {
             ensure!(
                 !self.evidence_indices.is_empty(),
@@ -150,6 +181,10 @@ impl Assessment {
     }
     pub fn validate_source(&self, experience: &Experience) -> Result<()> {
         self.validate()?;
+        ensure!(
+            self.item_keys.is_empty(),
+            "item keys must be resolved before source validation"
+        );
         for i in &self.evidence_indices {
             ensure!(
                 experience
@@ -161,7 +196,7 @@ impl Assessment {
         }
         for id in &self.item_ids {
             ensure!(
-                experience.learning_items.iter().any(|i| i.id == *id),
+                experience.learning_items.iter().any(|i| i.id == Some(*id)),
                 "missing learning item"
             );
         }

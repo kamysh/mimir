@@ -243,6 +243,7 @@ pub struct Review {
 }
 impl Review {
     pub fn validate(&self) -> Result<()> {
+        crate::assessment::validate_items(&self.extracted_items)?;
         ensure!(
             self.experience_revision > 0,
             "experience_revision must be positive"
@@ -356,6 +357,9 @@ pub struct ExperienceState {
     /// Resolved identities for candidates declared by the active review.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub candidate_ids: std::collections::HashMap<String, Uuid>,
+    /// PostgreSQL-assigned identities for experience-local learning item keys.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub item_ids: std::collections::HashMap<String, Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
