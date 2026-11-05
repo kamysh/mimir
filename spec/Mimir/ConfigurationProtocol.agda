@@ -67,7 +67,7 @@ module Run (sizeMaximum : ℕ) where
 
   caseDecoded : Validation.Fault ⊎ Schema.Config → Script (Failure ⊎ Schema.Config)
   caseDecoded (inj₁ fault) = done (inj₁ (validation fault))
-  caseDecoded (inj₂ config) = done (inj₂ config)
+  caseDecoded (inj₂ configurationValue) = done (inj₂ configurationValue)
 
   loadFrom : Path.Path → Script (Failure ⊎ Schema.Config)
   loadFrom path = ask (readUTF8 path) λ where
@@ -88,19 +88,19 @@ module Run (sizeMaximum : ℕ) where
     field state : IO.State; pending : List IO.Effect
 
   initialWrite : IO.Settings → FileState
-  initialWrite settings with IO.afterAbsence settings
+  initialWrite writeSettings with IO.afterAbsence writeSettings
   ... | IO.next state effects = writing state effects
 
   advanceWrite : IO.Settings → FileState → IO.Input → FileState
-  advanceWrite settings (writing state pending) reply with IO.step settings state reply
+  advanceWrite writeSettings (writing state pending) reply with IO.step writeSettings state reply
   ... | IO.next next effects = writing next effects
 
-  data WriteRun (settings : IO.Settings) (path : Path.Path) (content : Content) :
+  data WriteRun (writeSettings : IO.Settings) (path : Path.Path) (content : Content) :
     FileState → List P.Event → IO.Result → Set where
-    finished : ∀ result → WriteRun settings path content (writing (IO.finished result) []) [] result
+    finished : ∀ result → WriteRun writeSettings path content (writing (IO.finished result) []) [] result
     response : ∀ state effect reply events result →
-      WriteRun settings path content (advanceWrite settings (writing state (effect ∷ [])) reply) events result →
-      WriteRun settings path content (writing state (effect ∷ []))
+      WriteRun writeSettings path content (advanceWrite writeSettings (writing state (effect ∷ [])) reply) events result →
+      WriteRun writeSettings path content (writing state (effect ∷ []))
         ((filesystem path content effect , reply) ∷ events) result
 
   module Creation (parser : Unsigned.Parser) where
@@ -112,9 +112,9 @@ module Run (sizeMaximum : ℕ) where
     afterCheck operations [] = done (inj₂ (template operations))
     afterCheck operations pairs@(_ ∷ _) with Overrides.create pairs
     ... | inj₁ error = done (inj₁ (override error))
-    ... | inj₂ config = ask (prettyTOML config) λ where
+    ... | inj₂ configurationValue = ask (prettyTOML configurationValue) λ where
       (inj₁ error) → done (inj₁ (file error))
-      (inj₂ _) → done (inj₂ (configured operations config))
+      (inj₂ _) → done (inj₂ (configured operations configurationValue))
 
     prepare : Path.Path → List (String × Text) → Script (Failure ⊎ Content)
     prepare path pairs = ask (exists path) λ where
@@ -139,17 +139,17 @@ module Run (sizeMaximum : ℕ) where
     -- Full create command, including early failure, partial file creation and
     -- editor exit handling. The joined trace retains every actual filesystem
     -- response; failed writes never reach the editor or success announcements.
-    data Created (settings : IO.Settings) (path : Path.Path)
+    data Created (writeSettings : IO.Settings) (path : Path.Path)
       (pairs : List (String × Text)) (editorValue : Maybe Text) :
       List P.Event → Failure ⊎ ⊤ → Set where
       preparationFailed : ∀ events failure → P.Runs (prepare path pairs) events (inj₁ failure) →
-        Created settings path pairs editorValue events (inj₁ failure)
+        Created writeSettings path pairs editorValue events (inj₁ failure)
       writeFailed : ∀ prepared content written failure →
         P.Runs (prepare path pairs) prepared (inj₂ content) →
-        WriteRun settings path content (initialWrite settings) written (IO.failed failure) →
-        Created settings path pairs editorValue (prepared Data.List.++ written) (inj₁ (file failure))
+        WriteRun writeSettings path content (initialWrite writeSettings) written (IO.failed failure) →
+        Created writeSettings path pairs editorValue (prepared Data.List.++ written) (inj₁ (file failure))
       afterWrite : ∀ prepared content written announcements result →
         P.Runs (prepare path pairs) prepared (inj₂ content) →
-        WriteRun settings path content (initialWrite settings) written IO.success →
+        WriteRun writeSettings path content (initialWrite writeSettings) written IO.success →
         P.Runs (afterCreation path content editorValue) announcements result →
-        Created settings path pairs editorValue (prepared Data.List.++ written Data.List.++ announcements) result
+        Created writeSettings path pairs editorValue (prepared Data.List.++ written Data.List.++ announcements) result

@@ -27,8 +27,8 @@ at zero (value ∷ _) = just value
 at (suc index) (_ ∷ rest) = at index rest
 
 provenance : X.Experience → ℕ → Maybe S.Provenance
-provenance experience index with X.Experience.sources experience
-... | [] = just (X.Experience.provenance experience)
+provenance selectedExperience index with X.Experience.sources selectedExperience
+... | [] = just (X.Experience.provenance selectedExperience)
 ... | sources@(_ ∷ _) = Data.Maybe.map S.Source.provenance (at index sources)
 
 nonAgent : Maybe S.Provenance → Bool
@@ -38,32 +38,32 @@ nonAgent (just S.userFeedback) = true
 nonAgent (just S.toolResult) = true
 
 entry : X.Experience → ℕ → Text → V.Value
-entry experience index text = Encoding.object
+entry selectedExperience index text = Encoding.object
   (("index" , V.unsigned index) ∷ ("nonempty" , V.boolean (does (nonblank? text))) ∷
    ("provenance" , Encoding.optional (λ p → V.string (Wire.provenanceText p)) origin) ∷
    ("non_agent_provenance" , V.boolean (nonAgent origin)) ∷ [])
-  where origin = provenance experience index
+  where origin = provenance selectedExperience index
 
 entries : X.Experience → ℕ → List Text → List V.Value
-entries experience index [] = []
-entries experience index (text ∷ rest) = entry experience index text ∷ entries experience (suc index) rest
+entries selectedExperience index [] = []
+entries selectedExperience index (text ∷ rest) = entry selectedExperience index text ∷ entries selectedExperience (suc index) rest
 
 format : X.Experience → Text
-format experience with X.Experience.sources experience
+format selectedExperience with X.Experience.sources selectedExperience
 ... | [] = toList "legacy_evidence"
 ... | _ ∷ _ = toList "source_records"
 
 indexMap : X.Experience → V.Value
-indexMap experience = Encoding.object (("format" , V.string (format experience)) ∷
-  ("entries" , V.array (entries experience 0 (X.Experience.evidence experience))) ∷ [])
+indexMap selectedExperience = Encoding.object (("format" , V.string (format selectedExperience)) ∷
+  ("entries" , V.array (entries selectedExperience 0 (X.Experience.evidence selectedExperience))) ∷ [])
 
 evidenceGuidance : (V.Value → Text) → X.Experience → Text
-evidenceGuidance json experience = toList "Pinned evidence index map: " ++ json (indexMap experience) ++
+evidenceGuidance json selectedExperience = toList "Pinned evidence index map: " ++ json (indexMap selectedExperience) ++
   toList ". These indices address experience.evidence, not item IDs. Provenance is caller-reported, not independently verified. Select only citations relevant to the scoped claim and benefit rubric; an eligible index does not itself justify a score or weight."
 
 guidance : (V.Value → Text) → X.Experience → Text
-guidance json experience = policy ++ toList "\n" ++ evidenceGuidance json experience
+guidance json selectedExperience = policy ++ toList "\n" ++ evidenceGuidance json selectedExperience
 
-legacyUsesRootSource : ∀ experience index → X.Experience.sources experience ≡ [] →
-  provenance experience index ≡ just (X.Experience.provenance experience)
-legacyUsesRootSource experience index empty rewrite empty = refl
+legacyUsesRootSource : ∀ selectedExperience index → X.Experience.sources selectedExperience ≡ [] →
+  provenance selectedExperience index ≡ just (X.Experience.provenance selectedExperience)
+legacyUsesRootSource selectedExperience index empty rewrite empty = refl

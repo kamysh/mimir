@@ -30,29 +30,29 @@ record Message : Set where
         subject messageID contentType body : Text
 
 details : Incident.Alert → Text
-details alert with Incident.Alert.details alert
+details pendingAlert with Incident.Alert.details pendingAlert
 ... | nothing = toList "Inspect the local component status for details."
 ... | just value = value
 
 alertMessage : Config.Config → Text → Incident.Alert → Message
-alertMessage cfg host alert with Incident.Alert.kind alert
+alertMessage cfg host pendingAlert with Incident.Alert.kind pendingAlert
 ... | Incident.failure = message (Config.Config.fromAddress cfg) (Config.Config.recipients cfg)
   (toList "Mimir [" ++ host ++ toList "] notification: attention needed")
-  (toList "<mimir-" ++ Incident.Alert.identity alert ++ toList "@mimir.local>") (toList "text/plain")
-  (toList "Mimir reported a failure.\nComputer: " ++ host ++ toList "\nSource: " ++ Incident.Alert.source alert ++
-   toList "\nCode: " ++ Incident.Alert.code alert ++ toList "\nSummary: " ++ Incident.Alert.summary alert ++
-   toList "\n\n" ++ details alert ++ toList "\n")
+  (toList "<mimir-" ++ Incident.Alert.identity pendingAlert ++ toList "@mimir.local>") (toList "text/plain")
+  (toList "Mimir reported a failure.\nComputer: " ++ host ++ toList "\nSource: " ++ Incident.Alert.source pendingAlert ++
+   toList "\nCode: " ++ Incident.Alert.code pendingAlert ++ toList "\nSummary: " ++ Incident.Alert.summary pendingAlert ++
+   toList "\n\n" ++ details pendingAlert ++ toList "\n")
 ... | Incident.recovery = message (Config.Config.fromAddress cfg) (Config.Config.recipients cfg)
   (toList "Mimir [" ++ host ++ toList "] notification: recovered")
-  (toList "<mimir-" ++ Incident.Alert.identity alert ++ toList "@mimir.local>") (toList "text/plain")
-  (toList "Mimir reported recovery.\nComputer: " ++ host ++ toList "\nSource: " ++ Incident.Alert.source alert ++
-   toList "\n\n" ++ details alert ++ toList "\n")
+  (toList "<mimir-" ++ Incident.Alert.identity pendingAlert ++ toList "@mimir.local>") (toList "text/plain")
+  (toList "Mimir reported recovery.\nComputer: " ++ host ++ toList "\nSource: " ++ Incident.Alert.source pendingAlert ++
+   toList "\n\n" ++ details pendingAlert ++ toList "\n")
 
 digestMessage : Config.Config → Text → Digest.Digest → Message
-digestMessage cfg host digest = message (Config.Config.fromAddress cfg) (Config.Config.recipients cfg)
-  (toList "Mimir [" ++ host ++ toList "] daily statistics through " ++ Digest.Digest.throughDay digest)
-  (toList "<mimir-daily-" ++ Digest.Digest.throughDay digest ++ toList "-" ++ host ++ toList "@mimir.local>")
-  (toList "text/plain") (toList "Computer: " ++ host ++ toList "\n" ++ Digest.Digest.body digest)
+digestMessage cfg host digestValue = message (Config.Config.fromAddress cfg) (Config.Config.recipients cfg)
+  (toList "Mimir [" ++ host ++ toList "] daily statistics through " ++ Digest.Digest.throughDay digestValue)
+  (toList "<mimir-daily-" ++ Digest.Digest.throughDay digestValue ++ toList "-" ++ host ++ toList "@mimir.local>")
+  (toList "text/plain") (toList "Computer: " ++ host ++ toList "\n" ++ Digest.Digest.body digestValue)
 
 data Credentials : Set where
   anonymous : Credentials

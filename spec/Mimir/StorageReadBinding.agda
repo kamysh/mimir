@@ -88,8 +88,8 @@ module Read (ops : VectorOperations) where
     chunkFailed : ∀ id error → DocumentMeaning snapshot (Query.getChunk id) (inj₁ error)
 
   RetrievalMeaning : (state : Retrieval.State) → Store.World → Retrieval.Reply state → Set
-  RetrievalMeaning state@(Retrieval.vectorQuery request retired beliefs token vector) snapshot (inj₁ error) = ⊤
-  RetrievalMeaning state@(Retrieval.vectorQuery request retired beliefs token vector) snapshot (inj₂ ids)
+  RetrievalMeaning state@(Retrieval.vectorQuery requestValue retired beliefs token vector) snapshot (inj₁ error) = ⊤
+  RetrievalMeaning state@(Retrieval.vectorQuery requestValue retired beliefs token vector) snapshot (inj₂ ids)
     with Retrieval.command state
   ... | just (Retrieval.queryVector query limit filter) = V.Selected query limit filter (Store.World.beliefVectors snapshot) ids
   ... | _ = Data.Empty.⊥
@@ -103,7 +103,7 @@ module Observed (reads : Committed.Contract Store.World) where
 
   GraphReply : (effect : Graph.Effect) → Graph.Reply effect → Set
   GraphReply (Graph.select handle statement) (inj₁ error) = ⊤
-  GraphReply (Graph.select handle statement) (inj₂ world) = Σ Read (λ read → world ≡ snapshot read)
+  GraphReply (Graph.select handle statement) (inj₂ observedWorld) = Σ Read (λ read → observedWorld ≡ snapshot read)
   GraphReply Graph.beginRead reply = ⊤
   GraphReply (Graph.dropTransaction tx) reply = ⊤
 

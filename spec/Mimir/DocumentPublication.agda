@@ -31,12 +31,12 @@ module Publication (dimension : ℕ) where
   shape (v ∷ vs) with B.shape dimension v | shape vs
   ... | nothing | _ = nothing
   ... | _ | nothing = nothing
-  ... | just shaped | just rest = just (B.Shaped.vector shaped ∷ rest)
+  ... | just shapedValue | just rest = just (B.Shaped.vector shapedValue ∷ rest)
 
   align : List Documents.Chunk → List Store.Vector → Maybe D.Store
   align chunks vectors with shape vectors
   ... | nothing = nothing
-  ... | just shaped = D.align chunks shaped
+  ... | just shapedValue = D.align chunks shapedValue
 
   clear : Text → Store.World → Store.World
   clear path before = Store.removeChunkVectors ids (Store.removeChunks ids before)

@@ -129,7 +129,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   persistInvalid : Text → Script ⊤
   persistInvalid detail = ask resolveState λ where
     (inj₁ _) → done tt
-    (inj₂ resolved) → ask (acquire (StatePath.Resolved.path resolved)) λ where
+    (inj₂ resolvedPaths) → ask (acquire (StatePath.Resolved.path resolvedPaths)) λ where
       (inj₁ _) → done tt
       (inj₂ nothing) → done tt
       (inj₂ (just held)) → ask clock (λ observed →
@@ -144,11 +144,11 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   failed watch output code = emit watch output >>= λ _ → done (Host.outcome code true false)
 
   afterLock : Bool → C.Loaded → Reply (acquire []) → Script Host.Outcome
-  afterLock watch loaded (inj₁ _) = failed watch stateUnavailable Host.unavailable
-  afterLock watch loaded (inj₂ nothing) = failed watch alreadyRunning Host.alreadyRunning
-  afterLock watch loaded (inj₂ (just held)) = ask (execute settings held (C.Loaded.path loaded)) (λ result →
+  afterLock watch loadedConfiguration (inj₁ _) = failed watch stateUnavailable Host.unavailable
+  afterLock watch loadedConfiguration (inj₂ nothing) = failed watch alreadyRunning Host.alreadyRunning
+  afterLock watch loadedConfiguration (inj₂ (just held)) = ask (execute settings held (C.Loaded.path loadedConfiguration)) (λ result →
     emit watch (reportOutput result) >>= λ _ → ask (release held) (λ _ → done (Host.outcomeOf watch result)))
-    where settings = Config.Validate.Admitted.settings (C.Loaded.configuration loaded)
+    where settings = Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration)
 
   afterConfig : Bool → C.Result → Script Host.Outcome
   afterConfig watch (inj₁ detail) = persistInvalid detail >>= λ _ → announce watch
@@ -156,9 +156,9 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     announce : Bool → Script Host.Outcome
     announce true = done (Host.outcome Host.invalidConfig true false)
     announce false = ask (configurationDiagnostic detail) (λ _ → failed false (invalidConfig detail) Host.invalidConfig)
-  afterConfig watch (inj₂ loaded) = ask resolveState λ where
+  afterConfig watch (inj₂ loadedConfiguration) = ask resolveState λ where
     (inj₁ _) → failed watch invalidStatePath Host.invalidConfig
-    (inj₂ resolved) → ask (acquire (StatePath.Resolved.path resolved)) (afterLock watch loaded)
+    (inj₂ resolvedPaths) → ask (acquire (StatePath.Resolved.path resolvedPaths)) (afterLock watch loadedConfiguration)
 
   once : Bool → Script Host.Outcome
   once watch = ask loadConfig (afterConfig watch)

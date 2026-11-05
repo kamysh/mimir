@@ -68,13 +68,18 @@ PostgreSQL nor prove Mimir's SQL or lock participation.
 
 ## Verification boundary
 
+The warning cleanup in this PR gives local values names distinct from record
+constructors and imports `all` and `any` from their current standard-library
+module. It preserves record fields, text literals and application rules, and
+does not disable compiler warnings.
+
 The final publication check type-checks `spec/Mimir.agda`, whose import closure
 includes every remaining safe module. The inventory checker retains the same
 34 MCP operations, 30 CLI commands, seven lifecycle groups and ten exact SQL
 body bindings. The repository's isolated full check also verifies the unchanged
 application; its disposable configuration and database are separate from the
-real deployment. Compiler naming/deprecation warnings are reported separately
-from errors. Publication evidence belongs to the exact checked commit.
+real deployment. The final compiler log is checked for warnings as well as
+errors. Publication evidence belongs to the exact checked commit.
 
 This change does not alter the Rust application, SQL migrations, installed
 binaries, version, tags, system configuration or production data. The remaining

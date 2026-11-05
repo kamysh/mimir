@@ -146,11 +146,11 @@ module Prepare (decimalPort : ℕ → Text) (certificateBlocks : Text → List T
   connector config with TLS.validateOptions (Config.Database.mode config) (Config.Database.rootCertificate config)
     (Config.Database.clientCertificate config) (Config.Database.clientKey config)
   ... | inj₁ error = done (inj₁ (tlsOptions error))
-  ... | inj₂ options = rootFile (TLS.Options.root options) >>= λ where
+  ... | inj₂ connectionOptions = rootFile (TLS.Options.root connectionOptions) >>= λ where
     (inj₁ error) → done (inj₁ error)
-    (inj₂ tt) → identity (TLS.Options.identity options) >>= λ where
+    (inj₂ tt) → identity (TLS.Options.identity connectionOptions) >>= λ where
       (inj₁ error) → done (inj₁ error)
-      (inj₂ tt) → ask (build options) λ where
+      (inj₂ tt) → ask (build connectionOptions) λ where
         (inj₁ error) → done (inj₁ (connectorBuild error))
         (inj₂ tt) → done (inj₂ tt)
 

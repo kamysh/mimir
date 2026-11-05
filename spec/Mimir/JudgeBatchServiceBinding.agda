@@ -63,7 +63,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   current (inj₂ V.null) = inj₂ nothing
   current (inj₂ value) with W.snapshot value
   ... | inj₁ failure = inj₁ (sourceError "invalid experience state" value failure)
-  ... | inj₂ snapshot = inj₂ (just snapshot)
+  ... | inj₂ observedSnapshot = inj₂ (just observedSnapshot)
 
   pending : Scope.Failure ⊎ V.Value → Revision.Error ⊎ List Observation.Snapshot
   pending (inj₁ failure) = inj₁ (error failure)
@@ -98,7 +98,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   readback : Revision.Error ⊎ Maybe Observation.Snapshot → Readback.Failure ⊎ Maybe Observation.Snapshot
   readback (inj₁ failure) = inj₁ (Readback.failure (Revision.Error.detail failure) (Revision.Error.source failure))
-  readback (inj₂ snapshot) = inj₂ snapshot
+  readback (inj₂ observedSnapshot) = inj₂ observedSnapshot
 
   data ReadbackReceipt : (effect : Readback.Effect) → Readback.Reply effect → Set where
     clock : ∀ now → ReadbackReceipt Readback.clock now

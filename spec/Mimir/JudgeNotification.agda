@@ -119,16 +119,16 @@ module Details (format : Encoding.Formatting) (localTime : ℕ → Text) where
   ... | no _ = toList "\nAdditional affected reviews: " ++ number (length values ∸ 5)
 
   recovery : Maybe Text → R.Report → R.Incident → Text
-  recovery project report incident = toList "Project: " ++ projectName project ++
+  recovery project report savedIncident = toList "Project: " ++ projectName project ++
     toList "\nPrevious failure: " ++ localTime (R.Report.recordedAt first) ++
     toList "\nPrevious reason: " ++ reason first ++ toList "\nQueue: idle at " ++ localTime (R.Report.recordedAt report) ++
     toList "; no pending reviews were selected\nAffected reviews: " ++ number count ++
     toList " confirmed by completed batches; " ++ number (length selected ∸ count) ++ toList " unverified" ++
     previousDiagnostic (R.Report.diagnosticsId first) ++ join [] (map (itemLine reviews) (take 5 selected)) ++ extra selected
     where
-    first = R.Incident.first incident
+    first = R.Incident.first savedIncident
     selected = R.Report.selectedIds first
-    reviews = R.Incident.confirmedReviews incident
+    reviews = R.Incident.confirmedReviews savedIncident
     count = length (filterᵇ (confirmed reviews) selected)
 
 outcomeText : I.Outcome → Text
@@ -165,4 +165,4 @@ module Run (format : Encoding.Formatting) (localTime : ℕ → Text)
   ...   | I.recovery = ask readFailure λ where
     (inj₁ error) → done (inj₁ error)
     (inj₂ nothing) → submitDetails report nothing
-    (inj₂ (just incident)) → submitDetails report (just (D.recovery project report incident))
+    (inj₂ (just savedIncident)) → submitDetails report (just (D.recovery project report savedIncident))

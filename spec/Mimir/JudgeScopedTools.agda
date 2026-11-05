@@ -116,14 +116,14 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
     (inj₂ value) → done (inj₂ (visible project value))
 
   reviewed : V.Value → Review.Review → Script (Failure ⊎ V.Value)
-  reviewed args review with does (Review.Review.experienceID review ≟ selectedID) ∧
-    does (Review.Review.experienceRevision review Integer.≟ Observation.Snapshot.revision selected)
+  reviewed args requestedReview with does (Review.Review.experienceID requestedReview ≟ selectedID) ∧
+    does (Review.Review.experienceRevision requestedReview Integer.≟ Observation.Snapshot.revision selected)
   ... | false = done (inj₁ (rejected (toList "review is outside pinned revision")))
   ... | true with Review.validateReview owned
-    where owned = record review { reviewer = toList "mimir-judge" }
+    where owned = record requestedReview { reviewer = toList "mimir-judge" }
   ...   | Validation.rejected fault proof = done (inj₁ (invalidReviewSchema fault))
   ...   | Validation.accepted proof = done (inj₂ (put "review" (Encode.review owned) args))
-    where owned = record review { reviewer = toList "mimir-judge" }
+    where owned = record requestedReview { reviewer = toList "mimir-judge" }
 
   reviewArguments : V.Value → Script (Failure ⊎ V.Value)
   reviewArguments args with Input.i64 (get "expected_review_revision" args)
@@ -132,7 +132,7 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
   ...   | false = done (inj₁ (rejected (toList "stale review token")))
   ...   | true with W.review (get "review" args)
   ...     | inj₁ error = done (inj₁ (malformedReview (get "review" args) error))
-  ...     | inj₂ review = reviewed args review
+  ...     | inj₂ requestedReview = reviewed args requestedReview
 
   historyCheck : V.Value → Failure ⊎ Observation.Snapshot → Script (Failure ⊎ V.Value)
   historyCheck args (inj₁ error) = done (inj₁ error)

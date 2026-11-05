@@ -303,7 +303,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       Trace middle events after → Trace before (event ∷ events) after
 
   start : Queue.Account initial → R.Report → State
-  start account report = loop (work account report Policy.initial nothing nothing)
+  start currentAccount report = loop (work currentAccount report Policy.initial nothing nothing)
 
   -- Applies to every outcome, including fatal diagnostic or transport errors.
   -- Account construction itself contains the original, shared charge trace.

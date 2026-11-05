@@ -114,7 +114,7 @@ result D.invalidMessage = inj₁ invalidEvent
 attempt : D.Config → ℕ → Text → Outbox → Script (Outbox × Result)
 attempt cfg now wanted before with lookup wanted (Outbox.entries before)
 ... | nothing = done (before , inj₁ missingIncident)
-... | just incident = deliver wanted before (D.attempt cfg now incident) >>= λ pair →
+... | just savedIncident = deliver wanted before (D.attempt cfg now savedIncident) >>= λ pair →
   done (proj₁ pair , result (proj₂ pair))
 
 saveThen : Outbox → Script Result → Script Result
@@ -124,25 +124,25 @@ saveThen value next = ask (writeOutbox value) λ where
   D.uncertain → done (inj₁ storage)
 
 saveReconciled : D.Config → ℕ → I.Event → Outbox → I.Incident → Text → Script Result
-saveReconciled cfg now e before incident identity =
-  let updated = put (key e) (just (I.reconcile identity now incident e)) before
+saveReconciled cfg now e before savedIncident identity =
+  let updated = put (key e) (just (I.reconcile identity now savedIncident e)) before
   in saveThen updated (attempt cfg now (key e) updated >>= λ pair → done (proj₂ pair))
 
 -- Clearing an undelivered incident produces no recovery alert and therefore
 -- does not allocate an alert identity. The unused argument is never stored.
 reconcileChanged : D.Config → ℕ → I.Event → Outbox → I.Incident → Script Result
-reconcileChanged cfg now e before incident with I.Event.status e | I.Incident.deliveredCode incident
-... | I.recovery | nothing = saveReconciled cfg now e before incident []
-... | _ | _ = ask freshAlert (saveReconciled cfg now e before incident)
+reconcileChanged cfg now e before savedIncident with I.Event.status e | I.Incident.deliveredCode savedIncident
+... | I.recovery | nothing = saveReconciled cfg now e before savedIncident []
+... | _ | _ = ask freshAlert (saveReconciled cfg now e before savedIncident)
 
 reconcileExisting : D.Config → ℕ → I.Event → Outbox → I.Incident → Script Result
-reconcileExisting cfg now e before incident with changed incident e
+reconcileExisting cfg now e before savedIncident with changed savedIncident e
 ... | false = attempt cfg now (key e) before >>= λ pair → done (proj₂ pair)
-... | true = reconcileChanged cfg now e before incident
+... | true = reconcileChanged cfg now e before savedIncident
 
 submitLoaded : D.Config → ℕ → I.Event → Outbox → Script Result
 submitLoaded cfg now e before with lookup (key e) (Outbox.entries before)
-... | just incident = reconcileExisting cfg now e before incident
+... | just savedIncident = reconcileExisting cfg now e before savedIncident
 ... | nothing with I.Event.status e
 ...   | I.progress = done (inj₂ I.notNeeded)
 ...   | I.recovery = done (inj₂ I.notNeeded)
@@ -177,21 +177,21 @@ submit enabled cfg e = ask clock (λ now → submitAt enabled cfg now e)
 due : ℕ → Text × I.Incident → Bool
 due now pair with I.Incident.outbox (proj₂ pair)
 ... | nothing = false
-... | just alert with I.Alert.delivery alert
+... | just pendingAlert with I.Alert.delivery pendingAlert
 ...   | I.exhausted = false
-...   | I.pending = does (I.Alert.nextDue alert ≤? now)
+...   | I.pending = does (I.Alert.nextDue pendingAlert ≤? now)
 
 RetryResult = Error ⊎ List (Text × (Text × I.Outcome))
 retryKeys : D.Config → ℕ → List Text → Outbox → Script RetryResult
 retryKeys cfg now [] before = done (inj₂ [])
 retryKeys cfg now (wanted ∷ rest) before with lookup wanted (Outbox.entries before)
 ... | nothing = done (inj₁ missingIncident)
-... | just incident = attempt cfg now wanted before >>= λ where
+... | just savedIncident = attempt cfg now wanted before >>= λ where
   (after , inj₁ error) → done (inj₁ error)
   (after , inj₂ outcome) → retryKeys cfg now rest after >>= λ where
     (inj₁ error) → done (inj₁ error)
-    (inj₂ outcomes) → done (inj₂ ((I.Incident.source incident ,
-      (I.Incident.incidentKey incident , outcome)) ∷ outcomes))
+    (inj₂ outcomes) → done (inj₂ ((I.Incident.source savedIncident ,
+      (I.Incident.incidentKey savedIncident , outcome)) ∷ outcomes))
 
 retryDue : Bool → D.Config → ℕ → Script RetryResult
 retryDue enabled cfg limit with does (1 ≤? limit) ∧ does (limit ≤? 20)

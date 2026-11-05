@@ -69,13 +69,13 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   configResult : C.Result → Text ⊎ Config.Runtime
   configResult (inj₁ detail) = inj₁ detail
-  configResult (inj₂ loaded) = inj₂ (Config.Validate.Admitted.settings (C.Loaded.configuration loaded))
+  configResult (inj₂ loadedConfiguration) = inj₂ (Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration))
   pathResult : H.SP.Result → Text ⊎ Path.Path
   pathResult (inj₁ error) = inj₁ (toList "invalid notification state path")
   pathResult (inj₂ path) = inj₂ (StatePath.Resolved.path path)
   cursorResult : N.Error ⊎ Daily.Cursor → Text ⊎ Daily.Cursor
   cursorResult (inj₁ error) = inj₁ (toList "notification cursor unavailable")
-  cursorResult (inj₂ cursor) = inj₂ cursor
+  cursorResult (inj₂ savedCursor) = inj₂ savedCursor
 
   data State : Set where idle : State; connected : ℕ → Snapshot.State → State
 

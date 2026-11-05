@@ -35,14 +35,14 @@ record Counts : Set where
   field newExperiences sourceRevisions judgeReviews : ℤ
 
 within : ℤ → ℤ → Ledger.Row → Bool
-within start end row = does (start Integer.≤? Ledger.Row.createdAt row) ∧ does (Ledger.Row.createdAt row <? end)
+within start end reviewRow = does (start Integer.≤? Ledger.Row.createdAt reviewRow) ∧ does (Ledger.Row.createdAt reviewRow <? end)
 
 selectedCounts : Ledger.Database → ℤ → ℤ → Counts
 selectedCounts db start end = counts
-  (+ length (filterᵇ (λ row → within start end row ∧ does (Ledger.Row.revision row ≟ + 1)) (Ledger.Database.sourceRows db)))
-  (+ length (filterᵇ (λ row → within start end row ∧ does (+ 1 <? Ledger.Row.revision row)) (Ledger.Database.sourceRows db)))
-  (+ length (filterᵇ (λ row → within start end row ∧
-    Fields.textIs (toList "mimir-judge") (Fields.get "reviewer" (Ledger.Row.payload row))) (Ledger.Database.reviewRows db)))
+  (+ length (filterᵇ (λ reviewRow → within start end reviewRow ∧ does (Ledger.Row.revision reviewRow ≟ + 1)) (Ledger.Database.sourceRows db)))
+  (+ length (filterᵇ (λ reviewRow → within start end reviewRow ∧ does (+ 1 <? Ledger.Row.revision reviewRow)) (Ledger.Database.sourceRows db)))
+  (+ length (filterᵇ (λ reviewRow → within start end reviewRow ∧
+    Fields.textIs (toList "mimir-judge") (Fields.get "reviewer" (Ledger.Row.payload reviewRow))) (Ledger.Database.reviewRows db)))
 
 backlog : Ledger.Database → ℤ
 backlog db = + length (filterᵇ (λ header → does (Ledger.Head.reviewedRevision header <? Ledger.Head.revision header))

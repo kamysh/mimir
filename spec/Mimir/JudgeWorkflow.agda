@@ -38,12 +38,12 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   module One selected = Revision.Run conversion format display initial selected
 
   record RevisionReceipt (selected : Observation.Snapshot)
-    (account : Queue.Account initial) (report : R.Report) : Set where
+    (currentAccount : Queue.Account initial) (report : R.Report) : Set where
     constructor reviewed
     module T = One selected
     field outcome : T.Outcome
           events : List (Maybe T.P.Event)
-          executed : T.Trace (T.start account report) events (T.finished outcome)
+          executed : T.Trace (T.start currentAccount report) events (T.finished outcome)
 
   data Effect : Set where
     clock : Effect
@@ -59,7 +59,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   Reply startClient = Revision.Error ⊎ Handshake.Contract.Ready contract model
   Reply (selection effect) = Selection.Reply effect
   Reply (beginTrace report) = Text ⊎ ℕ
-  Reply (revision ready selected account report) = RevisionReceipt selected account report
+  Reply (revision clientReady selected currentAccount report) = RevisionReceipt selected currentAccount report
   Reply (readback effect) = Readback.Reply effect
   Reply (finalize effect) = Finalization.Reply effect
   module P = Effects.Protocol Effect Reply
@@ -81,9 +81,9 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   finish report = liftFinalization (Finalization.finish report)
 
   failed : R.Report → Text → Revision.Error → Script R.Report
-  failed report reason error = finish (record (R.captureSource (Revision.Error.source error) report)
+  failed report reason failureValue = finish (record (R.captureSource (Revision.Error.source failureValue) report)
     { status = toList "blocked" ; blockReason = just reason
-    ; failureDetail = just (Bounded.bounded 512 (Revision.Error.detail error)) })
+    ; failureDetail = just (Bounded.bounded 512 (Revision.Error.detail failureValue)) })
 
   finalReads : List Observation.Pin → R.Report → Bool → Script R.Report
   finalReads original report failure = liftReadback (Readback.finish original report failure
@@ -92,51 +92,51 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   mutual
     revisions : Handshake.Contract.Ready contract model → List Observation.Pin → List Observation.Snapshot → Queue.Account initial → R.Report → Script R.Report
-    revisions ready original [] account report = finalReads original report false
-    revisions ready original (selected ∷ rest) account report =
-      ask (revision ready selected account report) (afterRevision ready original rest selected account report)
+    revisions clientReady original [] currentAccount report = finalReads original report false
+    revisions clientReady original (selected ∷ rest) currentAccount report =
+      ask (revision clientReady selected currentAccount report) (afterRevision clientReady original rest selected currentAccount report)
 
     afterRevision : Handshake.Contract.Ready contract model → List Observation.Pin → List Observation.Snapshot →
-      (selected : Observation.Snapshot) → (account : Queue.Account initial) → (report : R.Report) →
-      RevisionReceipt selected account report → Script R.Report
-    afterRevision ready original rest selected account report receipt
+      (selected : Observation.Snapshot) → (currentAccount : Queue.Account initial) → (report : R.Report) →
+      RevisionReceipt selected currentAccount report → Script R.Report
+    afterRevision clientReady original rest selected currentAccount report receipt
       with One.Outcome.fatal result | One.Outcome.failed result
       where result = RevisionReceipt.outcome receipt
     ... | true | _ = finish (One.Outcome.report result)
       where result = RevisionReceipt.outcome receipt
     ... | false | true = finalReads original (One.Outcome.report result) true
       where result = RevisionReceipt.outcome receipt
-    ... | false | false = revisions ready original rest (One.Outcome.account result) (One.Outcome.report result)
+    ... | false | false = revisions clientReady original rest (One.Outcome.account result) (One.Outcome.report result)
       where result = RevisionReceipt.outcome receipt
 
-  selectedBatch : (ready : Handshake.Contract.Ready contract model) → R.Report →
-    Selection.Select.Result contract model batchLimit project ready → Script R.Report
-  selectedBatch ready report (Selection.Select.failed error) =
-    failed report (toList "mcp_or_configuration_error") error
-  selectedBatch ready report (Selection.Select.malformed error) =
-    failed report (toList "mcp_or_configuration_error") (Revision.error (Validation.Fault.explanation error) nothing)
-  selectedBatch ready report (Selection.Select.selected prepared) = dispatch (Select.disposition prepared)
+  selectedBatch : (clientReady : Handshake.Contract.Ready contract model) → R.Report →
+    Selection.Select.Result contract model batchLimit project clientReady → Script R.Report
+  selectedBatch clientReady report (Selection.Select.failed failureValue) =
+    failed report (toList "mcp_or_configuration_error") failureValue
+  selectedBatch clientReady report (Selection.Select.malformed failureValue) =
+    failed report (toList "mcp_or_configuration_error") (Revision.error (Validation.Fault.explanation failureValue) nothing)
+  selectedBatch clientReady report (Selection.Select.selected preparedBatch) = dispatch (Select.disposition preparedBatch)
     where
-    module Select = Selection.Select contract model batchLimit project ready
-    batch = Select.Prepared.batch prepared
-    pins = Select.pins prepared
+    module Select = Selection.Select contract model batchLimit project clientReady
+    batch = Select.Prepared.batch preparedBatch
+    pins = Select.pins preparedBatch
     updated = record report
       { selected = length batch ; selectedIds = map Observation.Pin.identity pins
       ; deferredReviews = map (λ d → R.deferred (Observation.Deferred.identity d) (Observation.Deferred.revision d))
-          (Select.Prepared.deferred prepared) }
+          (Select.Prepared.deferred preparedBatch) }
     dispatch : Select.Disposition → Script R.Report
     dispatch Select.idle = finish (record updated { status = toList "idle" })
     dispatch Select.held = finish (record updated
       { status = toList "blocked" ; blockReason = just (toList "review_deferred") })
     dispatch Select.review = ask (beginTrace updated) λ where
-      (inj₁ error) → failed updated (toList "diagnostics_write_error") (Revision.error error nothing)
-      (inj₂ traceID) → revisions ready pins batch
+      (inj₁ failureValue) → failed updated (toList "diagnostics_write_error") (Revision.error failureValue nothing)
+      (inj₂ traceID) → revisions clientReady pins batch
         (Queue.startAccount initial) (record updated { diagnosticsId = just traceID })
 
   afterClient : R.Report → Reply startClient → Script R.Report
-  afterClient report (inj₁ error) = failed report (toList "mcp_or_configuration_error") error
-  afterClient report (inj₂ ready) = liftSelection
-    (Selection.Select.start contract model batchLimit project ready) >>= selectedBatch ready report
+  afterClient report (inj₁ failureValue) = failed report (toList "mcp_or_configuration_error") failureValue
+  afterClient report (inj₂ clientReady) = liftSelection
+    (Selection.Select.start contract model batchLimit project clientReady) >>= selectedBatch clientReady report
 
   start : Script R.Report
   start = ask clock (λ observed → ask startClient

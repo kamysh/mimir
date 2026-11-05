@@ -4,7 +4,8 @@
 module Mimir.JudgeConfiguration where
 
 open import Data.Bool using (Bool; true; false; not; _∧_; _∨_)
-open import Data.List using (List; []; _∷_; length; reverse; any; all)
+open import Data.List using (List; []; _∷_; length; reverse)
+open import Data.Bool.ListAction using (all; any)
 open import Data.Maybe using (Maybe; just; nothing; is-just; is-nothing)
 open import Data.Nat using (ℕ; _≤?_)
 open import Data.Fin using (_≟_)
@@ -251,24 +252,24 @@ module Load (conversion : Conversion.Contract) (sizeMaximum : ℕ) (libraries : 
   ... | true = ask (coreLoad path) (afterCore path)
   inspect path file (parent ∷ rest) parents = ask (lstat parent) (λ where
     (inj₁ _) → done (inj₁ (toList "unable to inspect config path"))
-    (inj₂ metadata) → next metadata)
+    (inj₂ observedMetadata) → next observedMetadata)
     where
     next : Metadata.Metadata → Script Result
-    next metadata with Metadata.directory? (Metadata.Metadata.kind metadata)
+    next observedMetadata with Metadata.directory? (Metadata.Metadata.kind observedMetadata)
     ... | no _ = done (inj₁ (toList "config parent is not a directory"))
-    ... | yes _ = inspect path file rest (metadata ∷ parents)
+    ... | yes _ = inspect path file rest (observedMetadata ∷ parents)
 
   -- Ancestry enumerates the selected path itself first; the caller supplies
   -- the standard-library ancestor list through its existing checked function.
   file : Path.Path → List Path.Path → Script Result
   file path parents = ask (lstat path) (λ where
     (inj₁ _) → done (inj₁ (toList "unable to inspect config path"))
-    (inj₂ metadata) → next metadata)
+    (inj₂ observedMetadata) → next observedMetadata)
     where
     next : Metadata.Metadata → Script Result
-    next metadata with Metadata.regular? (Metadata.Metadata.kind metadata)
+    next observedMetadata with Metadata.regular? (Metadata.Metadata.kind observedMetadata)
     ... | no _ = done (inj₁ (toList "config must be a regular file"))
-    ... | yes _ = inspect path metadata parents []
+    ... | yes _ = inspect path observedMetadata parents []
 
   resolved : Path.Path → Script Result
   resolved path with Parts.noParent? path | not (not unix)
