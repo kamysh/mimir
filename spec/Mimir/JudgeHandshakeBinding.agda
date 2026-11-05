@@ -12,7 +12,7 @@ open import Data.Unit using (⊤; tt)
 open import Data.String using (toList)
 open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text using (Text)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.JudgeHandshake as H
 import Mimir.JudgeMcpLifecycle as Client
 import Mimir.McpClientRequest as Request

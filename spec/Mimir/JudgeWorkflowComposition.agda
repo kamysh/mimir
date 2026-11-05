@@ -9,7 +9,7 @@ open import Data.Maybe using (Maybe; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Product using (_,_)
 open import Mimir.Text using (Text)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.PublicEncoding as Encoding
 import Mimir.ApplicationProtocol as Application
 import Mimir.JudgeConfiguration as Config

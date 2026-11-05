@@ -23,11 +23,12 @@ import Mimir.SerdeEmissionBuilders as Build
 import Mimir.JudgeStatePrimitives as P
 import Mimir.JudgeStateDecode as Decode
 import Mimir.JudgeStateBounds as Bounds
-import Mimir.JudgeStateWire as W
-import Mimir.UUIDSchema as UUID
+import Mimir.JudgeStateWire as Wire
+import Mimir.StandardLibrary as Library
+import Mimir.UUIDSchema as UUIDDependency
 import Mimir.SourceFailure as Source
 import Mimir.RecordDecoding as Array
-module R = W.R
+module R = Wire.R
 module Names = Objects.Names
 open S using (empty; more)
 
@@ -37,8 +38,11 @@ finish : ∀ {A : Set} fields (build : S.Values fields → A) values input value
 finish fields build values input value unique receipt exact =
   trans (cong (P.recordResult build) (E.roundTrip unique receipt)) (cong inj₂ exact)
 
-module Size (sizeMaximum : ℕ) where
-  module D = Decode.Size sizeMaximum
+module Size (library : Library.Contract) (sizeMaximum : ℕ) where
+  module W = Wire.With library
+  module UUID = UUIDDependency library
+  module UUIDFields = P.UUIDFields library
+  module D = Decode.Size library sizeMaximum
   module B = Bounds.Size sizeMaximum
 
   abstract
@@ -78,7 +82,7 @@ module Size (sizeMaximum : ℕ) where
 
   deferredEmission : ∀ value → B.DeferredBounds value → E.Emits D.deferredFields (deferredValues value)
     ((toList "id" , UUID.encode (R.Deferred.identity value)) ∷ (toList "revision" , JSON.signed (R.Deferred.revision value)) ∷ [])
-  deferredEmission value bounded = E.emitted (P.uuidRoundTrip (R.Deferred.identity value))
+  deferredEmission value bounded = E.emitted (UUIDFields.uuidRoundTrip (R.Deferred.identity value))
     (E.emitted (P.signedNumberRoundTrip (R.Deferred.revision value) bounded) E.done)
 
   deferred : ∀ value → B.DeferredBounds value → D.deferred (W.deferred value) ≡ inj₂ value
@@ -93,7 +97,7 @@ module Size (sizeMaximum : ℕ) where
      (toList "experience_id" , UUID.encode (R.FailureDiagnostic.experience value)) ∷
      (toList "tool" , JSON.string (R.FailureDiagnostic.tool value)) ∷ (toList "detail" , JSON.string (R.FailureDiagnostic.detail value)) ∷ [])
   diagnosticEmission value bounded = E.emitted (P.uintRoundTrip P.u64Maximum (R.FailureDiagnostic.observedAt value) bounded)
-    (E.emitted (P.uuidRoundTrip (R.FailureDiagnostic.experience value)) (E.emitted refl (E.emitted refl E.done)))
+    (E.emitted (UUIDFields.uuidRoundTrip (R.FailureDiagnostic.experience value)) (E.emitted refl (E.emitted refl E.done)))
 
   diagnostic : ∀ value → B.DiagnosticBounds value → D.diagnostic (W.diagnostic value) ≡ inj₂ value
   diagnostic value bounded = finish D.diagnosticFields D.buildDiagnostic (diagnosticValues value) _ value diagnosticUnique (diagnosticEmission value bounded) refl
@@ -103,7 +107,7 @@ module Size (sizeMaximum : ℕ) where
 
   confirmedEmission : ∀ value → B.ConfirmedBounds value → E.Emits D.confirmedFields (confirmedValues value)
     ((toList "id" , UUID.encode (R.Confirmed.identity value)) ∷ (toList "recorded_at" , JSON.unsigned (R.Confirmed.recordedAt value)) ∷ [])
-  confirmedEmission value bounded = E.emitted (P.uuidRoundTrip (R.Confirmed.identity value))
+  confirmedEmission value bounded = E.emitted (UUIDFields.uuidRoundTrip (R.Confirmed.identity value))
     (E.emitted (P.uintRoundTrip P.u64Maximum (R.Confirmed.recordedAt value) bounded) E.done)
 
   confirmed : ∀ value → B.ConfirmedBounds value → D.confirmed (W.confirmed value) ≡ inj₂ value
@@ -123,8 +127,8 @@ module Size (sizeMaximum : ℕ) where
     Build.optional (toList "diagnostic") W.diagnostic D.diagnostic (λ value ()) diagnostic (R.Report.diagnostic value) (B.ReportBounds.diagnostic bounded) $
     Build.optionalUniform (toList "failure_detail") JSON.string JSON.asString (λ value ()) (λ value → refl) (R.Report.failureDetail value) $
     Build.optional (toList "failure_source") W.source D.source (λ value ()) source (R.Report.failureSource value) (B.ReportBounds.source bounded) $
-    Build.optionalUniform (toList "diagnostics_id") UUID.encode P.uuid (λ value ()) P.uuidRoundTrip (R.Report.diagnosticsId value) $
-    Build.nonemptyUniform (toList "selected_ids") UUID.encode P.uuid P.uuidRoundTrip (R.Report.selectedIds value) $
+    Build.optionalUniform (toList "diagnostics_id") UUID.encode UUIDFields.uuid (λ value ()) UUIDFields.uuidRoundTrip (R.Report.diagnosticsId value) $
+    Build.nonemptyUniform (toList "selected_ids") UUID.encode UUIDFields.uuid UUIDFields.uuidRoundTrip (R.Report.selectedIds value) $
     E.emitted (P.uintRoundTrip sizeMaximum (R.Report.selected value) (B.ReportBounds.selected bounded)) $
     E.emitted (P.uintRoundTrip sizeMaximum (R.Report.confirmed value) (B.ReportBounds.confirmed bounded)) $
     E.emitted (P.uintRoundTrip sizeMaximum (R.Report.corrected value) (B.ReportBounds.corrected bounded)) $
@@ -158,7 +162,7 @@ module Size (sizeMaximum : ℕ) where
 
   eventEmission : ∀ value → B.EventBounds value → E.Emits D.eventFields (eventValues value) (W.eventFields value)
   eventEmission value bounded = E.emitted (P.uintRoundTrip P.u64Maximum (R.Event.at value) (B.EventBounds.at bounded)) $
-    E.emitted (P.uuidRoundTrip (R.Event.experience value)) $ E.emitted refl $
+    E.emitted (UUIDFields.uuidRoundTrip (R.Event.experience value)) $ E.emitted refl $
     Build.optional (toList "model_requests") JSON.unsigned D.size (λ value ()) (P.uintRoundTrip sizeMaximum)
       (R.Event.modelRequests value) (B.EventBounds.model bounded) $
     Build.optional (toList "tool_attempts") JSON.unsigned D.size (λ value ()) (P.uintRoundTrip sizeMaximum)
@@ -178,13 +182,13 @@ module Size (sizeMaximum : ℕ) where
     more (R.Trace.eventsOmitted value) empty
 
   traceEmission : ∀ value → B.TraceBounds value → E.Emits D.traceFields (traceValues value) (W.traceFields value)
-  traceEmission value bounded = E.emitted (P.uuidRoundTrip (R.Trace.identity value)) $
+  traceEmission value bounded = E.emitted (UUIDFields.uuidRoundTrip (R.Trace.identity value)) $
     E.emitted (P.uintRoundTrip P.u64Maximum (R.Trace.startedAt value) (B.TraceBounds.started bounded)) $
     Build.optional (toList "finished_at") JSON.unsigned D.u64 (λ value ()) (P.uintRoundTrip P.u64Maximum)
       (R.Trace.finishedAt value) (B.TraceBounds.finished bounded) $
     E.emitted refl $
     Build.optionalUniform (toList "block_reason") JSON.string JSON.asString (λ value ()) (λ value → refl) (R.Trace.blockReason value) $
-    E.emitted (Array.elementsRoundTrip UUID.encode P.uuid P.uuidRoundTrip 0 (R.Trace.selectedIds value)) $
+    E.emitted (Array.elementsRoundTrip UUID.encode UUIDFields.uuid UUIDFields.uuidRoundTrip 0 (R.Trace.selectedIds value)) $
     Build.optional (toList "model_requests") JSON.unsigned D.size (λ value ()) (P.uintRoundTrip sizeMaximum)
       (R.Trace.modelRequests value) (B.TraceBounds.model bounded) $
     Build.optional (toList "tool_attempts") JSON.unsigned D.size (λ value ()) (P.uintRoundTrip sizeMaximum)

@@ -13,7 +13,7 @@ open import Data.Unit using (⊤)
 open import Data.String using (String; toList)
 open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text using (Text)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.PublicEncoding as Encoding
 import Mimir.ApplicationProtocol as Application
 import Mimir.JudgeRevision as Revision
@@ -44,7 +44,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   sourceError : String → V.Value → Validation.Fault → Revision.Error
   sourceError stage value failure = Revision.error (Source.display captured) (just captured)
-    where captured = Source.Current.input (toList stage) (Revision.Display.bytes display value)
+    where captured = Source.Current.input conversion (toList stage) (Revision.Display.bytes display value)
             (Revision.Display.fault display failure)
 
   error : Scope.Failure → Revision.Error

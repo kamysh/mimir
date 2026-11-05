@@ -16,16 +16,16 @@ open import Mimir.PublicInput
 import Mimir.StructuredValue as V
 import Mimir.LearningWire as Wire
 import Mimir.ReviewObservation as Observation
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 
-ids : List (Text × V.Value) → Fault ⊎ List (Text × ℕ)
-ids [] = inj₂ []
-ids ((key , value) ∷ rest) with V.Object.normalize rest key
-... | just _ = ids rest
-... | nothing = uuid value >>= λ id → mapResult ((key , id) ∷_) (ids rest)
+ids : Conversion.Contract → List (Text × V.Value) → Fault ⊎ List (Text × ℕ)
+ids conversion [] = inj₂ []
+ids conversion ((key , value) ∷ rest) with V.Object.normalize rest key
+... | just _ = ids conversion rest
+... | nothing = readUUID conversion value >>= λ id → mapResult ((key , id) ∷_) (ids conversion rest)
 
-candidateIDs : V.Value → Fault ⊎ List (Text × ℕ)
-candidateIDs value = V.asObject value >>= ids
+candidateIDs : Conversion.Contract → V.Value → Fault ⊎ List (Text × ℕ)
+candidateIDs conversion value = V.asObject value >>= ids conversion
 
 module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
   module W = Wire.Decode conversion sizeMaximum
@@ -37,5 +37,5 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     decode fields = required "experience" W.experience fields >>= λ experience →
       required "revision" i64 fields >>= λ revision → required "review_revision" i64 fields >>= λ reviewRevision →
       required "reviewed_revision" i64 fields >>= λ reviewedRevision →
-      defaulted "candidate_ids" [] candidateIDs fields >>= λ ids →
+      defaulted "candidate_ids" [] (candidateIDs conversion) fields >>= λ ids →
       inj₂ (Observation.snapshot experience revision reviewRevision reviewedRevision ids)

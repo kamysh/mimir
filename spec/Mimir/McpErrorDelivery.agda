@@ -2,8 +2,8 @@
 -- Wire error data reaches the existing judge controller. The continuation
 -- theorem explicitly includes the trace acknowledgements that precede a
 -- subsequent model request; decoding an error cannot invent those receipts.
-import Mimir.FloatConversion
-module Mimir.McpErrorDelivery (floatConversion : Mimir.FloatConversion.Contract) where
+import Mimir.StandardLibrary
+module Mimir.McpErrorDelivery (library : Mimir.StandardLibrary.Contract) where
 
 open import Data.Integer using (ℤ)
 open import Data.Nat using (suc)
@@ -15,7 +15,7 @@ import Mimir.StructuredValue as V
 import Mimir.McpErrors as Errors
 import Mimir.McpErrorWire as WireDependency
 private
-  module Wire = WireDependency floatConversion
+  module Wire = WireDependency library
 import Mimir.JudgeErrorAdapter as Adapter
 import Mimir.JudgeReview as Review
 

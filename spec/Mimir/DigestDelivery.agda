@@ -4,7 +4,7 @@
 module Mimir.DigestDelivery where
 
 open import Data.Bool using (Bool; true; false)
-open import Data.Char using (Char; _≟_)
+open import Data.Char using (Char; toℕ; _≟_)
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤_; _≤?_)
@@ -16,7 +16,6 @@ open import Relation.Nullary using (Dec; yes; no; ¬_)
 open import Relation.Nullary.Decidable.Core using (_×-dec_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text; Bounded; bounded?)
-open import Mimir.DecimalLexer using (DigitAt; classify)
 open import Mimir.TextOrder
 import Mimir.Saturating as Sat
 open import Mimir.Effects
@@ -24,11 +23,11 @@ open import Mimir.NotificationDelivery using (WriteReceipt; durable; refused; un
 
 data Slot : Set where digit dash : Slot
 Fits : Slot → Char → Set
-Fits digit c = DigitAt c
+Fits digit c = 48 ≤ toℕ c × toℕ c ≤ 57
 Fits dash c = c ≡ '-'
 
 fits? : ∀ slot c → Dec (Fits slot c)
-fits? digit c = classify c
+fits? digit c = (48 ≤? toℕ c) ×-dec (toℕ c ≤? 57)
 fits? dash c = c ≟ '-'
 
 data Matches : List Slot → Text → Set where

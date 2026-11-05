@@ -2,8 +2,8 @@
 -- Server control-state composition. Input failures terminate the loop; normal
 -- JSON errors write a parse-error response and may continue after its flush.
 -- Each exchange finishes before the next read. Traces need not be infinite.
-import Mimir.FloatConversion
-module Mimir.McpRuntime (floatConversion : Mimir.FloatConversion.Contract) where
+import Mimir.StandardLibrary
+module Mimir.McpRuntime (library : Mimir.StandardLibrary.Contract) where
 
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (just; nothing)
@@ -14,19 +14,15 @@ open import Mimir.Bits using (Byte)
 open import Mimir.Text using (Text)
 import Mimir.McpInput as InputDependency
 private
-  module Input = InputDependency floatConversion
+  module Input = InputDependency library
 import Mimir.McpExchange as Exchange
-import Mimir.JsonErrorDisplay as Display
-import Mimir.JsonFlow as Flow
-import Mimir.UTF8Text as UTF8
-import Mimir.UTF8Packet as Packet
+import Mimir.StandardLibrary as Library
 import Mimir.ReadLine as Lines
-import Mimir.SignedMachine as Machine
 
 data Exit : Set where
   eof : Exit
   readFailure : Text → Exit
-  invalidUTF8 : Packet.Error → Exit
+  invalidUTF8 : Text → Exit
   arithmeticPanic : Exit
   exchangeFailure : Exchange.Failure → Exit
 
@@ -37,11 +33,9 @@ data State : Set where
 
 bodyOutcome : ∀ {input} → Input.BodyOutcome input → State
 bodyOutcome (Input.blank proof) = reading
-bodyOutcome (Input.accepted value position complete) = executing (Exchange.exchange (Input.request value))
-bodyOutcome (Input.rejected failure) with Display.renderRejected failure
-... | nothing = exited arithmeticPanic
-... | just message = executing (Exchange.parseError message)
-bodyOutcome (Input.panicked position) = exited arithmeticPanic
+bodyOutcome (Input.accepted value) = executing (Exchange.exchange (Input.request value))
+bodyOutcome (Input.rejected failure) = executing (Exchange.parseError (Library.JSONError.message failure))
+bodyOutcome (Input.panicked message) = exited arithmeticPanic
 
 readOutcome : ∀ {input} → Input.Outcome input → State
 readOutcome (Input.eof proof) = exited eof
@@ -58,28 +52,28 @@ data Event : Set where
   effect : Exchange.Event → Event
   returned : Event
 
-data Step (checks : Machine.OverflowChecks) : State → Event → State → Set where
-  received : ∀ input wholeLine → Step checks reading (read input wholeLine)
-    (readOutcome (Input.Parser.read checks input))
-  failedRead : ∀ message → Step checks reading (readError message) (exited (readFailure message))
+data Step : State → Event → State → Set where
+  received : ∀ input wholeLine → Step reading (read input wholeLine)
+    (readOutcome (Input.Parser.read input))
+  failedRead : ∀ message → Step reading (readError message) (exited (readFailure message))
   replied : ∀ operation continuation reply →
-    Step checks (executing (Exchange.ask operation continuation)) (effect (operation , reply))
+    Step (executing (Exchange.ask operation continuation)) (effect (operation , reply))
       (executing (continuation reply))
-  returned : ∀ outcome → Step checks (executing (Exchange.done outcome)) returned (finish outcome)
+  returned : ∀ outcome → Step (executing (Exchange.done outcome)) returned (finish outcome)
 
-data Trace (checks : Machine.OverflowChecks) : State → List Event → State → Set where
-  empty : ∀ state → Trace checks state [] state
-  more : ∀ {before event middle events after} → Step checks before event middle →
-    Trace checks middle events after → Trace checks before (event ∷ events) after
+data Trace : State → List Event → State → Set where
+  empty : ∀ state → Trace state [] state
+  more : ∀ {before event middle events after} → Step before event middle →
+    Trace middle events after → Trace before (event ∷ events) after
 
-exitHasNoStep : ∀ checks reason event after → Step checks (exited reason) event after → ⊥
-exitHasNoStep checks reason event after ()
+exitHasNoStep : ∀ reason event after → Step (exited reason) event after → ⊥
+exitHasNoStep reason event after ()
 
-exitHasNoLaterEffect : ∀ checks reason events after → Trace checks (exited reason) events after → events ≡ []
-exitHasNoLaterEffect checks reason .[] .(exited reason) (empty _) = refl
-exitHasNoLaterEffect checks reason .(_ ∷ _) after (more () tail)
+exitHasNoLaterEffect : ∀ reason events after → Trace (exited reason) events after → events ≡ []
+exitHasNoLaterEffect reason .[] .(exited reason) (empty _) = refl
+exitHasNoLaterEffect reason .(_ ∷ _) after (more () tail)
 
-noConcurrentRead : ∀ checks script input wholeLine after →
-  Step checks (executing script) (read input wholeLine) after → ⊥
-noConcurrentRead checks script input wholeLine after ()
+noConcurrentRead : ∀ script input wholeLine after →
+  Step (executing script) (read input wholeLine) after → ⊥
+noConcurrentRead script input wholeLine after ()
 

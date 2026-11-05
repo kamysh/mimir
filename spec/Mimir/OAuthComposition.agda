@@ -18,8 +18,7 @@ import Mimir.NotificationConfig as Config
 import Mimir.OAuthCache as Cache
 import Mimir.SMTPAuth as SMTP
 import Mimir.StructuredValue as V
-import Mimir.JsonCompactRecords as Compact
-import Mimir.SHA256Hash as SHA
+import Mimir.StandardLibrary as Library
 import Mimir.Effects as Effects
 
 optionalText : Maybe Text → V.Value
@@ -37,11 +36,12 @@ identityMaterial cfg oauth = V.array
    optionalText (Config.OAuth.clientSecret oauth) ∷ optionalText (Config.OAuth.tenant oauth) ∷
    optionalText (Config.OAuth.scope oauth) ∷ V.string (Config.OAuth.refreshToken oauth) ∷ [])
 
--- Checking callers must not normalize the SHA-256 implementation. Its checked
--- definition remains here; application laws depend on the selected material.
+-- Mimir chooses the identity material; serialization and hashing are supplied
+-- library operations. No collision-freedom or hash implementation is proved.
 abstract
-  identity : ∀ cfg oauth → Compact.Supported (identityMaterial cfg oauth) → Cache.Bytes
-  identity cfg oauth valid = vectorList (SHA.hash (Compact.bytes (identityMaterial cfg oauth) valid))
+  identity : Library.Contract → Config.Config → Config.OAuth → Cache.Bytes
+  identity library cfg oauth = vectorList (Library.Contract.sha256 library
+    (Library.Contract.compactJSON library (identityMaterial cfg oauth)))
 
 endpoint : Config.OAuth → Cache.AuthError ⊎ Text
 endpoint oauth with Config.OAuth.provider oauth
@@ -89,9 +89,9 @@ Reply (http _) = Cache.AuthError ⊎ Cache.Refresh
 Reply (smtp _) = SMTP.SMTPReceipt
 open Effects.Protocol Effect Reply public
 
-module Configured (cfg : Config.Config) (oauth : Config.OAuth)
-  (validText : Compact.Supported (identityMaterial cfg oauth)) (clockMaximum : ℕ) where
-  boundIdentity = identity cfg oauth validText
+module Configured (library : Library.Contract) (cfg : Config.Config) (oauth : Config.OAuth)
+  (clockMaximum : ℕ) where
+  boundIdentity = identity library cfg oauth
 
   cacheProgram : ∀ {A} → Cache.Script A → Script A
   cacheProgram (Cache.done value) = done value

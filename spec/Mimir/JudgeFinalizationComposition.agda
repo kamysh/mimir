@@ -11,7 +11,7 @@ open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₂)
 open import Data.Unit using (⊤)
 open import Mimir.Text using (Text)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.PublicEncoding as Encoding
 import Mimir.NotificationConfig as Email
 import Mimir.NotificationDelivery as Delivery

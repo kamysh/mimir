@@ -1,3 +1,13 @@
+## Current boundary after the value audit
+
+The user requested removal of library implementation proofs. See
+[FORMAL-VALUE-AUDIT.md](FORMAL-VALUE-AUDIT.md) for the current retained and
+removed files. Entries below are historical investigation and verification
+records. References there to Unicode enumeration, JSON/UTF-8 parser engines,
+SHA-256, numeric/UUID formatting and their support do not describe the current
+specification or work still required. These operations are supplied library
+boundaries; Mimir's application rules remain the subject of the safe model.
+
 ## Subsequent Rust implementation alignment
 
 Current amendment: the user subsequently instructed removal of application

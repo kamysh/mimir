@@ -14,11 +14,12 @@ import Mimir.NotificationCodec as Codec
 import Mimir.NotificationStorage as Storage
 import Mimir.NotificationDelivery as Delivery
 import Mimir.Validation as Validation
+import Mimir.StandardLibrary as Library
 
-module Bound (library : Codec.JSONLibrary) (sizeMaximum clockMaximum : ℕ) where
+module Bound (standard : Library.Contract) (library : Codec.JSONLibrary) (sizeMaximum clockMaximum : ℕ) where
   private
     module C = Codec.Decode library sizeMaximum clockMaximum
-  module F = Storage.File ℕ Text
+  module F = Storage.File standard ℕ Text
   private
     module R name = F.Decoded (Codec.Value name) Validation.Fault (C.bytes name)
 

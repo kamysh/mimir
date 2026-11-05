@@ -13,6 +13,7 @@ open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Validation using (Fault)
+open import Mimir.SourceReview using (_≟Text_)
 import Mimir.StructuredValue as V
 import Mimir.ToolCatalog as T
 import Mimir.McpEnvelope as Envelope
@@ -20,7 +21,7 @@ import Mimir.PublicRequest as Request
 import Mimir.ApplicationProtocol as Application
 import Mimir.ApplicationOutput as Output
 import Mimir.PublicEncoding as Encoding
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 
 all : List T.Tool
 all = T.insertBelief ∷ T.deleteBelief ∷ T.deleteProject ∷ T.deletePattern ∷ T.insertPattern ∷
@@ -34,7 +35,7 @@ all = T.insertBelief ∷ T.deleteBelief ∷ T.deleteProject ∷ T.deletePattern 
 
 find : Envelope.Text → List T.Tool → Maybe T.Tool
 find name [] = nothing
-find name (tool ∷ rest) with List.≡-dec _≟_ name (Envelope.literal (T.wireName tool))
+find name (tool ∷ rest) with name ≟Text Envelope.literal (T.wireName tool)
 ... | yes _ = just tool
 ... | no _ = find name rest
 

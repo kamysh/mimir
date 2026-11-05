@@ -16,7 +16,7 @@ open import Data.String using (toList)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.NotificationConfig as Config
 import Mimir.NotificationRuntime as N
 import Mimir.NotificationIncident as I
@@ -29,7 +29,6 @@ import Mimir.SMTPProtocol as SMTP
 import Mimir.DigestDelivery as Digest
 import Mimir.UnixPath as Path
 import Mimir.UUIDV4 as UUID
-import Mimir.UUIDHyphenated as UUIDText
 import Mimir.Validation as Validation
 import Mimir.Effects as Effects
 
@@ -99,7 +98,7 @@ module Bound (conversion : Conversion.Contract) (library : Codec.JSONLibrary)
   (buildMessage : SMTP.Message → D.BuildReceipt) (sizeMaximum clockMaximum : ℕ)
   (endian : UUID.Endian) (service : Notifier) where
   private
-    module F = Files.Bound library sizeMaximum clockMaximum
+    module F = Files.Bound conversion library sizeMaximum clockMaximum
     module M = Mail.Bound conversion library sizeMaximum clockMaximum
   cfg = Notifier.config service
 
@@ -140,7 +139,7 @@ module Bound (conversion : Conversion.Contract) (library : Codec.JSONLibrary)
     cursorWritten : ∀ lock message value reply → F.Written lock Names.digest value reply →
       Receipt (held lock message) (digest (Digest.saveCursor value)) reply (held lock message)
     identity : ∀ lock message entropy → Receipt (held lock message) (notification N.freshAlert)
-      (map (λ byte → fromℕ (toℕ byte)) (UUIDText.encode (UUID.fromRandom endian entropy))) (held lock message)
+      (Conversion.Contract.formatUUID conversion (UUID.fromRandom conversion endian entropy)) (held lock message)
     alertBuilt : ∀ lock previous hostname alert →
       Receipt (held lock previous) (notification (N.build alert))
         (buildMessage (SMTP.alertMessage cfg (SMTP.computer hostname) alert))

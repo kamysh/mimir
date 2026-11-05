@@ -13,7 +13,7 @@ open import Data.Empty using (⊥)
 open import Data.String using (toList)
 open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Bits using (Byte)
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.OAuthRefreshRaw as Raw
 import Mimir.OAuthHTTP as HTTP
 import Mimir.OAuthWire as Wire

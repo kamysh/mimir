@@ -30,7 +30,7 @@ import Mimir.JudgeTools as Tools
 import Mimir.ToolCatalog as Catalog
 import Mimir.StructuredValue as V
 import Mimir.Validation as Validation
-import Mimir.FloatConversion as Conversion
+import Mimir.StandardLibrary as Conversion
 import Mimir.GraphNumerics as Numeric
 import Mimir.Binary64 as Binary
 import Mimir.Effects as Effects
@@ -109,7 +109,7 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
   ... | inj₂ state = inj₂ state
 
   visibleBelief : Text → Script (Failure ⊎ Bool)
-  visibleBelief id with Input.uuid (V.string id)
+  visibleBelief id with Input.readUUID conversion (V.string id)
   ... | inj₁ _ = done (inj₁ (rejected (toList "invalid belief id")))
   ... | inj₂ _ = ask (call Catalog.getBelief (byID id)) λ where
     (inj₁ error) → done (inj₁ error)

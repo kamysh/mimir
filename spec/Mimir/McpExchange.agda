@@ -15,7 +15,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Bits using (Byte)
 open import Mimir.Text using (Text)
 open import Data.String using (toList)
-import Mimir.JsonStoredValue as JSON
+import Mimir.StructuredValue as JSON
 import Mimir.McpEnvelope as Envelope
 import Mimir.Effects as Effects
 

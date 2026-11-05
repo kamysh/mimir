@@ -19,11 +19,12 @@ import Mimir.ConfigurationPath as Path
 import Mimir.ConnectionProtocol as Connection
 import Mimir.ServiceConnection as Service
 import Mimir.MigrationRuntime as Migration
+import Mimir.StandardLibrary as Library
 
-module Bound (environment : Application.Environment) (format : Encoding.Formatting)
+module Bound (conversion : Library.Contract) (environment : Application.Environment) (format : Encoding.Formatting)
   (sizeMaximum : ℕ) (path : Path.Path) (connectionEnvironment : Connection.Environment)
   (decimalPort : ℕ → Text) (certificateBlocks : Text → List Text) (unix : Bool) where
-  module C = CLI.Run environment format
+  module C = CLI.Run conversion environment format
   private
     module S = Service.Bound sizeMaximum path connectionEnvironment decimalPort certificateBlocks unix
     module M = Migration.Runtime Text Text

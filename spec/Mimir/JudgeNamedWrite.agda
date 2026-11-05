@@ -4,6 +4,7 @@
 module Mimir.JudgeNamedWrite where
 
 import Mimir.OptionalLimit as Limit
+import Mimir.StandardLibrary as Library
 open import Data.List using (List; []; _∷_; map; length)
 open import Data.Nat using (_≤_; _≤?_)
 open import Data.Product using (Σ; _,_; _×_)
@@ -20,7 +21,7 @@ open import Mimir.UUIDV4 using (Endian; fromRandom)
 import Mimir.JudgeWriteReceipt as WriteReceipt
 import Mimir.Effects as Effects
 
-module With (Handle NativeError RandomError EncodeError : Set) where
+module With (library : Library.Contract) (Handle NativeError RandomError EncodeError : Set) where
   module W = WriteReceipt.With Path Handle NativeError
   module FS = W.Write.FS
 
@@ -74,7 +75,7 @@ module With (Handle NativeError RandomError EncodeError : Set) where
   afterEntropy : Path → Name → Endian → List Byte → Reply randomBytes16 → Script Outcome
   afterEntropy directory name endian bytes (inj₁ error) = done (panicked error)
   afterEntropy directory name endian bytes (inj₂ random) = embed
-    (W.write (join directory (temporaryName name (fromRandom endian random)))
+    (W.write (join directory (temporaryName library name (fromRandom library endian random)))
       (join directory (filename name)) directory bytes)
 
   writeBytes : Path → Name → Endian → List Byte → Script Outcome
@@ -100,11 +101,11 @@ module With (Handle NativeError RandomError EncodeError : Set) where
       random : UUID
       file directoryHandle : Handle
       exactTrace : events ≡ (randomBytes16 , inj₂ random) ∷ map event
-        (W.Write.successTrace (join directory (temporaryName name (fromRandom endian random)))
+        (W.Write.successTrace (join directory (temporaryName library name (fromRandom library endian random)))
           (join directory (filename name)) directory bytes file directoryHandle)
 
   prependEntropy : ∀ directory name endian bytes random {events} →
-    EmbeddedCommit (join directory (temporaryName name (fromRandom endian random)))
+    EmbeddedCommit (join directory (temporaryName library name (fromRandom library endian random)))
       (join directory (filename name)) directory bytes events →
     Committed directory name endian bytes ((randomBytes16 , inj₂ random) ∷ events)
   prependEntropy directory name endian bytes random receipt =
@@ -118,7 +119,7 @@ module With (Handle NativeError RandomError EncodeError : Set) where
   successRequiresReceipts directory name endian bytes () | no oversized
   successRequiresReceipts directory name endian bytes (P.replied effect continuation (inj₂ random) run) | yes admitted =
     prependEntropy directory name endian bytes random
-      (embeddedSuccess (join directory (temporaryName name (fromRandom endian random)))
+      (embeddedSuccess (join directory (temporaryName library name (fromRandom library endian random)))
         (join directory (filename name)) directory bytes run)
 
   encodingFailureNoEffects : ∀ directory name endian error {events result} →

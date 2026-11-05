@@ -26,9 +26,11 @@ import Mimir.Unsigned as UInt
 Row = Text → Maybe Text
 
 record Libraries : Set where
-  field float : Text → Maybe Float
+  field unsigned : UInt.Parser
+        float : Text → Maybe Float
         rfc3339UTCNanoseconds : Text → Maybe ℤ
         stringArrayJSON : Text → Maybe (List Text)
+        uuid : Text → Maybe ℕ
 
 data Error : Set where
   missing malformed driverPanic : Text → Error
@@ -49,11 +51,6 @@ parse name decode text with decode text
 ... | nothing = inj₁ (malformed name)
 ... | just value = inj₂ value
 
-uuid : Text → Maybe ℕ
-uuid text with Input.uuid (JSON.string text)
-... | inj₁ _ = nothing
-... | inj₂ value = just value
-
 optional : ∀ {A : Set} → (Text → Maybe A) → Maybe Text → Maybe A
 optional decode nothing = nothing
 optional decode (just text) = decode text
@@ -69,6 +66,9 @@ memory (just text) with Request.memory (JSON.string text)
 ... | inj₂ value = value
 
 module Decode (libraries : Libraries) where
+  uuid : Text → Maybe ℕ
+  uuid = Libraries.uuid libraries
+
   reconstruct : ℕ → Text → Float → Float → ℤ → ℤ → Row → Error ⊎ Graph.BeliefValues
   reconstruct id content probability confidence created activated row
     with Numeric.probability mean ∧ Numeric.probability certainty
@@ -104,9 +104,9 @@ module Decode (libraries : Libraries) where
     reconstruct id content probability confidence created activated row
 
   unsigned32 : Text → Maybe ℕ
-  unsigned32 text with UInt.parse 4294967295 text
+  unsigned32 text with UInt.parse (Libraries.unsigned libraries) 4294967295 text
   ... | inj₁ _ = nothing
-  ... | inj₂ value = just (UInt.UInt.number (UInt.Number.result value))
+  ... | inj₂ value = just (UInt.UInt.number value)
 
   patternRow : Row → Error ⊎ Graph.PatternValues
   patternRow row = column (toList "id") row >>= λ idText → column (toList "situation") row >>= λ situation →
