@@ -4,8 +4,9 @@
 module Mimir.LearningRecompute where
 
 open import Data.Float.Base using (Float; _+_; _*_)
-open import Data.Bool using (Bool; true; false; _∧_)
+open import Data.Bool using (Bool; true; false; _∧_; not)
 open import Data.List using (List; []; _∷_; _++_; map; length; concatMap)
+open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc; _≟_)
 open import Data.Product using (_×_; _,_)
@@ -21,7 +22,7 @@ import Mimir.ReviewLedger as Ledger
 import Mimir.ReviewRecomputeTraversal as Traversal
 import Mimir.ApplicationFloat as Numeric
 import Mimir.PosteriorComputation as Posterior
-import Mimir.AssessmentScores as Scores
+import Mimir.EvidenceValidity as Evidence
 
 beliefs : List Graph.Node → List Graph.BeliefValues
 beliefs [] = []
@@ -91,12 +92,15 @@ prepareNodes : List Review.Feedback → List (ℕ × Float) → List Graph.Belie
 prepareNodes feedback ground [] = just []
 prepareNodes feedback ground (b ∷ bs) with feedbackMass (Graph.BeliefValues.identity b) feedback (Posterior.beta 0.0 0.0)
   | prepareNodes feedback ground bs
-... | just mass | just rest = just (Posterior.node (Graph.BeliefValues.identity b)
+... | nothing | _ = nothing
+... | just mass | nothing = nothing
+... | just mass | just rest with Evidence.validBelief b
+...   | false = nothing
+...   | true = just (Posterior.node (Graph.BeliefValues.identity b)
   (Posterior.beta
     (Graph.BeliefValues.alpha0 b + (Posterior.Beta.alpha mass + 1.0 * groundMass (Graph.BeliefValues.identity b) ground 0.0))
     (Graph.BeliefValues.beta0 b + Posterior.Beta.negative mass))
   (Posterior.beta (Graph.BeliefValues.alpha b) (Graph.BeliefValues.beta b)) ∷ rest)
-... | _ | _ = nothing
 
 prepareEdges : List ℕ → List Edges.Edge → Maybe (List Posterior.Edge)
 prepareEdges targets [] = just []
@@ -114,28 +118,67 @@ external ids (b ∷ bs) with member (Graph.BeliefValues.identity b) ids
 ... | false = (Graph.BeliefValues.identity b , Graph.BeliefValues.probability b) ∷ external ids bs
 
 validWrites : Posterior.State → Bool
-validWrites [] = true
-validWrites ((id , b) ∷ rest) = Scores.finite (Posterior.Beta.alpha b) ∧
-  Scores.finite (Posterior.Beta.negative b) ∧ validWrites rest
+validWrites = Posterior.validState
 
 apply : Posterior.State → List Graph.Node → List Graph.Node
 apply changes [] = []
 apply changes (Graph.patternNode p ∷ ns) = Graph.patternNode p ∷ apply changes ns
 apply changes (Graph.beliefNode b ∷ ns) with Posterior.lookup (Graph.BeliefValues.identity b) changes
 ... | nothing = Graph.beliefNode b ∷ apply changes ns
-... | just value = Graph.beliefNode (record b
-  { alpha = Posterior.Beta.alpha value ; beta = Posterior.Beta.negative value
-  ; probability = Posterior.mean value ; confidence = Posterior.confidence value }) ∷ apply changes ns
+... | just value = Graph.beliefNode (Evidence.updated b value) ∷ apply changes ns
+
+applyPreservesValidity : ∀ changes nodes → Posterior.ValidState changes →
+  All Evidence.ValidNode nodes → All Evidence.ValidNode (apply changes nodes)
+applyPreservesValidity changes [] writes [] = []
+applyPreservesValidity changes (Graph.patternNode p ∷ ns) writes (valid ∷ tail) =
+  valid ∷ applyPreservesValidity changes ns writes tail
+applyPreservesValidity changes (Graph.beliefNode b ∷ ns) writes (valid ∷ tail)
+  with Posterior.lookup (Graph.BeliefValues.identity b) changes in found
+... | nothing = valid ∷ applyPreservesValidity changes ns writes tail
+... | just value = Evidence.updatedValid b value valid
+  (Evidence.lookupValid (Graph.BeliefValues.identity b) changes value writes found) ∷
+  applyPreservesValidity changes ns writes tail
+
+originals : List Graph.Node → List (ℕ × (Float × Float))
+originals [] = []
+originals (Graph.patternNode p ∷ rest) = originals rest
+originals (Graph.beliefNode b ∷ rest) =
+  (Graph.BeliefValues.identity b , Graph.BeliefValues.alpha0 b , Graph.BeliefValues.beta0 b) ∷ originals rest
+
+applyPreservesOriginals : ∀ changes nodes → originals (apply changes nodes) ≡ originals nodes
+applyPreservesOriginals changes [] = refl
+applyPreservesOriginals changes (Graph.patternNode p ∷ rest) = applyPreservesOriginals changes rest
+applyPreservesOriginals changes (Graph.beliefNode b ∷ rest)
+  with Posterior.lookup (Graph.BeliefValues.identity b) changes
+... | nothing = cong ((Graph.BeliefValues.identity b , Graph.BeliefValues.alpha0 b , Graph.BeliefValues.beta0 b) ∷_)
+  (applyPreservesOriginals changes rest)
+... | just value = cong ((Graph.BeliefValues.identity b , Graph.BeliefValues.alpha0 b , Graph.BeliefValues.beta0 b) ∷_)
+  (applyPreservesOriginals changes rest)
 
 data Result : Set where
   foreignTarget invalidNumericInput invalidNumericWrite : Result
   recomputed : List Graph.Node → Bool → Result
 
 finish : List Graph.Node → Posterior.Result → Result
-finish nodes r with validWrites (Posterior.Result.writes r)
+finish nodes r with not (Posterior.Result.numericFailure r) ∧ validWrites (Posterior.Result.writes r)
 ... | false = invalidNumericWrite
 ... | true = recomputed (apply (Posterior.Result.writes r) nodes)
   (Posterior.Result.iterationLimitReached r)
+
+finishPreservesValidity : ∀ nodes r after limit → All Evidence.ValidNode nodes →
+  finish nodes r ≡ recomputed after limit → All Evidence.ValidNode after
+finishPreservesValidity nodes r after limit valid observed
+  with not (Posterior.Result.numericFailure r) ∧ validWrites (Posterior.Result.writes r) in admitted
+... | false with observed
+...   | ()
+finishPreservesValidity nodes r after limit valid refl | true =
+  applyPreservesValidity (Posterior.Result.writes r) nodes
+    (Posterior.validStateSound (Posterior.Result.writes r)
+      (Posterior.andRight (not (Posterior.Result.numericFailure r)) (validWrites (Posterior.Result.writes r)) admitted)) valid
+
+failedCalculationCannotSucceed : ∀ nodes r → Posterior.Result.numericFailure r ≡ true →
+  finish nodes r ≡ invalidNumericWrite
+failedCalculationCannotSucceed nodes r failed rewrite failed = refl
 
 run : Text → List ℕ → List Graph.Node → List Edges.Edge →
   List Review.Review → List (ℕ × Float) → Result
@@ -150,6 +193,26 @@ run project roots nodes edges reviews ground with owned project chosen
 ...   | just prepared | just incoming = finish nodes
   (Posterior.run nothing (external (map Posterior.Node.identity prepared) (beliefs nodes)) incoming prepared)
 
+runPreservesValidity : ∀ project roots nodes edges reviews ground after limit →
+  All Evidence.ValidNode nodes → run project roots nodes edges reviews ground ≡ recomputed after limit →
+  All Evidence.ValidNode after
+runPreservesValidity project roots nodes edges reviews ground after limit valid observed
+  with owned project (selected (closure project (beliefs nodes) edges roots) (beliefs nodes))
+... | false with observed
+...   | ()
+runPreservesValidity project roots nodes edges reviews ground after limit valid observed | true
+  with prepareNodes (concatMap Review.Review.feedbacks reviews) ground chosen
+  | prepareEdges (map Graph.BeliefValues.identity chosen) edges
+  where chosen = selected (closure project (beliefs nodes) edges roots) (beliefs nodes)
+... | nothing | _ with observed
+...   | ()
+runPreservesValidity project roots nodes edges reviews ground after limit valid observed | true | just prepared | nothing with observed
+... | ()
+runPreservesValidity project roots nodes edges reviews ground after limit valid observed | true | just prepared | just incoming =
+  finishPreservesValidity nodes
+    (Posterior.run nothing (external (map Posterior.Node.identity prepared) (beliefs nodes)) incoming prepared)
+    after limit valid observed
+
 identitiesPreserved : ∀ changes nodes → map Graph.nodeID (apply changes nodes) ≡ map Graph.nodeID nodes
 identitiesPreserved changes [] = refl
 identitiesPreserved changes (Graph.patternNode p ∷ ns) = cong (Graph.PatternValues.identity p ∷_) (identitiesPreserved changes ns)
@@ -161,7 +224,7 @@ identitiesPreserved changes (Graph.beliefNode b ∷ ns) with Posterior.lookup (G
 
 finishPreservesIdentities : ∀ nodes r after limit → finish nodes r ≡ recomputed after limit →
   map Graph.nodeID after ≡ map Graph.nodeID nodes
-finishPreservesIdentities nodes r after limit proof with validWrites (Posterior.Result.writes r)
+finishPreservesIdentities nodes r after limit proof with not (Posterior.Result.numericFailure r) ∧ validWrites (Posterior.Result.writes r)
 ... | false with proof
 ...   | ()
 finishPreservesIdentities nodes r after limit refl | true = identitiesPreserved (Posterior.Result.writes r) nodes
