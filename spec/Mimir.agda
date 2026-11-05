@@ -472,6 +472,8 @@ import Mimir.CoreLibrary
 
 import Mimir.OperationalConfiguration
 import Mimir.OperationalLogRetention
+import Mimir.OperationalLogSteps
+import Mimir.OperationalLogProtocol
 import Mimir.ConfigurationUpgrade
 import Mimir.OperationalDiagnostics
 import Mimir.OperationalLifecycle
