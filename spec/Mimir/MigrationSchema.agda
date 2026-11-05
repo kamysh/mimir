@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- The nine embedded application migrations. This is the concrete DDL/data
+-- The ten embedded application migrations. This is the concrete DDL/data
 -- contract supplied to MigrationDriver.executeOriginalSQL; PostgreSQL executes
 -- these operations inside the driver's transaction, before both ledger writes.
 -- SQL expression arithmetic, collation and NULL semantics are database
@@ -14,14 +14,17 @@ open import Data.String using (String; toList)
 open import Data.Product using (_×_; _,_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
+import Mimir.ItemOwnerBackfill as Historical
+import Mimir.ItemOwners as Owners
 open import Mimir.Migrations public
   using (Migration; initial; searchPath; evidenceEdges; betaBeliefs)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
+    postgresItemAllocation to allocation;
     predecessor to requires; manifest to ordered)
 
 data Type : Set where uuid text bigint timestamp jsonb double boolean vector : Type
-data Default : Set where noDefault now zero falseDefault : Default
+data Default : Set where noDefault now zero falseDefault postgresUUID : Default
 record Column : Set where
   constructor column
   field name : String; type : Type; nullable : Bool; defaultValue : Default
@@ -35,8 +38,8 @@ data Expr : Set where
   columnValue : String → Expr
   number : String → Expr -- exact SQL decimal literal, interpreted by PostgreSQL
   literal : String → Expr
-  add subtract multiply absolute charLength : List Expr → Expr
-  less lessEqual equal between oneOf : List Expr → Expr
+  add subtract multiply absolute charLength trimSpaces : List Expr → Expr
+  less lessEqual equal between oneOf either isNull : List Expr → Expr
 
 data DeleteAction : Set where restrict cascade : DeleteAction
 record ForeignKey : Set where
@@ -116,6 +119,20 @@ itemOwners = table "mimir_learning_item_owners"
   (required "item_id" uuid ∷ required "experience_id" uuid ∷ required "source_ref" text ∷ required "actor" text ∷ [])
   ("item_id" ∷ []) [] (experienceFK ∷ []) []
 
+-- A historical row has no local key. PostgreSQL's normal nullable UNIQUE
+-- behavior permits those rows; non-null keys are unique within an experience.
+-- postgresUUID names the trusted database default, not an Agda UUID generator.
+localKeyValid : Expr
+localKeyValid = either
+  (isNull (columnValue "item_key" ∷ []) ∷
+   less (number "0" ∷ charLength (trimSpaces (columnValue "item_key" ∷ []) ∷ []) ∷ []) ∷ [])
+
+allocatedItemOwners : Table
+allocatedItemOwners = table "mimir_learning_item_owners"
+  (column "item_id" uuid false postgresUUID ∷ required "experience_id" uuid ∷
+   required "source_ref" text ∷ required "actor" text ∷ optional "item_key" text ∷ [])
+  ("item_id" ∷ []) (("experience_id" ∷ "item_key" ∷ []) ∷ []) (experienceFK ∷ []) (localKeyValid ∷ [])
+
 -- Label creation catches all PostgreSQL exceptions in the existing SQL; that
 -- native behavior is explicit and must not be confused with a label-exists proof.
 data DDL : Set where
@@ -126,6 +143,10 @@ data DDL : Set where
   addNullableColumn : String → Column → DDL
   createIndex : Index → DDL
   backfillMissingAlpha0 : List (String × Expr) → DDL
+  backfillHistoricalItemOwners : List (String × String) → DDL
+  setColumnDefault : String → String → Default → DDL
+  addUniqueConstraint : String → String → List String → DDL
+  addCheckConstraint : String → String → Expr → DDL
 
 kappa alpha beta : Expr
 kappa = add (number "2.0" ∷ multiply (columnValue "confidence" ∷ number "198.0" ∷ []) ∷ [])
@@ -149,6 +170,27 @@ body candidates = addNullableColumn "mimir_review_versions" (optional "request" 
 body assessment = create assessments ∷
   createIndex (index "mimir_assessment_lookup" "mimir_assessment_contributions" ("belief_id" ∷ "scope" ∷ "rubric" ∷ []) nothing) ∷ []
 body owners = create itemOwners ∷ []
+body allocation =
+  backfillHistoricalItemOwners (("mimir_experience_versions" , "learning_items") ∷
+    ("mimir_review_versions" , "extracted_items") ∷ []) ∷
+  setColumnDefault "mimir_learning_item_owners" "item_id" postgresUUID ∷
+  addNullableColumn "mimir_learning_item_owners" (optional "item_key" text) ∷
+  addUniqueConstraint "mimir_learning_item_owners" "mimir_learning_item_local_key"
+    ("experience_id" ∷ "item_key" ∷ []) ∷
+  addCheckConstraint "mimir_learning_item_owners" "mimir_learning_item_key_nonempty" localKeyValid ∷ []
+
+-- PostgreSQL supplies the decoded historical rows and execution order. The
+-- application's data rule is insert-missing-only, linked to its general laws.
+data OwnerDataEffect : DDL → List Historical.Row → Owners.Registry → Owners.Registry → Set where
+  importedHistory : ∀ sources rows before → OwnerDataEffect (backfillHistoricalItemOwners sources)
+    rows before (Historical.backfill rows before)
+
+ownerDataPreservesExisting : ∀ operation rows before after identity old →
+  OwnerDataEffect operation rows before after → before identity ≡ Data.Maybe.just old →
+  after identity ≡ Data.Maybe.just old
+ownerDataPreservesExisting .(backfillHistoricalItemOwners sources) rows before
+  .(Historical.backfill rows before) identity old (importedHistory sources .rows .before) =
+  Historical.existingOwnersPreserved rows before identity old
 
 -- Backfill guards only alpha0. Already migrated vertices are untouched even
 -- if another field is absent; the specification does not silently repair data.
