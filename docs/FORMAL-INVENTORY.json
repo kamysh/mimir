@@ -5340,6 +5340,21 @@
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
     {
+      "path": "crates/core/migrations/010_postgres_item_ids.sql",
+      "definitions": [],
+      "status": "unmapped",
+      "proof_boundary_category": "database_effects",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/Migrations.agda",
+        "spec/Mimir/MigrationSchema.agda",
+        "spec/Mimir/MigrationScriptBinding.agda",
+        "spec/Mimir/ItemOwnerBackfill.agda",
+        "spec/Mimir/MigrationRuntime.agda"
+      ],
+      "specification_status": "behavior-defined"
+    },
+    {
       "path": "crates/core/src/assessment.rs",
       "definitions": [
         {

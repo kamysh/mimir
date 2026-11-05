@@ -4,7 +4,7 @@ Status: **completed and checked**, 2026-10-31 03:59 UTC.
 
 This extends the existing specification for the current Mimir product. It covers public inputs and defaults, validation, output projections, state transitions, partial failures, persistence and background protocols. The specification-only completion receipt remains in FORMAL-BEHAVIOR-VERIFICATION.json. Subsequent Rust alignment is documented in [RUST-CONFORMANCE.md](RUST-CONFORMANCE.md); the checked model must not be described as a verified installed binary.
 
-The inventory contains **34 MCP tools, 27 CLI leaf commands, seven lifecycle groups and 55 source artifacts** (34 production Rust files, nine SQL migrations, and 12 test/example artifacts). Core-library-only entry points are listed separately below.
+The inventory contains **34 MCP tools, 30 CLI leaf commands, seven lifecycle groups and 61 source artifacts** (38 production Rust files, ten SQL migrations, and 13 verification/test/example artifacts). Core-library-only entry points are listed separately below.
 
 ## Reading the contract
 
@@ -23,7 +23,7 @@ Protocols distinguish application decisions from external observations. Database
 | Documents and embeddings | Markdown chunk/parent construction, path reads, configured remote/local backend lifecycle, cache/download/load failures, batch cardinality/index/dimension association, paired publication, query parent context and automatic grounding. |
 | Judge | Configuration, one owned MCP client, handshake/catalog/capabilities, shared ID/deadline including overflow, pending/deferred selection, scoped tools, API/subprocess model exchanges, budgets, trace barriers, reread confirmation, durable finalization, cleanup, watch/backoff and stop at the wait point. |
 | Notifications | Independent notifier API, admission, exclusive outbox lock, incident/recovery reconciliation, reservations, retries and delivery uncertainty, bounded durable files, exact record decoding, SMTP, OAuth identity/cache/refresh ordering, read-only digest snapshot and cursor advancement. |
-| Startup and migrations | Core operation without judge/model settings, source/override precedence, credential/TLS selection, all nine DDL/data bodies, migration dependencies, history/checksum/locking and transaction outcomes. |
+| Startup and migrations | Core operation without judge/model settings, source/override precedence, credential/TLS selection, all ten DDL/data bodies, historical item ownership preservation, database-assigned item IDs, local-key constraints, migration dependencies, history/checksum/locking and transaction outcomes. |
 
 ## MCP operations
 
@@ -114,7 +114,7 @@ Every operation below also uses the shared input/dispatch/output/MCP composition
 | --- | --- |
 | MCP startup and request loop | [McpServiceProcess](../spec/Mimir/McpServiceProcess.agda), [McpRuntimeComposition](../spec/Mimir/McpRuntimeComposition.agda), [McpApplicationComposition](../spec/Mimir/McpApplicationComposition.agda), [McpToolExecution](../spec/Mimir/McpToolExecution.agda), [PublicRequest](../spec/Mimir/PublicRequest.agda), [ApplicationProtocol](../spec/Mimir/ApplicationProtocol.agda), [ApplicationOutput](../spec/Mimir/ApplicationOutput.agda), [PublicEncoding](../spec/Mimir/PublicEncoding.agda) |
 | Configuration, connection and credentials | [ConfigurationProtocol](../spec/Mimir/ConfigurationProtocol.agda), [ConfigurationSchema](../spec/Mimir/ConfigurationSchema.agda), [ConfigurationValues](../spec/Mimir/ConfigurationValues.agda), [ConnectionProtocol](../spec/Mimir/ConnectionProtocol.agda), [Password](../spec/Mimir/Password.agda), [TLS](../spec/Mimir/TLS.agda), [ServiceStartup](../spec/Mimir/ServiceStartup.agda), [ServiceConnection](../spec/Mimir/ServiceConnection.agda), [CoreLibrary](../spec/Mimir/CoreLibrary.agda) |
-| Database bootstrap and nine schema migrations | [MigrationSchema](../spec/Mimir/MigrationSchema.agda), [MigrationScriptBinding](../spec/Mimir/MigrationScriptBinding.agda), [MigrationRuntime](../spec/Mimir/MigrationRuntime.agda), [MigrationComposition](../spec/Mimir/MigrationComposition.agda), [MigrationHistory](../spec/Mimir/MigrationHistory.agda), [MigrationDependencies](../spec/Mimir/MigrationDependencies.agda) |
+| Database bootstrap and ten schema migrations | [MigrationSchema](../spec/Mimir/MigrationSchema.agda), [MigrationScriptBinding](../spec/Mimir/MigrationScriptBinding.agda), [ItemOwnerBackfill](../spec/Mimir/ItemOwnerBackfill.agda), [MigrationRuntime](../spec/Mimir/MigrationRuntime.agda), [MigrationComposition](../spec/Mimir/MigrationComposition.agda), [MigrationHistory](../spec/Mimir/MigrationHistory.agda), [MigrationDependencies](../spec/Mimir/MigrationDependencies.agda) |
 | Judge host, provider and subprocess lifecycle | [JudgeHostProtocol](../spec/Mimir/JudgeHostProtocol.agda), [JudgeWorkflowComposition](../spec/Mimir/JudgeWorkflowComposition.agda), [JudgeBackendComposition](../spec/Mimir/JudgeBackendComposition.agda), [JudgeClientStartup](../spec/Mimir/JudgeClientStartup.agda), [JudgeMcpLifecycle](../spec/Mimir/JudgeMcpLifecycle.agda), [JudgeAPIAdapter](../spec/Mimir/JudgeAPIAdapter.agda), [JudgeHarnessAdapter](../spec/Mimir/JudgeHarnessAdapter.agda), [JudgePersistenceComposition](../spec/Mimir/JudgePersistenceComposition.agda), [JudgeFinalizationComposition](../spec/Mimir/JudgeFinalizationComposition.agda) |
 | Notification, digest and OAuth lifecycle | [JudgeDigestComposition](../spec/Mimir/JudgeDigestComposition.agda), [JudgeDigestSnapshot](../spec/Mimir/JudgeDigestSnapshot.agda), [NotificationComposition](../spec/Mimir/NotificationComposition.agda), [NotificationRuntime](../spec/Mimir/NotificationRuntime.agda), [NotificationFileBinding](../spec/Mimir/NotificationFileBinding.agda), [NotificationCodec](../spec/Mimir/NotificationCodec.agda), [NotificationWire](../spec/Mimir/NotificationWire.agda), [NotificationMail](../spec/Mimir/NotificationMail.agda), [OAuthComposition](../spec/Mimir/OAuthComposition.agda), [OAuthResponseBinding](../spec/Mimir/OAuthResponseBinding.agda), [SMTPProtocol](../spec/Mimir/SMTPProtocol.agda) |
 | Embedding backend and automatic grounding | [EmbeddingService](../spec/Mimir/EmbeddingService.agda), [EmbeddingLifecycle](../spec/Mimir/EmbeddingLifecycle.agda), [EmbeddingBackend](../spec/Mimir/EmbeddingBackend.agda), [EmbeddingBatch](../spec/Mimir/EmbeddingBatch.agda), [BeliefEmbeddingStorage](../spec/Mimir/BeliefEmbeddingStorage.agda), [GroundingStorageBinding](../spec/Mimir/GroundingStorageBinding.agda), [DocumentLoading](../spec/Mimir/DocumentLoading.agda) |
@@ -123,7 +123,7 @@ Every operation below also uses the shared input/dispatch/output/MCP composition
 ## Dependency and proof boundaries
 
 - Standard Float/formatter, JSON/TOML, Unicode, UUID, clock, filesystem, TLS/HTTP/SMTP, tokenizer/ONNX, hashing, PostgreSQL and pgvector operations remain explicit dependency contracts. The specification defines Mimir’s choices, parameters, sequencing and handling of their results. It does not redevelop those libraries.
-- All 638 modules under `spec/` use `--safe` and are reachable from `Mimir.agda`. There are no postulates, holes or termination escape markers in that source tree.
+- All modules under `spec/` use `--safe` and are reachable from `Mimir.agda`. There are no postulates, holes or termination escape markers in that source tree.
 - The three individually approved PostgreSQL postulates remain isolated in `assumptions/Mimir/Assumptions/PostgreSQL.agda`; the safe root does not import them. No new postulate was added in this bounded task.
 - Legacy ideal/percentage models retain their structural laws. Current floating calculations and operation behavior come from `PosteriorComputation`, `GraphNumerics`, `RetrievalRanking`, `CoreLibrary` and the concrete protocols, not the older approximations.
 - Source inventory mappings are navigation and coverage evidence, not per-function Rust refinement theorems. Tests and examples are classified separately from production behavior.
@@ -132,13 +132,28 @@ Existing required laws remain authoritative where current Rust differs. The docu
 
 ## Verification
 
-`python scripts/formal/check-coverage.py` verifies the exact tool/CLI inventory, referenced modules, complete root import closure, safety markers and all nine SQL body bindings. It passed for the current sources. This structural audit does not replace Agda.
+`python scripts/formal/check-coverage.py` verifies the exact tool/CLI inventory, referenced modules, complete root import closure, safety markers and all ten SQL body bindings. This structural audit does not replace Agda. The following timing and verification receipt describe the original nine-migration audit.
 
 The persistent interactive root check passed with no errors or goals. The final batch Agda check passed with exit 0 in 53.657 seconds. Naming/deprecation warnings remain; there were no errors. Complete log: /tmp/mimir-formal-final-aggregate-4aAlpuul.log (exit status in .exit). This check reused completed interfaces; it is not a cold-rebuild claim.
 
 The [verification receipt](FORMAL-BEHAVIOR-VERIFICATION.json) records commands, logs, coverage results, assumption boundaries and SHA-256 hashes of every checked formal source. Completion took 4.93 hours from the agreed start, before the eight-hour deadline.
 
 Machine-readable maps: [FORMAL-BEHAVIOR-COVERAGE.json](FORMAL-BEHAVIOR-COVERAGE.json) and [FORMAL-INVENTORY.json](FORMAL-INVENTORY.json).
+
+## PostgreSQL item-ID upgrade
+
+The tenth migration preserves existing item IDs and ownership. It imports
+missing owners from saved experiences and reviews, leaves established owners
+unchanged even when old records conflict, and adds nullable local names with
+per-experience uniqueness and a nonempty-name check. PostgreSQL supplies IDs
+for future rows through its column default; its UUID guarantees are trusted.
+
+`ItemOwnerBackfill` proves preservation of existing owners, retention of every
+historical identity, repeatability, preservation of unrelated rows and rollback
+behavior. `MigrationSchema` connects those rules to the migration's data change;
+`MigrationScriptBinding` retains the exact loaded SQL body. Historical SQL
+observation order is explicit: when an unreserved ID has conflicting old
+declarations, the first observed declaration is retained.
 
 ## Operational repair (2026-10-31)
 

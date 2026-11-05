@@ -1700,7 +1700,7 @@
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
     },
     {
-      "name": "Database bootstrap and nine schema migrations",
+      "name": "Database bootstrap and ten schema migrations",
       "step": 6,
       "existing_modules": [
         "spec/Mimir/Migrations.agda",
@@ -1715,7 +1715,8 @@
         "spec/Mimir/MigrationRuntime.agda",
         "spec/Mimir/MigrationComposition.agda",
         "spec/Mimir/MigrationHistory.agda",
-        "spec/Mimir/MigrationDependencies.agda"
+        "spec/Mimir/MigrationDependencies.agda",
+        "spec/Mimir/ItemOwnerBackfill.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
       "baseline_gap": "Migration framework exists; map each actual SQL schema/data transition and constraints, not only migration file/checksum bookkeeping.",
