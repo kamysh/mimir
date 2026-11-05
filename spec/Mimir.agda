@@ -154,6 +154,7 @@ import Mimir.JudgeErrorAdapter
 import Mimir.BatchReport
 import Mimir.DeferredReviews
 import Mimir.PendingSelection
+import Mimir.ExperiencePending
 import Mimir.CandidateDeferral
 import Mimir.NotificationIncident
 import Mimir.Saturating
