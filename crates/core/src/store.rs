@@ -609,7 +609,7 @@ $$) AS (ok ag_catalog.agtype)"#
              MATCH (n:Belief) WHERE n.project = $project DETACH DELETE n RETURN 1 \
              $$, $1) AS (ok agtype)"
         );
-        age_execute(&client, &stmt_del, &prepare_del, &agtype_json).await?;
+        age_execute(client, &stmt_del, &prepare_del, &agtype_json).await?;
 
         tx.commit().await?;
 
@@ -627,7 +627,7 @@ $$) AS (ok ag_catalog.agtype)"#
              MATCH (p:Pattern) WHERE p.project = $project DETACH DELETE p RETURN 1 \
              $$, $1) AS (ok agtype)"
         );
-        age_execute(&client, &stmt_pat, &prepare_pat, &agtype_json).await?;
+        age_execute(client, &stmt_pat, &prepare_pat, &agtype_json).await?;
 
         tx.commit().await?;
         drop(connection);
@@ -804,7 +804,7 @@ $$) {BELIEF_RETURN_COLUMNS}"#
              $$, $1) {BELIEF_RETURN_COLUMNS}"
         );
 
-        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let rows = age_query_rows(client, &stmt, &prepare, &agtype_json).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
             beliefs.push(belief_from_simple_row(row)?);
@@ -1453,7 +1453,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
              RETURN c.id $$, $1) AS (id ag_catalog.agtype)"
         );
 
-        age_execute(&client, &stmt, &prepare, &agtype_json).await?;
+        age_execute(client, &stmt, &prepare, &agtype_json).await?;
 
         // Insert CONTAINS edge from parent → child when parent exists.
         if let Some(parent_id) = chunk.parent_id {
@@ -1607,7 +1607,7 @@ $$) AS (ok ag_catalog.agtype)"#
             .map(|row| Uuid::parse_str(row.get::<_, &str>(0)))
             .collect::<std::result::Result<_, _>>()?;
         tx.query(&sql, &[]).await?;
-        self.recompute_learning(&tx, None, affected).await?;
+        self.recompute_learning(tx, None, affected).await?;
         Ok(())
     }
 
