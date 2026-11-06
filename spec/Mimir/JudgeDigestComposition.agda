@@ -221,27 +221,16 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     evidence observedBatch = All.map (λ read → Acknowledgement.evidence (ConfirmedRead.observed read)
       (ConfirmedRead.valid read) (ConfirmedRead.acknowledged read)) (BatchEvidence.confirmed observedBatch)
 
-  ObservedRun : ∀ {effect reply} → H.Receipt effect reply → List Observation.Snapshot → List Observation.Snapshot → Set
-  ObservedRun (H.ran settings held configPath report
-    (H.completed program before after events client .report built execution dropped)) remaining selected =
-    ProgressOf.BatchEvidence settings program (H.L.Locked.path held) configPath events remaining selected
-  ObservedRun receipt remaining selected = ⊥
+  data ObservedRun : ∀ {effect reply} → H.Receipt effect reply → List Observation.Snapshot → List Observation.Snapshot → Set where
+    completedBatch : ∀ {settings held configPath report program before after events client built execution dropped remaining selected} →
+      ProgressOf.BatchEvidence settings program (H.L.Locked.path held) configPath events remaining selected →
+      ObservedRun (H.ran settings held configPath report
+        (H.completed program before after events client report built execution dropped)) remaining selected
 
   observedEvidence : ∀ {effect reply} (receipt : H.Receipt effect reply) {remaining selected} →
     ObservedRun receipt remaining selected → All Confirmed selected
-  observedEvidence (H.ran settings held configPath report
-    (H.completed program before after events client .report built execution dropped)) seen =
+  observedEvidence receipt (completedBatch {settings = settings} {held = held} {configPath = configPath} {program = program} seen) =
     ProgressOf.evidence settings program (H.L.Locked.path held) configPath seen
-  observedEvidence (H.configuration _ _ _) ()
-  observedEvidence (H.path _ _ _) ()
-  observedEvidence (H.locked _ _ _ _) ()
-  observedEvidence (H.unlocked _ _ _) ()
-  observedEvidence (H.ran _ _ _ _ (H.setupFailure _ _ _ _ _ _)) ()
-  observedEvidence (H.observed _) ()
-  observedEvidence (H.recorded _ _ _ _) ()
-  observedEvidence (H.written _ _ _ _) ()
-  observedEvidence (H.printed _) ()
-  observedEvidence (H.diagnostic _) ()
 
   ContainsBatch : ∀ {A script events result} → H.Runs {A} script events result →
     List Observation.Snapshot → List Observation.Snapshot → Set
