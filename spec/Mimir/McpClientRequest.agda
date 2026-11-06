@@ -77,6 +77,14 @@ module Pending (expected : ℕ) where
       (reply : Reply effect) → Runs (continuation reply) events outcome →
       Runs state ((effect , reply) ∷ events) outcome
 
+  -- Cancellation retains a real unfinished request cursor, including a send
+  -- that may already have reached the service. It invents no reply or rollback.
+  data Prefix : State → List E.Event → State → Set where
+    stopped : ∀ state → Prefix state [] state
+    replied : ∀ {state effect continuation events after} → next state ≡ external effect continuation →
+      (reply : Reply effect) → Prefix (continuation reply) events after →
+      Prefix state ((effect , reply) ∷ events) after
+
   start : Text → V.Value → State
   start = sending
 

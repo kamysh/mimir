@@ -47,6 +47,9 @@ module With (Path Handle NativeError : Set) where
     removeFile : Path → Operation
     -- File::drop ignores the close result. It does not imply a successful sync.
     close : Handle → Operation
+    -- Join this already-started job; never issue its operation again. Return
+    -- means the job has settled, even when its result cannot be recovered.
+    awaitExisting : ℕ → Operation → Operation
 
   Reply : Operation → Set
   Reply (pathExists _) = Bool
@@ -64,6 +67,7 @@ module With (Path Handle NativeError : Set) where
   Reply (rename _ _) = IO ⊤
   Reply (removeFile _) = IO ⊤
   Reply (close _) = ⊤
+  Reply (awaitExisting _ operation) = IO (Reply operation)
 
   open E.Protocol Operation Reply public
 

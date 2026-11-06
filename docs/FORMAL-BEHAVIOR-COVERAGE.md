@@ -4,6 +4,9 @@ Current scope: **Mimir application behavior, with standard libraries supplied ex
 The [value audit](FORMAL-VALUE-AUDIT.md) records the removal of library
 implementation proofs and unused support. The verification dates and module
 counts in the historical sections below describe those earlier snapshots.
+The [outside-guarantees guide](FORMAL-EXTERNAL-GUARANTEES.md) identifies the
+accepted database and library premises and the application responsibilities
+that remain with Mimir.
 
 This extends the existing specification for the current Mimir product. It covers public inputs and defaults, validation, output projections, state transitions, partial failures, persistence and background protocols. The specification-only completion receipt remains in FORMAL-BEHAVIOR-VERIFICATION.json. Subsequent Rust alignment is documented in [RUST-CONFORMANCE.md](RUST-CONFORMANCE.md); the checked model must not be described as a verified installed binary.
 
@@ -15,6 +18,41 @@ The inventory contains **34 MCP tools, 30 CLI leaf commands, seven lifecycle gro
 
 Protocols distinguish application decisions from external observations. Database, filesystem, network and subprocess replies retain failure and uncertain outcomes. Their concrete application meanings are supplied by the storage, transaction, publication, codec and lifecycle modules listed below; they are not unrestricted successful application callbacks. A `Runs` control transcript alone is not a Rust conformance proof or proof that real I/O happened.
 
+## Stored belief evidence
+
+[EvidenceValidity](../spec/Mimir/EvidenceValidity.agda) defines valid stored
+beliefs. Both current evidence counts and the original prior counts must be
+finite and nonnegative, and each pair must have a finite total. Displayed
+probability and confidence must stay between zero and one. Empty evidence is
+allowed: its probability is one half and its confidence is zero. A normal
+displayed probability cannot make negative or overflowing counts valid.
+
+[StoreRows](../spec/Mimir/StoreRows.agda) proves that every successful belief
+read satisfies these rules. Only absent legacy evidence fields use the
+documented fallback: missing original counts come from the stored probability
+and confidence; missing current counts use those original counts. A supplied
+malformed, negative, infinite or NaN count is refused. A pair whose addition
+overflows is also refused. This specifies refusal, not repair of stored data.
+
+[PosteriorComputation](../spec/Mimir/PosteriorComputation.agda) checks inputs,
+each calculated update before change detection, and the final state. Numeric
+failure is distinct from an empty successful update. Decay checks its result
+before deciding whether the change is large enough to save. The propagation
+and review paths refuse numeric failures instead of reporting success.
+
+[LearningRecompute](../spec/Mimir/LearningRecompute.agda) proves that applying
+valid updates preserves valid beliefs and retains every original prior count.
+[StorageSemantics](../spec/Mimir/StorageSemantics.agda) requires valid evidence
+for inserted beliefs and posterior writes. Its preservation laws cover commit,
+abort and either possible outcome after a lost acknowledgement. These laws
+assume the unchanged starting beliefs were valid; they do not claim that an
+update repairs unrelated damaged records.
+
+Arithmetic and parsing remain supplied library operations. These are checks
+and general laws about Mimir's accepted values and updates, not proofs of
+floating-point arithmetic or a parser implementation. The change is confined
+to the specification; it does not certify or change the installed application.
+
 ## Behavioral areas
 
 | Area | Detailed behavior |
@@ -24,7 +62,7 @@ Protocols distinguish application decisions from external observations. Database
 | Graph and inference | Record defaults and legacy decoding, inserts and edge effects, deletion cleanup, complete dependency closure, fixed priors, seed clamping, 50-iteration exit, operation order, memory-specific decay, expiry and causal intervention. |
 | Retrieval | Project/global filtering, working-memory exclusion, lexical tokens, physical vector selection, weighted binary32 RRF, type preference, deterministic ordering, zero/nonzero limits, grounding and evidence joins. |
 | Documents and embeddings | Markdown chunk/parent construction, path reads, configured remote/local backend lifecycle, cache/download/load failures, batch cardinality/index/dimension association, paired publication, query parent context and automatic grounding. |
-| Judge | Configuration, one owned MCP client, handshake/catalog/capabilities, shared ID/deadline including overflow, pending/deferred selection, scoped tools, API/subprocess model exchanges, budgets, trace barriers, reread confirmation, durable finalization, cleanup, watch/backoff and stop at the wait point. |
+| Judge | Configuration, one owned MCP client, handshake/catalog/capabilities, shared ID/deadline including overflow, pending/deferred selection, scoped tools, API/subprocess model exchanges, budgets, trace barriers, reread confirmation, durable finalization, cleanup, watch/backoff and stop at the wait point. [Local calendar statistics](FORMAL-LOCAL-CALENDAR.md) connect one time sample, displayed dates and query windows. |
 | Notifications | Independent notifier API, admission, exclusive outbox lock, incident/recovery reconciliation, reservations, retries and delivery uncertainty, bounded durable files, exact record decoding, SMTP, OAuth identity/cache/refresh ordering, read-only digest snapshot and cursor advancement. |
 | Startup and migrations | Core operation without judge/model settings, source/override precedence, credential/TLS selection, all ten DDL/data bodies, historical item ownership preservation, database-assigned item IDs, local-key constraints, migration dependencies, history/checksum/locking and transaction outcomes. |
 
@@ -63,7 +101,7 @@ Every operation below also uses the shared input/dispatch/output/MCP composition
 | `lesson_assessment_history` | [LearningAssessmentQueries](../spec/Mimir/LearningAssessmentQueries.agda), [AssessmentScores](../spec/Mimir/AssessmentScores.agda), [AssessmentSelection](../spec/Mimir/AssessmentSelection.agda), [AssessmentHistory](../spec/Mimir/AssessmentHistory.agda), [LearningQueryProtocol](../spec/Mimir/LearningQueryProtocol.agda), [LearningQueryBinding](../spec/Mimir/LearningQueryBinding.agda) |
 | `explain_belief` | [LearningQueryProtocol](../spec/Mimir/LearningQueryProtocol.agda), [LearningStore](../spec/Mimir/LearningStore.agda), [IndependentProvenance](../spec/Mimir/IndependentProvenance.agda), [CandidateRegistry](../spec/Mimir/CandidateRegistry.agda), [LearningQueryBinding](../spec/Mimir/LearningQueryBinding.agda) |
 | `record_experience` | [LearningOperations](../spec/Mimir/LearningOperations.agda), [LearningPublication](../spec/Mimir/LearningPublication.agda), [LearningRevision](../spec/Mimir/LearningRevision.agda), [LearningHistory](../spec/Mimir/LearningHistory.agda), [LearningTransaction](../spec/Mimir/LearningTransaction.agda), [LearningTransactionReceipt](../spec/Mimir/LearningTransactionReceipt.agda), [LearningQueryProtocol](../spec/Mimir/LearningQueryProtocol.agda), [LearningHistoryWire](../spec/Mimir/LearningHistoryWire.agda), [LearningQueryBinding](../spec/Mimir/LearningQueryBinding.agda) |
-| `pending_experiences` | [PendingSelection](../spec/Mimir/PendingSelection.agda), [LearningQueryProtocol](../spec/Mimir/LearningQueryProtocol.agda), [LearningHistoryWire](../spec/Mimir/LearningHistoryWire.agda), [LearningQueryBinding](../spec/Mimir/LearningQueryBinding.agda) |
+| `pending_experiences` | [PendingSelection](../spec/Mimir/PendingSelection.agda), [LearningQueryProtocol](../spec/Mimir/LearningQueryProtocol.agda), [LearningHistoryWire](../spec/Mimir/LearningHistoryWire.agda), [LearningQueryBinding](../spec/Mimir/LearningQueryBinding.agda), [ExperiencePending](../spec/Mimir/ExperiencePending.agda), [JudgeSelection](../spec/Mimir/JudgeSelection.agda), [pending-batch guarantee](FORMAL-PENDING-BATCHES.md) |
 | `review_experience` | [LearningOperations](../spec/Mimir/LearningOperations.agda), [ReviewNumericalPublication](../spec/Mimir/ReviewNumericalPublication.agda), [ReviewPreparationPublication](../spec/Mimir/ReviewPreparationPublication.agda), [LearningTransaction](../spec/Mimir/LearningTransaction.agda), [LearningTransactionReceipt](../spec/Mimir/LearningTransactionReceipt.agda), [LearningQueryProtocol](../spec/Mimir/LearningQueryProtocol.agda), [LearningQueryBinding](../spec/Mimir/LearningQueryBinding.agda) |
 | `get_experience` | [LearningOperations](../spec/Mimir/LearningOperations.agda), [LearningPublication](../spec/Mimir/LearningPublication.agda), [LearningRevision](../spec/Mimir/LearningRevision.agda), [LearningHistory](../spec/Mimir/LearningHistory.agda), [LearningTransaction](../spec/Mimir/LearningTransaction.agda), [LearningTransactionReceipt](../spec/Mimir/LearningTransactionReceipt.agda), [LearningQueryProtocol](../spec/Mimir/LearningQueryProtocol.agda), [LearningHistoryWire](../spec/Mimir/LearningHistoryWire.agda), [LearningQueryBinding](../spec/Mimir/LearningQueryBinding.agda) |
 | `experience_history` | [LearningOperations](../spec/Mimir/LearningOperations.agda), [LearningPublication](../spec/Mimir/LearningPublication.agda), [LearningRevision](../spec/Mimir/LearningRevision.agda), [LearningHistory](../spec/Mimir/LearningHistory.agda), [LearningTransaction](../spec/Mimir/LearningTransaction.agda), [LearningTransactionReceipt](../spec/Mimir/LearningTransactionReceipt.agda), [LearningQueryProtocol](../spec/Mimir/LearningQueryProtocol.agda), [LearningHistoryWire](../spec/Mimir/LearningHistoryWire.agda), [LearningQueryBinding](../spec/Mimir/LearningQueryBinding.agda) |
@@ -96,8 +134,8 @@ Every operation below also uses the shared input/dispatch/output/MCP composition
 | `hook stop` | [HookProtocol](../spec/Mimir/HookProtocol.agda), [CLIServiceBinding](../spec/Mimir/CLIServiceBinding.agda) |
 | `hook set-project` | [HookProtocol](../spec/Mimir/HookProtocol.agda), [CLIServiceBinding](../spec/Mimir/CLIServiceBinding.agda) |
 | `judge check-config` | [JudgeHostProtocol](../spec/Mimir/JudgeHostProtocol.agda), [JudgeConfigurationComposition](../spec/Mimir/JudgeConfigurationComposition.agda) |
-| `judge run` | [JudgeHostProtocol](../spec/Mimir/JudgeHostProtocol.agda), [JudgeWorkflowComposition](../spec/Mimir/JudgeWorkflowComposition.agda), [JudgeBackendComposition](../spec/Mimir/JudgeBackendComposition.agda), [JudgeFinalizationComposition](../spec/Mimir/JudgeFinalizationComposition.agda) |
-| `judge watch` | [JudgeHostProtocol](../spec/Mimir/JudgeHostProtocol.agda), [JudgeDigestComposition](../spec/Mimir/JudgeDigestComposition.agda), [JudgeDigestSnapshot](../spec/Mimir/JudgeDigestSnapshot.agda), [NotificationComposition](../spec/Mimir/NotificationComposition.agda) |
+| `judge run` | [JudgeHostProtocol](../spec/Mimir/JudgeHostProtocol.agda), [JudgeWorkflowComposition](../spec/Mimir/JudgeWorkflowComposition.agda), [JudgeBackendComposition](../spec/Mimir/JudgeBackendComposition.agda), [JudgeFinalizationComposition](../spec/Mimir/JudgeFinalizationComposition.agda), [JudgeCommandExecution](../spec/Mimir/JudgeCommandExecution.agda), [JudgeSignalBinding](../spec/Mimir/JudgeSignalBinding.agda), [JudgeOwnedWork](../spec/Mimir/JudgeOwnedWork.agda), [stop and cleanup rules](FORMAL-JUDGE-STOP.md) |
+| `judge watch` | [JudgeHostProtocol](../spec/Mimir/JudgeHostProtocol.agda), [JudgeDigestComposition](../spec/Mimir/JudgeDigestComposition.agda), [JudgeDigestSnapshot](../spec/Mimir/JudgeDigestSnapshot.agda), [NotificationComposition](../spec/Mimir/NotificationComposition.agda), [JudgeCommandExecution](../spec/Mimir/JudgeCommandExecution.agda), [JudgeSignalBinding](../spec/Mimir/JudgeSignalBinding.agda), [JudgeOwnedWork](../spec/Mimir/JudgeOwnedWork.agda), [stop and cleanup rules](FORMAL-JUDGE-STOP.md) |
 | `judge status` | [JudgeStatusProtocol](../spec/Mimir/JudgeStatusProtocol.agda), [JudgeStateOperations](../spec/Mimir/JudgeStateOperations.agda) |
 | `judge diagnostics` | [JudgeStatusProtocol](../spec/Mimir/JudgeStatusProtocol.agda), [JudgeStateOperations](../spec/Mimir/JudgeStateOperations.agda) |
 
@@ -118,10 +156,10 @@ Every operation below also uses the shared input/dispatch/output/MCP composition
 | MCP startup and request loop | [McpServiceProcess](../spec/Mimir/McpServiceProcess.agda), [McpRuntimeComposition](../spec/Mimir/McpRuntimeComposition.agda), [McpApplicationComposition](../spec/Mimir/McpApplicationComposition.agda), [McpToolExecution](../spec/Mimir/McpToolExecution.agda), [PublicRequest](../spec/Mimir/PublicRequest.agda), [ApplicationProtocol](../spec/Mimir/ApplicationProtocol.agda), [ApplicationOutput](../spec/Mimir/ApplicationOutput.agda), [PublicEncoding](../spec/Mimir/PublicEncoding.agda) |
 | Configuration, connection and credentials | [ConfigurationProtocol](../spec/Mimir/ConfigurationProtocol.agda), [ConfigurationSchema](../spec/Mimir/ConfigurationSchema.agda), [ConfigurationValues](../spec/Mimir/ConfigurationValues.agda), [ConnectionProtocol](../spec/Mimir/ConnectionProtocol.agda), [Password](../spec/Mimir/Password.agda), [TLS](../spec/Mimir/TLS.agda), [ServiceStartup](../spec/Mimir/ServiceStartup.agda), [ServiceConnection](../spec/Mimir/ServiceConnection.agda), [CoreLibrary](../spec/Mimir/CoreLibrary.agda) |
 | Database bootstrap and ten schema migrations | [MigrationSchema](../spec/Mimir/MigrationSchema.agda), [MigrationScriptBinding](../spec/Mimir/MigrationScriptBinding.agda), [ItemOwnerBackfill](../spec/Mimir/ItemOwnerBackfill.agda), [MigrationRuntime](../spec/Mimir/MigrationRuntime.agda), [MigrationComposition](../spec/Mimir/MigrationComposition.agda), [MigrationHistory](../spec/Mimir/MigrationHistory.agda) |
-| Judge host, provider and subprocess lifecycle | [JudgeHostProtocol](../spec/Mimir/JudgeHostProtocol.agda), [JudgeWorkflowComposition](../spec/Mimir/JudgeWorkflowComposition.agda), [JudgeBackendComposition](../spec/Mimir/JudgeBackendComposition.agda), [JudgeClientStartup](../spec/Mimir/JudgeClientStartup.agda), [JudgeMcpLifecycle](../spec/Mimir/JudgeMcpLifecycle.agda), [JudgeAPIAdapter](../spec/Mimir/JudgeAPIAdapter.agda), [JudgeHarnessAdapter](../spec/Mimir/JudgeHarnessAdapter.agda), [JudgePersistenceComposition](../spec/Mimir/JudgePersistenceComposition.agda), [JudgeFinalizationComposition](../spec/Mimir/JudgeFinalizationComposition.agda) |
+| Judge host, provider and subprocess lifecycle | [JudgeHostProtocol](../spec/Mimir/JudgeHostProtocol.agda), [JudgeWorkflowComposition](../spec/Mimir/JudgeWorkflowComposition.agda), [JudgeBackendComposition](../spec/Mimir/JudgeBackendComposition.agda), [JudgeClientStartup](../spec/Mimir/JudgeClientStartup.agda), [JudgeMcpLifecycle](../spec/Mimir/JudgeMcpLifecycle.agda), [JudgeAPIAdapter](../spec/Mimir/JudgeAPIAdapter.agda), [JudgeHarnessAdapter](../spec/Mimir/JudgeHarnessAdapter.agda), [JudgePersistenceComposition](../spec/Mimir/JudgePersistenceComposition.agda), [JudgeFinalizationComposition](../spec/Mimir/JudgeFinalizationComposition.agda), [OperationalLogSteps](../spec/Mimir/OperationalLogSteps.agda), [OperationalLogProtocol](../spec/Mimir/OperationalLogProtocol.agda), [OperationalLifecycle](../spec/Mimir/OperationalLifecycle.agda), [log-write and startup guarantees](FORMAL-OPERATIONAL-LOGS.md) |
 | Notification, digest and OAuth lifecycle | [JudgeDigestComposition](../spec/Mimir/JudgeDigestComposition.agda), [JudgeDigestSnapshot](../spec/Mimir/JudgeDigestSnapshot.agda), [NotificationComposition](../spec/Mimir/NotificationComposition.agda), [NotificationRuntime](../spec/Mimir/NotificationRuntime.agda), [NotificationFileBinding](../spec/Mimir/NotificationFileBinding.agda), [NotificationCodec](../spec/Mimir/NotificationCodec.agda), [NotificationWire](../spec/Mimir/NotificationWire.agda), [NotificationMail](../spec/Mimir/NotificationMail.agda), [OAuthComposition](../spec/Mimir/OAuthComposition.agda), [OAuthResponseBinding](../spec/Mimir/OAuthResponseBinding.agda), [SMTPProtocol](../spec/Mimir/SMTPProtocol.agda) |
 | Embedding backend and automatic grounding | [EmbeddingService](../spec/Mimir/EmbeddingService.agda), [EmbeddingLifecycle](../spec/Mimir/EmbeddingLifecycle.agda), [EmbeddingBackend](../spec/Mimir/EmbeddingBackend.agda), [EmbeddingBatch](../spec/Mimir/EmbeddingBatch.agda), [BeliefEmbeddingStorage](../spec/Mimir/BeliefEmbeddingStorage.agda), [GroundingStorageBinding](../spec/Mimir/GroundingStorageBinding.agda), [DocumentLoading](../spec/Mimir/DocumentLoading.agda) |
-| Experience/review concurrency and recovery | [LearningTransaction](../spec/Mimir/LearningTransaction.agda), [LearningTransactionReceipt](../spec/Mimir/LearningTransactionReceipt.agda), [LearningOperations](../spec/Mimir/LearningOperations.agda), [LearningPublication](../spec/Mimir/LearningPublication.agda), [ReviewNumericalPublication](../spec/Mimir/ReviewNumericalPublication.agda), [ReviewPreparationPublication](../spec/Mimir/ReviewPreparationPublication.agda), [DatabaseTransaction](../spec/Mimir/DatabaseTransaction.agda), [DatabaseAdvisoryLock](../spec/Mimir/DatabaseAdvisoryLock.agda), [DatabaseReadCommitted](../spec/Mimir/DatabaseReadCommitted.agda), [LearningQueryBinding](../spec/Mimir/LearningQueryBinding.agda) |
+| Experience/review concurrency and recovery | [LearningTransaction](../spec/Mimir/LearningTransaction.agda), [LearningTransactionReceipt](../spec/Mimir/LearningTransactionReceipt.agda), [LearningOperations](../spec/Mimir/LearningOperations.agda), [LearningPublication](../spec/Mimir/LearningPublication.agda), [ReviewNumericalPublication](../spec/Mimir/ReviewNumericalPublication.agda), [ReviewPreparationPublication](../spec/Mimir/ReviewPreparationPublication.agda), [DatabaseTransaction](../spec/Mimir/DatabaseTransaction.agda), [DatabaseAdvisoryLock](../spec/Mimir/DatabaseAdvisoryLock.agda), [DatabaseReadCommitted](../spec/Mimir/DatabaseReadCommitted.agda), [LearningQueryBinding](../spec/Mimir/LearningQueryBinding.agda), [LearningTransactionDatabase](../spec/Mimir/LearningTransactionDatabase.agda), [NativeLockOrder](../spec/Mimir/NativeLockOrder.agda), [ReviewCompetition](../spec/Mimir/ReviewCompetition.agda), [competing review guarantees](FORMAL-REVIEW-COMPETITION.md) |
 
 ## Dependency and proof boundaries
 
@@ -157,6 +195,32 @@ behavior. `MigrationSchema` connects those rules to the migration's data change;
 `MigrationScriptBinding` retains the exact loaded SQL body. Historical SQL
 observation order is explicit: when an unreserved ID has conflicting old
 declarations, the first observed declaration is retained.
+
+### Incoming items and saved IDs
+
+`LearningInput` separates an incoming item, whose ID may be absent, from a
+saved item with its assigned ID. `LearningWire` uses these incoming types for
+record/review requests and keeps IDs required when reading stored results.
+Both the saved payload and its retry comparison retain the optional local key.
+
+`LearningNormalization` connects the request to the saved key and ownership
+tables. For example, a new item named `estimate-a` can omit its ID. The normalizer
+uses the held learning transaction to ask PostgreSQL for the ID, retains that
+returned ID in the item and key table, then resolves assessment `item_keys`
+before the existing whole-payload validation. A supplied ID can reuse an
+existing reservation; it cannot create a new item. Unknown names, a mismatched
+ID/key or changed provenance refuse the operation. An acknowledged transaction
+abort preserves the old keys and owners under the existing database contract;
+an uncertain commit is not reported as a successful write.
+Project deletion clears the keys of the deleted experiences while preserving
+every unrelated experience's lookup.
+
+`LearningOperations.Protocol.start` now includes that allocation phase in the
+actual public operation. Its general `publicSuccessRequiresCommit` and scope
+laws require an observed commit and the same held transaction. The named-request
+retry laws derive each item from its saved key/owner observations, preserve IDs
+and resolve to replay without another allocation or data write. PostgreSQL's
+UUID generation remains an external operation; no uniqueness proof is added.
 
 ## Operational repair (2026-10-31)
 

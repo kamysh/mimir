@@ -283,11 +283,15 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     post : Text → List (Text × Text) → V.Value → Effect
     modelMetadata : Effect
     readChunk : ℕ → Effect
+    dropPendingIO : Effect -- stop polling the owned library request future
+    dropBody : ℕ → Effect -- release the currently owned response body
   Reply : Effect → Set
   Reply (headerValid _) = Bool
   Reply (post url headers body) = TransportFailure ⊎ (ℕ × ℕ)
   Reply modelMetadata = Revision.Error ⊎ V.Value
   Reply (readChunk handle) = Body.Input
+  Reply dropPendingIO = ⊤
+  Reply (dropBody handle) = ⊤
   module P = Effects.Protocol Effect Reply
   open P using (Script; ask; done) renaming (_>>=_ to _then_)
 
@@ -396,6 +400,11 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     empty : ∀ {state} → Trace state [] state
     step : ∀ {before middle after event events} → Transition before event middle →
       Trace middle events after → Trace before (event ∷ events) after
+
+  cancel : State → Script ⊤
+  cancel (receiving state handle status body) = ask (dropBody handle) (λ _ → done tt)
+  cancel (executing state pending) = ask dropPendingIO (λ _ → done tt)
+  cancel (finished result) = done tt
 
   yieldedIdentity : ∀ state current rest → Adapter.pending state ≡ current ∷ rest →
     yield state ≡ finished (outcome (record state { pending = rest ; awaiting = just (Call.identity current) })

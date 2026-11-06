@@ -22,6 +22,7 @@ import Mimir.PublicInput as Input
 import Mimir.PublicRequest as Public
 import Mimir.PublicEncoding as Encoding
 import Mimir.LearningWire as Wire
+import Mimir.LearningInput as LearningInput
 import Mimir.LearningStateWire as StateWire
 import Mimir.ReviewObservation as Observation
 import Mimir.ExperienceSchema as Experience
@@ -115,22 +116,19 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
     (inj₁ error) → done (inj₁ error)
     (inj₂ value) → done (inj₂ (visible project value))
 
-  reviewed : V.Value → Review.Review → Script (Failure ⊎ V.Value)
-  reviewed args requestedReview with does (Review.Review.experienceID requestedReview ≟ selectedID) ∧
-    does (Review.Review.experienceRevision requestedReview Integer.≟ Observation.Snapshot.revision selected)
+  reviewed : V.Value → LearningInput.Review → Script (Failure ⊎ V.Value)
+  reviewed args requestedReview with does (LearningInput.Review.experienceID requestedReview ≟ selectedID) ∧
+    does (LearningInput.Review.experienceRevision requestedReview Integer.≟ Observation.Snapshot.revision selected)
   ... | false = done (inj₁ (rejected (toList "review is outside pinned revision")))
-  ... | true with Review.validateReview owned
-    where owned = record requestedReview { reviewer = toList "mimir-judge" }
-  ...   | Validation.rejected fault proof = done (inj₁ (invalidReviewSchema fault))
-  ...   | Validation.accepted proof = done (inj₂ (put "review" (Encode.review owned) args))
-    where owned = record requestedReview { reviewer = toList "mimir-judge" }
+  ... | true = done (inj₂ (put "review"
+    (put "reviewer" (V.string (toList "mimir-judge")) (get "review" args)) args))
 
   reviewArguments : V.Value → Script (Failure ⊎ V.Value)
   reviewArguments args with Input.i64 (get "expected_review_revision" args)
   ... | inj₁ _ = done (inj₁ (rejected (toList "stale review token")))
   ... | inj₂ token with does (token Integer.≟ Observation.Snapshot.reviewRevision selected)
   ...   | false = done (inj₁ (rejected (toList "stale review token")))
-  ...   | true with W.review (get "review" args)
+  ...   | true with W.reviewInput (get "review" args)
   ...     | inj₁ error = done (inj₁ (malformedReview (get "review" args) error))
   ...     | inj₂ requestedReview = reviewed args requestedReview
 

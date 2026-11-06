@@ -25,6 +25,7 @@ import Mimir.GraphNumerics as N
 import Mimir.LearningRecompute as L
 import Mimir.ReviewSchema as Reviews
 import Mimir.DatabaseTransaction as DB
+import Mimir.EvidenceValidity as Evidence
 
 record Incoming : Set where
   constructor incoming
@@ -99,11 +100,14 @@ prepare : List Reviews.Feedback → List (ℕ × Float) → List G.BeliefValues 
 prepare feedback ground [] = just []
 prepare feedback ground (b ∷ bs) with L.feedbackMass (G.BeliefValues.identity b) feedback (P.beta 0.0 0.0)
   | prepare feedback ground bs
-... | just mass | just rest = just (P.node (G.BeliefValues.identity b)
+... | nothing | _ = nothing
+... | just mass | nothing = nothing
+... | just mass | just rest with Evidence.validBelief b
+...   | false = nothing
+...   | true = just (P.node (G.BeliefValues.identity b)
   (P.beta ((G.BeliefValues.alpha0 b + N.massOf (G.BeliefValues.identity b) ground) + P.Beta.alpha mass)
     (G.BeliefValues.beta0 b + P.Beta.negative mass))
   (P.beta (G.BeliefValues.alpha b) (G.BeliefValues.beta b)) ∷ rest)
-... | _ | _ = nothing
 
 persist : P.State → Result → Script Result
 persist writes success with L.validWrites writes
@@ -115,8 +119,11 @@ persist writes success with L.validWrites writes
   ; (inj₂ DB.acknowledgementLost) → done publicationUncertain })
 
 finishPropagation : Bool → P.Result → Script Result
-finishPropagation true outcome = done (projected (N.project (P.Result.writes outcome)) (P.Result.iterationLimitReached outcome))
-finishPropagation false outcome = persist (P.Result.writes outcome)
+finishPropagation causal outcome with P.Result.numericFailure outcome
+... | true = done invalidNumericWrite
+... | false with causal
+...   | true = done (projected (N.project (P.Result.writes outcome)) (P.Result.iterationLimitReached outcome))
+...   | false = persist (P.Result.writes outcome)
   (propagated (N.project (P.Result.writes outcome)) (P.Result.iterationLimitReached outcome))
 
 calculate : Bool → ℕ → Float → List G.BeliefValues → List Reviews.Review →

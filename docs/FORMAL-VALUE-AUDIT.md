@@ -65,6 +65,8 @@ A successful typed read retains the equation for Mimir's field decoder.
 The three previously approved PostgreSQL assumptions remain outside the safe
 root. They state external database guarantees; they neither implement
 PostgreSQL nor prove Mimir's SQL or lock participation.
+The [outside-guarantees guide](FORMAL-EXTERNAL-GUARANTEES.md) records their
+domains, the other accepted library guarantees, and Mimir's remaining duties.
 
 ## Verification boundary
 

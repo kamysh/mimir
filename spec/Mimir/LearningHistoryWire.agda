@@ -21,6 +21,8 @@ record Head : Set where
 
 record Row : Set where
   constructor row
+  -- createdAt is UTC nanoseconds, shared with public timestamp formatting
+  -- and digest count boundaries; revisions remain ordinary integers.
   field experience : ℕ; revision sourceRevision createdAt : ℤ; payload : V.Value
 
 record Entry : Set where

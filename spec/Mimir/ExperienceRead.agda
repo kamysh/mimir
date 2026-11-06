@@ -12,7 +12,7 @@ open import Data.Nat using (ℕ; _≟_; _≤?_; _<?_)
 open import Data.Integer using (ℤ)
 import Data.Integer.Properties as Integer
 open import Relation.Nullary using (yes; no; does)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym)
 open import Mimir.Text using (Text; member)
 open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.ExperienceSchema using (Experience)
@@ -33,6 +33,14 @@ get id [] = nothing
 get id (r ∷ rs) with id ≟ identity r
 ... | yes same = just (storedSnapshot r)
 ... | no different = get id rs
+
+lookupIdentity : ∀ id rows actual → get id rows ≡ just actual →
+  Experience.identity (Observation.Snapshot.experience actual) ≡ id
+lookupIdentity id [] actual ()
+lookupIdentity id (r ∷ rs) actual found with id ≟ identity r
+... | yes same with found
+...   | refl = sym same
+lookupIdentity id (r ∷ rs) actual found | no different = lookupIdentity id rs actual found
 
 scopeMatches : Maybe Text → Row → Bool
 scopeMatches nothing r = true
