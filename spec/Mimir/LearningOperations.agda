@@ -8,7 +8,7 @@ open import Data.Bool using (true; false; _∧_)
 open import Data.List using (List; []; _∷_; map; length)
 open import Data.List.Relation.Unary.Any using (Any; here; there)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≤?_)
+open import Data.Nat using (ℕ)
 open import Data.Integer using (ℤ; +_)
 open import Data.Product using (Σ; _×_; _,_)
 open import Data.Sum using (inj₁; inj₂)
@@ -51,7 +51,6 @@ data Failure : Set where
   reviewFailure : Reviewing.Failure → Failure
   externalFailure : Text → Failure
   allocationFailure : Validation.Fault → Failure
-  oversizedPayload : Failure
 
 expectedValid : ℤ → Data.Bool.Bool
 expectedValid expected = does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))
@@ -153,7 +152,8 @@ module Protocol (database : ℕ) (request : Request)
     transacted : T.Outcome → Outcome
 
   -- Standard serialization is external. Its failure is reported before any
-  -- transaction; allocation and canonical validation remain in Plan.start.
+  -- transaction. Successful encoding imposes no payload-size limit;
+  -- allocation and canonical validation remain in Plan.start.
   data Serialization : Set where
     encoded : List Byte → Serialization
     serializationFailed : Text → Serialization
@@ -224,6 +224,24 @@ module Protocol (database : ℕ) (request : Request)
   publicSuccessRequiresCommit events value (E.replied _ _ reply execution)
     with serializationRequiresCommit reply _ value execution
   ... | tx , observed = tx , there observed
+
+  -- For every pair of successful encodings, including arbitrary lengths,
+  -- the same transaction requests, replies and outcome remain possible.
+  encodedLengthCannotChangeExecution : ∀ first second events outcome →
+    E.Runs (afterSerialization (encoded first)) events outcome →
+    E.Runs (afterSerialization (encoded second)) events outcome
+  encodedLengthCannotChangeExecution first second events outcome execution = execution
+
+  encodingFailureStartsNoTransaction : ∀ message events outcome →
+    E.Runs (afterSerialization (serializationFailed message)) events outcome →
+    events ≡ [] × outcome ≡ invalidRequest (externalFailure message)
+  encodingFailureStartsNoTransaction message events outcome (E.returned _) = refl , refl
+
+  invalidAdmissionStartsNoTransaction : ∀ bytes failure events outcome → admit request ≡ just failure →
+    E.Runs (afterSerialization (encoded bytes)) events outcome →
+    events ≡ [] × outcome ≡ invalidRequest failure
+  invalidAdmissionStartsNoTransaction bytes failure events outcome rejected execution rewrite rejected =
+    E.completedCannotProduceEffects execution
 
   -- CommitEvidence.successRequiresCommit is instantiated with decide request,
   -- so it applies to these actual plans rather than an arbitrary application
