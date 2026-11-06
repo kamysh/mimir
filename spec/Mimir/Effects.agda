@@ -52,6 +52,11 @@ module Protocol (Effect : Set) (Reply : Effect → Set) where
       Prefix (continuation reply) events residual →
       Prefix (ask effect continuation) ((effect , reply) ∷ events) residual
 
+  prefixAppend : ∀ {A} {first middle last : Script A} {before after} →
+    Prefix first before middle → Prefix middle after last → Prefix first (before ++ after) last
+  prefixAppend (stopped _) second = second
+  prefixAppend (replied effect next reply rest) second = replied effect next reply (prefixAppend rest second)
+
   module Counting (cost : Effect → ℕ) where
     count : List Event → ℕ
     count [] = 0

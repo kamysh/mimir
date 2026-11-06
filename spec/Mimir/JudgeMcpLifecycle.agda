@@ -52,10 +52,13 @@ Reply (killGroup _) = Text ⊎ ⊤
 Reply (captureStderr _) = ⊤
 open Effects.Protocol Effect Reply public
 
+dropChild : Child → Script ⊤
+dropChild owned = ask (currentChildID owned) λ where
+  nothing → ask (startKill owned) (λ _ → done tt)
+  (just pid) → ask (killGroup pid) (λ _ → ask (startKill owned) (λ _ → done tt))
+
 dropClient : Client → Script ⊤
-dropClient owned = ask (currentChildID (Client.owner owned)) λ where
-  nothing → ask (startKill (Client.owner owned)) (λ _ → done tt)
-  (just pid) → ask (killGroup pid) (λ _ → ask (startKill (Client.owner owned)) (λ _ → done tt))
+dropClient owned = dropChild (Client.owner owned)
 
 -- Before all pipes are installed, the Client destructor does not exist yet;
 -- tokio Child::kill_on_drop still owns and terminates the direct child.
@@ -75,6 +78,31 @@ start : Text → List Text → Path.Path → Script (Text ⊎ Client)
 start program arguments config = ask (spawn (prepare program arguments config)) λ where
   (inj₁ error) → done (inj₁ error)
   (inj₂ owned) → pipes owned
+
+-- Cancellation can precede construction of Client. Derive ownership from
+-- the actual startup prefix rather than inventing a complete client value.
+data Ownership : Set where
+  absent : Ownership
+  installing connected : Child → Ownership
+
+ownerAfter : Ownership → List Event → Ownership
+ownerAfter owner [] = owner
+ownerAfter owner ((spawn request , inj₂ ownedChild) ∷ rest) = ownerAfter (installing ownedChild) rest
+ownerAfter (installing ownedChild) ((captureStderr pipe , tt) ∷ rest) = ownerAfter (connected ownedChild) rest
+ownerAfter owner ((startKill ownedChild , reply) ∷ rest) = ownerAfter absent rest
+ownerAfter owner (_ ∷ rest) = ownerAfter owner rest
+
+cancelOwned : Ownership → Script ⊤
+cancelOwned absent = done tt
+cancelOwned (installing ownedChild) = ask (startKill ownedChild) (λ _ → done tt)
+cancelOwned (connected ownedChild) = dropChild ownedChild
+
+cancelBeforeSpawnHasNoEffects : ∀ events → Runs (cancelOwned absent) events tt → events ≡ []
+cancelBeforeSpawnHasNoEffects .[] (returned tt) = refl
+
+cancelInstallingUsesChildGuard : ∀ ownedChild events → Runs (cancelOwned (installing ownedChild)) events tt →
+  Data.Product.Σ (Reply (startKill ownedChild)) (λ reply → events ≡ (startKill ownedChild , reply) ∷ [])
+cancelInstallingUsesChildGuard ownedChild events (replied _ _ reply (returned tt)) = reply , refl
 
 data StderrState : Set where reading closed : List Byte → StderrState
 data StderrInput : Set where bytes : List Byte → StderrInput; eof failure : StderrInput

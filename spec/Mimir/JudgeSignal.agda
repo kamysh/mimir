@@ -14,35 +14,37 @@ open import Mimir.Text using (Text)
 import Mimir.Effects as Effects
 
 data Signal : Set where interrupt terminate : Signal
-data Race : Set where completed : ℕ → Race; stopped : Signal → Race
+data Race (Work : Set) : Set where
+  completed : ℕ → Race Work
+  stopped : Signal → Work → Race Work
 module For (Work : Set) where
   data Effect : Set where
     installListeners : Effect
     awaitRace dropWork : Work → Effect
   Reply : Effect → Set
   Reply installListeners = Text ⊎ ⊤
-  Reply (awaitRace work) = Race
+  Reply (awaitRace work) = Race Work
   Reply (dropWork work) = ⊤
   open Effects.Protocol Effect Reply public
 
-  afterRace : Work → Race → Script ℕ
-  afterRace work (completed code) = done code
-  afterRace work (stopped signal) = ask (dropWork work) (λ _ → done 0)
+  afterRace : Race Work → Script ℕ
+  afterRace (completed code) = done code
+  afterRace (stopped signal active) = ask (dropWork active) (λ _ → done 0)
 
   afterInstall : Work → Reply installListeners → Script ℕ
   afterInstall work (inj₁ problem) = done 5
-  afterInstall work (inj₂ tt) = ask (awaitRace work) (afterRace work)
+  afterInstall work (inj₂ tt) = ask (awaitRace work) afterRace
 
   run : Work → Script ℕ
   run work = ask installListeners (afterInstall work)
 
   signalDropsActiveWork : ∀ work signal events code →
-    Runs (afterRace work (stopped signal)) events code →
+    Runs (afterRace (stopped signal work)) events code →
     events ≡ (dropWork work , tt) ∷ [] × code ≡ 0
   signalDropsActiveWork work signal ._ .0 (replied _ _ tt (returned .0)) = refl , refl
 
-  normalExitPreserved : ∀ work code → afterRace work (completed code) ≡ done code
-  normalExitPreserved work code = refl
+  normalExitPreserved : ∀ code → afterRace (completed code) ≡ done code
+  normalExitPreserved code = refl
 
   listenerFailureStartsNoWork : ∀ work problem events code →
     Runs (afterInstall work (inj₁ problem)) events code → events ≡ [] × code ≡ 5
