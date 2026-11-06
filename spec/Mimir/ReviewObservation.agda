@@ -4,6 +4,7 @@
 module Mimir.ReviewObservation where
 
 open import Data.Bool using (Bool; true; false)
+open import Data.Empty using (⊥)
 open import Data.Integer using (ℤ; +_; _<_; _≤_)
 import Data.Integer.Properties as Integer
 open import Data.List using (List; []; _∷_; map)
@@ -137,6 +138,10 @@ stillDeferred? d s with Snapshot.revision s Integer.≟ Deferred.revision d |
 ... | yes same | yes unreviewed = yes (same , unreviewed)
 ... | no different | _ = no (λ { (same , _) → different same })
 ... | _ | no reviewed = no (λ { (_ , unreviewed) → reviewed unreviewed })
+
+deferredRevisionCannotBeConfirmed : ∀ retained target observed → StillDeferred retained observed → Ack target observed → ⊥
+deferredRevisionCannotBeConfirmed retained target observed (unchanged , unreviewed)
+  (ack (sameIdentity , source , reviewed , newer)) rewrite source | reviewed = Integer.<-irrefl refl unreviewed
 
 InScope : Maybe Text → Snapshot → Set
 InScope nothing s = ⊤
