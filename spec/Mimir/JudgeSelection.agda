@@ -13,6 +13,8 @@ open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤?_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Nullary using (does; yes; no)
+open import Data.Empty using (⊥-elim)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.ExperienceSchema as Experience
@@ -134,3 +136,25 @@ module Select (contract model batchLimit : ℕ) (project : Maybe Text)
 
   -- Model execution is available only for review. Both empty-queue outcomes
   -- finish before trace allocation, backend.next or provider budget spending.
+
+  unchangedPendingRevisionRemainsDeferred : ∀ item remaining retained observed →
+    Observation.SnapshotValid observed → inScope project observed ≡ true → Observation.StillDeferred item observed →
+    afterCurrent item remaining retained (inj₂ (just observed)) ≡ reconcile remaining (retained ++ (item ∷ []))
+  unchangedPendingRevisionRemainsDeferred item remaining retained observed valid scoped deferred
+    with Observation.checkSnapshot observed
+  ... | Validation.rejected fault invalid = ⊥-elim (invalid valid)
+  ... | Validation.accepted checked with Observation.stillDeferred? item observed
+  ...   | yes still rewrite scoped = refl
+  ...   | no impossible = ⊥-elim (impossible deferred)
+
+  changedOrReviewedRevisionIsReleased : ∀ item remaining retained observed →
+    Observation.SnapshotValid observed → (Observation.StillDeferred item observed → Data.Empty.⊥) →
+    afterCurrent item remaining retained (inj₂ (just observed)) ≡ reconcile remaining retained
+  changedOrReviewedRevisionIsReleased item remaining retained observed valid released
+    with Observation.checkSnapshot observed
+  ... | Validation.rejected fault invalid = ⊥-elim (invalid valid)
+  ... | Validation.accepted checked with Observation.stillDeferred? item observed
+  ...   | yes still = ⊥-elim (released still)
+  ...   | no different with inScope project observed
+  ...     | false = refl
+  ...     | true = refl
