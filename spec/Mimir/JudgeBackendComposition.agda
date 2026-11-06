@@ -59,23 +59,17 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   record HarnessInterruption (before : Harness.Adapter) (last : Maybe V.Value) : Set where
     constructor interruptedHarness
     field
-      events : List H.P.Event
-      process : Process.Spawn
-      continuation : H.ProcessReceipt process → H.P.Script H.Result
-      prefix : H.P.Prefix (H.start before last) events (H.P.ask (H.runProcess process) continuation)
-      childEvents : List (Maybe Process.P.Event)
-      childState : Process.State
-      childPrefix : Process.Trace (Process.start process) childEvents childState
-      cleanupEvents : List Process.P.Event
-      cleaned : Process.P.Runs (Process.cancelOwned (Process.ownerAfter nothing childEvents)) cleanupEvents
-        (Process.finished (inj₁ (Process.nativeFailure (toList "cancelled"))))
+      point : H.Checkpoint before last
+      cleanupEvents : List H.P.Event
+      cleaned : H.P.Runs (H.cancelCheckpoint point) cleanupEvents tt
 
-    -- Dropping the pending adapter future also drops RunDir. Removal is
-    -- best effort, but invoking it is mandatory even when process cleanup fails.
+  record APIInterruption (provider : Config.Provider) (before : API.Adapter) (last : Maybe V.Value) : Set where
     field
-      directoryEvents : List H.P.Event
-      directoryDropped : H.P.Runs
-        (H.P.ask (H.removeRun (Process.Spawn.directory process)) (λ _ → H.P.done tt)) directoryEvents tt
+      events : List (Maybe (A.P.Event provider))
+      point : A.State provider
+      prefix : A.Trace provider (A.start provider before last) events point
+      cleanupEvents : List (A.P.Event provider)
+      cleaned : A.P.Runs provider (A.cancel provider point) cleanupEvents tt
 
   data Ordinary : T.Effect → Set where
     clock : Ordinary T.clock
@@ -99,7 +93,11 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     harnessCancelled : ∀ before last (prefix : HarnessInterruption before last) →
       Receipt (harness before) (T.nextModel last)
         (Revision.backendError (Revision.error (toList "cancelled") nothing))
-        (harness (H.observedState before (HarnessInterruption.events prefix)))
+        (harness (H.observedState before (H.checkpointEvents (HarnessInterruption.point prefix))))
+    apiCancelled : ∀ provider before last (prefix : APIInterruption provider before last) →
+      Receipt (api provider before) (T.nextModel last)
+        (Revision.backendError (Revision.error (toList "cancelled") nothing))
+        (api provider (A.currentAdapter provider (APIInterruption.point prefix)))
     unavailableResult : ∀ last → Receipt unavailable (T.nextModel last)
       (Revision.backendError (Revision.error (toList "configured backend adapter is not installed") nothing)) unavailable
     serviceCall : ∀ before id tool args reply → S.Receipt id tool args reply →
@@ -130,6 +128,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   issued (harnessResult _ _ _ _ _) = []
   issued (apiResult _ _ _ _ _ _) = []
   issued (harnessCancelled _ _ _) = []
+  issued (apiCancelled _ _ _ _) = []
   issued (unavailableResult _) = []
   issued (traceRecorded _ _ _ _ _) = []
   issued (ordinary _ _ _ _) = []

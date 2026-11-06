@@ -123,6 +123,11 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
           events : List (Maybe Process.P.Event)
           executed : Process.Trace (Process.start request) events (Process.finished outcome)
 
+  record ProcessCancellation (owner : Maybe ℕ) : Set where
+    field events : List Process.P.Event
+          executed : Process.P.Runs (Process.cancelOwned owner) events
+            (Process.finished (inj₁ (Process.nativeFailure (toList "cancelled"))))
+
   data Effect : Set where
     remember : Adapter → Effect -- synchronous mutation of the adapter fields
     rootExists createRoot700 rootMetadata : Effect
@@ -132,6 +137,11 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
     runProcess : Process.Spawn → Effect
     openAnswerNoFollowCloseExec : Text → Effect
     answerMetadata readAnswerBytes : ℕ → Effect
+    dropPendingIO : Effect -- drop the awaited library future and its owned file/pipe guards
+    cancelProcess : Maybe ℕ → Effect
+    -- Wait for an already-started filesystem call, without issuing it again.
+    -- An unavailable result still acknowledges that the call has settled.
+    awaitFilesystem : ℕ → Effect → Effect
   Reply : Effect → Set
   Reply (remember _) = ⊤
   Reply rootExists = Bool
@@ -145,6 +155,9 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
   Reply (openAnswerNoFollowCloseExec _) = Text ⊎ ℕ
   Reply (answerMetadata _) = Text ⊎ (Bool × ℕ) -- regular file and size
   Reply (readAnswerBytes _) = Text ⊎ List Byte -- take(MAX_ANSWER+1).read_to_end
+  Reply dropPendingIO = ⊤
+  Reply (cancelProcess owner) = ProcessCancellation owner
+  Reply (awaitFilesystem job effect) = Text ⊎ Reply effect
   module P = Effects.Protocol Effect Reply
   open P using (Script; ask; done) renaming (_>>=_ to _then_)
 
@@ -345,6 +358,57 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
   observedState state [] = state
   observedState state ((remember updated , _) ∷ events) = observedState updated events
   observedState state (_ ∷ events) = observedState state events
+
+  -- A checkpoint is backed by the actual adapter prefix. The nested child
+  -- has its own spawn/wait trace while runProcess has not yet returned.
+  data FileJob : Effect → Set where
+    creatingRoot : FileJob createRoot700
+    creatingRun : ∀ path → FileJob (createRun700 path)
+    writingFile : ∀ path bytes → FileJob (writeNew600NoFollowCloseExec path bytes)
+    removingRun : ∀ path → FileJob (removeRun path)
+    openingAnswer : ∀ path → FileJob (openAnswerNoFollowCloseExec path)
+    inspectingAnswer : ∀ handle → FileJob (answerMetadata handle)
+    readingAnswer : ∀ handle → FileJob (readAnswerBytes handle)
+
+  data Checkpoint (before : Adapter) (last : Maybe V.Value) : Set where
+    scriptPoint : ∀ events residual → P.Prefix (start before last) events residual → Checkpoint before last
+    processPoint : ∀ events request continuation →
+      P.Prefix (start before last) events (ask (runProcess request) continuation) →
+      ∀ childEvents childState → Process.Trace (Process.start request) childEvents childState → Checkpoint before last
+    filesystemPoint : ∀ events (job : ℕ) effect continuation → FileJob effect →
+      P.Prefix (start before last) events (ask effect continuation) → Checkpoint before last
+
+  checkpointEvents : ∀ {before last} → Checkpoint before last → List P.Event
+  checkpointEvents (scriptPoint events residual prefix) = events
+  checkpointEvents (processPoint events request continuation prefix childEvents childState childPrefix) = events
+  checkpointEvents (filesystemPoint events job effect continuation kind prefix) = events
+
+  checkpointOwner : ∀ {before last} → Checkpoint before last → Maybe ℕ
+  checkpointOwner (scriptPoint events residual prefix) = nothing
+  checkpointOwner (processPoint events request continuation prefix childEvents childState childPrefix) =
+    Process.ownerAfter nothing childEvents
+  checkpointOwner (filesystemPoint events job effect continuation kind prefix) = nothing
+
+  directoryAfter : Maybe Text → List P.Event → Maybe Text
+  directoryAfter owned [] = owned
+  directoryAfter owned ((createRun700 path , inj₂ tt) ∷ events) = directoryAfter (just path) events
+  directoryAfter owned ((removeRun path , tt) ∷ events) = directoryAfter nothing events
+  directoryAfter owned (_ ∷ events) = directoryAfter owned events
+
+  removeOwnedDirectory : Maybe Text → Script ⊤
+  removeOwnedDirectory nothing = done tt
+  removeOwnedDirectory (just path) = ask (removeRun path) (λ _ → done tt)
+
+  settleCheckpoint : ∀ {before last} → Checkpoint before last → Script (List P.Event)
+  settleCheckpoint (filesystemPoint events job effect continuation kind prefix) = ask (awaitFilesystem job effect) λ where
+    (inj₁ error) → done events
+    (inj₂ reply) → done (events ++ ((effect , reply) ∷ []))
+  settleCheckpoint point = done (checkpointEvents point)
+
+  cancelCheckpoint : ∀ {before last} → Checkpoint before last → Script ⊤
+  cancelCheckpoint point = settleCheckpoint point then λ settled →
+    ask dropPendingIO (λ _ → ask (cancelProcess (checkpointOwner point)) (λ _ →
+      removeOwnedDirectory (directoryAfter nothing settled)))
 
 construct : Config.Llm → Text ⊎ Text
 construct config with Config.Llm.backend config

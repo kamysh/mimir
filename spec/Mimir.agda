@@ -489,3 +489,6 @@ import Mimir.OperationalLifecycle
 import Mimir.OptionalLimit
 
 import Mimir.JudgeSignal
+import Mimir.JudgeOwnedWork
+import Mimir.JudgeSignalBinding
+import Mimir.JudgeCommandExecution
