@@ -11,7 +11,7 @@ open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Integer using (ℤ; +_)
 open import Data.Product using (Σ; _×_; _,_)
-open import Data.Sum using (inj₁; inj₂)
+open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 import Data.Integer.Properties as Integer
 open import Relation.Nullary using (does; yes; no)
@@ -80,13 +80,17 @@ module Protocol (database : ℕ) (request : Request)
   reviewed (Reviewing.replay value) = T.replay value
   reviewed (Reviewing.fresh after value limit) = T.replace after value
 
+  reviewReady : ℤ → Failure ⊎ (Store.World × Review) → T.Allocation T.Decision
+  reviewReady expected (inj₁ failure) = T.resolved (T.reject failure)
+  reviewReady expected (inj₂ (staged , canonical)) =
+    T.resolved (reviewed (Reviewing.plan staged canonical expected clock now identities))
+
   decide : Request → Store.World → T.Allocation T.Decision
   decide (recordExperience sourceValue expected) before = T.bindAllocation (Normalize.experience sourceValue before) λ where
     (inj₁ failure) → T.resolved (T.reject failure)
     (inj₂ (staged , canonical)) → T.resolved (recorded (Recording.plan staged canonical expected now))
-  decide (reviewExperience reviewValue expected) before = T.bindAllocation (Normalize.review reviewValue before) λ where
-    (inj₁ failure) → T.resolved (T.reject failure)
-    (inj₂ (staged , canonical)) → T.resolved (reviewed (Reviewing.plan staged canonical expected clock now identities))
+  decide (reviewExperience reviewValue expected) before =
+    T.bindAllocation (Normalize.review reviewValue before) (reviewReady expected)
 
   module Plan = T.PreparedPlan (decide request)
   module CommitEvidence = Receipts.WithPreparedPlan (decide request)
