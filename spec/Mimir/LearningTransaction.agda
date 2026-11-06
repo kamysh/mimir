@@ -107,6 +107,25 @@ module Over (State Value Failure : Set) (database key : ℕ) where
   bindAllocation (reserve experience name source actor continuation) next =
     reserve experience name source actor (λ reply → bindAllocation (continuation reply) next)
 
+  -- The result is selected by the observed database replies, not by a
+  -- caller-chosen UUID or a deterministic interpretation of allocation.
+  data Resolves {A : Set} : Allocation A → A → Set where
+    resolvedResult : ∀ {value} → Resolves (resolved value) value
+    reservedResult : ∀ {experience name source actor next value} reply →
+      Resolves (next reply) value → Resolves (reserve experience name source actor next) value
+
+  abstract
+    resolvedValue : ∀ {A} {value result : A} → Resolves (resolved value) result → value ≡ result
+    resolvedValue resolvedResult = refl
+
+    bindResolution : ∀ {A B} (program : Allocation A) (next : A → Allocation B) result →
+      Resolves (bindAllocation program next) result →
+      Σ A (λ value → Resolves program value × Resolves (next value) result)
+    bindResolution (resolved value) next result observed = value , resolvedResult , observed
+    bindResolution (reserve experience name source actor continuation) next result (reservedResult reply observed)
+      with bindResolution (continuation reply) next result observed
+    ... | value , first , remaining = value , reservedResult reply first , remaining
+
   executeAllocation : Transaction → Allocation Decision → E.Script Outcome
   executeAllocation tx (resolved decision) = decide tx decision
   executeAllocation tx (reserve experience name source actor next) =
