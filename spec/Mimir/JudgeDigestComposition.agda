@@ -4,14 +4,21 @@
 module Mimir.JudgeDigestComposition where
 
 open import Data.Bool using (Bool; true; false)
-open import Data.List using (List; []; _∷_)
+open import Data.List using (List; []; _∷_; _++_; take; length)
+open import Data.List.Properties using (length-++)
+open import Data.List.Relation.Unary.All using (All; []; _∷_)
+import Data.List.Relation.Unary.All as All
+import Data.List.Relation.Unary.All.Properties as AllProperties
+open import Data.List.Relation.Unary.Any using (Any)
+open import Data.Empty using (⊥)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ)
-open import Data.Product using (_,_)
+open import Data.Nat using (ℕ; zero; suc; _≤_; z≤n; s≤s)
+open import Data.Nat.Properties using (≤-trans; ≤-refl; m≤n+m)
+open import Data.Product using (Σ; _,_; _×_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (tt)
 open import Data.String using (toList)
-open import Relation.Binary.PropositionalEquality using (_≡_)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.JudgeHost as Host
 import Mimir.JudgeHostProtocol as HostProtocol
@@ -40,6 +47,10 @@ import Mimir.UnixPath as Path
 import Mimir.UnixMetadata as Metadata
 import Mimir.UUIDV4 as UUID
 import Mimir.Effects as Effects
+import Mimir.ReviewObservation as Observation
+import Mimir.JudgeAcknowledgement as Acknowledgement
+import Mimir.JudgeSelection as Selection
+import Mimir.JudgeBatchReadback as Readback
 
 digestResult : Daily.Result → Text ⊎ Incident.Outcome
 digestResult Daily.disabled = inj₂ Incident.disabled
@@ -137,3 +148,188 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     empty : ∀ phase → Trace migrations interval threshold phase phase
     more : ∀ before middle after → Step migrations interval threshold before middle →
       Trace migrations interval threshold middle after → Trace migrations interval threshold before after
+
+  -- A complete continued round uses the actual batch and digest programs.
+  -- The timer receipt is the external scheduling/fairness condition. Neither
+  -- a failed batch nor an unavailable digest creates an exit transition.
+  problem : Text ⊎ Bool → Bool
+  problem (inj₁ error) = true
+  problem (inj₂ digestProblem) = digestProblem
+
+  nextWatch : Host.Watch → Host.Outcome → Text ⊎ Bool → Host.Watch
+  nextWatch before batchResult reply = record (Host.advance sizeMaximum before batchResult)
+    { digestProblem = problem reply }
+
+  WaitingTimer : Host.Phase → Set
+  WaitingTimer (Host.waiting state seconds messages) = Waited seconds messages false
+  WaitingTimer phase = ⊥
+
+  record Round (migrations : M.Inputs) (interval threshold : ℕ) (before : Host.Watch) : Set where
+    constructor continuedRound
+    field outcome : Host.Outcome
+          batchEvents : List H.P.Event
+          batchDone : H.Runs (H.once true) batchEvents outcome
+          digestEvents : List Digest.Event
+          digestReply : Text ⊎ Bool
+          digestDone : Runs migrations idle (Digest.Run.tick calendar outcome) digestEvents idle digestReply
+          timerReady : WaitingTimer (Host.step sizeMaximum interval threshold (Host.digest before outcome) digestReply)
+
+  roundTrace : ∀ migrations interval threshold before → (round : Round migrations interval threshold before) →
+    Trace migrations interval threshold (Host.running before)
+      (Host.running (nextWatch before (Round.outcome round) (Round.digestReply round)))
+  roundTrace migrations interval threshold before
+    (continuedRound batchResult batchEvents batchDone digestEvents (inj₁ error) digestDone timerReady) =
+    more _ _ _ (batch before _ _ batchDone)
+      (more _ _ _ (digest before _ _ _ digestDone)
+        (more _ _ _ (waited _ _ _ false timerReady) (empty _)))
+  roundTrace migrations interval threshold before
+    (continuedRound batchResult batchEvents batchDone digestEvents (inj₂ digestProblem) digestDone timerReady) =
+    more _ _ _ (batch before _ _ batchDone)
+      (more _ _ _ (digest before _ _ _ digestDone)
+        (more _ _ _ (waited _ _ _ false timerReady) (empty _)))
+
+  appendTrace : ∀ {migrations interval threshold before middle after} →
+    Trace migrations interval threshold before middle → Trace migrations interval threshold middle after →
+    Trace migrations interval threshold before after
+  appendTrace (empty _) second = second
+  appendTrace (more _ _ _ step rest) second = more _ _ _ step (appendTrace rest second)
+
+  Confirmed : Observation.Snapshot → Set
+  Confirmed observed = Acknowledgement.Evidence (Observation.pinSnapshot observed)
+
+  -- Selection and confirmations must occur inside the actual host batch,
+  -- not in an unrelated successful call or in a model's account of its work.
+  module ProgressOf (settings : Config.Runtime) (program : Text) (path configPath : Path.Path) where
+    private module W = H.W settings program path configPath
+    private module P = W.W
+
+    record ConfirmedRead (events : List P.P.Event) (selected : Observation.Snapshot) : Set where
+      field observed : Observation.Snapshot
+            valid : Observation.SnapshotValid observed
+            acknowledged : Observation.Ack (Observation.pinSnapshot selected) observed
+            occurred : Any (_≡ (P.readback (Readback.getExperience (Observation.pinSnapshot selected)) , inj₂ (just observed))) events
+
+    record BatchEvidence (events : List P.P.Event) (remaining selected : List Observation.Snapshot) : Set where
+      field excluded : List ℕ
+            queried : Any (_≡ (P.selection (Selection.pending
+              (Config.Judge.project (Config.Runtime.judge settings))
+              (Config.Judge.batchSize (Config.Runtime.judge settings)) excluded) , inj₂ selected)) events
+            ordered : selected ≡ take (Config.Judge.batchSize (Config.Runtime.judge settings)) remaining
+            confirmed : All (ConfirmedRead events) selected
+
+    evidence : ∀ {events remaining selected} → BatchEvidence events remaining selected → All Confirmed selected
+    evidence observedBatch = All.map (λ read → Acknowledgement.evidence (ConfirmedRead.observed read)
+      (ConfirmedRead.valid read) (ConfirmedRead.acknowledged read)) (BatchEvidence.confirmed observedBatch)
+
+  ObservedRun : ∀ {effect reply} → H.Receipt effect reply → List Observation.Snapshot → List Observation.Snapshot → Set
+  ObservedRun (H.ran settings held configPath report
+    (H.completed program before after events client .report built execution dropped)) remaining selected =
+    ProgressOf.BatchEvidence settings program (H.L.Locked.path held) configPath events remaining selected
+  ObservedRun receipt remaining selected = ⊥
+
+  observedEvidence : ∀ {effect reply} (receipt : H.Receipt effect reply) {remaining selected} →
+    ObservedRun receipt remaining selected → All Confirmed selected
+  observedEvidence (H.ran settings held configPath report
+    (H.completed program before after events client .report built execution dropped)) seen =
+    ProgressOf.evidence settings program (H.L.Locked.path held) configPath seen
+  observedEvidence (H.configuration _ _ _) ()
+  observedEvidence (H.path _ _ _) ()
+  observedEvidence (H.locked _ _ _ _) ()
+  observedEvidence (H.unlocked _ _ _) ()
+  observedEvidence (H.ran _ _ _ _ (H.setupFailure _ _ _ _ _ _)) ()
+  observedEvidence (H.observed _) ()
+  observedEvidence (H.recorded _ _ _ _) ()
+  observedEvidence (H.written _ _ _ _) ()
+  observedEvidence (H.printed _) ()
+  observedEvidence (H.diagnostic _) ()
+
+  ContainsBatch : ∀ {A script events result} → H.Runs {A} script events result →
+    List Observation.Snapshot → List Observation.Snapshot → Set
+  ContainsBatch (H.returned result) remaining selected = ⊥
+  ContainsBatch (H.replied _ _ _ _ _ receipt rest) remaining selected =
+    ObservedRun receipt remaining selected ⊎ ContainsBatch rest remaining selected
+
+  containedEvidence : ∀ {A script events result} (run : H.Runs {A} script events result) {remaining selected} →
+    ContainsBatch run remaining selected → All Confirmed selected
+  containedEvidence (H.returned result) ()
+  containedEvidence (H.replied _ _ _ _ _ receipt rest) (inj₁ seen) = observedEvidence receipt seen
+  containedEvidence (H.replied _ _ _ _ _ receipt rest) (inj₂ later) = containedEvidence rest later
+
+  -- Recovery is stronger than a reachable endpoint: every nonempty attempt
+  -- selects a positive prefix of this stable, ordered queue and actual final
+  -- reads confirm that prefix. It does not assume completion of the suffix.
+  record RecoveredRound (migrations : M.Inputs) (interval threshold : ℕ)
+    (before : Host.Watch) (remaining : List Observation.Snapshot) : Set where
+    constructor recoveredRound
+    field round : Round migrations interval threshold before
+          first : Observation.Snapshot
+          additional rest : List Observation.Snapshot
+          split : remaining ≡ (first ∷ additional) ++ rest
+          selected : ContainsBatch (Round.batchDone round) remaining (first ∷ additional)
+
+  suffixBound : ∀ (prefix suffix : List Observation.Snapshot) → length suffix ≤ length (prefix ++ suffix)
+  suffixBound prefix suffix rewrite length-++ prefix {ys = suffix} = m≤n+m (length suffix) (length prefix)
+
+  predecessorBound : ∀ {m n} → suc m ≤ suc n → m ≤ n
+  predecessorBound (s≤s bound) = bound
+
+  -- Arbitrary observed recovered histories, not a chosen successful path.
+  data RecoveredTrace (migrations : M.Inputs) (interval threshold : ℕ) :
+    ℕ → Host.Watch → List Observation.Snapshot → Host.Watch → List Observation.Snapshot → Set where
+    stopped : ∀ before remaining → RecoveredTrace migrations interval threshold 0 before remaining before remaining
+    idleRound : ∀ count before after remaining (round : Round migrations interval threshold before) →
+      RecoveredTrace migrations interval threshold count
+        (nextWatch before (Round.outcome round) (Round.digestReply round)) [] after remaining →
+      RecoveredTrace migrations interval threshold (suc count) before [] after remaining
+    productiveRound : ∀ count before remaining after final
+      (recovered : RecoveredRound migrations interval threshold before remaining) →
+      RecoveredTrace migrations interval threshold count
+        (nextWatch before (Round.outcome (RecoveredRound.round recovered)) (Round.digestReply (RecoveredRound.round recovered)))
+        (RecoveredRound.rest recovered) after final →
+      RecoveredTrace migrations interval threshold (suc count) before remaining after final
+
+  recoveredExecution : ∀ {migrations interval threshold count before remaining after final} →
+    RecoveredTrace migrations interval threshold count before remaining after final →
+    Trace migrations interval threshold (Host.running before) (Host.running after)
+  recoveredExecution (stopped before remaining) = empty _
+  recoveredExecution (idleRound _ _ _ _ round rest) = appendTrace (roundTrace _ _ _ _ round) (recoveredExecution rest)
+  recoveredExecution (productiveRound _ _ _ _ _ recovered rest) =
+    appendTrace (roundTrace _ _ _ _ (RecoveredRound.round recovered)) (recoveredExecution rest)
+
+  emptyQueueStaysEmpty : ∀ {migrations interval threshold count before after final} →
+    RecoveredTrace migrations interval threshold count before [] after final → final ≡ []
+  emptyQueueStaysEmpty (stopped _ _) = refl
+  emptyQueueStaysEmpty (idleRound _ _ _ _ round rest) = emptyQueueStaysEmpty rest
+  emptyQueueStaysEmpty (productiveRound _ _ _ _ _ (recoveredRound _ _ _ _ () _) rest)
+
+  -- Every history meeting the conditions has finished by this bound. A retry
+  -- or deferred result alone cannot inhabit productiveRound.
+  allRecoveredHistoriesFinish : ∀ {migrations interval threshold count before remaining after final} →
+    length remaining ≤ count → RecoveredTrace migrations interval threshold count before remaining after final →
+    All Confirmed remaining × final ≡ []
+  allRecoveredHistoriesFinish {remaining = []} bound history = [] , emptyQueueStaysEmpty history
+  allRecoveredHistoriesFinish {count = zero} {remaining = first ∷ rest} () history
+  allRecoveredHistoriesFinish {count = suc count} {remaining = first ∷ rest} bound
+    (productiveRound _ _ _ _ _ (recoveredRound round .first additional tail refl selected) history)
+    with allRecoveredHistoriesFinish (≤-trans (suffixBound additional tail) (predecessorBound bound)) history
+  ... | confirmations , emptyQueue =
+    AllProperties.++⁺ (containedEvidence (Round.batchDone round) selected) confirmations , emptyQueue
+
+  record Drained (migrations : M.Inputs) (interval threshold : ℕ)
+    (before : Host.Watch) (remaining : List Observation.Snapshot) : Set where
+    field after : Host.Watch
+          attempts : ℕ
+          bounded : attempts ≤ length remaining
+          executed : Trace migrations interval threshold (Host.running before) (Host.running after)
+          confirmed : All Confirmed remaining
+
+  everyStableRevisionEventuallyConfirmed : ∀ migrations interval threshold before original →
+    (∀ count → Σ Host.Watch (λ after → Σ (List Observation.Snapshot) (λ remaining →
+      RecoveredTrace migrations interval threshold count before original after remaining))) →
+    Drained migrations interval threshold before original
+  everyStableRevisionEventuallyConfirmed migrations interval threshold before original continues
+    with continues (length original)
+  ... | after , remaining , history with allRecoveredHistoriesFinish ≤-refl history
+  ... | confirmations , emptyQueue = record
+    { after = after ; attempts = length original ; bounded = ≤-refl
+    ; executed = recoveredExecution history ; confirmed = confirmations }
