@@ -51,17 +51,6 @@ repetitionBound : ∀ {limit archives} entries (state : State limit archives) �
   size (after entries state) ≤ suc archives * limit
 repetitionBound entries state = boundedTotal (after entries state)
 
--- Failed file operations may retain an earlier state or a partial write only
--- within these same slots and per-file bounds. They cannot authorize a new
--- unbounded file, an append without the lock, or an unlimited retry archive.
-data Outcome {limit archives : ℕ} (before : State limit archives) : Set where
-  written : (after : State limit archives) → Outcome before
-  failed : (retained : State limit archives) → Outcome before
-
-retained : ∀ {limit archives} {before : State limit archives} → Outcome before → State limit archives
-retained (written state) = state
-retained (failed state) = state
-
-failureBound : ∀ {limit archives} {before : State limit archives} (outcome : Outcome before) →
-  size (retained outcome) ≤ suc archives * limit
-failureBound outcome = boundedTotal (retained outcome)
+-- OperationalLogSteps specifies the concrete rotation order and partial
+-- append contents. OperationalLogProtocol requires their native receipts;
+-- a size-bounded file set alone cannot supply a write outcome.

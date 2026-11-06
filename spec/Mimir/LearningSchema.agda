@@ -62,6 +62,7 @@ record LearningItem : Set where
   constructor learningItem
   field
     identity : ℕ
+    localKey : Maybe Text
     kind : Kind
     reference actor statement conditions : Text
     predictions : List Prediction

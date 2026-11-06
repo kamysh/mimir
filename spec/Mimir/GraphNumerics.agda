@@ -20,6 +20,7 @@ import Mimir.RetrievalRanking as Ranking
 import Mimir.PosteriorComputation as P
 import Mimir.AssessmentScores as Scores
 import Mimir.ReviewSchema as Review
+import Mimir.EvidenceValidity as Evidence
 
 probability : Float → Bool
 probability x = (0.0 ≤ᵇ x) ∧ (x ≤ᵇ 1.0)
@@ -58,20 +59,26 @@ massOf id masses with P.lookup id masses
 ... | nothing = 0.0
 ... | just mass = mass
 
-decayRows : ℤ → Float → List (ℕ × Float) → List Graph.BeliefValues → P.State
-decayRows now factor masses [] = []
+decayRows : ℤ → Float → List (ℕ × Float) → List Graph.BeliefValues → Maybe P.State
+decayRows now factor masses [] = just []
 decayRows now factor masses (b ∷ bs) with Graph.BeliefValues.memory b
 ... | Candidates.experiential = decayRows now factor masses bs
 ... | Candidates.working = decayRows now factor masses bs
-... | Candidates.fact with decayChanged b (decayed now factor (massOf (Graph.BeliefValues.identity b) masses) b)
-...   | false = decayRows now factor masses bs
-...   | true = (Graph.BeliefValues.identity b , decayed now factor (massOf (Graph.BeliefValues.identity b) masses) b)
-  ∷ decayRows now factor masses bs
+... | Candidates.fact with Evidence.validBelief b ∧
+  Scores.finite (massOf (Graph.BeliefValues.identity b) masses) ∧
+  (0.0 ≤ᵇ massOf (Graph.BeliefValues.identity b) masses) ∧
+  P.validCounts (decayed now factor (massOf (Graph.BeliefValues.identity b) masses) b)
+...   | false = nothing
+...   | true with decayChanged b (decayed now factor (massOf (Graph.BeliefValues.identity b) masses) b)
+...     | false = decayRows now factor masses bs
+...     | true with decayRows now factor masses bs
+...       | nothing = nothing
+...       | just rest = just ((Graph.BeliefValues.identity b , decayed now factor (massOf (Graph.BeliefValues.identity b) masses) b) ∷ rest)
 
 decay : ℤ → Float → List (ℕ × Float) → List Graph.BeliefValues → Maybe P.State
 decay now factor masses beliefs with probability factor
 ... | false = nothing
-... | true = just (decayRows now factor masses beliefs)
+... | true = decayRows now factor masses beliefs
 
 -- Latest defeat is the source belief creation time, not an edge timestamp.
 -- HashMap iteration order is intentionally not invented: callers provide the

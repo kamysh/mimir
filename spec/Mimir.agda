@@ -41,8 +41,13 @@ import Mimir.DatabaseTransaction
 import Mimir.DatabaseReadCommitted
 import Mimir.LearningTransaction
 import Mimir.LearningTransactionReceipt
+import Mimir.LearningInput
+import Mimir.LearningNormalization
 import Mimir.ReviewTransaction
 import Mimir.ReviewSerialization
+import Mimir.LearningTransactionDatabase
+import Mimir.ReviewCompetition
+import Mimir.NativeLockOrder
 import Mimir.DatabaseAdvisoryLock
 import Mimir.AssessmentSelection
 
@@ -154,6 +159,7 @@ import Mimir.JudgeErrorAdapter
 import Mimir.BatchReport
 import Mimir.DeferredReviews
 import Mimir.PendingSelection
+import Mimir.ExperiencePending
 import Mimir.CandidateDeferral
 import Mimir.NotificationIncident
 import Mimir.Saturating
@@ -336,6 +342,7 @@ import Mimir.AssessmentEvaluation
 import Mimir.AssessmentRead
 import Mimir.ExperienceRead
 import Mimir.PosteriorComputation
+import Mimir.EvidenceValidity
 import Mimir.LearningRecompute
 import Mimir.ReviewNumericalPublication
 import Mimir.LearningStore
@@ -442,6 +449,7 @@ import Mimir.EmbeddingService
 import Mimir.OAuthRefreshRaw
 
 import Mimir.JudgeDigestSnapshot
+import Mimir.LocalCalendar
 
 import Mimir.JudgeClientStartup
 
@@ -472,6 +480,8 @@ import Mimir.CoreLibrary
 
 import Mimir.OperationalConfiguration
 import Mimir.OperationalLogRetention
+import Mimir.OperationalLogSteps
+import Mimir.OperationalLogProtocol
 import Mimir.ConfigurationUpgrade
 import Mimir.OperationalDiagnostics
 import Mimir.OperationalLifecycle
@@ -479,3 +489,6 @@ import Mimir.OperationalLifecycle
 import Mimir.OptionalLimit
 
 import Mimir.JudgeSignal
+import Mimir.JudgeOwnedWork
+import Mimir.JudgeSignalBinding
+import Mimir.JudgeCommandExecution

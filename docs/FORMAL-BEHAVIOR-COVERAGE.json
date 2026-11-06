@@ -724,7 +724,10 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/LearningInput.agda",
+        "spec/Mimir/LearningNormalization.agda",
+        "spec/Mimir/ItemAllocation.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
@@ -787,7 +790,10 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/LearningInput.agda",
+        "spec/Mimir/LearningNormalization.agda",
+        "spec/Mimir/ItemAllocation.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task."

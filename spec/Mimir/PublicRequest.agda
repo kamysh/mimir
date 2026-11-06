@@ -165,9 +165,9 @@ module Decode (conversion : Conversion.Contract) where
   decode Tools.explainBelief fields = required "id" uuid fields >>= λ id →
     defaulted "offset" 0 integer fields >>= λ offset → defaulted "limit" 10 integer fields >>= λ limit →
     inj₂ (read (Read.explain id offset limit))
-  decode Tools.recordExperience fields = required "experience" L.experience fields >>= λ experience →
+  decode Tools.recordExperience fields = required "experience" L.experienceInput fields >>= λ experience →
     required "expected_revision" i64 fields >>= λ expected → inj₂ (learning (Learning.recordExperience experience expected))
-  decode Tools.reviewExperience fields = required "review" L.review fields >>= λ review →
+  decode Tools.reviewExperience fields = required "review" L.reviewInput fields >>= λ review →
     required "expected_review_revision" i64 fields >>= λ expected → inj₂ (learning (Learning.reviewExperience review expected))
   decode Tools.pendingExperiences fields = present "project" V.asString fields >>= λ project →
     defaulted "limit" 10 integer fields >>= λ limit → defaulted "exclude_ids" [] (readArray uuid) fields >>= λ excluded →

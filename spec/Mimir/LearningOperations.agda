@@ -5,10 +5,14 @@
 module Mimir.LearningOperations where
 
 open import Data.Bool using (true; false; _∧_)
-open import Data.List using (List; [])
+open import Data.List using (List; []; _∷_; map; length)
+open import Data.List.Relation.Unary.Any using (Any; here; there)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Integer using (ℤ; +_)
+open import Data.Product using (Σ; _×_; _,_)
+open import Data.Sum using (inj₁; inj₂)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 import Data.Integer.Properties as Integer
 open import Relation.Nullary using (does; yes; no)
 open import Mimir.Text using (Text)
@@ -25,18 +29,18 @@ import Mimir.LearningTransaction as Transaction
 import Mimir.LearningTransactionReceipt as Receipt
 import Mimir.RevisionBounds as Bounds
 import Mimir.Validation as Validation
+import Mimir.LearningInput as Input
+import Mimir.LearningNormalization as Normalization
 import Mimir.Effects as Effects
 open import Mimir.Bits using (Byte)
-open import Data.Product using (_×_; _,_)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 
 data Request : Set where
-  recordExperience : Experience → ℤ → Request
-  reviewExperience : Review → ℤ → Request
+  recordExperience : Input.Experience → ℤ → Request
+  reviewExperience : Input.Review → ℤ → Request
 
 data Payload : Set where
-  experiencePayload : Experience → Payload
-  reviewPayload : Review → Payload
+  experiencePayload : Input.Experience → Payload
+  reviewPayload : Input.Review → Payload
 
 payload : Request → Payload
 payload (recordExperience value expected) = experiencePayload value
@@ -46,35 +50,25 @@ data Failure : Set where
   recordFailure : Recording.Failure → Failure
   reviewFailure : Reviewing.Failure → Failure
   externalFailure : Text → Failure
-
-structure : Request → Maybe Failure
-structure (recordExperience value expected) with ExperienceSchema.validate value
-... | Validation.rejected failure refutation = just (recordFailure (Recording.invalid failure))
-... | Validation.accepted valid = nothing
-structure (reviewExperience value expected) with ReviewSchema.validateReview value
-... | Validation.rejected failure refutation = just (reviewFailure (Reviewing.invalid failure))
-... | Validation.accepted valid = nothing
+  allocationFailure : Validation.Fault → Failure
 
 expectedValid : ℤ → Data.Bool.Bool
 expectedValid expected = does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))
 
 admit : Request → Maybe Failure
-admit (recordExperience sourceValue expected) with ExperienceSchema.validate sourceValue
-... | Validation.rejected failure refutation = just (recordFailure (Recording.invalid failure))
-... | Validation.accepted valid with expectedValid expected
-...   | false = just (recordFailure Recording.invalidExpected)
-...   | true = nothing
-admit (reviewExperience reviewValue expected) with ReviewSchema.validateReview reviewValue
-... | Validation.rejected failure refutation = just (reviewFailure (Reviewing.invalid failure))
-... | Validation.accepted valid with expectedValid expected
-...   | false = just (reviewFailure Reviewing.invalidExpected)
-...   | true = nothing
+admit (recordExperience sourceValue expected) with expectedValid expected
+... | false = just (recordFailure Recording.invalidExpected)
+... | true = nothing
+admit (reviewExperience reviewValue expected) with expectedValid expected
+... | false = just (reviewFailure Reviewing.invalidExpected)
+... | true = nothing
 
 module Protocol (database : ℕ) (request : Request)
   (clock : Candidate → ℤ) (now : ℤ) (identities : Candidate → ℕ) where
 
   module T = Transaction.Over Store.World Observation.Snapshot Failure database 671942183
   module Receipts = Receipt.Over Store.World Observation.Snapshot Failure database 671942183
+  module Normalize = Normalization.For Failure allocationFailure database
 
   recorded : Recording.Decision → T.Decision
   recorded (Recording.rejected failure) = T.reject (recordFailure failure)
@@ -86,24 +80,80 @@ module Protocol (database : ℕ) (request : Request)
   reviewed (Reviewing.replay value) = T.replay value
   reviewed (Reviewing.fresh after value limit) = T.replace after value
 
-  decide : Request → Store.World → T.Decision
-  decide (recordExperience sourceValue expected) before = recorded (Recording.plan before sourceValue expected now)
-  decide (reviewExperience reviewValue expected) before = reviewed (Reviewing.plan before reviewValue expected clock now identities)
+  decide : Request → Store.World → T.Allocation T.Decision
+  decide (recordExperience sourceValue expected) before = T.bindAllocation (Normalize.experience sourceValue before) λ where
+    (inj₁ failure) → T.resolved (T.reject failure)
+    (inj₂ (staged , canonical)) → T.resolved (recorded (Recording.plan staged canonical expected now))
+  decide (reviewExperience reviewValue expected) before = T.bindAllocation (Normalize.review reviewValue before) λ where
+    (inj₁ failure) → T.resolved (T.reject failure)
+    (inj₂ (staged , canonical)) → T.resolved (reviewed (Reviewing.plan staged canonical expected clock now identities))
 
-  module Plan = T.Plan (decide request)
-  module CommitEvidence = Receipts.WithPlan (decide request)
+  module Plan = T.PreparedPlan (decide request)
+  module CommitEvidence = Receipts.WithPreparedPlan (decide request)
+  module ScopeEvidence = T.PreparedLaws (decide request)
+
+  operationUsesLockedHandle : ∀ events outcome → T.E.Runs Plan.start events outcome →
+    T.Trace T.outside events T.finished
+  operationUsesLockedHandle = ScopeEvidence.completedScope
+
+  operationSuccessRequiresCommit : ∀ events value →
+    T.E.Runs Plan.start events (T.applied value) → Receipts.Receipt events
+  operationSuccessRequiresCommit = CommitEvidence.successRequiresCommit
+
+  -- A replay of this complete raw-request plan has no allocation or write
+  -- effect after its locked read, regardless of the rollback acknowledgement.
+  exactRetryOnlyRollsBack : ∀ tx before value events outcome →
+    decide request before ≡ T.resolved (T.replay value) →
+    T.E.Runs (Plan.afterRead tx (inj₂ before)) events outcome →
+    Σ T.Cleanup (λ cleanup → events ≡ ((T.rollback tx , cleanup) Data.List.∷ Data.List.[]) ×
+      outcome ≡ T.replayed value cleanup)
+  exactRetryOnlyRollsBack tx before value events outcome unchanged rewrite unchanged =
+    T.exactReplayOnlyRollback tx value events outcome
+
+  recordedExperienceRetry : ∀ input expected before assigned value →
+    Normalize.RecordedItems (Input.Experience.identity input) before (Input.Experience.items input) assigned →
+    Recording.plan before (Input.canonicalExperience input assigned) expected now ≡ Recording.replay value →
+    decide (recordExperience input expected) before ≡ T.resolved (T.replay value)
+  recordedExperienceRetry input expected before assigned value recorded replay
+    rewrite Normalize.recordedExperienceNeedsNoAllocation input before assigned recorded | replay = refl
+
+  recordedReviewRetry : ∀ input expected before assigned resolved supported value →
+    Normalize.RecordedItems (Input.Review.experienceID input) before (Input.Review.extracted input) assigned →
+    Normalize.assessments (Store.World.itemKeys before) (Input.Review.experienceID input) (Input.Review.assessments input)
+      ≡ inj₂ (resolved , supported) →
+    Reviewing.plan before (Input.canonicalReview input assigned resolved) expected clock now identities ≡ Reviewing.replay value →
+    decide (reviewExperience input expected) before ≡ T.resolved (T.replay value)
+  recordedReviewRetry input expected before assigned resolved supported value recorded references replay
+    rewrite Normalize.recordedReviewNeedsNoAllocation input before assigned resolved supported recorded references | replay = refl
+
+  -- These whole-request retry laws take saved key/owner observations for
+  -- every raw item. They do not assume the normalizer already returned the
+  -- desired result and do not request a second PostgreSQL identity.
+  namedExperienceRetry : ∀ input expected before assigned value →
+    Normalize.NamedItems (Input.Experience.identity input) before (Input.Experience.items input) assigned →
+    Recording.plan before (Input.canonicalExperience input assigned) expected now ≡ Recording.replay value →
+    decide (recordExperience input expected) before ≡ T.resolved (T.replay value)
+  namedExperienceRetry input expected before assigned value saved replay =
+    recordedExperienceRetry input expected before assigned value
+      (Normalize.namedItemsRecorded (Input.Experience.identity input) before (Input.Experience.items input) assigned saved) replay
+
+  namedReviewRetry : ∀ input expected before assigned resolved supported value →
+    Normalize.NamedItems (Input.Review.experienceID input) before (Input.Review.extracted input) assigned →
+    Normalize.assessments (Store.World.itemKeys before) (Input.Review.experienceID input) (Input.Review.assessments input)
+      ≡ inj₂ (resolved , supported) →
+    Reviewing.plan before (Input.canonicalReview input assigned resolved) expected clock now identities ≡ Reviewing.replay value →
+    decide (reviewExperience input expected) before ≡ T.resolved (T.replay value)
+  namedReviewRetry input expected before assigned resolved supported value saved references replay =
+    recordedReviewRetry input expected before assigned resolved supported value
+      (Normalize.namedItemsRecorded (Input.Review.experienceID input) before (Input.Review.extracted input) assigned saved) references replay
 
   data Outcome : Set where
     invalidRequest : Failure → Outcome
     transacted : T.Outcome → Outcome
 
-  afterAdmission : T.E.Script Outcome
-  afterAdmission with admit request
-  ... | just failure = T.E.done (invalidRequest failure)
-  ... | nothing = T.E._>>=_ Plan.start (λ result → T.E.done (transacted result))
-
-  -- Standard serialization is external. Failure is reported; successful
-  -- encoding imposes no payload-size limit. Request validation still applies.
+  -- Standard serialization is external. Its failure is reported before any
+  -- transaction. Successful encoding imposes no payload-size limit;
+  -- allocation and canonical validation remain in Plan.start.
   data Serialization : Set where
     encoded : List Byte → Serialization
     serializationFailed : Text → Serialization
@@ -118,18 +168,62 @@ module Protocol (database : ℕ) (request : Request)
 
   module E = Effects.Protocol Effect Reply
 
-  lift : T.E.Script Outcome → E.Script Outcome
-  lift (T.E.done value) = E.done value
-  lift (T.E.ask operation next) = E.ask (transaction operation) (λ reply → lift (next reply))
+  transact : T.E.Script T.Outcome → E.Script Outcome
+  transact (T.E.done value) = E.done (transacted value)
+  transact (T.E.ask operation next) = E.ask (transaction operation) (λ reply → transact (next reply))
+
+  afterAdmission : E.Script Outcome
+  afterAdmission with admit request
+  ... | just failure = E.done (invalidRequest failure)
+  ... | nothing = transact Plan.start
 
   afterSerialization : Serialization → E.Script Outcome
   afterSerialization (serializationFailed message) = E.done (invalidRequest (externalFailure message))
-  afterSerialization (encoded bytes) = lift afterAdmission
+  afterSerialization (encoded bytes) = afterAdmission
 
   start : E.Script Outcome
-  start with structure request
-  ... | just failure = E.done (invalidRequest failure)
-  ... | nothing = E.ask (serializePayload (payload request)) afterSerialization
+  start = E.ask (serializePayload (payload request)) afterSerialization
+
+  publicEvent : T.E.Event → E.Event
+  publicEvent (operation , reply) = transaction operation , reply
+
+  transactRun : ∀ program events value → E.Runs (transact program) events (transacted value) →
+    Σ (List T.E.Event) (λ original → T.E.Runs program original value × events ≡ map publicEvent original)
+  transactRun (T.E.done value) .[] .value (E.returned .(transacted value)) = [] , T.E.returned value , refl
+  transactRun (T.E.ask operation next) events value (E.replied _ _ reply execution)
+    with transactRun (next reply) _ value execution
+  ... | original , run , refl = (operation , reply) ∷ original , T.E.replied operation next reply run , refl
+
+  PublicCommitReceipt : List E.Event → Set
+  PublicCommitReceipt events = Σ T.Transaction
+    (λ tx → Any (_≡ (transaction (T.commit tx) , T.committed)) events)
+
+  liftCommitMember : ∀ tx {events} → Any (_≡ (T.commit tx , T.committed)) events →
+    Any (_≡ (transaction (T.commit tx) , T.committed)) (map publicEvent events)
+  liftCommitMember tx (here refl) = here refl
+  liftCommitMember tx (there remaining) = there (liftCommitMember tx remaining)
+
+  admissionRequiresCommit : ∀ events value →
+    E.Runs afterAdmission events (transacted (T.applied value)) → PublicCommitReceipt events
+  admissionRequiresCommit events value execution with admit request
+  ... | just failure with execution
+  ...   | ()
+  admissionRequiresCommit events value execution | nothing with transactRun Plan.start events (T.applied value) execution
+  ... | original , run , refl with operationSuccessRequiresCommit original value run
+  ... | tx , observed = tx , liftCommitMember tx observed
+
+  serializationRequiresCommit : ∀ reply events value →
+    E.Runs (afterSerialization reply) events (transacted (T.applied value)) → PublicCommitReceipt events
+  serializationRequiresCommit (serializationFailed message) events value ()
+  serializationRequiresCommit (encoded bytes) events value execution = admissionRequiresCommit events value execution
+
+  -- This is the complete public operation, including raw serialization,
+  -- expected-revision admission, locked allocation and canonical validation.
+  publicSuccessRequiresCommit : ∀ events value →
+    E.Runs start events (transacted (T.applied value)) → PublicCommitReceipt events
+  publicSuccessRequiresCommit events value (E.replied _ _ reply execution)
+    with serializationRequiresCommit reply _ value execution
+  ... | tx , observed = tx , there observed
 
   -- For every pair of successful encodings, including arbitrary lengths,
   -- the same transaction requests, replies and outcome remain possible.
@@ -142,11 +236,6 @@ module Protocol (database : ℕ) (request : Request)
     E.Runs (afterSerialization (serializationFailed message)) events outcome →
     events ≡ [] × outcome ≡ invalidRequest (externalFailure message)
   encodingFailureStartsNoTransaction message events outcome (E.returned _) = refl , refl
-
-  invalidStructureStartsNoEncoding : ∀ failure events outcome → structure request ≡ just failure →
-    E.Runs start events outcome → events ≡ [] × outcome ≡ invalidRequest failure
-  invalidStructureStartsNoEncoding failure events outcome rejected execution rewrite rejected =
-    E.completedCannotProduceEffects execution
 
   invalidAdmissionStartsNoTransaction : ∀ bytes failure events outcome → admit request ≡ just failure →
     E.Runs (afterSerialization (encoded bytes)) events outcome →

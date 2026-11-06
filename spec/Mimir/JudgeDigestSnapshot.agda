@@ -6,13 +6,15 @@ module Mimir.JudgeDigestSnapshot where
 
 open import Data.List using (List; []; _∷_)
 open import Data.Nat using (ℕ)
-open import Data.Integer using (ℤ)
+open import Data.Integer using (ℤ; _+_; +_)
 open import Data.Sum using (inj₁; inj₂)
-open import Data.Product using (_,_)
+open import Data.Product using (_×_; _,_)
+open import Data.Maybe using (just)
 open import Data.Unit using (tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 import Mimir.JudgeDigest as Digest
 import Mimir.LearningHistoryWire as Ledger
+import Mimir.LocalCalendar as Local
 open import Mimir.Text using (Text)
 
 data State : Set where idle closed : State; active : Ledger.Database → State
@@ -45,3 +47,17 @@ countedExactly : ∀ connection snapshot start end result after →
   Step connection (active snapshot) (Digest.countBetween connection start end , inj₂ result) after →
   result ≡ Digest.selectedCounts snapshot start end
 countedExactly connection snapshot start end result after (counted _ _ _ _ _ _) = refl
+
+-- The displayed date and the exact query interval are justified together,
+-- while all count definitions and the retained snapshot remain unchanged.
+countedForDisplayedDay : ∀ calendar day (range : Local.Window calendar day)
+  connection snapshot result after →
+  Step connection (active snapshot)
+    (Digest.countBetween connection (Local.Window.start range) (Local.Window.end range) , inj₂ result) after →
+  result ≡ Digest.selectedCounts snapshot (Local.Window.start range) (Local.Window.end range) ×
+  Digest.Calendar.parse calendar (Digest.Calendar.showDay calendar day) ≡ just day ×
+  Local.Local.day (Digest.Calendar.localAt calendar (Local.Window.start range)) ≡ day ×
+  Local.Local.day (Digest.Calendar.localAt calendar (Local.Window.end range)) ≡ day + + 1
+countedForDisplayedDay calendar day range connection snapshot result after receipt =
+  countedExactly connection snapshot (Local.Window.start range) (Local.Window.end range) result after receipt ,
+  Local.windowLabel range , Local.windowDates range

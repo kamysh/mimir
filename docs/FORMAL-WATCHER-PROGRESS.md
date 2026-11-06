@@ -1,0 +1,68 @@
+# When the running watcher must make progress
+
+The watcher has two different obligations: continue attempting work, and
+confirm work that can be completed. A retry proves only the first.
+
+## Continued attempts
+
+One round includes the actual batch program, the daily notification check, and
+the configured wait. If those operations return and the timer gets time to run,
+the watcher returns to the next batch. A batch failure or an unavailable daily
+notification changes the recorded state and waiting period, but does not exit
+the loop. Repeated failures can increase the delay to an hour. A signal or an
+invalid starting configuration is outside this continued-operation condition.
+
+The `Round` record and `roundTrace` proof in
+[JudgeDigestComposition](../spec/Mimir/JudgeDigestComposition.agda) connect these
+conditions to the actual repeated watcher program. The timer acknowledgement
+is an external scheduling condition, not a proof about the operating system.
+
+## Completing stable work after recovery
+
+The completion guarantee requires a finite, ordered queue of eligible source
+revisions and all of the following conditions:
+
+- The project, configuration and source revisions stay unchanged. No new work
+  is inserted into this queue during the guarantee.
+- Each continued attempt selects a nonempty first group from the remaining
+  queue, using the configured batch size and the actual pending-work call.
+- Each selected revision receives a valid completed review. Final database
+  reads confirm its identity and unchanged source revision, acknowledge that
+  source revision, and show a newer review revision.
+- Batch work and the daily notification check return, and the timer continues
+  receiving time to run. The watcher is not stopped.
+
+Under these conditions, every original revision is confirmed within at most as
+many attempts as there were revisions in the original queue. For example,
+seven stable revisions take at most seven such attempts; larger batches can
+finish them sooner. This is a bound on attempts, not a wall-clock deadline.
+
+`RecoveredRound` requires the selection and confirmation reads to occur inside
+the actual host batch. `allRecoveredHistoriesFinish` proves the bound for every
+history meeting these conditions, rather than exhibiting one successful path.
+The continuation condition says arbitrarily many recovered rounds receive time
+to finish. It does not assume that the whole queue eventually completes.
+`everyStableRevisionEventuallyConfirmed` applies the bound to that continuing
+operation and produces an actual watcher execution and database confirmation
+evidence for every original revision.
+
+Recovery means more than a database accepting connections or a model returning
+HTTP success. A model that keeps returning invalid reviews, unavailable final
+reads, repeated lock conflicts, changing source revisions, or an indefinitely
+blocked notification operation does not meet these conditions. Temporary
+failures can precede the recovered execution; its bound starts after recovery.
+
+## Deferrals remain pending
+
+A deliberately deferred revision that remains unchanged and unreviewed stays
+excluded on the next selection. Merely waiting longer does not release it.
+Correcting the source or reviewing it elsewhere releases that exclusion when
+the next reconciliation observes the change. A deferred item need not be
+included in the recovered queue while other eligible work progresses.
+
+[JudgeSelection](../spec/Mimir/JudgeSelection.agda) proves both retention and
+release for the actual reconciliation operation.
+[ReviewObservation](../spec/Mimir/ReviewObservation.agda) proves that an
+unchanged deferred, unreviewed revision cannot also have a confirmed review.
+The specification therefore does not promise that a revision deliberately
+deferred on every attempt will eventually be processed.
