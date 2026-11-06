@@ -5,9 +5,9 @@
 module Mimir.LearningOperations where
 
 open import Data.Bool using (true; false; _∧_)
-open import Data.List using (List; length)
+open import Data.List using (List; [])
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≤?_)
+open import Data.Nat using (ℕ)
 open import Data.Integer using (ℤ; +_)
 import Data.Integer.Properties as Integer
 open import Relation.Nullary using (does; yes; no)
@@ -27,6 +27,8 @@ import Mimir.RevisionBounds as Bounds
 import Mimir.Validation as Validation
 import Mimir.Effects as Effects
 open import Mimir.Bits using (Byte)
+open import Data.Product using (_×_; _,_)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 
 data Request : Set where
   recordExperience : Experience → ℤ → Request
@@ -44,7 +46,6 @@ data Failure : Set where
   recordFailure : Recording.Failure → Failure
   reviewFailure : Reviewing.Failure → Failure
   externalFailure : Text → Failure
-  oversizedPayload : Failure
 
 structure : Request → Maybe Failure
 structure (recordExperience value expected) with ExperienceSchema.validate value
@@ -101,8 +102,8 @@ module Protocol (database : ℕ) (request : Request)
   ... | just failure = T.E.done (invalidRequest failure)
   ... | nothing = T.E._>>=_ Plan.start (λ result → T.E.done (transacted result))
 
-  -- Standard serde serialization is an external operation; its exact result
-  -- determines Mimir's size admission. The model does not invent a formatter.
+  -- Standard serialization is external. Failure is reported; successful
+  -- encoding imposes no payload-size limit. Request validation still applies.
   data Serialization : Set where
     encoded : List Byte → Serialization
     serializationFailed : Text → Serialization
@@ -129,6 +130,29 @@ module Protocol (database : ℕ) (request : Request)
   start with structure request
   ... | just failure = E.done (invalidRequest failure)
   ... | nothing = E.ask (serializePayload (payload request)) afterSerialization
+
+  -- For every pair of successful encodings, including arbitrary lengths,
+  -- the same transaction requests, replies and outcome remain possible.
+  encodedLengthCannotChangeExecution : ∀ first second events outcome →
+    E.Runs (afterSerialization (encoded first)) events outcome →
+    E.Runs (afterSerialization (encoded second)) events outcome
+  encodedLengthCannotChangeExecution first second events outcome execution = execution
+
+  encodingFailureStartsNoTransaction : ∀ message events outcome →
+    E.Runs (afterSerialization (serializationFailed message)) events outcome →
+    events ≡ [] × outcome ≡ invalidRequest (externalFailure message)
+  encodingFailureStartsNoTransaction message events outcome (E.returned _) = refl , refl
+
+  invalidStructureStartsNoEncoding : ∀ failure events outcome → structure request ≡ just failure →
+    E.Runs start events outcome → events ≡ [] × outcome ≡ invalidRequest failure
+  invalidStructureStartsNoEncoding failure events outcome rejected execution rewrite rejected =
+    E.completedCannotProduceEffects execution
+
+  invalidAdmissionStartsNoTransaction : ∀ bytes failure events outcome → admit request ≡ just failure →
+    E.Runs (afterSerialization (encoded bytes)) events outcome →
+    events ≡ [] × outcome ≡ invalidRequest failure
+  invalidAdmissionStartsNoTransaction bytes failure events outcome rejected execution rewrite rejected =
+    E.completedCannotProduceEffects execution
 
   -- CommitEvidence.successRequiresCommit is instantiated with decide request,
   -- so it applies to these actual plans rather than an arbitrary application
