@@ -36,6 +36,7 @@ module Over (World Value Failure : Set) (database key : ℕ) where
     acquire : ∀ tx lockKey → NonPublication (T.acquire tx lockKey)
     read : ∀ tx → NonPublication (T.read tx)
     write : ∀ tx proposed → NonPublication (T.write tx proposed)
+    allocate : ∀ tx experience name source actor → NonPublication (T.allocateItem tx experience name source actor)
     rollback : ∀ tx → NonPublication (T.rollback tx)
 
   -- Other operations may publish before this operation obtains its lock.
@@ -103,6 +104,8 @@ module Over (World Value Failure : Set) (database key : ℕ) where
         (T.read tx , inj₁ error) (reading tx before)
       readSucceeded : ∀ tx before (observed : ReadAt tx before) → Receipt (reading tx before)
         (T.read tx , inj₂ (C.snapshot (ReadAt.event observed))) (ready tx before)
+      allocated : ∀ tx before experience name source actor reply → HeldAt tx →
+        Receipt (ready tx before) (T.allocateItem tx experience name source actor , reply) (ready tx before)
       writeFailed : ∀ tx before proposed error → Receipt (ready tx before)
         (T.write tx proposed , inj₁ error) (ready tx before)
       wrote : ∀ tx before proposed → HeldAt tx → Receipt (ready tx before)
@@ -172,6 +175,53 @@ module Over (World Value Failure : Set) (database key : ℕ) where
       (replied (readSucceeded .tx .before observed) execution)
       rewrite readSeesPublication tx before observed = decisionPublication tx before (plan before) _ after result execution
 
+    ChosenPublication : World → T.Allocation T.Decision → Session → Set
+    ChosenPublication before plan after = Σ T.Decision (λ decision →
+      T.Resolves plan decision × after ≡ finished (writeSet before decision))
+
+    allocationCannotPublish : ∀ tx before plan events after result →
+      (∀ decision → T.Resolves plan decision → Inert decision) →
+      Runs (T.executeAllocation tx plan) (ready tx before) events after result → after ≡ finished before
+    allocationCannotPublish tx before (T.resolved decision) events after result inert execution =
+      decideCannotPublish tx before decision events after result (inert decision T.resolvedResult) execution
+    allocationCannotPublish tx before (T.reserve experience name source actor next) events after result inert
+      (replied (allocated _ _ _ _ _ _ reply owned) execution) =
+      allocationCannotPublish tx before (next reply) _ after result
+        (λ decision observed → inert decision (T.reservedResult reply observed)) execution
+
+    allocationPublication : ∀ tx before plan events after result →
+      Runs (T.executeAllocation tx plan) (ready tx before) events after result →
+      after ≡ finished before ⊎ ChosenPublication before plan after
+    allocationPublication tx before (T.resolved decision) events after result execution
+      with decisionPublication tx before decision events after result execution
+    ... | inj₁ sameBefore = inj₁ sameBefore
+    ... | inj₂ savedWorld = inj₂ (decision , T.resolvedResult , savedWorld)
+    allocationPublication tx before (T.reserve experience name source actor next) events after result
+      (replied (allocated _ _ _ _ _ _ reply owned) execution)
+      with allocationPublication tx before (next reply) _ after result execution
+    ... | inj₁ sameBefore = inj₁ sameBefore
+    ... | inj₂ (decision , observed , savedWorld) = inj₂ (decision , T.reservedResult reply observed , savedWorld)
+
+    preparedAfterLockCannotPublish : ∀ plan tx before events after result →
+      (∀ decision → T.Resolves (plan before) decision → Inert decision) →
+      Runs (T.PreparedPlan.afterLock plan tx (inj₂ tt)) (reading tx before) events after result →
+      after ≡ finished before
+    preparedAfterLockCannotPublish plan tx before events after result inert
+      (replied (readFailed _ _ _) (replied (rollbackReading _ _ _) (returned _ _))) = refl
+    preparedAfterLockCannotPublish plan tx before events after result inert
+      (replied (readSucceeded .tx .before observed) execution)
+      rewrite readSeesPublication tx before observed =
+      allocationCannotPublish tx before (plan before) _ after result inert execution
+
+    preparedReadPublication : ∀ plan tx before events after result →
+      Runs (T.PreparedPlan.afterLock plan tx (inj₂ tt)) (reading tx before) events after result →
+      after ≡ finished before ⊎ ChosenPublication before (plan before) after
+    preparedReadPublication plan tx before events after result
+      (replied (readFailed _ _ _) (replied (rollbackReading _ _ _) (returned _ _))) = inj₁ refl
+    preparedReadPublication plan tx before events after result
+      (replied (readSucceeded .tx .before observed) execution)
+      rewrite readSeesPublication tx before observed = allocationPublication tx before (plan before) _ after result execution
+
   module AfterPeer (locks : Lock.Contract) (reads : Committed.Contract World)
     (nativeDatabase : Lock.Contract.Database locks) (nativeKey : Lock.Contract.Key locks)
     (nativeTransaction : ℕ → Lock.Contract.Transaction locks) where
@@ -205,3 +255,33 @@ module Over (World Value Failure : Set) (database key : ℕ) where
     startPublication plan before events after result
       (B.replied (B.begun .before tx) (B.replied (B.locked .tx .before actual publications owned) execution))
       rewrite finishedPeerCannotPublish before actual publications = B.readAndDecidePublication plan tx before _ after result execution
+
+    preparedAcquisition : ∀ plan before events after result →
+      B.Runs (T.PreparedPlan.start plan) (B.beginning before) events after result → Maybe (Σ ℕ B.HeldAt)
+    preparedAcquisition plan before events after result (B.replied (B.beginFailed _ _) (B.returned _ _)) = nothing
+    preparedAcquisition plan before events after result (B.replied (B.begun _ _) (B.replied (B.lockFailed _ _ _) execution)) = nothing
+    preparedAcquisition plan before events after result (B.replied (B.begun _ tx) (B.replied (B.locked _ _ _ _ owned) execution)) = just (tx , owned)
+
+    preparedStartCannotPublish : ∀ plan before events after result →
+      (∀ decision → T.Resolves (plan before) decision → B.Inert decision) →
+      B.Runs (T.PreparedPlan.start plan) (B.beginning before) events after result → after ≡ B.finished before
+    preparedStartCannotPublish plan before events after result inert
+      (B.replied (B.beginFailed _ _) (B.returned _ _)) = refl
+    preparedStartCannotPublish plan before events after result inert
+      (B.replied (B.begun _ _) (B.replied (B.lockFailed _ _ _)
+        (B.replied (B.rollbackWaiting _ _ _) (B.returned _ _)))) = refl
+    preparedStartCannotPublish plan before events after result inert
+      (B.replied (B.begun .before tx) (B.replied (B.locked .tx .before actual publications owned) execution))
+      rewrite finishedPeerCannotPublish before actual publications = B.preparedAfterLockCannotPublish plan tx before _ after result inert execution
+
+    preparedStartPublication : ∀ plan before events after result →
+      B.Runs (T.PreparedPlan.start plan) (B.beginning before) events after result →
+      after ≡ B.finished before ⊎ B.ChosenPublication before (plan before) after
+    preparedStartPublication plan before events after result
+      (B.replied (B.beginFailed _ _) (B.returned _ _)) = inj₁ refl
+    preparedStartPublication plan before events after result
+      (B.replied (B.begun _ _) (B.replied (B.lockFailed _ _ _)
+        (B.replied (B.rollbackWaiting _ _ _) (B.returned _ _)))) = inj₁ refl
+    preparedStartPublication plan before events after result
+      (B.replied (B.begun .before tx) (B.replied (B.locked .tx .before actual publications owned) execution))
+      rewrite finishedPeerCannotPublish before actual publications = B.preparedReadPublication plan tx before _ after result execution
