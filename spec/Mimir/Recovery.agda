@@ -3,7 +3,7 @@
 -- an alternative predicate nor an operation-chosen observation is a field.
 module Mimir.Recovery where
 
-open import Data.Product using (_×_; _,_; proj₁; proj₂)
+open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.List using (List; []; _∷_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; sym; trans)
 import Mimir.ApplicationStore as Store
@@ -122,3 +122,44 @@ module Transactions (World Statement : Set) (proposed : Statement → World → 
       (X.E.stopped _) (X.unchanged before) Database.unknownBefore ,
     X.beforeReply [] statement continuation before Database.acknowledgementLost (proposed statement before)
       (X.E.stopped _) (X.unchanged before) Database.unknownAfter
+
+-- There is no Goal, Completed, valid-input or readiness predicate to replace.
+-- Inputs are the operation's admitted inputs; every one owes a lawful complete
+-- execution from every represented starting world, as well as retry safety.
+record Recoverable (World Input : Set) : Set₁ where
+  field
+    Effect : Set
+    Reply : Effect → Set
+  module E = Effects.Protocol Effect Reply
+  field
+    script : Input → E.Script Wire.Value
+    Atomic : World → (effect : Effect) → Reply effect → World → Set
+    intent : Over.Intent World Input
+  module X = Execution World Effect Reply Atomic
+  module G = Over World
+  field
+    converges : ∀ input initial interrupted final reply →
+      X.Interrupted (script input) initial interrupted →
+      X.Completed (script input) interrupted final reply →
+      G.Goal intent (G.invocation input initial) final reply
+    progress : ∀ input initial →
+      Σ World (λ final → Σ Wire.Value (λ reply →
+        X.Completed (script input) initial final reply))
+
+  -- Ordinary completion is also checked: interrupting before the first effect
+  -- leaves the initial world intact, so convergence applies to that execution.
+  completedMeetsIntent : ∀ input initial final reply →
+    X.Completed (script input) initial final reply →
+    G.Goal intent (G.invocation input initial) final reply
+  completedMeetsIntent input initial final reply execution =
+    converges input initial initial final reply
+      (X.atPrefix [] (script input) initial (E.stopped _) (X.unchanged initial))
+      execution
+
+  progressReachesIntent : ∀ input initial →
+    Σ World (λ final → Σ Wire.Value (λ reply →
+      X.Completed (script input) initial final reply ×
+      G.Goal intent (G.invocation input initial) final reply))
+  progressReachesIntent input initial with progress input initial
+  ... | final , reply , execution =
+    final , reply , execution , completedMeetsIntent input initial final reply execution

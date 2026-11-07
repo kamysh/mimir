@@ -51,10 +51,29 @@ the committed state remains possible. Neither is silently treated as rollback.
 The same generic definition applies to every operation; an operation cannot
 choose a shorter list of interruption points.
 
-The required convergence field, concrete operation instances and exclusive
-dispatcher entry remain #73–#74 and #76. They must use this goal and interruption
-relation directly; these foundations do not yet enforce dispatch. The native
-comparison tests must consume the same intended outcomes and boundaries.
+`Recoverable` now requires the script, physical statement semantics, independent
+intent, convergence proof and progress proof together. Convergence uses the
+shared interruption and completion relations and the fixed goal. It cannot
+substitute a weaker predicate. The proof covers a completed retry after every
+interrupted world that the statement semantics permits.
+
+Progress has no configurable readiness test. Every admitted input and represented
+starting world must have a lawful completed execution. Combining that witness
+with convergence establishes that it reaches the intended state and reply. An
+operation that always says it is unavailable cannot satisfy this contract for
+an intent that requires a write. This is an existence claim under the declared
+dependency semantics, not a guarantee that a real external service will answer.
+It adds no deadline or retry quota.
+
+The input type must contain the actual admitted request and its required
+context. A concrete operation table must still cover every public request;
+using an empty input type cannot establish that coverage. Malformed inputs need
+the separately specified correction path rather than being silently excluded.
+
+Concrete instances and exclusive dispatcher entry remain #74 and #76. These
+foundations do not yet remove raw dispatch. The native comparison tests must
+consume the same intended outcomes and statement boundaries, and the later
+disposition work must require evidence before reporting an integrity failure.
 
 The remaining human judgment is whether each intended outcome expresses what
 the user actually wants. An identity function can still be the wrong intent.
