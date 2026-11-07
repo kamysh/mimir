@@ -10085,7 +10085,7 @@
         {
           "kind": "fn",
           "name": "stats",
-          "line": 1163,
+          "line": 1166,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -13937,58 +13937,6 @@
         {
           "kind": "fn",
           "name": "operation",
-          "line": 27,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/Recovery.agda",
-            "spec/Mimir/DatabaseTransaction.agda",
-            "spec/Mimir/MigrationSchema.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "arguments",
-          "line": 29,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/Recovery.agda",
-            "spec/Mimir/DatabaseTransaction.agda",
-            "spec/Mimir/MigrationSchema.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "settings",
-          "line": 30,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/Recovery.agda",
-            "spec/Mimir/DatabaseTransaction.agda",
-            "spec/Mimir/MigrationSchema.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "struct",
-          "name": "OperationBinding",
-          "line": 34,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/Recovery.agda",
-            "spec/Mimir/DatabaseTransaction.agda",
-            "spec/Mimir/MigrationSchema.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "enum",
-          "name": "OperationBindingDecision",
           "line": 42,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
@@ -14001,8 +13949,60 @@
         },
         {
           "kind": "fn",
+          "name": "arguments",
+          "line": 45,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "settings",
+          "line": 48,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "struct",
+          "name": "OperationBinding",
+          "line": 54,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "enum",
+          "name": "OperationBindingDecision",
+          "line": 62,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
           "name": "decode_binding",
-          "line": 47,
+          "line": 68,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -14015,7 +14015,7 @@
         {
           "kind": "struct",
           "name": "OperationReservation",
-          "line": 61,
+          "line": 81,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -14028,7 +14028,7 @@
         {
           "kind": "fn",
           "name": "decode",
-          "line": 65,
+          "line": 86,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -14041,19 +14041,6 @@
         {
           "kind": "fn",
           "name": "bind_operation_request",
-          "line": 76,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/Recovery.agda",
-            "spec/Mimir/DatabaseTransaction.agda",
-            "spec/Mimir/MigrationSchema.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "read_operation_binding",
           "line": 96,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
@@ -14066,8 +14053,21 @@
         },
         {
           "kind": "fn",
+          "name": "read_operation_binding",
+          "line": 123,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
           "name": "reserve_operation",
-          "line": 107,
+          "line": 134,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -14080,7 +14080,7 @@
         {
           "kind": "fn",
           "name": "read_operation_reservation",
-          "line": 114,
+          "line": 161,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [

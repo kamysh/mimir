@@ -19,7 +19,7 @@ import Mimir.ItemOwners as Owners
 import Mimir.LearningStore as Learning
 import Mimir.DatabaseTransaction as Database
 open import Mimir.Migrations public
-  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans)
+  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation;
@@ -141,6 +141,13 @@ reservationTable = table "mimir_operation_reservations"
    column "reserved_at" timestamp false now ∷ [])
   ("operation_token" ∷ []) [] [] []
 
+requestKeyTable : Table
+requestKeyTable = table "mimir_operation_request_keys"
+  (required "request_key" text ∷ required "operation_token" uuid ∷ [])
+  ("request_key" ∷ []) (("operation_token" ∷ []) ∷ [])
+  (references ("operation_token" ∷ []) "mimir_operation_reservations" ("operation_token" ∷ []) restrict ∷ [])
+  (less (number "0" ∷ charLength (trimSpaces (columnValue "request_key" ∷ []) ∷ []) ∷ []) ∷ [])
+
 -- Label creation catches all PostgreSQL exceptions in the existing SQL; that
 -- native behavior is explicit and must not be confused with a label-exists proof.
 data DDL : Set where
@@ -155,7 +162,7 @@ data DDL : Set where
   setColumnDefault : String → String → Default → DDL
   addUniqueConstraint : String → String → List String → DDL
   addCheckConstraint : String → String → Expr → DDL
-  installReviewQueueNotifier installImmutableOperationBindings installImmutableStepReplies installImmutableOperationPlans : DDL
+  installReviewQueueNotifier installImmutableOperationBindings installImmutableStepReplies installImmutableOperationPlans installImmutableRequestKeys : DDL
 
 kappa alpha beta : Expr
 kappa = add (number "2.0" ∷ multiply (columnValue "confidence" ∷ number "198.0" ∷ []) ∷ [])
@@ -192,6 +199,7 @@ body operationReservations = create reservationTable ∷ []
 body operationBindings = installImmutableOperationBindings ∷ []
 body operationStepReplies = installImmutableStepReplies ∷ []
 body operationPlans = installImmutableOperationPlans ∷ []
+body operationRequestKeys = create requestKeyTable ∷ installImmutableRequestKeys ∷ []
 
 -- The trigger's concrete meaning is the pending-source rule, with signals
 -- coupled to publication. This is a native PostgreSQL contract; the SQL body

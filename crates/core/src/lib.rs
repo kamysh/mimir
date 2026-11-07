@@ -1066,8 +1066,11 @@ impl MimirService {
     }
 
     /// Reserve operation metadata without executing a business handler.
-    pub async fn reserve_operation(&self) -> Result<store::OperationReservation> {
-        self.store.reserve_operation().await
+    pub async fn reserve_operation(
+        &self,
+        request_key: &str,
+    ) -> Result<store::OperationReservation> {
+        self.store.reserve_operation(request_key).await
     }
 
     pub async fn read_operation_reservation(

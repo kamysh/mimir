@@ -12,6 +12,14 @@ use std::sync::{
 use tokio_postgres::Transaction;
 use uuid::Uuid;
 
+async fn request_key() -> Result<String> {
+    let client = db::connect(&config().database).await?;
+    Ok(client
+        .query_one("SELECT gen_random_uuid()::text", &[])
+        .await?
+        .get(0))
+}
+
 fn config() -> Config {
     Config {
         database: isolation::fixture().database_config(),
@@ -57,7 +65,10 @@ async fn prepared() -> Result<(
             0,
         )
         .await?;
-    let token = service.reserve_operation().await?.operation_token;
+    let token = service
+        .reserve_operation(&request_key().await?)
+        .await?
+        .operation_token;
     let request = OperationBindingRequest::new(
         "delete_project".into(),
         json!({"project":project}),
@@ -116,7 +127,10 @@ fn erase<'a, 'client>(
 async fn competing_callers_publish_once_and_keep_the_original_answer() -> Result<()> {
     let (first, cfg, token, id, request, _plan, step) = prepared().await?;
     let second = MimirService::connect(&cfg).await?;
-    let unbound = first.reserve_operation().await?.operation_token;
+    let unbound = first
+        .reserve_operation(&request_key().await?)
+        .await?
+        .operation_token;
     assert!(matches!(
         first
             .prepare_operation(unbound, &request, |_, _| Box::pin(async {
@@ -324,7 +338,10 @@ async fn readback_distinguishes_reserved_pending_correction_and_completion() -> 
         service.read_operation_outcome(unknown, None).await?,
         OperationOutcome::UnknownToken
     ));
-    let reserved = service.reserve_operation().await?.operation_token;
+    let reserved = service
+        .reserve_operation(&request_key().await?)
+        .await?
+        .operation_token;
     assert!(matches!(
         service.read_operation_outcome(reserved, None).await?,
         OperationOutcome::Reserved

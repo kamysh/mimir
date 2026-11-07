@@ -12,6 +12,14 @@ use std::collections::BTreeMap;
 use tokio_postgres::Client;
 use uuid::Uuid;
 
+async fn request_key() -> Result<String> {
+    let client = db::connect(&config().database).await?;
+    Ok(client
+        .query_one("SELECT gen_random_uuid()::text", &[])
+        .await?
+        .get(0))
+}
+
 fn config() -> Config {
     Config {
         database: isolation::fixture().database_config(),
@@ -26,7 +34,7 @@ async fn business_snapshot(client: &Client, graph: &str) -> Result<BTreeMap<Stri
     // Snapshot every column and row, including graph edges and vector tables.
     // Reservation/binding/step receipts are control metadata, not business data.
     let tables = client.query(
-        "SELECT quote_ident(n.nspname)||'.'||quote_ident(c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public',$1) AND c.relkind IN ('r','p') AND c.relname NOT IN ('mimir_operation_reservations','mimir_operation_bindings','mimir_operation_step_replies','mimir_operation_plans') ORDER BY 1",
+        "SELECT quote_ident(n.nspname)||'.'||quote_ident(c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public',$1) AND c.relkind IN ('r','p') AND c.relname NOT IN ('mimir_operation_reservations','mimir_operation_bindings','mimir_operation_step_replies','mimir_operation_plans','mimir_operation_request_keys') ORDER BY 1",
         &[&graph],
     ).await?;
     let mut snapshot = BTreeMap::new();
@@ -40,19 +48,20 @@ async fn business_snapshot(client: &Client, graph: &str) -> Result<BTreeMap<Stri
 }
 
 #[tokio::test]
-async fn reservations_survive_reconnection_and_age_without_business_changes() -> Result<()> {
+async fn reservations_survive_lost_reply_and_reconnection_without_business_changes() -> Result<()> {
     let cfg = config();
     let service = MimirService::connect(&cfg).await?;
     let audit = db::connect(&cfg.database).await?;
     let before = business_snapshot(&audit, &cfg.database.dbname).await?;
-    let first = service.reserve_operation().await?;
+    let key = request_key().await?;
+    let first = service.reserve_operation(&key).await?;
     assert_eq!(
         service
             .read_operation_reservation(first.operation_token)
             .await?,
         Some(first.clone())
     );
-    let second = service.reserve_operation().await?;
+    let second = service.reserve_operation(&request_key().await?).await?;
     assert_eq!(
         service
             .read_operation_reservation(first.operation_token)
@@ -65,19 +74,92 @@ async fn reservations_survive_reconnection_and_age_without_business_changes() ->
             .await?,
         Some(second)
     );
-    audit.execute("UPDATE mimir_operation_reservations SET reserved_at=TIMESTAMPTZ '1900-01-01 00:00:00+00' WHERE operation_token=$1", &[&first.operation_token]).await?;
     drop(service);
     let reconnected = MimirService::connect(&cfg).await?;
     let old = reconnected
         .read_operation_reservation(first.operation_token)
         .await?
         .unwrap();
-    assert_eq!(old.operation_token, first.operation_token);
-    assert!(old.reserved_at < first.reserved_at);
+    assert_eq!(old, first);
+    assert_eq!(reconnected.reserve_operation(&key).await?, first);
+    for sql in [
+        "UPDATE mimir_operation_reservations SET reserved_at=now() WHERE operation_token=$1",
+        "UPDATE mimir_operation_request_keys SET request_key=request_key || '-changed' WHERE operation_token=$1",
+        "DELETE FROM mimir_operation_request_keys WHERE operation_token=$1",
+    ] {
+        let error = audit.execute(sql, &[&first.operation_token]).await.unwrap_err();
+        assert_eq!(error.code(), Some(&tokio_postgres::error::SqlState::CHECK_VIOLATION));
+        assert_eq!(reconnected.reserve_operation(&key).await?, first);
+    }
     assert_eq!(
         business_snapshot(&audit, &cfg.database.dbname).await?,
         before
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn simultaneous_same_key_keeps_one_reservation_and_original_time() -> Result<()> {
+    let cfg = config();
+    let first = MimirService::connect(&cfg).await?;
+    let second = MimirService::connect(&cfg).await?;
+    let audit = db::connect(&cfg.database).await?;
+    let key = request_key().await?;
+    let before: i64 = audit
+        .query_one("SELECT count(*) FROM mimir_operation_reservations", &[])
+        .await?
+        .get(0);
+    let (a, b) = tokio::join!(
+        first.reserve_operation(&key),
+        second.reserve_operation(&key)
+    );
+    let original = a?;
+    assert_eq!(b?, original);
+    let after: i64 = audit
+        .query_one("SELECT count(*) FROM mimir_operation_reservations", &[])
+        .await?
+        .get(0);
+    assert_eq!(after, before + 1, "the losing allocation must roll back");
+    assert_eq!(first.reserve_operation(&key).await?, original);
+    let distinct = format!("{key}-another-action");
+    assert_ne!(
+        first.reserve_operation(&distinct).await?.operation_token,
+        original.operation_token
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_or_rejected_key_publication_leaves_no_reservation() -> Result<()> {
+    let cfg = config();
+    let service = MimirService::connect(&cfg).await?;
+    let audit = db::connect(&cfg.database).await?;
+    let before: i64 = audit
+        .query_one("SELECT count(*) FROM mimir_operation_reservations", &[])
+        .await?
+        .get(0);
+    for key in ["", " \n\t"] {
+        let error = service
+            .reserve_operation(key)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("request_key") && error.contains("reuse"));
+    }
+    // The fixture owns this trigger and no live database is reachable.
+    audit.batch_execute("CREATE FUNCTION mimir_fixture_reject_key() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.request_key LIKE 'fixture-rejected-%' THEN RAISE EXCEPTION 'fixture refuses key publication'; END IF; RETURN NEW; END; $$; CREATE TRIGGER mimir_fixture_reject_key BEFORE INSERT ON mimir_operation_request_keys FOR EACH ROW EXECUTE FUNCTION mimir_fixture_reject_key();").await?;
+    let key = format!("fixture-rejected-{}", request_key().await?);
+    let rejected = service.reserve_operation(&key).await;
+    audit.batch_execute("DROP TRIGGER mimir_fixture_reject_key ON mimir_operation_request_keys; DROP FUNCTION mimir_fixture_reject_key();").await?;
+    assert!(rejected.is_err());
+    let after: i64 = audit
+        .query_one("SELECT count(*) FROM mimir_operation_reservations", &[])
+        .await?
+        .get(0);
+    assert_eq!(after, before);
+    // The caller can repair the cause and repeat the same key.
+    let original = service.reserve_operation(&key).await?;
+    assert_eq!(service.reserve_operation(&key).await?, original);
     Ok(())
 }
 
@@ -105,7 +187,10 @@ async fn original_request_survives_changed_input_reconnection_and_direct_mutatio
     let service = MimirService::connect(&cfg).await?;
     let audit = db::connect(&cfg.database).await?;
     let before = business_snapshot(&audit, &cfg.database.dbname).await?;
-    let token = service.reserve_operation().await?.operation_token;
+    let token = service
+        .reserve_operation(&request_key().await?)
+        .await?
+        .operation_token;
     let request = OperationBindingRequest::new(
         "delete_project".into(),
         json!({"project":"fixture-project", "selected":[1,2]}),
@@ -189,7 +274,10 @@ async fn concurrent_different_requests_have_one_immutable_winner() -> Result<()>
     let cfg = config();
     let first = MimirService::connect(&cfg).await?;
     let second = MimirService::connect(&cfg).await?;
-    let token = first.reserve_operation().await?.operation_token;
+    let token = first
+        .reserve_operation(&request_key().await?)
+        .await?
+        .operation_token;
     let one =
         OperationBindingRequest::new("delete_project".into(), json!({"project":"one"}), json!({}))?;
     let two =

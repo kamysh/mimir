@@ -128,14 +128,34 @@ impl AgeStore {
         ).await?.as_ref().map(decode_binding).transpose()
     }
 
-    /// PostgreSQL supplies both values. No business handler, automatic retry,
-    /// expiry, cleanup policy or application UUID generator runs here.
-    pub async fn reserve_operation(&self) -> Result<OperationReservation> {
-        let client = self.client.lock().await;
-        decode(client.query_one(
+    /// Reuse the exact key for one logical action, including after a lost reply.
+    /// PostgreSQL supplies the token and time. A competing allocation rolls back
+    /// completely before reading the winner; it leaves no extra reservation.
+    pub async fn reserve_operation(&self, request_key: &str) -> Result<OperationReservation> {
+        ensure!(
+            !request_key.trim().is_empty(),
+            "request_key is required and must not be blank; supply a stable name for this action and reuse that exact key on every retry"
+        );
+        let mut client = self.client.lock().await;
+        const READ: &str = "SELECT r.operation_token,r.reserved_at FROM mimir_operation_request_keys k JOIN mimir_operation_reservations r USING (operation_token) WHERE k.request_key=$1";
+        if let Some(row) = client.query_opt(READ, &[&request_key]).await? {
+            return decode(row);
+        }
+        let tx = client.transaction().await?;
+        let allocated = decode(tx.query_one(
             "INSERT INTO mimir_operation_reservations DEFAULT VALUES RETURNING operation_token, reserved_at",
             &[],
-        ).await?)
+        ).await?)?;
+        let inserted = tx.execute(
+            "INSERT INTO mimir_operation_request_keys (request_key,operation_token) VALUES ($1,$2) ON CONFLICT (request_key) DO NOTHING",
+            &[&request_key,&allocated.operation_token],
+        ).await?;
+        if inserted == 1 {
+            tx.commit().await?;
+            return Ok(allocated);
+        }
+        tx.rollback().await?;
+        decode(client.query_one(READ, &[&request_key]).await?)
     }
 
     pub async fn read_operation_reservation(

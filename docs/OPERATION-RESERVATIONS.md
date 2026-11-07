@@ -1,7 +1,7 @@
 # PostgreSQL-issued operation tokens
 
 The storage API can reserve an operation token before business publication.
-`reserve_operation` returns `operation_token` and `reserved_at` directly from
+`reserve_operation(request_key)` returns `operation_token` and `reserved_at` directly from
 PostgreSQL. The insert supplies neither value; the database uses its UUID and
 timestamp defaults. UUID allocation is an external database guarantee.
 
@@ -10,7 +10,14 @@ that exact token and returns the stored reservation or absence. It does not
 create a replacement token, infer an identity, retry automatically or filter
 by age. Reserving another token does not expire an earlier one.
 
-Reservation changes only `mimir_operation_reservations`. It creates no belief,
+Keep one exact request key for one action and reuse it if the reservation reply
+is lost. Repeating that key returns its original token and time. The key and
+reservation publish together; concurrent losing allocations roll back.
+Missing or blank keys are refused with repair instructions. The association
+never expires or changes. See [request keys](OPERATION-REQUEST-KEYS.md).
+
+Reservation changes only `mimir_operation_reservations` and its request-key
+metadata. It creates no belief,
 experience, vector or other business record. The additive migration creates
 that metadata table; it does not change historical migrations. The existing
 transaction and migration receipt rules still govern publication.
@@ -21,7 +28,8 @@ registered step order and client integration remain #122–#123 and
 that all operations recover correctly. Public reservation-control recovery is
 also an obligation of #163.
 
-The Agda reservation model proves readback of a published token and preservation
+The Agda reservation model proves readback by the original key, unchanged state
+and the original answer after a repeated reservation, and preservation
 of the complete business state for every transaction receipt, including both
 possible states after a lost acknowledgement. It contains no identity
 generator or UUID uniqueness proof.

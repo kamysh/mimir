@@ -6,6 +6,14 @@ use anyhow::Result;
 use mimir_core::{config::Config, db, operation_catalogue::CommitSite, store::*, MimirService};
 use serde_json::{json, Value};
 
+async fn request_key() -> Result<String> {
+    let client = db::connect(&config().database).await?;
+    Ok(client
+        .query_one("SELECT gen_random_uuid()::text", &[])
+        .await?
+        .get(0))
+}
+
 fn config() -> Config {
     Config {
         database: isolation::fixture().database_config(),
@@ -18,7 +26,10 @@ fn config() -> Config {
 
 async fn bound(name: &str) -> Result<(MimirService, OperationBindingRequest, uuid::Uuid)> {
     let service = MimirService::connect(&config()).await?;
-    let token = service.reserve_operation().await?.operation_token;
+    let token = service
+        .reserve_operation(&request_key().await?)
+        .await?
+        .operation_token;
     let request =
         OperationBindingRequest::new(name.into(), json!({"project":token.to_string()}), json!({}))?;
     assert!(matches!(
@@ -106,7 +117,7 @@ async fn a_saved_selection_is_reused_after_database_changes_and_reconnect() -> R
         let row=tx.query_one("SELECT operation_token::text FROM mimir_operation_reservations WHERE operation_token=$1",&[&own]).await?;
         Ok(vec![(CommitSite::BeliefDeletion,vec![row.get(0)])])
     })).await? else {panic!("plan missing")};
-    service.reserve_operation().await?;
+    service.reserve_operation(&request_key().await?).await?;
     drop(service);
     let reopened = MimirService::connect(&config()).await?;
     let PlanDecision::Ready(again) = reopened

@@ -301,8 +301,8 @@ module Single where
 -- Reservation metadata is separate from business publication. Identities and
 -- timestamps are supplied by PostgreSQL; this module has no identity generator
 -- or uniqueness proposition. The database primary-key/default contracts apply.
-module Reservations (Business Identity Timestamp : Set)
-  (_≟_ : (first second : Identity) → Dec (first ≡ second)) where
+module Reservations (Business Key Identity Timestamp : Set)
+  (_≟_ : (first second : Key) → Dec (first ≡ second)) where
 
   record Entry : Set where
     constructor entry
@@ -310,32 +310,61 @@ module Reservations (Business Identity Timestamp : Set)
 
   record State : Set where
     constructor state
-    field business : Business; entries : List Entry
+    field business : Business; entries : List (Key × Entry)
 
-  publish : State → Entry → State
-  publish before allocated = state (State.business before) (allocated ∷ State.entries before)
-
-  find : Identity → List Entry → Maybe Entry
-  find token [] = nothing
-  find token (allocated ∷ rest) with token ≟ Entry.token allocated
+  find : Key → List (Key × Entry) → Maybe Entry
+  find key [] = nothing
+  find key ((stored , allocated) ∷ rest) with key ≟ stored
   ... | yes _ = just allocated
-  ... | no _ = find token rest
+  ... | no _ = find key rest
 
-  readBack : State → Identity → Maybe Entry
-  readBack before token = find token (State.entries before)
+  readBack : State → Key → Maybe Entry
+  readBack before key = find key (State.entries before)
 
-  allocatedTokenIsReadable : ∀ before allocated →
-    readBack (publish before allocated) (Entry.token allocated) ≡ just allocated
-  allocatedTokenIsReadable before allocated with Entry.token allocated ≟ Entry.token allocated
+  publish : State → Key → Entry → State
+  publish before key allocated with readBack before key
+  ... | just original = before
+  ... | nothing = state (State.business before) ((key , allocated) ∷ State.entries before)
+
+  reply : State → Key → Entry → Entry
+  reply before key allocated with readBack before key
+  ... | just original = original
+  ... | nothing = allocated
+
+  originalReservationIsReadable : ∀ before key allocated →
+    readBack (publish before key allocated) key ≡ just (reply before key allocated)
+  originalReservationIsReadable before key allocated with readBack before key in observed
+  ... | just original = observed
+  ... | nothing with key ≟ key
   ... | yes _ = refl
   ... | no impossible = ⊥-elim (impossible refl)
 
-  businessUnchangedForEveryReceipt : ∀ before allocated receipt after →
-    Database.Atomic before (publish before allocated) receipt after →
+  existingReservationUnchanged : ∀ before key original allocated →
+    readBack before key ≡ just original → publish before key allocated ≡ before
+  existingReservationUnchanged before key original allocated observed rewrite observed = refl
+
+  retryKeepsOriginalReservation : ∀ before key first second →
+    publish (publish before key first) key second ≡ publish before key first
+  retryKeepsOriginalReservation before key first second =
+    existingReservationUnchanged (publish before key first) key (reply before key first) second
+      (originalReservationIsReadable before key first)
+
+  retryReturnsOriginalAnswer : ∀ before key first second →
+    reply (publish before key first) key second ≡ reply before key first
+  retryReturnsOriginalAnswer before key first second rewrite originalReservationIsReadable before key first = refl
+
+  proposedPreservesBusiness : ∀ before key allocated →
+    State.business (publish before key allocated) ≡ State.business before
+  proposedPreservesBusiness before key allocated with readBack before key
+  ... | just original = refl
+  ... | nothing = refl
+
+  businessUnchangedForEveryReceipt : ∀ before key allocated receipt after →
+    Database.Atomic before (publish before key allocated) receipt after →
     State.business after ≡ State.business before
-  businessUnchangedForEveryReceipt before allocated receipt after publication =
+  businessUnchangedForEveryReceipt before key allocated receipt after publication =
     Database.invariantPreserved (λ current → State.business current ≡ State.business before)
-      publication refl refl
+      publication refl (proposedPreservesBusiness before key allocated)
 
 -- This is the state selected by one reserved token. Request includes the
 -- admitted operation, arguments and relevant settings; equality is PostgreSQL

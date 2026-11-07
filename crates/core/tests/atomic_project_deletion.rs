@@ -15,6 +15,14 @@ use mimir_core::{
 use serde_json::json;
 use uuid::Uuid;
 
+async fn request_key() -> Result<String> {
+    let client = db::connect(&config().database).await?;
+    Ok(client
+        .query_one("SELECT gen_random_uuid()::text", &[])
+        .await?
+        .get(0))
+}
+
 fn config() -> Config {
     Config {
         database: isolation::fixture().database_config(),
@@ -133,7 +141,10 @@ async fn setup() -> Result<(AgeStore, MimirService)> {
     Ok((store, service))
 }
 async fn admitted(service: &MimirService, owned: &Owned) -> Result<(Uuid, RegisteredStep)> {
-    let token = service.reserve_operation().await?.operation_token;
+    let token = service
+        .reserve_operation(&request_key().await?)
+        .await?
+        .operation_token;
     let request = OperationBindingRequest::new(
         "delete_project".into(),
         json!({"project":owned.project}),
