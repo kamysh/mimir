@@ -2,6 +2,7 @@ mod conformance;
 mod learning;
 mod operation_plans;
 mod operation_steps;
+mod project_deletion;
 mod reservations;
 use anyhow::{bail, Result};
 use chrono::DateTime;
@@ -567,83 +568,6 @@ $$) AS (ok ag_catalog.agtype)"#
         self.recompute_learning(&tx, None, affected).await?;
         tx.commit().await?;
         Ok(true)
-    }
-
-    /// Delete all beliefs (and their edges) tagged with the given project.
-    /// Returns the number of beliefs deleted.
-    pub async fn delete_project(&self, project: &str) -> Result<usize> {
-        let g = &self.graph_name;
-        let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
-
-        // Count first so we can return a meaningful number.
-        // UUID-derived names avoid collision on connection reuse (PREPARE is session-scoped).
-        let stmt_count = format!("age_delproj_count_{}", Uuid::new_v4().simple());
-        let prepare_count = format!(
-            "PREPARE {stmt_count}(agtype) AS SELECT id::text \
-             FROM ag_catalog.cypher('{g}', $$ \
-             MATCH (n:Belief) WHERE n.project = $project RETURN n.id \
-             $$, $1) AS (id agtype)"
-        );
-        let exec_count = format!("EXECUTE {stmt_count}('{}')", sql_esc(&agtype_json));
-
-        let mut connection = self.client.lock().await;
-        let tx = learning_transaction(&mut connection).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
-        let client = tx.client();
-        client.simple_query(&prepare_count).await?;
-        let msgs = client.simple_query(&exec_count).await;
-        let _ = client
-            .simple_query(&format!("DEALLOCATE {stmt_count}"))
-            .await;
-        let msgs = msgs?;
-
-        let count = msgs
-            .iter()
-            .filter(|m| matches!(m, tokio_postgres::SimpleQueryMessage::Row(_)))
-            .count();
-        let ids: Vec<Uuid> = msgs
-            .iter()
-            .filter_map(|m| {
-                if let tokio_postgres::SimpleQueryMessage::Row(row) = m {
-                    row.get(0).and_then(|s| Uuid::parse_str(s).ok())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let stmt_del = format!("age_delproj_del_{}", Uuid::new_v4().simple());
-        let prepare_del = format!(
-            "PREPARE {stmt_del}(agtype) AS SELECT * \
-             FROM ag_catalog.cypher('{g}', $$ \
-             MATCH (n:Belief) WHERE n.project = $project DETACH DELETE n RETURN 1 \
-             $$, $1) AS (ok agtype)"
-        );
-        age_execute(client, &stmt_del, &prepare_del, &agtype_json).await?;
-
-        tx.commit().await?;
-
-        // Preserve separate publication of the pattern deletion while making
-        // both independent graph writers participate in the learning lock.
-        let tx = learning_transaction(&mut connection).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
-        let client = tx.client();
-        // Also purge Pattern nodes tagged with the same project.
-        let stmt_pat = format!("age_delproj_pat_{}", Uuid::new_v4().simple());
-        let prepare_pat = format!(
-            "PREPARE {stmt_pat}(agtype) AS SELECT * \
-             FROM ag_catalog.cypher('{g}', $$ \
-             MATCH (p:Pattern) WHERE p.project = $project DETACH DELETE p RETURN 1 \
-             $$, $1) AS (ok agtype)"
-        );
-        age_execute(client, &stmt_pat, &prepare_pat, &agtype_json).await?;
-
-        tx.commit().await?;
-        drop(connection);
-        self.delete_belief_embeddings(&ids).await?;
-        Ok(count)
     }
 
     pub async fn get_belief(&self, id: Uuid) -> Result<Option<Belief>> {

@@ -143,3 +143,23 @@ lost-acknowledgement states. PostgreSQL tests reject only the final answer after
 the step answer was inserted, then verify rollback of all three changes and a
 successful retry. These remain core storage APIs; public readback is connected
 by the later MCP and CLI integration issues.
+
+## Atomic project deletion
+
+The store and service project-deletion methods now use one transaction for
+beliefs, patterns, their graph edges, belief vectors, document chunks, chunk
+vectors and project learning records with their dependent history. IDs are
+collected before their discovery roots are removed. Patterns remain excluded
+from the returned count, which counts beliefs and document chunks.
+
+The registered deletion has one commit boundary. `delete_project_operation`
+accepts its checked step handle and saves the deletion count together with the
+whole closure deletion and final operation answer. Retrying that token returns
+the original count even though the rows have already gone. A failure while
+saving the result rolls the entire deletion back.
+
+The existing public interfaces still need their token binding from #85–#86.
+Their current calls use the same atomic closure, but do not yet acquire a
+saved operation result automatically. The intended-outcome and convergence
+proofs remain #126–#127. This change removes the separate deletion commits; it
+does not claim that the dispatcher already requires every operation's proof.

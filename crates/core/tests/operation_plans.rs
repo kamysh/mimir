@@ -30,7 +30,7 @@ async fn bound(name: &str) -> Result<(MimirService, OperationBindingRequest, uui
 
 #[tokio::test]
 async fn wrong_order_never_runs_work_and_completion_requires_all_steps() -> Result<()> {
-    let (service, request, token) = bound("delete_project").await?;
+    let (service, request, token) = bound("record_defeat").await?;
     let PlanDecision::Ready(plan) = service
         .prepare_operation(token, &request, |_, _| Box::pin(async { Ok(vec![]) }))
         .await?

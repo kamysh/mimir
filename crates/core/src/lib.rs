@@ -315,14 +315,14 @@ impl MimirService {
     /// Delete all beliefs and DocumentChunks tagged with the given project.
     /// Returns the combined count of vertices removed.
     pub async fn delete_project(&self, project: &str) -> Result<usize> {
-        let belief_count = self.store.delete_project(project).await?;
-        // Also clear document chunks tagged with this project.
-        let chunk_ids = self.store.get_chunk_ids_by_project(project).await?;
-        let chunk_count = chunk_ids.len();
-        self.store.delete_document_chunks(&chunk_ids).await?;
-        self.store.delete_chunk_embeddings(&chunk_ids).await?;
-        self.store.delete_learning_project(project).await?;
-        Ok(belief_count + chunk_count)
+        self.store.delete_project(project).await
+    }
+
+    pub async fn delete_project_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.delete_project_operation(step).await
     }
 
     /// Get a pattern by ID.

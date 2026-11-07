@@ -58,19 +58,8 @@ impl TestCtx {
     }
 
     async fn cleanup(&self) {
-        // BUG FIX (2026-08-13): this previously called only self.store.delete_project,
-        // the store-layer method that deletes Belief/Pattern vertices ONLY — it has no
-        // knowledge of DocumentChunk. MimirService::delete_project (lib.rs) is the
-        // service-layer wrapper that additionally clears DocumentChunk vertices and
-        // their pgvector rows; tests must mirror that, or every chunk a test creates
-        // leaks into the live graph permanently, on every successful run (not just
-        // crashes — confirmed live: 296 DocumentChunk vertices in production, the
-        // overwhelming majority from `_test-*` projects never cleaned up).
+        // The store removes graph, vector and learning ownership together.
         let _ = self.store.delete_project(&self.project).await;
-        if let Ok(chunk_ids) = self.store.get_chunk_ids_by_project(&self.project).await {
-            let _ = self.store.delete_document_chunks(&chunk_ids).await;
-            let _ = self.store.delete_chunk_embeddings(&chunk_ids).await;
-        }
     }
 }
 

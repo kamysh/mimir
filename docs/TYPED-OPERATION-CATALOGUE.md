@@ -28,10 +28,11 @@ schema by itself is not evidence that all business conditions were checked.
 
 Committed boundaries describe actual publication sites, rather than every SQL
 query inside a transaction. Propagation and document replacement each publish
-through one transaction. Project deletion currently has six independently
-committed steps; #125 must replace that sequence with one atomic deletion.
-Its declaration is deliberately about the current code, not a claim that the
-design is already recoverable.
+through one transaction. Project deletion also has one boundary: its graph
+roots, dependent vectors, chunks and learning records publish together. Its
+registered token path saves the original result in that same transaction.
+This declaration describes the native publication boundary; the independent
+intended-outcome and recovery proofs remain separate obligations.
 
 A boundary can be skipped when execution stops earlier or its branch is not
 taken. Grounding and sweeping can revisit the same site for multiple selected
