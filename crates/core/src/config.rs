@@ -101,6 +101,140 @@ pub struct Config {
     pub judge: Option<toml::Table>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<toml::Table>,
+    /// Optional until sweeping; no retention period is chosen by the application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retirement: Option<toml::Value>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RetirementPolicy {
+    hours: f64,
+    duration: chrono::Duration,
+}
+impl RetirementPolicy {
+    pub fn grace_hours(&self) -> f64 {
+        self.hours
+    }
+    pub(crate) fn duration(&self) -> chrono::Duration {
+        self.duration
+    }
+}
+
+#[derive(Debug)]
+pub struct RetirementIssue(crate::interaction::NeedsInput);
+impl RetirementIssue {
+    pub fn correction(&self) -> &crate::interaction::NeedsInput {
+        &self.0
+    }
+}
+impl std::fmt::Display for RetirementIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.issues()[0].fault().message)
+    }
+}
+impl std::error::Error for RetirementIssue {}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    fn setting(value: toml::Value) -> toml::Value {
+        let mut table = toml::Table::new();
+        table.insert("grace_hours".into(), value);
+        toml::Value::Table(table)
+    }
+    #[test]
+    fn missing_and_invalid_retention_never_choose_a_period() {
+        let mut cases = vec![
+            None,
+            Some(toml::Value::String("not a table".into())),
+            Some(toml::Value::Table(toml::Table::new())),
+        ];
+        cases.extend(
+            [
+                toml::Value::String("24".into()),
+                toml::Value::Float(-1.0),
+                toml::Value::Float(f64::NAN),
+                toml::Value::Float(f64::INFINITY),
+                toml::Value::Float(1e300),
+            ]
+            .map(|value| Some(setting(value))),
+        );
+        for value in cases {
+            let issue = retirement_policy(value.as_ref()).unwrap_err();
+            assert_eq!(
+                issue.correction().issues()[0].location(),
+                crate::interaction::Location::Configuration
+            );
+            let encoded = serde_json::to_value(issue.correction()).unwrap();
+            assert_eq!(encoded["status"], "needs_input");
+            assert_eq!(encoded["business_changes"], "none");
+            assert!(encoded.to_string().contains("user"));
+        }
+    }
+    #[test]
+    fn only_explicit_policy_can_choose_zero_and_subminute_period_is_kept() {
+        let zero = retirement_policy(Some(&setting(toml::Value::Integer(0)))).unwrap();
+        assert_eq!(zero.duration(), chrono::Duration::zero());
+        let precise = retirement_policy(Some(&setting(toml::Value::Float(0.000001)))).unwrap();
+        assert_eq!(precise.duration().num_nanoseconds(), Some(3_600_000));
+        assert_eq!(precise.grace_hours(), 0.000001);
+    }
+}
+
+pub(crate) fn retirement_policy(
+    raw: Option<&toml::Value>,
+) -> Result<RetirementPolicy, RetirementIssue> {
+    use crate::interaction::{CorrectionItem, Location, NeedsInput};
+    use crate::validation::{Code, Fault, Segment};
+    let issue = |code, field: Option<&str>, message: &str| {
+        let mut path = vec![Segment::Key("retirement".into())];
+        if let Some(field) = field {
+            path.push(Segment::Key(field.into()));
+        }
+        RetirementIssue(NeedsInput::new(CorrectionItem::new(Location::Configuration,
+            Fault{path,code,message:message.into()},
+            "A user-chosen finite nonnegative retirement.grace_hours value in Mimir configuration.".into(),
+            "Ask the user to choose or repair [retirement].grace_hours, then reload the client configuration. Do not send a per-call override or guess a default.".into()
+        ).expect("fixed policy diagnostics contain a repair"),vec![]).expect("a policy diagnostic contains an issue"))
+    };
+    let Some(raw) = raw else {
+        return Err(issue(Code::MissingField,Some("grace_hours"),"Sweeping is paused: the user has not configured retirement.grace_hours. No retention period was chosen."));
+    };
+    let table = raw.as_table().ok_or_else(|| {
+        issue(
+            Code::WrongType,
+            None,
+            "retirement must be a configuration table containing the user's grace_hours choice.",
+        )
+    })?;
+    if let Some(unknown) = table.keys().find(|key| key.as_str() != "grace_hours") {
+        return Err(issue(
+            Code::UnknownField,
+            Some(unknown),
+            "This retirement setting is unknown; the accepted field is grace_hours.",
+        ));
+    }
+    let hours = table.get("grace_hours").ok_or_else(|| {
+        issue(
+            Code::MissingField,
+            Some("grace_hours"),
+            "Sweeping is paused: retirement.grace_hours requires an explicit user decision.",
+        )
+    })?;
+    let hours = hours
+        .as_float()
+        .or_else(|| hours.as_integer().map(|number| number as f64))
+        .ok_or_else(|| {
+            issue(
+                Code::WrongType,
+                Some("grace_hours"),
+                "retirement.grace_hours must be a number chosen by the user.",
+            )
+        })?;
+    let duration=std::time::Duration::try_from_secs_f64(hours * 3600.0)
+        .ok().and_then(|value|chrono::Duration::from_std(value).ok())
+        .ok_or_else(||issue(Code::InvalidNumber,Some("grace_hours"),"retirement.grace_hours must be finite, nonnegative and representable by the clock. No replacement period was chosen."))?;
+    Ok(RetirementPolicy { hours, duration })
 }
 
 impl std::fmt::Debug for Config {
@@ -131,6 +265,9 @@ fn write_private_config(path: &std::path::Path, content: &str) -> anyhow::Result
 }
 
 impl Config {
+    pub fn retirement_policy(&self) -> Result<RetirementPolicy, RetirementIssue> {
+        retirement_policy(self.retirement.as_ref())
+    }
     pub fn config_path() -> std::path::PathBuf {
         if let Some(path) = std::env::var_os("MIMIR_CONFIG") {
             return std::path::PathBuf::from(path);
@@ -320,6 +457,7 @@ impl Config {
             llm: None,
             judge: None,
             email: None,
+            retirement: None,
         };
         let content = crate::operations::Operations::defaults()?.header()?
             + &toml::to_string_pretty(&config)?;

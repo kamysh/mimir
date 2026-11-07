@@ -23,7 +23,6 @@ module Bound (database : ℕ) (sum : List Float → Float) (reads : Committed.Co
 
   data External : I.Effect → Set where
     clock : External I.clock
-    chrono : ∀ hours → External (I.convertGraceHours hours)
     iteration : ∀ ids → External (I.hashIteration ids)
 
   data Receipt : (effect : I.Effect) → I.Reply effect → Set where

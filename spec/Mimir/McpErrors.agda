@@ -159,7 +159,7 @@ emittedRefusalPreserved certified = roundTrip (CertifiedRefusal.report certified
 -- A server may claim no business changes only with the corresponding actual
 -- state equality. Unknown write outcomes still require receipt inspection.
 module AgentCorrection where
-  data Location : Set where request arguments : Location
+  data Location : Set where request arguments configuration : Location
 
   record Item : Set where
     constructor item
@@ -184,6 +184,7 @@ module AgentCorrection where
   locationName : Location → Text
   locationName request = toList "request"
   locationName arguments = toList "arguments"
+  locationName configuration = toList "configuration"
 
   instruction : Text
   instruction = toList "Correct the indicated fields and retry. If a required value is not known, ask the user instead of guessing."

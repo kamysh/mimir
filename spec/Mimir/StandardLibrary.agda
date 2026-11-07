@@ -9,12 +9,14 @@ open import Data.Bool using (Bool)
 open import Data.List using (List; length)
 open import Data.Maybe using (Maybe; just)
 open import Data.Nat using (ℕ; _≤_; _*_)
+open import Data.Integer using (ℤ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text using (Text; byteLength)
 open import Mimir.Bits using (Byte)
 open import Mimir.Binary64 using (power)
 import Mimir.FloatValue as Float
+import Mimir.Binary64 as Binary
 import Mimir.StructuredValue as Value
 import Mimir.ExactBytes as Bytes
 import Mimir.UUIDGroups as UUID
@@ -42,6 +44,10 @@ data ReadResult {A : Set} (decode : Value.Value → Validation.Fault ⊎ A) : Se
 record Contract : Set₁ where
   field
     cast : Fin (power 64) → Float.Number
+    -- Checked std::time/chrono conversion of an explicitly configured number
+    -- of hours. Nonfinite, negative and unrepresentable durations return none;
+    -- zero is an explicitly chosen immediate policy, never an omitted value.
+    userHoursToNanoseconds : Binary.Number → Maybe ℤ
     -- Generic Value parsing uses library object normalization.
     jsonValue : List Byte → JSONResult
     -- MCP's Serde visitor observes every member before map insertion. This

@@ -13,6 +13,7 @@ open import Data.Product using (Σ; _×_; _,_)
 open import Data.String using (toList)
 open import Data.Empty using (⊥-elim)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.Unit using (tt)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Validation using (Fault; fault; key; unknownField)
@@ -83,7 +84,11 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
     unknown : lookup name ≡ nothing → Handled name raw [] (inputCorrection (unknownTool name))
     invalid : ∀ tool fault → lookup name ≡ just tool → D.readTool tool raw ≡ inj₁ fault →
       Handled name raw [] (inputCorrection (invalidArguments fault))
+    configuration : ∀ tool request detail → lookup name ≡ just tool → D.readTool tool raw ≡ inj₂ request →
+      A.admission request ≡ inj₁ detail →
+      Handled name raw [] (inputCorrection (Application.configurationCorrection detail))
     executed : ∀ tool request events result → lookup name ≡ just tool → D.readTool tool raw ≡ inj₂ request →
+      A.admission request ≡ inj₂ tt →
       A.Runs (A.start request) events result → Handled name raw events (finish result)
 
   record Operation (name : Envelope.Text) (raw : V.Value) (events : List A.Event) (value : V.Value) : Set where
@@ -94,13 +99,14 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
       result : A.Result
       named : lookup name ≡ just tool
       decoded : D.readTool tool raw ≡ inj₂ request
+      admitted : A.admission request ≡ inj₂ tt
       execution : A.Runs (A.start request) events result
       projected : finish result ≡ completed value
 
   successWitness : ∀ name raw events reply value → Handled name raw events reply →
     reply ≡ completed value → Operation name raw events value
-  successWitness name raw events reply value (executed tool request events₁ result named decoded ran) same =
-    operation tool request result named decoded ran same
+  successWitness name raw events reply value (executed tool request events₁ result named decoded admitted ran) same =
+    operation tool request result named decoded admitted ran same
 
   successRequiresOperation : ∀ name raw events value → Handled name raw events (completed value) →
     Operation name raw events value
@@ -115,7 +121,8 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
     reply ≡ inputCorrection report → events ≡ []
   correctionWitness name raw events reply report (unknown named) same = refl
   correctionWitness name raw events reply report (invalid tool detail named decoded) same = refl
-  correctionWitness name raw events reply report (executed tool request events₁ result named decoded ran) same =
+  correctionWitness name raw events reply report (configuration tool request detail named decoded notAdmitted) same = refl
+  correctionWitness name raw events reply report (executed tool request events₁ result named decoded admitted ran) same =
     ⊥-elim (completionCannotRequestCorrection result report same)
 
   admissionCorrectionsHaveNoEvents : ∀ name raw events report →

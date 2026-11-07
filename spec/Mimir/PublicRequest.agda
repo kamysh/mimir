@@ -44,7 +44,7 @@ data Request : Set where
   delete : Delete.Kind → ℕ → Request
   deleteProject : Text → Request
   inference : Inference.Request → Request
-  sweepHours : Maybe Text → Float → Float → Request
+  sweepConfigured : Maybe Text → Float → Request
   relevant : Text → Ranking.Selection → Maybe Text → Maybe C.Memory → Bool → Ranking.Selection → Request
   addEvidence : ℕ → ℕ → Float → Request -- belief, chunk, weight
   removeEvidence : ℕ → ℕ → Request -- existing core-library API; no new MCP tool
@@ -87,7 +87,7 @@ acceptedFields Tools.listBeliefs = Data.List.map toList ("limit" ∷ "memory_typ
 acceptedFields Tools.listPatterns = Data.List.map toList ("project" ∷ [])
 acceptedFields Tools.getContradictions = Data.List.map toList ("project" ∷ [])
 acceptedFields Tools.decayAll = Data.List.map toList ("decay_factor" ∷ "project" ∷ [])
-acceptedFields Tools.sweepExpiredDefeated = Data.List.map toList ("grace_hours" ∷ "prob_threshold" ∷ "project" ∷ [])
+acceptedFields Tools.sweepExpiredDefeated = Data.List.map toList ("prob_threshold" ∷ "project" ∷ [])
 acceptedFields Tools.queryRelevant = Data.List.map toList ("context" ∷ "evidence_per_belief" ∷ "include_evidence" ∷ "limit" ∷ "prefer_type" ∷ "project" ∷ [])
 acceptedFields Tools.addEvidence = Data.List.map toList ("belief_id" ∷ "chunk_id" ∷ "weight" ∷ [])
 acceptedFields Tools.getEvidence = Data.List.map toList ("belief_id" ∷ [])
@@ -186,8 +186,8 @@ module Decode (conversion : Conversion.Contract) where
   decode Tools.listPatterns fields = inj₂ (read (Read.listPatterns (project fields)))
   decode Tools.getContradictions fields = inj₂ (inference (Inference.contradictions (project fields)))
   decode Tools.decayAll fields = inj₂ (inference (Inference.decay (project fields) (loose "decay_factor" 0.99 float fields)))
-  decode Tools.sweepExpiredDefeated fields = inj₂ (sweepHours (project fields)
-    (loose "prob_threshold" 0.3 float fields) (loose "grace_hours" 24.0 float fields))
+  decode Tools.sweepExpiredDefeated fields = inj₂ (sweepConfigured (project fields)
+    (loose "prob_threshold" 0.3 float fields))
   decode Tools.queryRelevant fields = required "context" V.asString fields >>= λ context →
     memoryField (toList "prefer_type") fields >>= λ preference →
     selection "limit" fields >>= λ limit → selection "evidence_per_belief" fields >>= λ per →
@@ -243,7 +243,6 @@ module Decode (conversion : Conversion.Contract) where
     supplied "include_evidence" V.asBoolean fields >>= λ _ →
     supplied "decay_factor" float fields >>= λ _ →
     supplied "prob_threshold" float fields >>= λ _ →
-    supplied "grace_hours" float fields >>= λ _ →
     supplied "weight" float fields
 
   admittedFields : Tools.Tool → V.Object.View → Fault ⊎ Request

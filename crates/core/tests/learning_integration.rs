@@ -24,6 +24,7 @@ async fn service() -> MimirService {
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     })
     .await
     .unwrap()
@@ -1457,6 +1458,7 @@ async fn grounding_removal_recomputes_without_erasing_independent_support() {
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     };
     let raw = AgeStore::new(
         db::connect(&config.database).await.unwrap(),

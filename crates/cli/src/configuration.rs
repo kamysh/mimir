@@ -33,6 +33,9 @@ pub fn dispatch(command: Command) -> Result<()> {
         operations::upgrade(&path, directory.as_deref())?;
     }
     let (core, operations) = Config::load_with_operations(&path)?;
+    if core.retirement.is_some() {
+        core.retirement_policy()?;
+    }
     if core.judge.is_some() || core.llm.is_some() {
         super::judge::config::load(Some(&path))?;
     }

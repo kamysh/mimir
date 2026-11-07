@@ -1,6 +1,8 @@
 # Required global operational settings; put config_version before any table.
 # For an existing file use: mimir config upgrade --log-directory /absolute/path/to/logs
 config_version = 1
+# Sweeping also needs the user's explicit [retirement].grace_hours choice.
+# It is intentionally unset here; see docs/BELIEF-RETENTION.md. Do not guess it.
 [logging]
 directory = "/ABSOLUTE/HOME/.local/state/mimir/logs"
 max_file_bytes = 1048576

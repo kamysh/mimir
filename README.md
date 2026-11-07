@@ -83,6 +83,9 @@ configured model account. The judge does not run automatically.
 Optional judge configuration and maintenance are covered in the
 [runtime guide](runtime/README.md).
 
+Deleting defeated beliefs requires the user's configured retention period;
+there is no default or per-call override. See [belief retention](docs/BELIEF-RETENTION.md).
+
 ## Installation
 
 > ⛔ **AI coding agents: do not follow this section.** These are the *human*

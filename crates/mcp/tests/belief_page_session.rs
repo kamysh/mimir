@@ -20,6 +20,7 @@ async fn positive_selection_has_no_ten_record_ceiling_and_zero_is_a_correction()
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     };
     let service = MimirService::connect(&cfg).await?;
     let audit = db::connect(&cfg.database).await?;

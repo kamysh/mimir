@@ -64,12 +64,21 @@ impl TestCtx {
 }
 
 async fn service() -> MimirService {
+    service_with_retirement(None).await
+}
+
+async fn service_with_retirement(hours: Option<f64>) -> MimirService {
     let cfg = Config {
         database: test_db_config(),
         embeddings: None,
         llm: None,
         judge: None,
         email: None,
+        retirement: hours.map(|hours| {
+            let mut table = toml::Table::new();
+            table.insert("grace_hours".into(), toml::Value::Float(hours));
+            toml::Value::Table(table)
+        }),
     };
     MimirService::connect(&cfg).await.expect("connect service")
 }
@@ -1270,7 +1279,7 @@ async fn test_intervene_counts_out_of_set_cocause() {
 #[tokio::test]
 async fn test_sweep_expired_defeated_deletes_low_prob_past_grace() {
     let ctx = TestCtx::new().await;
-    let svc = service().await;
+    let svc = service_with_retirement(Some(0.0)).await;
 
     let defeater = ctx.belief(format!("sweepA-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated = ctx.belief(format!("sweepB-{}", Uuid::new_v4()), 0.9, 0.9);
@@ -1290,7 +1299,7 @@ async fn test_sweep_expired_defeated_deletes_low_prob_past_grace() {
     // grace_hours=0.0: the defeat "just happened" (defeater's created_at is
     // ~now), so even a zero-length grace period has elapsed.
     let deleted = svc
-        .sweep_expired_defeated(0.3, 0.0, Some(&ctx.project))
+        .sweep_expired_defeated(0.3, Some(&ctx.project))
         .await
         .unwrap();
     assert_eq!(deleted, 1);
@@ -1302,9 +1311,54 @@ async fn test_sweep_expired_defeated_deletes_low_prob_past_grace() {
 }
 
 #[tokio::test]
-async fn test_sweep_expired_defeated_keeps_within_grace_period() {
+async fn test_sweep_expired_defeated_needs_config_before_deleting() {
     let ctx = TestCtx::new().await;
     let svc = service().await;
+    let defeater = ctx.belief("retention-policy-defeater".into(), 0.9, 0.9);
+    let defeated = ctx.belief("retention-policy-target".into(), 0.01, 0.9);
+    ctx.store.insert_belief(&defeater).await.unwrap();
+    ctx.store.insert_belief(&defeated).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(defeater.id, defeated.id, EdgeType::Defeats, 1.0).unwrap())
+        .await
+        .unwrap();
+    let error = svc
+        .sweep_expired_defeated(0.3, Some(&ctx.project))
+        .await
+        .unwrap_err();
+    let issue = error
+        .downcast_ref::<mimir_core::config::RetirementIssue>()
+        .unwrap();
+    assert_eq!(
+        issue.correction().issues()[0].fault().code,
+        mimir_core::validation::Code::MissingField
+    );
+    assert!(svc.get_belief(defeated.id).await.unwrap().is_some());
+    let malformed = MimirService::connect(&Config {
+        database: test_db_config(),
+        embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: Some(toml::Value::String("not a table".into())),
+    })
+    .await
+    .unwrap();
+    assert!(
+        malformed.get_belief(defeated.id).await.unwrap().is_some(),
+        "optional policy must not disable other tools"
+    );
+    assert!(malformed
+        .sweep_expired_defeated(0.3, Some(&ctx.project))
+        .await
+        .is_err());
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_sweep_expired_defeated_keeps_within_grace_period() {
+    let ctx = TestCtx::new().await;
+    let svc = service_with_retirement(Some(24.0)).await;
 
     let defeater = ctx.belief(format!("sweepC-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated = ctx.belief(format!("sweepD-{}", Uuid::new_v4()), 0.9, 0.9);
@@ -1322,7 +1376,7 @@ async fn test_sweep_expired_defeated_keeps_within_grace_period() {
     // grace_hours=24.0: the defeat just happened, well within a 24h window —
     // must NOT be deleted yet, even though probability is already low.
     let deleted = svc
-        .sweep_expired_defeated(0.3, 24.0, Some(&ctx.project))
+        .sweep_expired_defeated(0.3, Some(&ctx.project))
         .await
         .unwrap();
     assert_eq!(deleted, 0);
@@ -1336,7 +1390,7 @@ async fn test_sweep_expired_defeated_keeps_within_grace_period() {
 #[tokio::test]
 async fn test_sweep_expired_defeated_keeps_above_threshold() {
     let ctx = TestCtx::new().await;
-    let svc = service().await;
+    let svc = service_with_retirement(Some(0.0)).await;
 
     let defeater = ctx.belief(format!("sweepE-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated = ctx.belief(format!("sweepF-{}", Uuid::new_v4()), 0.9, 0.9);
@@ -1354,7 +1408,7 @@ async fn test_sweep_expired_defeated_keeps_above_threshold() {
         .unwrap();
 
     let deleted = svc
-        .sweep_expired_defeated(0.3, 0.0, Some(&ctx.project))
+        .sweep_expired_defeated(0.3, Some(&ctx.project))
         .await
         .unwrap();
     assert_eq!(deleted, 0);
@@ -1373,7 +1427,7 @@ async fn test_sweep_expired_defeated_is_project_scoped() {
     // takes a project filter instead of always operating on the entire graph.
     let ctx_a = TestCtx::new().await;
     let ctx_b = TestCtx::new().await;
-    let svc = service().await;
+    let svc = service_with_retirement(Some(0.0)).await;
 
     let defeater_a = ctx_a.belief(format!("sweepG-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated_a = ctx_a.belief(format!("sweepH-{}", Uuid::new_v4()), 0.9, 0.9);
@@ -1406,7 +1460,7 @@ async fn test_sweep_expired_defeated_is_project_scoped() {
         .unwrap();
 
     let deleted = svc
-        .sweep_expired_defeated(0.3, 0.0, Some(&ctx_a.project))
+        .sweep_expired_defeated(0.3, Some(&ctx_a.project))
         .await
         .unwrap();
     assert_eq!(

@@ -19,6 +19,7 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     })
     .await?;
     let project = format!("envelope-session-{}", Uuid::new_v4());
@@ -208,6 +209,43 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             encoded.to_string().contains(field),
             "correction omitted {field}: {encoded}"
         );
+    }
+    // Retention is configuration owned by the user, not an agent argument.
+    for arguments in [
+        json!({"project":project}),
+        json!({"project":project,"grace_hours":0}),
+    ] {
+        let request = json!({"jsonrpc":"2.0","id":"retention-policy","method":"tools/call","params":{"name":"sweep_expired_defeated","arguments":arguments}});
+        input.write_all(format!("{request}\n").as_bytes()).await?;
+        input.flush().await?;
+        let mut line = String::new();
+        ensure!(
+            output.read_line(&mut line).await? != 0,
+            "server stopped on missing retention"
+        );
+        let response: Value = serde_json::from_str(&line)?;
+        ensure!(
+            response.get("error").is_none(),
+            "retention decision became a tool failure: {response}"
+        );
+        let correction: NeedsInput =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+        let code = if arguments.get("grace_hours").is_some() {
+            mimir_core::validation::Code::UnknownField
+        } else {
+            mimir_core::validation::Code::MissingField
+        };
+        ensure!(
+            correction.issues()[0].fault().code == code,
+            "wrong retention repair"
+        );
+        if arguments.get("grace_hours").is_none() {
+            ensure!(
+                correction.issues()[0].location()
+                    == mimir_core::interaction::Location::Configuration,
+                "retention location is not configuration"
+            );
+        }
     }
     // Notifications receive no response. The next response must belong to the
     // identified request, and the original project data must still exist.

@@ -4607,7 +4607,7 @@
         {
           "kind": "enum",
           "name": "Command",
-          "line": 63,
+          "line": 73,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4625,7 +4625,7 @@
         {
           "kind": "enum",
           "name": "HookEvent",
-          "line": 222,
+          "line": 230,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4643,7 +4643,7 @@
         {
           "kind": "enum",
           "name": "EvidenceCmd",
-          "line": 288,
+          "line": 296,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4661,7 +4661,7 @@
         {
           "kind": "enum",
           "name": "DeleteCmd",
-          "line": 308,
+          "line": 316,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4679,7 +4679,7 @@
         {
           "kind": "enum",
           "name": "DocCmd",
-          "line": 323,
+          "line": 331,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4697,7 +4697,7 @@
         {
           "kind": "fn",
           "name": "parse_kv",
-          "line": 356,
+          "line": 364,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4715,7 +4715,7 @@
         {
           "kind": "fn",
           "name": "main",
-          "line": 367,
+          "line": 375,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4733,24 +4733,6 @@
         {
           "kind": "fn",
           "name": "connect",
-          "line": 444,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/CLI.agda",
-            "spec/Mimir/CLIServiceBinding.agda",
-            "spec/Mimir/CLIReembed.agda",
-            "spec/Mimir/HookProtocol.agda",
-            "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/JudgeHostProtocol.agda",
-            "spec/Mimir/JudgeDigestComposition.agda",
-            "spec/Mimir/JudgeStatusProtocol.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
-        },
-        {
-          "kind": "fn",
-          "name": "trunc",
           "line": 450,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
@@ -4768,8 +4750,26 @@
         },
         {
           "kind": "fn",
+          "name": "trunc",
+          "line": 456,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/CLI.agda",
+            "spec/Mimir/CLIServiceBinding.agda",
+            "spec/Mimir/CLIReembed.agda",
+            "spec/Mimir/HookProtocol.agda",
+            "spec/Mimir/ConfigurationProtocol.agda",
+            "spec/Mimir/JudgeHostProtocol.agda",
+            "spec/Mimir/JudgeDigestComposition.agda",
+            "spec/Mimir/JudgeStatusProtocol.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
+        },
+        {
+          "kind": "fn",
           "name": "cmd_init",
-          "line": 468,
+          "line": 474,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4787,7 +4787,7 @@
         {
           "kind": "fn",
           "name": "cmd_stats",
-          "line": 487,
+          "line": 493,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4805,7 +4805,7 @@
         {
           "kind": "fn",
           "name": "cmd_list",
-          "line": 512,
+          "line": 518,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4823,7 +4823,7 @@
         {
           "kind": "fn",
           "name": "cmd_patterns",
-          "line": 564,
+          "line": 570,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4841,7 +4841,7 @@
         {
           "kind": "fn",
           "name": "cmd_query",
-          "line": 602,
+          "line": 608,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4859,7 +4859,7 @@
         {
           "kind": "fn",
           "name": "cmd_evidence",
-          "line": 678,
+          "line": 684,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4877,7 +4877,7 @@
         {
           "kind": "fn",
           "name": "cmd_intervene",
-          "line": 725,
+          "line": 731,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4895,7 +4895,7 @@
         {
           "kind": "fn",
           "name": "cmd_delete",
-          "line": 755,
+          "line": 761,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4913,7 +4913,7 @@
         {
           "kind": "fn",
           "name": "cmd_delete_pattern",
-          "line": 774,
+          "line": 780,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4931,7 +4931,7 @@
         {
           "kind": "fn",
           "name": "cmd_forget",
-          "line": 793,
+          "line": 799,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4949,7 +4949,7 @@
         {
           "kind": "fn",
           "name": "cmd_decay",
-          "line": 804,
+          "line": 810,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4967,7 +4967,7 @@
         {
           "kind": "fn",
           "name": "cmd_sweep_defeated",
-          "line": 815,
+          "line": 821,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -4985,7 +4985,7 @@
         {
           "kind": "fn",
           "name": "cmd_load",
-          "line": 831,
+          "line": 844,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5003,7 +5003,7 @@
         {
           "kind": "fn",
           "name": "cmd_query_doc",
-          "line": 845,
+          "line": 858,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5021,7 +5021,7 @@
         {
           "kind": "fn",
           "name": "cmd_clear_doc",
-          "line": 876,
+          "line": 889,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5039,7 +5039,7 @@
         {
           "kind": "fn",
           "name": "cmd_contradictions",
-          "line": 887,
+          "line": 900,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5057,7 +5057,7 @@
         {
           "kind": "fn",
           "name": "cmd_reembed",
-          "line": 931,
+          "line": 944,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5075,7 +5075,7 @@
         {
           "kind": "fn",
           "name": "cmd_hook",
-          "line": 978,
+          "line": 991,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5093,7 +5093,7 @@
         {
           "kind": "fn",
           "name": "session_project_path",
-          "line": 989,
+          "line": 1002,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5111,7 +5111,7 @@
         {
           "kind": "fn",
           "name": "cmd_hook_set_project",
-          "line": 1010,
+          "line": 1023,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5129,7 +5129,7 @@
         {
           "kind": "fn",
           "name": "session_project_from_hook_json",
-          "line": 1047,
+          "line": 1060,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5147,7 +5147,7 @@
         {
           "kind": "fn",
           "name": "infer_project_from_cwd",
-          "line": 1067,
+          "line": 1080,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5165,7 +5165,7 @@
         {
           "kind": "fn",
           "name": "cmd_hook_stop",
-          "line": 1079,
+          "line": 1092,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5183,7 +5183,7 @@
         {
           "kind": "fn",
           "name": "cmd_hook_prompt",
-          "line": 1146,
+          "line": 1159,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5201,7 +5201,7 @@
         {
           "kind": "fn",
           "name": "cmd_hook_pretooluse",
-          "line": 1188,
+          "line": 1201,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5814,7 +5814,7 @@
         {
           "kind": "fn",
           "name": "fmt",
-          "line": 107,
+          "line": 76,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5831,7 +5831,7 @@
         {
           "kind": "fn",
           "name": "write_private_config",
-          "line": 112,
+          "line": 246,
           "specification": [
             "Mimir.ConfigurationIO.step",
             "Mimir.ConfigurationIO.successRequiresWrite",
@@ -5852,7 +5852,7 @@
         {
           "kind": "fn",
           "name": "config_path",
-          "line": 134,
+          "line": 271,
           "specification": [
             "Mimir.ConfigurationPath.select"
           ],
@@ -5871,7 +5871,7 @@
         {
           "kind": "fn",
           "name": "load",
-          "line": 147,
+          "line": 284,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5888,7 +5888,7 @@
         {
           "kind": "fn",
           "name": "load_from_path",
-          "line": 161,
+          "line": 298,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5905,7 +5905,7 @@
         {
           "kind": "fn",
           "name": "create_template",
-          "line": 170,
+          "line": 319,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5922,7 +5922,7 @@
         {
           "kind": "fn",
           "name": "create_from_kv",
-          "line": 188,
+          "line": 338,
           "specification": [
             "Mimir.ConfigurationInput.Read.collect",
             "Mimir.ConfigurationValues.Overrides.applyAll",
@@ -5941,26 +5941,9 @@
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
         {
-          "kind": "const",
-          "name": "CONFIG_TEMPLATE",
-          "line": 318,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ConfigurationSchema.agda",
-            "spec/Mimir/ConfigurationValues.agda",
-            "spec/Mimir/ConfigurationInput.agda",
-            "spec/Mimir/ConfigurationProtocol.agda",
-            "spec/Mimir/ConfigurationIO.agda",
-            "spec/Mimir/ConfigurationPath.agda",
-            "spec/Mimir/CoreLibrary.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
-        },
-        {
           "kind": "fn",
           "name": "old_config_and_runtime_sections_round_trip_without_debug_secrets",
-          "line": 403,
+          "line": 553,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5977,7 +5960,7 @@
         {
           "kind": "fn",
           "name": "config_creation_is_private_and_cannot_overwrite",
-          "line": 419,
+          "line": 569,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -5988,6 +5971,78 @@
             "spec/Mimir/ConfigurationIO.agda",
             "spec/Mimir/ConfigurationPath.agda",
             "spec/Mimir/CoreLibrary.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
+        },
+        {
+          "kind": "struct",
+          "name": "RetirementPolicy",
+          "line": 110,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ConfigurationSchema.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
+        },
+        {
+          "kind": "struct",
+          "name": "RetirementIssue",
+          "line": 124,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ConfigurationSchema.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
+        },
+        {
+          "kind": "fn",
+          "name": "retirement_policy",
+          "line": 184,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ConfigurationSchema.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
+        },
+        {
+          "kind": "fn",
+          "name": "grace_hours",
+          "line": 115,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ConfigurationSchema.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
+        },
+        {
+          "kind": "fn",
+          "name": "duration",
+          "line": 118,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ConfigurationSchema.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
+        },
+        {
+          "kind": "fn",
+          "name": "correction",
+          "line": 126,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ConfigurationSchema.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         }
@@ -8005,19 +8060,6 @@
       "path": "crates/core/src/interaction.rs",
       "definitions": [
         {
-          "kind": "const",
-          "name": "INSTRUCTION",
-          "line": 8,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/McpErrors.agda",
-            "spec/Mimir/Validation.agda",
-            "spec/Mimir/FaultWire.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
           "kind": "enum",
           "name": "Location",
           "line": 12,
@@ -8033,7 +8075,7 @@
         {
           "kind": "struct",
           "name": "CorrectionItem",
-          "line": 19,
+          "line": 20,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8046,7 +8088,7 @@
         {
           "kind": "fn",
           "name": "new",
-          "line": 27,
+          "line": 28,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8059,7 +8101,7 @@
         {
           "kind": "fn",
           "name": "missing_argument",
-          "line": 43,
+          "line": 44,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8072,7 +8114,7 @@
         {
           "kind": "fn",
           "name": "unknown_argument",
-          "line": 49,
+          "line": 50,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8085,7 +8127,7 @@
         {
           "kind": "fn",
           "name": "fault",
-          "line": 63,
+          "line": 64,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8098,7 +8140,7 @@
         {
           "kind": "fn",
           "name": "location",
-          "line": 66,
+          "line": 67,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8111,7 +8153,7 @@
         {
           "kind": "fn",
           "name": "expected",
-          "line": 69,
+          "line": 70,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8124,7 +8166,7 @@
         {
           "kind": "fn",
           "name": "suggested_correction",
-          "line": 72,
+          "line": 73,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8137,7 +8179,7 @@
         {
           "kind": "fn",
           "name": "validate",
-          "line": 76,
+          "line": 77,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8150,7 +8192,7 @@
         {
           "kind": "enum",
           "name": "Status",
-          "line": 95,
+          "line": 96,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8163,7 +8205,7 @@
         {
           "kind": "enum",
           "name": "BusinessChanges",
-          "line": 100,
+          "line": 101,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8176,7 +8218,7 @@
         {
           "kind": "enum",
           "name": "NextAction",
-          "line": 105,
+          "line": 106,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8189,7 +8231,7 @@
         {
           "kind": "struct",
           "name": "WireResponse",
-          "line": 111,
+          "line": 112,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8202,7 +8244,7 @@
         {
           "kind": "struct",
           "name": "NeedsInput",
-          "line": 123,
+          "line": 124,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8215,7 +8257,7 @@
         {
           "kind": "fn",
           "name": "new",
-          "line": 126,
+          "line": 28,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8228,7 +8270,7 @@
         {
           "kind": "fn",
           "name": "issues",
-          "line": 138,
+          "line": 139,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8241,7 +8283,7 @@
         {
           "kind": "fn",
           "name": "message",
-          "line": 141,
+          "line": 142,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8254,7 +8296,7 @@
         {
           "kind": "fn",
           "name": "checked",
-          "line": 145,
+          "line": 146,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -8267,7 +8309,7 @@
         {
           "kind": "fn",
           "name": "deserialize",
-          "line": 162,
+          "line": 163,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9285,7 +9327,7 @@
         {
           "kind": "fn",
           "name": "connect",
-          "line": 119,
+          "line": 120,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9309,7 +9351,7 @@
         {
           "kind": "fn",
           "name": "add_belief",
-          "line": 147,
+          "line": 156,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9333,7 +9375,7 @@
         {
           "kind": "fn",
           "name": "add_belief_in_project",
-          "line": 160,
+          "line": 169,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9357,7 +9399,7 @@
         {
           "kind": "fn",
           "name": "add_independent_belief",
-          "line": 180,
+          "line": 189,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9381,7 +9423,7 @@
         {
           "kind": "fn",
           "name": "insert_and_embed_belief",
-          "line": 203,
+          "line": 212,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9405,7 +9447,7 @@
         {
           "kind": "fn",
           "name": "embed_and_store_belief",
-          "line": 228,
+          "line": 237,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9429,7 +9471,7 @@
         {
           "kind": "fn",
           "name": "auto_ground_belief",
-          "line": 245,
+          "line": 254,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9453,7 +9495,7 @@
         {
           "kind": "fn",
           "name": "auto_ground_chunks",
-          "line": 278,
+          "line": 287,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9477,7 +9519,7 @@
         {
           "kind": "fn",
           "name": "list_embedded_belief_ids",
-          "line": 312,
+          "line": 321,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9501,7 +9543,7 @@
         {
           "kind": "fn",
           "name": "delete_belief",
-          "line": 317,
+          "line": 326,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9525,7 +9567,7 @@
         {
           "kind": "fn",
           "name": "delete_project",
-          "line": 323,
+          "line": 332,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9549,7 +9591,7 @@
         {
           "kind": "fn",
           "name": "get_pattern",
-          "line": 335,
+          "line": 344,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9573,7 +9615,7 @@
         {
           "kind": "fn",
           "name": "delete_pattern",
-          "line": 340,
+          "line": 349,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9597,7 +9639,7 @@
         {
           "kind": "fn",
           "name": "add_pattern",
-          "line": 345,
+          "line": 354,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9621,7 +9663,7 @@
         {
           "kind": "fn",
           "name": "add_edge",
-          "line": 359,
+          "line": 368,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9645,7 +9687,7 @@
         {
           "kind": "fn",
           "name": "get_belief",
-          "line": 380,
+          "line": 389,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9669,7 +9711,7 @@
         {
           "kind": "fn",
           "name": "list_beliefs",
-          "line": 386,
+          "line": 395,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9693,7 +9735,7 @@
         {
           "kind": "fn",
           "name": "list_beliefs_filtered",
-          "line": 399,
+          "line": 408,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9717,7 +9759,7 @@
         {
           "kind": "fn",
           "name": "list_beliefs_page",
-          "line": 414,
+          "line": 423,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9741,7 +9783,7 @@
         {
           "kind": "fn",
           "name": "list_patterns",
-          "line": 432,
+          "line": 441,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9765,30 +9807,6 @@
         {
           "kind": "fn",
           "name": "propagate_from",
-          "line": 442,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ApplicationProtocol.agda",
-            "spec/Mimir/ApplicationStore.agda",
-            "spec/Mimir/ServiceConnection.agda",
-            "spec/Mimir/GraphMutationProtocol.agda",
-            "spec/Mimir/GraphReadProtocol.agda",
-            "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
-            "spec/Mimir/InferenceProtocol.agda",
-            "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
-            "spec/Mimir/DocumentQuery.agda",
-            "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/GroundingProtocol.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "query_intervention",
           "line": 451,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
@@ -9812,8 +9830,32 @@
         },
         {
           "kind": "fn",
+          "name": "query_intervention",
+          "line": 460,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ApplicationProtocol.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/ServiceConnection.agda",
+            "spec/Mimir/GraphMutationProtocol.agda",
+            "spec/Mimir/GraphReadProtocol.agda",
+            "spec/Mimir/GraphDeletion.agda",
+            "spec/Mimir/ProjectDeletion.agda",
+            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/RetrievalProtocol.agda",
+            "spec/Mimir/DocumentLoading.agda",
+            "spec/Mimir/DocumentQuery.agda",
+            "spec/Mimir/EvidenceRead.agda",
+            "spec/Mimir/GroundingProtocol.agda",
+            "spec/Mimir/BeliefEmbedding.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
           "name": "get_contradictions",
-          "line": 487,
+          "line": 496,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9837,7 +9879,7 @@
         {
           "kind": "fn",
           "name": "decay_beliefs",
-          "line": 515,
+          "line": 524,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9861,7 +9903,7 @@
         {
           "kind": "fn",
           "name": "sweep_expired_defeated",
-          "line": 535,
+          "line": 544,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9885,7 +9927,7 @@
         {
           "kind": "fn",
           "name": "query_relevant",
-          "line": 589,
+          "line": 597,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9909,7 +9951,7 @@
         {
           "kind": "fn",
           "name": "load_document",
-          "line": 849,
+          "line": 857,
           "specification": [
             "Mimir.DocumentStore.Storage.publish",
             "Mimir.DocumentStore.Storage.failedPreparationPreserves",
@@ -9937,7 +9979,7 @@
         {
           "kind": "fn",
           "name": "clear_document",
-          "line": 889,
+          "line": 897,
           "specification": [
             "Mimir.DocumentStore.Storage.clear",
             "Mimir.DocumentStore.Storage.partitionCount",
@@ -9965,7 +10007,7 @@
         {
           "kind": "fn",
           "name": "query_document",
-          "line": 905,
+          "line": 913,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -9989,7 +10031,7 @@
         {
           "kind": "fn",
           "name": "add_evidence",
-          "line": 958,
+          "line": 966,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -10013,7 +10055,7 @@
         {
           "kind": "fn",
           "name": "delete_evidence",
-          "line": 965,
+          "line": 973,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -10037,7 +10079,7 @@
         {
           "kind": "fn",
           "name": "evidence_for_belief",
-          "line": 971,
+          "line": 979,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -10061,7 +10103,7 @@
         {
           "kind": "fn",
           "name": "query_relevant_grounded",
-          "line": 999,
+          "line": 1007,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -10085,7 +10127,7 @@
         {
           "kind": "fn",
           "name": "stats",
-          "line": 1166,
+          "line": 1174,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -14318,37 +14360,37 @@
           "kind": "fn",
           "name": "config",
           "specification": [],
-          "line": 12
+          "line": 17
         },
         {
           "kind": "fn",
           "name": "store",
           "specification": [],
-          "line": 35
+          "line": 28
         },
         {
           "kind": "fn",
           "name": "closure_mixes_relations_crosses_depth_ten_and_deduplicates_cycles",
           "specification": [],
-          "line": 47
+          "line": 39
         },
         {
           "kind": "fn",
           "name": "replacement_rejects_bad_preparation_and_rolls_back_late_vector_failure",
           "specification": [],
-          "line": 93
+          "line": 85
         },
         {
           "kind": "fn",
           "name": "propagation_waits_for_learning_lock_before_reading_seed",
           "specification": [],
-          "line": 170
+          "line": 166
         },
         {
           "kind": "fn",
           "name": "stored_defeat_survives_a_later_propagation_failure",
           "specification": [],
-          "line": 223
+          "line": 219
         }
       ],
       "status": "mapped",
@@ -14391,147 +14433,147 @@
         {
           "kind": "fn",
           "name": "experience",
-          "line": 31,
+          "line": 32,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "sql_pages_cover_large_filtered_corpus_without_a_total_cutoff",
-          "line": 306,
+          "line": 307,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "sql_pager_handles_single_last_and_global_project_visibility",
-          "line": 362,
+          "line": 363,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "review",
-          "line": 437,
+          "line": 438,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "typed_assessments_replace_retract_and_preserve_legacy_probability",
-          "line": 456,
+          "line": 457,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "offline_learning_scenario_matrix",
-          "line": 667,
+          "line": 668,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "standalone_foreground_belief_can_still_double_count_one_incident",
-          "line": 919,
+          "line": 920,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "learning_cycle_retry_revision_causal_projection_and_retraction",
-          "line": 959,
+          "line": 960,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "atomic_candidates_retry_retraction_and_observed_pattern_use",
-          "line": 1047,
+          "line": 1048,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "source_correction_deactivates_candidate_support_without_deleting_identity",
-          "line": 1166,
+          "line": 1200,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "rejected_candidate_review_rolls_back_node_and_acknowledgement",
-          "line": 1212,
+          "line": 1246,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "deleting_candidate_recomputes_linked_belief_and_keeps_tombstone",
-          "line": 1273,
+          "line": 1307,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "project_deletion_removes_pattern_only_candidate_and_ledger",
-          "line": 1317,
+          "line": 1351,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "review_recompute_stays_in_project_and_keeps_external_incoming_support",
-          "line": 1337,
+          "line": 1371,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "grounding_removal_recomputes_without_erasing_independent_support",
-          "line": 1388,
+          "line": 1422,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "supersession_is_reversible_and_feedback_survives_propagation",
-          "line": 1448,
+          "line": 1483,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "scoped_pattern_outcomes_replace_instead_of_accumulate",
-          "line": 1518,
+          "line": 1553,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "concurrent_review_conflict_is_atomic_and_keeps_manual_edges",
-          "line": 1596,
+          "line": 1631,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "incremental_queue_handles_more_than_two_hundred_experiences",
-          "line": 1644,
+          "line": 1679,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "contradiction_review_changes_detection_without_triggering_evidence_propagation",
-          "line": 1671,
+          "line": 1706,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "source_coverage_is_atomic_revision_owned_and_preserves_unresolved_items",
-          "line": 1713,
+          "line": 1748,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         }
@@ -14602,336 +14644,336 @@
         {
           "kind": "fn",
           "name": "test_insert_and_get_belief",
-          "line": 82,
+          "line": 91,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_get_nonexistent_belief_returns_none",
-          "line": 100,
+          "line": 109,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_list_beliefs_contains_inserted",
-          "line": 112,
+          "line": 121,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_list_beliefs_multiple",
-          "line": 122,
+          "line": 131,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_list_beliefs_by_project_scopes_correctly",
-          "line": 138,
+          "line": 147,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_update_belief_beta_round_trips_mean_and_strength",
-          "line": 183,
+          "line": 192,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_memory_type_round_trips_through_store",
-          "line": 205,
+          "line": 214,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_belief_boundary_probabilities",
-          "line": 250,
+          "line": 259,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_belief_content_with_special_chars",
-          "line": 261,
+          "line": 270,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_belief_content_with_backslash_and_doublequote",
-          "line": 276,
+          "line": 285,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_belief_content_with_unicode",
-          "line": 292,
+          "line": 301,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_insert_and_list_patterns",
-          "line": 310,
+          "line": 319,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_list_patterns_by_project_scopes_correctly",
-          "line": 324,
+          "line": 333,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_list_patterns_multiple",
-          "line": 363,
+          "line": 372,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_pattern_boundary_success_rate",
-          "line": 383,
+          "line": 392,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_insert_edge_supports",
-          "line": 402,
+          "line": 411,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_insert_edge_causes",
-          "line": 416,
+          "line": 425,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_insert_edge_defeats",
-          "line": 430,
+          "line": 439,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_insert_edge_missing_source_fails",
-          "line": 447,
+          "line": 456,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_insert_edge_missing_target_fails",
-          "line": 459,
+          "line": 468,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_contradicts_bidirectional",
-          "line": 474,
+          "line": 483,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_no_contradiction_without_edge",
-          "line": 489,
+          "line": 498,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_get_contradiction_pairs_by_project_scopes_correctly",
-          "line": 504,
+          "line": 513,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_get_edges_among_two_edges",
-          "line": 558,
+          "line": 567,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_get_edges_among_empty_input",
-          "line": 590,
+          "line": 599,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_get_edges_among_excludes_outside_set",
-          "line": 598,
+          "line": 607,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_get_downstream_via_causes",
-          "line": 622,
+          "line": 631,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_get_downstream_no_edges_empty",
-          "line": 638,
+          "line": 647,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_get_downstream_multi_hop",
-          "line": 648,
+          "line": 657,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_get_direct_downstream_by_project_one_hop",
-          "line": 671,
+          "line": 680,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_query_relevant_excludes_working_from_candidate_pool",
-          "line": 717,
+          "line": 726,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_query_relevant_excludes_working_from_graph_expansion",
-          "line": 750,
+          "line": 759,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_query_relevant_prefer_type_reorders_tied_matches",
-          "line": 793,
+          "line": 802,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_query_relevant_excludes_beliefs_reachable_only_via_out_of_scope_bridge",
-          "line": 842,
+          "line": 851,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_intervention_is_read_only",
-          "line": 902,
+          "line": 911,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_intervention_rejects_out_of_range_value",
-          "line": 965,
+          "line": 974,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_intervention_unknown_target_errors",
-          "line": 973,
+          "line": 982,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_evidence_preserves_substrate_and_survives_propagation",
-          "line": 987,
+          "line": 996,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_add_evidence_raises_alpha",
-          "line": 1020,
+          "line": 1029,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_add_and_query_grounded",
-          "line": 1049,
+          "line": 1058,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_delete_belief_removes_grounds_edge",
-          "line": 1089,
+          "line": 1098,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_propagate_preserves_out_of_subgraph_evidence",
-          "line": 1129,
+          "line": 1138,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_bare_defeat_lowers_target",
-          "line": 1180,
+          "line": 1189,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_intervene_counts_out_of_set_cocause",
-          "line": 1217,
+          "line": 1226,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_sweep_expired_defeated_deletes_low_prob_past_grace",
-          "line": 1271,
+          "line": 1280,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_sweep_expired_defeated_keeps_within_grace_period",
-          "line": 1305,
+          "line": 1359,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_sweep_expired_defeated_keeps_above_threshold",
-          "line": 1337,
+          "line": 1391,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         },
         {
           "kind": "fn",
           "name": "test_sweep_expired_defeated_is_project_scoped",
-          "line": 1369,
+          "line": 1423,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         }
@@ -15656,7 +15698,7 @@
         {
           "kind": "fn",
           "name": "candidate_review_retry_and_retrieval_through_mcp_tools",
-          "line": 13,
+          "line": 14,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         }
@@ -15789,7 +15831,7 @@
         {
           "kind": "fn",
           "name": "handle_tool_call",
-          "line": 402,
+          "line": 401,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15808,7 +15850,7 @@
         {
           "kind": "fn",
           "name": "main",
-          "line": 811,
+          "line": 807,
           "specification": [
             "Mimir.ReadLine",
             "Mimir.McpEnvelope",
@@ -15833,7 +15875,7 @@
         {
           "kind": "fn",
           "name": "belief_fields_put_content_first_and_posterior_last_even_when_nested",
-          "line": 978,
+          "line": 974,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15852,7 +15894,7 @@
         {
           "kind": "fn",
           "name": "non_belief_json_keeps_its_fields_and_values",
-          "line": 1007,
+          "line": 1003,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15969,7 +16011,7 @@
         {
           "kind": "fn",
           "name": "call",
-          "line": 35,
+          "line": 14,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15982,7 +16024,7 @@
         {
           "kind": "struct",
           "name": "Catalogue",
-          "line": 43,
+          "line": 48,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15995,7 +16037,7 @@
         {
           "kind": "fn",
           "name": "new",
-          "line": 47,
+          "line": 52,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -16008,7 +16050,7 @@
         {
           "kind": "fn",
           "name": "entries",
-          "line": 91,
+          "line": 96,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -16021,7 +16063,7 @@
         {
           "kind": "fn",
           "name": "advertised",
-          "line": 94,
+          "line": 99,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -16034,7 +16076,7 @@
         {
           "kind": "fn",
           "name": "get",
-          "line": 102,
+          "line": 107,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -16047,7 +16089,7 @@
         {
           "kind": "fn",
           "name": "call",
-          "line": 107,
+          "line": 14,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [

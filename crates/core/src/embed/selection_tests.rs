@@ -39,6 +39,7 @@ async fn all_matches_survive_former_vector_pools_and_only_explicit_counts_cut_re
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     };
     let service = MimirService::connect_with_embeddings(
         &cfg,

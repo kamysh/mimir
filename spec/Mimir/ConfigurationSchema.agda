@@ -7,6 +7,7 @@ module Mimir.ConfigurationSchema where
 open import Data.List using (List; []; _∷_; map; reverse)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
+open import Data.Integer using (ℤ)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (String; toList; fromList)
@@ -20,10 +21,39 @@ import Mimir.OperationalConfiguration as Operations
 import Mimir.ConfigurationValues as C
 import Mimir.ConfigurationInput as Input
 import Mimir.SourceReview as TextEquality
+import Mimir.StandardLibrary as Library
+import Mimir.PublicInput as Public
+import Mimir.Validation as Validation
+import Mimir.Binary64 as Binary
+open import Mimir.JsonObjects using (forbid)
 
 record Config : Set where
   constructor config
-  field operations : Operations.Admitted; core : C.Config; llm judge email : Maybe V.Value
+  field operations : Operations.Admitted; core : C.Config; llm judge email retirement : Maybe V.Value
+
+-- Unset/malformed optional retention never prevents other tools from starting.
+-- Sweeping alone requires the user-owned policy, before any store operation.
+module Retirement (conversion : Library.Contract) where
+  module Numbers = Public.Numbers conversion
+
+  duration : V.Value → Fault ⊎ ℤ
+  duration raw = Numbers.number raw >>= λ hours → checked hours
+    where
+    checked : Binary.Number → Fault ⊎ ℤ
+    checked hours with Library.Contract.userHoursToNanoseconds conversion hours
+    ... | just period = inj₂ period
+    ... | nothing = inj₁ (Validation.fault [] Validation.invalidNumber
+      "Choose a finite nonnegative grace_hours duration representable by the clock; no value will be guessed.")
+
+  tablePolicy : V.Value → Fault ⊎ ℤ
+  tablePolicy raw = V.asObject raw >>= λ fields →
+    Validation.result (V.Object.checkUnknowns forbid (toList "grace_hours" ∷ []) fields) >>= λ _ →
+    required "grace_hours" duration (V.Object.normalize fields)
+
+  resolve : Maybe V.Value → Fault ⊎ ℤ
+  resolve nothing = inj₁ (Validation.fault (Validation.key "retirement" ∷ Validation.key "grace_hours" ∷ [])
+    Validation.missingField "Sweeping needs the user's configured retirement.grace_hours; ask the user and do not choose a default.")
+  resolve (just raw) = V.withField (toList "retirement") (tablePolicy raw)
 
 sslMode : V.Value → Fault ⊎ C.Mode
 sslMode = enum (("disable" , C.disable) ∷ ("prefer" , C.prefer) ∷ ("require" , C.require) ∷
@@ -63,7 +93,8 @@ module Decode (sizeMaximum : ℕ) where
     fields : Operations.Admitted → V.Object.View → Fault ⊎ Config
     fields operations values = required "database" database values >>= λ db → optional "embeddings" embeddings values >>= λ embed →
       optional "llm" table values >>= λ llm → optional "judge" table values >>= λ judge → optional "email" table values >>= λ email →
-      inj₂ (config operations (C.config db embed) llm judge email)
+      optional "retirement" (λ value → inj₂ value) values >>= λ retirement →
+      inj₂ (config operations (C.config db embed) llm judge email retirement)
 
 -- CLI parsing splits only at the first '='; values can contain more equals
 -- signs, whitespace or an empty string. Keys are not trimmed or case-folded.

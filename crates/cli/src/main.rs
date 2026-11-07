@@ -18,6 +18,16 @@ struct Cli {
 }
 
 #[cfg(test)]
+mod sweep_policy_tests {
+    use super::*;
+    #[test]
+    fn retention_has_no_per_call_flag() {
+        assert!(Cli::try_parse_from(["mimir", "sweep-defeated"]).is_ok());
+        assert!(Cli::try_parse_from(["mimir", "sweep-defeated", "--grace-hours", "0"]).is_err());
+    }
+}
+
+#[cfg(test)]
 mod selection_tests {
     use super::*;
     use clap::CommandFactory;
@@ -168,14 +178,12 @@ enum Command {
     /// Delete defeated beliefs whose grace period has elapsed (attenuated
     /// deletion — soft-retirement via record_defeat, not immediate hard
     /// deletion, so a wrong defeat can still be caught before it's gone).
+    /// Requires the user's [retirement].grace_hours configuration; no default
+    /// or per-call retention override is selected.
     SweepDefeated {
         /// Probability below which a defeated belief becomes eligible for deletion.
         #[arg(long, short, default_value_t = 0.3)]
         threshold: f64,
-
-        /// Hours since the belief was last defeated before it can be deleted.
-        #[arg(long, short, default_value_t = 24.0)]
-        grace_hours: f64,
 
         /// Restrict the sweep to this project plus untagged beliefs.
         #[arg(long, short)]
@@ -411,11 +419,9 @@ async fn application_main() -> Result<()> {
         Command::Forget { project } => cmd_forget(&project).await?,
         Command::Decay { factor, project } => cmd_decay(factor, project.as_deref()).await?,
         Command::Contradictions { project } => cmd_contradictions(project.as_deref()).await?,
-        Command::SweepDefeated {
-            threshold,
-            grace_hours,
-            project,
-        } => cmd_sweep_defeated(threshold, grace_hours, project.as_deref()).await?,
+        Command::SweepDefeated { threshold, project } => {
+            cmd_sweep_defeated(threshold, project.as_deref()).await?
+        }
         Command::Doc(DocCmd::Load { path, project }) => cmd_load(&path, project.as_deref()).await?,
         Command::Doc(DocCmd::Query {
             context,
@@ -812,14 +818,21 @@ async fn cmd_decay(factor: f64, project: Option<&str>) -> Result<()> {
 // mimir sweep-defeated
 // ---------------------------------------------------------------------------
 
-async fn cmd_sweep_defeated(threshold: f64, grace_hours: f64, project: Option<&str>) -> Result<()> {
+async fn cmd_sweep_defeated(threshold: f64, project: Option<&str>) -> Result<()> {
     let svc = connect().await?;
-    let count = svc
-        .sweep_expired_defeated(threshold, grace_hours, project)
-        .await?;
+    let policy = match svc.retirement_policy() {
+        Ok(policy) => policy,
+        Err(issue) => {
+            println!("{}", serde_json::to_string(issue.correction())?);
+            return Ok(());
+        }
+    };
+    let count = svc.sweep_expired_defeated(threshold, project).await?;
     println!(
-        "deleted {}  [threshold: {:.2}, grace: {:.1}h]",
-        count, threshold, grace_hours
+        "deleted {}  [threshold: {:.2}, configured grace: {}h]",
+        count,
+        threshold,
+        policy.grace_hours()
     );
     Ok(())
 }

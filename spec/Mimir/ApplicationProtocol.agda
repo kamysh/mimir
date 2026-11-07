@@ -12,7 +12,8 @@ open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Product using (Σ; _×_; _,_)
-open import Data.Unit using (⊤)
+open import Data.Unit using (⊤; tt)
+open import Data.String using (toList)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.PublicRequest as Public
@@ -34,6 +35,15 @@ import Mimir.LearningCandidates as Candidates
 import Mimir.LearningCapabilities as Capabilities
 import Mimir.CandidateGraph as Graph
 import Mimir.Effects as Effects
+import Mimir.Validation as Validation
+import Mimir.McpErrors as Errors
+module Correction = Errors.AgentCorrection
+
+configurationCorrection : Validation.Fault → Correction.Claim
+configurationCorrection detail = Correction.claim
+  (Correction.item Correction.configuration detail
+    (toList "A user-chosen retirement.grace_hours value in Mimir configuration.")
+    (toList "Ask the user to choose or repair the configured retention period. Do not send a per-call override or guess a default.")) []
 
 record Environment : Set₁ where
   field
@@ -43,6 +53,7 @@ record Environment : Set₁ where
     unicode : Ranking.Unicode
     databaseTextBefore : Text → Text → Bool
     now : ℤ
+    retirementPolicy : Validation.Fault ⊎ ℤ
     candidateClock : Candidates.Candidate → ℤ
     candidateIdentity : Candidates.Candidate → ℕ
     chunkIdentity : ℕ → ℕ
@@ -56,6 +67,16 @@ module Run (environment : Environment) where
   module Learn (q : Learning.Request) = Learning.Protocol database q candidateClock now candidateIdentity
   module Retrieve = Retrieval.Run f32 unicode
   module LearningContext = Context.Run f32 unicode databaseTextBefore
+
+  admission : Public.Request → Validation.Fault ⊎ ⊤
+  admission (Public.sweepConfigured project threshold) with retirementPolicy
+  ... | inj₁ detail = inj₁ detail
+  ... | inj₂ period = inj₂ tt
+  admission _ = inj₂ tt
+
+  missingPolicyRefusesAdmission : ∀ project threshold detail → retirementPolicy ≡ inj₁ detail →
+    admission (Public.sweepConfigured project threshold) ≡ inj₁ detail
+  missingPolicyRefusesAdmission project threshold detail missing rewrite missing = refl
 
   data Result : Set where
     mutated : Mutation.Result → Result
@@ -192,7 +213,9 @@ module Run (environment : Environment) where
   start (Public.delete kind id) = deleteState (Delete.Run.start kind id)
   start (Public.deleteProject project) = forgetState (Forget.start project)
   start (Public.inference q) = inferenceState (Inference.start q)
-  start (Public.sweepHours project threshold hours) = inferenceState (Inference.start (Inference.sweepHours project threshold hours))
+  start (Public.sweepConfigured project threshold) with retirementPolicy
+  ... | inj₁ detail = finished (failed (Validation.Fault.explanation detail))
+  ... | inj₂ period = inferenceState (Inference.start (Inference.sweep project threshold period))
   start (Public.relevant query limit project prefer include per) = retrievalState include per
     (Retrieval.overlay (Retrieval.request query limit project (preference include prefer) embeddingsEnabled))
   start (Public.addEvidence belief chunk weight) = groundStart belief chunk weight

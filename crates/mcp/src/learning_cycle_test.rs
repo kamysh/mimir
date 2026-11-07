@@ -18,6 +18,7 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     })
     .await?;
     let capabilities = handle_tool_call(&service, "learning_capabilities", &json!({})).await?;

@@ -21,6 +21,7 @@ fn config() -> Config {
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     }
 }
 

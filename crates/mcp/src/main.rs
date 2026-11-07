@@ -277,12 +277,11 @@ fn tools_list() -> Value {
         },
         {
             "name": "sweep_expired_defeated",
-            "description": "Delete defeated beliefs whose grace period has elapsed (attenuated deletion — a defeated belief is deleted only once its probability has decayed below prob_threshold AND grace_hours have passed since it was last defeated, giving a wrong record_defeat call time to be caught and reversed first). Returns count of beliefs deleted. If project is given, restricts the sweep to that project's beliefs plus untagged (global) beliefs.",
+            "description": "Delete defeated beliefs below prob_threshold after the user-configured [retirement].grace_hours period. Retention is required configuration with no default and cannot be overridden in this request. If it is missing or invalid, ask the user to choose or repair it; no sweep runs. Returns the deletion count. A project restricts selection to that project's beliefs plus untagged beliefs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "prob_threshold": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.3, "description": "Probability below which a defeated belief becomes eligible for deletion." },
-                    "grace_hours": { "type": "number", "minimum": 0.0, "default": 24.0, "description": "Hours since the belief was last defeated before it can be deleted." },
                     "project": { "type": "string", "description": "Restrict the sweep to this project's beliefs plus untagged (global) beliefs. Omit to sweep everything." }
                 }
             }
@@ -640,11 +639,8 @@ async fn handle_graph_call(
 
         GraphOperation::SweepExpiredDefeated => {
             let prob_threshold = args["prob_threshold"].as_f64().unwrap_or(0.3);
-            let grace_hours = args["grace_hours"].as_f64().unwrap_or(24.0);
             let project = args["project"].as_str();
-            let count = svc
-                .sweep_expired_defeated(prob_threshold, grace_hours, project)
-                .await?;
+            let count = svc.sweep_expired_defeated(prob_threshold, project).await?;
             Ok(json!({ "deleted": count }))
         }
 

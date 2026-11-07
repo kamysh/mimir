@@ -37,7 +37,6 @@ data Request : Set where
   decay : Maybe Text → Float → Request
   contradictions : Maybe Text → Request
   sweep : Maybe Text → Float → ℤ → Request -- grace in nanoseconds
-  sweepHours : Maybe Text → Float → Float → Request
 
 data Effect : Set where
   getBelief : ℕ → Effect
@@ -47,7 +46,6 @@ data Effect : Set where
   listBeliefs : Maybe Text → Effect
   contradictionPairs defeatTimes : Maybe Text → Effect
   clock : Effect
-  convertGraceHours : Float → Effect
   hashIteration : List ℕ → Effect
   persistBeta : P.State → Effect
   deleteBelief : ℕ → Effect -- GraphDeletion.Operation, including its transaction
@@ -62,9 +60,6 @@ Reply (listBeliefs project) = Text ⊎ List G.BeliefValues
 Reply (contradictionPairs project) = Text ⊎ List (ℕ × ℕ)
 Reply (defeatTimes project) = Text ⊎ List N.Defeat
 Reply clock = ℤ
--- Standard round(hours*60), Rust saturating i64 conversion and chrono minutes.
--- Conversion occurs only after nonempty defeats, beliefs and the clock read.
-Reply (convertGraceHours hours) = Maybe ℤ
 Reply (hashIteration ids) = Σ (List ℕ) (λ order → order ↭ ids)
 Reply (persistBeta writes) = Text ⊎ DB.Receipt
 Reply (deleteBelief id) = Text ⊎ Bool
@@ -76,7 +71,6 @@ data Result : Set where
   failed : Text → Result
   missingBelief invalidProbability invalidDecay invalidNumericInput invalidNumericWrite : Result
   publicationUncertain publicationAborted : Result
-  durationOutOfRange : Result
   projected propagated : List (ℕ × Float) → Bool → Result
   changed deleted : ℕ → Result
   pairs : List (ℕ × ℕ) → Result
@@ -180,14 +174,3 @@ start (sweep project threshold grace) = read (defeatTimes project) refl decide
   decide edges@(_ ∷ _) = read (listBeliefs project) refl (λ beliefs → ask clock (λ now →
     ask (hashIteration (Ranking.unique (map N.Defeat.target edges))) (λ { (order , sameMembers) →
       sweepDeletes 0 (N.expiredTargets now grace threshold beliefs edges order) })))
-start (sweepHours project threshold hours) = read (defeatTimes project) refl decide
-  where
-  afterDuration : List N.Defeat → List G.BeliefValues → ℤ → Maybe ℤ → Script Result
-  afterDuration edges beliefs now nothing = done durationOutOfRange
-  afterDuration edges beliefs now (just grace) =
-    ask (hashIteration (Ranking.unique (map N.Defeat.target edges))) (λ { (order , sameMembers) →
-      sweepDeletes 0 (N.expiredTargets now grace threshold beliefs edges order) })
-  decide : List N.Defeat → Script Result
-  decide [] = done (deleted 0)
-  decide edges@(_ ∷ _) = read (listBeliefs project) refl (λ beliefs → ask clock (λ now →
-    ask (convertGraceHours hours) (afterDuration edges beliefs now)))

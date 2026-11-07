@@ -9,6 +9,7 @@ open import Data.Nat using (ℕ)
 open import Data.Product using (_,_)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.Unit using (tt)
+open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text using (Text)
 import Mimir.CLI as CLI
 import Mimir.HookProtocol as Hook
@@ -37,11 +38,12 @@ module Bound (conversion : Library.Contract) (environment : Application.Environm
     configFailed : ∀ failure detail → S.Receipt migrations (S.configurationFailure failure) → Connected migrations (inj₁ detail)
     serviceFailed : ∀ config failure detail → S.Receipt migrations (S.startupFailure config failure) → Connected migrations (inj₁ detail)
     ready : ∀ config service → S.Receipt migrations (S.connected config service) →
-      Service.Compatible (Config.Config.core config) environment → Connected migrations (inj₂ tt)
+      Service.Compatible conversion config environment → Connected migrations (inj₂ tt)
 
   data Receipt (migrations : M.Inputs) : (effect : C.Effect) → C.Reply effect → Set where
     connected : ∀ reply → Connected migrations reply → Receipt migrations C.connect reply
-    executed : ∀ request events reply → A.Runs (A.start request) events reply → Receipt migrations (C.execute request) reply
+    executed : ∀ request events reply → A.admission request ≡ inj₂ tt →
+      A.Runs (A.start request) events reply → Receipt migrations (C.execute request) reply
     printed : ∀ line reply → Receipt migrations (C.print line) reply
 
   data Runs (migrations : M.Inputs) : C.P.Script (C.Failure Data.Sum.⊎ Data.Unit.⊤) →
@@ -54,7 +56,8 @@ module Bound (conversion : Library.Contract) (environment : Application.Environm
   -- exit 2. Its connect effect has the same startup obligation.
   data HookReceipt (migrations : M.Inputs) : (effect : H.Effect) → H.Reply effect → Set where
     connected : ∀ reply → Connected migrations reply → HookReceipt migrations H.connect reply
-    executed : ∀ request events reply → A.Runs (A.start request) events reply → HookReceipt migrations (H.execute request) reply
+    executed : ∀ request events reply → A.admission request ≡ inj₂ tt →
+      A.Runs (A.start request) events reply → HookReceipt migrations (H.execute request) reply
     stdin : ∀ reply → HookReceipt migrations H.stdinUTF8 reply
     json : ∀ input reply → HookReceipt migrations (H.parseJSON input) reply
     sessionEnvironment : ∀ reply → HookReceipt migrations H.sessionEnvironment reply

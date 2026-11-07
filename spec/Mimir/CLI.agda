@@ -53,7 +53,7 @@ data ServiceCommand : Set where
   forget : Text → ServiceCommand
   decay : Float → Maybe Text → ServiceCommand
   contradictions : Maybe Text → ServiceCommand
-  sweep : Float → Float → Maybe Text → ServiceCommand
+  sweep : Float → Maybe Text → ServiceCommand
   docLoad : Text → Maybe Text → ServiceCommand
   docQuery : Text → Maybe Text → Ranking.Selection → ServiceCommand
   docClear : Text → ServiceCommand
@@ -75,11 +75,11 @@ record Defaults : Set where
   field listLimit queryLimit documentLimit : Ranking.Selection
         watchInterval watchFailures : ℕ
         queryEvidence : Bool
-        decayFactor threshold graceHours evidenceWeight : Float
+        decayFactor threshold evidenceWeight : Float
 
 defaults : Defaults
 defaults = record { listLimit = nothing; queryLimit = nothing; documentLimit = nothing; watchInterval = 300; watchFailures = 3
-  ; queryEvidence = false; decayFactor = 0.99; threshold = 0.3; graceHours = 24.0; evidenceWeight = 1.0 }
+  ; queryEvidence = false; decayFactor = 0.99; threshold = 0.3; evidenceWeight = 1.0 }
 
 -- UUID arguments of these commands are parsed before configuration/database
 -- access. Evidence UUIDs are parsed after connection, as in the native command.
@@ -102,7 +102,7 @@ request conversion (deletePattern id) = mapResult (Public.delete Delete.patternN
 request conversion (forget project) = inj₂ (Public.deleteProject project)
 request conversion (decay factor project) = inj₂ (Public.inference (Inference.decay project factor))
 request conversion (contradictions project) = inj₂ (Public.inference (Inference.contradictions project))
-request conversion (sweep threshold grace project) = inj₂ (Public.sweepHours project threshold grace)
+request conversion (sweep threshold project) = inj₂ (Public.sweepConfigured project threshold)
 request conversion (docLoad path project) = inj₂ (Public.loadDocument path project)
 request conversion (docQuery text project limit) = inj₂ (Public.queryDocument text project limit)
 request conversion (docClear path) = inj₂ (Public.clearDocument path)
@@ -172,6 +172,7 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
   -- Payloads are fully selected application data. A renderer applies only
   -- the command's fixed layout/truncation policy, never another database read.
   data Line : Set where
+    configurationDecision : Application.Correction.Claim → Line
     commandOutput : ServiceCommand → A.Result → Line
     emptyIntervention emptyContradictions : Line
     intervention : ℕ → Float → Maybe Graph.BeliefValues → Line
@@ -237,7 +238,9 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
   dispatch : ServiceCommand → Script (Failure ⊎ ⊤)
   dispatch command with request conversion command
   ... | inj₁ error = done (inj₁ (arguments error))
-  ... | inj₂ request = ask (execute request) (after command)
+  ... | inj₂ request with A.admission request
+  ...   | inj₁ detail = emit (configurationDecision (Application.configurationCorrection detail))
+  ...   | inj₂ tt = ask (execute request) (after command)
 
   connectThen : ServiceCommand → Script (Failure ⊎ ⊤)
   connectThen command = ask connect λ where

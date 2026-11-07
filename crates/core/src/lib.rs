@@ -113,6 +113,7 @@ pub struct MimirService {
     store: AgeStore,
     inference: InferenceEngine,
     embeddings: Option<OwnedEmbeddingBackend>,
+    retirement: Option<toml::Value>,
 }
 
 impl MimirService {
@@ -140,7 +141,15 @@ impl MimirService {
             store: AgeStore::new(client, cfg.database.dbname.clone())?,
             inference: InferenceEngine::new(),
             embeddings,
+            retirement: cfg.retirement.clone(),
         })
+    }
+
+    /// Read the captured user policy without accessing business records.
+    pub fn retirement_policy(
+        &self,
+    ) -> std::result::Result<config::RetirementPolicy, config::RetirementIssue> {
+        config::retirement_policy(self.retirement.as_ref())
     }
 
     /// Add a new belief. Returns the created Belief.
@@ -535,9 +544,9 @@ impl MimirService {
     pub async fn sweep_expired_defeated(
         &self,
         prob_threshold: f64,
-        grace_hours: f64,
         project: Option<&str>,
     ) -> Result<usize> {
+        let grace_period = self.retirement_policy()?.duration();
         let edges = match project {
             Some(p) => self.store.get_defeats_with_timestamps_by_project(p).await?,
             None => self.store.get_defeats_with_timestamps().await?,
@@ -552,7 +561,6 @@ impl MimirService {
         let belief_map: std::collections::HashMap<Uuid, Belief> =
             beliefs.into_iter().map(|b| (b.id, b)).collect();
         let now = chrono::Utc::now();
-        let grace_period = chrono::Duration::minutes((grace_hours * 60.0).round() as i64);
         let candidates = self.inference.find_expired_defeated(
             &edges,
             &belief_map,

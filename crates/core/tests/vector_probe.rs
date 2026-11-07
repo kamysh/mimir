@@ -110,6 +110,7 @@ async fn full_query_relevant_ranking() {
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     };
     let svc = MimirService::connect_with_worker(&cfg, isolation::fixture().mcp.into())
         .await

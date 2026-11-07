@@ -36,6 +36,11 @@ impl RegisteredOperation {
         if let Some(correction) = super::admission::arguments(self.input_schema(), input) {
             return Ok(serde_json::to_value(correction)?);
         }
+        if self.handler == Operation::Graph(GraphOperation::SweepExpiredDefeated) {
+            if let Err(issue) = service.retirement_policy() {
+                return Ok(serde_json::to_value(issue.correction())?);
+            }
+        }
         call(self.handler, service, input).await
     }
 }

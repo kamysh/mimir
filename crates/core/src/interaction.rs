@@ -12,6 +12,7 @@ const INSTRUCTION: &str = "Correct the indicated fields and retry. If a required
 pub enum Location {
     Request,
     Arguments,
+    Configuration,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
