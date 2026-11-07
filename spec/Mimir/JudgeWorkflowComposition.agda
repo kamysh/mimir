@@ -19,6 +19,7 @@ import Mimir.JudgeBackendComposition as Backend
 import Mimir.JudgeWorkflow as Workflow
 import Mimir.JudgeHandshake as Handshake
 import Mimir.JudgeFinalizationComposition as Finalization
+import Mimir.JudgeFinalization as Finish
 import Mimir.JudgeStateOperations as State
 import Mimir.NotificationConfig as Email
 import Mimir.UnixPath as Path
@@ -40,13 +41,14 @@ module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
   (mcpProgram : Text) (mcpArguments : List Text) (configurationPath : Path.Path)
   (email : Email.Config) (localTime : ℕ → Text) (sizeMaximum clockMaximum : ℕ)
   (endian : UUID.Endian) (path : Path.Path)
-  (json : Codec.JSONLibrary) (buildMessage : SMTP.Message → Delivery.BuildReceipt) where
+  (json : Codec.JSONLibrary) (buildMessage : SMTP.Message → Delivery.BuildReceipt)
+  (deliveryMode : Finish.NotificationMode) where
   private
     module F = Finalization.Bound conversion format localTime sizeMaximum clockMaximum endian path email project json buildMessage
     module S = State.Bound conversion sizeMaximum endian path
     module Batch = BatchService.Bound conversion format (Harness.Libraries.display libraries) errors environment sizeMaximum endian path
   module W = Workflow.Run conversion format (Harness.Libraries.display libraries)
-    contract model batchLimit project
+    contract model batchLimit project deliveryMode
   private
     module B (clientReady : Handshake.Contract.Ready contract model) selected = Backend.Bound conversion format libraries environment errors config program W.initial selected
       (Handshake.CheckedCatalogue.exposed (Handshake.Contract.Ready.catalogue clientReady))

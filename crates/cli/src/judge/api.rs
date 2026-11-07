@@ -1154,7 +1154,13 @@ mod tests {
         .await;
         settings.llm = config(Provider::Openai, url);
         let mut backend = ApiBackend::new(&settings.llm).unwrap().unwrap();
-        let report = super::super::runner::run(&settings, &state, &mut backend).await;
+        let report = super::super::runner::run(
+            &settings,
+            &state,
+            &mut backend,
+            crate::judge::notification::Mode::Inline,
+        )
+        .await;
         assert_eq!(report.status, "blocked");
         assert_eq!(report.confirmed, 0);
         assert_eq!(
@@ -1186,7 +1192,13 @@ mod tests {
         // One provider response supplies both tools. The database receipt ends
         // the review without another model request or completion message.
         let mut backend = ApiBackend::new(&settings.llm).unwrap().unwrap();
-        let report = super::super::runner::run(&settings, &state, &mut backend).await;
+        let report = super::super::runner::run(
+            &settings,
+            &state,
+            &mut backend,
+            crate::judge::notification::Mode::Inline,
+        )
+        .await;
         assert_eq!(report.status, "complete");
         assert_eq!(report.confirmed, 1);
         assert_eq!(

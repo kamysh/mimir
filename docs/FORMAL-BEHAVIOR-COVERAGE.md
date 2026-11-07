@@ -45,6 +45,15 @@ the next batch. Invalid settings wait for a correction event;
 `Round` uses one admitted configuration for both the batch and daily summary.
 No polling timer is added by subscription, reconnection or configuration reload.
 
+Watch-mode notification finalization requires queue admission, with receipts that
+exclude synchronous submission. `queuedFinalizationNeedsNoDelivery` proves that
+the finisher never requests inline mail delivery. The next review round requires
+only the captured daily job's admission, without an SMTP completion premise.
+The worker queue accepts another job while a delivery is active; cancellation
+and joining leave no owned worker running. Native verification stalls an actual
+local SMTP connection while another report is persisted, then checks transport
+closure and notification-lock release on shutdown.
+
 ## Stored belief evidence
 
 [EvidenceValidity](../spec/Mimir/EvidenceValidity.agda) defines valid stored

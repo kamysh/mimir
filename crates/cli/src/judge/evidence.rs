@@ -116,7 +116,13 @@ mod tests {
             .unwrap()
             .unwrap();
         let mut backend = RepairCitation { calls: 0 };
-        let report = crate::judge::runner::run(&settings, &state, &mut backend).await;
+        let report = crate::judge::runner::run(
+            &settings,
+            &state,
+            &mut backend,
+            crate::judge::notification::Mode::Inline,
+        )
+        .await;
         assert_eq!(report.status, "complete");
         assert_eq!(report.confirmed, 1);
         assert_eq!(backend.calls, 2);

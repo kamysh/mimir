@@ -1,4 +1,4 @@
-use super::{config, state, RunOutcome};
+use super::{state, RunOutcome};
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Local, NaiveDate, TimeZone, Timelike, Utc};
 use mimir_notifications::{Digest, Notifier, Outcome};
@@ -148,7 +148,8 @@ async fn content(
 }
 
 pub async fn tick(
-    settings: &config::RuntimeConfig,
+    email: &mimir_notifications::config::EmailConfig,
+    database: &mimir_core::config::DatabaseConfig,
     state_dir: Option<&Path>,
     run: &RunOutcome,
 ) -> Result<bool> {
@@ -156,11 +157,11 @@ pub async fn tick(
     let Some(through) = reporting_day(now) else {
         return Ok(false);
     };
-    if !settings.email.enabled {
+    if !email.enabled {
         return Ok(false);
     }
     let path = state::resolve(state_dir)?;
-    let notifier = Notifier::new(&settings.email, path)?;
+    let notifier = Notifier::new(email, path)?;
     let cursor = notifier.digest_state()?;
     let Some(first) = first_day(cursor.through_day.as_deref(), through)? else {
         return Ok(false);
@@ -168,7 +169,7 @@ pub async fn tick(
     if (now.timestamp().max(0) as u64) < cursor.next_due {
         return Ok(cursor.last_attempt_failed);
     }
-    let client = mimir_core::db::connect(&settings.core.database).await?;
+    let client = mimir_core::db::connect(database).await?;
     let mut body = content(
         &client,
         first,

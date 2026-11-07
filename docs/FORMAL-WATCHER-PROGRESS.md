@@ -5,7 +5,7 @@ confirm work that can be completed. A retry proves only the first.
 
 ## Continued attempts
 
-One round includes the actual batch program and the daily notification check.
+One round includes the actual batch program and admission of a daily-summary job.
 A successful, non-idle, non-degraded batch continues directly to the next queue
 check, without constructing a timer or waiting for a timer acknowledgement.
 An empty queue waits for a database work event, then scans again. It cannot
@@ -30,6 +30,11 @@ boundaries, including an idle wait. Invalid replacements pause for a correction
 event without overwriting the file or publishing the invalid settings.
 `invalidConfigurationCannotStartBatch` excludes batch execution from that wait.
 Each round uses the same admitted settings for review and the daily summary.
+Watch-mode finalization queues its alert instead of awaiting SMTP or OAuth.
+`queuedFinalizationNeedsNoDelivery` excludes inline delivery from that path;
+the composed queue receipt also excludes synchronous submission. Queue admission
+remains possible while an earlier delivery is active. The owned worker's joined
+state contains no active task after cancellation.
 
 ## Completing stable work after recovery
 
@@ -43,7 +48,8 @@ revisions and all of the following conditions:
 - Each selected revision receives a valid completed review. Final database
   reads confirm its identity and unchanged source revision, acknowledge that
   source revision, and show a newer review revision.
-- Batch work and the daily notification check return. Any remaining waiting
+- Batch work and notification queue admission return. SMTP and OAuth need not
+  return for review processing to continue. Any remaining waiting
   path receives its required external event. Productive batches have no timer
   prerequisite. The watcher is not stopped.
 

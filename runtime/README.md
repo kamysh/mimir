@@ -150,6 +150,12 @@ when a required account or permission step remains unresolved.
 
 ## Runtime behavior
 
+Watch mode owns a background task for alert and daily-summary delivery. A stalled
+SMTP or authentication exchange does not block another review. `notification:
+"queued"` means accepted for an attempt, not delivered. Shutdown cancels and
+awaits that task; queued jobs not yet submitted are cancelled, and saved notifier
+outbox entries remain. Standalone `judge run` delivery remains synchronous.
+
 `mimir judge check-config` validates settings locally. `mimir judge run` reviews
 one selected batch through `mimir-mcp`; `mimir judge watch` immediately checks
 for further eligible work after each successful non-idle batch. An empty queue

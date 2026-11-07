@@ -22,6 +22,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.JudgeHost as Host
 import Mimir.JudgeHostProtocol as HostProtocol
+import Mimir.JudgeFinalization as Finalization
 import Mimir.JudgeDigest as Digest
 import Mimir.JudgeDigestSnapshot as Snapshot
 import Mimir.JudgeConfiguration as Config
@@ -156,6 +157,18 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
           batchEvents : List H.P.Event
           completed : H.Runs (H.afterConfig true (inj₂ loaded)) batchEvents result
 
+  -- The core loop admits a captured daily-summary job. SMTP execution belongs
+  -- to the owned consumer and is not a premise of the next review round.
+  data DigestQueued (settings : Config.Runtime) (outcome : Host.Outcome) : Text ⊎ Bool → Set where
+    disabled : Email.Config.enabled (Config.Runtime.email settings) ≡ false → DigestQueued settings outcome (inj₂ false)
+    accepted : ∀ resolved before after → H.Receipt H.resolveState (inj₂ resolved) →
+      Finalization.WorkerQueue.Accepted
+        (Finalization.digestJob (Config.Runtime.email settings)
+          (Values.Config.db (Core.Config.core (Config.Runtime.core settings)))
+          (StatePath.Resolved.path resolved) outcome) before after →
+      DigestQueued settings outcome (inj₂ false)
+    unavailable : DigestQueued settings outcome (inj₂ true)
+
   data Step (migrations : M.Inputs) : Host.Phase → Host.Phase → Set where
     initialConfigurationFailed : ∀ state detail → H.Receipt H.loadConfig (inj₁ detail) →
       Step migrations (Host.subscribing state) (Host.waitingConfiguration state)
@@ -173,7 +186,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     batch : ∀ state loadedConfiguration events result → H.Receipt H.loadConfig (inj₂ loadedConfiguration) →
       H.Runs (H.afterConfig true (inj₂ loadedConfiguration)) events result →
       Step migrations (Host.running state) (Host.digest state result)
-    digest : ∀ state settings outcome events result → Runs migrations idle (Digest.Run.tick calendar settings outcome) events idle result →
+    digest : ∀ state settings outcome result → DigestQueued settings outcome result →
       Step migrations (Host.digest state outcome)
         (Host.step (Host.digest state outcome) result)
     continued : ∀ state messages →
@@ -263,10 +276,9 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
           admitted : H.Receipt H.loadConfig (inj₂ loadedConfiguration)
           batchEvents : List H.P.Event
           batchDone : H.Runs (H.afterConfig true (inj₂ loadedConfiguration)) batchEvents outcome
-          digestEvents : List Digest.Event
           digestReply : Text ⊎ Bool
-          digestDone : Runs migrations idle (Digest.Run.tick calendar
-            (Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration)) outcome) digestEvents idle digestReply
+          digestDone : DigestQueued
+            (Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration)) outcome digestReply
           continuationReady : Continues (nextWatch before outcome digestReply)
             (Host.step (Host.digest before outcome) digestReply)
 
@@ -274,9 +286,9 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     Trace migrations (Host.running before)
       (Host.running (nextWatch before (Round.outcome round) (Round.digestReply round)))
   roundTrace migrations before
-    (continuedRound batchResult loadedConfiguration admitted batchEvents batchDone digestEvents reply digestDone continuationReady) =
+    (continuedRound batchResult loadedConfiguration admitted batchEvents batchDone reply digestDone continuationReady) =
     more _ _ _ (batch before loadedConfiguration _ _ admitted batchDone)
-      (more _ _ _ (digest before _ _ _ _ digestDone)
+      (more _ _ _ (digest before _ _ _ digestDone)
         (continuationTrace migrations _ _ continuationReady))
 
   appendTrace : ∀ {migrations before middle after} →
@@ -291,7 +303,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   -- Selection and confirmations must occur inside the actual host batch,
   -- not in an unrelated successful call or in a model's account of its work.
   module ProgressOf (settings : Config.Runtime) (program : Text) (path configPath : Path.Path) where
-    private module W = H.W settings program path configPath
+    private module W = H.W true settings program path configPath
     private module P = W.W
 
     record ConfirmedRead (events : List P.P.Event) (selected : Observation.Snapshot) : Set where
@@ -316,7 +328,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     completedBatch : ∀ {settings held configPath report program before after events client snapshot preparationEvents prepared built execution dropped remaining selected} →
       ProgressOf.BatchEvidence settings program (H.L.Locked.path held)
         (H.PreparedMcpConfig.path snapshot) events remaining selected →
-      ObservedRun (H.ran settings held configPath report
+      ObservedRun (H.ran true settings held configPath report
         (H.completed program before after events client report snapshot preparationEvents prepared built execution dropped)) remaining selected
 
   observedEvidence : ∀ {effect reply} (receipt : H.Receipt effect reply) {remaining selected} →

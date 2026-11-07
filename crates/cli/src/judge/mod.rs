@@ -133,7 +133,12 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
             }
         },
         JudgeCommand::Run { config, state_dir } => run_once(config, state_dir, false).await.code,
-        JudgeCommand::Watch { config, state_dir } => watch(config, state_dir).await,
+        JudgeCommand::Watch { config, state_dir } => {
+ let notifications = notification::Worker::start();
+ let result = watch(config, state_dir, &notifications).await;
+ notifications.shutdown().await;
+ result
+ },
         JudgeCommand::Status { state_dir } => {
             let path = match state::resolve(state_dir.as_deref()) {
                 Ok(path) => path,
@@ -332,7 +337,7 @@ where
     }
 }
 
-async fn watch(config: Option<PathBuf>, state_dir: Option<PathBuf>) -> i32 {
+async fn watch(config: Option<PathBuf>, state_dir: Option<PathBuf>, notifications: &notification::Worker) -> i32 {
     let mut retry = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
         Ok(signal) => signal,
         Err(error) => {
@@ -401,19 +406,10 @@ async fn watch(config: Option<PathBuf>, state_dir: Option<PathBuf>) -> i32 {
             }
         };
         loop {
-            let outcome = run_with_settings(&settings, state_dir.clone(), true).await;
-            let problem = digest::tick(&settings, state_dir.as_deref(), &outcome)
-                .await
-                .unwrap_or(true);
+            let outcome = run_with_settings(&settings, state_dir.clone(), true, notification::Mode::Queued(notifications)).await;
+            let problem = state::resolve(state_dir.as_deref()).and_then(|path| notifications.digest(&settings, &path, &outcome)).is_err();
             if problem != digest_problem {
-                eprintln!(
-                    "judge daily email: {}",
-                    if problem {
-                        "unavailable; awaiting the next reporting event"
-                    } else {
-                        "available"
-                    }
-                );
+                eprintln!("judge daily email queue: {}", if problem { "unavailable; inspect watcher state" } else { "available" });
                 digest_problem = problem;
             }
             let (next, transition) = watch.advance(outcome);
@@ -483,6 +479,7 @@ async fn watch(config: Option<PathBuf>, state_dir: Option<PathBuf>) -> i32 {
     }
 }
 
+#[derive(Clone, Copy)]
 struct RunOutcome {
     code: i32,
     degraded: bool,
@@ -614,7 +611,7 @@ async fn run_once(
             };
         }
     };
-    run_with_settings(&settings, state_dir, watch_mode).await
+    run_with_settings(&settings, state_dir, watch_mode, notification::Mode::Inline).await
 }
 
 // Used by watcher startup after it subscribes with these exact settings. It
@@ -623,6 +620,7 @@ async fn run_with_settings(
     settings: &config::RuntimeConfig,
     state_dir: Option<PathBuf>,
     watch_mode: bool,
+    delivery: notification::Mode<'_>,
 ) -> RunOutcome {
     let path = match state::resolve(state_dir.as_deref()) {
         Ok(path) => path,
@@ -693,16 +691,20 @@ async fn run_with_settings(
     let _=state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"reviewing","config_format":settings.operations.config_version}));
     let report = match settings.llm.backend {
         config::Backend::Api => match api::ApiBackend::new(&settings.llm) {
-            Ok(Some(mut backend)) => runner::run(settings, &state, &mut backend).await,
-            Ok(None) => runner::run(settings, &state, &mut runner::UnavailableBackend).await,
+            Ok(Some(mut backend)) => runner::run(settings, &state, &mut backend, delivery).await,
+            Ok(None) => {
+                runner::run(settings, &state, &mut runner::UnavailableBackend, delivery).await
+            }
             Err(error) => {
-                runner::setup_failure(settings, &state, "backend_configuration", &error).await
+                runner::setup_failure(settings, &state, "backend_configuration", &error, delivery)
+                    .await
             }
         },
         _ => match harness::Harness::new(&settings.llm) {
-            Ok(mut backend) => runner::run(settings, &state, &mut backend).await,
+            Ok(mut backend) => runner::run(settings, &state, &mut backend, delivery).await,
             Err(error) => {
-                runner::setup_failure(settings, &state, "backend_configuration", &error).await
+                runner::setup_failure(settings, &state, "backend_configuration", &error, delivery)
+                    .await
             }
         },
     };

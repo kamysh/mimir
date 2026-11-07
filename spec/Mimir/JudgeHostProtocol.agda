@@ -66,11 +66,15 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   module SP = StatePath.With Text
   module FS = Persistence.With ℕ Text
   module L = Lock.With Path.Path ℕ Text
-  module W (settings : Config.Runtime) program path configPath = Workflow.Compose conversion format libraries environment errors
+  notificationMode : Bool → Finalization.NotificationMode
+  notificationMode true = Finalization.queuedDelivery
+  notificationMode false = Finalization.inlineDelivery
+
+  module W (watch : Bool) (settings : Config.Runtime) program path configPath = Workflow.Compose conversion format libraries environment errors
     (Config.Runtime.llm settings) program contract model (Config.Judge.batchSize (Config.Runtime.judge settings))
     (Config.Judge.project (Config.Runtime.judge settings))
     (Config.Judge.mcpCommand (Config.Runtime.judge settings)) (Config.Judge.mcpArgs (Config.Runtime.judge settings)) configPath
-    (Config.Runtime.email settings) localTime sizeMaximum clockMaximum endian path json buildMessage
+    (Config.Runtime.email settings) localTime sizeMaximum clockMaximum endian path json buildMessage (notificationMode watch)
   module S path = StateOperations.Bound conversion sizeMaximum endian path
   module F (settings : Config.Runtime) path = FinalizationComposition.Bound conversion format localTime
     sizeMaximum clockMaximum endian path (Config.Runtime.email settings)
@@ -131,31 +135,31 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   preparationReport now detail = record (setupReport now detail)
     { blockReason = just (toList "mcp_or_configuration_error") }
 
-  data Executed (settings : Config.Runtime) (held : L.Locked) (configPath : Path.Path) : R.Report → Set where
+  data Executed (watch : Bool) (settings : Config.Runtime) (held : L.Locked) (configPath : Path.Path) : R.Report → Set where
     completed : ∀ program before after events client report (snapshot : PreparedMcpConfig settings configPath)
       preparationEvents →
       Preparation.Runs settings configPath (L.Locked.path held)
         (Preparation.start settings configPath (L.Locked.path held)) preparationEvents (inj₂ snapshot) →
       Built (Config.Runtime.llm settings) program before →
-      W.Runs settings program (L.Locked.path held) (PreparedMcpConfig.path snapshot) before nothing
-        (W.W.start settings program (L.Locked.path held) (PreparedMcpConfig.path snapshot)) events after client report →
-      Dropped client → Executed settings held configPath report
+      W.Runs watch settings program (L.Locked.path held) (PreparedMcpConfig.path snapshot) before nothing
+        (W.W.start watch settings program (L.Locked.path held) (PreparedMcpConfig.path snapshot)) events after client report →
+      Dropped client → Executed watch settings held configPath report
     -- No MCP execution is admitted on this branch. The existing watcher/caller
     -- owns retry after the private state/configuration problem is corrected.
     preparationFailure : ∀ detail observed preparationEvents events report →
       Preparation.Runs settings configPath (L.Locked.path held)
         (Preparation.start settings configPath (L.Locked.path held)) preparationEvents (inj₁ detail) →
-      F.Runs settings (L.Locked.path held) (Finalization.finish (preparationReport observed detail)) events report →
-      Executed settings held configPath report
+      F.Runs settings (L.Locked.path held) (Finalization.finishWith (notificationMode watch) (preparationReport observed detail)) events report →
+      Executed watch settings held configPath report
     setupFailure : ∀ detail observed events report → BuildFailed (Config.Runtime.llm settings) detail →
-      F.Runs settings (L.Locked.path held) (Finalization.finish (setupReport observed detail)) events report → Executed settings held configPath report
+      F.Runs settings (L.Locked.path held) (Finalization.finishWith (notificationMode watch) (setupReport observed detail)) events report → Executed watch settings held configPath report
 
   data Effect : Set where
     loadConfig resolveState clock : Effect
     prepareLog : C.Loaded → Effect
     acquire : Path.Path → Effect
     release : L.Locked → Effect
-    execute : Config.Runtime → L.Locked → Path.Path → Effect
+    execute : Bool → Config.Runtime → L.Locked → Path.Path → Effect
     incident status : L.Locked → R.Report → Effect
     stdout : Output → Effect
     configurationDiagnostic : Text → Effect
@@ -167,7 +171,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   Reply clock = Maybe ℕ
   Reply (acquire _) = L.FS.Result (Maybe L.Locked)
   Reply (release _) = ⊤
-  Reply (execute settings held configPath) = R.Report
+  Reply (execute watch settings held configPath) = R.Report
   Reply (incident held report) = Text ⊎ ⊤
   Reply (status held report) = Text ⊎ ⊤
   Reply (stdout _) = ⊤
@@ -199,7 +203,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   afterLock : Bool → C.Loaded → Reply (acquire []) → Script Host.Outcome
   afterLock watch loadedConfiguration (inj₁ _) = failed watch stateUnavailable Host.unavailable
   afterLock watch loadedConfiguration (inj₂ nothing) = failed watch alreadyRunning Host.alreadyRunning
-  afterLock watch loadedConfiguration (inj₂ (just held)) = ask (execute settings held (C.Loaded.path loadedConfiguration)) (λ result →
+  afterLock watch loadedConfiguration (inj₂ (just held)) = ask (execute watch settings held (C.Loaded.path loadedConfiguration)) (λ result →
     emit watch (reportOutput result) >>= λ _ → ask (release held) (λ _ → done (Host.outcomeOf watch result)))
     where settings = Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration)
 
@@ -250,7 +254,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     path : ∀ events result → SP.Runs (SP.resolve explicitState) events result → Receipt resolveState result
     locked : ∀ path events result → L.FS.Runs (FS.acquire path) events result → Receipt (acquire path) result
     unlocked : ∀ held events → L.FS.Runs (L.release held) events tt → Receipt (release held) tt
-    ran : ∀ settings held configPath report → Executed settings held configPath report → Receipt (execute settings held configPath) report
+    ran : ∀ watch settings held configPath report → Executed watch settings held configPath report → Receipt (execute watch settings held configPath) report
     observed : ∀ reply → Receipt clock reply
     recorded : ∀ held report reply → S.IncidentExecution (L.Locked.path held) report reply → Receipt (incident held report) reply
     written : ∀ held report reply → S.Written (L.Locked.path held) Persistence.status report reply → Receipt (status held report) reply
