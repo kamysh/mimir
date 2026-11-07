@@ -79,3 +79,30 @@ The remaining human judgment is whether each intended outcome expresses what
 the user actually wants. An identity function can still be the wrong intent.
 Review and the native differential tests must check that meaning; this module
 does not claim that a type can discover it automatically.
+
+`Single.single` is the proved entry for one committed statement. Its statement
+supplies the physical state/reply function, an independently reviewed intent,
+and evidence that a confirmed execution realizes that intent. Construction
+also requires idempotence of the complete state and reply. Having one SQL
+statement is not evidence that it is safe to repeat.
+
+For example, an append that creates another row on each retry cannot supply
+that proof. A deletion that leaves the state unchanged on retry but returns a
+different affected-row count also lacks the required reply stability unless
+its original result is retained and read back. The constructor does not bypass
+this obligation for generated identifiers or counts.
+
+The proof uses the shared generic interruption relation. A statement can leave
+only the original state or its atomic publication. A general coverage theorem
+maps every existing PostgreSQL atomicity receipt, including both possible
+states after lost acknowledgement, into those interruption states. An abort
+or uncertain acknowledgement never becomes a confirmed completed result.
+After a completed retry, idempotence establishes the original intended state
+and complete reply. Progress supplies the confirmed execution witness under
+the declared dependency semantics.
+
+A read that preserves the world and computes a specified answer has a general
+idempotence proof and enters through the same constructor. This does not yet
+remove raw scripts from the dispatcher; the concrete operation table and its
+exclusive entry remain #74 and #76. Native adapters must still establish that
+each statement's physical meaning matches its implementation.

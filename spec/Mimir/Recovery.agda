@@ -10,6 +10,7 @@ import Mimir.ApplicationStore as Store
 import Mimir.StructuredValue as Wire
 import Mimir.Effects as Effects
 import Mimir.DatabaseTransaction as Database
+open import Data.Sum using (_⊎_; inj₁; inj₂)
 
 -- Assembly fixes World once for the entire dispatcher. An operation over a
 -- smaller world cannot be supplied where this dispatcher expects the larger
@@ -163,3 +164,129 @@ record Recoverable (World Input : Set) : Set₁ where
   progressReachesIntent input initial with progress input initial
   ... | final , reply , execution =
     final , reply , execution , completedMeetsIntent input initial final reply execution
+
+-- One committed statement is not automatically repeatable. Its physical
+-- meaning and independently reviewed intent are separate, and the complete
+-- observation (including the reply) must be stable on replay.
+module Single where
+  record Statement (World Input : Set) : Set where
+    field
+      execute : Input → World → World × Wire.Value
+      intent : Over.Intent World Input
+      correct : ∀ input initial → execute input initial ≡
+        Over.expected World intent (Over.invocation input initial)
+
+  record Idempotent {World Input} (statement : Statement World Input) : Set where
+    field
+      stable : ∀ input initial →
+        Statement.execute statement input (proj₁ (Statement.execute statement input initial)) ≡
+        Statement.execute statement input initial
+
+  module Semantics {World Input} (statement : Statement World Input) where
+    execute = Statement.execute statement
+    module G = Over World
+
+    -- Only a confirmed statement supplies a completed reply. Aborts and lost
+    -- acknowledgements remain interruption states, covered below directly
+    -- from every constructor of the existing PostgreSQL atomicity contract.
+    Atomic : World → Input → Wire.Value → World → Set
+    Atomic before input reply after =
+      Database.Atomic before (proj₁ (execute input before)) Database.committed after ×
+      reply ≡ proj₂ (execute input before)
+
+    module X = Execution World Input (λ _ → Wire.Value) Atomic
+    module E = X.E
+
+    script : Input → E.Script Wire.Value
+    script input = E.ask input E.done
+
+    oneObservation : ∀ input before after reply →
+      X.Changes before ((input , reply) ∷ []) after →
+      G.observe after reply ≡ execute input before
+    oneObservation input before after reply
+      (X.changed _ _ _ _ (Database.committedAll , refl) (X.unchanged _)) = refl
+
+    completedObservation : ∀ input before after reply →
+      X.Completed (script input) before after reply →
+      G.observe after reply ≡ execute input before
+    completedObservation input before after reply
+      (X.completed _ (E.replied _ _ _ (E.returned _)) physical) =
+      oneObservation input before after reply physical
+
+    interruptionState : ∀ input initial interrupted →
+      X.Interrupted (script input) initial interrupted →
+      interrupted ≡ initial ⊎ interrupted ≡ proj₁ (execute input initial)
+    interruptionState input initial interrupted
+      (X.atPrefix _ _ _ (E.stopped _) (X.unchanged _)) = inj₁ refl
+    interruptionState input initial interrupted
+      (X.atPrefix _ _ _ (E.replied _ _ _ (E.stopped _)) physical) =
+      inj₂ (cong proj₁ (oneObservation input initial interrupted _ physical))
+    interruptionState input initial interrupted
+      (X.beforeReply _ _ _ _ _ _ (E.stopped _) (X.unchanged _)
+        (Database.committedAll , refl)) = inj₂ refl
+    interruptionState input initial interrupted
+      (X.beforeReply _ _ _ _ _ _ (E.replied _ _ _ ()) physical active)
+
+    everyDatabaseReceiptCovered : ∀ input initial receipt interrupted →
+      Database.Atomic initial (proj₁ (execute input initial)) receipt interrupted →
+      X.Interrupted (script input) initial interrupted
+    everyDatabaseReceiptCovered input initial .Database.committed _ Database.committedAll =
+      X.beforeReply [] input E.done initial (proj₂ (execute input initial)) _
+        (E.stopped _) (X.unchanged initial) (Database.committedAll , refl)
+    everyDatabaseReceiptCovered input initial .Database.aborted _ Database.abortedNone =
+      X.atPrefix [] (script input) initial (E.stopped _) (X.unchanged initial)
+    everyDatabaseReceiptCovered input initial .Database.acknowledgementLost _ Database.unknownBefore =
+      X.atPrefix [] (script input) initial (E.stopped _) (X.unchanged initial)
+    everyDatabaseReceiptCovered input initial .Database.acknowledgementLost _ Database.unknownAfter =
+      X.beforeReply [] input E.done initial (proj₂ (execute input initial)) _
+        (E.stopped _) (X.unchanged initial) (Database.committedAll , refl)
+
+    converges : Idempotent statement → ∀ input initial interrupted final reply →
+      X.Interrupted (script input) initial interrupted →
+      X.Completed (script input) interrupted final reply →
+      G.Goal (Statement.intent statement) (G.invocation input initial) final reply
+    converges repeatable input initial interrupted final reply interruption completion
+      with interruptionState input initial interrupted interruption
+    ... | inj₁ beforeEquality = trans (completedObservation input interrupted final reply completion)
+      (trans (cong (execute input) beforeEquality) (Statement.correct statement input initial))
+    ... | inj₂ afterEquality = trans (completedObservation input interrupted final reply completion)
+      (trans (cong (execute input) afterEquality)
+        (trans (Idempotent.stable repeatable input initial) (Statement.correct statement input initial)))
+
+    progress : ∀ input initial → Σ World (λ final → Σ Wire.Value (λ reply →
+      X.Completed (script input) initial final reply))
+    progress input initial = proj₁ (execute input initial) , proj₂ (execute input initial) ,
+      X.completed ((input , proj₂ (execute input initial)) ∷ [])
+        (E.replied input E.done (proj₂ (execute input initial)) (E.returned _))
+        (X.changed initial input _ _ (Database.committedAll , refl) (X.unchanged _))
+
+  single : ∀ {World Input} (statement : Statement World Input) →
+    Idempotent statement → Recoverable World Input
+  single {Input = Input} statement repeatable = record
+    { Effect = Input
+    ; Reply = λ _ → Wire.Value
+    ; script = S.script
+    ; Atomic = S.Atomic
+    ; intent = Statement.intent statement
+    ; converges = S.converges repeatable
+    ; progress = S.progress
+    }
+    where module S = Semantics statement
+
+  readStatement : ∀ {World Input} → (Input → World → Wire.Value) → Statement World Input
+  readStatement answer = record
+    { execute = λ input initial → initial , answer input initial
+    ; intent = record { intended = λ _ initial → initial; expectedReply = answer }
+    ; correct = λ _ _ → refl
+    }
+
+  readIsIdempotent : ∀ {World Input} (answer : Input → World → Wire.Value) →
+    Idempotent (readStatement answer)
+  readIsIdempotent answer = record { stable = λ _ _ → refl }
+
+  replyMustRepeat : ∀ {World Input} (statement : Statement World Input) →
+    Idempotent statement → ∀ input initial →
+    proj₂ (Statement.execute statement input (proj₁ (Statement.execute statement input initial))) ≡
+    proj₂ (Statement.execute statement input initial)
+  replyMustRepeat statement repeatable input initial =
+    cong proj₂ (Idempotent.stable repeatable input initial)
