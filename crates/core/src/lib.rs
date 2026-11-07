@@ -5,6 +5,7 @@ pub mod documents;
 pub mod embed;
 pub mod graph;
 pub mod inference;
+pub mod interaction;
 pub mod learning;
 pub mod learning_sources;
 mod password;

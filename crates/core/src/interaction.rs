@@ -1,0 +1,263 @@
+//! Shared pre-execution correction responses for ordinary clients and the judge.
+//! Governed by Mimir.McpErrors.AgentCorrection. Do not construct these around an
+//! uncertain database outcome: they explicitly certify no business changes.
+use crate::validation::{Code, Fault, Segment};
+use anyhow::{ensure, Result};
+use serde::{Deserialize, Deserializer, Serialize};
+
+const INSTRUCTION: &str = "Correct the indicated fields and retry. If a required value is not known, ask the user instead of guessing.";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Location {
+    Request,
+    Arguments,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorrectionItem {
+    location: Location,
+    fault: Fault,
+    expected: String,
+    suggested_correction: String,
+}
+
+impl CorrectionItem {
+    pub fn new(
+        location: Location,
+        fault: Fault,
+        expected: String,
+        suggested_correction: String,
+    ) -> Result<Self> {
+        let item = Self {
+            location,
+            fault,
+            expected,
+            suggested_correction,
+        };
+        item.validate()?;
+        Ok(item)
+    }
+
+    pub fn missing_argument(path: Vec<Segment>, expected: String) -> Result<Self> {
+        Self::new(Location::Arguments, Fault {
+            path, code: Code::MissingField, message: "A required field is missing.".into(),
+        }, expected, "Provide the missing value from the task context. If it is not known, ask the user; do not invent a value.".into())
+    }
+
+    pub fn unknown_argument(path: Vec<Segment>, accepted_fields: &[String]) -> Result<Self> {
+        let expected = if accepted_fields.is_empty() {
+            "This tool accepts no argument fields.".into()
+        } else {
+            format!(
+                "Use only the advertised fields: {}.",
+                serde_json::to_string(accepted_fields)?
+            )
+        };
+        Self::new(Location::Arguments, Fault {
+            path, code: Code::UnknownField, message: "This field is not accepted by the tool.".into(),
+        }, expected, "Remove this field. If another field was intended, use the tool schema and preserve the intended meaning.".into())
+    }
+
+    pub fn fault(&self) -> &Fault {
+        &self.fault
+    }
+    pub fn location(&self) -> Location {
+        self.location
+    }
+    pub fn expected(&self) -> &str {
+        &self.expected
+    }
+    pub fn suggested_correction(&self) -> &str {
+        &self.suggested_correction
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.fault.message.trim().is_empty(),
+            "a correction must explain what was wrong"
+        );
+        ensure!(
+            !self.expected.trim().is_empty(),
+            "a correction must describe the expected input"
+        );
+        ensure!(
+            !self.suggested_correction.trim().is_empty(),
+            "a correction must suggest how to proceed"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Status {
+    NeedsInput,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BusinessChanges {
+    None,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum NextAction {
+    CorrectRequestOrAskUser,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireResponse {
+    status: Status,
+    business_changes: BusinessChanges,
+    next_action: NextAction,
+    message: String,
+    issues: Vec<CorrectionItem>,
+}
+
+/// A normal tool result requesting correction before business mutation.
+/// An unclassified service error cannot be converted into this type implicitly.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct NeedsInput(WireResponse);
+
+impl NeedsInput {
+    pub fn new(first: CorrectionItem, rest: Vec<CorrectionItem>) -> Result<Self> {
+        let mut issues = vec![first];
+        issues.extend(rest);
+        Self::checked(WireResponse {
+            status: Status::NeedsInput,
+            business_changes: BusinessChanges::None,
+            next_action: NextAction::CorrectRequestOrAskUser,
+            message: INSTRUCTION.into(),
+            issues,
+        })
+    }
+
+    pub fn issues(&self) -> &[CorrectionItem] {
+        &self.0.issues
+    }
+    pub fn message(&self) -> &str {
+        &self.0.message
+    }
+
+    fn checked(wire: WireResponse) -> Result<Self> {
+        ensure!(
+            !wire.issues.is_empty(),
+            "a correction response must identify at least one issue"
+        );
+        ensure!(
+            !wire.message.trim().is_empty(),
+            "a correction response must explain the next action"
+        );
+        for issue in &wire.issues {
+            issue.validate()?;
+        }
+        Ok(Self(wire))
+    }
+}
+
+impl<'de> Deserialize<'de> for NeedsInput {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let wire = WireResponse::deserialize(deserializer)?;
+        Self::checked(wire).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn response() -> NeedsInput {
+        NeedsInput::new(
+            CorrectionItem::missing_argument(
+                vec![Segment::Key("project".into())],
+                "The actual project name for this work.".into(),
+            )
+            .unwrap(),
+            vec![CorrectionItem::unknown_argument(
+                vec![Segment::Key("project_name".into())],
+                &["project".into(), "context".into()],
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn missing_and_unknown_fields_share_an_actionable_non_success_response() {
+        let response = response();
+        let wire = serde_json::to_value(&response).unwrap();
+        assert_eq!(wire["status"], "needs_input");
+        assert_eq!(wire["business_changes"], "none");
+        assert_eq!(wire["next_action"], "correct_request_or_ask_user");
+        assert_eq!(wire["issues"][0]["location"], "arguments");
+        assert_eq!(wire["issues"][0]["fault"]["path"], json!(["project"]));
+        assert_eq!(wire["issues"][0]["fault"]["code"], "missing_field");
+        assert_eq!(wire["issues"][1]["fault"]["code"], "unknown_field");
+        assert!(response
+            .message()
+            .contains("ask the user instead of guessing"));
+        assert!(wire["issues"][0].get("value").is_none());
+        assert!(wire.get("result").is_none());
+        assert_eq!(
+            serde_json::from_value::<NeedsInput>(wire).unwrap(),
+            response
+        );
+    }
+
+    #[test]
+    fn incomplete_or_uncertain_outcomes_cannot_decode_as_no_change_corrections() {
+        let original = serde_json::to_value(response()).unwrap();
+        for (path, value) in [
+            (vec!["issues"], json!([])),
+            (vec!["status"], json!("success")),
+            (vec!["business_changes"], json!("unknown")),
+            (vec!["next_action"], json!("retry_unchanged")),
+            (vec!["message"], json!("")),
+        ] {
+            let mut wire = original.clone();
+            wire[path[0]] = value;
+            assert!(serde_json::from_value::<NeedsInput>(wire).is_err());
+        }
+        let mut wire = original.clone();
+        wire["issues"][0]["expected"] = json!("");
+        assert!(serde_json::from_value::<NeedsInput>(wire).is_err());
+        let mut wire = original;
+        wire["issues"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("suggested_correction");
+        assert!(serde_json::from_value::<NeedsInput>(wire).is_err());
+    }
+
+    #[test]
+    fn all_diagnostics_and_full_explanations_survive_transport() {
+        let mut first = response().issues()[0].clone();
+        first.fault.message = "complete explanation; ".repeat(8193);
+        let remaining: Vec<_> = (0..2049)
+            .map(|index| {
+                CorrectionItem::missing_argument(
+                    vec![
+                        Segment::Key("items".into()),
+                        Segment::Index(index),
+                        Segment::Key("source_ref".into()),
+                    ],
+                    "A reference to the actual supporting source.".into(),
+                )
+                .unwrap()
+            })
+            .collect();
+        let response = NeedsInput::new(first, remaining).unwrap();
+        let decoded: NeedsInput =
+            serde_json::from_slice(&serde_json::to_vec(&response).unwrap()).unwrap();
+        assert_eq!(decoded, response);
+        assert_eq!(decoded.issues().len(), 2050);
+        assert_eq!(
+            decoded.issues().last().unwrap().fault.path[1],
+            Segment::Index(2048)
+        );
+    }
+}

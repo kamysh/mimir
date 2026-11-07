@@ -27,6 +27,9 @@ pub enum Code {
     MissingEvidence,
     UnsupportedCombination,
     MalformedInput,
+    MissingField,
+    UnknownField,
+    WrongType,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -33,11 +33,14 @@ codeName invalidInterval = toList "invalid_interval"
 codeName missingEvidence = toList "missing_evidence"
 codeName unsupportedCombination = toList "unsupported_combination"
 codeName malformedInput = toList "malformed_input"
+codeName missingField = toList "missing_field"
+codeName unknownField = toList "unknown_field"
+codeName wrongType = toList "wrong_type"
 
 codes : List Code
 codes = emptyText ∷ textTooLong ∷ tooMany ∷ duplicate ∷ missingReference ∷ wrongActor ∷
   quotationMismatch ∷ staleRevision ∷ wrongIdentity ∷ invalidNumber ∷ invalidInterval ∷
-  missingEvidence ∷ unsupportedCombination ∷ malformedInput ∷ []
+  missingEvidence ∷ unsupportedCombination ∷ malformedInput ∷ missingField ∷ unknownField ∷ wrongType ∷ []
 
 findCode : Text → List Code → Maybe Code
 findCode text [] = nothing
@@ -60,6 +63,9 @@ findComplete invalidInterval = refl
 findComplete missingEvidence = refl
 findComplete unsupportedCombination = refl
 findComplete malformedInput = refl
+findComplete missingField = refl
+findComplete unknownField = refl
+findComplete wrongType = refl
 
 readCodeText : Text → Fault ⊎ Code
 readCodeText text with findCode text codes

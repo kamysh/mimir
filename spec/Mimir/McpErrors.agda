@@ -6,14 +6,14 @@ module Mimir.McpErrors where
 
 open import Data.Integer using (ℤ; -[1+_])
 import Data.Integer.Properties as Integer
-open import Data.List using (List; []; _∷_)
+open import Data.List using (List; []; _∷_; map)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
-open import Data.Empty using (⊥-elim)
+open import Data.Empty using (⊥; ⊥-elim)
 open import Data.String using (toList)
 open import Relation.Nullary using (yes; no)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.Validation using (Fault; fault; malformedInput)
@@ -154,3 +154,53 @@ emit certified = encode (CertifiedRefusal.report certified)
 emittedRefusalPreserved : ∀ {World before after} (certified : CertifiedRefusal World before after) →
   classify (emit certified) ≡ rejected (CertifiedRefusal.report certified)
 emittedRefusalPreserved certified = roundTrip (CertifiedRefusal.report certified)
+
+-- Actionable correction is an ordinary tool outcome, not a JSON-RPC failure.
+-- A server may claim no business changes only with the corresponding actual
+-- state equality. Unknown write outcomes still require receipt inspection.
+module AgentCorrection where
+  data Location : Set where request arguments : Location
+
+  record Item : Set where
+    constructor item
+    field
+      location : Location
+      failure : Fault
+      expected suggestedCorrection : Text
+
+  -- A response cannot claim that correction is needed without naming an issue.
+  record Claim : Set where
+    constructor claim
+    field first : Item; rest : List Item
+
+  record Certified (World : Set) (before after : World) : Set where
+    constructor certified
+    field report : Claim; unchanged : after ≡ before
+
+  changedStateCannotBeCertified : ∀ {World before after} → after ≢ before →
+    Certified World before after → ⊥
+  changedStateCannotBeCertified changed proof = changed (Certified.unchanged proof)
+
+  locationName : Location → Text
+  locationName request = toList "request"
+  locationName arguments = toList "arguments"
+
+  instruction : Text
+  instruction = toList "Correct the indicated fields and retry. If a required value is not known, ask the user instead of guessing."
+
+  private
+    encodeItem : Item → Value
+    encodeItem detail = object
+      ((toList "location" , string (locationName (Item.location detail))) ∷
+       (toList "fault" , FaultWire.encode (Item.failure detail)) ∷
+       (toList "expected" , string (Item.expected detail)) ∷
+       (toList "suggested_correction" , string (Item.suggestedCorrection detail)) ∷ [])
+
+  emitCorrection : ∀ {World before after} → Certified World before after → Value
+  emitCorrection proof = object
+    ((toList "status" , string (toList "needs_input")) ∷
+     (toList "business_changes" , string (toList "none")) ∷
+     (toList "next_action" , string (toList "correct_request_or_ask_user")) ∷
+     (toList "message" , string instruction) ∷
+     (toList "issues" , array (map encodeItem (Claim.first report ∷ Claim.rest report))) ∷ [])
+    where report = Certified.report proof

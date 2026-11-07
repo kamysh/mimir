@@ -7889,6 +7889,294 @@
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
     {
+      "path": "crates/core/src/interaction.rs",
+      "definitions": [
+        {
+          "kind": "const",
+          "name": "INSTRUCTION",
+          "line": 8,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "enum",
+          "name": "Location",
+          "line": 12,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "struct",
+          "name": "CorrectionItem",
+          "line": 19,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "new",
+          "line": 27,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "missing_argument",
+          "line": 43,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "unknown_argument",
+          "line": 49,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "fault",
+          "line": 63,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "location",
+          "line": 66,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "expected",
+          "line": 69,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "suggested_correction",
+          "line": 72,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "validate",
+          "line": 76,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "enum",
+          "name": "Status",
+          "line": 95,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "enum",
+          "name": "BusinessChanges",
+          "line": 100,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "enum",
+          "name": "NextAction",
+          "line": 105,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "struct",
+          "name": "WireResponse",
+          "line": 111,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "struct",
+          "name": "NeedsInput",
+          "line": 123,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "new",
+          "line": 126,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "issues",
+          "line": 138,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "message",
+          "line": 141,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "checked",
+          "line": 145,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "deserialize",
+          "line": 162,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/Validation.agda",
+            "spec/Mimir/FaultWire.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        }
+      ],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/McpErrors.agda",
+        "spec/Mimir/Validation.agda",
+        "spec/Mimir/FaultWire.agda"
+      ],
+      "specification_status": "behavior-defined",
+      "proof_boundary_category": "application_protocol",
+      "implementation_receipt": "docs/AGENT-CORRECTIONS.md"
+    },
+    {
       "path": "crates/core/src/learning.rs",
       "definitions": [
         {
@@ -16389,7 +16677,7 @@
         "formal_status": "One external-interface postulate outside the safe spec import graph; the Rust adapter correspondence remains open.",
         "approval": "User selected Approve for the PostgreSQL transaction-atomicity question on 2026-10-30.",
         "module_file": "assumptions/Mimir/Assumptions/PostgreSQL.agda",
-        "declaration": "atomicTransactions : (State : Set) → Mimir.DatabaseTransaction.Contract State",
+        "declaration": "atomicTransactions : (State : Set) \u2192 Mimir.DatabaseTransaction.Contract State",
         "isolation_audit": "/tmp/mimir-assumption-isolation-audit-eejzpx6r.json",
         "verification": "/tmp/mimir-agda-approved-postgresql-vetBrZBn.log and .exit",
         "verification_limit": "Checks the declaration and imports; PostgreSQL behavior is assumed, not proved."

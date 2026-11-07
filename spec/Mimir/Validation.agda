@@ -27,7 +27,7 @@ key name = fieldKey (toList name)
 data Code : Set where
   emptyText textTooLong tooMany duplicate missingReference wrongActor
     quotationMismatch staleRevision wrongIdentity invalidNumber invalidInterval
-    missingEvidence unsupportedCombination malformedInput : Code
+    missingEvidence unsupportedCombination malformedInput missingField unknownField wrongType : Code
 
 record Fault : Set where
   constructor problem
