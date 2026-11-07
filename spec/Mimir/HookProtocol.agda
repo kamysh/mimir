@@ -113,11 +113,9 @@ module Run (environment : Application.Environment) where
     (just project) → done project
     nothing → ask currentDirectory done
 
-  width count : CLI.HookCommand → ℕ
+  width : CLI.HookCommand → ℕ
   width CLI.prompt = 500
   width _ = 200
-  count CLI.prompt = 5
-  count _ = 3
 
   message : CLI.HookCommand → List Graph.BeliefValues → Message
   message CLI.prompt = promptContext
@@ -126,7 +124,7 @@ module Run (environment : Application.Environment) where
   inject : CLI.HookCommand → Text → Maybe Text → Script ℕ
   inject kind text scope = ask connect λ where
     (inj₁ _) → done 0
-    (inj₂ tt) → ask (execute (Public.relevant (CLI.trunc (width kind) text) (count kind) scope nothing false 3)) λ where
+    (inj₂ tt) → ask (execute (Public.relevant (CLI.trunc (width kind) text) nothing scope nothing false nothing)) λ where
       (A.relevantResult []) → done 0
       (A.relevantResult beliefs@(_ ∷ _)) → ask (stdout (message kind beliefs)) (λ _ → done 0)
       _ → done 0
