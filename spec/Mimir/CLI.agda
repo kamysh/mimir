@@ -72,12 +72,12 @@ data Command : Set where
   judge : JudgeCommand → Command
 
 record Defaults : Set where
-  field listLimit queryLimit documentLimit watchInterval watchFailures : ℕ
+  field listLimit queryLimit documentLimit : ℕ
         queryEvidence : Bool
         decayFactor threshold graceHours evidenceWeight : Float
 
 defaults : Defaults
-defaults = record { listLimit = 0; queryLimit = 10; documentLimit = 5; watchInterval = 300; watchFailures = 3
+defaults = record { listLimit = 0; queryLimit = 10; documentLimit = 5
   ; queryEvidence = false; decayFactor = 0.99; threshold = 0.3; graceHours = 24.0; evidenceWeight = 1.0 }
 
 -- UUID arguments of these commands are parsed before configuration/database

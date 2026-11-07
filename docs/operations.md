@@ -61,11 +61,12 @@ mean the failure has been repaired. After a successful non-idle batch, the
 watcher immediately checks for the next eligible work. An empty queue waits for
 a PostgreSQL work event and then scans the durable queue again. There is no idle
 polling interval. After losing its listener, the watcher reconnects and scans
-saved pending work, including changes whose notifications were missed. The current
-incomplete-work paths still use the configured interval and failure backoff;
-their removal is tracked separately in #67. It announces
-failure/recovery transitions instead of repeating the same error on every
-polling cycle.
+saved pending work, including changes whose notifications were missed. After
+incomplete work or an unresolved prerequisite, it waits for a configuration
+correction or explicit SIGHUP retry and prints `kill -HUP PID` for its current
+process. Correct the cause before retrying. New work notifications cannot retry
+an unchanged missing prerequisite. There is no failure-count threshold or
+scheduled backoff. It announces failure/recovery transitions once per episode.
 
 While running, the watcher observes configuration file changes through OS
 events, including edits and atomic replacements. It applies a valid replacement

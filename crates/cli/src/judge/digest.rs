@@ -179,7 +179,7 @@ pub async fn tick(
     .await?;
     let report = state::read(&state::resolve(state_dir)?).ok().flatten();
     body.push_str(&super::diagnose::summary(report.as_ref()));
-    body.push_str("The watcher retries automatically while running, with hourly backoff after repeated failures. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/main/docs/operations.md\n");
+    body.push_str("After an unresolved prerequisite, the watcher waits for a configuration correction or explicit SIGHUP retry. The running watcher prints the retry command. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/main/docs/operations.md\n");
     let digest = Digest {
         through_day: through.to_string(),
         body,

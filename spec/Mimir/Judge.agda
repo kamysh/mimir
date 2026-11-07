@@ -237,7 +237,7 @@ module PreDispatch where
 -- A malformed model request is returned as corrective tool feedback; it is
 -- not a deferred source revision. Immutable candidate-key conflicts can be
 -- deferred after bounded in-run correction, while the watcher keeps one alert
--- episode and its existing backoff for incomplete batches.
+-- episode while an unresolved prerequisite waits for correction or an explicit retry.
 module Watch where
   data Outcome : Set where success rejected infrastructureFailure : Outcome
   data Rejection : Set where invalidRequest candidateConflict : Rejection
@@ -282,41 +282,6 @@ module Watch where
   idle-reports-active-episode false = refl
   idle-reports-active-episode true = refl
 
-  reached : ℕ → ℕ → Bool
-  reached zero current = true
-  reached (suc limit) zero = false
-  reached (suc limit) (suc current) = reached limit current
-
-  retryDelay : ℕ → ℕ → ℕ → ℕ → ℕ
-  retryDelay threshold failures normal backedOff with reached threshold failures
-  ... | true = backedOff
-  ... | false = normal
-
-  reached-complete : ∀ {limit current} → limit ≤ current → reached limit current ≡ true
-  reached-complete z≤n = refl
-  reached-complete (s≤s bound) = reached-complete bound
-
-  reached-sound : ∀ limit current → reached limit current ≡ true → limit ≤ current
-  reached-sound zero current proof = z≤n
-  reached-sound (suc limit) zero ()
-  reached-sound (suc limit) (suc current) proof = s≤s (reached-sound limit current proof)
-
-  below-threshold : ∀ {limit current} → current < limit → reached limit current ≡ false
-  below-threshold {suc limit} {zero} (s≤s bound) = refl
-  below-threshold {suc limit} {suc current} (s≤s bound) = below-threshold bound
-
-  threshold-switches-to-slow-retry : ∀ threshold normal backedOff →
-    retryDelay threshold threshold normal backedOff ≡ backedOff
-  threshold-switches-to-slow-retry threshold normal backedOff rewrite reached-complete (≤-refl {x = threshold}) = refl
-
-  after-threshold-keeps-slow-retry : ∀ threshold current normal backedOff → threshold ≤ current →
-    retryDelay threshold current normal backedOff ≡ backedOff
-  after-threshold-keeps-slow-retry threshold current normal backedOff bound rewrite reached-complete bound = refl
-
-  before-threshold-keeps-normal-retry : ∀ threshold current normal backedOff → current < threshold →
-    retryDelay threshold current normal backedOff ≡ normal
-  before-threshold-keeps-normal-retry threshold current normal backedOff bound rewrite below-threshold bound = refl
-
   retryDeferred : RevisionCheck → Bool
   retryDeferred unchanged = false
   retryDeferred corrected = true
@@ -328,17 +293,6 @@ module Watch where
   correctionPermitsRetry : ∀ revision → revision ≡ corrected → retryDeferred revision ≡ true
   correctionPermitsRetry revision refl = refl
 
-  failures : Outcome → ℕ → ℕ
-  failures success previous = zero
-  failures rejected previous = zero
-  failures infrastructureFailure previous = suc previous
-
-  rejected-resets-failure-streak : ∀ previous → failures rejected previous ≡ zero
-  rejected-resets-failure-streak previous = refl
-
-  infrastructure-failure-increments : ∀ previous →
-    failures infrastructureFailure previous ≡ suc previous
-  infrastructure-failure-increments previous = refl
 
 module Notification where
   incidentAfter : Bool → Watch.Cycle → Bool

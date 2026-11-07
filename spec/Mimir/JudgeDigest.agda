@@ -218,7 +218,7 @@ module Run (calendar : Calendar) where
     (inj₂ connection) → content connection first through run (localZone calendar now) >>= λ where
       (inj₁ error) → ask (close connection) (λ _ → done (inj₁ error))
       (inj₂ body) → ask (readReport path) λ report →
-        ask (send settings path (Delivery.digest (Calendar.showDay calendar through) (body ++ Diagnostics.summary report ++ toList "The watcher retries automatically while running, with hourly backoff after repeated failures. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/v2.2.1/docs/operations.md\n")))
+        ask (send settings path (Delivery.digest (Calendar.showDay calendar through) (body ++ Diagnostics.summary report ++ toList "After an unresolved prerequisite, the watcher waits for a configuration correction or explicit SIGHUP retry. The running watcher prints the retry command. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/main/docs/operations.md\n")))
         (λ reply → ask (close connection) (λ _ → done (sent reply)))
 
   cursor : Config.Runtime → Path.Path → ℤ → Now → Host.Outcome → (Text ⊎ Delivery.Cursor) → Script (Text ⊎ Bool)
