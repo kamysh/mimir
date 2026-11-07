@@ -84,6 +84,18 @@ async fn positive_selection_has_no_ten_record_ceiling_and_zero_is_a_correction()
             "after-correction",
             json!({"jsonrpc":"2.0","id":"after-correction","method":"tools/call","params":{"name":"list_beliefs","arguments":{"project":project,"limit":12,"offset":12}}}),
         ),
+        (
+            "negative-offset",
+            json!({"jsonrpc":"2.0","id":"negative-offset","method":"tools/call","params":{"name":"list_beliefs","arguments":{"project":project,"limit":12,"offset":-1}}}),
+        ),
+        (
+            "missing-selection",
+            json!({"jsonrpc":"2.0","id":"missing-selection","method":"tools/call","params":{"name":"list_beliefs","arguments":{"project":project,"offset":12}}}),
+        ),
+        (
+            "after-offset-corrections",
+            json!({"jsonrpc":"2.0","id":"after-offset-corrections","method":"tools/call","params":{"name":"list_beliefs","arguments":{"project":project,"limit":12,"offset":12}}}),
+        ),
     ];
     let mut first_page = Vec::new();
     for (name, message) in requests {
@@ -117,11 +129,15 @@ async fn positive_selection_has_no_ten_record_ceiling_and_zero_is_a_correction()
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
         let result: Value = serde_json::from_str(text)?;
         match name {
-            "zero" => {
+            "zero" | "negative-offset" | "missing-selection" => {
                 let correction: NeedsInput = serde_json::from_str(text)?;
                 ensure!(
-                    serde_json::to_string(&correction)?
-                        .contains("omit limit to return all matching beliefs"),
+                    serde_json::to_string(&correction)?.contains(match name {
+                        "zero" => "omit limit to return all matching records",
+                        "negative-offset" => "nonnegative",
+                        "missing-selection" => "positive limit",
+                        _ => unreachable!(),
+                    }),
                     "missing correction: {result}"
                 );
             }
@@ -165,7 +181,7 @@ async fn positive_selection_has_no_ten_record_ceiling_and_zero_is_a_correction()
                     "page was capped or next page missing: {result}"
                 );
             }
-            "after-correction" => {
+            "after-correction" | "after-offset-corrections" => {
                 let ids = result["beliefs"]
                     .as_array()
                     .unwrap()

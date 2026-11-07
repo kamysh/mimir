@@ -16,6 +16,11 @@ structured correction explaining that a positive integer selects a page and
 omission selects all matches. The agent can correct the request on the same
 connection; it should not guess a replacement count.
 
+A negative offset, or an offset without an explicit positive limit, also
+returns a correction before the database listing. The correction identifies
+the field and explains whether to supply a page selection or omit the paging
+fields for all matches.
+
 Page selection uses exact numeric comparisons in PostgreSQL, so a large
 positive selection or offset does not acquire an extra limit from the SQL
 `LIMIT`/`OFFSET` integer representation. The request's host integer

@@ -591,26 +591,23 @@ async fn handle_graph_call(
             match args.get("limit") {
                 None => {
                     if args.get("offset").is_some() {
-                        anyhow::bail!("'offset' requires 'limit'");
+                        return Ok(serde_json::to_value(admission::offset_requires_selection())?);
                     }
                     Ok(serde_json::to_value(
                         svc.list_beliefs_filtered(project, memory_type).await?,
                     )?)
                 }
                 Some(raw_limit) => {
-                    let limit = raw_limit
-                        .as_u64()
-                        .filter(|n| *n > 0)
-                        .and_then(|n| usize::try_from(n).ok())
-                        .ok_or_else(|| anyhow::anyhow!("'limit' must be a positive integer; omit it to return all matching beliefs"))?;
+                    let limit = match admission::positive_selection("limit", raw_limit) {
+                        Ok(count) => count.get(),
+                        Err(correction) => return Ok(serde_json::to_value(correction)?),
+                    };
                     let offset = match args.get("offset") {
                         None => 0,
-                        Some(raw_offset) => raw_offset
-                            .as_u64()
-                            .and_then(|n| usize::try_from(n).ok())
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("'offset' must be a nonnegative integer")
-                            })?,
+                        Some(raw_offset) => match admission::page_offset(raw_offset) {
+                            Ok(offset) => offset,
+                            Err(correction) => return Ok(serde_json::to_value(correction)?),
+                        },
                     };
                     svc.list_beliefs_page(project, memory_type, limit, offset)
                         .await

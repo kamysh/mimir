@@ -81,25 +81,6 @@ fn walk(schema: &Value, value: &Value, path: &mut Vec<Segment>, issues: &mut Vec
             ));
         }
     }
-    // Compare integer constraints as integers, without float conversion. The
-    // schema already declares these minimums; enforce them before dispatch.
-    if schema.get("type").and_then(Value::as_str) == Some("integer") {
-        if let Some(minimum) = schema.get("minimum").and_then(Value::as_u64) {
-            if value.as_u64().is_none_or(|supplied| supplied < minimum) {
-                let guidance = schema
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Use the field's declared integer range.");
-                issues.push(issue(
-                    Location::Arguments,
-                    path,
-                    Code::InvalidNumber,
-                    "The supplied integer is below the field's declared minimum.",
-                    format!("An integer at least {minimum}. {guidance}"),
-                ));
-            }
-        }
-    }
     if let Some(choices) = schema.get("enum").and_then(Value::as_array) {
         if !choices.contains(value) {
             issues.push(issue(
@@ -219,6 +200,43 @@ pub fn arguments(schema: &Value, value: &Value) -> Option<NeedsInput> {
     report(issues)
 }
 
+pub fn page_offset(value: &Value) -> Result<usize, NeedsInput> {
+    value.as_u64().and_then(|n|usize::try_from(n).ok()).ok_or_else(||
+        report(vec![issue(Location::Arguments,&[Segment::Key("offset".into())],Code::InvalidNumber,
+            "The page offset must be a nonnegative integer.",
+            "Use zero for the first selected page, or a nonnegative next_offset from the previous page.".into())])
+            .expect("an offset error contains one complete correction"))
+}
+
+pub fn offset_requires_selection() -> NeedsInput {
+    report(vec![issue(Location::Arguments,&[Segment::Key("limit".into())],Code::MissingField,
+        "An offset requires an explicit page selection.",
+        "Supply a positive limit with offset, or omit offset and limit to return all matching records.".into())])
+        .expect("a missing selection contains one complete correction")
+}
+
+/// A supplied selection is positive. Omission is handled separately by its
+/// caller and never encoded as the integer zero.
+pub fn positive_selection(
+    field: &str,
+    value: &Value,
+) -> Result<std::num::NonZeroUsize, NeedsInput> {
+    value
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .and_then(std::num::NonZeroUsize::new)
+        .ok_or_else(|| {
+            report(vec![issue(
+                Location::Arguments,
+                &[Segment::Key(field.into())],
+                Code::InvalidNumber,
+                "The supplied selection must be a positive integer.",
+                format!("Use a positive integer, or omit {field} to return all matching records."),
+            )])
+            .expect("a selection error contains one complete correction")
+        })
+}
+
 /// Publish the same closed field sets that admission enforces. Constraint-only
 /// alternatives inherit their containing record; they do not close an empty
 /// field set of their own.
@@ -317,10 +335,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn integer_minimums_are_checked_without_rounding_large_positive_values() {
-        let schema = json!({"type":"object","properties":{"limit":{"type":"integer","minimum":1,"description":"Use a positive integer or omit limit for all matches."}}});
-        for input in [json!({"limit":0}), json!({"limit":-1})] {
-            let correction = arguments(&schema, &input).unwrap();
+    fn selections_reject_zero_without_rounding_large_positive_values() {
+        for input in [json!(0), json!(-1), json!("12"), json!(null)] {
+            let correction = positive_selection("limit", &input).unwrap_err();
             assert_eq!(
                 correction.issues()[0].fault().path,
                 vec![Segment::Key("limit".into())]
@@ -328,11 +345,19 @@ mod tests {
             assert_eq!(correction.issues()[0].fault().code, Code::InvalidNumber);
             assert!(serde_json::to_string(&correction)
                 .unwrap()
-                .contains("omit limit for all matches"));
+                .contains("omit limit"));
         }
-        assert!(arguments(&schema, &json!({"limit":u64::MAX})).is_none());
-        assert!(arguments(&schema, &json!({"limit":12})).is_none());
-        assert!(arguments(&schema, &json!({})).is_none());
+        assert_eq!(
+            positive_selection("limit", &json!(u64::MAX)).unwrap().get(),
+            usize::MAX
+        );
+        assert_eq!(positive_selection("limit", &json!(12)).unwrap().get(), 12);
+        assert_eq!(page_offset(&json!(0)).unwrap(), 0);
+        assert_eq!(page_offset(&json!(u64::MAX)).unwrap(), usize::MAX);
+        assert!(page_offset(&json!(-1)).is_err());
+        assert!(serde_json::to_string(&offset_requires_selection())
+            .unwrap()
+            .contains("positive limit"));
     }
 
     #[test]
