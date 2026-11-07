@@ -43,6 +43,28 @@ Changing these sources does not authorize a live database, provider account,
 installed hook, system service, or external harness change. The isolated-test
 guard must remain effective; tests must never fall back to the real deployment.
 
+## Database constraints and evaluation tools
+
+The supplemental search includes all of `tests/` and the migration SQL, not
+only Rust test files. These restrictions also require removal work.
+
+| Source | Existing restriction and effect | Follow-up |
+|---|---|---|
+| [007_review_candidates.sql:8](../crates/core/migrations/007_review_candidates.sql#L8), and `MigrationSchema.reviewCandidates` | PostgreSQL still rejects a candidate key longer than 128 characters through a table check, independently of the current Rust input validator. | [#106](https://github.com/kamysh/mimir/issues/106) must remove the ceiling through a new migration and update its formal contract. Do not rewrite a historical applied migration. |
+| [fixture.py:62](../tests/support/fixture.py#L62), [fixture.py:70](../tests/support/fixture.py#L70), [database-connections.py:33](../tests/database-connections.py#L33), [database-connections.py:88](../tests/database-connections.py#L88) | Shared cancellation helper waits at most 60 seconds for readiness, polls every 0.05 seconds, and waits ten seconds for exit/cleanup. Database-connection checks impose a 60-second subprocess timeout and at most 60 startup checks with 0.5-second sleeps. | Deterministic lifecycle synchronization in [#116](https://github.com/kamysh/mimir/issues/116). |
+| [database-connections.py:82](../tests/database-connections.py#L82) | A second disposable database fixture limits memory to 512 MiB and its data filesystem to 256 MiB. It needs the same audit as the main runner's fixture. | Remove these quotas alongside the first fixture in [#171](https://github.com/kamysh/mimir/issues/171). |
+| [judge-adapters.sh:150](../tests/judge-adapters.sh#L150), [judge-adapters.sh:187](../tests/judge-adapters.sh#L187), [judge_process_fixture.rs:24](../tests/judge_process_fixture.rs#L24), [test_isolated_runner.py:84](../tests/test_isolated_runner.py#L84) | Adapter fixtures poll at most 30 times with 0.05-second sleeps and use a 60-second watch interval; process fixtures use 30-second sleeping children, and the isolation-runner fixture assumes 0.3/0.1-second ordering. | [#116](https://github.com/kamysh/mimir/issues/116), with obsolete watcher options removed by [#64](https://github.com/kamysh/mimir/issues/64) and [#67](https://github.com/kamysh/mimir/issues/67). |
+| [eval/main.rs:676](../tests/eval/main.rs#L676), [eval/main.rs:1439](../tests/eval/main.rs#L1439), [eval/main.rs:1711](../tests/eval/main.rs#L1711), [eval/main.rs:1854](../tests/eval/main.rs#L1854), [eval/config.json:11](../tests/eval/config.json#L11) | Evaluator defaults execution to 600 seconds and 40 turns, kills timed-out scripts/actors, and polls at 30/40 milliseconds. Valid slow work can become an evaluation failure. | Remove evaluation execution budgets in [#175](https://github.com/kamysh/mimir/issues/175). |
+| [learning_compare.rs:255](../tests/eval/learning_compare.rs#L255) | Later-action actor is killed after 300 seconds, with 100-millisecond polling. | [#175](https://github.com/kamysh/mimir/issues/175). |
+| [eval/main.rs:1013](../tests/eval/main.rs#L1013), [eval/main.rs:1399](../tests/eval/main.rs#L1399), [eval/main.rs:1473](../tests/eval/main.rs#L1473), [eval/main.rs:1500](../tests/eval/main.rs#L1500), [eval/main.rs:1511](../tests/eval/main.rs#L1511), [eval/main.rs:1520](../tests/eval/main.rs#L1520), [eval/main.rs:1636](../tests/eval/main.rs#L1636) | Reporting cuts lines to 200/400 characters; grading sees only 60 calls, 160 characters per input, and 500 characters of final result. Some evidence comparisons use only a 60-character prefix. | Restore complete evaluation evidence and matching in [#176](https://github.com/kamysh/mimir/issues/176). |
+| [eval/main.rs:49](../tests/eval/main.rs#L49), [eval/main.rs:1047](../tests/eval/main.rs#L1047), [eval/main.rs:1645](../tests/eval/main.rs#L1645) | Grading sample defaults to zero meaning all. Evaluation callers still send `list --limit 0` and request fixed retrieval/evidence selections of 25/two. These callers must move with the public request contract instead of preserving the old zero convention or hiding an evaluator default. | Explicit evaluator selection [#177](https://github.com/kamysh/mimir/issues/177), coordinated with [#103](https://github.com/kamysh/mimir/issues/103), [#104](https://github.com/kamysh/mimir/issues/104), and [#105](https://github.com/kamysh/mimir/issues/105). |
+
+An explicitly chosen experiment sample or fixed set of scenarios defines the
+experiment being requested; it does not justify shortening a selected run's
+evidence or terminating its agent. Likewise, fixture requests intentionally
+selecting one known row to assert a particular result are not evidence of a
+production quota. No live evaluation model was called during this inventory.
+
 ## Agda rules that currently encode the restrictions
 
 The removal issues must change these existing contracts before changing the
