@@ -110,7 +110,7 @@ render calendar daily cumulative pending run zone =
   toList "\n\nSource revisions count stored updates to experiences. They are distinct from the per-run 'corrected' status counter.\n"
 
 data Effect : Set where
-  localNow loadConfig resolveState : Effect
+  localNow resolveState : Effect
   readReport : Path.Path → Effect
   readCursor : Email.Config → Path.Path → Effect
   connect : Config.Runtime → Effect
@@ -121,7 +121,6 @@ data Effect : Set where
 
 Reply : Effect → Set
 Reply localNow = Now
-Reply loadConfig = Text ⊎ Config.Runtime
 Reply resolveState = Text ⊎ Path.Path
 Reply (readReport _) = Maybe Diagnostics.R.Report
 Reply (readCursor _ _) = Text ⊎ Delivery.Cursor
@@ -231,20 +230,19 @@ module Run (calendar : Calendar) where
   ...   | no _ = done (inj₂ (Delivery.Cursor.lastAttemptFailed previous))
   ...   | yes _ = collect settings path first through now run
 
-  configured : ℤ → Now → Host.Outcome → Reply loadConfig → Script (Text ⊎ Bool)
-  configured through now run (inj₁ error) = done (inj₁ error)
-  configured through now run (inj₂ settings) with Email.Config.enabled (Config.Runtime.email settings)
+  configured : ℤ → Now → Host.Outcome → Config.Runtime → Script (Text ⊎ Bool)
+  configured through now run settings with Email.Config.enabled (Config.Runtime.email settings)
   ... | false = done (inj₂ false)
   ... | true = ask resolveState λ where
     (inj₁ error) → done (inj₁ error)
     (inj₂ path) → ask (readCursor (Config.Runtime.email settings) path) (cursor settings path through now run)
 
-  observed : Host.Outcome → Now → Script (Text ⊎ Bool)
-  observed run now with 9 Data.Nat.≤? localHour calendar now
+  observed : Config.Runtime → Host.Outcome → Now → Script (Text ⊎ Bool)
+  observed settings run now with 9 Data.Nat.≤? localHour calendar now
   ... | no _ = done (inj₂ false)
   ... | yes _ with Calendar.minimumDay calendar <? localDay calendar now
   ...   | no _ = done (inj₂ false)
-  ...   | yes _ = ask loadConfig (configured (localDay calendar now - + 1) now run)
+  ...   | yes _ = configured (localDay calendar now - + 1) now run settings
 
-  tick : Host.Outcome → Script (Text ⊎ Bool)
-  tick run = ask localNow (observed run)
+  tick : Config.Runtime → Host.Outcome → Script (Text ⊎ Bool)
+  tick settings run = ask localNow (observed settings run)

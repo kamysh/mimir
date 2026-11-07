@@ -63,9 +63,17 @@ a PostgreSQL work event and then scans the durable queue again. There is no idle
 polling interval. After losing its listener, the watcher reconnects and scans
 saved pending work, including changes whose notifications were missed. The current
 incomplete-work paths still use the configured interval and failure backoff;
-their removal is tracked separately in issues #66–#67. It announces
+their removal is tracked separately in #67. It announces
 failure/recovery transitions instead of repeating the same error on every
 polling cycle.
+
+While running, the watcher observes configuration file changes through OS
+events, including edits and atomic replacements. It applies a valid replacement
+at the next batch boundary, subscribes using the new settings, then scans before
+waiting. An invalid file produces a diagnostic and waits for a correction; the
+file and last admitted settings are left intact. Save the corrected file to
+resume, or press Ctrl-C to stop. No polling timer is used for configuration
+changes.
 
 Common cases:
 

@@ -10,7 +10,7 @@ A successful, non-idle, non-degraded batch continues directly to the next queue
 check, without constructing a timer or waiting for a timer acknowledgement.
 An empty queue waits for a database work event, then scans again. It cannot
 construct a timer. Incomplete-work paths still use the configured wait; their
-replacements and removal of failure backoff are tracked in #65–#67. No retained
+replacements and removal of failure backoff are tracked in #67. No retained
 wait is approved by this description.
 
 The `Round` record and `roundTrace` proof in
@@ -25,7 +25,11 @@ reply. Its continuation requires an actual listener event; cancellation exits
 the wait. A disconnected listener returns to the subscription phase, which
 requires a fresh configuration receipt, acknowledgement and queue scan before
 waiting again. A failed reconnection reports the missing prerequisite and
-restart instruction; waiting for configuration corrections follows in #66–#67.
+restart instruction. OS file events wake configuration reload at batch
+boundaries, including an idle wait. Invalid replacements pause for a correction
+event without overwriting the file or publishing the invalid settings.
+`invalidConfigurationCannotStartBatch` excludes batch execution from that wait.
+Each round uses the same admitted settings for review and the daily summary.
 
 ## Completing stable work after recovery
 

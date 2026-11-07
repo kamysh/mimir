@@ -39,8 +39,11 @@ requires that the observed settings match. Editing the original file cannot
 redirect the admitted batch. Preparation failure starts no MCP child. Idle
 waiting uses database events. A lost listener returns to the same subscribing
 phase and requires a new scan before waiting; missed hints cannot hide saved
-work. Configuration-change subscriptions follow in #66. No polling timer is
-added by subscription or reconnection.
+work. OS file events request configuration reload and resubscription before
+the next batch. Invalid settings wait for a correction event;
+`invalidConfigurationCannotStartBatch` excludes a batch from that state.
+`Round` uses one admitted configuration for both the batch and daily summary.
+No polling timer is added by subscription, reconnection or configuration reload.
 
 ## Stored belief evidence
 

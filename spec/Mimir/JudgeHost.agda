@@ -134,10 +134,11 @@ module Subscription where
   successRequiresAcknowledgedListen dbConfig events handle (replied _ _ (inj₂ .handle)
     (replied _ _ (inj₂ tt) (returned .(inj₂ handle)))) = refl
 
-data QueueWake : Set where workAvailable disconnected interrupted : QueueWake
+data QueueWake : Set where workAvailable configurationChanged disconnected interrupted : QueueWake
 
 data Phase : Set where
   subscribing : Watch → Phase
+  waitingConfiguration : Watch → Phase
   running : Watch → Phase
   digest : Watch → Outcome → Phase
   continuing : Watch → List Transition → Phase
@@ -147,6 +148,7 @@ data Phase : Set where
 
 Reply : Phase → Set
 Reply (subscribing state) = Exit ⊎ Outcome
+Reply (waitingConfiguration state) = Bool -- Ctrl-C or a configuration file event
 Reply (running state) = Outcome
 Reply (digest state result) = Text ⊎ Bool -- error is an unavailable digest
 Reply (continuing state messages) = ⊤ -- emit transitions, then continue; no timer
@@ -180,13 +182,17 @@ afterDigest usizeMaximum interval threshold before result problem =
   ... | just transition = digestTransitions (Watch.digestProblem before) problem Data.List.++ (transition ∷ [])
 
 step : ℕ → ℕ → ℕ → (phase : Phase) → Reply phase → Phase
+step usizeMaximum interval threshold (subscribing state) (inj₁ invalidConfig) = waitingConfiguration state
 step usizeMaximum interval threshold (subscribing state) (inj₁ code) = exited code
 step usizeMaximum interval threshold (subscribing state) (inj₂ result) = digest state result
+step usizeMaximum interval threshold (waitingConfiguration state) false = subscribing state
+step usizeMaximum interval threshold (waitingConfiguration state) true = exited success
 step usizeMaximum interval threshold (running state) result = digest state result
 step usizeMaximum interval threshold (digest state result) (inj₁ error) = afterDigest usizeMaximum interval threshold state result true
 step usizeMaximum interval threshold (digest state result) (inj₂ problem) = afterDigest usizeMaximum interval threshold state result problem
 step usizeMaximum interval threshold (continuing state messages) reply = running state
 step usizeMaximum interval threshold (awaitingWork state messages) workAvailable = running state
+step usizeMaximum interval threshold (awaitingWork state messages) configurationChanged = subscribing state
 step usizeMaximum interval threshold (awaitingWork state messages) disconnected = subscribing state
 step usizeMaximum interval threshold (awaitingWork state messages) interrupted = exited success
 step usizeMaximum interval threshold (waiting state seconds messages) true = exited success
@@ -234,3 +240,7 @@ cancelAtWorkWait maximum interval threshold state messages = refl
 disconnectionRequiresSubscription : ∀ maximum interval threshold state messages →
   step maximum interval threshold (awaitingWork state messages) disconnected ≡ subscribing state
 disconnectionRequiresSubscription maximum interval threshold state messages = refl
+
+configurationChangeRequiresSubscription : ∀ maximum interval threshold state messages →
+  step maximum interval threshold (awaitingWork state messages) configurationChanged ≡ subscribing state
+configurationChangeRequiresSubscription maximum interval threshold state messages = refl

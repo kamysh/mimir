@@ -157,7 +157,10 @@ waits for PostgreSQL work events and scans again when one arrives; it has no idl
 polling interval. After a listener disconnects, it subscribes again and scans
 saved work before waiting, so missed notifications do not lose pending reviews.
 If restoring the connection fails, it reports how to correct the problem and
-restart. Incomplete-work paths still wait five minutes by default
+restart. OS file events detect configuration edits and replacements without
+polling. Valid changes are subscribed before the next queue scan. Invalid
+settings pause for a correction event, leave the file intact, and do not replace
+the admitted settings. Incomplete-work paths still wait five minutes by default
 (`--interval-seconds`, positive values). After three consecutive incomplete or unavailable runs by default
 (`--max-consecutive-failures`), it backs off to hourly runs (removal tracked in #67). An empty queue
 makes no model call. `mimir judge status` reads the last local report and gives

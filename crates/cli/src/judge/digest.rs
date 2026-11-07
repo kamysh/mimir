@@ -148,7 +148,7 @@ async fn content(
 }
 
 pub async fn tick(
-    config_path: Option<&Path>,
+    settings: &config::RuntimeConfig,
     state_dir: Option<&Path>,
     run: &RunOutcome,
 ) -> Result<bool> {
@@ -156,7 +156,6 @@ pub async fn tick(
     let Some(through) = reporting_day(now) else {
         return Ok(false);
     };
-    let settings = config::load(config_path)?;
     if !settings.email.enabled {
         return Ok(false);
     }

@@ -79,9 +79,6 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     module M = Migration.Runtime Text Text
     module Notify service = Notification.Bound conversion json buildMessage sizeMaximum clockMaximum endian service
 
-  configResult : C.Result → Text ⊎ Config.Runtime
-  configResult (inj₁ detail) = inj₁ detail
-  configResult (inj₂ loadedConfiguration) = inj₂ (Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration))
   pathResult : H.SP.Result → Text ⊎ Path.Path
   pathResult (inj₁ error) = inj₁ (toList "invalid notification state path")
   pathResult (inj₂ path) = inj₂ (StatePath.Resolved.path path)
@@ -96,7 +93,6 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     -- or absent state yields no report and an explicit diagnostic action.
     reportRead : ∀ state path report → Receipt migrations state (Digest.readReport path) report state
     clock : ∀ state now → Receipt migrations state Digest.localNow now state
-    configured : ∀ state reply → H.Receipt H.loadConfig reply → Receipt migrations state Digest.loadConfig (configResult reply) state
     path : ∀ state reply → H.Receipt H.resolveState reply → Receipt migrations state Digest.resolveState (pathResult reply) state
     cursorConstructorFailed : ∀ state cfg path detail → Notification.new cfg path ≡ inj₁ detail →
       Receipt migrations state (Digest.readCursor cfg path) (inj₁ detail) state
@@ -139,6 +135,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   -- evidence that a review completed or that a particular row exists.
   data WorkWait : Host.QueueWake → Set where
     notification : WorkWait Host.workAvailable
+    configurationChanged : WorkWait Host.configurationChanged
     listenerFailed : WorkWait Host.disconnected
     interrupted : WorkWait Host.interrupted
 
@@ -160,19 +157,28 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   data Step (migrations : M.Inputs) (interval threshold : ℕ) : Host.Phase → Host.Phase → Set where
     initialConfigurationFailed : ∀ state detail → H.Receipt H.loadConfig (inj₁ detail) →
-      Step migrations interval threshold (Host.subscribing state) (Host.exited Host.invalidConfig)
+      Step migrations interval threshold (Host.subscribing state) (Host.waitingConfiguration state)
+    correctedConfiguration : ∀ state → WorkWait Host.configurationChanged →
+      Step migrations interval threshold (Host.waitingConfiguration state) (Host.subscribing state)
+    stoppedAtConfiguration : ∀ state → WorkWait Host.interrupted →
+      Step migrations interval threshold (Host.waitingConfiguration state) (Host.exited Host.success)
     initialSubscriptionFailed : ∀ state loaded detail events → H.Receipt H.loadConfig (inj₂ loaded) →
       Host.Subscription.Runs (Host.Subscription.start (selectedDatabase loaded)) events (inj₁ detail) →
       Step migrations interval threshold (Host.subscribing state) (Host.exited Host.unavailable)
     firstBatch : ∀ state result → FirstBatch result →
       Step migrations interval threshold (Host.subscribing state) (Host.digest state result)
-    batch : ∀ state events result → H.Runs (H.once true) events result →
+    batch : ∀ state loadedConfiguration events result → H.Receipt H.loadConfig (inj₂ loadedConfiguration) →
+      H.Runs (H.afterConfig true (inj₂ loadedConfiguration)) events result →
       Step migrations interval threshold (Host.running state) (Host.digest state result)
-    digest : ∀ state outcome events result → Runs migrations idle (Digest.Run.tick calendar outcome) events idle result →
+    digest : ∀ state settings outcome events result → Runs migrations idle (Digest.Run.tick calendar settings outcome) events idle result →
       Step migrations interval threshold (Host.digest state outcome)
         (Host.step sizeMaximum interval threshold (Host.digest state outcome) result)
     continued : ∀ state messages →
       Step migrations interval threshold (Host.continuing state messages) (Host.running state)
+    configurationAtBoundary : ∀ state messages → WorkWait Host.configurationChanged →
+      Step migrations interval threshold (Host.continuing state messages) (Host.subscribing state)
+    configurationAtTimer : ∀ state seconds messages → WorkWait Host.configurationChanged →
+      Step migrations interval threshold (Host.waiting state seconds messages) (Host.subscribing state)
     workWoke : ∀ state messages reply → WorkWait reply →
       Step migrations interval threshold (Host.awaitingWork state messages)
         (Host.step sizeMaximum interval threshold (Host.awaitingWork state messages) reply)
@@ -189,6 +195,10 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     Step migrations interval threshold (Host.subscribing state) (Host.digest state result) →
     FirstBatch result
   firstBatchRequiresSubscription migrations interval threshold state result (firstBatch .state .result receipt) = receipt
+
+  invalidConfigurationCannotStartBatch : ∀ migrations interval threshold state result →
+    Step migrations interval threshold (Host.waitingConfiguration state) (Host.digest state result) → ⊥
+  invalidConfigurationCannotStartBatch migrations interval threshold state result ()
 
   firstBatchAcknowledgedListen : ∀ result (receipt : FirstBatch result) →
     FirstBatch.subscriptionEvents receipt ≡
@@ -234,11 +244,14 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   record Round (migrations : M.Inputs) (interval threshold : ℕ) (before : Host.Watch) : Set where
     constructor continuedRound
     field outcome : Host.Outcome
+          loadedConfiguration : C.Loaded
+          admitted : H.Receipt H.loadConfig (inj₂ loadedConfiguration)
           batchEvents : List H.P.Event
-          batchDone : H.Runs (H.once true) batchEvents outcome
+          batchDone : H.Runs (H.afterConfig true (inj₂ loadedConfiguration)) batchEvents outcome
           digestEvents : List Digest.Event
           digestReply : Text ⊎ Bool
-          digestDone : Runs migrations idle (Digest.Run.tick calendar outcome) digestEvents idle digestReply
+          digestDone : Runs migrations idle (Digest.Run.tick calendar
+            (Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration)) outcome) digestEvents idle digestReply
           continuationReady : Continues (nextWatch before outcome digestReply)
             (Host.step sizeMaximum interval threshold (Host.digest before outcome) digestReply)
 
@@ -246,9 +259,9 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     Trace migrations interval threshold (Host.running before)
       (Host.running (nextWatch before (Round.outcome round) (Round.digestReply round)))
   roundTrace migrations interval threshold before
-    (continuedRound batchResult batchEvents batchDone digestEvents reply digestDone continuationReady) =
-    more _ _ _ (batch before _ _ batchDone)
-      (more _ _ _ (digest before _ _ _ digestDone)
+    (continuedRound batchResult loadedConfiguration admitted batchEvents batchDone digestEvents reply digestDone continuationReady) =
+    more _ _ _ (batch before loadedConfiguration _ _ admitted batchDone)
+      (more _ _ _ (digest before _ _ _ _ digestDone)
         (continuationTrace migrations interval threshold _ _ continuationReady))
 
   appendTrace : ∀ {migrations interval threshold before middle after} →

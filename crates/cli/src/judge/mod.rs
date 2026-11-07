@@ -1,5 +1,6 @@
 mod api;
 pub mod config;
+mod config_events;
 mod diagnose;
 mod digest;
 mod evidence;
@@ -154,12 +155,32 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
             }
             // LISTEN and the first batch use the same admitted settings.
             // Keep subscription ownership through the scan/loop.
-            let settings = match config::load(config.as_deref()) {
-                Ok(settings) => settings,
+            let path = match config::resolved_path(config.as_deref()) {
+                Ok(path) => path,
                 Err(error) => {
-                    record_invalid_configuration(state_dir.as_deref(), &error);
-                    eprintln!("Unable to prepare watcher: {error:#}. Run mimir judge check-config, correct the configuration, then retry.");
+                    eprintln!("Invalid watcher configuration path: {error:#}. Choose a valid --config path and retry.");
                     return INVALID_CONFIG;
+                }
+            };
+            let mut file_events = match config_events::ConfigEvents::new(&path) {
+                Ok(events) => events,
+                Err(error) => {
+                    eprintln!("Unable to observe configuration changes: {error:#}. Correct the reported OS error for {} and retry.", path.display());
+                    return UNAVAILABLE;
+                }
+            };
+            let mut settings = match load_watch_settings(
+                &path,
+                state_dir.as_deref(),
+                &mut file_events,
+            )
+            .await
+            {
+                Ok(Some(settings)) => settings,
+                Ok(None) => return 0,
+                Err(error) => {
+                    eprintln!("Configuration event source unavailable: {error:#}. Correct the path and restart the watcher.");
+                    return UNAVAILABLE;
                 }
             };
             let mut subscription = match mimir_core::db::ReviewQueueSubscription::connect(
@@ -173,15 +194,11 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                     return UNAVAILABLE;
                 }
             };
-            let mut initial_settings = Some(settings);
             let mut watch = WatchState::default();
             let mut digest_problem = false;
             loop {
-                let outcome = match initial_settings.take() {
-                    Some(settings) => run_with_settings(settings, state_dir.clone(), true).await,
-                    None => run_once(config.clone(), state_dir.clone(), true).await,
-                };
-                let problem = digest::tick(config.as_deref(), state_dir.as_deref(), &outcome)
+                let outcome = run_with_settings(&settings, state_dir.clone(), true).await;
+                let problem = digest::tick(&settings, state_dir.as_deref(), &outcome)
                     .await
                     .unwrap_or(true);
                 if problem != digest_problem {
@@ -229,21 +246,38 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                     }
                 }
                 tokio::select! {
+                    biased;
+                    _ = tokio::signal::ctrl_c() => return 0,
+                    changed = file_events.changed() => {
+                        if let Err(error) = changed { eprintln!("Configuration event source unavailable: {error:#}. Correct the path and restart the watcher."); return UNAVAILABLE; }
+                        let replacement = match load_watch_settings(&path, state_dir.as_deref(), &mut file_events).await {
+                            Ok(Some(settings)) => settings,
+                            Ok(None) => return 0,
+                            Err(error) => { eprintln!("Configuration event source unavailable: {error:#}. Correct the path and restart the watcher."); return UNAVAILABLE; }
+                        };
+                        let connected = tokio::select! {
+                            result = mimir_core::db::ReviewQueueSubscription::connect(&replacement.core.database) => result,
+                            _ = tokio::signal::ctrl_c() => return 0,
+                        };
+                        subscription = match connected {
+                            Ok(subscription) => subscription,
+                            Err(error) => { eprintln!("Unable to subscribe with the corrected configuration: {error:#}. Restore the database connection and restart the watcher; pending work remains stored."); return UNAVAILABLE; }
+                        };
+                        // Publish the new settings only after LISTEN succeeds.
+                        settings = replacement;
+                    },
                     result = next.wait_with(
                         |seconds| tokio::time::sleep(std::time::Duration::from_secs(seconds)),
                         || subscription.changed(),
                     ) => if let Err(error) = result {
                         eprintln!("Review work listener disconnected: {error:#}. Reconnecting before checking saved pending work.");
-                        let settings = match config::load(config.as_deref()) {
-                            Ok(settings) => settings,
-                            Err(error) => {
-                                record_invalid_configuration(state_dir.as_deref(), &error);
-                                eprintln!("Unable to reload watcher configuration: {error:#}. Run mimir judge check-config, correct the configuration, then retry.");
-                                return INVALID_CONFIG;
-                            }
+                        let replacement = match load_watch_settings(&path, state_dir.as_deref(), &mut file_events).await {
+                            Ok(Some(settings)) => settings,
+                            Ok(None) => return 0,
+                            Err(error) => { eprintln!("Configuration event source unavailable: {error:#}. Correct the path and restart the watcher."); return UNAVAILABLE; }
                         };
                         let connected = tokio::select! {
-                            result = mimir_core::db::ReviewQueueSubscription::connect(&settings.core.database) => result,
+                            result = mimir_core::db::ReviewQueueSubscription::connect(&replacement.core.database) => result,
                             _ = tokio::signal::ctrl_c() => return 0,
                         };
                         subscription = match connected {
@@ -256,9 +290,8 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                         // Reuse the admitted value, just as at initial startup.
                         // Continue through a durable scan, never straight to wait:
                         // notifications emitted while disconnected are not saved.
-                        initial_settings = Some(settings);
+                        settings = replacement;
                     },
-                    _ = tokio::signal::ctrl_c() => return 0,
                 }
             }
         }
@@ -449,6 +482,27 @@ impl WatchState {
     }
 }
 
+async fn load_watch_settings(
+    path: &std::path::Path,
+    state_dir: Option<&std::path::Path>,
+    events: &mut config_events::ConfigEvents,
+) -> anyhow::Result<Option<config::RuntimeConfig>> {
+    loop {
+        events.rearm()?;
+        match config::load(Some(path)) {
+            Ok(settings) => return Ok(Some(settings)),
+            Err(error) => {
+                record_invalid_configuration(state_dir, &error);
+                eprintln!("Watcher configuration needs correction: {error:#}. Run mimir judge check-config --config {}, correct that file, and save it. Waiting for its next change; no batch will start with invalid settings.", path.display());
+            }
+        }
+        tokio::select! {
+            changed = events.changed() => changed?,
+            _ = tokio::signal::ctrl_c() => return Ok(None),
+        }
+    }
+}
+
 fn record_invalid_configuration(state_dir: Option<&std::path::Path>, error: &anyhow::Error) {
     let Ok(path) = state::resolve(state_dir) else {
         return;
@@ -486,13 +540,13 @@ async fn run_once(
             };
         }
     };
-    run_with_settings(settings, state_dir, watch_mode).await
+    run_with_settings(&settings, state_dir, watch_mode).await
 }
 
 // Used by watcher startup after it subscribes with these exact settings. It
 // must not reread the mutable source file between subscription and first scan.
 async fn run_with_settings(
-    settings: config::RuntimeConfig,
+    settings: &config::RuntimeConfig,
     state_dir: Option<PathBuf>,
     watch_mode: bool,
 ) -> RunOutcome {
@@ -565,16 +619,16 @@ async fn run_with_settings(
     let _=state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"reviewing","config_format":settings.operations.config_version}));
     let report = match settings.llm.backend {
         config::Backend::Api => match api::ApiBackend::new(&settings.llm) {
-            Ok(Some(mut backend)) => runner::run(&settings, &state, &mut backend).await,
-            Ok(None) => runner::run(&settings, &state, &mut runner::UnavailableBackend).await,
+            Ok(Some(mut backend)) => runner::run(settings, &state, &mut backend).await,
+            Ok(None) => runner::run(settings, &state, &mut runner::UnavailableBackend).await,
             Err(error) => {
-                runner::setup_failure(&settings, &state, "backend_configuration", &error).await
+                runner::setup_failure(settings, &state, "backend_configuration", &error).await
             }
         },
         _ => match harness::Harness::new(&settings.llm) {
-            Ok(mut backend) => runner::run(&settings, &state, &mut backend).await,
+            Ok(mut backend) => runner::run(settings, &state, &mut backend).await,
             Err(error) => {
-                runner::setup_failure(&settings, &state, "backend_configuration", &error).await
+                runner::setup_failure(settings, &state, "backend_configuration", &error).await
             }
         },
     };
@@ -617,6 +671,46 @@ async fn run_with_settings(
 mod watch_tests {
     use super::*;
     use std::os::unix::fs::OpenOptionsExt;
+
+    #[tokio::test]
+    async fn malformed_config_waits_for_correction_without_replacing_admitted_settings() {
+        use std::future::{poll_fn, Future};
+        let work = harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
+        let text = |dbname: &str| {
+            format!(
+            "config_version=1\n[logging]\ndirectory={}\n[database]\ndbname={}\n[judge]\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n",
+            toml::Value::String(work.path().join("logs").display().to_string()),
+            toml::Value::String(dbname.to_owned())
+        )
+        };
+        let path = work
+            .write("config.toml", text("admitted").as_bytes())
+            .unwrap();
+        let admitted = config::load(Some(&path)).unwrap();
+        let invalid = "[database]\nunknown_field=true\n";
+        std::fs::write(&path, invalid).unwrap();
+        let mut events = config_events::ConfigEvents::new(&path).unwrap();
+        let state = work.path().join("state");
+        let corrected = load_watch_settings(&path, Some(&state), &mut events);
+        tokio::pin!(corrected);
+        assert!(
+            poll_fn(|cx| std::task::Poll::Ready(corrected.as_mut().poll(cx).is_pending())).await
+        );
+        assert_eq!(admitted.core.database.dbname, "admitted");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+        assert_eq!(
+            state::read(&state)
+                .unwrap()
+                .unwrap()
+                .block_reason
+                .as_deref(),
+            Some("invalid_config")
+        );
+        std::fs::write(&path, text("corrected")).unwrap();
+        let corrected = corrected.await.unwrap().unwrap();
+        assert_eq!(corrected.core.database.dbname, "corrected");
+        assert_eq!(admitted.core.database.dbname, "admitted");
+    }
 
     #[tokio::test]
     async fn idle_waits_for_an_event_without_a_timer_or_busy_loop() {
