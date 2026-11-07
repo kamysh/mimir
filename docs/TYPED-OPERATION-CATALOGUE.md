@@ -1,12 +1,14 @@
 # Registered public operations
 
-`crates/mcp/src/operation_catalogue.rs` defines the existing public tool set.
+`crates/core/src/operation_catalogue.rs` defines the existing public tool set
+and commit boundaries once, for both core storage and MCP.
 Each declaration supplies its wire name, typed handler identity and current
 committed business-write sites. Graph and learning handlers match closed Rust
 enums, without a catch-all branch. Adding a declared operation without adding
 its handler is therefore a compile error.
 
-The catalogue associates each handler with its actual advertised input schema.
+`crates/mcp/src/operation_catalogue.rs` imports those closed types and associates
+each handler with its actual advertised input schema.
 Its constructor rejects duplicate names, unknown descriptions, missing schemas
 and registered operations without descriptions. Tool discovery is generated
 from the resulting registered entries, preserving the existing descriptions
@@ -42,3 +44,9 @@ Instrumentation and the native/specification comparison in #88 and #91 must
 check actual occurrences, including repeated ones. The existing Agda
 `ToolCatalog.Tool` remains the closed public operation universe, and the
 coverage check ties its names to the advertised tools.
+
+Core and MCP share the declarations rather than maintaining separate lists.
+The shared module contains metadata; executable dispatch stays inside the MCP
+catalogue. Moving the declarations does not itself enforce stored step order or
+prove completion. Those guards remain #123, and public recovery binding remains
+#85–#86.

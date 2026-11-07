@@ -10329,6 +10329,164 @@
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
     },
     {
+      "path": "crates/core/src/operation_catalogue.rs",
+      "definitions": [
+        {
+          "kind": "enum",
+          "name": "CommitSite",
+          "line": 7,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ToolCatalog.agda",
+            "spec/Mimir/McpToolExecution.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "name",
+          "line": 31,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ToolCatalog.agda",
+            "spec/Mimir/McpToolExecution.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "struct",
+          "name": "CommitBoundary",
+          "line": 58,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ToolCatalog.agda",
+            "spec/Mimir/McpToolExecution.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "once",
+          "line": 64,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ToolCatalog.agda",
+            "spec/Mimir/McpToolExecution.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "repeated",
+          "line": 70,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ToolCatalog.agda",
+            "spec/Mimir/McpToolExecution.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "enum",
+          "name": "GraphOperation",
+          "line": 81,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ToolCatalog.agda",
+            "spec/Mimir/McpToolExecution.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "enum",
+          "name": "LearningOperation",
+          "line": 83,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ToolCatalog.agda",
+            "spec/Mimir/McpToolExecution.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "enum",
+          "name": "Operation",
+          "line": 85,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ToolCatalog.agda",
+            "spec/Mimir/McpToolExecution.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "const",
+          "name": "ALL",
+          "line": 87,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ToolCatalog.agda",
+            "spec/Mimir/McpToolExecution.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "name",
+          "line": 88,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ToolCatalog.agda",
+            "spec/Mimir/McpToolExecution.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "committed_boundaries",
+          "line": 91,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/ToolCatalog.agda",
+            "spec/Mimir/McpToolExecution.agda",
+            "spec/Mimir/ApplicationProtocol.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        }
+      ],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/ToolCatalog.agda",
+        "spec/Mimir/McpToolExecution.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "specification_status": "behavior-defined",
+      "proof_boundary_category": "application_protocol",
+      "implementation_receipt": "docs/TYPED-OPERATION-CATALOGUE.md"
+    },
+    {
       "path": "crates/core/src/operations.rs",
       "definitions": [
         {
@@ -15427,152 +15585,9 @@
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
         {
-          "kind": "enum",
-          "name": "CommitSite",
-          "line": 13,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ToolCatalog.agda",
-            "spec/Mimir/McpToolExecution.agda",
-            "spec/Mimir/ApplicationProtocol.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "name",
-          "line": 37,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ToolCatalog.agda",
-            "spec/Mimir/McpToolExecution.agda",
-            "spec/Mimir/ApplicationProtocol.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "struct",
-          "name": "CommitBoundary",
-          "line": 64,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ToolCatalog.agda",
-            "spec/Mimir/McpToolExecution.agda",
-            "spec/Mimir/ApplicationProtocol.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "const",
-          "name": "fn",
-          "line": 70,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ToolCatalog.agda",
-            "spec/Mimir/McpToolExecution.agda",
-            "spec/Mimir/ApplicationProtocol.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "const",
-          "name": "fn",
-          "line": 76,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ToolCatalog.agda",
-            "spec/Mimir/McpToolExecution.agda",
-            "spec/Mimir/ApplicationProtocol.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "enum",
-          "name": "GraphOperation",
-          "line": 87,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ToolCatalog.agda",
-            "spec/Mimir/McpToolExecution.agda",
-            "spec/Mimir/ApplicationProtocol.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "enum",
-          "name": "LearningOperation",
-          "line": 89,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ToolCatalog.agda",
-            "spec/Mimir/McpToolExecution.agda",
-            "spec/Mimir/ApplicationProtocol.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "enum",
-          "name": "Operation",
-          "line": 91,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ToolCatalog.agda",
-            "spec/Mimir/McpToolExecution.agda",
-            "spec/Mimir/ApplicationProtocol.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "const",
-          "name": "ALL",
-          "line": 93,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ToolCatalog.agda",
-            "spec/Mimir/McpToolExecution.agda",
-            "spec/Mimir/ApplicationProtocol.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "name",
-          "line": 94,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ToolCatalog.agda",
-            "spec/Mimir/McpToolExecution.agda",
-            "spec/Mimir/ApplicationProtocol.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "committed_boundaries",
-          "line": 97,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ToolCatalog.agda",
-            "spec/Mimir/McpToolExecution.agda",
-            "spec/Mimir/ApplicationProtocol.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
           "kind": "fn",
           "name": "call",
-          "line": 103,
+          "line": 14,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15585,7 +15600,7 @@
         {
           "kind": "struct",
           "name": "RegisteredOperation",
-          "line": 155,
+          "line": 21,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15598,7 +15613,7 @@
         {
           "kind": "fn",
           "name": "handler",
-          "line": 160,
+          "line": 26,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15611,7 +15626,7 @@
         {
           "kind": "fn",
           "name": "input_schema",
-          "line": 163,
+          "line": 29,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15624,7 +15639,7 @@
         {
           "kind": "fn",
           "name": "committed_boundaries",
-          "line": 166,
+          "line": 32,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15637,7 +15652,7 @@
         {
           "kind": "fn",
           "name": "call",
-          "line": 169,
+          "line": 35,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15650,7 +15665,7 @@
         {
           "kind": "struct",
           "name": "Catalogue",
-          "line": 174,
+          "line": 43,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15663,7 +15678,7 @@
         {
           "kind": "fn",
           "name": "new",
-          "line": 178,
+          "line": 47,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15676,7 +15691,7 @@
         {
           "kind": "fn",
           "name": "entries",
-          "line": 220,
+          "line": 91,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15689,7 +15704,7 @@
         {
           "kind": "fn",
           "name": "advertised",
-          "line": 223,
+          "line": 94,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15702,7 +15717,7 @@
         {
           "kind": "fn",
           "name": "get",
-          "line": 231,
+          "line": 102,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -15715,7 +15730,7 @@
         {
           "kind": "fn",
           "name": "call",
-          "line": 236,
+          "line": 107,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [

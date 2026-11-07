@@ -8,6 +8,7 @@ pub mod inference;
 pub mod interaction;
 pub mod learning;
 pub mod learning_sources;
+pub mod operation_catalogue;
 mod password;
 pub mod store;
 mod tls;
