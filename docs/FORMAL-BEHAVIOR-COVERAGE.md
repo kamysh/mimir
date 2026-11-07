@@ -18,6 +18,16 @@ The inventory contains **34 MCP tools, 30 CLI leaf commands, seven lifecycle gro
 
 Protocols distinguish application decisions from external observations. Database, filesystem, network and subprocess replies retain failure and uncertain outcomes. Their concrete application meanings are supplied by the storage, transaction, publication, codec and lifecycle modules listed below; they are not unrestricted successful application callbacks. A `Runs` control transcript alone is not a Rust conformance proof or proof that real I/O happened.
 
+## Recovery goal
+
+`Recovery.Business` fixes the observation to the complete shared
+`ApplicationStore.World` and semantic reply. An operation supplies its intended
+state and expected reply for the original invocation, with no replacement goal
+or private observation function. See [the recovery contract](RECOVERY-CONTRACT.md).
+This is the foundation from #71; required convergence instances and exclusive
+dispatch through them remain later plan work. Existing raw dispatch is not yet
+claimed to enforce this goal.
+
 ## Review queue signals
 
 Committed changes to pending experiences emit an empty review-queue hint on

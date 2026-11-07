@@ -56,6 +56,7 @@ import Mimir.BitLogic
 import Mimir.SignedMachine
 
 import Mimir.Effects
+import Mimir.Recovery
 import Mimir.AtomicFile
 import Mimir.CharacterRules
 import Mimir.OAuthCache
