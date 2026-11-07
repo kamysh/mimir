@@ -19,7 +19,7 @@ import Mimir.ItemOwners as Owners
 import Mimir.LearningStore as Learning
 import Mimir.DatabaseTransaction as Database
 open import Mimir.Migrations public
-  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys)
+  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys; candidateKeyContent)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation;
@@ -162,6 +162,7 @@ data DDL : Set where
   setColumnDefault : String → String → Default → DDL
   addUniqueConstraint : String → String → List String → DDL
   addCheckConstraint : String → String → Expr → DDL
+  dropCheckConstraint : String → String → DDL
   installReviewQueueNotifier installImmutableOperationBindings installImmutableStepReplies installImmutableOperationPlans installImmutableRequestKeys : DDL
 
 kappa alpha beta : Expr
@@ -200,6 +201,10 @@ body operationBindings = installImmutableOperationBindings ∷ []
 body operationStepReplies = installImmutableStepReplies ∷ []
 body operationPlans = installImmutableOperationPlans ∷ []
 body operationRequestKeys = create requestKeyTable ∷ installImmutableRequestKeys ∷ []
+body candidateKeyContent =
+  dropCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_check" ∷
+  addCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_nonempty"
+    (less (number "0" ∷ charLength (columnValue "candidate_key" ∷ []) ∷ [])) ∷ []
 
 -- The trigger's concrete meaning is the pending-source rule, with signals
 -- coupled to publication. This is a native PostgreSQL contract; the SQL body

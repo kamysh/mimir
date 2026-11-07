@@ -116,7 +116,7 @@ fn tools_list() -> Value {
                     "confidence":  { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                     "project":     { "type": "string", "description": "Optional project scope. Beliefs in a project can be bulk-deleted with delete_project when the project is done." },
                     "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Functional memory type. 'fact' (default): declarative knowledge that decays over time absent reinforcement. 'experiential': a hard-won working lesson (gotcha, corrected approach) — exempt from time-decay, since its truth doesn't erode with elapsed time. 'working': task-local scratch memory, excluded from cross-session query_relevant retrieval." },
-                    "provenance": { "type": "object", "additionalProperties": false, "properties": { "basis": {"type":"string","enum":["user_instruction","document"]}, "reference": {"type":"string","minLength":1,"maxLength":2048} }, "required": ["basis","reference"], "description": "Identify the independent source. Do not use this tool for a conclusion derived from an experience." }
+                    "provenance": { "type": "object", "additionalProperties": false, "properties": { "basis": {"type":"string","enum":["user_instruction","document"]}, "reference": {"type":"string","minLength":1} }, "required": ["basis","reference"], "description": "Identify the independent source. Do not use this tool for a conclusion derived from an experience." }
                 },
                 "required": ["content", "probability", "confidence", "provenance"]
             }

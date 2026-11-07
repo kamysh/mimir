@@ -1163,6 +1163,39 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
 }
 
 #[tokio::test]
+async fn complete_candidate_keys_survive_publication_and_exact_retry() {
+    let svc = service().await;
+    let project = format!("complete-candidate-key-{}", Uuid::new_v4());
+    let e = experience(&project);
+    svc.record_experience(&e, 0).await.unwrap();
+    let key = "complete-procedure-".repeat(20);
+    let mut r = review(&e);
+    r.candidates = vec![Candidate::Pattern {
+        key: key.clone(),
+        situation: "preserve the full caller key".into(),
+        approach: "publish once and recover the original identity".into(),
+    }];
+    let original = svc.review_experience(&r, 0).await.unwrap();
+    assert!(original.candidate_ids.contains_key(&key));
+    assert_eq!(
+        svc.review_experience(&r, 0).await.unwrap().candidate_ids,
+        original.candidate_ids
+    );
+    r.candidates = vec![Candidate::Pattern {
+        key: String::new(),
+        situation: "missing identity".into(),
+        approach: "must still be refused".into(),
+    }];
+    assert!(r.validate().is_err());
+    let provenance = mimir_core::learning::IndependentProvenance {
+        basis: mimir_core::learning::IndependentBasis::Document,
+        reference: "document-reference/".repeat(200),
+    };
+    provenance.validate().unwrap();
+    svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
 async fn source_correction_deactivates_candidate_support_without_deleting_identity() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
