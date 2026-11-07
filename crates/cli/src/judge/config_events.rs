@@ -269,6 +269,9 @@ mod native {
                 return Err(io::Error::last_os_error());
             }
             let descriptor = unsafe { OwnedFd::from_raw_fd(raw) };
+            if unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
             for fd in std::iter::once(&parent).chain(file.iter()) {
                 let event = libc::kevent {
                     ident: fd.as_raw_fd() as usize,
