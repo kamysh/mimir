@@ -152,10 +152,35 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                 );
                 return INVALID_CONFIG;
             }
+            // LISTEN and the first batch use the same admitted settings.
+            // Keep subscription ownership through the scan/loop.
+            let settings = match config::load(config.as_deref()) {
+                Ok(settings) => settings,
+                Err(error) => {
+                    record_invalid_configuration(state_dir.as_deref(), &error);
+                    eprintln!("Unable to prepare watcher: {error:#}. Run mimir judge check-config, correct the configuration, then retry.");
+                    return INVALID_CONFIG;
+                }
+            };
+            let _subscription = match mimir_core::db::ReviewQueueSubscription::connect(
+                &settings.core.database,
+            )
+            .await
+            {
+                Ok(subscription) => subscription,
+                Err(error) => {
+                    eprintln!("Unable to subscribe to review work: {error:#}. Restore the database connection and restart mimir judge watch; no pending work was selected.");
+                    return UNAVAILABLE;
+                }
+            };
+            let mut initial_settings = Some(settings);
             let mut watch = WatchState::default();
             let mut digest_problem = false;
             loop {
-                let outcome = run_once(config.clone(), state_dir.clone(), true).await;
+                let outcome = match initial_settings.take() {
+                    Some(settings) => run_with_settings(settings, state_dir.clone(), true).await,
+                    None => run_once(config.clone(), state_dir.clone(), true).await,
+                };
                 let problem = digest::tick(config.as_deref(), state_dir.as_deref(), &outcome)
                     .await
                     .unwrap_or(true);

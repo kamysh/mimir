@@ -42,6 +42,7 @@ import Mimir.SMTPProtocol as SMTP
 import Mimir.ServiceStartup as Startup
 import Mimir.ConnectionProtocol as Connection
 import Mimir.ConfigurationSchema as Core
+import Mimir.ConfigurationValues as Values
 import Mimir.MigrationRuntime as Migration
 import Mimir.UnixPath as Path
 import Mimir.UnixMetadata as Metadata
@@ -134,7 +135,30 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     timer : Waited seconds messages false
     signal : Waited seconds messages true
 
+  selectedDatabase : C.Loaded → Values.Database
+  selectedDatabase loadedConfiguration = Values.Config.db (Core.Config.core
+    (Config.Runtime.core (Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration))))
+
+  -- The same loaded value determines LISTEN's database and the first batch.
+  -- Calling H.once here would reread a mutable source and break this link.
+  record FirstBatch (result : Host.Outcome) : Set where
+    field loaded : C.Loaded
+          admitted : H.Receipt H.loadConfig (inj₂ loaded)
+          subscriptionEvents : List Host.Subscription.Event
+          connection : ℕ
+          subscribed : Host.Subscription.Runs (Host.Subscription.start (selectedDatabase loaded))
+            subscriptionEvents (inj₂ connection)
+          batchEvents : List H.P.Event
+          completed : H.Runs (H.afterConfig true (inj₂ loaded)) batchEvents result
+
   data Step (migrations : M.Inputs) (interval threshold : ℕ) : Host.Phase → Host.Phase → Set where
+    initialConfigurationFailed : ∀ state detail → H.Receipt H.loadConfig (inj₁ detail) →
+      Step migrations interval threshold (Host.subscribing state) (Host.exited Host.invalidConfig)
+    initialSubscriptionFailed : ∀ state loaded detail events → H.Receipt H.loadConfig (inj₂ loaded) →
+      Host.Subscription.Runs (Host.Subscription.start (selectedDatabase loaded)) events (inj₁ detail) →
+      Step migrations interval threshold (Host.subscribing state) (Host.exited Host.unavailable)
+    firstBatch : ∀ state result → FirstBatch result →
+      Step migrations interval threshold (Host.subscribing state) (Host.digest state result)
     batch : ∀ state events result → H.Runs (H.once true) events result →
       Step migrations interval threshold (Host.running state) (Host.digest state result)
     digest : ∀ state outcome events result → Runs migrations idle (Digest.Run.tick calendar outcome) events idle result →
@@ -148,6 +172,19 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     empty : ∀ phase → Trace migrations interval threshold phase phase
     more : ∀ before middle after → Step migrations interval threshold before middle →
       Trace migrations interval threshold middle after → Trace migrations interval threshold before after
+
+  firstBatchRequiresSubscription : ∀ migrations interval threshold state result →
+    Step migrations interval threshold (Host.subscribing state) (Host.digest state result) →
+    FirstBatch result
+  firstBatchRequiresSubscription migrations interval threshold state result (firstBatch .state .result receipt) = receipt
+
+  firstBatchAcknowledgedListen : ∀ result (receipt : FirstBatch result) →
+    FirstBatch.subscriptionEvents receipt ≡
+      ((Host.Subscription.connect (selectedDatabase (FirstBatch.loaded receipt)) , inj₂ (FirstBatch.connection receipt)) ∷
+       (Host.Subscription.listen (FirstBatch.connection receipt) , inj₂ tt) ∷ [])
+  firstBatchAcknowledgedListen result receipt = Host.Subscription.successRequiresAcknowledgedListen
+    (selectedDatabase (FirstBatch.loaded receipt)) (FirstBatch.subscriptionEvents receipt)
+    (FirstBatch.connection receipt) (FirstBatch.subscribed receipt)
 
   -- A complete continued round uses the actual batch and digest programs.
   -- The timer receipt is the external scheduling/fairness condition. Neither

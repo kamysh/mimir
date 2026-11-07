@@ -45,6 +45,27 @@ fn experience(project: &str) -> Experience {
 }
 
 #[tokio::test]
+async fn subscribed_queue_keeps_work_arriving_before_initial_scan() {
+    let svc = service().await;
+    let cfg = isolation::fixture().database_config();
+    let mut subscription = db::ReviewQueueSubscription::connect(&cfg).await.unwrap();
+
+    // The constructor has observed LISTEN acknowledgement. Insert at the
+    // controlled boundary before the very first pending-queue scan.
+    let project = format!("startup-queue-{}", Uuid::new_v4());
+    let source = experience(&project);
+    svc.record_experience(&source, 0).await.unwrap();
+    let selected = svc.pending_experiences(Some(&project), 1).await.unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].experience.id, source.id);
+    // The wake must survive the scan as well, so the later idle-wait stage
+    // cannot miss the change by registering its waiter after that scan.
+    subscription.changed().await.unwrap();
+    drop(subscription);
+    svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
 async fn pending_queue_notifications_follow_commit_and_contain_no_source() {
     use std::future::poll_fn;
     use tokio_postgres::{AsyncMessage, Notification};

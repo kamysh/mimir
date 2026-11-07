@@ -27,8 +27,18 @@ tie the hint to the atomic publication boundary, including lost acknowledgements
 Rollback sends no hint. `observedSignals` permits harmless extra committed hints,
 including an intermediate row change restored before commit; it requires a wake
 for a net queue change. The hint carries no source content and is not a durable
-review receipt. Listeners must scan the queue after subscribing and reconnecting;
-listener startup and waiting are implemented in the following watcher issues.
+review receipt. Listeners must scan the queue after subscribing and reconnecting.
+The watch CLI starts in `JudgeHost.subscribing`.
+`JudgeDigestComposition.firstBatchRequiresSubscription` requires a configuration
+receipt, an acknowledged subscription to that configuration's database, and the
+first batch using that same loaded configuration. `firstBatchAcknowledgedListen`
+proves the connection and acknowledgement order. The Rust subscription retains
+incoming hints across the initial scan. Each batch hands its MCP child a private
+configuration copy, read back before use; `JudgeHostProtocol.PreparedMcpConfig`
+requires that the observed settings match. Editing the original file cannot
+redirect the admitted batch. Preparation failure starts no MCP child. Event
+waiting, reconnection, and configuration-change subscriptions follow in #64–#66;
+this startup change adds no polling timer.
 
 ## Stored belief evidence
 

@@ -11,13 +11,15 @@ open import Data.Nat using (ℕ; zero; suc; _≟_; _≤?_; _⊔_; _⊓_)
 open import Data.String using (toList)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
-open import Data.Unit using (⊤)
+open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.Judge as Judge
 import Mimir.JudgeStateRecords as Records
+import Mimir.Effects as Effects
+import Mimir.ConfigurationValues as Values
 
 module State = Records.Over ℕ
 
@@ -102,13 +104,45 @@ delay interval threshold state = Judge.Watch.retryDelay threshold (Watch.failure
 admitted : ℕ → ℕ → Bool
 admitted interval threshold = does (1 ≤? interval) ∧ does (1 ≤? threshold)
 
+-- This startup protocol must finish before the first batch can read the
+-- queue. Both connection and LISTEN acknowledgement are native observations;
+-- there is no timer, fabricated success, or queue read in this protocol.
+module Subscription where
+  data Effect : Set where
+    connect : Values.Database → Effect
+    listen : ℕ → Effect
+
+  Reply : Effect → Set
+  Reply (connect dbConfig) = Text ⊎ ℕ
+  Reply (listen handle) = Text ⊎ ⊤
+
+  module E = Effects.Protocol Effect Reply
+  open E public
+
+  start : Values.Database → Script (Text ⊎ ℕ)
+  start dbConfig = ask (connect dbConfig) λ where
+    (inj₁ error) → done (inj₁ error)
+    (inj₂ handle) → ask (listen handle) λ where
+      (inj₁ error) → done (inj₁ error)
+      (inj₂ tt) → done (inj₂ handle)
+
+  successRequiresAcknowledgedListen : ∀ dbConfig events handle → Runs (start dbConfig) events (inj₂ handle) →
+    events ≡ ((connect dbConfig , inj₂ handle) ∷ (listen handle , inj₂ tt) ∷ [])
+  successRequiresAcknowledgedListen dbConfig events handle (replied _ _ (inj₁ error) ())
+  successRequiresAcknowledgedListen dbConfig events handle (replied _ _ (inj₂ connected)
+    (replied _ _ (inj₁ error) ()))
+  successRequiresAcknowledgedListen dbConfig events handle (replied _ _ (inj₂ .handle)
+    (replied _ _ (inj₂ tt) (returned .(inj₂ handle)))) = refl
+
 data Phase : Set where
+  subscribing : Watch → Phase
   running : Watch → Phase
   digest : Watch → Outcome → Phase
   waiting : Watch → ℕ → List Transition → Phase
   exited : Exit → Phase
 
 Reply : Phase → Set
+Reply (subscribing state) = Exit ⊎ Outcome
 Reply (running state) = Outcome
 Reply (digest state result) = Text ⊎ Bool -- error is an unavailable digest
 Reply (waiting state seconds messages) = Bool -- true = Ctrl-C, false = timer
@@ -130,6 +164,8 @@ afterDigest usizeMaximum interval threshold before result problem = waiting afte
   ... | just transition = digestTransitions (Watch.digestProblem before) problem Data.List.++ (transition ∷ [])
 
 step : ℕ → ℕ → ℕ → (phase : Phase) → Reply phase → Phase
+step usizeMaximum interval threshold (subscribing state) (inj₁ code) = exited code
+step usizeMaximum interval threshold (subscribing state) (inj₂ result) = digest state result
 step usizeMaximum interval threshold (running state) result = digest state result
 step usizeMaximum interval threshold (digest state result) (inj₁ error) = afterDigest usizeMaximum interval threshold state result true
 step usizeMaximum interval threshold (digest state result) (inj₂ problem) = afterDigest usizeMaximum interval threshold state result problem
@@ -140,7 +176,7 @@ step usizeMaximum interval threshold (exited code) reply = exited code
 startWatch : ℕ → ℕ → Phase
 startWatch interval threshold with admitted interval threshold
 ... | false = exited invalidConfig
-... | true = running (watchState 0 false false)
+... | true = subscribing (watchState 0 false false)
 
 cancelAtWait : ∀ maximum interval threshold state seconds messages →
   step maximum interval threshold (waiting state seconds messages) true ≡ exited success
