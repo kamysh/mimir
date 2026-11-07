@@ -27,7 +27,8 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         .record_experience(
             &serde_json::from_value(json!({
                 "id":experience_id, "project":project, "context":"preserve this project",
-                "action":"exercise envelope admission", "outcome":"unknown", "source":"agent_report"
+                "action":"exercise envelope admission", "outcome":"unknown", "source":"agent_report",
+                "evidence":["private fixture setup"]
             }))?,
             0,
         )
