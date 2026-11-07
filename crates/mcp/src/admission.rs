@@ -65,7 +65,13 @@ fn walk(schema: &Value, value: &Value, path: &mut Vec<Segment>, issues: &mut Vec
                 path,
                 Code::WrongType,
                 "The supplied value has the wrong JSON type.",
-                format!("A value with JSON type {kind}."),
+                format!(
+                    "A value with JSON type {kind}. {}",
+                    schema
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                ),
             ));
             return;
         }
@@ -235,6 +241,13 @@ pub fn positive_selection(
             )])
             .expect("a selection error contains one complete correction")
         })
+}
+
+pub fn selection(arguments: &Value, field: &str) -> Result<mimir_core::Selection, NeedsInput> {
+    arguments
+        .get(field)
+        .map(|value| positive_selection(field, value))
+        .transpose()
 }
 
 /// Publish the same closed field sets that admission enforces. Constraint-only

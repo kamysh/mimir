@@ -12,6 +12,7 @@ open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
 import Mimir.DocumentStore as Documents
 import Mimir.Effects as Effects
+import Mimir.RetrievalRanking as Ranking
 
 record Hit : Set where
   constructor hit
@@ -26,7 +27,7 @@ project c (just parent) = hit (Documents.Chunk.identity c) (Documents.Chunk.docu
 data Effect : Set where
   embed : Text → Effect
   projectChunkIDs : Text → Effect
-  queryVectors : Store.Vector → ℕ → Maybe (List ℕ) → Effect
+  queryVectors : Store.Vector → Ranking.Selection → Maybe (List ℕ) → Effect
   getChunk : ℕ → Effect
 
 Reply : Effect → Set
@@ -67,17 +68,17 @@ afterSearch : Text ⊎ List ℕ → Script Result
 afterSearch (inj₁ error) = done (failed error)
 afterSearch (inj₂ ids) = materialize ids
 
-search : Store.Vector → ℕ → Maybe Text → Script Result
+search : Store.Vector → Ranking.Selection → Maybe Text → Script Result
 search vector limit nothing = ask (queryVectors vector limit nothing) afterSearch
 search vector limit (just project) = ask (projectChunkIDs project) (λ
   { (inj₁ error) → done (failed error)
   ; (inj₂ ids) → ask (queryVectors vector limit (just ids)) afterSearch })
 
-afterEmbedding : ℕ → Maybe Text → Text ⊎ List Store.Vector → Script Result
+afterEmbedding : Ranking.Selection → Maybe Text → Text ⊎ List Store.Vector → Script Result
 afterEmbedding limit project (inj₁ error) = done (failed error)
 afterEmbedding limit project (inj₂ []) = done emptyEmbedding
 afterEmbedding limit project (inj₂ (vector ∷ extra)) = search vector limit project
 
-start : Bool → Text → ℕ → Maybe Text → Script Result
+start : Bool → Text → Ranking.Selection → Maybe Text → Script Result
 start false query limit project = done embeddingsDisabled
 start true query limit project = ask (embed query) (afterEmbedding limit project)

@@ -63,7 +63,7 @@ pub fn tools() -> Vec<Value> {
                 "candidate_links":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{"from":target,"to":target,"relation":{"enum":["Supports","Defeats","Causes","Contradicts"]},"weight":{"type":"number","minimum":0,"maximum":1}},"required":["from","to","relation","weight"]}}},"required":["experience_id","experience_revision","reviewer","rationale"]}},"required":["review","expected_review_revision"]}}),
         json!({"name":"get_experience","description":"Inspect current experience and revision tokens for safe correction or review.","inputSchema":{"type":"object","properties":{"id":uuid},"required":["id"]}}),
         json!({"name":"experience_history","description":"Inspect immutable experience and review versions, including superseded judgments and their rationale.","inputSchema":{"type":"object","properties":{"id":uuid},"required":["id"]}}),
-        json!({"name":"query_learning_context","description":"Retrieve relevant beliefs and situation-matched procedures with outcome counts and Beta(1,1) success estimates. Agent reports and unknown outcomes do not count as measured success. Counts include current experience versions in this project only; retrieval is not successful use. Pattern matching is lexical; beliefs use existing hybrid retrieval.","inputSchema":{"type":"object","properties":{"context":{"type":"string"},"project":{"type":"string"},"limit":{"type":"integer","minimum":1,"default":5}},"required":["context","project"]}}),
+        json!({"name":"query_learning_context","description":"Retrieve relevant beliefs and situation-matched procedures with outcome counts and Beta(1,1) success estimates. Agent reports and unknown outcomes do not count as measured success. Counts include current experience versions in this project only; retrieval is not successful use. Pattern matching is lexical; beliefs use existing hybrid retrieval.","inputSchema":{"type":"object","properties":{"context":{"type":"string"},"project":{"type":"string"},"limit":{"type":"integer","minimum":1,"description":"Positive result count; omit for all matching records. Zero is invalid."}},"required":["context","project"]}}),
     ]
 }
 fn required<'a>(args: &'a Value, key: &str) -> Result<&'a Value> {
@@ -176,7 +176,10 @@ pub async fn call(svc: &MimirService, operation: LearningOperation, args: &Value
             svc.query_learning_context(
                 text(args, "context")?,
                 text(args, "project")?,
-                limit(args, 5)?,
+                match super::admission::selection(args, "limit") {
+                    Ok(selection) => selection,
+                    Err(correction) => return Ok(serde_json::to_value(correction)?),
+                },
             )
             .await?,
         )?,

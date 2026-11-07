@@ -522,7 +522,11 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
     assert!((score["scores"]["correctness"].as_f64().unwrap() - 2. / 3.).abs() < 1e-12);
     assert_eq!(score["scores"]["usefulness"], 0.5);
     let retrieved = svc
-        .query_learning_context("30 minutes fixed scope", &project, 5)
+        .query_learning_context(
+            "30 minutes fixed scope",
+            &project,
+            std::num::NonZeroUsize::new(5),
+        )
         .await
         .unwrap();
     assert!(retrieved
@@ -751,7 +755,11 @@ async fn offline_learning_scenario_matrix() {
     // review state is handed to the chooser.
     let later_session = service().await;
     let retrieved = later_session
-        .query_learning_context("stale keyboard indicator", &project, 20)
+        .query_learning_context(
+            "stale keyboard indicator",
+            &project,
+            std::num::NonZeroUsize::new(20),
+        )
         .await
         .unwrap();
     let retrieved_lesson = retrieved.beliefs.iter().any(|b| b.id == success_id);
@@ -771,7 +779,11 @@ async fn offline_learning_scenario_matrix() {
         "restart layout process"
     );
     let unrelated = later_session
-        .query_learning_context("disk quota exceeded", &project, 20)
+        .query_learning_context(
+            "disk quota exceeded",
+            &project,
+            std::num::NonZeroUsize::new(20),
+        )
         .await
         .unwrap();
     let unrelated_retrieved_lesson = unrelated.beliefs.iter().any(|b| b.id == success_id);
@@ -1072,7 +1084,11 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
     let candidate = svc.explain_belief(belief_id, 0, 10).await.unwrap();
     assert_eq!(candidate["candidate_provenance"]["active"], true);
     let before_use = svc
-        .query_learning_context("keyboard session lifecycle", &project, 10)
+        .query_learning_context(
+            "keyboard session lifecycle",
+            &project,
+            std::num::NonZeroUsize::new(10),
+        )
         .await
         .unwrap();
     let result = before_use
@@ -1100,7 +1116,11 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
     use_record.pattern_id = Some(pattern_id);
     svc.record_experience(&use_record, 0).await.unwrap();
     let observed = svc
-        .query_learning_context("keyboard session lifecycle", &project, 10)
+        .query_learning_context(
+            "keyboard session lifecycle",
+            &project,
+            std::num::NonZeroUsize::new(10),
+        )
         .await
         .unwrap();
     let result = observed
@@ -1120,7 +1140,11 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
         false
     );
     let after = svc
-        .query_learning_context("keyboard session lifecycle", &project, 10)
+        .query_learning_context(
+            "keyboard session lifecycle",
+            &project,
+            std::num::NonZeroUsize::new(10),
+        )
         .await
         .unwrap();
     let result = after
@@ -1458,7 +1482,12 @@ async fn supersession_is_reversible_and_feedback_survives_propagation() {
     r.superseded_beliefs.push(a.id);
     svc.review_experience(&r, 0).await.unwrap();
     assert!(!svc
-        .query_relevant("keyboard", 10, Some(&project), None)
+        .query_relevant(
+            "keyboard",
+            std::num::NonZeroUsize::new(10),
+            Some(&project),
+            None
+        )
         .await
         .unwrap()
         .iter()
@@ -1472,7 +1501,12 @@ async fn supersession_is_reversible_and_feedback_survives_propagation() {
     r.rationale = "review was mistaken; retract it".into();
     svc.review_experience(&r, 1).await.unwrap();
     assert!(svc
-        .query_relevant("keyboard", 10, Some(&project), None)
+        .query_relevant(
+            "keyboard",
+            std::num::NonZeroUsize::new(10),
+            Some(&project),
+            None
+        )
         .await
         .unwrap()
         .iter()
@@ -1498,7 +1532,7 @@ async fn scoped_pattern_outcomes_replace_instead_of_accumulate() {
     svc.record_experience(&e, 0).await.unwrap();
     svc.record_experience(&e, 0).await.unwrap();
     let context = svc
-        .query_learning_context("keyboard", &project, 5)
+        .query_learning_context("keyboard", &project, std::num::NonZeroUsize::new(5))
         .await
         .unwrap();
     assert_eq!(context.patterns[0].successes, 1);
@@ -1506,7 +1540,7 @@ async fn scoped_pattern_outcomes_replace_instead_of_accumulate() {
     e.outcome = Outcome::Failure;
     svc.record_experience(&e, 1).await.unwrap();
     let context = svc
-        .query_learning_context("keyboard", &project, 5)
+        .query_learning_context("keyboard", &project, std::num::NonZeroUsize::new(5))
         .await
         .unwrap();
     assert_eq!(context.patterns[0].successes, 0);
@@ -1517,7 +1551,7 @@ async fn scoped_pattern_outcomes_replace_instead_of_accumulate() {
     report.source = ObservationSource::AgentReport;
     svc.record_experience(&report, 0).await.unwrap();
     assert_eq!(
-        svc.query_learning_context("keyboard", &project, 5)
+        svc.query_learning_context("keyboard", &project, std::num::NonZeroUsize::new(5))
             .await
             .unwrap()
             .patterns[0]

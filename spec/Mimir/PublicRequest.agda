@@ -8,7 +8,7 @@ open import Data.Float.Base using (Float; _*_)
 open import Data.Integer using (ℤ; +_) renaming (_*_ to _*ℤ_)
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; zero; suc)
+open import Data.Nat using (ℕ; zero; suc; s≤s; z≤n)
 open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (String; toList)
@@ -23,6 +23,7 @@ import Mimir.Binary64 as Binary
 import Mimir.ApplicationFloat as Numeric
 import Mimir.StandardLibrary as Conversion
 import Mimir.ToolCatalog as Tools
+import Mimir.RetrievalRanking as Ranking
 import Mimir.GraphMutationProtocol as Mutation
 import Mimir.GraphReadProtocol as Read
 import Mimir.GraphDeletion as Delete
@@ -44,16 +45,16 @@ data Request : Set where
   deleteProject : Text → Request
   inference : Inference.Request → Request
   sweepHours : Maybe Text → Float → Float → Request
-  relevant : Text → ℕ → Maybe Text → Maybe C.Memory → Bool → ℕ → Request
+  relevant : Text → Ranking.Selection → Maybe Text → Maybe C.Memory → Bool → Ranking.Selection → Request
   addEvidence : ℕ → ℕ → Float → Request -- belief, chunk, weight
   removeEvidence : ℕ → ℕ → Request -- existing core-library API; no new MCP tool
   evidence : ℕ → Request
   loadDocument : Text → Maybe Text → Request
-  queryDocument : Text → Maybe Text → ℕ → Request
+  queryDocument : Text → Maybe Text → Ranking.Selection → Request
   clearDocument : Text → Request
   learning : Learning.Request → Request
   learningQuery : Query.Request → Request
-  learningContext : Text → Text → ℕ → Request
+  learningContext : Text → Text → Ranking.Selection → Request
   capabilities : Request
 
 memory : V.Value → Fault ⊎ C.Memory
@@ -131,15 +132,22 @@ module Decode (conversion : Conversion.Contract) where
     required "belief_id" uuid fields >>= λ id → required "scope" V.asString fields >>= λ scope →
     required "rubric" V.asString fields >>= λ rubric → inj₂ (Assessment.query project id scope rubric)
 
+  selectedCount : V.Value → Fault ⊎ Ranking.PositiveCount
+  selectedCount raw = integer raw >>= λ
+    { zero → inj₁ (Validation.fault [] Validation.invalidNumber "selection must be positive; omit the field to return all matches")
+    ; (suc n) → inj₂ (Ranking.positiveCount (suc n) (s≤s z≤n)) }
+
+  selection : String → V.Object.View → Fault ⊎ Ranking.Selection
+  selection fieldName fields = present fieldName selectedCount fields
+
   listRequest : V.Object.View → Maybe C.Memory → Fault ⊎ Request
   listRequest fields memory with fields (toList "limit")
   ... | nothing with fields (toList "offset")
   ...   | nothing = inj₂ (read (Read.listBeliefs (project fields) memory))
   ...   | just _ = bad "offset requires limit"
-  listRequest fields memory | just raw = integer raw >>= λ
-    { zero → bad "limit must be a positive integer; omit limit to return all matching beliefs"
-    ; limit@(suc _) → defaulted "offset" 0 integer fields >>= λ offset →
-        inj₂ (read (Read.beliefPage (project fields) memory limit offset)) }
+  listRequest fields memory | just raw = required "limit" selectedCount fields >>= λ selected →
+    defaulted "offset" 0 integer fields >>= λ offset →
+    inj₂ (read (Read.beliefPage (project fields) memory (Ranking.PositiveCount.count selected) offset))
 
   edgeRequest : R.Relation → V.Object.View → Fault ⊎ Request
   edgeRequest relation fields = required "from_id" V.asString fields >>= λ fromText →
@@ -182,8 +190,9 @@ module Decode (conversion : Conversion.Contract) where
     (loose "prob_threshold" 0.3 float fields) (loose "grace_hours" 24.0 float fields))
   decode Tools.queryRelevant fields = required "context" V.asString fields >>= λ context →
     memoryField (toList "prefer_type") fields >>= λ preference →
-    inj₂ (relevant context (loose "limit" 10 integer fields) (project fields) preference
-      (loose "include_evidence" false V.asBoolean fields) (loose "evidence_per_belief" 3 integer fields))
+    selection "limit" fields >>= λ limit → selection "evidence_per_belief" fields >>= λ per →
+    inj₂ (relevant context limit (project fields) preference
+      (loose "include_evidence" false V.asBoolean fields) per)
   decode Tools.addEvidence fields = required "belief_id" V.asString fields >>= λ beliefText →
     required "chunk_id" V.asString fields >>= λ chunkText →
     uuid (V.string beliefText) >>= λ belief → uuid (V.string chunkText) >>= λ chunk →
@@ -194,7 +203,7 @@ module Decode (conversion : Conversion.Contract) where
     uuid (V.string text) >>= λ id → inj₂ (inference (Inference.intervention id value))
   decode Tools.loadDocument fields = required "path" V.asString fields >>= λ path → inj₂ (loadDocument path (project fields))
   decode Tools.queryDocument fields = required "context" V.asString fields >>= λ context →
-    inj₂ (queryDocument context (project fields) (loose "limit" 5 integer fields))
+    selection "limit" fields >>= λ limit → inj₂ (queryDocument context (project fields) limit)
   decode Tools.clearDocument fields = mapResult clearDocument (required "path" V.asString fields)
   decode Tools.getLearningReview fields = mapResult (λ id → learningQuery (Query.currentReview id)) (required "id" uuid fields)
   decode Tools.learningCapabilities fields = inj₂ capabilities
@@ -215,7 +224,7 @@ module Decode (conversion : Conversion.Contract) where
   decode Tools.getExperience fields = mapResult (λ id → learningQuery (Query.experience id)) (required "id" uuid fields)
   decode Tools.experienceHistory fields = mapResult (λ id → learningQuery (Query.history id)) (required "id" uuid fields)
   decode Tools.queryLearningContext fields = required "context" V.asString fields >>= λ context →
-    required "project" V.asString fields >>= λ project → defaulted "limit" 5 integer fields >>= λ limit →
+    required "project" V.asString fields >>= λ project → selection "limit" fields >>= λ limit →
     inj₂ (learningContext context project limit)
 
   -- A supplied optional value must pass its decoder before any loose

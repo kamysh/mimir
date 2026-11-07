@@ -6,14 +6,13 @@
 -- asserted here. All Mimir selection, weights and accumulation are defined.
 module Mimir.RetrievalRanking where
 
-import Mimir.UnsignedMachine
 
 open import Data.Bool using (Bool; true; false; _∧_; _∨_; not)
 open import Data.Char using (Char)
 open import Data.Float.Base using (Float; _<ᵇ_)
 open import Data.List using (List; []; _∷_; _++_; map; filterᵇ; foldl; length; take; reverse)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; zero; suc; _≟_; _≤?_; _*_; _⊔_)
+open import Data.Nat using (ℕ; zero; suc; _≟_; _≤?_; _≤_; _*_)
 open import Data.Product using (_×_; _,_)
 open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -130,15 +129,16 @@ typeRanking (just wanted) all = map Graph.BeliefValues.identity
   (filterᵇ matching all ++ filterᵇ (λ b → not (matching b)) all)
   where matching = λ b → sameMemory wanted (Graph.BeliefValues.memory b)
 
-cap : ∀ {A : Set} → ℕ → List A → List A
-cap zero xs = xs
-cap (suc n) xs = take (suc n) xs
+record PositiveCount : Set where
+  constructor positiveCount
+  field count : ℕ; positive : 1 ≤ count
 
-poolSize : ℕ → ℕ
-poolSize zero = 50
-poolSize (suc n) = Counter.Natural.number (Counter.wrap ((suc n) * 4)) ⊔ 20
-  where
-  module Counter = Mimir.UnsignedMachine.Width 64
+-- Omission means all matches; a supplied zero has no representation here.
+Selection = Maybe PositiveCount
+
+cap : ∀ {A : Set} → Selection → List A → List A
+cap nothing xs = xs
+cap (just selected) xs = take (PositiveCount.count selected) xs
 
 module Fusion (ops : F32) where
   open F32 ops
@@ -167,14 +167,14 @@ module Fusion (ops : F32) where
       (leg (decimal 1 10) 0 prior
         (leg (decimal 3 10) 0 token (leg (fromNat 1) 0 vector [])))
 
-  rank : List ℕ → List ℕ → Maybe Candidates.Memory → ℕ →
+  rank : List ℕ → List ℕ → Maybe Candidates.Memory → Selection →
     List Graph.BeliefValues → List Graph.BeliefValues
   rank vector token preferred limit matched = cap limit
     (sort (λ b c → not (less (get (Graph.BeliefValues.identity b) fused)
       (get (Graph.BeliefValues.identity c) fused))) matched)
     where fused = scores vector token (priorRanking matched) (typeRanking preferred matched)
 
-unlimited : ∀ {A : Set} (xs : List A) → cap 0 xs ≡ xs
+unlimited : ∀ {A : Set} (xs : List A) → cap nothing xs ≡ xs
 unlimited xs = refl
 
 globalVisible : ∀ scope → visible scope nothing ≡ true

@@ -103,6 +103,12 @@ pub struct GroundedBelief {
     pub evidence: Vec<EvidenceRef>,
 }
 
+/// Omission requests all matches; a supplied count cannot be zero.
+pub type Selection = Option<std::num::NonZeroUsize>;
+
+#[cfg(test)]
+extern crate self as mimir_core;
+
 pub struct MimirService {
     store: AgeStore,
     inference: InferenceEngine,
@@ -242,7 +248,7 @@ impl MimirService {
         // all chunks, then filter by project compatibility in Rust.
         let candidates = self
             .store
-            .query_chunks_by_vector_scored(embedding, 20, None)
+            .query_chunks_by_vector_scored(embedding, None, None)
             .await?;
         for (chunk_id, sim) in candidates {
             if sim < GROUND_THRESHOLD {
@@ -277,7 +283,7 @@ impl MimirService {
         for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
             let candidates = self
                 .store
-                .query_beliefs_by_vector_scored(embedding, 20)
+                .query_beliefs_by_vector_scored(embedding, None)
                 .await?;
             for (belief_id, sim) in candidates {
                 if sim < GROUND_THRESHOLD {
@@ -576,14 +582,14 @@ impl MimirService {
     /// probability desc). RRF fuses ranks (scale-agnostic); the weights let the
     /// reliable semantic leg lead while probability remains a real ranking signal
     /// rather than a tiebreaker or a naked multiply. Spec: `Mimir.Graph`
-    /// (query_relevant section). `limit = 0` means no limit.
+    /// (query_relevant section). Omitted selection means all matches.
     /// `project`, when given, restricts the candidate pool (token, vector,
     /// probability-prior, and graph-expansion legs) to beliefs tagged with
     /// that project plus untagged (global) beliefs — see `list_beliefs`.
     pub async fn query_relevant(
         &self,
         query: &str,
-        limit: usize,
+        limit: Selection,
         project: Option<&str>,
         prefer_type: Option<MemoryType>,
     ) -> Result<Vec<Belief>> {
@@ -639,24 +645,21 @@ impl MimirService {
             scored.into_iter().map(|(_, b)| b.id).collect()
         };
 
-        // ── Vector list: cosine top-k over belief_embeddings, when an
-        //    embedding backend is configured. The pool is intentionally larger
-        //    than `limit`; RRF + the probability sort + truncate decide the
-        //    final cut. If the embedder itself fails (model unavailable,
+        // ── Vector list: all eligible vectors participate in fusion.
+        //    Only the caller's final selection cuts the returned ranking. If the embedder itself fails (model unavailable,
         //    network error, etc.) we degrade to token-only with a warning
         //    rather than failing the whole query — partial recall beats none.
         let vector_ranked: Vec<Uuid> = if let Some(embedder) = &self.embeddings {
-            let pool_size = if limit > 0 { (limit * 4).max(20) } else { 50 };
             match embedder.embed(&[query.to_string()]).await {
                 Ok(mut vecs) => match vecs.pop() {
                     Some(qv) => match project {
                         Some(_) => {
                             let ids: Vec<Uuid> = all.iter().map(|b| b.id).collect();
                             self.store
-                                .query_beliefs_by_vector_filtered(&qv, pool_size, &ids)
+                                .query_beliefs_by_vector_filtered(&qv, None, &ids)
                                 .await?
                         }
-                        None => self.store.query_beliefs_by_vector(&qv, pool_size).await?,
+                        None => self.store.query_beliefs_by_vector(&qv, None).await?,
                     },
                     None => Vec::new(),
                 },
@@ -820,8 +823,8 @@ impl MimirService {
             sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        if limit > 0 {
-            matched.truncate(limit);
+        if let Some(count) = limit {
+            matched.truncate(count.get());
         }
         Ok(matched)
     }
@@ -898,12 +901,12 @@ impl MimirService {
     /// Semantic search over loaded document chunks.
     /// Embeds `context`, queries chunk_embeddings by cosine distance, fetches
     /// matching DocumentChunk vertices from AGE, enriches with parent content.
-    /// limit=0 means no limit.
+    /// Omitted selection means all matches.
     pub async fn query_document(
         &self,
         context: &str,
         project: Option<&str>,
-        limit: usize,
+        limit: Selection,
     ) -> Result<Vec<QueryResult>> {
         let embedder = self.embeddings.as_ref().ok_or_else(|| {
             anyhow::anyhow!("embeddings not configured — add [embeddings] to config.toml")
@@ -968,12 +971,12 @@ impl MimirService {
     pub async fn evidence_for_belief(
         &self,
         belief_id: Uuid,
-        limit: usize,
+        limit: Selection,
     ) -> Result<Vec<EvidenceRef>> {
         let mut ev = self.store.get_evidence_for_beliefs(&[belief_id]).await?;
         ev.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        if limit > 0 {
-            ev.truncate(limit);
+        if let Some(count) = limit {
+            ev.truncate(count.get());
         }
         let mut out = Vec::with_capacity(ev.len());
         for (_belief, chunk_id, weight) in ev {
@@ -992,12 +995,12 @@ impl MimirService {
 
     /// `query_relevant`, enriched with the top-k grounding passages per belief.
     /// `query_relevant` itself is unchanged (backward compatible); this is purely
-    /// additive. `evidence_per_belief = 0` means no cap.
+    /// additive. Omitted passage selection returns all supporting passages.
     pub async fn query_relevant_grounded(
         &self,
         query: &str,
-        limit: usize,
-        evidence_per_belief: usize,
+        limit: Selection,
+        evidence_per_belief: Selection,
         project: Option<&str>,
     ) -> Result<Vec<GroundedBelief>> {
         let beliefs = self.query_relevant(query, limit, project, None).await?;
@@ -1028,8 +1031,8 @@ impl MimirService {
                 let mut entries = entries.clone();
                 // Strongest grounding first.
                 entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                if evidence_per_belief > 0 {
-                    entries.truncate(evidence_per_belief);
+                if let Some(count) = evidence_per_belief {
+                    entries.truncate(count.get());
                 }
                 for (chunk_id, weight) in entries {
                     if let std::collections::hash_map::Entry::Vacant(e) =

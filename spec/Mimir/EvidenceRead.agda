@@ -32,7 +32,7 @@ referenceOf : Float → Documents.Chunk → Reference
 referenceOf weight c = reference (Documents.Chunk.identity c) (Documents.Chunk.document c)
   (Documents.Chunk.section c) (trim (Documents.Chunk.content c)) weight
 
-ranked : ℕ → ℕ → List Store.Ground → List Store.Ground
+ranked : ℕ → Ranking.Selection → List Store.Ground → List Store.Ground
 ranked belief limit grounds = Ranking.cap limit (Ranking.sort
   (λ a b → not (Store.Ground.weight a <ᵇ Store.Ground.weight b))
   (filterᵇ (λ e → does (belief ≟ Store.Ground.belief e)) grounds))
@@ -66,7 +66,7 @@ refs (edge ∷ rest) cache with Lookup.lookup (Store.Ground.chunk edge) cache
   ; (inj₂ observed) → refs rest ((Store.Ground.chunk edge , observed) ∷ cache) >>= λ result →
       done (prepend (Store.Ground.weight edge) observed result) })
 
-enrich : ℕ → List Store.Ground → List G.BeliefValues → Cache → Script (Text ⊎ List Grounded)
+enrich : Ranking.Selection → List Store.Ground → List G.BeliefValues → Cache → Script (Text ⊎ List Grounded)
 enrich limit grounds [] cache = done (inj₂ [])
 enrich limit grounds (belief ∷ rest) cache = refs (ranked (G.BeliefValues.identity belief) limit grounds) cache >>= λ
   { (inj₁ error) → done (inj₁ error)
@@ -86,12 +86,12 @@ uncached (edge ∷ rest) = ask (readChunk (Store.Ground.chunk edge)) (λ
   append nothing later = inj₂ later
   append (just chunk) later = inj₂ (referenceOf (Store.Ground.weight edge) chunk ∷ later)
 
-one : ℕ → ℕ → Script (Text ⊎ List Reference)
+one : ℕ → Ranking.Selection → Script (Text ⊎ List Reference)
 one belief limit = ask (readGrounds (belief ∷ [])) (λ
   { (inj₁ error) → done (inj₁ error)
   ; (inj₂ grounds) → uncached (ranked belief limit grounds) })
 
-many : ℕ → List G.BeliefValues → Script (Text ⊎ List Grounded)
+many : Ranking.Selection → List G.BeliefValues → Script (Text ⊎ List Grounded)
 many limit [] = done (inj₂ [])
 many limit beliefs@(_ ∷ _) = ask (readGrounds (Data.List.map G.BeliefValues.identity beliefs)) (λ
   { (inj₁ error) → done (inj₁ error) ; (inj₂ grounds) → enrich limit grounds beliefs [] })

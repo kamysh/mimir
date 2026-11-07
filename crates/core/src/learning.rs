@@ -477,9 +477,8 @@ impl crate::MimirService {
         &self,
         context: &str,
         project: &str,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<LearningContext> {
-        ensure!(limit > 0, "limit must be positive");
         ensure!(!project.trim().is_empty(), "project must be explicit");
         let beliefs = self
             .query_relevant(context, limit, Some(project), None)
@@ -515,9 +514,12 @@ impl crate::MimirService {
             .store
             .assessments_for_beliefs(project, &beliefs.iter().map(|b| b.id).collect::<Vec<_>>())
             .await?;
+        if let Some(count) = limit {
+            ranked.truncate(count.get());
+        }
         Ok(LearningContext {
             beliefs,
-            patterns: ranked.into_iter().take(limit).map(|(_, p)| p).collect(),
+            patterns: ranked.into_iter().map(|(_, p)| p).collect(),
             assessments,
             assessments_truncated,
         })

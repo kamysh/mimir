@@ -429,6 +429,38 @@ pub struct AgeStore {
     graph_name: String,
 }
 
+enum VectorTable {
+    Chunks,
+    Beliefs,
+}
+
+fn vector_query(
+    table: VectorTable,
+    selection: crate::Selection,
+    filtered: bool,
+    scored: bool,
+) -> String {
+    let (table, id) = match table {
+        VectorTable::Chunks => ("chunk_embeddings", "chunk_id"),
+        VectorTable::Beliefs => ("belief_embeddings", "belief_id"),
+    };
+    let filter = if filtered {
+        format!("WHERE {id} = ANY($2)")
+    } else {
+        String::new()
+    };
+    let score = if scored {
+        ", 1.0 - (embedding <=> $1) AS similarity"
+    } else {
+        ""
+    };
+    let base=format!("SELECT {id}::text{score}, embedding <=> $1 AS selection_distance FROM public.{table} {filter}");
+    match selection {
+        None=>format!("{base} ORDER BY selection_distance"),
+        Some(count)=>format!("SELECT * FROM (SELECT source.*, row_number() OVER (ORDER BY selection_distance) AS selection_position FROM ({base}) source) selected WHERE selection_position::numeric <= {}::numeric ORDER BY selection_position",count.get()),
+    }
+}
+
 impl AgeStore {
     /// Construct a new store. `graph_name` must consist solely of ASCII
     /// alphanumeric characters and underscores — it is interpolated directly
@@ -1575,40 +1607,25 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Cosine nearest-neighbour search over chunk_embeddings.
     /// If filter_ids is Some, only those chunk IDs are considered.
-    /// limit=0 means no limit.
+    /// Omitted selection returns all matches.
     pub async fn query_chunks_by_vector(
         &self,
         query_vec: &[f32],
-        limit: usize,
+        limit: crate::Selection,
         filter_ids: Option<&[Uuid]>,
     ) -> Result<Vec<Uuid>> {
-        let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
-
+        if filter_ids.is_some_and(|ids| ids.is_empty()) {
+            return Ok(Vec::new());
+        }
+        let vector = Vector::from(query_vec.to_vec());
+        let sql = vector_query(VectorTable::Chunks, limit, filter_ids.is_some(), false);
         let client = self.client.lock().await;
         let rows = match filter_ids {
-            None => {
-                let sql = format!(
-                    "SELECT chunk_id::text FROM public.chunk_embeddings \
-                     ORDER BY embedding <=> $1 {limit_clause}"
-                );
-                client.query(&sql, &[&vec]).await?
-            }
-            Some(ids) => {
-                let sql = format!(
-                    "SELECT chunk_id::text FROM public.chunk_embeddings \
-                     WHERE chunk_id = ANY($2) \
-                     ORDER BY embedding <=> $1 {limit_clause}"
-                );
-                client.query(&sql, &[&vec, &ids]).await?
-            }
+            None => client.query(&sql, &[&vector]).await?,
+            Some(ids) => client.query(&sql, &[&vector, &ids]).await?,
         };
         rows.iter()
-            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("chunk_id"))?))
+            .map(|row| Ok(Uuid::parse_str(row.try_get::<_, &str>(0)?)?))
             .collect()
     }
 
@@ -1648,26 +1665,18 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Cosine nearest-neighbour search over belief_embeddings.
     /// Returns belief IDs ordered by ascending cosine distance (most similar first).
-    /// limit=0 means no limit.
+    /// Omitted selection returns all matches.
     pub async fn query_beliefs_by_vector(
         &self,
         query_vec: &[f32],
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<Vec<Uuid>> {
-        let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
-        let sql = format!(
-            "SELECT belief_id::text FROM public.belief_embeddings \
-             ORDER BY embedding <=> $1 {limit_clause}"
-        );
+        let vector = Vector::from(query_vec.to_vec());
+        let sql = vector_query(VectorTable::Beliefs, limit, false, false);
         let client = self.client.lock().await;
-        let rows = client.query(&sql, &[&vec]).await?;
+        let rows = client.query(&sql, &[&vector]).await?;
         rows.iter()
-            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("belief_id"))?))
+            .map(|row| Ok(Uuid::parse_str(row.try_get::<_, &str>(0)?)?))
             .collect()
     }
 
@@ -1679,100 +1688,68 @@ $$) AS (ok ag_catalog.agtype)"#
     pub async fn query_beliefs_by_vector_filtered(
         &self,
         query_vec: &[f32],
-        limit: usize,
+        limit: crate::Selection,
         filter_ids: &[Uuid],
     ) -> Result<Vec<Uuid>> {
         if filter_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
-        let sql = format!(
-            "SELECT belief_id::text FROM public.belief_embeddings \
-             WHERE belief_id = ANY($2) \
-             ORDER BY embedding <=> $1 {limit_clause}"
-        );
+        let vector = Vector::from(query_vec.to_vec());
+        let sql = vector_query(VectorTable::Beliefs, limit, true, false);
         let client = self.client.lock().await;
-        let rows = client.query(&sql, &[&vec, &filter_ids]).await?;
+        let rows = client.query(&sql, &[&vector, &filter_ids]).await?;
         rows.iter()
-            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("belief_id"))?))
+            .map(|row| Ok(Uuid::parse_str(row.try_get::<_, &str>(0)?)?))
             .collect()
     }
 
     /// Cosine nearest-neighbour search over chunk_embeddings, returning (chunk_id, similarity).
     /// similarity = 1.0 - cosine_distance. Results ordered by similarity descending.
-    /// limit=0 means no limit. Used by auto-grounding in insert_belief.
+    /// Omitted selection returns all matches. Used by auto-grounding in insert_belief.
     pub async fn query_chunks_by_vector_scored(
         &self,
         query_vec: &[f32],
-        limit: usize,
+        limit: crate::Selection,
         filter_ids: Option<&[Uuid]>,
     ) -> Result<Vec<(Uuid, f64)>> {
-        let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
+        if filter_ids.is_some_and(|ids| ids.is_empty()) {
+            return Ok(Vec::new());
+        }
+        let vector = Vector::from(query_vec.to_vec());
+        let sql = vector_query(VectorTable::Chunks, limit, filter_ids.is_some(), true);
         let client = self.client.lock().await;
         let rows = match filter_ids {
-            None => {
-                let sql = format!(
-                    "SELECT chunk_id::text, 1.0 - (embedding <=> $1) AS similarity \
-                     FROM public.chunk_embeddings \
-                     ORDER BY embedding <=> $1 {limit_clause}"
-                );
-                client.query(&sql, &[&vec]).await?
-            }
-            Some(ids) => {
-                let sql = format!(
-                    "SELECT chunk_id::text, 1.0 - (embedding <=> $1) AS similarity \
-                     FROM public.chunk_embeddings \
-                     WHERE chunk_id = ANY($2) \
-                     ORDER BY embedding <=> $1 {limit_clause}"
-                );
-                client.query(&sql, &[&vec, &ids]).await?
-            }
+            None => client.query(&sql, &[&vector]).await?,
+            Some(ids) => client.query(&sql, &[&vector, &ids]).await?,
         };
         rows.iter()
-            .map(|r| {
-                let id = Uuid::parse_str(r.get::<_, &str>("chunk_id"))?;
-                let sim: f64 = r.get("similarity");
-                Ok((id, sim))
+            .map(|row| {
+                Ok((
+                    Uuid::parse_str(row.try_get::<_, &str>(0)?)?,
+                    row.try_get::<_, f64>("similarity")?,
+                ))
             })
             .collect()
     }
 
     /// Cosine nearest-neighbour search over belief_embeddings, returning (belief_id, similarity).
     /// similarity = 1.0 - cosine_distance. Results ordered by similarity descending.
-    /// limit=0 means no limit. Used by auto-grounding in load_document.
+    /// Omitted selection returns all matches. Used by auto-grounding in load_document.
     pub async fn query_beliefs_by_vector_scored(
         &self,
         query_vec: &[f32],
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<Vec<(Uuid, f64)>> {
-        let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
-        let sql = format!(
-            "SELECT belief_id::text, 1.0 - (embedding <=> $1) AS similarity \
-             FROM public.belief_embeddings \
-             ORDER BY embedding <=> $1 {limit_clause}"
-        );
+        let vector = Vector::from(query_vec.to_vec());
+        let sql = vector_query(VectorTable::Beliefs, limit, false, true);
         let client = self.client.lock().await;
-        let rows = client.query(&sql, &[&vec]).await?;
+        let rows = client.query(&sql, &[&vector]).await?;
         rows.iter()
-            .map(|r| {
-                let id = Uuid::parse_str(r.get::<_, &str>("belief_id"))?;
-                let sim: f64 = r.get("similarity");
-                Ok((id, sim))
+            .map(|row| {
+                Ok((
+                    Uuid::parse_str(row.try_get::<_, &str>(0)?)?,
+                    row.try_get::<_, f64>("similarity")?,
+                ))
             })
             .collect()
     }

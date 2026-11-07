@@ -91,7 +91,7 @@ module Run (environment : Environment) where
     documentQueryState : DocumentQuery.E.Script DocumentQuery.Result → State
     learningState : (q : Learning.Request) → Learn.E.Script q (Learn.Outcome q) → State
     queryState : Query.E.Script Query.Result → State
-    retrievalState : Bool → ℕ → Retrieval.State → State
+    retrievalState : Bool → Ranking.Selection → Retrieval.State → State
     contextState : Context.State → State
 
   data Effect : Set where
@@ -197,7 +197,7 @@ module Run (environment : Environment) where
     (Retrieval.overlay (Retrieval.request query limit project (preference include prefer) embeddingsEnabled))
   start (Public.addEvidence belief chunk weight) = groundStart belief chunk weight
   start (Public.removeEvidence belief chunk) = groundState (Grounding.Run.P.start (Ground.remove chunk belief))
-  start (Public.evidence belief) = evidenceState (Evidence.one belief 0)
+  start (Public.evidence belief) = evidenceState (Evidence.one belief nothing)
   start (Public.loadDocument path project) = documentState (Document.load embeddingsEnabled chunkIdentity path project)
   start (Public.queryDocument query project limit) = documentQueryState (DocumentQuery.start embeddingsEnabled query limit project)
   start (Public.clearDocument path) = documentState (Document.clear path)

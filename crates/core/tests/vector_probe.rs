@@ -71,7 +71,7 @@ async fn vector_leg_ranking() {
             .pop()
             .expect("one vector");
         let ranked = store
-            .query_beliefs_by_vector(&qv, 0)
+            .query_beliefs_by_vector(&qv, None)
             .await
             .expect("vector query");
         let rank = ranked.iter().position(|id| *id == target.id);
@@ -121,7 +121,7 @@ async fn full_query_relevant_ranking() {
     ] {
         let t0 = std::time::Instant::now();
         let res = svc
-            .query_relevant(q, 10, None, None)
+            .query_relevant(q, std::num::NonZeroUsize::new(10), None, None)
             .await
             .expect("query_relevant");
         let elapsed = t0.elapsed();

@@ -17,6 +17,48 @@ struct Cli {
     command: Command,
 }
 
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn result_selection_is_optional_positive_and_has_no_default() {
+        let command = Cli::command();
+        for name in ["list", "patterns", "query"] {
+            let option = command
+                .find_subcommand(name)
+                .unwrap()
+                .get_arguments()
+                .find(|arg| arg.get_id() == "limit")
+                .unwrap();
+            assert!(!option.is_required_set());
+            assert!(option.get_default_values().is_empty());
+        }
+        let option = command
+            .find_subcommand("doc")
+            .unwrap()
+            .find_subcommand("query")
+            .unwrap()
+            .get_arguments()
+            .find(|arg| arg.get_id() == "limit")
+            .unwrap();
+        assert!(!option.is_required_set());
+        assert!(option.get_default_values().is_empty());
+        for arguments in [
+            vec!["mimir", "list"],
+            vec!["mimir", "patterns"],
+            vec!["mimir", "query", "needle"],
+            vec!["mimir", "doc", "query", "needle"],
+        ] {
+            assert!(Cli::try_parse_from(arguments.clone()).is_ok());
+            let mut invalid = arguments;
+            invalid.extend(["--limit", "0"]);
+            assert!(Cli::try_parse_from(invalid).is_err());
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Check compatibility or upgrade an existing configuration offline.
@@ -51,9 +93,9 @@ enum Command {
         #[arg(long, short)]
         project: Option<String>,
 
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 0)]
-        limit: usize,
+        /// Positive result count; omit for all matching records.
+        #[arg(long, short)]
+        limit: Option<std::num::NonZeroUsize>,
     },
 
     /// List patterns.
@@ -62,9 +104,9 @@ enum Command {
         #[arg(long, short)]
         project: Option<String>,
 
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 0)]
-        limit: usize,
+        /// Positive result count; omit for all matching records.
+        #[arg(long, short)]
+        limit: Option<std::num::NonZeroUsize>,
     },
 
     /// Hybrid search: text match plus graph expansion via SUPPORTS/CAUSES edges.
@@ -72,9 +114,9 @@ enum Command {
         /// Search text (case-insensitive substring match).
         text: String,
 
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 10)]
-        limit: usize,
+        /// Positive result count; omit for all matching records.
+        #[arg(long, short)]
+        limit: Option<std::num::NonZeroUsize>,
 
         /// Also show the document passages that ground each belief.
         #[arg(long)]
@@ -299,9 +341,9 @@ enum DocCmd {
         #[arg(long, short)]
         project: Option<String>,
 
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 5)]
-        limit: usize,
+        /// Positive result count; omit for all matching records.
+        #[arg(long, short)]
+        limit: Option<std::num::NonZeroUsize>,
     },
     /// Remove all chunks and embeddings for a document path.
     Clear {
@@ -467,7 +509,7 @@ async fn cmd_stats() -> Result<()> {
 // mimir list
 // ---------------------------------------------------------------------------
 
-async fn cmd_list(project: Option<String>, limit: usize) -> Result<()> {
+async fn cmd_list(project: Option<String>, limit: mimir_core::Selection) -> Result<()> {
     let svc = connect().await?;
     let mut beliefs = svc.list_beliefs(project.as_deref()).await?;
 
@@ -479,8 +521,8 @@ async fn cmd_list(project: Option<String>, limit: usize) -> Result<()> {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    if limit > 0 {
-        beliefs.truncate(limit);
+    if let Some(count) = limit {
+        beliefs.truncate(count.get());
     }
 
     if beliefs.is_empty() {
@@ -519,7 +561,7 @@ async fn cmd_list(project: Option<String>, limit: usize) -> Result<()> {
 // mimir patterns
 // ---------------------------------------------------------------------------
 
-async fn cmd_patterns(project: Option<String>, limit: usize) -> Result<()> {
+async fn cmd_patterns(project: Option<String>, limit: mimir_core::Selection) -> Result<()> {
     let svc = connect().await?;
     let mut patterns = svc.list_patterns(project.as_deref()).await?;
 
@@ -531,8 +573,8 @@ async fn cmd_patterns(project: Option<String>, limit: usize) -> Result<()> {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    if limit > 0 {
-        patterns.truncate(limit);
+    if let Some(count) = limit {
+        patterns.truncate(count.get());
     }
 
     if patterns.is_empty() {
@@ -559,7 +601,7 @@ async fn cmd_patterns(project: Option<String>, limit: usize) -> Result<()> {
 
 async fn cmd_query(
     text: &str,
-    limit: usize,
+    limit: mimir_core::Selection,
     evidence: bool,
     project: Option<&str>,
     prefer_type: Option<mimir_core::graph::MemoryType>,
@@ -567,7 +609,9 @@ async fn cmd_query(
     let svc = connect().await?;
 
     if evidence {
-        let grounded = svc.query_relevant_grounded(text, limit, 3, project).await?;
+        let grounded = svc
+            .query_relevant_grounded(text, limit, std::num::NonZeroUsize::new(3), project)
+            .await?;
         if grounded.is_empty() {
             println!("(no results)");
             return Ok(());
@@ -652,7 +696,7 @@ async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
             let belief = belief_id
                 .parse::<uuid::Uuid>()
                 .map_err(|_| anyhow::anyhow!("invalid belief UUID: {}", belief_id))?;
-            let refs = svc.evidence_for_belief(belief, 0).await?;
+            let refs = svc.evidence_for_belief(belief, None).await?;
             if refs.is_empty() {
                 println!("(no evidence)");
                 return Ok(());
@@ -798,7 +842,11 @@ async fn cmd_load(path: &str, project: Option<&str>) -> Result<()> {
 // mimir query-doc
 // ---------------------------------------------------------------------------
 
-async fn cmd_query_doc(context: &str, project: Option<&str>, limit: usize) -> Result<()> {
+async fn cmd_query_doc(
+    context: &str,
+    project: Option<&str>,
+    limit: mimir_core::Selection,
+) -> Result<()> {
     let svc = connect().await?;
     let results = svc.query_document(context, project, limit).await?;
 
@@ -1109,7 +1157,7 @@ async fn cmd_hook_prompt() -> Result<()> {
     let project = session_project_from_hook_json(&v);
     let svc = connect().await?;
     let beliefs = svc
-        .query_relevant(&trunc(&prompt, 500), 5, project.as_deref(), None)
+        .query_relevant(&trunc(&prompt, 500), None, project.as_deref(), None)
         .await?;
     if beliefs.is_empty() {
         return Ok(());
@@ -1157,7 +1205,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
     let project = session_project_from_hook_json(&v);
     let svc = connect().await?;
     let beliefs = svc
-        .query_relevant(&trunc(query_raw, 200), 3, project.as_deref(), None)
+        .query_relevant(&trunc(query_raw, 200), None, project.as_deref(), None)
         .await?;
     if beliefs.is_empty() {
         return Ok(());

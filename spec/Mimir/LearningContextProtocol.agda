@@ -26,7 +26,7 @@ import Mimir.AssessmentScores as Scores
 
 record Request : Set where
   constructor contextRequest
-  field context project : Text; limit : ℕ; embeddingsEnabled : Bool
+  field context project : Text; limit : R.Selection; embeddingsEnabled : Bool
 
 record Output : Set where
   constructor output

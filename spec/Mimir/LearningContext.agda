@@ -52,8 +52,8 @@ before (hits , a) (other , b) with hits ≟ other
 ...   | true = does (Graph.PatternValues.identity (Patterns.Result.patternValue a) ≤?
   Graph.PatternValues.identity (Patterns.Result.patternValue b))
 
-rank : ℕ → List (ℕ × Patterns.Result) → List Patterns.Result
-rank limit rows = map (λ { (_ , p) → p }) (take limit (Ranking.sort before rows))
+rank : Ranking.Selection → List (ℕ × Patterns.Result) → List Patterns.Result
+rank limit rows = map (λ { (_ , p) → p }) (Ranking.cap limit (Ranking.sort before rows))
 
 record Key : Set where
   constructor key
@@ -103,8 +103,8 @@ assessmentPage textBefore project ids state = assessments
   view = View.view state
   ordered = Ranking.sort (keyBefore textBefore) (keys project ids view (Read.World.contributions view))
 
-admitted : Text → ℕ → Bool
-admitted project limit = nonblank project ∧ does (1 ≤? limit)
+admitted : Text → Ranking.Selection → Bool
+admitted project limit = nonblank project
 
 readAssessmentPage : (Text → Text → Bool) → Text → List ℕ → Store.World → Store.World × Assessments
 readAssessmentPage order project ids state = state , assessmentPage order project ids state

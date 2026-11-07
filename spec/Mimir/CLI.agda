@@ -46,8 +46,8 @@ data HookCommand : Set where prompt pretooluse : HookCommand; stop : Maybe Text 
 
 data ServiceCommand : Set where
   stats : ServiceCommand
-  list patterns : Maybe Text → ℕ → ServiceCommand
-  query : Text → ℕ → Bool → Maybe Text → Maybe Candidates.Memory → ServiceCommand
+  list patterns : Maybe Text → Ranking.Selection → ServiceCommand
+  query : Text → Ranking.Selection → Bool → Maybe Text → Maybe Candidates.Memory → ServiceCommand
   evidenceAdd : Text → Text → Float → ServiceCommand -- chunk, belief, weight
   evidenceList deleteBelief deletePattern : Text → ServiceCommand
   forget : Text → ServiceCommand
@@ -55,7 +55,7 @@ data ServiceCommand : Set where
   contradictions : Maybe Text → ServiceCommand
   sweep : Float → Float → Maybe Text → ServiceCommand
   docLoad : Text → Maybe Text → ServiceCommand
-  docQuery : Text → Maybe Text → ℕ → ServiceCommand
+  docQuery : Text → Maybe Text → Ranking.Selection → ServiceCommand
   docClear : Text → ServiceCommand
   intervene : Text → Float → ServiceCommand
 
@@ -72,12 +72,13 @@ data Command : Set where
   judge : JudgeCommand → Command
 
 record Defaults : Set where
-  field listLimit queryLimit documentLimit watchInterval watchFailures : ℕ
+  field listLimit queryLimit documentLimit : Ranking.Selection
+        watchInterval watchFailures : ℕ
         queryEvidence : Bool
         decayFactor threshold graceHours evidenceWeight : Float
 
 defaults : Defaults
-defaults = record { listLimit = 0; queryLimit = 10; documentLimit = 5; watchInterval = 300; watchFailures = 3
+defaults = record { listLimit = nothing; queryLimit = nothing; documentLimit = nothing; watchInterval = 300; watchFailures = 3
   ; queryEvidence = false; decayFactor = 0.99; threshold = 0.3; graceHours = 24.0; evidenceWeight = 1.0 }
 
 -- UUID arguments of these commands are parsed before configuration/database
@@ -92,7 +93,7 @@ request : Library.Contract → ServiceCommand → Validation.Fault ⊎ Public.Re
 request conversion stats = inj₂ (Public.read Read.stats)
 request conversion (list project limit) = inj₂ (Public.read (Read.listBeliefs project nothing))
 request conversion (patterns project limit) = inj₂ (Public.read (Read.listPatterns project))
-request conversion (query text limit evidence project prefer) = inj₂ (Public.relevant text limit project prefer evidence 3)
+request conversion (query text limit evidence project prefer) = inj₂ (Public.relevant text limit project prefer evidence nothing)
 request conversion (evidenceAdd chunk belief weight) = Input.readUUID conversion (V.string chunk) >>= λ chunkID →
   Input.readUUID conversion (V.string belief) >>= λ beliefID → inj₂ (Public.addEvidence beliefID chunkID weight)
 request conversion (evidenceList belief) = mapResult Public.evidence (Input.readUUID conversion (V.string belief))
@@ -117,11 +118,11 @@ trunc maximum text with does (length clean ≤? maximum)
 ...   | zero = []
 ...   | suc n = take n (trim text) ++ toList "…"
 
-listRows : ℕ → List Graph.BeliefValues → List Graph.BeliefValues
+listRows : Ranking.Selection → List Graph.BeliefValues → List Graph.BeliefValues
 listRows limit rows = Ranking.cap limit (Ranking.sort
   (λ a b → not (Graph.BeliefValues.probability a <ᵇ Graph.BeliefValues.probability b)) rows)
 
-patternRows : ℕ → List Graph.PatternValues → List Graph.PatternValues
+patternRows : Ranking.Selection → List Graph.PatternValues → List Graph.PatternValues
 patternRows limit rows = Ranking.cap limit (Ranking.sort
   (λ a b → not (Graph.PatternValues.successRate a <ᵇ Graph.PatternValues.successRate b)) rows)
 

@@ -21,7 +21,7 @@ import Mimir.RetrievalRanking as R
 
 record Request : Set where
   constructor request
-  field query : Text; limit : ℕ; project : Maybe Text
+  field query : Text; limit : R.Selection; project : Maybe Text
         preference : Maybe Candidates.Memory; embeddingsEnabled : Bool
 
 record Context : Set where
@@ -53,7 +53,7 @@ data Command : Set where
   readActiveOverlay : Maybe Text → Command
   listBeliefs : Maybe Text → Command
   embedQuery : Text → Command
-  queryVector : List Float → ℕ → Maybe (List ℕ) → Command
+  queryVector : List Float → R.Selection → Maybe (List ℕ) → Command
   readClosure : ℕ → Command
   readNeighbors : ℕ → Text → Command
 
@@ -62,8 +62,8 @@ command (overlay r) = just (readActiveOverlay (Request.project r))
 command (beliefs r retired) = just (listBeliefs (Request.project r))
 command (embedding r retired all token) = just (embedQuery (Request.query r))
 command (vectorQuery r retired all token v) with Request.project r
-... | nothing = just (queryVector v (R.poolSize (Request.limit r)) nothing)
-... | just _ = just (queryVector v (R.poolSize (Request.limit r))
+... | nothing = just (queryVector v nothing nothing)
+... | just _ = just (queryVector v nothing
   (just (map Graph.BeliefValues.identity all)))
 command (closure c id seeds) = just (readClosure id)
 command (neighbors c project id seeds frontier next) = just (readNeighbors id project)

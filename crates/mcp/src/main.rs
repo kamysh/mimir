@@ -294,9 +294,9 @@ fn tools_list() -> Value {
                 "type": "object",
                 "properties": {
                     "context":          { "type": "string" },
-                    "limit":            { "type": "integer", "minimum": 0, "default": 10 },
+                    "limit":            { "type": "integer", "minimum": 1, "description": "Positive result count; omit for all matching records. Zero is invalid." },
                     "include_evidence":   { "type": "boolean", "default": false },
-                    "evidence_per_belief":{ "type": "integer", "minimum": 0, "default": 3 },
+                    "evidence_per_belief":{ "type": "integer", "minimum": 1, "description": "Positive passage count per belief; omit for all supporting passages. Zero is invalid." },
                     "project":          { "type": "string", "description": "Restrict the candidate pool to this project's beliefs plus untagged (global) beliefs. Omit to search everything." },
                     "prefer_type":      { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Nudge ranking toward this memory type — a soft preference (same weight class as the probability prior), never strong enough to lift an off-topic belief of the preferred type over a real semantic match. Omit for type-neutral ranking." }
                 },
@@ -370,7 +370,7 @@ fn tools_list() -> Value {
                 "properties": {
                     "context": { "type": "string", "description": "Query text to embed and search." },
                     "project": { "type": "string", "description": "Restrict search to chunks tagged with this project." },
-                    "limit":   { "type": "integer", "minimum": 0, "default": 5, "description": "Maximum results (0 = no limit)." }
+                    "limit":   { "type": "integer", "minimum": 1, "description": "Positive result count; omit for all matching chunks. Zero is invalid." }
                 },
                 "required": ["context"]
             }
@@ -652,20 +652,26 @@ async fn handle_graph_call(
             let query = args["context"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
-            let limit = args["limit"].as_u64().unwrap_or(10) as usize;
+            let limit = match admission::selection(args, "limit") {
+                Ok(selection) => selection,
+                Err(correction) => return Ok(serde_json::to_value(correction)?),
+            };
             let include_evidence = args["include_evidence"].as_bool().unwrap_or(false);
             let project = args["project"].as_str();
             let prefer_type = args["prefer_type"]
                 .as_str()
                 .map(|s| s.parse::<mimir_core::graph::MemoryType>())
                 .transpose()?;
+            let per = match admission::selection(args, "evidence_per_belief") {
+                Ok(selection) => selection,
+                Err(correction) => return Ok(serde_json::to_value(correction)?),
+            };
             if !include_evidence {
                 let beliefs = svc
                     .query_relevant(query, limit, project, prefer_type)
                     .await?;
                 return Ok(serde_json::to_value(&beliefs)?);
             }
-            let per = args["evidence_per_belief"].as_u64().unwrap_or(3) as usize;
             let grounded = svc
                 .query_relevant_grounded(query, limit, per, project)
                 .await?;
@@ -717,7 +723,7 @@ async fn handle_graph_call(
             // query_relevant_grounded with a degenerate query would re-rank; instead
             // pull evidence directly for this one belief via the grounded path on an
             // exact id is overkill — use the store accessor through a tiny helper.
-            let grounded = svc.evidence_for_belief(belief_id, 0).await?;
+            let grounded = svc.evidence_for_belief(belief_id, None).await?;
             let result: Vec<Value> = grounded
                 .into_iter()
                 .map(|e| {
@@ -780,7 +786,10 @@ async fn handle_graph_call(
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
             let project = args["project"].as_str();
-            let limit = args["limit"].as_u64().unwrap_or(5) as usize;
+            let limit = match admission::selection(args, "limit") {
+                Ok(selection) => selection,
+                Err(correction) => return Ok(serde_json::to_value(correction)?),
+            };
             let results = svc.query_document(context, project, limit).await?;
             Ok(serde_json::to_value(&results)?)
         }

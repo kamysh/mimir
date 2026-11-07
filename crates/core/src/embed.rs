@@ -8,6 +8,8 @@ use tract_onnx::prelude::*;
 
 use crate::config::{EmbeddingBackend, EmbeddingsConfig};
 mod local_worker;
+#[cfg(test)]
+mod selection_tests;
 pub use local_worker::worker_entrypoint;
 
 // ---------------------------------------------------------------------------

@@ -49,7 +49,7 @@ module Vectors (ops : VectorOperations) where
 
   -- Equal-distance rows may appear in either order. IDs are SQL table keys;
   -- absent graph endpoints are not prefiltered by vector-only SQL statements.
-  record Selected (query : Store.Vector) (limit : ℕ) (filter : Maybe (List ℕ))
+  record Selected (query : Store.Vector) (limit : Ranking.Selection) (filter : Maybe (List ℕ))
     (rows : List (ℕ × Store.Vector)) (result : List ℕ) : Set where
     field sorted : List (ℕ × Store.Vector)
           complete : sorted ↭ eligibleVectors filter rows

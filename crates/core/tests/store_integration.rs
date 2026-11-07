@@ -727,7 +727,7 @@ async fn test_query_relevant_excludes_working_from_candidate_pool() {
     ctx.store.insert_belief(&working).await.unwrap();
 
     let results = svc
-        .query_relevant(&format!("factterm {term}"), 0, Some(&ctx.project), None)
+        .query_relevant(&format!("factterm {term}"), None, Some(&ctx.project), None)
         .await
         .unwrap();
     assert!(
@@ -766,7 +766,7 @@ async fn test_query_relevant_excludes_working_from_graph_expansion() {
     let results = svc
         .query_relevant(
             &format!("seedterm {seed_term}"),
-            0,
+            None,
             Some(&ctx.project),
             None,
         )
@@ -805,7 +805,7 @@ async fn test_query_relevant_prefer_type_reorders_tied_matches() {
     ctx.store.insert_belief(&experiential).await.unwrap();
 
     let neutral = svc
-        .query_relevant(&format!("tiedterm {term}"), 0, Some(&ctx.project), None)
+        .query_relevant(&format!("tiedterm {term}"), None, Some(&ctx.project), None)
         .await
         .unwrap();
     assert_eq!(neutral.len(), 2, "both tied beliefs should be returned");
@@ -813,7 +813,7 @@ async fn test_query_relevant_prefer_type_reorders_tied_matches() {
     let preferred = svc
         .query_relevant(
             &format!("tiedterm {term}"),
-            0,
+            None,
             Some(&ctx.project),
             Some(mimir_core::graph::MemoryType::Experiential),
         )
@@ -872,7 +872,7 @@ async fn test_query_relevant_excludes_beliefs_reachable_only_via_out_of_scope_br
     let results = svc
         .query_relevant(
             &format!("seedterm {seed_term}"),
-            0,
+            None,
             Some(&ctx.project),
             None,
         )
@@ -1064,7 +1064,12 @@ async fn test_add_and_query_grounded() {
     svc.add_evidence(b.id, chunk.id, 0.8).await.unwrap();
 
     let grounded = svc
-        .query_relevant_grounded(&token, 10, 3, None)
+        .query_relevant_grounded(
+            &token,
+            std::num::NonZeroUsize::new(10),
+            std::num::NonZeroUsize::new(3),
+            None,
+        )
         .await
         .unwrap();
     let gb = grounded
