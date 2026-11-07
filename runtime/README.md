@@ -152,10 +152,11 @@ when a required account or permission step remains unresolved.
 
 `mimir judge check-config` validates settings locally. `mimir judge run` reviews
 one selected batch through `mimir-mcp`; `mimir judge watch` immediately checks
-for further eligible work after each successful non-idle batch. The current
-idle and incomplete-work paths wait five minutes by default
+for further eligible work after each successful non-idle batch. An empty queue
+waits for PostgreSQL work events and scans again when one arrives; it has no idle
+polling interval. Incomplete-work paths still wait five minutes by default
 (`--interval-seconds`, positive values). After three consecutive incomplete or unavailable runs by default
-(`--max-consecutive-failures`), it backs off to hourly runs. An empty queue
+(`--max-consecutive-failures`), it backs off to hourly runs (removal tracked in #67). An empty queue
 makes no model call. `mimir judge status` reads the last local report and gives
 the ID of a retained failure trace. `mimir judge diagnostics` reads the first
 failure trace of the current incident; `--list` shows retained attempt IDs and
@@ -218,7 +219,7 @@ function results. Anthropic calls replay signed thinking/content blocks unchange
 and pair each `tool_result` with its `tool_use` ID. Multiple calls in one provider
 response are executed one at a time through the same scoped host gate. Provider
 redirects, incomplete responses and provider errors block the run. Malformed tool
-arguments return correction feedback. Transport bodies are read completely. `watch` supplies recurring local polling; no service or timer is installed
+arguments return correction feedback. Transport bodies are read completely. `watch` runs locally and waits for database work events when idle; no service or timer is installed
 by the source change. The Step 11 Codex comparison exercised live judge calls,
 but the new watch mode and API-provider accounts have not been exercised live.
 

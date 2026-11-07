@@ -58,9 +58,11 @@ With a custom configuration or state directory, pass `--config PATH` and/or
 The daily email includes a cause, batch impact, next action and this diagnostic
 command. A backlog is work still awaiting review; a scheduled retry does not
 mean the failure has been repaired. After a successful non-idle batch, the
-watcher immediately checks for the next eligible work. The current idle and
+watcher immediately checks for the next eligible work. An empty queue waits for
+a PostgreSQL work event and then scans the durable queue again. There is no idle
+polling interval. The current
 incomplete-work paths still use the configured interval and failure backoff;
-their removal is tracked separately in issues #64–#67. It announces
+their removal is tracked separately in issues #65–#67. It announces
 failure/recovery transitions instead of repeating the same error on every
 polling cycle.
 

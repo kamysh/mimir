@@ -8,9 +8,10 @@ confirm work that can be completed. A retry proves only the first.
 One round includes the actual batch program and the daily notification check.
 A successful, non-idle, non-degraded batch continues directly to the next queue
 check, without constructing a timer or waiting for a timer acknowledgement.
-The current idle and incomplete-work paths still use the configured wait;
-their event-driven replacements and removal of failure backoff are tracked
-separately in issues #64–#67. No retained wait is approved by this description.
+An empty queue waits for a database work event, then scans again. It cannot
+construct a timer. Incomplete-work paths still use the configured wait; their
+replacements and removal of failure backoff are tracked in #65–#67. No retained
+wait is approved by this description.
 
 The `Round` record and `roundTrace` proof in
 [JudgeDigestComposition](../spec/Mimir/JudgeDigestComposition.agda) connect these
@@ -19,7 +20,10 @@ conditions to the actual repeated watcher program.
 non-idle batch without a timer premise, for any configured interval, failure
 history, or digest reply. The timer acknowledgement on the remaining waiting
 paths is an external scheduling condition, not a proof about the operating
-system.
+system. `JudgeHost.idleBatchWaitsForWork` covers every idle batch and digest
+reply. Its continuation requires an actual listener event; cancellation exits
+the wait. A disconnected listener reports a restart instruction until the
+reconnection change in #65.
 
 ## Completing stable work after recovery
 

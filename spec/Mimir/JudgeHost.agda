@@ -134,11 +134,14 @@ module Subscription where
   successRequiresAcknowledgedListen dbConfig events handle (replied _ _ (inj₂ .handle)
     (replied _ _ (inj₂ tt) (returned .(inj₂ handle)))) = refl
 
+data QueueWake : Set where workAvailable disconnected interrupted : QueueWake
+
 data Phase : Set where
   subscribing : Watch → Phase
   running : Watch → Phase
   digest : Watch → Outcome → Phase
   continuing : Watch → List Transition → Phase
+  awaitingWork : Watch → List Transition → Phase
   waiting : Watch → ℕ → List Transition → Phase
   exited : Exit → Phase
 
@@ -147,6 +150,7 @@ Reply (subscribing state) = Exit ⊎ Outcome
 Reply (running state) = Outcome
 Reply (digest state result) = Text ⊎ Bool -- error is an unavailable digest
 Reply (continuing state messages) = ⊤ -- emit transitions, then continue; no timer
+Reply (awaitingWork state messages) = QueueWake
 Reply (waiting state seconds messages) = Bool -- true = Ctrl-C, false = timer
 Reply (exited code) = ⊤
 
@@ -160,13 +164,14 @@ completedWork : Outcome → Bool
 completedWork (outcome success false false) = true
 completedWork _ = false
 
-schedule : Bool → Watch → ℕ → List Transition → Phase
-schedule true state seconds messages = continuing state messages
-schedule false state seconds messages = waiting state seconds messages
+schedule : Outcome → Watch → ℕ → List Transition → Phase
+schedule (outcome success false false) state seconds messages = continuing state messages
+schedule (outcome success false true) state seconds messages = awaitingWork state messages
+schedule _ state seconds messages = waiting state seconds messages
 
 afterDigest : ℕ → ℕ → ℕ → Watch → Outcome → Bool → Phase
 afterDigest usizeMaximum interval threshold before result problem =
-  schedule (completedWork result) after (delay interval threshold after) messages
+  schedule result after (delay interval threshold after) messages
   where
   after = record (advance usizeMaximum before result) { digestProblem = problem }
   messages : List Transition
@@ -181,6 +186,9 @@ step usizeMaximum interval threshold (running state) result = digest state resul
 step usizeMaximum interval threshold (digest state result) (inj₁ error) = afterDigest usizeMaximum interval threshold state result true
 step usizeMaximum interval threshold (digest state result) (inj₂ problem) = afterDigest usizeMaximum interval threshold state result problem
 step usizeMaximum interval threshold (continuing state messages) reply = running state
+step usizeMaximum interval threshold (awaitingWork state messages) workAvailable = running state
+step usizeMaximum interval threshold (awaitingWork state messages) disconnected = exited unavailable
+step usizeMaximum interval threshold (awaitingWork state messages) interrupted = exited success
 step usizeMaximum interval threshold (waiting state seconds messages) true = exited success
 step usizeMaximum interval threshold (waiting state seconds messages) false = running state
 step usizeMaximum interval threshold (exited code) reply = exited code
@@ -208,3 +216,15 @@ successfulBatchContinuesImmediately : ∀ maximum interval threshold before repl
     (digest before (outcome success false false)) reply)
 successfulBatchContinuesImmediately maximum interval threshold before (inj₁ error) = ready _ _
 successfulBatchContinuesImmediately maximum interval threshold before (inj₂ problem) = ready _ _
+
+data AwaitsWork : Phase → Set where
+  subscribed : ∀ state messages → AwaitsWork (awaitingWork state messages)
+
+idleBatchWaitsForWork : ∀ maximum interval threshold before reply →
+  AwaitsWork (step maximum interval threshold (digest before (outcome success false true)) reply)
+idleBatchWaitsForWork maximum interval threshold before (inj₁ error) = subscribed _ _
+idleBatchWaitsForWork maximum interval threshold before (inj₂ problem) = subscribed _ _
+
+cancelAtWorkWait : ∀ maximum interval threshold state messages →
+  step maximum interval threshold (awaitingWork state messages) interrupted ≡ exited success
+cancelAtWorkWait maximum interval threshold state messages = refl

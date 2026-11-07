@@ -135,6 +135,13 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     timer : Waited seconds messages false
     signal : Waited seconds messages true
 
+  -- Native completions. A queue hint causes a durable rescan; it is not
+  -- evidence that a review completed or that a particular row exists.
+  data WorkWait : Host.QueueWake → Set where
+    notification : WorkWait Host.workAvailable
+    listenerFailed : WorkWait Host.disconnected
+    interrupted : WorkWait Host.interrupted
+
   selectedDatabase : C.Loaded → Values.Database
   selectedDatabase loadedConfiguration = Values.Config.db (Core.Config.core
     (Config.Runtime.core (Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration))))
@@ -166,6 +173,9 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
         (Host.step sizeMaximum interval threshold (Host.digest state outcome) result)
     continued : ∀ state messages →
       Step migrations interval threshold (Host.continuing state messages) (Host.running state)
+    workWoke : ∀ state messages reply → WorkWait reply →
+      Step migrations interval threshold (Host.awaitingWork state messages)
+        (Host.step sizeMaximum interval threshold (Host.awaitingWork state messages) reply)
     waited : ∀ state seconds messages result → Waited seconds messages result →
       Step migrations interval threshold (Host.waiting state seconds messages)
         (Host.step sizeMaximum interval threshold (Host.waiting state seconds messages) result)
@@ -201,6 +211,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   data Continues (state : Host.Watch) : Host.Phase → Set where
     immediately : ∀ messages → Continues state (Host.continuing state messages)
+    afterWork : ∀ messages → WorkWait Host.workAvailable → Continues state (Host.awaitingWork state messages)
     afterTimer : ∀ seconds messages → Waited seconds messages false →
       Continues state (Host.waiting state seconds messages)
 
@@ -208,6 +219,8 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     Trace migrations interval threshold phase (Host.running state)
   continuationTrace migrations interval threshold state .(Host.continuing state messages)
     (immediately messages) = more _ _ _ (continued state messages) (empty _)
+  continuationTrace migrations interval threshold state .(Host.awaitingWork state messages)
+    (afterWork messages observed) = more _ _ _ (workWoke state messages Host.workAvailable observed) (empty _)
   continuationTrace migrations interval threshold state .(Host.waiting state seconds messages)
     (afterTimer seconds messages timerReady) = more _ _ _ (waited state seconds messages false timerReady) (empty _)
 

@@ -162,7 +162,7 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                     return INVALID_CONFIG;
                 }
             };
-            let _subscription = match mimir_core::db::ReviewQueueSubscription::connect(
+            let mut subscription = match mimir_core::db::ReviewQueueSubscription::connect(
                 &settings.core.database,
             )
             .await
@@ -202,6 +202,7 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                     "pid":std::process::id(),
                     "phase":match next {
                         NextAttempt::Immediately => "running",
+                        NextAttempt::WorkEvent => "waiting_for_work",
                         NextAttempt::After(_) => "waiting",
                     },
                     "consecutive_failures":watch.consecutive_failures,
@@ -223,13 +224,20 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                     eprintln!("{message}");
                     match next {
                         NextAttempt::Immediately => eprintln!("Continuing immediately. For cause and recovery steps, run: mimir judge diagnose"),
+                        NextAttempt::WorkEvent => eprintln!("Waiting for a database work event."),
                         NextAttempt::After(delay) => eprintln!("Next attempt in {delay} seconds. For cause and recovery steps, run: mimir judge diagnose"),
                     }
                 }
-                next.wait_with(|seconds| {
-                    tokio::time::sleep(std::time::Duration::from_secs(seconds))
-                })
-                .await;
+                tokio::select! {
+                    result = next.wait_with(
+                        |seconds| tokio::time::sleep(std::time::Duration::from_secs(seconds)),
+                        || subscription.changed(),
+                    ) => if let Err(error) = result {
+                        eprintln!("Review work listener disconnected: {error:#}. Restore the database connection and restart mimir judge watch; pending work remains stored.");
+                        return UNAVAILABLE;
+                    },
+                    _ = tokio::signal::ctrl_c() => return 0,
+                }
             }
         }
         JudgeCommand::Status { state_dir } => {
@@ -342,17 +350,25 @@ struct RunOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NextAttempt {
     Immediately,
+    WorkEvent,
     After(u64),
 }
 
 impl NextAttempt {
-    async fn wait_with<F, W>(self, wait: F)
+    async fn wait_with<F, W, C, E>(self, wait: F, changed: C) -> anyhow::Result<()>
     where
         F: FnOnce(u64) -> W,
         W: std::future::Future<Output = ()>,
+        C: FnOnce() -> E,
+        E: std::future::Future<Output = anyhow::Result<()>>,
     {
-        if let Self::After(seconds) = self {
-            wait(seconds).await;
+        match self {
+            Self::Immediately => Ok(()),
+            Self::WorkEvent => changed().await,
+            Self::After(seconds) => {
+                wait(seconds).await;
+                Ok(())
+            }
         }
     }
 }
@@ -398,6 +414,8 @@ impl WatchState {
         }
         let next = if outcome.code == 0 && !outcome.degraded && !outcome.idle {
             NextAttempt::Immediately
+        } else if outcome.code == 0 && !outcome.degraded && outcome.idle {
+            NextAttempt::WorkEvent
         } else {
             NextAttempt::After(if self.consecutive_failures >= backoff_after {
                 interval_seconds.max(3600)
@@ -579,6 +597,34 @@ mod watch_tests {
     use std::os::unix::fs::OpenOptionsExt;
 
     #[tokio::test]
+    async fn idle_waits_for_an_event_without_a_timer_or_busy_loop() {
+        use std::future::{poll_fn, Future};
+        let mut watch = WatchState::default();
+        let (next, _) = watch.advance(
+            RunOutcome {
+                code: 0,
+                degraded: false,
+                idle: true,
+            },
+            300,
+            3,
+        );
+        assert_eq!(next, NextAttempt::WorkEvent);
+        let (wake, received) = tokio::sync::oneshot::channel();
+        let wait = next.wait_with(
+            |_| -> std::future::Ready<()> { panic!("Idle work must not construct a timer") },
+            || async {
+                received.await?;
+                Ok(())
+            },
+        );
+        tokio::pin!(wait);
+        assert!(poll_fn(|cx| std::task::Poll::Ready(wait.as_mut().poll(cx).is_pending())).await);
+        wake.send(()).unwrap();
+        wait.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn ready_batches_continue_without_constructing_a_timer() {
         let mut watch = WatchState::default();
         let ready = [
@@ -597,10 +643,14 @@ mod watch_tests {
         for outcome in ready {
             let (next, _) = watch.advance(outcome, 300, 3);
             assert_eq!(next, NextAttempt::Immediately);
-            next.wait_with(|_| -> std::future::Ready<()> {
-                panic!("Ready work must not construct or wait for a timer")
-            })
-            .await;
+            next.wait_with(
+                |_| -> std::future::Ready<()> { panic!("Ready work must not construct a timer") },
+                || -> std::future::Ready<anyhow::Result<()>> {
+                    panic!("Ready work must not wait for a work event")
+                },
+            )
+            .await
+            .unwrap();
             completed += 1;
         }
         assert_eq!(completed, 2);
@@ -690,7 +740,7 @@ mod watch_tests {
                 60,
                 3
             ),
-            (NextAttempt::After(60), None)
+            (NextAttempt::WorkEvent, None)
         );
     }
 
@@ -747,7 +797,7 @@ mod watch_tests {
         );
         assert_eq!(
             watch.advance(idle(), 300, 3),
-            (NextAttempt::After(300), None)
+            (NextAttempt::WorkEvent, None)
         );
     }
 }

@@ -66,6 +66,32 @@ async fn subscribed_queue_keeps_work_arriving_before_initial_scan() {
 }
 
 #[tokio::test]
+async fn empty_review_queue_wakes_on_a_later_committed_experience() {
+    use std::future::{poll_fn, Future};
+    let svc = service().await;
+    let cfg = isolation::fixture().database_config();
+    let mut subscription = db::ReviewQueueSubscription::connect(&cfg).await.unwrap();
+    let project = format!("idle-queue-{}", Uuid::new_v4());
+    assert!(svc
+        .pending_experiences(Some(&project), 1)
+        .await
+        .unwrap()
+        .is_empty());
+    let wake = subscription.changed();
+    tokio::pin!(wake);
+    // Polling once establishes an actual waiting listener before insertion.
+    // No elapsed-time guess is needed to establish that an empty queue waits.
+    assert!(poll_fn(|cx| std::task::Poll::Ready(wake.as_mut().poll(cx).is_pending())).await);
+    let source = experience(&project);
+    svc.record_experience(&source, 0).await.unwrap();
+    wake.await.unwrap();
+    let selected = svc.pending_experiences(Some(&project), 1).await.unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].experience.id, source.id);
+    svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
 async fn pending_queue_notifications_follow_commit_and_contain_no_source() {
     use std::future::poll_fn;
     use tokio_postgres::{AsyncMessage, Notification};
