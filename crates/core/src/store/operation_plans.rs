@@ -13,7 +13,7 @@ use std::{
 use tokio_postgres::{GenericClient, Transaction};
 use uuid::Uuid;
 
-const RESULT_KEY: &str = "@operation-result";
+pub(super) const RESULT_KEY: &str = "@operation-result";
 pub type Selections = Vec<(CommitSite, Vec<String>)>;
 pub type SelectionWork<'a> = Pin<Box<dyn Future<Output = Result<Selections>> + Send + 'a>>;
 
@@ -151,6 +151,9 @@ impl OperationPlan {
     }
 }
 impl RegisteredStep {
+    pub(super) fn is_final(&self) -> bool {
+        self.position + 1 == self.inner.stored.steps.len()
+    }
     pub fn description(&self) -> &PlannedStep {
         &self.inner.stored.steps[self.position]
     }
@@ -199,6 +202,29 @@ pub enum CompletionDecision {
     Incomplete(PlannedStep),
     UnknownBinding,
     ChangedRequest(OperationBinding),
+    FinalStepRequired(PlannedStep),
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub enum OperationOutcome {
+    UnknownToken,
+    Reserved,
+    AwaitingPlan(OperationBinding),
+    AwaitingCompletion(OperationBinding),
+    ChangedRequest(OperationBinding),
+    Pending {
+        binding: OperationBinding,
+        next_step: PlannedStep,
+        saved_replies: Vec<super::StepReceipt>,
+    },
+    Completed {
+        binding: OperationBinding,
+        outcome: CompletedOperation,
+    },
+    NeedsRecovery {
+        binding: OperationBinding,
+        reason: String,
+    },
 }
 
 async fn binding<C: GenericClient + Sync>(
@@ -276,6 +302,94 @@ async fn progress<C: GenericClient + Sync>(
 }
 
 impl AgeStore {
+    /// One consistent read, without writes, reselection or inferred success.
+    /// A database error is an unavailable read, never a completed operation.
+    pub async fn read_operation_outcome(
+        &self,
+        token: Uuid,
+        expected: Option<&OperationBindingRequest>,
+    ) -> Result<OperationOutcome> {
+        let mut client = self.client.lock().await;
+        let tx = client
+            .build_transaction()
+            .read_only(true)
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .start()
+            .await?;
+        let row = tx.query_opt("SELECT operation_token,bound_at,operation,arguments::text AS arguments,settings::text AS settings FROM mimir_operation_bindings WHERE operation_token=$1", &[&token]).await?;
+        let Some(row) = row else {
+            let reserved = tx
+                .query_opt(
+                    "SELECT 1 FROM mimir_operation_reservations WHERE operation_token=$1",
+                    &[&token],
+                )
+                .await?
+                .is_some();
+            tx.rollback().await?;
+            return Ok(if reserved {
+                OperationOutcome::Reserved
+            } else {
+                OperationOutcome::UnknownToken
+            });
+        };
+        let original = decode_binding(&row)?;
+        if let Some(expected) = expected {
+            let (_, matches) = binding(&tx, token, expected, false).await?.ok_or_else(|| anyhow!("The binding could not be read consistently. Keep this token and read its outcome again."))?;
+            if !matches {
+                tx.rollback().await?;
+                return Ok(OperationOutcome::ChangedRequest(original));
+            }
+        }
+        let Some(plan) = load(&tx, token).await? else {
+            if tx
+                .query_opt(
+                    "SELECT 1 FROM mimir_operation_step_replies WHERE operation_token=$1",
+                    &[&token],
+                )
+                .await?
+                .is_some()
+            {
+                tx.rollback().await?;
+                return Ok(OperationOutcome::NeedsRecovery { binding: original, reason: "Saved step answers exist without a registered plan. Read those answers and resolve this older operation before continuing.".into() });
+            }
+            tx.rollback().await?;
+            return Ok(OperationOutcome::AwaitingPlan(original));
+        };
+        let (rows, result, next) = progress(&tx, token, &plan).await?;
+        let outcome = if let Some(reply) = result {
+            OperationOutcome::Completed {
+                binding: original,
+                outcome: CompletedOperation {
+                    operation_token: token,
+                    reply,
+                },
+            }
+        } else if let Some(step) = plan.steps.get(next) {
+            let saved_replies = plan
+                .steps
+                .iter()
+                .filter_map(|step| {
+                    rows.get(&step.id).map(|reply| super::StepReceipt {
+                        operation_token: token,
+                        step: step.id.clone(),
+                        reply: reply.clone(),
+                    })
+                })
+                .collect();
+            OperationOutcome::Pending {
+                binding: original,
+                next_step: step.clone(),
+                saved_replies,
+            }
+        } else if plan.steps.is_empty() {
+            OperationOutcome::AwaitingCompletion(original)
+        } else {
+            OperationOutcome::NeedsRecovery { binding: original, reason: "Every step has a saved answer but the operation result is absent. Read the saved answers and resolve this older operation; do not repeat its data changes or invent a result.".into() }
+        };
+        tx.rollback().await?;
+        Ok(outcome)
+    }
+
     /// Capture reads cannot write permanent business tables. Retrying an
     /// existing plan never calls the selector, even if the database changed.
     pub async fn prepare_operation<F>(
@@ -388,6 +502,11 @@ impl AgeStore {
         let reply = match saved {
             Some(reply) => reply,
             None => {
+                if let Some(last) = plan.inner.stored.steps.last() {
+                    let last = last.clone();
+                    tx.rollback().await?;
+                    return Ok(CompletionDecision::FinalStepRequired(last));
+                }
                 let encoded = serde_json::to_string(&reply)?;
                 let row=tx.query_one("INSERT INTO mimir_operation_step_replies (operation_token,step,reply) VALUES ($1,$2,$3::text::jsonb) RETURNING reply::text",&[&token,&RESULT_KEY,&encoded]).await?;
                 serde_json::from_str(row.try_get::<_, &str>(0)?)?

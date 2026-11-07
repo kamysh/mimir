@@ -6,10 +6,10 @@ mod reservations;
 use anyhow::{bail, Result};
 use chrono::DateTime;
 pub use operation_plans::{
-    CompletedOperation, CompletionDecision, OperationPlan, PlanDecision, PlannedStep,
-    RegisteredStep, SelectionWork, Selections,
+    CompletedOperation, CompletionDecision, OperationOutcome, OperationPlan, PlanDecision,
+    PlannedStep, RegisteredStep, SelectionWork, Selections,
 };
-pub use operation_steps::{StepDecision, StepReceipt, StepWork};
+pub use operation_steps::{FinalStepWork, StepDecision, StepReceipt, StepWork};
 use pgvector::Vector;
 pub use reservations::{
     OperationBinding, OperationBindingDecision, OperationBindingRequest, OperationReservation,

@@ -54,7 +54,7 @@ async fn wrong_order_never_runs_work_and_completion_requires_all_steps() -> Resu
             .await?,
         CompletionDecision::Incomplete(_)
     ));
-    for step in &steps {
+    for step in &steps[..steps.len() - 1] {
         assert!(matches!(
             service
                 .commit_operation_step(step, |_, _| Box::pin(async { Ok(Value::Null) }))
@@ -62,6 +62,14 @@ async fn wrong_order_never_runs_work_and_completion_requires_all_steps() -> Resu
             StepDecision::Done(_)
         ));
     }
+    assert!(matches!(
+        service
+            .commit_final_operation_step(steps.last().unwrap(), |_, _| Box::pin(async {
+                Ok((Value::Null, json!({"done":true})))
+            }))
+            .await?,
+        StepDecision::Done(_)
+    ));
     let CompletionDecision::Done(first) = service
         .complete_operation(&plan, json!({"done":true}))
         .await?

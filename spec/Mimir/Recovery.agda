@@ -505,3 +505,39 @@ module PlanOrder (Business Key : Set) where
   completionRequiresEveryPlannedStep current (finished empty) = sym
     (trans (State.partition current)
       (trans (cong (State.completed current ++_) empty) (++-identityʳ (State.completed current))))
+
+-- The final business change, last step answer and whole-operation answer are
+-- one database publication. Neither answer may be inferred from data alone.
+module FinalPublication (Business : Set) where
+  record Answers : Set where
+    constructor answers
+    field stepReply operationReply : Wire.Value
+
+  record State : Set where
+    constructor state
+    field business : Business; saved : Maybe Answers
+
+  publish : Business → Answers → State
+  publish changed replies = state changed (just replies)
+
+  everyReceiptKeepsPublicationTogether : ∀ before changed replies receipt after →
+    Database.Atomic before (publish changed replies) receipt after →
+    after ≡ before ⊎ after ≡ publish changed replies
+  everyReceiptKeepsPublicationTogether before changed replies .Database.committed .(publish changed replies) Database.committedAll = inj₂ refl
+  everyReceiptKeepsPublicationTogether before changed replies .Database.aborted .before Database.abortedNone = inj₁ refl
+  everyReceiptKeepsPublicationTogether before changed replies .Database.acknowledgementLost .before Database.unknownBefore = inj₁ refl
+  everyReceiptKeepsPublicationTogether before changed replies .Database.acknowledgementLost .(publish changed replies) Database.unknownAfter = inj₂ refl
+
+  completedReadbackHasBothAnswers : ∀ changed replies →
+    State.saved (publish changed replies) ≡ just replies ×
+    State.business (publish changed replies) ≡ changed
+  completedReadbackHasBothAnswers changed replies = refl , refl
+
+  -- Re-reading a completed operation does not accept a newly supplied answer.
+  readBack : State → Maybe Answers
+  readBack = State.saved
+
+  readBackRetainsOriginal : ∀ changed stepReply operationReply →
+    readBack (publish changed (answers stepReply operationReply)) ≡
+      just (answers stepReply operationReply)
+  readBackRetainsOriginal changed stepReply operationReply = refl

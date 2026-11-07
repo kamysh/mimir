@@ -98,12 +98,14 @@ original token. Reconnecting or retrying returns that saved plan without
 selecting different work. An explicitly empty selection means that no items
 matched; an omitted selection is an error. No selection count is imposed.
 
-The core step writer now accepts only a handle issued by this saved plan.
+The core step writer accepts only a handle issued by this saved plan.
 Passing a later step returns the next required step before running any change.
 Repeating a completed step returns its original answer. A caller cannot obtain
-a completion result until every planned step has a saved answer, and repeating
-completion returns the original result even if the caller supplies a different
-one. The database rejects changes to or deletion of a saved plan.
+a completion result until every planned step has a saved answer. The final
+step uses `commit_final_operation_step`: its business change, step answer and
+whole-operation answer share one transaction. The ordinary step writer refuses
+the final step before running its change. The database rejects changes to or
+deletion of a saved plan.
 
 For example, if the first step completed and its reply was lost, the retry reads
 that answer and proceeds to the second step. It cannot skip directly to the
@@ -113,3 +115,31 @@ These core checks do not yet connect the existing public handlers to saved
 plans. That remains #123 and #85–#86. A completed plan alone is not proof that
 its business changes meet the user's intended outcome; #84 and the concrete
 operation proofs supply that separate obligation.
+
+## Reading the original outcome
+
+`read_operation_outcome` reads the original binding, saved steps and final
+answer in one consistent database snapshot. It distinguishes an unknown token,
+an unbound reservation, a request awaiting selection, unfinished work with the
+exact next step and saved answers, an empty selection awaiting completion, and
+a completed operation with its original answer. Supplying a changed request
+returns the original binding even if the operation already completed.
+
+Readback never writes data, recalculates a selection, substitutes another token,
+or infers success from the presence or absence of business rows. A failed
+database read returns an error requiring readback under the same token; it does
+not return a guessed operation status. Inconsistent older saved steps require
+explicit recovery with the saved answers, rather than repeating their changes.
+
+For a nonempty plan, saving the final answer separately from the last business
+change is refused. If saving either answer fails, the transaction rolls back
+the final change and both answers. After a lost response, a new connection can
+read the original result or retry the same final step without repeating its
+business change. An explicitly empty plan has no business change and can save
+its answer through `complete_operation`.
+
+The formal atomic-publication law covers committed, aborted and both possible
+lost-acknowledgement states. PostgreSQL tests reject only the final answer after
+the step answer was inserted, then verify rollback of all three changes and a
+successful retry. These remain core storage APIs; public readback is connected
+by the later MCP and CLI integration issues.

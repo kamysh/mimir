@@ -11,6 +11,9 @@ use tokio_postgres::{Row, Transaction};
 use uuid::Uuid;
 
 pub type StepWork<'a> = Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>>;
+pub type FinalStepWork<'a> = Pin<Box<dyn Future<Output = Result<(Value, Value)>> + Send + 'a>>;
+type PublicationWork<'a> =
+    Pin<Box<dyn Future<Output = Result<(Value, Option<Value>)>> + Send + 'a>>;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct StepReceipt {
@@ -25,6 +28,11 @@ pub enum StepDecision {
     UnknownBinding,
     ChangedRequest(OperationBinding),
     OutOfOrder(PlannedStep),
+    WrongCompletion {
+        step: PlannedStep,
+        requires_final_result: bool,
+    },
+    NeedsRecovery(String),
 }
 
 fn step_name(name: &str) -> Result<()> {
@@ -58,6 +66,47 @@ impl AgeStore {
             &'a OperationBindingRequest,
         ) -> StepWork<'a>,
     {
+        self.publish_operation_step(registered, false, move |tx, request| {
+            let work = apply(tx, request);
+            Box::pin(async move { Ok((work.await?, None)) })
+        })
+        .await
+    }
+
+    /// The final change, step answer and operation answer commit together.
+    pub async fn commit_final_operation_step<F>(
+        &self,
+        registered: &RegisteredStep,
+        apply: F,
+    ) -> Result<StepDecision>
+    where
+        F: for<'a, 'client> FnOnce(
+            &'a Transaction<'client>,
+            &'a OperationBindingRequest,
+        ) -> FinalStepWork<'a>,
+    {
+        self.publish_operation_step(registered, true, move |tx, request| {
+            let work = apply(tx, request);
+            Box::pin(async move {
+                let (step, result) = work.await?;
+                Ok((step, Some(result)))
+            })
+        })
+        .await
+    }
+
+    async fn publish_operation_step<F>(
+        &self,
+        registered: &RegisteredStep,
+        final_step: bool,
+        apply: F,
+    ) -> Result<StepDecision>
+    where
+        F: for<'a, 'client> FnOnce(
+            &'a Transaction<'client>,
+            &'a OperationBindingRequest,
+        ) -> PublicationWork<'a>,
+    {
         let token = registered.token();
         let expected = registered.expected();
         let step = registered.id();
@@ -84,20 +133,35 @@ impl AgeStore {
             tx.rollback().await?;
             return Ok(StepDecision::OutOfOrder(next));
         }
+        if final_step != registered.is_final() {
+            tx.rollback().await?;
+            return Ok(StepDecision::WrongCompletion {
+                step: registered.description().clone(),
+                requires_final_result: registered.is_final(),
+            });
+        }
         if let Some(saved) = tx.query_opt(
             "SELECT operation_token,step,reply::text AS reply FROM mimir_operation_step_replies WHERE operation_token=$1 AND step=$2",
             &[&token, &step],
         ).await? {
             let saved = receipt(&saved)?;
+            if final_step && tx.query_opt("SELECT 1 FROM mimir_operation_step_replies WHERE operation_token=$1 AND step=$2", &[&token, &super::operation_plans::RESULT_KEY]).await?.is_none() {
+                tx.rollback().await?;
+                return Ok(StepDecision::NeedsRecovery("The last step has a saved answer but the operation result is absent. Read the saved answers and resolve this older operation; do not repeat its data change or invent a result.".into()));
+            }
             tx.commit().await?;
             return Ok(StepDecision::Done(saved));
         }
-        let reply = apply(&tx, &binding.request).await?;
+        let (reply, operation_result) = apply(&tx, &binding.request).await?;
         let reply = serde_json::to_string(&reply)?;
         let saved = receipt(&tx.query_one(
             "INSERT INTO mimir_operation_step_replies (operation_token,step,reply) VALUES ($1,$2,$3::text::jsonb) RETURNING operation_token,step,reply::text AS reply",
             &[&token, &step, &reply],
         ).await?)?;
+        if let Some(result) = operation_result {
+            let result = serde_json::to_string(&result)?;
+            tx.execute("INSERT INTO mimir_operation_step_replies (operation_token,step,reply) VALUES ($1,$2,$3::text::jsonb)", &[&token, &super::operation_plans::RESULT_KEY, &result]).await?;
+        }
         // A failed acknowledgement requires readback, not an invented success
         // or a second application of the business change.
         tx.commit().await?;
