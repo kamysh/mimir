@@ -7,6 +7,9 @@ procedure. Both use purpose-focused guidance and advisory lifecycle reminders.
 
 ## Read this first
 
+- The source version is **2.3.0**, pending release. Archive installation commands
+  below remain pinned to **2.2.3** until a 2.3.0 release is published; do not
+  assume that a source version identifies an available download.
 - All steps are idempotent. Safe to rerun. If interrupted, restart
   from **State detection** below, not from Step 1.
 - After every step, run the verify command. Do not stack failures —

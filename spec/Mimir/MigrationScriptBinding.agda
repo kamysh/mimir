@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- Bind the ten embedded SQL bodies to their application DDL contracts.
+-- Bind the embedded SQL bodies to their application DDL contracts.
 -- SQL whitespace is ignored only at the script boundary, as by the loader;
 -- statements, constraints and constants within a body remain exact.
 module Mimir.MigrationScriptBinding where
@@ -23,6 +23,8 @@ source Schema.assessment = toList "CREATE TABLE mimir_assessment_contributions (
 source Schema.owners = toList "CREATE TABLE mimir_learning_item_owners (\n    item_id uuid PRIMARY KEY,\n    experience_id uuid NOT NULL REFERENCES mimir_experiences(id) ON DELETE CASCADE,\n    source_ref text NOT NULL,\n    actor text NOT NULL\n);\n"
 
 source Schema.allocation = toList "-- Historical UUIDs are imported, never regenerated. Existing ownership rows\n-- remain authoritative if an older history contains conflicting provenance.\nINSERT INTO mimir_learning_item_owners(item_id,experience_id,source_ref,actor)\nSELECT (item->>'id')::uuid, experience_id, item->>'source_ref', item->>'actor'\nFROM (\n    SELECT experience_id, jsonb_array_elements(COALESCE(payload->'learning_items','[]'::jsonb)) AS item\n    FROM mimir_experience_versions\n    UNION ALL\n    SELECT experience_id, jsonb_array_elements(COALESCE(payload->'extracted_items','[]'::jsonb)) AS item\n    FROM mimir_review_versions\n) AS historical\nON CONFLICT(item_id) DO NOTHING;\n\nALTER TABLE mimir_learning_item_owners\n    ALTER COLUMN item_id SET DEFAULT gen_random_uuid(),\n    ADD COLUMN item_key text,\n    ADD CONSTRAINT mimir_learning_item_local_key UNIQUE(experience_id,item_key),\n    ADD CONSTRAINT mimir_learning_item_key_nonempty CHECK(item_key IS NULL OR length(btrim(item_key)) > 0);\n"
+
+source Schema.reviewQueueNotifications = toList "CREATE FUNCTION public.mimir_notify_review_queue() RETURNS trigger\nLANGUAGE plpgsql AS $$\nBEGIN\n    IF NEW.reviewed_revision < NEW.revision THEN\n        IF TG_OP = 'INSERT' THEN\n            PERFORM pg_notify('mimir_review_queue_changed', '');\n        ELSIF OLD.revision IS DISTINCT FROM NEW.revision\n           OR OLD.project IS DISTINCT FROM NEW.project\n           OR OLD.reviewed_revision >= OLD.revision THEN\n            PERFORM pg_notify('mimir_review_queue_changed', '');\n        END IF;\n    END IF;\n    RETURN NEW;\nEND;\n$$;\n\n-- PostgreSQL publishes transactional notifications at commit and discards them\n-- on rollback. Identical notifications may be coalesced within a transaction:\n-- a listener must scan the queue rather than count signals or treat one as a\n-- saved review receipt. Updates that only acknowledge a review do not wake it.\nCREATE TRIGGER mimir_review_queue_changed\nAFTER INSERT OR UPDATE OF revision, reviewed_revision, project\nON public.mimir_experiences\nFOR EACH ROW EXECUTE FUNCTION public.mimir_notify_review_queue();\n"
 
 data Statement : Set where
   application : Schema.DDL → Statement

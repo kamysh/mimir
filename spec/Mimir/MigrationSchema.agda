@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- The ten embedded application migrations. This is the concrete DDL/data
+-- The embedded application migrations. This is the concrete DDL/data
 -- contract supplied to MigrationDriver.executeOriginalSQL; PostgreSQL executes
 -- these operations inside the driver's transaction, before both ledger writes.
 -- SQL expression arithmetic, collation and NULL semantics are database
@@ -16,8 +16,10 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.ItemOwnerBackfill as Historical
 import Mimir.ItemOwners as Owners
+import Mimir.LearningStore as Learning
+import Mimir.DatabaseTransaction as Database
 open import Mimir.Migrations public
-  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs)
+  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation;
@@ -147,6 +149,7 @@ data DDL : Set where
   setColumnDefault : String → String → Default → DDL
   addUniqueConstraint : String → String → List String → DDL
   addCheckConstraint : String → String → Expr → DDL
+  installReviewQueueNotifier : DDL
 
 kappa alpha beta : Expr
 kappa = add (number "2.0" ∷ multiply (columnValue "confidence" ∷ number "198.0" ∷ []) ∷ [])
@@ -178,6 +181,21 @@ body allocation =
   addUniqueConstraint "mimir_learning_item_owners" "mimir_learning_item_local_key"
     ("experience_id" ∷ "item_key" ∷ []) ∷
   addCheckConstraint "mimir_learning_item_owners" "mimir_learning_item_key_nonempty" localKeyValid ∷ []
+body reviewQueueNotifications = installReviewQueueNotifier ∷ []
+
+-- The trigger's concrete meaning is the pending-source rule, with signals
+-- coupled to publication. This is a native PostgreSQL contract; the SQL body
+-- is bound exactly and exercised against PostgreSQL by the integration test.
+data QueueDataEffect : DDL → Learning.World → Learning.World → Database.Receipt →
+  Learning.World → List Learning.ReviewQueueSignal → Set where
+  queuePublication : ∀ {before proposed receipt actual}
+    (commit : Database.Atomic before proposed receipt actual) {signals} → Learning.observedSignals commit signals →
+    QueueDataEffect installReviewQueueNotifier before proposed receipt actual
+      signals
+
+queueRollbackCannotWake : ∀ before proposed actual signals →
+  QueueDataEffect installReviewQueueNotifier before proposed Database.aborted actual signals → signals ≡ []
+queueRollbackCannotWake before proposed .before signals (queuePublication Database.abortedNone noSignal) = noSignal
 
 -- PostgreSQL supplies the decoded historical rows and execution order. The
 -- application's data rule is insert-missing-only, linked to its general laws.

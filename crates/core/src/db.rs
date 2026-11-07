@@ -6,6 +6,9 @@ use crate::config::{DatabaseConfig, SslMode};
 
 const SEARCH_PATH: &str = "public,ag_catalog";
 
+/// Empty-payload commit hints; listeners must read the durable pending queue.
+pub const REVIEW_QUEUE_CHANNEL: &str = "mimir_review_queue_changed";
+
 static MIGRATIONS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 const RECEIPT_JSON: &str = include_str!("../migrations/.kryzhen-import-receipt.json");
 
