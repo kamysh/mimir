@@ -12,7 +12,7 @@ open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Data.String using (toList)
-open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong)
 open import Mimir.Text using (Text)
 import Mimir.StandardLibrary as Conversion
 import Mimir.PublicEncoding as Encoding
@@ -44,6 +44,7 @@ import Mimir.SMTPProtocol as SMTP
 import Mimir.OperationalLifecycle as Operational
 import Mimir.OperationalLogProtocol as OperationalLog
 import Mimir.ConfigurationSchema as Core
+import Mimir.ConfigurationValues as Values
 
 module R = Records.Over ℕ
 
@@ -97,15 +98,57 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     absent : Dropped nothing
     released : ∀ client events → Client.Runs (Client.dropClient client) events tt → Dropped (just client)
 
-  data Executed (settings : Config.Runtime) (held : L.Locked) (configPath : Path.Path) : R.Report → Set where
-    completed : ∀ program before after events client report → Built (Config.Runtime.llm settings) program before →
-      W.Runs settings program (L.Locked.path held) configPath before nothing (W.W.start settings program (L.Locked.path held) configPath) events after client report → Dropped client → Executed settings held configPath report
-    setupFailure : ∀ detail observed events report → BuildFailed (Config.Runtime.llm settings) detail →
-      F.Runs settings (L.Locked.path held) (Finalization.finish (setupReport observed detail)) events report → Executed settings held configPath report
-
   coreOf : C.Loaded → Core.Config
   coreOf loadedConfiguration = Config.Runtime.core
     (Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration))
+
+  -- A connected child uses a private configuration read back through the
+  -- existing loader. A mutable filename alone cannot provide this receipt.
+  record PreparedMcpConfig (settings : Config.Runtime) (original : Path.Path) : Set where
+    field path : Path.Path
+          separate : path ≢ original
+          observed : C.Loaded
+          events : List C.P.Event
+          readback : CC.Runs (C.start (just path) defaultConfig) events (inj₂ observed)
+          selected : coreOf observed ≡ Config.Runtime.core settings
+
+  snapshotDatabaseMatches : ∀ settings original (snapshot : PreparedMcpConfig settings original) →
+    Values.Config.db (Core.Config.core (coreOf (PreparedMcpConfig.observed snapshot))) ≡
+    Values.Config.db (Core.Config.core (Config.Runtime.core settings))
+  snapshotDatabaseMatches settings original snapshot = cong (λ core → Values.Config.db (Core.Config.core core))
+    (PreparedMcpConfig.selected snapshot)
+
+  module Preparation (settings : Config.Runtime) (original directory : Path.Path) where
+    data Effect : Set where preparePrivateConfig : Effect
+    Reply : Effect → Set
+    Reply preparePrivateConfig = Text ⊎ PreparedMcpConfig settings original
+    module P = Effects.Protocol Effect Reply
+    open P public
+    start : Script (Text ⊎ PreparedMcpConfig settings original)
+    start = ask preparePrivateConfig done
+
+  preparationReport : Maybe ℕ → Text → R.Report
+  preparationReport now detail = record (setupReport now detail)
+    { blockReason = just (toList "mcp_or_configuration_error") }
+
+  data Executed (settings : Config.Runtime) (held : L.Locked) (configPath : Path.Path) : R.Report → Set where
+    completed : ∀ program before after events client report (snapshot : PreparedMcpConfig settings configPath)
+      preparationEvents →
+      Preparation.Runs settings configPath (L.Locked.path held)
+        (Preparation.start settings configPath (L.Locked.path held)) preparationEvents (inj₂ snapshot) →
+      Built (Config.Runtime.llm settings) program before →
+      W.Runs settings program (L.Locked.path held) (PreparedMcpConfig.path snapshot) before nothing
+        (W.W.start settings program (L.Locked.path held) (PreparedMcpConfig.path snapshot)) events after client report →
+      Dropped client → Executed settings held configPath report
+    -- No MCP execution is admitted on this branch. The existing watcher/caller
+    -- owns retry after the private state/configuration problem is corrected.
+    preparationFailure : ∀ detail observed preparationEvents events report →
+      Preparation.Runs settings configPath (L.Locked.path held)
+        (Preparation.start settings configPath (L.Locked.path held)) preparationEvents (inj₁ detail) →
+      F.Runs settings (L.Locked.path held) (Finalization.finish (preparationReport observed detail)) events report →
+      Executed settings held configPath report
+    setupFailure : ∀ detail observed events report → BuildFailed (Config.Runtime.llm settings) detail →
+      F.Runs settings (L.Locked.path held) (Finalization.finish (setupReport observed detail)) events report → Executed settings held configPath report
 
   data Effect : Set where
     loadConfig resolveState clock : Effect

@@ -54,6 +54,103 @@ fn undeclared_belief_candidate(error: &Value) -> bool {
     Refusal::from_mcp(error).is_some_and(|r| r.kind == RefusalKind::UndeclaredCandidate)
 }
 
+/// Own the exact effective configuration handed to one MCP child. The source
+/// file can change after admission without changing this child's database.
+pub struct PreparedConfig {
+    _directory: super::harness::RunDir,
+    path: std::path::PathBuf,
+}
+
+#[cfg(test)]
+mod prepared_config_tests {
+    use super::PreparedConfig;
+    use crate::judge::{config, harness::RunDir};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    #[test]
+    fn prepared_mcp_config_keeps_selected_settings_and_cleans_up() {
+        let work = RunDir::new_in(&std::env::temp_dir()).unwrap();
+        let source_text = format!(
+            "config_version=1\n[logging]\ndirectory={}\n[database]\nhost='127.0.0.1'\nport=15432\ndbname='snapshot-selected'\nuser='snapshot-user'\npassword='fixture-only-secret'\nssl_mode='verify-full'\nssl_root_cert='/fixture/root.pem'\n[judge]\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n",
+            toml::Value::String(work.path().join("logs").display().to_string())
+        );
+        let original = work.write("original.toml", source_text.as_bytes()).unwrap();
+        let selected = config::load(Some(&original)).unwrap();
+        assert_eq!(selected.core.database.dbname, "snapshot-selected");
+        let prepared = PreparedConfig::new(&selected, work.path()).unwrap();
+        let child_path = prepared.path().to_owned();
+        assert_ne!(child_path, original);
+        assert_ne!(
+            std::fs::metadata(&child_path).unwrap().ino(),
+            std::fs::metadata(&original).unwrap().ino()
+        );
+        std::fs::write(
+            &original,
+            source_text.replace("snapshot-selected", "snapshot-replaced"),
+        )
+        .unwrap();
+        let (child, operations) =
+            mimir_core::config::Config::load_with_operations(&child_path).unwrap();
+        assert_eq!(
+            toml::to_string(&child).unwrap(),
+            toml::to_string(&selected.core).unwrap()
+        );
+        assert_eq!(
+            operations.header().unwrap(),
+            selected.operations.header().unwrap()
+        );
+        assert_eq!(
+            config::load(Some(&original)).unwrap().core.database.dbname,
+            "snapshot-replaced"
+        );
+        assert_eq!(
+            std::fs::metadata(&child_path).unwrap().permissions().mode() & 0o077,
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(child_path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+        drop(prepared);
+        assert!(!child_path.exists());
+        assert!(original.exists());
+    }
+}
+
+impl PreparedConfig {
+    pub fn new(settings: &super::config::RuntimeConfig, directory: &Path) -> Result<Self> {
+        let work = super::harness::RunDir::new_in(directory)?;
+        let text = format!(
+            "{}\n{}",
+            settings.operations.header()?,
+            toml::to_string(&settings.core)?
+        );
+        let path = work.write("mcp-config.toml", text.as_bytes())?;
+        ensure!(
+            path != settings.path,
+            "private MCP configuration must differ from its source"
+        );
+        let observed = super::config::load(Some(&path))?;
+        ensure!(
+            toml::to_string(&observed.core)? == toml::to_string(&settings.core)?
+                && observed.operations.header()? == settings.operations.header()?,
+            "private MCP configuration differs from the selected settings; retry after correcting the configuration"
+        );
+        Ok(Self {
+            _directory: work,
+            path,
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 pub struct Client {
     child: Child,
     input: ChildStdin,

@@ -380,6 +380,16 @@ async fn run_once(
             };
         }
     };
+    run_with_settings(settings, state_dir, watch_mode).await
+}
+
+// Used by watcher startup after it subscribes with these exact settings. It
+// must not reread the mutable source file between subscription and first scan.
+async fn run_with_settings(
+    settings: config::RuntimeConfig,
+    state_dir: Option<PathBuf>,
+    watch_mode: bool,
+) -> RunOutcome {
     let path = match state::resolve(state_dir.as_deref()) {
         Ok(path) => path,
         Err(_) => {

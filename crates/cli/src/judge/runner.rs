@@ -435,10 +435,11 @@ async fn run_inner<B: Backend>(
     backend: &mut B,
     report: &mut Report,
 ) -> Result<()> {
+    let config_snapshot = super::mcp::PreparedConfig::new(settings, state.path())?;
     let mut client = Client::start(
         &settings.judge.mcp_command,
         &settings.judge.mcp_args,
-        &settings.path,
+        config_snapshot.path(),
     )
     .await?;
     // A rejected source revision is held until it is corrected or reviewed by

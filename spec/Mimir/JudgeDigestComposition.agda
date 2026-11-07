@@ -222,15 +222,16 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
       (ConfirmedRead.valid read) (ConfirmedRead.acknowledged read)) (BatchEvidence.confirmed observedBatch)
 
   data ObservedRun : ∀ {effect reply} → H.Receipt effect reply → List Observation.Snapshot → List Observation.Snapshot → Set where
-    completedBatch : ∀ {settings held configPath report program before after events client built execution dropped remaining selected} →
-      ProgressOf.BatchEvidence settings program (H.L.Locked.path held) configPath events remaining selected →
+    completedBatch : ∀ {settings held configPath report program before after events client snapshot preparationEvents prepared built execution dropped remaining selected} →
+      ProgressOf.BatchEvidence settings program (H.L.Locked.path held)
+        (H.PreparedMcpConfig.path snapshot) events remaining selected →
       ObservedRun (H.ran settings held configPath report
-        (H.completed program before after events client report built execution dropped)) remaining selected
+        (H.completed program before after events client report snapshot preparationEvents prepared built execution dropped)) remaining selected
 
   observedEvidence : ∀ {effect reply} (receipt : H.Receipt effect reply) {remaining selected} →
     ObservedRun receipt remaining selected → All Confirmed selected
   observedEvidence receipt (completedBatch {settings = settings} {held = held} {configPath = configPath} {program = program} seen) =
-    ProgressOf.evidence settings program (H.L.Locked.path held) configPath seen
+    ProgressOf.evidence settings program (H.L.Locked.path held) _ seen
 
   ContainsBatch : ∀ {A script events result} → H.Runs {A} script events result →
     List Observation.Snapshot → List Observation.Snapshot → Set

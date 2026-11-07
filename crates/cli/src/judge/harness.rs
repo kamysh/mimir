@@ -33,10 +33,12 @@ struct Call {
     arguments_json: String,
 }
 
-struct RunDir(PathBuf);
+pub(super) struct RunDir(PathBuf);
 impl RunDir {
     fn new() -> Result<Self> {
-        let base = Path::new("/var/tmp/mimir");
+        Self::new_in(Path::new("/var/tmp/mimir"))
+    }
+    pub(super) fn new_in(base: &Path) -> Result<Self> {
         if !base.exists() {
             fs::DirBuilder::new().mode(0o700).create(base)?;
         }
@@ -48,10 +50,10 @@ impl RunDir {
         fs::DirBuilder::new().mode(0o700).create(&path)?;
         Ok(Self(path))
     }
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.0
     }
-    fn write(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
+    pub(super) fn write(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
         let path = self.0.join(name);
         let mut file = OpenOptions::new()
             .write(true)
