@@ -45,6 +45,168 @@ fn experience(project: &str) -> Experience {
 }
 
 #[tokio::test]
+async fn pending_queue_notifications_follow_commit_and_contain_no_source() {
+    use std::future::poll_fn;
+    use tokio_postgres::{AsyncMessage, Notification};
+
+    async fn signals_before_barrier(
+        listener: &tokio_postgres::Client,
+        received: &mut tokio::sync::mpsc::UnboundedReceiver<Notification>,
+    ) -> usize {
+        // A committed notification after the tested operation provides an
+        // observable boundary. No elapsed-time guess is needed to test absence.
+        listener
+            .query_one(
+                "SELECT pg_notify($1, 'test-barrier')",
+                &[&db::REVIEW_QUEUE_CHANNEL],
+            )
+            .await
+            .unwrap();
+        let mut signals = 0;
+        loop {
+            let notification = received.recv().await.expect("notification reader stopped");
+            assert_eq!(notification.channel(), db::REVIEW_QUEUE_CHANNEL);
+            if notification.payload() == "test-barrier" {
+                return signals;
+            }
+            assert!(
+                notification.payload().is_empty(),
+                "source data leaked in wake"
+            );
+            signals += 1;
+        }
+    }
+
+    let _service = service().await; // Apply the actual embedded migrations.
+    let fixture = isolation::fixture();
+    let cfg = fixture.database_config();
+    let mut writer = db::connect(&cfg).await.unwrap();
+    let password_file = std::fs::read_to_string(cfg.pgpassfile.as_ref().unwrap()).unwrap();
+    // The guarded fixture writes one generated hexadecimal password; no live
+    // credential resolution, installed configuration, or external account.
+    let password = password_file.trim_end().rsplit(':').next().unwrap();
+    let mut pg = tokio_postgres::Config::new();
+    pg.host(&cfg.host)
+        .port(cfg.port)
+        .user(&cfg.user)
+        .dbname(&cfg.dbname)
+        .password(password);
+    let (listener, mut connection) = pg.connect(tokio_postgres::NoTls).await.unwrap();
+    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let reader = tokio::spawn(async move {
+        while let Some(message) = poll_fn(|cx| connection.poll_message(cx)).await {
+            if let AsyncMessage::Notification(notification) = message.unwrap() {
+                sent.send(notification).unwrap();
+            }
+        }
+    });
+    listener
+        .batch_execute(&format!("LISTEN {}", db::REVIEW_QUEUE_CHANNEL))
+        .await
+        .unwrap();
+    let project = format!("private-queue-source-{}", Uuid::new_v4());
+
+    let tx = writer.transaction().await.unwrap();
+    let discarded: Uuid = tx
+        .query_one(
+            "INSERT INTO mimir_experiences(id,project,revision) VALUES(gen_random_uuid(),$1,1) RETURNING id",
+            &[&project],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 0);
+    tx.rollback().await.unwrap();
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 0);
+    assert!(!writer
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM mimir_experiences WHERE id=$1)",
+            &[&discarded]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0));
+
+    let tx = writer.transaction().await.unwrap();
+    let id: Uuid = tx
+        .query_one(
+            "INSERT INTO mimir_experiences(id,project,revision) VALUES(gen_random_uuid(),$1,1) RETURNING id",
+            &[&project],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 0);
+    tx.commit().await.unwrap();
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 1);
+    assert!(writer
+        .query_one("SELECT EXISTS(SELECT 1 FROM mimir_experiences WHERE id=$1 AND reviewed_revision<revision)", &[&id])
+        .await.unwrap().get::<_, bool>(0));
+
+    for (statement, expected) in [
+        ("UPDATE mimir_experiences SET revision=2 WHERE id=$1", 1),
+        (
+            "UPDATE mimir_experiences SET revision=revision WHERE id=$1",
+            0,
+        ),
+        (
+            "UPDATE mimir_experiences SET updated_at=clock_timestamp() WHERE id=$1",
+            0,
+        ),
+        (
+            "UPDATE mimir_experiences SET review_revision=1 WHERE id=$1",
+            0,
+        ),
+        (
+            "UPDATE mimir_experiences SET reviewed_revision=2 WHERE id=$1",
+            0,
+        ),
+        (
+            "UPDATE mimir_experiences SET reviewed_revision=1 WHERE id=$1",
+            1,
+        ),
+    ] {
+        writer.execute(statement, &[&id]).await.unwrap();
+        assert_eq!(
+            signals_before_barrier(&listener, &mut received).await,
+            expected,
+            "{statement}"
+        );
+    }
+    writer
+        .execute(
+            "UPDATE mimir_experiences SET project=project || '-changed' WHERE id=$1",
+            &[&id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 1);
+
+    let tx = writer.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE mimir_experiences SET revision=3 WHERE id=$1",
+        &[&id],
+    )
+    .await
+    .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 0);
+
+    writer
+        .execute("DELETE FROM mimir_experiences WHERE id=$1", &[&id])
+        .await
+        .unwrap();
+    let completed: Uuid = writer.query_one("INSERT INTO mimir_experiences(id,project,revision,reviewed_revision) VALUES(gen_random_uuid(),$1,1,1) RETURNING id", &[&project]).await.unwrap().get(0);
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 0);
+    writer
+        .execute("DELETE FROM mimir_experiences WHERE id=$1", &[&completed])
+        .await
+        .unwrap();
+    drop(listener);
+    reader.await.unwrap();
+}
+
+#[tokio::test]
 async fn sql_pages_cover_large_filtered_corpus_without_a_total_cutoff() {
     let _page_guard = PAGE_TEST_LOCK.lock().await;
     let svc = service().await;

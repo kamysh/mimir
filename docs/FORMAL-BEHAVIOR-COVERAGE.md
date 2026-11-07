@@ -18,6 +18,16 @@ The inventory contains **34 MCP tools, 30 CLI leaf commands, seven lifecycle gro
 
 Protocols distinguish application decisions from external observations. Database, filesystem, network and subprocess replies retain failure and uncertain outcomes. Their concrete application meanings are supplied by the storage, transaction, publication, codec and lifecycle modules listed below; they are not unrestricted successful application callbacks. A `Runs` control transcript alone is not a Rust conformance proof or proof that real I/O happened.
 
+## Review queue signals
+
+Committed changes to pending experiences emit an empty review-queue hint on
+`mimir_review_queue_changed`. `LearningStore.needsWake` defines eligibility and
+source/project changes; `publishedSignals` and `publicationAndSignalTogether`
+tie the hint to the atomic publication boundary, including lost acknowledgements.
+Rollback sends no hint. The hint carries no source content and is not a durable
+review receipt. Listeners must scan the queue after subscribing and reconnecting;
+listener startup and waiting are implemented in the following watcher issues.
+
 ## Stored belief evidence
 
 [EvidenceValidity](../spec/Mimir/EvidenceValidity.agda) defines valid stored
