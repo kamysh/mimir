@@ -13,6 +13,9 @@ open import Data.List.Relation.Unary.Any using (Any)
 open import Data.Empty using (⊥)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc; _≤_; z≤n; s≤s)
+open import Data.Integer using (ℤ)
+import Data.Integer as Integer
+import Mimir.LocalCalendar as Local
 open import Data.Nat.Properties using (≤-trans; ≤-refl; m≤n+m)
 open import Data.Product using (Σ; _,_; _×_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
@@ -161,13 +164,37 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   -- to the owned consumer and is not a premise of the next review round.
   data DigestQueued (settings : Config.Runtime) (outcome : Host.Outcome) : Text ⊎ Bool → Set where
     disabled : Email.Config.enabled (Config.Runtime.email settings) ≡ false → DigestQueued settings outcome (inj₂ false)
-    accepted : ∀ resolved before after → H.Receipt H.resolveState (inj₂ resolved) →
-      Finalization.WorkerQueue.Accepted
-        (Finalization.digestJob (Config.Runtime.email settings)
+    accepted : ∀ resolved time before after → H.Receipt H.resolveState (inj₂ resolved) →
+      Config.Judge.dailyReportTime (Config.Runtime.judge settings) ≡ just time →
+      Finalization.CalendarRegistration.Registered
+        (Finalization.dailySchedule (Config.Runtime.email settings)
           (Values.Config.db (Core.Config.core (Config.Runtime.core settings)))
-          (StatePath.Resolved.path resolved) outcome) before after →
+          (StatePath.Resolved.path resolved) outcome time) before after →
       DigestQueued settings outcome (inj₂ false)
     unavailable : DigestQueued settings outcome (inj₂ true)
+
+  -- Calendar delivery runs beside the review machine. Only a due, previously
+  -- unadmitted local day can enter the delivery queue. Stalled delivery is
+  -- allowed, and neither idle nor prerequisite-paused reviews are resumed.
+  data CalendarStep (phase : Host.Phase) (schedule : Finalization.CalendarSchedule) :
+    Maybe ℤ → Finalization.WorkerQueue.State → Maybe ℤ → Finalization.WorkerQueue.State → Set where
+    due : ∀ now previous day boundary before after →
+      day ≡ Digest.localDay calendar now →
+      Local.Calendar.deliveryBoundary calendar day
+        (Digest.reportSecond (Finalization.CalendarSchedule.time schedule)) ≡ just boundary →
+      boundary Integer.≤ Local.instant now →
+      Digest.CalendarAdmission.offer day previous ≡ just day →
+      Finalization.WorkerQueue.Accepted
+        (Finalization.digestJob (Finalization.CalendarSchedule.email schedule)
+          (Finalization.CalendarSchedule.database schedule) (Finalization.CalendarSchedule.path schedule)
+          (Finalization.CalendarSchedule.outcome schedule)) before after →
+      CalendarStep phase schedule previous before (just day) after
+
+  calendarAdmissionPreventsRepeat : ∀ phase schedule previous before day after →
+    CalendarStep phase schedule previous before (just day) after →
+    Digest.CalendarAdmission.offer day (just day) ≡ nothing
+  calendarAdmissionPreventsRepeat phase schedule previous before day after receipt =
+    Digest.CalendarAdmission.admittedDayIsNotOfferedAgain day
 
   data Step (migrations : M.Inputs) : Host.Phase → Host.Phase → Set where
     initialConfigurationFailed : ∀ state detail → H.Receipt H.loadConfig (inj₁ detail) →

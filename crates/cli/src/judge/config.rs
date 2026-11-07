@@ -49,6 +49,28 @@ impl ReasoningEffort {
     }
 }
 
+#[derive(Clone, Copy, Deserialize, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DailyTime {
+    pub hour: u8,
+    pub minute: u8,
+}
+
+impl DailyTime {
+    pub fn validate(self) -> Result<()> {
+        ensure!(
+            self.hour < 24 && self.minute < 60,
+            "judge.daily_report_time requires hour 0..23 and minute 0..59"
+        );
+        Ok(())
+    }
+
+    pub fn local_time(self) -> chrono::NaiveTime {
+        chrono::NaiveTime::from_hms_opt(self.hour.into(), self.minute.into(), 0)
+            .expect("daily report time was validated before admission")
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JudgeConfig {
@@ -59,6 +81,7 @@ pub struct JudgeConfig {
     pub mcp_command: String,
     #[serde(default)]
     pub mcp_args: Vec<String>,
+    pub daily_report_time: Option<DailyTime>,
 }
 
 #[derive(Deserialize)]
@@ -216,6 +239,9 @@ fn endpoint(raw: &str) -> Result<()> {
 
 impl JudgeConfig {
     fn validate(&self) -> Result<()> {
+        if let Some(time) = self.daily_report_time {
+            time.validate()?;
+        }
         ensure!(self.batch_size > 0, "judge.batch_size must be positive");
         if let Some(project) = &self.project {
             nonempty(project, "judge.project")?;
@@ -297,6 +323,15 @@ pub fn load(explicit: Option<&Path>) -> Result<RuntimeConfig> {
     let path = resolved_path(explicit)?;
     validate_file_security(&path)?;
     let (core, operations) = Config::load_with_operations(&path)?;
+    if let Some(value) = core
+        .judge
+        .as_ref()
+        .and_then(|table| table.get("daily_report_time"))
+    {
+        let time: DailyTime = value.clone().try_into().map_err(|_| anyhow!(
+            "judge.daily_report_time must contain exactly hour and minute as integers; set {{ hour = H, minute = M }} to your chosen local time"))?;
+        time.validate()?;
+    }
     let judge: JudgeConfig = section(core.judge.as_ref(), "judge")?;
     if let Some(llm) = &core.llm {
         for retired in [
@@ -317,6 +352,8 @@ pub fn load(explicit: Option<&Path>) -> Result<RuntimeConfig> {
     judge.validate()?;
     llm.validate()?;
     email.validate()?;
+    ensure!(!email.enabled || judge.daily_report_time.is_some(),
+        "Set judge.daily_report_time = {{ hour = H, minute = M }} to your chosen local delivery time before enabling email; Mimir supplies no default");
     Ok(RuntimeConfig {
         path,
         core,
@@ -424,7 +461,11 @@ mod tests {
 
     #[test]
     fn email_password_google_and_microsoft_oauth() {
-        let common = format!("{DATABASE}{HARNESS}[email]\nenabled=true\nhost='smtp.example.com'\nport=587\ntls='starttls'\nfrom='a@example.com'\nto=['b@example.com']\nusername='a@example.com'\n");
+        let harness = HARNESS.replace(
+            "[judge]\n",
+            "[judge]\ndaily_report_time={ hour=14, minute=35 }\n",
+        );
+        let common = format!("{DATABASE}{harness}[email]\nenabled=true\nhost='smtp.example.com'\nport=587\ntls='starttls'\nfrom='a@example.com'\nto=['b@example.com']\nusername='a@example.com'\n");
         assert!(valid(&format!(
             "{common}auth='password'\npassword='private'\n"
         )));
@@ -432,6 +473,41 @@ mod tests {
         assert!(valid(&format!("{common}auth='oauth2'\n[email.oauth]\nprovider='microsoft'\nclient_id='client'\nrefresh_token='token'\ntenant='common'\nscope='https://outlook.office.com/SMTP.Send offline_access'\n")));
         assert!(!valid(&format!("{common}auth='oauth2'\n[email.oauth]\nprovider='microsoft'\nclient_id='client'\nrefresh_token='token'\ntenant='common'\nscope='SMTP.Send offline_access'\n")));
         assert!(!valid(&format!("{common}auth='oauth2'\npassword='bad'\n[email.oauth]\nprovider='google'\nclient_id='client'\nrefresh_token='token'\n")));
+    }
+
+    #[test]
+    fn daily_time_is_user_selected_and_required_for_enabled_email() {
+        let mail = "[email]\nenabled=true\nhost='smtp.example.test'\nport=587\ntls='starttls'\nfrom='a@example.test'\nto=['b@example.test']\nauth='none'\n";
+        let fixture = Fixture::new(0o700);
+        let path = fixture.config(&format!("{DATABASE}{HARNESS}{mail}"), 0o600);
+        let error = load(Some(&path)).err().unwrap().to_string();
+        assert!(
+            error.contains("judge.daily_report_time")
+                && error.contains("chosen local delivery time")
+        );
+        for time in ["{ hour=0, minute=0 }", "{ hour=23, minute=59 }"] {
+            let harness =
+                HARNESS.replace("[judge]\n", &format!("[judge]\ndaily_report_time={time}\n"));
+            assert!(valid(&format!("{DATABASE}{harness}{mail}")));
+        }
+        for time in [
+            "{ hour=24, minute=0 }",
+            "{ hour=0, minute=60 }",
+            "{ hour=9 }",
+            "{ hour=9, minute=1, guessed=true }",
+        ] {
+            let harness =
+                HARNESS.replace("[judge]\n", &format!("[judge]\ndaily_report_time={time}\n"));
+            assert!(!valid(&format!("{DATABASE}{harness}{mail}")));
+            assert!(
+                !valid(&format!("{DATABASE}{harness}")),
+                "supplied invalid values must not be ignored when email is disabled"
+            );
+        }
+        assert!(
+            valid(&format!("{DATABASE}{HARNESS}")),
+            "disabled email needs no schedule"
+        );
     }
 
     #[test]

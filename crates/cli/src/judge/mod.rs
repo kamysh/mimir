@@ -134,11 +134,11 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
         },
         JudgeCommand::Run { config, state_dir } => run_once(config, state_dir, false).await.code,
         JudgeCommand::Watch { config, state_dir } => {
- let notifications = notification::Worker::start();
- let result = watch(config, state_dir, &notifications).await;
- notifications.shutdown().await;
- result
- },
+            let notifications = notification::Worker::start();
+            let result = watch(config, state_dir, &notifications).await;
+            notifications.shutdown().await;
+            result
+        }
         JudgeCommand::Status { state_dir } => {
             let path = match state::resolve(state_dir.as_deref()) {
                 Ok(path) => path,
@@ -337,7 +337,11 @@ where
     }
 }
 
-async fn watch(config: Option<PathBuf>, state_dir: Option<PathBuf>, notifications: &notification::Worker) -> i32 {
+async fn watch(
+    config: Option<PathBuf>,
+    state_dir: Option<PathBuf>,
+    notifications: &notification::Worker,
+) -> i32 {
     let mut retry = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
         Ok(signal) => signal,
         Err(error) => {
@@ -406,10 +410,25 @@ async fn watch(config: Option<PathBuf>, state_dir: Option<PathBuf>, notification
             }
         };
         loop {
-            let outcome = run_with_settings(&settings, state_dir.clone(), true, notification::Mode::Queued(notifications)).await;
-            let problem = state::resolve(state_dir.as_deref()).and_then(|path| notifications.digest(&settings, &path, &outcome)).is_err();
+            let outcome = run_with_settings(
+                &settings,
+                state_dir.clone(),
+                true,
+                notification::Mode::Queued(notifications),
+            )
+            .await;
+            let problem = state::resolve(state_dir.as_deref())
+                .and_then(|path| notifications.digest(&settings, &path, &outcome))
+                .is_err();
             if problem != digest_problem {
-                eprintln!("judge daily email queue: {}", if problem { "unavailable; inspect watcher state" } else { "available" });
+                eprintln!(
+                    "judge daily email queue: {}",
+                    if problem {
+                        "unavailable; inspect watcher state"
+                    } else {
+                        "available"
+                    }
+                );
                 digest_problem = problem;
             }
             let (next, transition) = watch.advance(outcome);

@@ -76,6 +76,15 @@ file and last admitted settings are left intact. Save the corrected file to
 resume, or press Ctrl-C to stop. No polling timer is used for configuration
 changes.
 
+Daily reports require the user's `judge.daily_report_time` configuration, with
+an explicit `hour` and `minute` and no default. The watcher has a separate
+calendar wake-up for that chosen local time, including when review work is idle
+or awaiting correction. That wake-up queues mail and does not retry reviews.
+Skipped local times use the first valid time afterward; repeated times produce
+one admission at the first occurrence. A stalled delivery cannot cause repeated
+admission of that day's report. Calendar and delivery tasks are cancelled and
+joined when the watcher stops.
+
 In watch mode, alert and daily-summary delivery run in one owned background
 task. A stalled SMTP or authentication exchange does not hold the judge's state
 lock or block another review. The report's `notification: "queued"` records

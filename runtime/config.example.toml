@@ -15,6 +15,9 @@ batch_size = 5
 # project = "my-project" # omit to process pending experiences across projects
 mcp_command = "mimir-mcp"
 mcp_args = []
+# Required when email is enabled. Obtain the local delivery time from the user;
+# there is no default and no per-call override. Replace H and M before enabling:
+# daily_report_time = { hour = H, minute = M }
 # Run once with `mimir judge run`; `mimir judge watch` repeats batches.
 # No service or timer is installed by this configuration.
 

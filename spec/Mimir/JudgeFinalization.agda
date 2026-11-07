@@ -25,6 +25,7 @@ import Mimir.NotificationIncident as Notification
 import Mimir.ConfigurationValues as Values
 import Mimir.UnixPath as Path
 import Mimir.JudgeHost as Host
+import Mimir.JudgeConfiguration as Config
 
 module R = Records.Over ℕ
 
@@ -35,6 +36,17 @@ data NotificationMode : Set where inlineDelivery queuedDelivery : NotificationMo
 data Job : Set where
   alertJob : Email.Config → Path.Path → Notification.Event → Job
   digestJob : Email.Config → Values.Database → Path.Path → Host.Outcome → Job
+
+record CalendarSchedule : Set where
+  constructor dailySchedule
+  field email : Email.Config; database : Values.Database; path : Path.Path
+        outcome : Host.Outcome; time : Config.DailyTime
+
+module CalendarRegistration where
+  -- The owned clock task receives the latest captured settings/status. This
+  -- update is not an SMTP submission and does not reset daily admission.
+  data Registered (schedule : CalendarSchedule) : Maybe CalendarSchedule → Maybe CalendarSchedule → Set where
+    updated : ∀ before → Registered schedule before (just schedule)
 
 module WorkerQueue where
   data State : Set where

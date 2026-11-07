@@ -150,6 +150,20 @@ when a required account or permission step remains unresolved.
 
 ## Runtime behavior
 
+When enabling email, obtain the desired local delivery time from the user and set
+`judge.daily_report_time = { hour = H, minute = M }` in the configuration. Hours
+run from 0 through 23 and minutes from 0 through 59. Both fields are required;
+there is no default and no request-level override. A missing or invalid time
+produces a configuration diagnostic with the correction to make.
+
+An owned calendar task admits the report at that time even when reviews are idle
+or paused for correction. It does not start a review batch. A skipped clock time
+uses the first valid time afterward; a repeated time uses its first occurrence,
+once. Missed days are included by the existing reporting cursor. Queue admission
+is remembered while delivery is pending, so status updates cannot repeatedly
+enqueue the same day's report. Disabling email through an admitted configuration
+stops future calendar admissions. Restart cancels and joins the calendar owner.
+
 Watch mode owns a background task for alert and daily-summary delivery. A stalled
 SMTP or authentication exchange does not block another review. `notification:
 "queued"` means accepted for an attempt, not delivered. Shutdown cancels and

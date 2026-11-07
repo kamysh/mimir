@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- Daily database-wide digest: local 09:00 boundary, calendar catch-up,
+-- Daily database-wide digest: user-configured local boundary, calendar catch-up,
 -- repeatable-read read-only query sequence, then durable notification cursor.
 module Mimir.JudgeDigest where
 
@@ -33,6 +33,25 @@ import Mimir.UnixPath as Path
 import Mimir.Effects as Effects
 open import Mimir.LocalCalendar public using (Calendar; Now; localDay; localHour; localZone)
 import Mimir.LocalCalendar as Local
+import Data.Fin
+import Data.Empty
+
+reportSecond : Config.DailyTime → ℕ
+reportSecond time = Config.DailyTime.hour time Data.Nat.* 3600 Data.Nat.+ Config.DailyTime.minute time Data.Nat.* 60
+
+-- Queue admission is remembered independently of delivery. A pending SMTP
+-- call therefore cannot cause the calendar owner to enqueue the same day again.
+module CalendarAdmission where
+  offer : ℤ → Maybe ℤ → Maybe ℤ
+  offer today nothing = just today
+  offer today (just previous) with today ≟ previous
+  ... | yes _ = nothing
+  ... | no _ = just today
+
+  admittedDayIsNotOfferedAgain : ∀ day → offer day (just day) ≡ nothing
+  admittedDayIsNotOfferedAgain day with day ≟ day
+  ... | yes _ = refl
+  ... | no different = Data.Empty.⊥-elim (different refl)
 
 record Counts : Set where
   constructor counts
@@ -238,11 +257,15 @@ module Run (calendar : Calendar) where
     (inj₂ path) → ask (readCursor (Config.Runtime.email settings) path) (cursor settings path through now run)
 
   observed : Config.Runtime → Host.Outcome → Now → Script (Text ⊎ Bool)
-  observed settings run now with 9 Data.Nat.≤? localHour calendar now
-  ... | no _ = done (inj₂ false)
-  ... | yes _ with Calendar.minimumDay calendar <? localDay calendar now
-  ...   | no _ = done (inj₂ false)
-  ...   | yes _ = configured (localDay calendar now - + 1) now run settings
+  observed settings run now with Config.Judge.dailyReportTime (Config.Runtime.judge settings)
+  ... | nothing = done (inj₂ false)
+  ... | just time with Calendar.deliveryBoundary calendar (localDay calendar now) (reportSecond time)
+  ...   | nothing = done (inj₁ (toList "local delivery time is unavailable; inspect the computer clock and configured time"))
+  ...   | just boundary with boundary Integer.≤? Local.instant now
+  ...     | no _ = done (inj₂ false)
+  ...     | yes _ with Calendar.minimumDay calendar <? localDay calendar now
+  ...       | no _ = done (inj₂ false)
+  ...       | yes _ = configured (localDay calendar now - + 1) now run settings
 
   tick : Config.Runtime → Host.Outcome → Script (Text ⊎ Bool)
   tick settings run = ask localNow (observed settings run)
