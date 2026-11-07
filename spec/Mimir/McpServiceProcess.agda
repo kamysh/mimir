@@ -1,5 +1,6 @@
 {-# OPTIONS --safe #-}
--- Executable process ordering: arguments, core configuration, migrations and
+-- MCP application entry after the private worker selection: arguments,
+-- core configuration, migrations and
 -- database connection, then the sequential MCP application loop. Judge/LLM
 -- configuration is deliberately absent from this startup path.
 module Mimir.McpServiceProcess where
@@ -44,7 +45,7 @@ module Process (sizeMaximum : ℕ) (configurationPath : Path.Path)
       runtimeExit : R.R.Exit → Exit
 
     data State : Set where
-      unstarted : List Arguments.Argument → State
+      unstarted : (args : List Arguments.Argument) → Arguments.ApplicationEntry args → State
       loading : Configuration.P.Script (Configuration.Failure Data.Sum.⊎ Config.Config) → State
       starting : (config : Config.Config) → S.State config → State
       serving : (config : Config.Config) → S.Service config → R.R.State → State
@@ -56,15 +57,15 @@ module Process (sizeMaximum : ℕ) (configurationPath : Path.Path)
       service : (config : Config.Config) → S.Event config → Event
       exchange : Loop.Event → Event
 
-    begin : List Arguments.Argument → State
-    begin args with Arguments.classify args
+    begin : (args : List Arguments.Argument) → Arguments.ApplicationEntry args → State
+    begin args admitted with Arguments.classify args
     ... | Arguments.showHelp = exited help
     ... | Arguments.showVersion = exited version
     ... | Arguments.reject = exited usage
     ... | Arguments.serve = loading (C.load configurationPath)
 
     data Step (migrations : M.Inputs) : State → Event → State → Set where
-      classified : ∀ args → Step migrations (unstarted args) arguments (begin args)
+      classified : ∀ args admitted → Step migrations (unstarted args admitted) arguments (begin args admitted)
       configured : ∀ effect continuation reply →
         Step migrations (loading (Configuration.P.ask effect continuation)) (configuration (effect , reply)) (loading (continuation reply))
       invalid : ∀ failure → Step migrations (loading (Configuration.P.done (inj₁ failure))) configurationReturned (exited (configurationFailure failure))
