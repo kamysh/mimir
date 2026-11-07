@@ -30,6 +30,9 @@ import Mimir.McpEnvelope as Envelope
 import Mimir.ApplicationProtocol as Application
 import Mimir.StructuredValue as V
 import Mimir.Validation as Validation
+import Mimir.McpErrors as Errors
+import Mimir.ApplicationStore as Store
+module Correction = Errors.AgentCorrection
 import Mimir.SourceFailure as Source
 import Mimir.RpcReply
 import Mimir.JudgeMcpLifecycle as Client
@@ -99,12 +102,20 @@ module Bind (conversion : Conversion.Contract) (format : Encoding.Formatting)
   -- They additionally identify the application operation that produced them.
   data Publication (tool : Catalog.Tool) (args : V.Value) : Scope.Failure ⊎ V.Value → Set where
     failed : ∀ failure → Publication tool args (inj₁ failure)
-    succeeded : ∀ events value → H.Handled (Envelope.literal (Catalog.wireName tool)) args events (inj₂ value) →
+    succeeded : ∀ events value → H.Handled (Envelope.literal (Catalog.wireName tool)) args events (H.completed value) →
       Publication tool args (inj₂ value)
+
+  -- Ordinary tool transport also carries admission dialogue. It is not a
+  -- completed publication, and its handler has no application events.
+  data Dialogue (tool : Catalog.Tool) (args : V.Value) : Scope.Failure ⊎ V.Value → Set where
+    corrected : ∀ {before after} (proof : Correction.Certified Store.World before after) →
+      H.Handled (Envelope.literal (Catalog.wireName tool)) args []
+        (H.inputCorrection (Correction.Certified.report proof)) →
+      Dialogue tool args (inj₂ (Correction.emitCorrection proof))
 
   record Receipt (id : ℕ) (tool : Catalog.Tool) (args : V.Value) (reply : Scope.Failure ⊎ V.Value) : Set where
     field client : ClientCall id tool args reply
-          publication : Publication tool args reply
+          publication : Publication tool args reply ⊎ Dialogue tool args reply
 
   issued : ∀ {id tool args reply} → Receipt id tool args reply → Client.Issued
   issued {id} receipt with Receipt.client receipt
