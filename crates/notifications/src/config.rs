@@ -23,7 +23,7 @@ pub enum OAuthProvider {
     Microsoft,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OAuthConfig {
     pub provider: OAuthProvider,
@@ -34,7 +34,7 @@ pub struct OAuthConfig {
     pub scope: Option<String>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct EmailConfig {
     #[serde(default)]

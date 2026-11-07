@@ -10,6 +10,8 @@ open import Data.Nat using (ℕ; _≟_; _∸_; _≤?_)
 import Data.Nat.Show as Nat
 open import Data.String using (toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.Unit using (⊤; tt)
+import Mimir.JudgeFinalization as Finalization
 open import Data.Product using (_,_)
 open import Relation.Nullary using (yes; no; does)
 open import Mimir.Text using (Text)
@@ -140,29 +142,43 @@ outcomeText I.exhausted = toList "exhausted"
 outcomeText I.authRequired = toList "auth_required"
 outcomeText I.unavailable = toList "unavailable"
 
-data Effect : Set where readFailure : Effect; submit : I.Event → Effect
+data Effect : Set where readFailure : Effect; submit enqueue : I.Event → Effect
 Reply : Effect → Set
 Reply readFailure = Text ⊎ Maybe R.Incident
 Reply (submit _) = N.Result
+Reply (enqueue _) = Text ⊎ ⊤
 open Effects.Protocol Effect Reply public
 
 module Run (format : Encoding.Formatting) (localTime : ℕ → Text)
   (cfg : Config.Config) (path : Path.Path) (project : Maybe Text) where
   module D = Details format localTime
 
-  submitDetails : R.Report → Maybe Text → Script (Text ⊎ Text)
-  submitDetails report details = ask (submit (I.event (toList "judge") (incidentKey project) (status report) details)) λ where
+  submitDetails : Finalization.NotificationMode → R.Report → Maybe Text → Script (Text ⊎ Text)
+  submitDetails Finalization.inlineDelivery report details = ask (submit (I.event (toList "judge") (incidentKey project) (status report) details)) λ where
     (inj₁ _) → done (inj₁ (toList "notification unavailable"))
     (inj₂ value) → done (inj₂ (outcomeText value))
 
-  notify : R.Report → Script (Text ⊎ Text)
-  notify report with V.result (Config.validate cfg) | Path.absolute path
+  submitDetails Finalization.queuedDelivery report details =
+    ask (enqueue (I.event (toList "judge") (incidentKey project) (status report) details)) λ where
+      (inj₁ error) → done (inj₁ error)
+      (inj₂ tt) → done (inj₂ (toList "queued"))
+
+  notifyWith : Finalization.NotificationMode → R.Report → Script (Text ⊎ Text)
+  notifyWith mode report with V.result (Config.validate cfg) | Path.absolute path
   ... | inj₁ _ | _ = done (inj₁ (toList "invalid notification configuration"))
   ... | _ | false = done (inj₁ (toList "notification state path must be absolute"))
   ... | inj₂ _ | true with status report
-  ...   | I.failure _ _ = submitDetails report (just (D.failure project report))
-  ...   | I.progress = submitDetails report nothing
+  ...   | I.failure _ _ = submitDetails mode report (just (D.failure project report))
+  ...   | I.progress = submitDetails mode report nothing
   ...   | I.recovery = ask readFailure λ where
     (inj₁ error) → done (inj₁ error)
-    (inj₂ nothing) → submitDetails report nothing
-    (inj₂ (just savedIncident)) → submitDetails report (just (D.recovery project report savedIncident))
+    (inj₂ nothing) → submitDetails mode report nothing
+    (inj₂ (just savedIncident)) → submitDetails mode report (just (D.recovery project report savedIncident))
+
+  notify : R.Report → Script (Text ⊎ Text)
+  notify = notifyWith Finalization.inlineDelivery
+
+  queue : R.Report → Script (Text ⊎ Text)
+  queue report with Config.Config.enabled cfg
+  ... | false = done (inj₂ (toList "disabled"))
+  ... | true = notifyWith Finalization.queuedDelivery report

@@ -75,6 +75,15 @@ file and last admitted settings are left intact. Save the corrected file to
 resume, or press Ctrl-C to stop. No polling timer is used for configuration
 changes.
 
+In watch mode, alert and daily-summary delivery run in one owned background
+task. A stalled SMTP or authentication exchange does not hold the judge's state
+lock or block another review. The report's `notification: "queued"` records
+queue admission, not confirmed email delivery. Delivery problems are logged by
+the worker. Stopping the watcher cancels and awaits the worker: existing notifier
+outbox entries remain on disk, while jobs not yet submitted are cancelled.
+Completed review reports remain stored. Standalone `judge run` delivery is still
+synchronous; its remaining deadline is tracked in #110.
+
 Common cases:
 
 | Cause | Action |

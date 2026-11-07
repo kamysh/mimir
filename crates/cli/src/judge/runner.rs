@@ -334,7 +334,12 @@ async fn observe(client: &mut Client, selected: &ExperienceState) -> Result<&'st
     }
 }
 
-pub async fn run<B: Backend>(settings: &RuntimeConfig, state: &State, backend: &mut B) -> Report {
+pub async fn run<B: Backend>(
+    settings: &RuntimeConfig,
+    state: &State,
+    backend: &mut B,
+    delivery: notification::Mode<'_>,
+) -> Report {
     let mut report = Report::new("blocked", 0, 0, 0, 0, 0);
     let result = run_inner(settings, state, backend, &mut report).await;
     if let Err(error) = result {
@@ -349,7 +354,7 @@ pub async fn run<B: Backend>(settings: &RuntimeConfig, state: &State, backend: &
         report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
         report.capture_source(&error);
     }
-    finish_report(settings, state, report).await
+    finish_report(settings, state, report, delivery).await
 }
 
 fn trace(
@@ -386,15 +391,21 @@ pub async fn setup_failure(
     state: &State,
     reason: &str,
     error: &anyhow::Error,
+    delivery: notification::Mode<'_>,
 ) -> Report {
     let mut report = Report::new("blocked", 0, 0, 0, 0, 0);
     report.block_reason = Some(reason.into());
     report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
     report.capture_source(error);
-    finish_report(settings, state, report).await
+    finish_report(settings, state, report, delivery).await
 }
 
-async fn finish_report(settings: &RuntimeConfig, state: &State, mut report: Report) -> Report {
+pub(super) async fn finish_report(
+    settings: &RuntimeConfig,
+    state: &State,
+    mut report: Report,
+    delivery: notification::Mode<'_>,
+) -> Report {
     report.stamp();
     if let Some(id) = report.diagnostics_id {
         match state.finish_trace(id, &report) {
@@ -416,7 +427,7 @@ async fn finish_report(settings: &RuntimeConfig, state: &State, mut report: Repo
         report.block_reason = Some("state_write_error".into());
         return report;
     }
-    if notification::notify(settings, state, &mut report)
+    if notification::notify_with(delivery, settings, state, &mut report)
         .await
         .is_err()
     {

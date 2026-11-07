@@ -32,7 +32,7 @@ module R = Records.Over ℕ
 
 module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   (display : Revision.Display) (contract model batchLimit : ℕ)
-  (project : Maybe Text) where
+  (project : Maybe Text) (deliveryMode : Finalization.NotificationMode) where
 
   initial = Budget.counts 0 0
   module One selected = Revision.Run conversion format display initial selected
@@ -78,7 +78,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   liftFinalization (Finalization.E.ask effect next) = ask (finalize effect) (λ reply → liftFinalization (next reply))
 
   finish : R.Report → Script R.Report
-  finish report = liftFinalization (Finalization.finish report)
+  finish report = liftFinalization (Finalization.finishWith deliveryMode report)
 
   failed : R.Report → Text → Revision.Error → Script R.Report
   failed report reason failureValue = finish (record (R.captureSource (Revision.Error.source failureValue) report)
