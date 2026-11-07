@@ -195,22 +195,41 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                     );
                     digest_problem = problem;
                 }
-                let (delay, transition) =
+                let (next, transition) =
                     watch.advance(outcome, interval_seconds, max_consecutive_failures);
-                let next_attempt = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |t| t.as_secs())
-                    .saturating_add(delay);
+                let mut runtime = json!({
+                    "version":env!("CARGO_PKG_VERSION"),
+                    "pid":std::process::id(),
+                    "phase":match next {
+                        NextAttempt::Immediately => "running",
+                        NextAttempt::After(_) => "waiting",
+                    },
+                    "consecutive_failures":watch.consecutive_failures,
+                });
+                if let NextAttempt::After(delay) = next {
+                    let next_attempt = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |t| t.as_secs())
+                        .saturating_add(delay);
+                    runtime["next_attempt_unix"] = json!(next_attempt);
+                    runtime["delay_seconds"] = json!(delay);
+                }
                 if let Ok(path) = state::resolve(state_dir.as_deref()) {
                     if let Ok(Some(state)) = state::State::lock(path) {
-                        let _ = state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"waiting","next_attempt_unix":next_attempt,"delay_seconds":delay,"consecutive_failures":watch.consecutive_failures}));
+                        let _ = state.write_runtime(&runtime);
                     }
                 }
                 if let Some(message) = transition {
                     eprintln!("{message}");
-                    eprintln!("Next attempt in {delay} seconds. For cause and recovery steps, run: mimir judge diagnose");
+                    match next {
+                        NextAttempt::Immediately => eprintln!("Continuing immediately. For cause and recovery steps, run: mimir judge diagnose"),
+                        NextAttempt::After(delay) => eprintln!("Next attempt in {delay} seconds. For cause and recovery steps, run: mimir judge diagnose"),
+                    }
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                next.wait_with(|seconds| {
+                    tokio::time::sleep(std::time::Duration::from_secs(seconds))
+                })
+                .await;
             }
         }
         JudgeCommand::Status { state_dir } => {
@@ -320,6 +339,24 @@ struct RunOutcome {
     idle: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NextAttempt {
+    Immediately,
+    After(u64),
+}
+
+impl NextAttempt {
+    async fn wait_with<F, W>(self, wait: F)
+    where
+        F: FnOnce(u64) -> W,
+        W: std::future::Future<Output = ()>,
+    {
+        if let Self::After(seconds) = self {
+            wait(seconds).await;
+        }
+    }
+}
+
 #[derive(Default)]
 struct WatchState {
     consecutive_failures: usize,
@@ -332,7 +369,7 @@ impl WatchState {
         outcome: RunOutcome,
         interval_seconds: u64,
         backoff_after: usize,
-    ) -> (u64, Option<&'static str>) {
+    ) -> (NextAttempt, Option<&'static str>) {
         let transition = if outcome.degraded {
             if self.episode_active {
                 None
@@ -359,12 +396,16 @@ impl WatchState {
         } else {
             self.consecutive_failures = self.consecutive_failures.saturating_add(1);
         }
-        let delay = if self.consecutive_failures >= backoff_after {
-            interval_seconds.max(3600)
+        let next = if outcome.code == 0 && !outcome.degraded && !outcome.idle {
+            NextAttempt::Immediately
         } else {
-            interval_seconds
+            NextAttempt::After(if self.consecutive_failures >= backoff_after {
+                interval_seconds.max(3600)
+            } else {
+                interval_seconds
+            })
         };
-        (delay, transition)
+        (next, transition)
     }
 }
 
@@ -538,6 +579,34 @@ mod watch_tests {
     use std::os::unix::fs::OpenOptionsExt;
 
     #[tokio::test]
+    async fn ready_batches_continue_without_constructing_a_timer() {
+        let mut watch = WatchState::default();
+        let ready = [
+            RunOutcome {
+                code: 0,
+                degraded: false,
+                idle: false,
+            },
+            RunOutcome {
+                code: 0,
+                degraded: false,
+                idle: false,
+            },
+        ];
+        let mut completed = 0;
+        for outcome in ready {
+            let (next, _) = watch.advance(outcome, 300, 3);
+            assert_eq!(next, NextAttempt::Immediately);
+            next.wait_with(|_| -> std::future::Ready<()> {
+                panic!("Ready work must not construct or wait for a timer")
+            })
+            .await;
+            completed += 1;
+        }
+        assert_eq!(completed, 2);
+    }
+
+    #[tokio::test]
     async fn invalid_configuration_replaces_stale_status_and_preserves_incident() {
         let dir =
             std::env::temp_dir().join(format!("mimir-judge-config-test-{}", uuid::Uuid::new_v4()));
@@ -577,7 +646,10 @@ mod watch_tests {
             idle: false,
         };
         assert!(watch.advance(failure(), 60, 3).1.is_some());
-        assert_eq!(watch.advance(failure(), 60, 3), (60, None));
+        assert_eq!(
+            watch.advance(failure(), 60, 3),
+            (NextAttempt::After(60), None)
+        );
         assert_eq!(
             watch.advance(
                 RunOutcome {
@@ -588,10 +660,13 @@ mod watch_tests {
                 60,
                 3
             ),
-            (3600, None)
+            (NextAttempt::After(3600), None)
         );
         for _ in 0..1000 {
-            assert_eq!(watch.advance(failure(), 60, 3), (3600, None));
+            assert_eq!(
+                watch.advance(failure(), 60, 3),
+                (NextAttempt::After(3600), None)
+            );
         }
         assert!(watch
             .advance(
@@ -615,7 +690,7 @@ mod watch_tests {
                 60,
                 3
             ),
-            (60, None)
+            (NextAttempt::After(60), None)
         );
     }
 
@@ -629,7 +704,10 @@ mod watch_tests {
         };
         assert!(watch.advance(deferred(), 300, 3).1.is_some());
         for _ in 0..1000 {
-            assert_eq!(watch.advance(deferred(), 300, 3), (300, None));
+            assert_eq!(
+                watch.advance(deferred(), 300, 3),
+                (NextAttempt::After(300), None)
+            );
         }
         assert_eq!(watch.consecutive_failures, 0);
     }
@@ -654,13 +732,22 @@ mod watch_tests {
         };
         assert!(watch.advance(failure(), 300, 3).1.is_some());
         for _ in 0..1000 {
-            assert_eq!(watch.advance(complete(), 300, 3), (300, None));
-            assert_eq!(watch.advance(failure(), 300, 3), (300, None));
+            assert_eq!(
+                watch.advance(complete(), 300, 3),
+                (NextAttempt::Immediately, None)
+            );
+            assert_eq!(
+                watch.advance(failure(), 300, 3),
+                (NextAttempt::After(300), None)
+            );
         }
         assert_eq!(
             watch.advance(idle(), 300, 3).1,
             Some("judge watch: recovered")
         );
-        assert_eq!(watch.advance(idle(), 300, 3), (300, None));
+        assert_eq!(
+            watch.advance(idle(), 300, 3),
+            (NextAttempt::After(300), None)
+        );
     }
 }

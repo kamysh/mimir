@@ -164,6 +164,8 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     digest : ∀ state outcome events result → Runs migrations idle (Digest.Run.tick calendar outcome) events idle result →
       Step migrations interval threshold (Host.digest state outcome)
         (Host.step sizeMaximum interval threshold (Host.digest state outcome) result)
+    continued : ∀ state messages →
+      Step migrations interval threshold (Host.continuing state messages) (Host.running state)
     waited : ∀ state seconds messages result → Waited seconds messages result →
       Step migrations interval threshold (Host.waiting state seconds messages)
         (Host.step sizeMaximum interval threshold (Host.waiting state seconds messages) result)
@@ -186,9 +188,9 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     (selectedDatabase (FirstBatch.loaded receipt)) (FirstBatch.subscriptionEvents receipt)
     (FirstBatch.connection receipt) (FirstBatch.subscribed receipt)
 
-  -- A complete continued round uses the actual batch and digest programs.
-  -- The timer receipt is the external scheduling/fairness condition. Neither
-  -- a failed batch nor an unavailable digest creates an exit transition.
+  -- A complete round uses the actual batch and digest programs. Productive
+  -- completion continues without a timer. Other paths retain their existing
+  -- external timer condition until their event-driven replacements are wired.
   problem : Text ⊎ Bool → Bool
   problem (inj₁ error) = true
   problem (inj₂ digestProblem) = digestProblem
@@ -197,9 +199,24 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   nextWatch before batchResult reply = record (Host.advance sizeMaximum before batchResult)
     { digestProblem = problem reply }
 
-  WaitingTimer : Host.Phase → Set
-  WaitingTimer (Host.waiting state seconds messages) = Waited seconds messages false
-  WaitingTimer phase = ⊥
+  data Continues (state : Host.Watch) : Host.Phase → Set where
+    immediately : ∀ messages → Continues state (Host.continuing state messages)
+    afterTimer : ∀ seconds messages → Waited seconds messages false →
+      Continues state (Host.waiting state seconds messages)
+
+  continuationTrace : ∀ migrations interval threshold state phase → Continues state phase →
+    Trace migrations interval threshold phase (Host.running state)
+  continuationTrace migrations interval threshold state .(Host.continuing state messages)
+    (immediately messages) = more _ _ _ (continued state messages) (empty _)
+  continuationTrace migrations interval threshold state .(Host.waiting state seconds messages)
+    (afterTimer seconds messages timerReady) = more _ _ _ (waited state seconds messages false timerReady) (empty _)
+
+  successfulRoundNeedsNoTimer : ∀ interval threshold before reply →
+    Continues (nextWatch before (Host.outcome Host.success false false) reply)
+      (Host.step sizeMaximum interval threshold
+        (Host.digest before (Host.outcome Host.success false false)) reply)
+  successfulRoundNeedsNoTimer interval threshold before (inj₁ error) = immediately _
+  successfulRoundNeedsNoTimer interval threshold before (inj₂ problem) = immediately _
 
   record Round (migrations : M.Inputs) (interval threshold : ℕ) (before : Host.Watch) : Set where
     constructor continuedRound
@@ -209,21 +226,17 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
           digestEvents : List Digest.Event
           digestReply : Text ⊎ Bool
           digestDone : Runs migrations idle (Digest.Run.tick calendar outcome) digestEvents idle digestReply
-          timerReady : WaitingTimer (Host.step sizeMaximum interval threshold (Host.digest before outcome) digestReply)
+          continuationReady : Continues (nextWatch before outcome digestReply)
+            (Host.step sizeMaximum interval threshold (Host.digest before outcome) digestReply)
 
   roundTrace : ∀ migrations interval threshold before → (round : Round migrations interval threshold before) →
     Trace migrations interval threshold (Host.running before)
       (Host.running (nextWatch before (Round.outcome round) (Round.digestReply round)))
   roundTrace migrations interval threshold before
-    (continuedRound batchResult batchEvents batchDone digestEvents (inj₁ error) digestDone timerReady) =
+    (continuedRound batchResult batchEvents batchDone digestEvents reply digestDone continuationReady) =
     more _ _ _ (batch before _ _ batchDone)
       (more _ _ _ (digest before _ _ _ digestDone)
-        (more _ _ _ (waited _ _ _ false timerReady) (empty _)))
-  roundTrace migrations interval threshold before
-    (continuedRound batchResult batchEvents batchDone digestEvents (inj₂ digestProblem) digestDone timerReady) =
-    more _ _ _ (batch before _ _ batchDone)
-      (more _ _ _ (digest before _ _ _ digestDone)
-        (more _ _ _ (waited _ _ _ false timerReady) (empty _)))
+        (continuationTrace migrations interval threshold _ _ continuationReady))
 
   appendTrace : ∀ {migrations interval threshold before middle after} →
     Trace migrations interval threshold before middle → Trace migrations interval threshold middle after →

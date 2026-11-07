@@ -151,9 +151,10 @@ when a required account or permission step remains unresolved.
 ## Runtime behavior
 
 `mimir judge check-config` validates settings locally. `mimir judge run` reviews
-one selected batch through `mimir-mcp`; `mimir judge watch` repeats batches
-every five minutes by default (`--interval-seconds`, positive values) until interrupted.
-After three consecutive incomplete or unavailable runs by default
+one selected batch through `mimir-mcp`; `mimir judge watch` immediately checks
+for further eligible work after each successful non-idle batch. The current
+idle and incomplete-work paths wait five minutes by default
+(`--interval-seconds`, positive values). After three consecutive incomplete or unavailable runs by default
 (`--max-consecutive-failures`), it backs off to hourly runs. An empty queue
 makes no model call. `mimir judge status` reads the last local report and gives
 the ID of a retained failure trace. `mimir judge diagnostics` reads the first

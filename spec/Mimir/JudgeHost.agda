@@ -138,6 +138,7 @@ data Phase : Set where
   subscribing : Watch → Phase
   running : Watch → Phase
   digest : Watch → Outcome → Phase
+  continuing : Watch → List Transition → Phase
   waiting : Watch → ℕ → List Transition → Phase
   exited : Exit → Phase
 
@@ -145,6 +146,7 @@ Reply : Phase → Set
 Reply (subscribing state) = Exit ⊎ Outcome
 Reply (running state) = Outcome
 Reply (digest state result) = Text ⊎ Bool -- error is an unavailable digest
+Reply (continuing state messages) = ⊤ -- emit transitions, then continue; no timer
 Reply (waiting state seconds messages) = Bool -- true = Ctrl-C, false = timer
 Reply (exited code) = ⊤
 
@@ -154,8 +156,17 @@ digestTransitions true true = []
 digestTransitions false true = digestUnavailable ∷ []
 digestTransitions true false = digestAvailable ∷ []
 
+completedWork : Outcome → Bool
+completedWork (outcome success false false) = true
+completedWork _ = false
+
+schedule : Bool → Watch → ℕ → List Transition → Phase
+schedule true state seconds messages = continuing state messages
+schedule false state seconds messages = waiting state seconds messages
+
 afterDigest : ℕ → ℕ → ℕ → Watch → Outcome → Bool → Phase
-afterDigest usizeMaximum interval threshold before result problem = waiting after (delay interval threshold after) messages
+afterDigest usizeMaximum interval threshold before result problem =
+  schedule (completedWork result) after (delay interval threshold after) messages
   where
   after = record (advance usizeMaximum before result) { digestProblem = problem }
   messages : List Transition
@@ -169,6 +180,7 @@ step usizeMaximum interval threshold (subscribing state) (inj₂ result) = diges
 step usizeMaximum interval threshold (running state) result = digest state result
 step usizeMaximum interval threshold (digest state result) (inj₁ error) = afterDigest usizeMaximum interval threshold state result true
 step usizeMaximum interval threshold (digest state result) (inj₂ problem) = afterDigest usizeMaximum interval threshold state result problem
+step usizeMaximum interval threshold (continuing state messages) reply = running state
 step usizeMaximum interval threshold (waiting state seconds messages) true = exited success
 step usizeMaximum interval threshold (waiting state seconds messages) false = running state
 step usizeMaximum interval threshold (exited code) reply = exited code
@@ -185,3 +197,14 @@ cancelAtWait maximum interval threshold state seconds messages = refl
 successfulBatchDoesNotCloseEpisode : ∀ maximum failures episode digestProblem →
   Watch.episode (advance maximum (watchState failures episode digestProblem) (outcome success false false)) ≡ episode
 successfulBatchDoesNotCloseEpisode maximum failures episode digestProblem = refl
+
+-- A confirmed non-idle batch cannot require any timer acknowledgement,
+-- independently of the configured interval, failure history or digest reply.
+data Immediate : Phase → Set where
+  ready : ∀ state messages → Immediate (continuing state messages)
+
+successfulBatchContinuesImmediately : ∀ maximum interval threshold before reply →
+  Immediate (step maximum interval threshold
+    (digest before (outcome success false false)) reply)
+successfulBatchContinuesImmediately maximum interval threshold before (inj₁ error) = ready _ _
+successfulBatchContinuesImmediately maximum interval threshold before (inj₂ problem) = ready _ _
