@@ -99,6 +99,8 @@ dispatch (Envelope.identity true id) (Envelope.callTool name args) =
   ask (handleTool name args) (afterTool (Envelope.identity true id))
 dispatch (Envelope.identity true id) (Envelope.unknownMethod name) =
   emit (error id -[1+ 32600 ] (toList "Method not found"))
+dispatch (Envelope.identity true id) (Envelope.invalidParams details) =
+  emit (protocolProblem (Envelope.problem (Envelope.identity true id) -[1+ 32601 ] details))
 
 exchange : Envelope.Problem ⊎ Envelope.Request → Script Outcome
 exchange (inj₁ diagnostic) = respond (Envelope.Problem.response diagnostic) (protocolProblem diagnostic)
@@ -135,6 +137,12 @@ serializeOnly : ∀ reply events result → Runs (afterSerialize reply) events r
 serializeOnly (panicked _) _ _ (returned _) = empty
 serializeOnly (serialized bytes) _ _ (replied _ _ reply run) =
   writing _ reply (writeOnly _ reply _ _ run)
+
+invalidMethodParametersHaveNoBusinessEffects : ∀ id report events result →
+  Runs (dispatch (Envelope.identity true id) (Envelope.invalidParams report)) events result →
+  ProtocolOnly events
+invalidMethodParametersHaveNoBusinessEffects id report events result (replied _ _ reply run) =
+  serialization _ reply (serializeOnly reply _ _ run)
 
 rejectedInputHasNoBusinessEffects : ∀ diagnostic events result →
   Runs (exchange (inj₁ diagnostic)) events result → ProtocolOnly events

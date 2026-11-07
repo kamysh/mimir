@@ -67,6 +67,10 @@ pub fn parse_error(message: &str) -> Value {
         "Repair the JSON syntax or UTF-8 encoding and resend the complete request with its client-chosen ID."), vec![]))
 }
 
+pub fn invalid_params(id: &Value, correction: NeedsInput) -> Value {
+    error(id.clone(), -32602, "Invalid params", correction)
+}
+
 pub fn decode(value: Value) -> Incoming {
     let Some(fields) = value.as_object() else {
         return Incoming::Rejected(error(

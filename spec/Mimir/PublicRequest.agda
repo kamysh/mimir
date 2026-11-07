@@ -12,7 +12,9 @@ open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
-open import Data.String using (toList)
+open import Data.String using (String; toList)
+open import Data.Unit using (⊤; tt)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.Validation using (Fault)
 open import Mimir.RecordDecoding using (_>>=_; mapResult; readArray)
@@ -178,5 +180,32 @@ module Decode (conversion : Conversion.Contract) where
     required "project" V.asString fields >>= λ project → defaulted "limit" 5 integer fields >>= λ limit →
     inj₂ (learningContext context project limit)
 
+  -- A supplied optional value must pass its decoder before any loose
+  -- legacy accessor can select a fallback. Omission retains the advertised
+  -- behavior; wrong types never become omission.
+  supplied : ∀ {A : Set} → String → (V.Value → Fault ⊎ A) → V.Object.View → Fault ⊎ ⊤
+  supplied name decoder fields = present name decoder fields >>= λ _ → inj₂ tt
+
+  suppliedTypes : V.Object.View → Fault ⊎ ⊤
+  suppliedTypes fields = supplied "project" V.asString fields >>= λ _ →
+    supplied "memory_type" V.asString fields >>= λ _ →
+    supplied "prefer_type" V.asString fields >>= λ _ →
+    supplied "limit" integer fields >>= λ _ →
+    supplied "offset" integer fields >>= λ _ →
+    supplied "evidence_per_belief" integer fields >>= λ _ →
+    supplied "include_evidence" V.asBoolean fields >>= λ _ →
+    supplied "decay_factor" float fields >>= λ _ →
+    supplied "prob_threshold" float fields >>= λ _ →
+    supplied "grace_hours" float fields >>= λ _ →
+    supplied "weight" float fields
+
+  admittedFields : Tools.Tool → V.Object.View → Fault ⊎ Request
+  admittedFields tool fields = suppliedTypes fields >>= λ _ → decode tool fields
+
   readTool : Tools.Tool → V.Value → Fault ⊎ Request
-  readTool tool raw = decode tool (view raw)
+  readTool tool (V.object fields) = admittedFields tool (V.Object.normalize fields)
+  readTool tool _ = inj₁ (Validation.fault [] Validation.wrongType "Tool arguments must be an object")
+
+  invalidSuppliedValuePreventsExecution : ∀ tool fields detail →
+    suppliedTypes fields ≡ inj₁ detail → admittedFields tool fields ≡ inj₁ detail
+  invalidSuppliedValuePreventsExecution tool fields detail rejected rewrite rejected = refl

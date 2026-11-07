@@ -1,3 +1,4 @@
+mod admission;
 mod envelope;
 mod learning;
 #[cfg(test)]
@@ -925,12 +926,12 @@ async fn application_main() -> Result<()> {
 
             "tools/list" => ok_response(&id, json!({ "tools": catalogue.advertised() })),
 
-            "tools/call" => {
-                let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let empty_obj = Value::Object(serde_json::Map::new());
-                let arguments = params.get("arguments").unwrap_or(&empty_obj);
-
-                match catalogue.call(&svc, tool_name, arguments).await {
+            "tools/call" => match admission::tool_parameters(params) {
+                Err(correction) => envelope::invalid_params(id, correction),
+                Ok((tool_name, arguments)) => match catalogue
+                    .call(&svc, tool_name, &arguments)
+                    .await
+                {
                     Ok(result) => ok_response(
                         &id,
                         json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
@@ -942,8 +943,8 @@ async fn application_main() -> Result<()> {
                         }
                         response
                     }
-                }
-            }
+                },
+            },
 
             other => {
                 error!("unknown method: {}", other);

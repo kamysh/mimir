@@ -150,6 +150,33 @@ data Command : Set where
   initialize listTools : Command
   callTool : Text → JSON.Value → Command
   unknownMethod : Text → Command
+  invalidParams : Correction.Claim → Command
+
+toolName : JSON.Object.View → Check Text
+toolName fields with fields (literal "name")
+... | just (JSON.string name) = accepted name
+... | nothing = rejected (issue (V.key "params" ∷ V.key "name" ∷ []) V.missingField
+  "tools/call requires a string tool name." "The exact name of an advertised tool."
+  "Supply the intended tool name from tool discovery; ask the user if the intended action is unknown.") []
+... | just _ = rejected (issue (V.key "params" ∷ V.key "name" ∷ []) V.wrongType
+  "tools/call requires a string tool name." "The exact name of an advertised tool."
+  "Supply the intended tool name from tool discovery; ask the user if the intended action is unknown.") []
+
+toolArguments : JSON.Object.View → Check JSON.Value
+toolArguments fields with fields (literal "arguments")
+... | nothing = accepted (JSON.object [])
+... | just (JSON.object values) = accepted (JSON.object values)
+... | just _ = rejected (issue (V.key "params" ∷ V.key "arguments" ∷ []) V.wrongType
+  "Tool arguments must be an object." "An arguments object, or omission for a tool that needs no fields."
+  "Supply the intended argument fields as an object; do not replace a malformed supplied value with defaults.") []
+
+toolCommand : JSON.Value → Command
+toolCommand (JSON.object fields) with both (toolName (JSON.Object.normalize fields)) (toolArguments (JSON.Object.normalize fields))
+... | accepted (name , arguments) = callTool name arguments
+... | rejected first rest = invalidParams (Correction.claim first rest)
+toolCommand _ = invalidParams (Correction.claim (issue (V.key "params" ∷ []) V.wrongType
+  "MCP named parameters must be an object." "An object."
+  "Supply named parameters as an object; do not replace an invalid supplied value with defaults.") [])
 
 route : Text → JSON.Value → Command
 route name params with name ≟Text literal "initialize"
@@ -157,8 +184,7 @@ route name params with name ≟Text literal "initialize"
 ... | no _ with name ≟Text literal "tools/list"
 ...   | yes _ = listTools
 ...   | no _ with name ≟Text literal "tools/call"
-...     | yes _ = callTool (asText (get (literal "name") params))
-        (orDefault (JSON.object []) (get (literal "arguments") params))
+...     | yes _ = toolCommand params
 ...     | no _ = unknownMethod name
 
 dispatch : Request → Command

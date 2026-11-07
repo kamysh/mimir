@@ -96,6 +96,60 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         let correction: NeedsInput = serde_json::from_value(response["error"]["data"].clone())?;
         ensure!(!correction.issues().is_empty(), "missing repair details");
     }
+    // Supplied invalid tool fields are corrected before handler execution.
+    for params in [json!({}), json!({"name":7,"arguments":null})] {
+        let message =
+            json!({"jsonrpc":"2.0","id":"method-fields","method":"tools/call","params":params});
+        input.write_all(format!("{message}\n").as_bytes()).await?;
+        input.flush().await?;
+        let mut line = String::new();
+        ensure!(
+            output.read_line(&mut line).await? != 0,
+            "server exited on missing method fields"
+        );
+        let response: Value = serde_json::from_str(&line)?;
+        ensure!(
+            response["error"]["code"] == -32602,
+            "missing method correction: {response}"
+        );
+        let _: NeedsInput = serde_json::from_value(response["error"]["data"].clone())?;
+    }
+    for (name, args, field) in [
+        ("delete_project", json!({}), "project"),
+        ("delete_project", json!({"project":4}), "project"),
+        ("list_beliefs", json!({"project":false}), "project"),
+        (
+            "query_relevant",
+            json!({"context":"must not embed","limit":"10"}),
+            "limit",
+        ),
+        (
+            "record_experience",
+            json!({"experience":{"project":project},"expected_revision":"0"}),
+            "id",
+        ),
+    ] {
+        let message = json!({"jsonrpc":"2.0","id":"argument-fields","method":"tools/call","params":{"name":name,"arguments":args}});
+        input.write_all(format!("{message}\n").as_bytes()).await?;
+        input.flush().await?;
+        let mut line = String::new();
+        ensure!(
+            output.read_line(&mut line).await? != 0,
+            "server exited on invalid arguments"
+        );
+        let response: Value = serde_json::from_str(&line)?;
+        ensure!(
+            response.get("error").is_none(),
+            "tool correction became a protocol failure: {response}"
+        );
+        let correction: NeedsInput =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+        let encoded = serde_json::to_value(&correction)?;
+        ensure!(
+            encoded.to_string().contains(field),
+            "correction omitted {field}: {encoded}"
+        );
+    }
     // Notifications receive no response. The next response must belong to the
     // identified request, and the original project data must still exist.
     for message in [

@@ -167,6 +167,9 @@ impl RegisteredOperation {
         self.handler.committed_boundaries()
     }
     pub async fn call(&self, service: &MimirService, input: &Input) -> Result<Value> {
+        if let Some(correction) = super::admission::arguments(self.input_schema(), input) {
+            return Ok(serde_json::to_value(correction)?);
+        }
         self.handler.call(service, input).await
     }
 }
