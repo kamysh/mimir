@@ -19,7 +19,7 @@ import Mimir.ItemOwners as Owners
 import Mimir.LearningStore as Learning
 import Mimir.DatabaseTransaction as Database
 open import Mimir.Migrations public
-  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations)
+  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation;
@@ -155,7 +155,7 @@ data DDL : Set where
   setColumnDefault : String → String → Default → DDL
   addUniqueConstraint : String → String → List String → DDL
   addCheckConstraint : String → String → Expr → DDL
-  installReviewQueueNotifier : DDL
+  installReviewQueueNotifier installImmutableOperationBindings : DDL
 
 kappa alpha beta : Expr
 kappa = add (number "2.0" ∷ multiply (columnValue "confidence" ∷ number "198.0" ∷ []) ∷ [])
@@ -189,6 +189,7 @@ body allocation =
   addCheckConstraint "mimir_learning_item_owners" "mimir_learning_item_key_nonempty" localKeyValid ∷ []
 body reviewQueueNotifications = installReviewQueueNotifier ∷ []
 body operationReservations = create reservationTable ∷ []
+body operationBindings = installImmutableOperationBindings ∷ []
 
 -- The trigger's concrete meaning is the pending-source rule, with signals
 -- coupled to publication. This is a native PostgreSQL contract; the SQL body

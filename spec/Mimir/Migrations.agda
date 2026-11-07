@@ -14,7 +14,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 
 data Migration : Set where
   initial searchPath beliefEmbeddings evidenceEdges betaBeliefs learningLedger
-    reviewCandidates assessments itemOwners postgresItemAllocation reviewQueueNotifications operationReservations : Migration
+    reviewCandidates assessments itemOwners postgresItemAllocation reviewQueueNotifications operationReservations operationBindings : Migration
 
 name : Migration → String
 name initial = "initial"
@@ -29,6 +29,7 @@ name itemOwners = "learning-item-owners"
 name postgresItemAllocation = "postgres-item-allocation"
 name reviewQueueNotifications = "review-queue-notifications"
 name operationReservations = "operation-reservations"
+name operationBindings = "operation-bindings"
 
 predecessor : Migration → Maybe Migration
 predecessor initial = nothing
@@ -43,11 +44,12 @@ predecessor itemOwners = just assessments
 predecessor postgresItemAllocation = just itemOwners
 predecessor reviewQueueNotifications = just postgresItemAllocation
 predecessor operationReservations = just reviewQueueNotifications
+predecessor operationBindings = just operationReservations
 
 manifest : List Migration
 manifest = initial ∷ searchPath ∷ beliefEmbeddings ∷ evidenceEdges ∷
   betaBeliefs ∷ learningLedger ∷ reviewCandidates ∷ assessments ∷ itemOwners ∷ postgresItemAllocation ∷
-  reviewQueueNotifications ∷ operationReservations ∷ []
+  reviewQueueNotifications ∷ operationReservations ∷ operationBindings ∷ []
 
 -- The executable lifecycle is MigrationDriver. The former untyped state
 -- table was removed because it conflated queued rollback with acknowledgement

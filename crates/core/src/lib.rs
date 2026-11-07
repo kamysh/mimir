@@ -1061,7 +1061,7 @@ impl MimirService {
         Ok(out)
     }
 
-    /// Collect graph statistics.
+    /// Reserve operation metadata without executing a business handler.
     pub async fn reserve_operation(&self) -> Result<store::OperationReservation> {
         self.store.reserve_operation().await
     }
@@ -1073,6 +1073,22 @@ impl MimirService {
         self.store.read_operation_reservation(token).await
     }
 
+    pub async fn bind_operation_request(
+        &self,
+        token: Uuid,
+        request: &store::OperationBindingRequest,
+    ) -> Result<store::OperationBindingDecision> {
+        self.store.bind_operation_request(token, request).await
+    }
+
+    pub async fn read_operation_binding(
+        &self,
+        token: Uuid,
+    ) -> Result<Option<store::OperationBinding>> {
+        self.store.read_operation_binding(token).await
+    }
+
+    /// Collect graph statistics.
     pub async fn stats(&self) -> Result<MimirStats> {
         let beliefs = self.store.count_beliefs().await?;
         let patterns = self.store.count_patterns().await?;

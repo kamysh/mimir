@@ -13,6 +13,7 @@ import Mimir.DatabaseTransaction as Database
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Empty using (⊥-elim)
+open import Data.Bool using (Bool; true; false)
 open import Relation.Nullary using (Dec; yes; no)
 
 -- Assembly fixes World once for the entire dispatcher. An operation over a
@@ -332,3 +333,86 @@ module Reservations (Business Identity Timestamp : Set)
   businessUnchangedForEveryReceipt before allocated receipt after publication =
     Database.invariantPreserved (λ current → State.business current ≡ State.business before)
       publication refl refl
+
+-- This is the state selected by one reserved token. Request includes the
+-- admitted operation, arguments and relevant settings; equality is PostgreSQL
+-- JSONB equality. Timestamp allocation is an external database observation.
+-- Other tokens and all business data are carried intact in Business.
+module Bindings (Business Request Timestamp : Set)
+  (_≟_ : (first second : Request) → Dec (first ≡ second)) where
+
+  record Entry : Set where
+    constructor entry
+    field request : Request; boundAt : Timestamp
+
+  record State : Set where
+    constructor state
+    field business : Business; reserved : Bool; binding : Maybe Entry
+
+  data Reply : Set where
+    unknownToken : Reply
+    bound changedRequest : Entry → Reply
+
+  proposed : State → Entry → State
+  proposed before requested with State.reserved before | State.binding before
+  ... | true | nothing = record before { binding = just requested }
+  ... | _ | _ = before
+
+  reply : State → Entry → Reply
+  reply before requested with State.reserved before | State.binding before
+  ... | false | _ = unknownToken
+  ... | true | nothing = bound requested
+  ... | true | just original with Entry.request requested ≟ Entry.request original
+  ...   | yes _ = bound original
+  ...   | no _ = changedRequest original
+
+  existingBindingPreserved : ∀ before requested original → State.binding before ≡ just original →
+    State.binding (proposed before requested) ≡ just original
+  existingBindingPreserved (state business false binding) requested original existing = existing
+  existingBindingPreserved (state business true nothing) requested original ()
+  existingBindingPreserved (state business true (just previous)) requested original existing = existing
+
+  everyReceiptPreservesExistingBinding : ∀ before requested original receipt after →
+    State.binding before ≡ just original →
+    Database.Atomic before (proposed before requested) receipt after →
+    State.binding after ≡ just original
+  everyReceiptPreservesExistingBinding before requested original receipt after existing publication =
+    Database.invariantPreserved (λ current → State.binding current ≡ just original) publication
+      existing (existingBindingPreserved before requested original existing)
+
+  proposedPreservesBusiness : ∀ before requested → State.business (proposed before requested) ≡ State.business before
+  proposedPreservesBusiness (state business false binding) requested = refl
+  proposedPreservesBusiness (state business true nothing) requested = refl
+  proposedPreservesBusiness (state business true (just original)) requested = refl
+
+  everyReceiptPreservesBusiness : ∀ before requested receipt after →
+    Database.Atomic before (proposed before requested) receipt after → State.business after ≡ State.business before
+  everyReceiptPreservesBusiness before requested receipt after publication =
+    Database.invariantPreserved (λ current → State.business current ≡ State.business before) publication
+      refl (proposedPreservesBusiness before requested)
+
+  retryCannotReplaceRequest : ∀ business original requested →
+    proposed (state business true (just original)) requested ≡ state business true (just original)
+  retryCannotReplaceRequest business original requested = refl
+
+  retryProposalIsStable : ∀ before first retry →
+    proposed (proposed before first) retry ≡ proposed before first
+  retryProposalIsStable (state business false binding) first retry = refl
+  retryProposalIsStable (state business true nothing) first retry = refl
+  retryProposalIsStable (state business true (just original)) first retry = refl
+
+  changedRequestReturnsOriginal : ∀ business original requested →
+    (Entry.request requested ≡ Entry.request original → Data.Empty.⊥) →
+    reply (state business true (just original)) requested ≡ changedRequest original
+  changedRequestReturnsOriginal business original requested different
+    with Entry.request requested ≟ Entry.request original
+  ... | yes same = ⊥-elim (different same)
+  ... | no _ = refl
+
+  sameRequestReturnsOriginal : ∀ business original requested →
+    Entry.request requested ≡ Entry.request original →
+    reply (state business true (just original)) requested ≡ bound original
+  sameRequestReturnsOriginal business original requested same
+    with Entry.request requested ≟ Entry.request original
+  ... | yes _ = refl
+  ... | no different = ⊥-elim (different same)

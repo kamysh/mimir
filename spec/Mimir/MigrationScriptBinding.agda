@@ -28,6 +28,8 @@ source Schema.reviewQueueNotifications = toList "CREATE FUNCTION public.mimir_no
 
 source Schema.operationReservations = toList "CREATE TABLE mimir_operation_reservations (\n    operation_token uuid PRIMARY KEY DEFAULT gen_random_uuid(),\n    reserved_at timestamptz NOT NULL DEFAULT now()\n);\n"
 
+source Schema.operationBindings = toList "CREATE TABLE mimir_operation_bindings (\n    operation_token uuid PRIMARY KEY REFERENCES mimir_operation_reservations(operation_token),\n    operation text NOT NULL CHECK (operation <> '' AND operation = btrim(operation)),\n    arguments jsonb NOT NULL CHECK (jsonb_typeof(arguments) = 'object'),\n    settings jsonb NOT NULL CHECK (jsonb_typeof(settings) = 'object'),\n    bound_at timestamptz NOT NULL DEFAULT now()\n);\n\nCREATE FUNCTION mimir_preserve_operation_binding() RETURNS trigger\nLANGUAGE plpgsql AS $$\nBEGIN\n    RAISE EXCEPTION 'Operation binding is immutable; read the existing binding and retry its original request'\n        USING ERRCODE = '23514';\nEND;\n$$;\n\nCREATE TRIGGER mimir_operation_binding_immutable\nBEFORE UPDATE OR DELETE ON mimir_operation_bindings\nFOR EACH ROW EXECUTE FUNCTION mimir_preserve_operation_binding();\n"
+
 data Statement : Set where
   application : Schema.DDL → Statement
   transactionSearchPath : List Text → Statement

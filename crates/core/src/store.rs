@@ -4,7 +4,9 @@ mod reservations;
 use anyhow::{bail, Result};
 use chrono::DateTime;
 use pgvector::Vector;
-pub use reservations::OperationReservation;
+pub use reservations::{
+    OperationBinding, OperationBindingDecision, OperationBindingRequest, OperationReservation,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
