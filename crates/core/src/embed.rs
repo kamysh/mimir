@@ -378,8 +378,10 @@ fn download_blocking(url: &str, dest: &std::path::Path) -> Result<()> {
         .unwrap_or_else(|| url.to_string());
     tracing::info!(url, dest = %dest.display(), "downloading model file");
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(600))
-        .redirect(reqwest::redirect::Policy::limited(10))
+        .timeout(None)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            attempt.follow()
+        }))
         .build()
         .context("building HTTP client")?;
     let mut resp = client
@@ -811,5 +813,94 @@ mod response_tests {
         ] {
             assert!(parse_embeddings(&json!({"data":data}), 2).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+
+    enum Event {
+        BodyReady,
+        Finished(Result<()>),
+    }
+
+    #[test]
+    fn download_follows_the_complete_chain_and_waits_for_explicit_body_release() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "mimir-download-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let dest = root.join("model.fixture");
+        let (events, observed) = mpsc::channel();
+        let (release, body_release) = mpsc::channel();
+        let server_events = events.clone();
+        let server = std::thread::spawn(move || {
+            for hop in 0..=12 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                request.read_line(&mut line).unwrap();
+                assert!(line.starts_with(&format!("GET /{hop} ")));
+                loop {
+                    line.clear();
+                    request.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                if hop < 12 {
+                    write!(stream,"HTTP/1.1 302 Found\r\nLocation: /{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",hop + 1).unwrap();
+                } else {
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                    stream.flush().unwrap();
+                    server_events.send(Event::BodyReady).unwrap();
+                    body_release.recv().unwrap();
+                    stream.write_all(b"complete").unwrap();
+                }
+            }
+        });
+        let output = dest.clone();
+        let client = std::thread::spawn(move || {
+            events
+                .send(Event::Finished(download_blocking(
+                    &format!("http://{address}/0"),
+                    &output,
+                )))
+                .unwrap();
+        });
+        match observed.recv().unwrap() {
+            Event::BodyReady => (),
+            Event::Finished(result) => {
+                panic!("download stopped before its response was released: {result:?}")
+            }
+        }
+        assert!(matches!(
+            observed.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        release.send(()).unwrap();
+        match observed.recv().unwrap() {
+            Event::Finished(result) => result.unwrap(),
+            Event::BodyReady => panic!("duplicate response release"),
+        }
+        client.join().unwrap();
+        server.join().unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"complete");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

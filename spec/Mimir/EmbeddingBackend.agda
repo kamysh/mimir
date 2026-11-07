@@ -100,7 +100,7 @@ module Arithmetic (float : Ranking.F32) where
   data Effect : Set where
     cached : Path.Path → Effect
     mkdirParents : Path.Path → Effect
-    downloadToPart : Text → Path.Path → ℕ → ℕ → Effect -- URL, path, timeout seconds, redirect bound
+    downloadToPart : Text → Path.Path → Effect -- URL and owned partial path; no deadline or redirect quota
     rename : Path.Path → Path.Path → Effect
     loadTokenizer loadModel optimizeModel makeRunnable : Path.Path → Effect
     tokenize : List Text → Bool → Effect
@@ -109,7 +109,7 @@ module Arithmetic (float : Ranking.F32) where
   Reply : Effect → Set
   Reply (cached path) = Bool
   Reply (mkdirParents path) = Text ⊎ ⊤
-  Reply (downloadToPart url path timeout redirects) = Text ⊎ ⊤
+  Reply (downloadToPart url path) = Text ⊎ ⊤
   Reply (rename source destination) = Text ⊎ ⊤
   Reply (loadTokenizer path) = Text ⊎ ⊤
   Reply (loadModel path) = Text ⊎ ⊤
@@ -130,7 +130,7 @@ module Arithmetic (float : Ranking.F32) where
     { true → done (inj₂ tt)
     ; false → ask (mkdirParents destination) (λ
       { (inj₁ error) → done (inj₁ error)
-      ; (inj₂ tt) → ask (downloadToPart url part 600 10) (λ
+      ; (inj₂ tt) → ask (downloadToPart url part) (λ
         { (inj₁ error) → done (inj₁ error)
         ; (inj₂ tt) → ask (rename part destination) done }) }) })
 
