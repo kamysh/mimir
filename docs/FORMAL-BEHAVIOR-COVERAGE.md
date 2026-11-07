@@ -24,7 +24,9 @@ Committed changes to pending experiences emit an empty review-queue hint on
 `mimir_review_queue_changed`. `LearningStore.needsWake` defines eligibility and
 source/project changes; `publishedSignals` and `publicationAndSignalTogether`
 tie the hint to the atomic publication boundary, including lost acknowledgements.
-Rollback sends no hint. The hint carries no source content and is not a durable
+Rollback sends no hint. `observedSignals` permits harmless extra committed hints,
+including an intermediate row change restored before commit; it requires a wake
+for a net queue change. The hint carries no source content and is not a durable
 review receipt. Listeners must scan the queue after subscribing and reconnecting;
 listener startup and waiting are implemented in the following watcher issues.
 
