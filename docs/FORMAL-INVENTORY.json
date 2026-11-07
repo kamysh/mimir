@@ -5403,6 +5403,21 @@
       "specification_status": "behavior-defined"
     },
     {
+      "path": "crates/core/migrations/012_operation_reservations.sql",
+      "definitions": [],
+      "status": "unmapped",
+      "proof_boundary_category": "database_effects",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/Migrations.agda",
+        "spec/Mimir/MigrationSchema.agda",
+        "spec/Mimir/MigrationScriptBinding.agda",
+        "spec/Mimir/Recovery.agda",
+        "spec/Mimir/MigrationRuntime.agda"
+      ],
+      "specification_status": "behavior-defined"
+    },
+    {
       "path": "crates/core/src/assessment.rs",
       "definitions": [
         {
@@ -13379,6 +13394,72 @@
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
+    },
+    {
+      "path": "crates/core/src/store/reservations.rs",
+      "definitions": [
+        {
+          "kind": "struct",
+          "name": "OperationReservation",
+          "line": 10,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "decode",
+          "line": 15,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "reserve_operation",
+          "line": 25,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "read_operation_reservation",
+          "line": 33,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        }
+      ],
+      "status": "mapped",
+      "proof_boundary_category": "database_effects",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/Recovery.agda",
+        "spec/Mimir/DatabaseTransaction.agda",
+        "spec/Mimir/MigrationSchema.agda"
+      ],
+      "specification_status": "behavior-defined-and-aggregate-checked"
     },
     {
       "path": "crates/core/src/tls.rs",

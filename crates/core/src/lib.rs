@@ -1062,6 +1062,17 @@ impl MimirService {
     }
 
     /// Collect graph statistics.
+    pub async fn reserve_operation(&self) -> Result<store::OperationReservation> {
+        self.store.reserve_operation().await
+    }
+
+    pub async fn read_operation_reservation(
+        &self,
+        token: Uuid,
+    ) -> Result<Option<store::OperationReservation>> {
+        self.store.read_operation_reservation(token).await
+    }
+
     pub async fn stats(&self) -> Result<MimirStats> {
         let beliefs = self.store.count_beliefs().await?;
         let patterns = self.store.count_patterns().await?;

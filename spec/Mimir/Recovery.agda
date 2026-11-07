@@ -11,6 +11,9 @@ import Mimir.StructuredValue as Wire
 import Mimir.Effects as Effects
 import Mimir.DatabaseTransaction as Database
 open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.Maybe using (Maybe; just; nothing)
+open import Data.Empty using (⊥-elim)
+open import Relation.Nullary using (Dec; yes; no)
 
 -- Assembly fixes World once for the entire dispatcher. An operation over a
 -- smaller world cannot be supplied where this dispatcher expects the larger
@@ -290,3 +293,42 @@ module Single where
     proj₂ (Statement.execute statement input initial)
   replyMustRepeat statement repeatable input initial =
     cong proj₂ (Idempotent.stable repeatable input initial)
+
+-- Reservation metadata is separate from business publication. Identities and
+-- timestamps are supplied by PostgreSQL; this module has no identity generator
+-- or uniqueness proposition. The database primary-key/default contracts apply.
+module Reservations (Business Identity Timestamp : Set)
+  (_≟_ : (first second : Identity) → Dec (first ≡ second)) where
+
+  record Entry : Set where
+    constructor entry
+    field token : Identity; reservedAt : Timestamp
+
+  record State : Set where
+    constructor state
+    field business : Business; entries : List Entry
+
+  publish : State → Entry → State
+  publish before allocated = state (State.business before) (allocated ∷ State.entries before)
+
+  find : Identity → List Entry → Maybe Entry
+  find token [] = nothing
+  find token (allocated ∷ rest) with token ≟ Entry.token allocated
+  ... | yes _ = just allocated
+  ... | no _ = find token rest
+
+  readBack : State → Identity → Maybe Entry
+  readBack before token = find token (State.entries before)
+
+  allocatedTokenIsReadable : ∀ before allocated →
+    readBack (publish before allocated) (Entry.token allocated) ≡ just allocated
+  allocatedTokenIsReadable before allocated with Entry.token allocated ≟ Entry.token allocated
+  ... | yes _ = refl
+  ... | no impossible = ⊥-elim (impossible refl)
+
+  businessUnchangedForEveryReceipt : ∀ before allocated receipt after →
+    Database.Atomic before (publish before allocated) receipt after →
+    State.business after ≡ State.business before
+  businessUnchangedForEveryReceipt before allocated receipt after publication =
+    Database.invariantPreserved (λ current → State.business current ≡ State.business before)
+      publication refl refl

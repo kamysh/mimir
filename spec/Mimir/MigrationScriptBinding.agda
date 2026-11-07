@@ -26,6 +26,8 @@ source Schema.allocation = toList "-- Historical UUIDs are imported, never regen
 
 source Schema.reviewQueueNotifications = toList "CREATE FUNCTION public.mimir_notify_review_queue() RETURNS trigger\nLANGUAGE plpgsql AS $$\nBEGIN\n    IF NEW.reviewed_revision < NEW.revision THEN\n        IF TG_OP = 'INSERT' THEN\n            PERFORM pg_notify('mimir_review_queue_changed', '');\n        ELSIF OLD.revision IS DISTINCT FROM NEW.revision\n           OR OLD.project IS DISTINCT FROM NEW.project\n           OR OLD.reviewed_revision >= OLD.revision THEN\n            PERFORM pg_notify('mimir_review_queue_changed', '');\n        END IF;\n    END IF;\n    RETURN NEW;\nEND;\n$$;\n\n-- PostgreSQL publishes transactional notifications at commit and discards them\n-- on rollback. Identical notifications may be coalesced within a transaction:\n-- a listener must scan the queue rather than count signals or treat one as a\n-- saved review receipt. Updates that only acknowledge a review do not wake it.\nCREATE TRIGGER mimir_review_queue_changed\nAFTER INSERT OR UPDATE OF revision, reviewed_revision, project\nON public.mimir_experiences\nFOR EACH ROW EXECUTE FUNCTION public.mimir_notify_review_queue();\n"
 
+source Schema.operationReservations = toList "CREATE TABLE mimir_operation_reservations (\n    operation_token uuid PRIMARY KEY DEFAULT gen_random_uuid(),\n    reserved_at timestamptz NOT NULL DEFAULT now()\n);\n"
+
 data Statement : Set where
   application : Schema.DDL → Statement
   transactionSearchPath : List Text → Statement

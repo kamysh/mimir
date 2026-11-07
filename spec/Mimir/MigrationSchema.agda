@@ -19,7 +19,7 @@ import Mimir.ItemOwners as Owners
 import Mimir.LearningStore as Learning
 import Mimir.DatabaseTransaction as Database
 open import Mimir.Migrations public
-  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications)
+  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation;
@@ -135,6 +135,12 @@ allocatedItemOwners = table "mimir_learning_item_owners"
    required "source_ref" text ∷ required "actor" text ∷ optional "item_key" text ∷ [])
   ("item_id" ∷ []) (("experience_id" ∷ "item_key" ∷ []) ∷ []) (experienceFK ∷ []) (localKeyValid ∷ [])
 
+reservationTable : Table
+reservationTable = table "mimir_operation_reservations"
+  (column "operation_token" uuid false postgresUUID ∷
+   column "reserved_at" timestamp false now ∷ [])
+  ("operation_token" ∷ []) [] [] []
+
 -- Label creation catches all PostgreSQL exceptions in the existing SQL; that
 -- native behavior is explicit and must not be confused with a label-exists proof.
 data DDL : Set where
@@ -182,6 +188,7 @@ body allocation =
     ("experience_id" ∷ "item_key" ∷ []) ∷
   addCheckConstraint "mimir_learning_item_owners" "mimir_learning_item_key_nonempty" localKeyValid ∷ []
 body reviewQueueNotifications = installReviewQueueNotifier ∷ []
+body operationReservations = create reservationTable ∷ []
 
 -- The trigger's concrete meaning is the pending-source rule, with signals
 -- coupled to publication. This is a native PostgreSQL contract; the SQL body
