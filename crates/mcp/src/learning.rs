@@ -1,3 +1,4 @@
+use super::operation_catalogue::LearningOperation;
 use anyhow::{anyhow, Result};
 use mimir_core::MimirService;
 use serde_json::{json, Value};
@@ -87,12 +88,12 @@ fn limit(args: &Value, default: usize) -> Result<usize> {
         })
         .unwrap_or(Ok(default))
 }
-pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value> {
-    Ok(match name {
-        "learning_capabilities" => {
+pub async fn call(svc: &MimirService, operation: LearningOperation, args: &Value) -> Result<Value> {
+    Ok(match operation {
+        LearningOperation::LearningCapabilities => {
             json!({"contract_version":3,"source_coverage":true,"assessment_model_version":1,"typed_learning_items":true,"revision_owned_assessments":true,"legacy_graph_probability_unchanged":true})
         }
-        "get_lesson_assessment" => {
+        LearningOperation::GetLessonAssessment => {
             svc.lesson_assessment(
                 text(args, "project")?,
                 text(args, "belief_id")?.parse()?,
@@ -101,7 +102,7 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
             )
             .await?
         }
-        "lesson_assessment_history" => {
+        LearningOperation::LessonAssessmentHistory => {
             svc.lesson_assessment_history(
                 text(args, "project")?,
                 text(args, "belief_id")?.parse()?,
@@ -119,7 +120,7 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
             )
             .await?
         }
-        "explain_belief" => {
+        LearningOperation::ExplainBelief => {
             svc.explain_belief(
                 text(args, "id")?.parse()?,
                 args.get("offset")
@@ -134,26 +135,30 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
             )
             .await?
         }
-        "record_experience" => serde_json::to_value(
+        LearningOperation::RecordExperience => serde_json::to_value(
             svc.record_experience(
                 &serde_json::from_value(required(args, "experience")?.clone())?,
                 integer(args, "expected_revision")?,
             )
             .await?,
         )?,
-        "review_experience" => serde_json::to_value(
+        LearningOperation::ReviewExperience => serde_json::to_value(
             svc.review_experience(
                 &serde_json::from_value(required(args, "review")?.clone())?,
                 integer(args, "expected_review_revision")?,
             )
             .await?,
         )?,
-        "get_learning_review" => svc.learning_review(text(args, "id")?.parse()?).await?,
-        "get_experience" => {
+        LearningOperation::GetLearningReview => {
+            svc.learning_review(text(args, "id")?.parse()?).await?
+        }
+        LearningOperation::GetExperience => {
             serde_json::to_value(svc.get_experience(text(args, "id")?.parse()?).await?)?
         }
-        "experience_history" => svc.experience_history(text(args, "id")?.parse()?).await?,
-        "pending_experiences" => serde_json::to_value(
+        LearningOperation::ExperienceHistory => {
+            svc.experience_history(text(args, "id")?.parse()?).await?
+        }
+        LearningOperation::PendingExperiences => serde_json::to_value(
             svc.pending_experiences_excluding(
                 args.get("project")
                     .map(|_| text(args, "project"))
@@ -167,7 +172,7 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
             )
             .await?,
         )?,
-        "query_learning_context" => serde_json::to_value(
+        LearningOperation::QueryLearningContext => serde_json::to_value(
             svc.query_learning_context(
                 text(args, "context")?,
                 text(args, "project")?,
@@ -175,6 +180,5 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
             )
             .await?,
         )?,
-        _ => anyhow::bail!("unknown learning tool"),
     })
 }

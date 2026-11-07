@@ -1,6 +1,7 @@
 mod learning;
 #[cfg(test)]
 mod learning_cycle_test;
+pub mod operation_catalogue;
 use anyhow::Result;
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
@@ -392,20 +393,21 @@ fn tools_list() -> Value {
 // Tool dispatch
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Result<Value> {
-    match name {
-        "explain_belief"
-        | "record_experience"
-        | "review_experience"
-        | "get_learning_review"
-        | "get_experience"
-        | "experience_history"
-        | "pending_experiences"
-        | "query_learning_context"
-        | "learning_capabilities"
-        | "get_lesson_assessment"
-        | "lesson_assessment_history" => learning::call(svc, name, args).await,
-        "insert_belief" => {
+    operation_catalogue::Catalogue::new(tools_list())?
+        .call(svc, name, args)
+        .await
+}
+
+async fn handle_graph_call(
+    svc: &MimirService,
+    operation: operation_catalogue::GraphOperation,
+    args: &Value,
+) -> Result<Value> {
+    use operation_catalogue::GraphOperation;
+    match operation {
+        GraphOperation::InsertBelief => {
             let provenance: IndependentProvenance = serde_json::from_value(
                 args.get("provenance")
                     .ok_or_else(|| anyhow::anyhow!("missing 'provenance'"))?
@@ -440,7 +442,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(serde_json::to_value(&belief)?)
         }
 
-        "delete_belief" => {
+        GraphOperation::DeleteBelief => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -449,7 +451,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "deleted": deleted }))
         }
 
-        "delete_project" => {
+        GraphOperation::DeleteProject => {
             let project = args["project"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'project'"))?;
@@ -457,7 +459,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "deleted": count }))
         }
 
-        "delete_pattern" => {
+        GraphOperation::DeletePattern => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -466,7 +468,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "deleted": deleted }))
         }
 
-        "insert_pattern" => {
+        GraphOperation::InsertPattern => {
             let situation = args["situation"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'situation'"))?;
@@ -492,7 +494,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(serde_json::to_value(&pattern)?)
         }
 
-        "record_support" => {
+        GraphOperation::RecordSupport => {
             let from_str = args["from_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
@@ -510,7 +512,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "record_cause" => {
+        GraphOperation::RecordCause => {
             let from_str = args["from_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
@@ -528,7 +530,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "record_defeat" => {
+        GraphOperation::RecordDefeat => {
             let from_str = args["from_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
@@ -547,7 +549,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "record_contradiction" => {
+        GraphOperation::RecordContradiction => {
             let id_a_str = args["id_a"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id_a'"))?;
@@ -563,7 +565,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "get_belief" => {
+        GraphOperation::GetBelief => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -572,7 +574,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(serde_json::to_value(&belief)?)
         }
 
-        "list_beliefs" => {
+        GraphOperation::ListBeliefs => {
             let project = args["project"].as_str();
             let memory_type = match args["memory_type"].as_str() {
                 Some(s) => Some(
@@ -611,13 +613,13 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             }
         }
 
-        "list_patterns" => {
+        GraphOperation::ListPatterns => {
             let project = args["project"].as_str();
             let patterns = svc.list_patterns(project).await?;
             Ok(serde_json::to_value(&patterns)?)
         }
 
-        "get_contradictions" => {
+        GraphOperation::GetContradictions => {
             let project = args["project"].as_str();
             let pairs = svc.get_contradictions(project).await?;
             let result: Vec<Value> = pairs
@@ -627,14 +629,14 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "decay_all" => {
+        GraphOperation::DecayAll => {
             let decay_factor = args["decay_factor"].as_f64();
             let project = args["project"].as_str();
             let count = svc.decay_beliefs(decay_factor, project).await?;
             Ok(json!({ "decayed": count }))
         }
 
-        "sweep_expired_defeated" => {
+        GraphOperation::SweepExpiredDefeated => {
             let prob_threshold = args["prob_threshold"].as_f64().unwrap_or(0.3);
             let grace_hours = args["grace_hours"].as_f64().unwrap_or(24.0);
             let project = args["project"].as_str();
@@ -644,7 +646,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "deleted": count }))
         }
 
-        "query_relevant" => {
+        GraphOperation::QueryRelevant => {
             let query = args["context"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
@@ -691,7 +693,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "add_evidence" => {
+        GraphOperation::AddEvidence => {
             let belief_str = args["belief_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'belief_id'"))?;
@@ -705,7 +707,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "get_evidence" => {
+        GraphOperation::GetEvidence => {
             let belief_str = args["belief_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'belief_id'"))?;
@@ -729,7 +731,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "propagate_from" => {
+        GraphOperation::PropagateFrom => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -744,7 +746,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "query_intervention" => {
+        GraphOperation::QueryIntervention => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -762,7 +764,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "load_document" => {
+        GraphOperation::LoadDocument => {
             let path = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
@@ -771,7 +773,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "loaded": count }))
         }
 
-        "query_document" => {
+        GraphOperation::QueryDocument => {
             let context = args["context"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
@@ -781,15 +783,13 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(serde_json::to_value(&results)?)
         }
 
-        "clear_document" => {
+        GraphOperation::ClearDocument => {
             let path = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
             let count = svc.clear_document(path).await?;
             Ok(json!({ "cleared": count }))
         }
-
-        other => anyhow::bail!("unknown tool: {}", other),
     }
 }
 
@@ -829,6 +829,8 @@ async fn application_main() -> Result<()> {
             std::process::exit(2);
         }
     }
+
+    let catalogue = operation_catalogue::Catalogue::new(tools_list())?;
 
     let (cfg, operations) = match Config::load_with_operations(&Config::config_path()) {
         Ok(c) => c,
@@ -902,14 +904,14 @@ async fn application_main() -> Result<()> {
                 }),
             ),
 
-            "tools/list" => ok_response(&id, json!({ "tools": tools_list() })),
+            "tools/list" => ok_response(&id, json!({ "tools": catalogue.advertised() })),
 
             "tools/call" => {
                 let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let empty_obj = Value::Object(serde_json::Map::new());
                 let arguments = params.get("arguments").unwrap_or(&empty_obj);
 
-                match handle_tool_call(&svc, tool_name, arguments).await {
+                match catalogue.call(&svc, tool_name, arguments).await {
                     Ok(result) => ok_response(
                         &id,
                         json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
