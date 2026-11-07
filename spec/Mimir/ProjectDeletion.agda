@@ -4,14 +4,14 @@
 -- count; patterns are removed but do not contribute to that count.
 module Mimir.ProjectDeletion where
 
-open import Data.Bool using (Bool; true; false; not)
-open import Data.List using (List; []; _∷_; filterᵇ; map; length)
+open import Data.Bool using (Bool; true; false; not; _∨_)
+open import Data.List using (List; []; _∷_; filterᵇ; map; length; _++_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _+_; z≤n)
 open import Data.Product using (_×_; _,_; proj₁)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
 import Mimir.GraphWrites as Writes
@@ -29,6 +29,33 @@ import Mimir.DocumentStore as Documents
 import Mimir.LearningTransaction as Transaction
 import Mimir.DatabaseTransaction as DB
 import Mimir.Effects as Effects
+
+open import Data.String using (toList)
+open import Data.List.Relation.Unary.All using (All; []; _∷_)
+open import Data.List.Relation.Unary.Any using (Any; here; there)
+import Mimir.CandidateGraph as Graph
+import Mimir.ReviewEdges as Edges
+import Mimir.Recovery as Recovery
+import Mimir.StructuredValue as Wire
+
+-- These list laws state both halves of deletion: every owned row is removed,
+-- and every retained row survives. They quantify over all predicates and rows.
+module Retention {A : Set} (owned : A → Bool) where
+  retain : List A → List A
+  retain = filterᵇ (λ value → not (owned value))
+
+  excludesOwned : ∀ values → All (λ value → owned value ≡ false) (retain values)
+  excludesOwned [] = []
+  excludesOwned (value ∷ rest) with owned value in equality
+  ... | true = excludesOwned rest
+  ... | false = equality ∷ excludesOwned rest
+
+  preservesUnowned : ∀ value values → owned value ≡ false →
+    Any (value ≡_) values → Any (value ≡_) (retain values)
+  preservesUnowned value (.value ∷ rest) retained (here refl) rewrite retained = here refl
+  preservesUnowned value (head ∷ rest) retained (there present) with owned head
+  ... | true = preservesUnowned value rest retained present
+  ... | false = there (preservesUnowned value rest retained present)
 
 ownedExperiences : Text → Learning.World → List ℕ
 ownedExperiences project w = map Read.identity (filterᵇ (Read.scopeMatches (just project)) (Learning.World.current w))
@@ -87,19 +114,111 @@ projectChunks : Text → Store.World → List ℕ
 projectChunks project w = map Documents.Chunk.identity
   (filterᵇ (λ c → Writes.tagged project (Documents.Chunk.project c)) (Store.World.chunks w))
 
--- Select ownership from the original world, before removing discovery roots.
--- These are components of one proposed world, not separately committed steps.
+-- Ownership is captured from the ORIGINAL world. Vector selection must not
+-- depend on roots still being discoverable in the resulting world.
+record Closure : Set where
+  constructor closure
+  field beliefs patterns chunks : List ℕ
+
+ownership : Text → Store.World → Closure
+ownership project before = closure (Writes.projectBeliefs project before)
+  (Writes.projectPatterns project before) (projectChunks project before)
+
+ownedNode : Text → Graph.Node → Bool
+ownedNode project node = Writes.tagged project (Graph.nodeProject node)
+
+ownedEdge : Closure → Edges.Edge → Bool
+ownedEdge selected link = Ranking.member (Edges.Edge.from link) roots ∨ Ranking.member (Edges.Edge.to link) roots
+  where roots = Closure.beliefs selected ++ Closure.patterns selected
+
+ownedGround : Closure → Store.Ground → Bool
+ownedGround selected edge = Ranking.member (Store.Ground.belief edge) (Closure.beliefs selected) ∨
+  Ranking.member (Store.Ground.chunk edge) (Closure.chunks selected)
+
+-- One resulting state, defined field by field from ownership. This function
+-- contains no SQL statements, commit order, receipt or execution cursor.
 eraseProject : Text → Store.World → Store.World
-eraseProject project before = forgetLearning project
-  (Store.removeChunkVectors chunkIDs (Store.removeChunks chunkIDs
-    (Store.removeBeliefVectors beliefIDs
-      (Writes.deleteProjectPatterns project (Writes.deleteProjectBeliefs project before)))))
+eraseProject project before = record before
+  { learning = record learn
+      { publication = record publication
+          { nodes = Retention.retain (ownedNode project) (Store.nodes before)
+          ; edges = Retention.retain (ownedEdge selected) (Publication.World.edges publication) }
+      ; independentOrigins = Retention.retain (λ row → Ranking.member (proj₁ row) roots)
+          (Learning.World.independentOrigins learn) }
+  ; chunks = Retention.retain (λ chunk → Writes.tagged project (Documents.Chunk.project chunk)) (Store.World.chunks before)
+  ; beliefVectors = Retention.retain (λ row → Ranking.member (proj₁ row) (Closure.beliefs selected)) (Store.World.beliefVectors before)
+  ; chunkVectors = Retention.retain (λ row → Ranking.member (proj₁ row) (Closure.chunks selected)) (Store.World.chunkVectors before)
+  ; grounds = Retention.retain (ownedGround selected) (Store.World.grounds before) }
   where
-  beliefIDs = Writes.projectBeliefs project before
-  chunkIDs = projectChunks project before
+  selected = ownership project before
+  roots = Closure.beliefs selected ++ Closure.patterns selected
+  learn = Store.World.learning (forgetLearning project before)
+  publication = Learning.World.publication learn
+
+noOriginalBeliefVectors : ∀ project before →
+  All (λ row → Ranking.member (proj₁ row) (Closure.beliefs (ownership project before)) ≡ false)
+    (Store.World.beliefVectors (eraseProject project before))
+noOriginalBeliefVectors project before = Retention.excludesOwned _ (Store.World.beliefVectors before)
+
+noOriginalChunkVectors : ∀ project before →
+  All (λ row → Ranking.member (proj₁ row) (Closure.chunks (ownership project before)) ≡ false)
+    (Store.World.chunkVectors (eraseProject project before))
+noOriginalChunkVectors project before = Retention.excludesOwned _ (Store.World.chunkVectors before)
+
+noProjectNodes : ∀ project before → All (λ node → ownedNode project node ≡ false) (Store.nodes (eraseProject project before))
+noProjectNodes project before = Retention.excludesOwned (ownedNode project) (Store.nodes before)
+
+noProjectChunks : ∀ project before → All (λ chunk → Writes.tagged project (Documents.Chunk.project chunk) ≡ false)
+  (Store.World.chunks (eraseProject project before))
+noProjectChunks project before = Retention.excludesOwned _ (Store.World.chunks before)
+
+noOwnedGrounds : ∀ project before → All (λ edge → ownedGround (ownership project before) edge ≡ false)
+  (Store.World.grounds (eraseProject project before))
+noOwnedGrounds project before = Retention.excludesOwned _ (Store.World.grounds before)
+
+noOwnedEdges : ∀ project before → All (λ link → ownedEdge (ownership project before) link ≡ false)
+  (Publication.World.edges (Learning.World.publication (Store.World.learning (eraseProject project before))))
+noOwnedEdges project before = Retention.excludesOwned _
+  (Publication.World.edges (Learning.World.publication (Store.World.learning before)))
+
+noOriginalExperiences : ∀ project before →
+  All (λ row → Ranking.member (Read.identity row) (ownedExperiences project (Store.World.learning before)) ≡ false)
+    (Learning.World.current (Store.World.learning (eraseProject project before)))
+noOriginalExperiences project before = Retention.excludesOwned _ (Learning.World.current (Store.World.learning before))
+
+otherBeliefVectorPreserved : ∀ project before row →
+  Ranking.member (proj₁ row) (Closure.beliefs (ownership project before)) ≡ false →
+  Any (row ≡_) (Store.World.beliefVectors before) →
+  Any (row ≡_) (Store.World.beliefVectors (eraseProject project before))
+otherBeliefVectorPreserved project before row = Retention.preservesUnowned _ row (Store.World.beliefVectors before)
+
+otherChunkVectorPreserved : ∀ project before row →
+  Ranking.member (proj₁ row) (Closure.chunks (ownership project before)) ≡ false →
+  Any (row ≡_) (Store.World.chunkVectors before) →
+  Any (row ≡_) (Store.World.chunkVectors (eraseProject project before))
+otherChunkVectorPreserved project before row = Retention.preservesUnowned _ row (Store.World.chunkVectors before)
+
+otherNodePreserved : ∀ project before node → ownedNode project node ≡ false →
+  Any (node ≡_) (Store.nodes before) → Any (node ≡_) (Store.nodes (eraseProject project before))
+otherNodePreserved project before node = Retention.preservesUnowned _ node (Store.nodes before)
+
+otherChunkPreserved : ∀ project before chunk → Writes.tagged project (Documents.Chunk.project chunk) ≡ false →
+  Any (chunk ≡_) (Store.World.chunks before) → Any (chunk ≡_) (Store.World.chunks (eraseProject project before))
+otherChunkPreserved project before chunk = Retention.preservesUnowned _ chunk (Store.World.chunks before)
+
+otherEdgePreserved : ∀ project before link → ownedEdge (ownership project before) link ≡ false →
+  Any (link ≡_) (Publication.World.edges (Learning.World.publication (Store.World.learning before))) →
+  Any (link ≡_) (Publication.World.edges (Learning.World.publication (Store.World.learning (eraseProject project before))))
+otherEdgePreserved project before link = Retention.preservesUnowned _ link
+  (Publication.World.edges (Learning.World.publication (Store.World.learning before)))
 
 deletedCount : Text → Store.World → ℕ
 deletedCount project before = length (Writes.projectBeliefs project before) + length (projectChunks project before)
+
+intent : Recovery.Business.Intent Text
+intent = record
+  { intended = eraseProject
+  ; expectedReply = λ project before → Wire.object ((toList "deleted" , Wire.unsigned (deletedCount project before)) ∷ []) }
 
 module Operation (database : ℕ) where
   module T = Transaction.Over Store.World ℕ Text database 671942183

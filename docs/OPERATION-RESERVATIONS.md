@@ -163,3 +163,15 @@ Their current calls use the same atomic closure, but do not yet acquire a
 saved operation result automatically. The intended-outcome and convergence
 proofs remain #126–#127. This change removes the separate deletion commits; it
 does not claim that the dispatcher already requires every operation's proof.
+
+The deletion intent now defines the resulting world directly: retain records
+outside the selected project's ownership, remove edges attached to its roots,
+and remove vectors using the IDs from the original world. It does not describe
+an order of SQL statements. The shared recovery goal compares the whole result
+and original deletion count with this intent.
+
+General laws establish removal of the original belief and chunk vectors, graph
+nodes, chunks, dependent edges, grounding links and current experiences. They
+also establish preservation of each unowned node, chunk, edge and vector row.
+Checking ownership against the original world matters: deleting the roots and
+then observing no IDs cannot make leftover vectors satisfy these laws.
