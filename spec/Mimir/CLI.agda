@@ -38,7 +38,7 @@ data JudgeCommand : Set where
   diagnose : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   checkConfig : Maybe Path.Path → JudgeCommand
   run : Maybe Path.Path → Maybe Path.Path → JudgeCommand
-  watch : Maybe Path.Path → Maybe Path.Path → ℕ → ℕ → JudgeCommand
+  watch : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   status : Maybe Path.Path → JudgeCommand
   diagnostics : Maybe Path.Path → Bool → Maybe ℕ → JudgeCommand
 
