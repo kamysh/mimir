@@ -22,7 +22,15 @@ fn config() -> Config {
     }
 }
 
-async fn prepared() -> Result<(MimirService, Config, Uuid, Uuid, OperationBindingRequest)> {
+async fn prepared() -> Result<(
+    MimirService,
+    Config,
+    Uuid,
+    Uuid,
+    OperationBindingRequest,
+    OperationPlan,
+    RegisteredStep,
+)> {
     let cfg = config();
     let service = MimirService::connect(&cfg).await?;
     let client = db::connect(&cfg.database).await?;
@@ -59,7 +67,24 @@ async fn prepared() -> Result<(MimirService, Config, Uuid, Uuid, OperationBindin
         service.bind_operation_request(token, &request).await?,
         OperationBindingDecision::Bound(_)
     ));
-    Ok((service, cfg, token, id, request))
+    let PlanDecision::Ready(plan) = service
+        .prepare_operation(token, &request, |_, _| Box::pin(async { Ok(vec![]) }))
+        .await?
+    else {
+        panic!("plan missing")
+    };
+    let mut steps = plan.steps();
+    let last = steps.pop().context("deletion plan is empty")?;
+    // This fixture has only a learning row. Earlier graph tables are empty.
+    for step in steps {
+        assert!(matches!(
+            service
+                .commit_operation_step(&step, |_, _| Box::pin(async { Ok(Value::Null) }))
+                .await?,
+            StepDecision::Done(_)
+        ));
+    }
+    Ok((service, cfg, token, id, request, plan, last))
 }
 
 fn erase<'a, 'client>(
@@ -88,39 +113,29 @@ fn erase<'a, 'client>(
 
 #[tokio::test]
 async fn competing_callers_publish_once_and_keep_the_original_answer() -> Result<()> {
-    let (first, cfg, token, id, request) = prepared().await?;
+    let (first, cfg, token, id, request, _plan, step) = prepared().await?;
     let second = MimirService::connect(&cfg).await?;
     let unbound = first.reserve_operation().await?.operation_token;
-    assert_eq!(
+    assert!(matches!(
         first
-            .commit_operation_step(unbound, &request, "delete_experiences", |_, _| Box::pin(
-                async { panic!("unbound request executed") }
-            ))
+            .prepare_operation(unbound, &request, |_, _| Box::pin(async {
+                panic!("unbound request executed")
+            }))
             .await?,
-        StepDecision::UnknownBinding
-    );
+        PlanDecision::UnknownBinding
+    ));
     let calls = Arc::new(AtomicUsize::new(0));
     let a = calls.clone();
     let b = calls.clone();
     let (one, two) = tokio::join!(
-        first.commit_operation_step(
-            token,
-            &request,
-            "delete_experiences",
-            move |tx, original| {
-                a.fetch_add(1, Ordering::SeqCst);
-                erase(tx, original)
-            }
-        ),
-        second.commit_operation_step(
-            token,
-            &request,
-            "delete_experiences",
-            move |tx, original| {
-                b.fetch_add(1, Ordering::SeqCst);
-                erase(tx, original)
-            }
-        ),
+        first.commit_operation_step(&step, move |tx, original| {
+            a.fetch_add(1, Ordering::SeqCst);
+            erase(tx, original)
+        }),
+        second.commit_operation_step(&step, move |tx, original| {
+            b.fetch_add(1, Ordering::SeqCst);
+            erase(tx, original)
+        }),
     );
     assert_eq!(one.as_ref().unwrap(), two.as_ref().unwrap());
     let StepDecision::Done(saved) = one? else {
@@ -129,18 +144,16 @@ async fn competing_callers_publish_once_and_keep_the_original_answer() -> Result
     assert_eq!(saved.reply, json!({"removed":[id.to_string()]}));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(
-        second
-            .read_operation_step(token, "delete_experiences")
-            .await?,
+        second.read_operation_step(token, step.id()).await?,
         Some(saved.clone())
     );
     drop(first);
     let reopened = MimirService::connect(&cfg).await?;
     assert_eq!(
         reopened
-            .commit_operation_step(token, &request, "delete_experiences", |_, _| Box::pin(
-                async { panic!("saved step ran again") }
-            ))
+            .commit_operation_step(&step, |_, _| Box::pin(async {
+                panic!("saved step ran again")
+            }))
             .await?,
         StepDecision::Done(saved)
     );
@@ -152,19 +165,19 @@ async fn competing_callers_publish_once_and_keep_the_original_answer() -> Result
     )?;
     assert!(matches!(
         reopened
-            .commit_operation_step(token, &changed, "delete_experiences", |_, _| Box::pin(
-                async { panic!("changed request executed") }
-            ))
+            .prepare_operation(token, &changed, |_, _| Box::pin(async {
+                panic!("changed request executed")
+            }))
             .await?,
-        StepDecision::ChangedRequest(_)
+        PlanDecision::ChangedRequest(_)
     ));
     Ok(())
 }
 
 #[tokio::test]
 async fn failing_to_save_an_answer_rolls_back_the_real_business_change() -> Result<()> {
-    let (service, cfg, token, id, request) = prepared().await?;
-    let result = service.commit_operation_step(token, &request, "delete_experiences", move |tx, original| Box::pin(async move {
+    let (service, cfg, token, id, _request, _plan, step) = prepared().await?;
+    let result = service.commit_operation_step(&step, move |tx, original| Box::pin(async move {
         let reply = erase(tx, original).await?;
         // The injected constraint and deletion belong to the SAME transaction.
         // A failed reply insert rolls both back, leaving no fixture-wide guard.
@@ -173,7 +186,7 @@ async fn failing_to_save_an_answer_rolls_back_the_real_business_change() -> Resu
     })).await;
     assert!(result.is_err());
     assert!(service
-        .read_operation_step(token, "delete_experiences")
+        .read_operation_step(token, step.id())
         .await?
         .is_none());
     let audit = db::connect(&cfg.database).await?;
@@ -188,9 +201,7 @@ async fn failing_to_save_an_answer_rolls_back_the_real_business_change() -> Resu
         )
         .await?
         .is_none());
-    let retried = service
-        .commit_operation_step(token, &request, "delete_experiences", erase)
-        .await?;
+    let retried = service.commit_operation_step(&step, erase).await?;
     let StepDecision::Done(saved) = retried else {
         panic!("corrected step did not complete");
     };
@@ -204,30 +215,25 @@ async fn failing_to_save_an_answer_rolls_back_the_real_business_change() -> Resu
 
 #[tokio::test]
 async fn interrupted_connection_before_publication_leaves_no_partial_step() -> Result<()> {
-    let (service, cfg, token, id, request) = prepared().await?;
+    let (service, cfg, token, id, _request, _plan, step) = prepared().await?;
     let service = Arc::new(service);
     let owner = service.clone();
-    let expected = request.clone();
+    let owned_step = step.clone();
     let (reached, at_boundary) = tokio::sync::oneshot::channel();
     let (resume, released) = tokio::sync::oneshot::channel();
     let work = tokio::spawn(async move {
         owner
-            .commit_operation_step(
-                token,
-                &expected,
-                "delete_experiences",
-                move |tx, original| {
-                    Box::pin(async move {
-                        let reply = erase(tx, original).await?;
-                        let pid: i32 = tx.query_one("SELECT pg_backend_pid()", &[]).await?.get(0);
-                        reached
-                            .send(pid)
-                            .map_err(|_| anyhow::anyhow!("boundary receiver closed"))?;
-                        released.await?;
-                        Ok(reply)
-                    })
-                },
-            )
+            .commit_operation_step(&owned_step, move |tx, original| {
+                Box::pin(async move {
+                    let reply = erase(tx, original).await?;
+                    let pid: i32 = tx.query_one("SELECT pg_backend_pid()", &[]).await?.get(0);
+                    reached
+                        .send(pid)
+                        .map_err(|_| anyhow::anyhow!("boundary receiver closed"))?;
+                    released.await?;
+                    Ok(reply)
+                })
+            })
             .await
     });
     let pid = at_boundary.await?;
@@ -243,17 +249,14 @@ async fn interrupted_connection_before_publication_leaves_no_partial_step() -> R
     assert!(work.await?.is_err());
     let reopened = MimirService::connect(&cfg).await?;
     assert!(reopened
-        .read_operation_step(token, "delete_experiences")
+        .read_operation_step(token, step.id())
         .await?
         .is_none());
     assert!(audit
         .query_opt("SELECT id FROM mimir_experiences WHERE id=$1", &[&id])
         .await?
         .is_some());
-    let StepDecision::Done(saved) = reopened
-        .commit_operation_step(token, &request, "delete_experiences", erase)
-        .await?
-    else {
+    let StepDecision::Done(saved) = reopened.commit_operation_step(&step, erase).await? else {
         panic!("retry failed");
     };
     assert_eq!(saved.reply, json!({"removed":[id.to_string()]}));

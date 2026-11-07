@@ -1,9 +1,14 @@
 mod conformance;
 mod learning;
+mod operation_plans;
 mod operation_steps;
 mod reservations;
 use anyhow::{bail, Result};
 use chrono::DateTime;
+pub use operation_plans::{
+    CompletedOperation, CompletionDecision, OperationPlan, PlanDecision, PlannedStep,
+    RegisteredStep, SelectionWork, Selections,
+};
 pub use operation_steps::{StepDecision, StepReceipt, StepWork};
 use pgvector::Vector;
 pub use reservations::{

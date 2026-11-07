@@ -82,10 +82,34 @@ The formal constructor proves replay stability over the complete business
 state and selected saved answer, and uses the existing recovery constructor to
 cover interruption before or after publication. Its caller must still prove
 that the business change matches an independently stated intended outcome.
-This is one step's guarantee. Registration/order enforcement remains #123,
+This is one step's guarantee. Public registration/order integration remains #123,
 the theorem for a complete sequence remains #84, and public admission/dispatch
 remain #85–#86. No public write route is enabled by these storage helpers.
 
 Tests delete actual private-fixture experience rows, reject saving an answer,
 interrupt the test's own PostgreSQL connection, reconnect and retry, and race
 two callers. They check both business data and the original saved answer.
+
+## Keeping the same work and enforcing its order
+
+`prepare_operation` captures selected item keys through a read-only database
+transaction. It then saves the registered step order and those keys under the
+original token. Reconnecting or retrying returns that saved plan without
+selecting different work. An explicitly empty selection means that no items
+matched; an omitted selection is an error. No selection count is imposed.
+
+The core step writer now accepts only a handle issued by this saved plan.
+Passing a later step returns the next required step before running any change.
+Repeating a completed step returns its original answer. A caller cannot obtain
+a completion result until every planned step has a saved answer, and repeating
+completion returns the original result even if the caller supplies a different
+one. The database rejects changes to or deletion of a saved plan.
+
+For example, if the first step completed and its reply was lost, the retry reads
+that answer and proceeds to the second step. It cannot skip directly to the
+last step or silently select a different set of rows.
+
+These core checks do not yet connect the existing public handlers to saved
+plans. That remains #123 and #85–#86. A completed plan alone is not proof that
+its business changes meet the user's intended outcome; #84 and the concrete
+operation proofs supply that separate obligation.

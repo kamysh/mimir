@@ -4,7 +4,9 @@
 module Mimir.Recovery where
 
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
-open import Data.List using (List; []; _∷_)
+open import Data.List using (List; []; _∷_; _++_)
+open import Data.List.Properties using (++-assoc; ++-identityʳ)
+open import Data.List.Relation.Unary.Any using (Any)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; sym; trans)
 import Mimir.ApplicationStore as Store
 import Mimir.StructuredValue as Wire
@@ -457,3 +459,49 @@ module SavedStep (Business Input : Set)
   rollbackPreservesBusinessAndReply : ∀ input before after →
     Database.Atomic before (proj₁ (execute input before)) Database.aborted after → after ≡ before
   rollbackPreservesBusinessAndReply input before .before Database.abortedNone = refl
+
+-- Checked journal views retain the original plan and an exact completed
+-- prefix. A missing or out-of-order row cannot produce this checked view.
+module PlanOrder (Business Key : Set) where
+  record State : Set where
+    constructor state
+    field business : Business
+          planned completed remaining : List Key
+          partition : planned ≡ completed ++ remaining
+
+  capture : Business → List Key → State
+  capture business keys = state business keys [] keys refl
+
+  capturePreservesBusiness : ∀ business keys → State.business (capture business keys) ≡ business
+  capturePreservesBusiness business keys = refl
+
+  data Step : State → Key → State → Set where
+    publish : ∀ business planned completed key rest partition updated →
+      Step (state business planned completed (key ∷ rest) partition) key
+        (state updated planned (completed ++ (key ∷ [])) rest
+          (trans partition (sym (++-assoc completed (key ∷ []) rest))))
+    replay : ∀ current key → Any (_≡ key) (State.completed current) → Step current key current
+
+  planNeverChanges : ∀ before key after → Step before key after → State.planned after ≡ State.planned before
+  planNeverChanges before key after (publish business planned completed .key rest partition updated) = refl
+  planNeverChanges before key .before (replay .before .key saved) = refl
+
+  newStepMustBeNext : ∀ before key after → Step before key after →
+    (Any (_≡ key) (State.completed before) → Data.Empty.⊥) →
+    Σ (List Key) (λ rest → State.remaining before ≡ key ∷ rest)
+  newStepMustBeNext before key after (publish business planned completed .key rest partition updated) absent = rest , refl
+  newStepMustBeNext before key .before (replay .before .key saved) absent = ⊥-elim (absent saved)
+
+  nextStepIsAvailable : ∀ business planned completed key rest partition updated →
+    Σ State (λ after → Step (state business planned completed (key ∷ rest) partition) key after)
+  nextStepIsAvailable business planned completed key rest partition updated =
+    _ , publish business planned completed key rest partition updated
+
+  record Finished (current : State) : Set where
+    constructor finished
+    field nothingRemaining : State.remaining current ≡ []
+
+  completionRequiresEveryPlannedStep : ∀ current → Finished current → State.completed current ≡ State.planned current
+  completionRequiresEveryPlannedStep current (finished empty) = sym
+    (trans (State.partition current)
+      (trans (cong (State.completed current ++_) empty) (++-identityʳ (State.completed current))))

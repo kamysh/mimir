@@ -32,6 +32,8 @@ source Schema.operationBindings = toList "CREATE TABLE mimir_operation_bindings 
 
 source Schema.operationStepReplies = toList "CREATE TABLE mimir_operation_step_replies (\n    operation_token uuid NOT NULL REFERENCES mimir_operation_bindings(operation_token),\n    step text NOT NULL CHECK (step <> '' AND step = btrim(step)),\n    reply jsonb NOT NULL,\n    PRIMARY KEY (operation_token, step)\n);\n\nCREATE FUNCTION mimir_preserve_operation_step_reply() RETURNS trigger\nLANGUAGE plpgsql AS $$\nBEGIN\n    RAISE EXCEPTION 'Step reply is immutable; read the original answer under this token and step'\n        USING ERRCODE = '23514';\nEND;\n$$;\n\nCREATE TRIGGER mimir_operation_step_reply_immutable\nBEFORE UPDATE OR DELETE ON mimir_operation_step_replies\nFOR EACH ROW EXECUTE FUNCTION mimir_preserve_operation_step_reply();\n"
 
+source Schema.operationPlans = toList "CREATE TABLE mimir_operation_plans (\n    operation_token uuid PRIMARY KEY REFERENCES mimir_operation_bindings(operation_token),\n    plan jsonb NOT NULL CHECK (jsonb_typeof(plan) = 'object')\n);\n\nCREATE FUNCTION mimir_preserve_operation_plan() RETURNS trigger\nLANGUAGE plpgsql AS $$\nBEGIN\n    RAISE EXCEPTION 'Operation plan is immutable; read the original plan and saved answers'\n        USING ERRCODE = '23514';\nEND;\n$$;\n\nCREATE TRIGGER mimir_operation_plan_immutable\nBEFORE UPDATE OR DELETE ON mimir_operation_plans\nFOR EACH ROW EXECUTE FUNCTION mimir_preserve_operation_plan();\n"
+
 data Statement : Set where
   application : Schema.DDL → Statement
   transactionSearchPath : List Text → Statement

@@ -1,5 +1,8 @@
 //! A named business change and its original answer share one transaction.
-use super::{reservations::decode_binding, AgeStore, OperationBinding, OperationBindingRequest};
+use super::{
+    reservations::decode_binding, AgeStore, OperationBinding, OperationBindingRequest, PlannedStep,
+    RegisteredStep,
+};
 use anyhow::{ensure, Result};
 use serde::Serialize;
 use serde_json::Value;
@@ -21,6 +24,7 @@ pub enum StepDecision {
     Done(StepReceipt),
     UnknownBinding,
     ChangedRequest(OperationBinding),
+    OutOfOrder(PlannedStep),
 }
 
 fn step_name(name: &str) -> Result<()> {
@@ -42,12 +46,10 @@ fn receipt(row: &Row) -> Result<StepReceipt> {
 impl AgeStore {
     /// The callback receives the stored request and a borrowed transaction;
     /// this helper owns publication. A retry never invokes the callback again.
-    /// Named-plan/order admission is added by #123 before public dispatch.
+    /// A checked plan handle and the next-step guard are required before work.
     pub async fn commit_operation_step<F>(
         &self,
-        token: Uuid,
-        expected: &OperationBindingRequest,
-        step: &str,
+        registered: &RegisteredStep,
         apply: F,
     ) -> Result<StepDecision>
     where
@@ -56,6 +58,9 @@ impl AgeStore {
             &'a OperationBindingRequest,
         ) -> StepWork<'a>,
     {
+        let token = registered.token();
+        let expected = registered.expected();
+        let step = registered.id();
         step_name(step)?;
         let arguments = serde_json::to_string(expected.arguments())?;
         let settings = serde_json::to_string(expected.settings())?;
@@ -74,6 +79,10 @@ impl AgeStore {
         if !row.try_get::<_, bool>("matches")? {
             tx.rollback().await?;
             return Ok(StepDecision::ChangedRequest(binding));
+        }
+        if let Some(next) = registered.admission(&tx).await? {
+            tx.rollback().await?;
+            return Ok(StepDecision::OutOfOrder(next));
         }
         if let Some(saved) = tx.query_opt(
             "SELECT operation_token,step,reply::text AS reply FROM mimir_operation_step_replies WHERE operation_token=$1 AND step=$2",

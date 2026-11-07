@@ -1091,9 +1091,7 @@ impl MimirService {
 
     pub async fn commit_operation_step<F>(
         &self,
-        token: Uuid,
-        expected: &store::OperationBindingRequest,
-        step: &str,
+        step: &store::RegisteredStep,
         apply: F,
     ) -> Result<store::StepDecision>
     where
@@ -1102,9 +1100,7 @@ impl MimirService {
             &'a store::OperationBindingRequest,
         ) -> store::StepWork<'a>,
     {
-        self.store
-            .commit_operation_step(token, expected, step, apply)
-            .await
+        self.store.commit_operation_step(step, apply).await
     }
 
     pub async fn read_operation_step(
@@ -1113,6 +1109,29 @@ impl MimirService {
         step: &str,
     ) -> Result<Option<store::StepReceipt>> {
         self.store.read_operation_step(token, step).await
+    }
+
+    pub async fn prepare_operation<F>(
+        &self,
+        token: Uuid,
+        expected: &store::OperationBindingRequest,
+        select: F,
+    ) -> Result<store::PlanDecision>
+    where
+        F: for<'a, 'client> FnOnce(
+            &'a tokio_postgres::Transaction<'client>,
+            &'a store::OperationBinding,
+        ) -> store::SelectionWork<'a>,
+    {
+        self.store.prepare_operation(token, expected, select).await
+    }
+
+    pub async fn complete_operation(
+        &self,
+        plan: &store::OperationPlan,
+        reply: serde_json::Value,
+    ) -> Result<store::CompletionDecision> {
+        self.store.complete_operation(plan, reply).await
     }
 
     /// Collect graph statistics.
