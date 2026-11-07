@@ -4,8 +4,8 @@
 module Mimir.Recovery where
 
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
-open import Data.List using (List; []; _∷_; _++_)
-open import Data.List.Properties using (++-assoc; ++-identityʳ)
+open import Data.List using (List; []; _∷_; _++_; map)
+open import Data.List.Properties using (++-assoc; ++-identityʳ; map-++)
 open import Data.List.Relation.Unary.Any using (Any)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; sym; trans)
 import Mimir.ApplicationStore as Store
@@ -17,6 +17,7 @@ open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Empty using (⊥-elim)
 open import Data.Bool using (Bool; true; false)
 open import Relation.Nullary using (Dec; yes; no)
+open import Data.Unit using (⊤; tt)
 
 -- Assembly fixes World once for the entire dispatcher. An operation over a
 -- smaller world cannot be supplied where this dispatcher expects the larger
@@ -541,3 +542,232 @@ module FinalPublication (Business : Set) where
     readBack (publish changed (answers stepReply operationReply)) ≡
       just (answers stepReply operationReply)
   readBackRetainsOriginal changed stepReply operationReply = refl
+
+-- A checked, frozen plan is read before execution. Its completed entries carry
+-- the original answers; only remaining entries can change business data. The
+-- final business step also saves completion, as required by the core writer.
+module SavedSequence (Business Action : Set)
+  (apply : Action → Business → Business × Wire.Value)
+  (finish : List (Action × Wire.Value) → Wire.Value) where
+
+  data State : Set where
+    active : Business → List (Action × Wire.Value) → List Action → State
+    finished : Business → List (Action × Wire.Value) → State
+
+  afterWrite : Business → List (Action × Wire.Value) → List Action → State
+  afterWrite business saved [] = finished business saved
+  afterWrite business saved remaining@(_ ∷ _) = active business saved remaining
+
+  planned : State → List Action
+  planned (active business saved remaining) = map proj₁ saved ++ remaining
+  planned (finished business saved) = map proj₁ saved
+
+  planAfterWrite : ∀ business saved remaining → planned (afterWrite business saved remaining) ≡ map proj₁ saved ++ remaining
+  planAfterWrite business saved [] = sym (++-identityʳ (map proj₁ saved))
+  planAfterWrite business saved (_ ∷ _) = refl
+
+  advance : State → State
+  advance (finished business saved) = finished business saved
+  advance (active business saved []) = finished business saved
+  advance (active business saved (action ∷ rest)) =
+    afterWrite (proj₁ (apply action business)) (saved ++ ((action , proj₂ (apply action business)) ∷ [])) rest
+
+  planNeverChanges : ∀ current → planned (advance current) ≡ planned current
+  planNeverChanges (finished business saved) = refl
+  planNeverChanges (active business saved []) = sym (++-identityʳ (map proj₁ saved))
+  planNeverChanges (active business saved (action ∷ rest)) with apply action business
+  ... | changed , answer = trans (planAfterWrite changed (saved ++ ((action , answer) ∷ [])) rest)
+    (trans (cong (_++ rest) (map-++ proj₁ saved ((action , answer) ∷ [])))
+      (++-assoc (map proj₁ saved) (action ∷ []) rest))
+
+  -- This evaluator is operational semantics, NOT an operation's intent. The
+  -- recovery constructor below separately requires equality to reviewed intent.
+  normalizePending : Business → List (Action × Wire.Value) → List Action → State × Wire.Value
+  normalizePending business saved [] = finished business saved , finish saved
+  normalizePending business saved (action ∷ rest) with apply action business
+  ... | changed , answer = normalizePending changed (saved ++ ((action , answer) ∷ [])) rest
+
+  normalize : State → State × Wire.Value
+  normalize (finished business saved) = finished business saved , finish saved
+  normalize (active business saved remaining) = normalizePending business saved remaining
+
+  normalizeAfterWrite : ∀ business saved remaining → normalize (afterWrite business saved remaining) ≡ normalizePending business saved remaining
+  normalizeAfterWrite business saved [] = refl
+  normalizeAfterWrite business saved (_ ∷ _) = refl
+
+  advancePreservesOutcome : ∀ current → normalize (advance current) ≡ normalize current
+  advancePreservesOutcome (finished business saved) = refl
+  advancePreservesOutcome (active business saved []) = refl
+  advancePreservesOutcome (active business saved (action ∷ rest)) with apply action business
+  ... | changed , answer = normalizeAfterWrite changed (saved ++ ((action , answer) ∷ [])) rest
+
+  data Effect : Set where
+    inspect : Effect
+    publish : State → Effect
+
+  Reply : Effect → Set
+  Reply inspect = State
+  Reply (publish current) = ⊤
+
+  -- Successful receipts continue the run. Aborts and lost acknowledgements
+  -- are interruptions, covered by everyReceiptAtEveryWriteBoundary below.
+  data Atomic : State → (effect : Effect) → Reply effect → State → Set where
+    inspected : ∀ current → Atomic current inspect current current
+    published : ∀ current after → Database.Atomic current (advance current) Database.committed after →
+      Atomic current (publish current) tt after
+
+  module X = Execution State Effect Reply Atomic
+  module E = X.E
+  module G = Over State
+
+  mutual
+    runPending : Business → List (Action × Wire.Value) → List Action → E.Script Wire.Value
+    runPending business saved [] = E.ask (publish (active business saved [])) (λ _ → E.done (finish saved))
+    runPending business saved (action ∷ rest) with apply action business
+    ... | changed , answer = E.ask (publish (active business saved (action ∷ rest)))
+      (λ _ → runTail changed (saved ++ ((action , answer) ∷ [])) rest)
+
+    runTail : Business → List (Action × Wire.Value) → List Action → E.Script Wire.Value
+    runTail business saved [] = E.done (finish saved)
+    runTail business saved remaining@(_ ∷ _) = runPending business saved remaining
+
+  runFromState : State → E.Script Wire.Value
+  runFromState (finished business saved) = E.done (finish saved)
+  runFromState (active business saved remaining) = runPending business saved remaining
+
+  start : ⊤ → E.Script Wire.Value
+  start _ = E.ask inspect runFromState
+
+  atomicPreservesOutcome : ∀ before effect reply after → Atomic before effect reply after →
+    normalize after ≡ normalize before
+  atomicPreservesOutcome current .inspect .current .current (inspected .current) = refl
+  atomicPreservesOutcome current .(publish current) .tt .(advance current)
+    (published .current .(advance current) Database.committedAll) = advancePreservesOutcome current
+
+  changesPreserveOutcome : ∀ before events after → X.Changes before events after → normalize after ≡ normalize before
+  changesPreserveOutcome before .[] .before (X.unchanged .before) = refl
+  changesPreserveOutcome before _ after
+    (X.changed .before effect reply middle {events = events} publication physical) =
+    trans (changesPreserveOutcome middle events after physical)
+      (atomicPreservesOutcome before effect reply middle publication)
+
+  interruptionsPreserveOutcome : ∀ initial interrupted → X.Interrupted (start tt) initial interrupted →
+    normalize interrupted ≡ normalize initial
+  interruptionsPreserveOutcome initial interrupted (X.atPrefix events residual .interrupted prefix physical) =
+    changesPreserveOutcome initial events interrupted physical
+  interruptionsPreserveOutcome initial interrupted
+    (X.beforeReply events effect continuation current reply .interrupted prefix physical publication) =
+    trans (atomicPreservesOutcome current effect reply interrupted publication)
+      (changesPreserveOutcome initial events current physical)
+
+  everyReceiptAtEveryWriteBoundary : ∀ initial events current continuation receipt actual →
+    E.Prefix (start tt) events (E.ask (publish current) continuation) →
+    X.Changes initial events current → Database.Atomic current (advance current) receipt actual →
+    X.Interrupted (start tt) initial actual
+  everyReceiptAtEveryWriteBoundary initial events current continuation .Database.committed .(advance current)
+    prefix physical Database.committedAll =
+    X.beforeReply events (publish current) continuation current tt (advance current) prefix physical
+      (published current (advance current) Database.committedAll)
+  everyReceiptAtEveryWriteBoundary initial events current continuation .Database.aborted .current
+    prefix physical Database.abortedNone = X.atPrefix events _ current prefix physical
+  everyReceiptAtEveryWriteBoundary initial events current continuation .Database.acknowledgementLost .current
+    prefix physical Database.unknownBefore = X.atPrefix events _ current prefix physical
+  everyReceiptAtEveryWriteBoundary initial events current continuation .Database.acknowledgementLost .(advance current)
+    prefix physical Database.unknownAfter =
+    X.beforeReply events (publish current) continuation current tt (advance current) prefix physical
+      (published current (advance current) Database.committedAll)
+
+  mutual
+    pendingObservation : ∀ business saved remaining {events} final reply →
+      E.Runs (runPending business saved remaining) events reply →
+      X.Changes (active business saved remaining) events final →
+      G.observe final reply ≡ normalizePending business saved remaining
+    pendingObservation business saved [] final reply
+      (E.replied _ _ tt (E.returned _))
+      (X.changed _ _ _ _ (published _ _ Database.committedAll) (X.unchanged _)) = refl
+    pendingObservation business saved (action ∷ rest) final reply execution physical with apply action business in applied
+    ... | changed , answer with execution | physical
+    ...   | E.replied _ _ tt runEvidence | X.changed _ _ _ _ (published _ _ Database.committedAll) remainingChanges rewrite applied =
+            tailObservation changed (saved ++ ((action , answer) ∷ [])) rest final reply runEvidence remainingChanges
+
+    tailObservation : ∀ business saved remaining {events} final reply →
+      E.Runs (runTail business saved remaining) events reply →
+      X.Changes (afterWrite business saved remaining) events final →
+      G.observe final reply ≡ normalizePending business saved remaining
+    tailObservation business saved [] .(finished business saved) .(finish saved)
+      (E.returned _) (X.unchanged _) = refl
+    tailObservation business saved remaining@(_ ∷ _) final reply execution physical =
+      pendingObservation business saved remaining final reply execution physical
+
+  stateObservation : ∀ current {events} final reply → E.Runs (runFromState current) events reply →
+    X.Changes current events final → G.observe final reply ≡ normalize current
+  stateObservation (finished business saved) .(finished business saved) .(finish saved)
+    (E.returned _) (X.unchanged _) = refl
+  stateObservation (active business saved remaining) final reply execution physical =
+    pendingObservation business saved remaining final reply execution physical
+
+  completedObservation : ∀ initial final reply → X.Completed (start tt) initial final reply →
+    G.observe final reply ≡ normalize initial
+  completedObservation initial final reply
+    (X.completed _ (E.replied .inspect .runFromState .initial runEvidence)
+      (X.changed .initial .inspect .initial .initial (inspected .initial) physical)) =
+    stateObservation initial final reply runEvidence physical
+
+  prependPublication : (current : State) (continuation : ⊤ → E.Script Wire.Value) (final : State) (reply : Wire.Value) →
+    X.Completed (continuation tt) (advance current) final reply →
+    X.Completed (E.ask (publish current) continuation) current final reply
+  prependPublication current continuation final reply (X.completed events runEvidence physical) =
+    X.completed ((publish current , tt) ∷ events)
+      (E.replied (publish current) continuation tt runEvidence)
+      (X.changed current (publish current) tt (advance current)
+        (published current (advance current) Database.committedAll) physical)
+
+  doneCompletes : (current : State) (reply : Wire.Value) → X.Completed (E.done reply) current current reply
+  doneCompletes current reply = X.completed [] (E.returned reply) (X.unchanged current)
+
+  prependKnownPublication : (current : State) (continuation : ⊤ → E.Script Wire.Value) (after final : State) (reply : Wire.Value) → after ≡ advance current →
+    X.Completed (continuation tt) after final reply →
+    X.Completed (E.ask (publish current) continuation) current final reply
+  prependKnownPublication current continuation .(advance current) final reply refl completion =
+    prependPublication current continuation final reply completion
+
+  mutual
+    pendingCompletes : ∀ business saved remaining →
+      X.Completed (runPending business saved remaining) (active business saved remaining)
+        (proj₁ (normalizePending business saved remaining)) (proj₂ (normalizePending business saved remaining))
+    pendingCompletes business saved [] = prependPublication (active business saved []) _ _ _
+      (doneCompletes (finished business saved) (finish saved))
+    pendingCompletes business saved (action ∷ rest) with apply action business in applied
+    ... | changed , answer = prependKnownPublication (active business saved (action ∷ rest)) _ _ _ _
+      (sym (cong (λ pair → afterWrite (proj₁ pair) (saved ++ ((action , proj₂ pair) ∷ [])) rest) applied))
+      (tailCompletes changed (saved ++ ((action , answer) ∷ [])) rest)
+
+    tailCompletes : ∀ business saved remaining →
+      X.Completed (runTail business saved remaining) (afterWrite business saved remaining)
+        (proj₁ (normalizePending business saved remaining)) (proj₂ (normalizePending business saved remaining))
+    tailCompletes business saved [] = doneCompletes (finished business saved) (finish saved)
+    tailCompletes business saved remaining@(_ ∷ _) = pendingCompletes business saved remaining
+
+  stateCompletes : ∀ current → X.Completed (runFromState current) current (proj₁ (normalize current)) (proj₂ (normalize current))
+  stateCompletes (finished business saved) = doneCompletes (finished business saved) (finish saved)
+  stateCompletes (active business saved remaining) = pendingCompletes business saved remaining
+
+  progress : ∀ initial → Σ State (λ final → Σ Wire.Value (λ reply → X.Completed (start tt) initial final reply))
+  progress initial with stateCompletes initial
+  ... | X.completed events runEvidence physical = proj₁ (normalize initial) , proj₂ (normalize initial) ,
+    X.completed ((inspect , initial) ∷ events)
+      (E.replied inspect runFromState initial runEvidence)
+      (X.changed initial inspect initial initial (inspected initial) physical)
+
+  recoverable : (intent : G.Intent ⊤) →
+    (∀ initial → normalize initial ≡ G.expected intent (G.invocation tt initial)) → Recoverable State ⊤
+  recoverable intent correct = record
+    { Effect = Effect
+    ; Reply = Reply
+    ; script = start
+    ; Atomic = Atomic
+    ; intent = intent
+    ; converges = λ _ initial interrupted final reply interruption completion →
+        trans (completedObservation interrupted final reply completion)
+          (trans (interruptionsPreserveOutcome initial interrupted interruption) (correct initial))
+    ; progress = λ _ initial → progress initial }

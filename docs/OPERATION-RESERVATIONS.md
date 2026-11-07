@@ -175,3 +175,24 @@ nodes, chunks, dependent edges, grounding links and current experiences. They
 also establish preservation of each unowned node, chunk, edge and vector row.
 Checking ownership against the original world matters: deleting the roots and
 then observing no IDs cannot make leftover vectors satisfy these laws.
+
+## Recovery of a saved sequence
+
+The shared sequence constructor reads a checked saved prefix and executes only
+the remaining work. Each step changes business data and saves its answer in one
+publication; the last step also saves completion. An empty plan publishes its
+result without changing business data. Re-reading completed work performs no
+business write.
+
+The general proof covers a stop at any script prefix and a lost reply at any
+active write. At every write boundary it covers a confirmed commit, rollback,
+and both possible states after a lost acknowledgement. Retrying to completion
+has the same final state and reply as completing the original saved plan. The
+proof also establishes that a completed execution exists and that advancing
+work preserves the complete plan.
+
+The constructor does not invent the intended business outcome. Its caller must
+provide a separate pure intent and prove that completing the plan produces
+that entire state and reply. The shared recovery goal remains unchanged.
+Concrete operation proofs and the mandatory dispatcher assembly still have to
+use this constructor; merely defining it does not complete #74 or #76.
