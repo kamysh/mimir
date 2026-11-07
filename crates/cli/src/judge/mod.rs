@@ -678,7 +678,7 @@ mod watch_tests {
         let work = harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
         let text = |dbname: &str| {
             format!(
-            "config_version=1\n[logging]\ndirectory={}\n[database]\ndbname={}\n[judge]\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n",
+            "config_version=1\n[logging]\ndirectory={}\n[database]\nhost='127.0.0.1'\nport=15432\nuser='fixture-user'\ndbname={}\n[judge]\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n",
             toml::Value::String(work.path().join("logs").display().to_string()),
             toml::Value::String(dbname.to_owned())
         )
