@@ -67,11 +67,15 @@ mod tests {
         let path = directory.join("config.toml");
         std::fs::write(&path, "original").unwrap();
         let mut events = ConfigEvents::new(&path).unwrap();
-        let changed = events.changed();
-        tokio::pin!(changed);
-        assert!(poll_fn(|cx| std::task::Poll::Ready(changed.as_mut().poll(cx).is_pending())).await);
-        std::fs::write(&path, "edited").unwrap();
-        changed.await.unwrap();
+        {
+            let changed = events.changed();
+            tokio::pin!(changed);
+            assert!(
+                poll_fn(|cx| std::task::Poll::Ready(changed.as_mut().poll(cx).is_pending())).await
+            );
+            std::fs::write(&path, "edited").unwrap();
+            changed.await.unwrap();
+        }
 
         events.rearm().unwrap();
         let replacement = directory.join("replacement");
