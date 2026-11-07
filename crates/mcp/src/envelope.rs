@@ -3,7 +3,135 @@ use mimir_core::{
     interaction::{CorrectionItem, Location, NeedsInput},
     validation::{Code, Fault, Segment},
 };
+use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
 use serde_json::{json, Value};
+use std::fmt;
+
+// Serde still owns JSON syntax and scalar decoding. This visitor records
+// repeated member paths before an object insertion could hide them. Nothing
+// is routed until the complete input has been read and this list is empty.
+struct CheckedValue<'a> {
+    path: Vec<Segment>,
+    repeated: &'a mut Vec<Vec<Segment>>,
+}
+impl<'de> DeserializeSeed<'de> for CheckedValue<'_> {
+    type Value = Value;
+    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Value, D::Error> {
+        decoder.deserialize_any(self)
+    }
+}
+impl<'de> Visitor<'de> for CheckedValue<'_> {
+    type Value = Value;
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+    fn visit_unit<E: Error>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_bool<E: Error>(self, value: bool) -> Result<Value, E> {
+        Ok(Value::Bool(value))
+    }
+    fn visit_i64<E: Error>(self, value: i64) -> Result<Value, E> {
+        Ok(value.into())
+    }
+    fn visit_u64<E: Error>(self, value: u64) -> Result<Value, E> {
+        Ok(value.into())
+    }
+    fn visit_f64<E: Error>(self, value: f64) -> Result<Value, E> {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .ok_or_else(|| E::custom("JSON number is not finite"))
+    }
+    fn visit_str<E: Error>(self, value: &str) -> Result<Value, E> {
+        Ok(Value::String(value.into()))
+    }
+    fn visit_string<E: Error>(self, value: String) -> Result<Value, E> {
+        Ok(Value::String(value))
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Value, A::Error> {
+        let mut values = Vec::new();
+        loop {
+            let mut path = self.path.clone();
+            path.push(Segment::Index(values.len()));
+            let Some(value) = sequence.next_element_seed(CheckedValue {
+                path,
+                repeated: &mut *self.repeated,
+            })?
+            else {
+                break;
+            };
+            values.push(value);
+        }
+        Ok(Value::Array(values))
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut object: A) -> Result<Value, A::Error> {
+        let mut values = serde_json::Map::new();
+        while let Some(key) = object.next_key::<String>()? {
+            let mut path = self.path.clone();
+            path.push(Segment::Key(key.clone()));
+            if values.contains_key(&key) {
+                self.repeated.push(path.clone());
+            }
+            let value = object.next_value_seed(CheckedValue {
+                path,
+                repeated: &mut *self.repeated,
+            })?;
+            values.insert(key, value);
+        }
+        Ok(Value::Object(values))
+    }
+}
+
+pub fn parse(text: &str) -> Result<Incoming, serde_json::Error> {
+    let mut decoder = serde_json::Deserializer::from_str(text);
+    let mut repeated = Vec::new();
+    let value = CheckedValue {
+        path: vec![],
+        repeated: &mut repeated,
+    }
+    .deserialize(&mut decoder)?;
+    decoder.end()?;
+    if repeated.is_empty() {
+        return Ok(decode(value));
+    }
+    let repeated_id = repeated
+        .iter()
+        .any(|path| matches!(path.as_slice(), [Segment::Key(key)] if key == "id"));
+    let mut issues = repeated.into_iter().map(|path| CorrectionItem::new(
+        Location::Request,
+        Fault {path,code:Code::Duplicate,message:"This field occurs more than once; no business operation was executed.".into()},
+        "One intended value for each field.".into(),
+        "Send this field exactly once. Decide which value was intended; do not rely on a first-value or last-value rule.".into(),
+    ).expect("duplicate-field diagnostics contain paths and a repair"));
+    let diagnostic = report(
+        issues.next().expect("repeated fields were checked"),
+        issues.collect(),
+    );
+    if value
+        .as_object()
+        .is_some_and(|fields| !fields.contains_key("id"))
+    {
+        return Ok(Incoming::Notification {
+            method: "ambiguous message".into(),
+            diagnostic: Some(diagnostic),
+        });
+    }
+    let id = if repeated_id {
+        Value::Null
+    } else {
+        value
+            .get("id")
+            .filter(|id| valid_id(id))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    Ok(Incoming::Rejected(error(
+        id,
+        -32600,
+        "Invalid Request",
+        diagnostic,
+    )))
+}
 
 pub struct Request {
     id: Value,
@@ -180,6 +308,59 @@ pub fn decode(value: Value) -> Incoming {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_members_are_located_without_choosing_a_response_id() {
+        let Incoming::Rejected(response) = parse(r#"{"jsonrpc":"2.0","id":1,"id":2,"method":"tools/list","method":"tools/call","params":{"arguments":{"project":"one","project":"two","sources":[{"actor":"one","actor":"two"}]}}}"#).unwrap() else {panic!("duplicates admitted")};
+        assert_eq!(response["id"], Value::Null);
+        let diagnostic: NeedsInput =
+            serde_json::from_value(response["error"]["data"].clone()).unwrap();
+        let paths: Vec<_> = diagnostic
+            .issues()
+            .iter()
+            .map(|item| item.fault().path.clone())
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                vec![Segment::Key("id".into())],
+                vec![Segment::Key("method".into())],
+                vec![
+                    Segment::Key("params".into()),
+                    Segment::Key("arguments".into()),
+                    Segment::Key("project".into())
+                ],
+                vec![
+                    Segment::Key("params".into()),
+                    Segment::Key("arguments".into()),
+                    Segment::Key("sources".into()),
+                    Segment::Index(0),
+                    Segment::Key("actor".into())
+                ]
+            ]
+        );
+    }
+
+    #[test]
+    fn repeated_notification_fields_never_acquire_a_response_or_handler() {
+        let Incoming::Notification {diagnostic:Some(diagnostic),..}=parse(r#"{"jsonrpc":"2.0","method":"tools/call","params":{"arguments":{"project":"same","project":"same"}}}"#).unwrap() else {panic!("ambiguous notification was admitted")};
+        assert_eq!(diagnostic.issues().len(), 1);
+        assert_eq!(diagnostic.issues()[0].fault().code, Code::Duplicate);
+    }
+
+    #[test]
+    fn clean_values_keep_standard_json_numbers_strings_and_complete_input_checks() {
+        let text = r#"{"jsonrpc":"2.0","id":0,"method":"tools/list","params":{"values":[null,true,-1,18446744073709551615,1.0,1e20,"escaped\\text\n","\u0061"],"nested":{"whole":[]}}}"#;
+        let expected: Value = serde_json::from_str(text).unwrap();
+        let Incoming::Request(request) = parse(text).unwrap() else {
+            panic!("clean input refused")
+        };
+        assert_eq!(request.id(), &expected["id"]);
+        assert_eq!(request.params(), &expected["params"]);
+        for broken in [format!("{text} null"), "{\"a\":1,\"a\":2".into()] {
+            assert!(parse(&broken).is_err());
+        }
+    }
 
     #[test]
     fn malformed_envelopes_are_not_executable_and_keep_usable_ids() {

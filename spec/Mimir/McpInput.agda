@@ -1,6 +1,8 @@
 {-# OPTIONS --safe #-}
 -- Mimir frames one line and trims its text before asking the standard JSON
 -- parser. The supplied library owns UTF-8 admission and complete JSON syntax.
+-- Its field-preserving visitor supplies object members before normalization;
+-- Envelope.extract rejects repeated names before selecting any handler.
 import Mimir.StandardLibrary
 module Mimir.McpInput (library : Mimir.StandardLibrary.Contract) where
 
@@ -37,7 +39,7 @@ module Parser where
   trimmed : ∀ text → BodyOutcome text
   trimmed [] = blank refl
   trimmed text@(_ ∷ _) = fromJSON
-    (Library.Contract.jsonValue library (Library.Contract.encodeUTF8 library text))
+    (Library.Contract.jsonMembers library (Library.Contract.encodeUTF8 library text))
 
   readBody : ∀ text → BodyOutcome (body text)
   readBody text = trimmed (trim text)

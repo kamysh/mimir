@@ -892,7 +892,7 @@ async fn application_main() -> Result<()> {
             continue;
         }
 
-        let request: Value = match serde_json::from_str(trimmed) {
+        let request = match envelope::parse(trimmed) {
             Ok(v) => v,
             Err(e) => {
                 error!("parse error: {}", e);
@@ -905,7 +905,7 @@ async fn application_main() -> Result<()> {
             }
         };
 
-        let request = match envelope::decode(request) {
+        let request = match request {
             envelope::Incoming::Request(request) => request,
             envelope::Incoming::Notification { method, diagnostic } => {
                 if let Some(diagnostic) = diagnostic {

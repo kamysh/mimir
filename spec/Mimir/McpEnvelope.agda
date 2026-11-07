@@ -4,7 +4,8 @@
 module Mimir.McpEnvelope where
 
 open import Data.Bool using (Bool; true; false)
-open import Data.List using (List; []; _∷_; _++_)
+open import Data.List using (List; []; _∷_; _++_; map)
+open import Data.Nat using (ℕ; zero; suc)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
@@ -18,6 +19,7 @@ open import Mimir.Text public using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.Validation as V
 import Mimir.McpErrors as Errors
+import Mimir.JsonObjects as Objects
 open import Mimir.JsonObjects using (forbid)
 module Correction = Errors.AgentCorrection
 
@@ -140,12 +142,69 @@ extractFields fields with both (version fields) (both (method fields) (both (ide
 ... | accepted (tt , name , who , params) = inj₂ (request who name params)
 ... | rejected first rest = inj₁ (problem (responseIdentity fields) (problemCode fields) (Correction.claim first rest))
 
-extract : JSON.Value → Problem ⊎ Request
-extract (JSON.object fields) = extractFields (JSON.Object.normalize fields)
-extract _ = inj₁ (problem (identity true JSON.null) -[1+ 32599 ] (Correction.claim
+extractUnique : JSON.Value → Problem ⊎ Request
+extractUnique (JSON.object fields) = extractFields (JSON.Object.normalize fields)
+extractUnique _ = inj₁ (problem (identity true JSON.null) -[1+ 32599 ] (Correction.claim
   (issue [] V.wrongType "The message is not a request object."
     "A JSON object containing jsonrpc, method and a client-chosen request ID."
     "Send one MCP request object per line; do not send a scalar or batch array.") []))
+
+-- The standard decoder supplies fields before object normalization. Repeated
+-- names at any depth block admission, even if both supplied values are equal.
+Path = List V.Segment
+
+mutual
+  repeated : JSON.Value → Path → List Path
+  repeated (JSON.object fields) path = repeatedFields fields [] path
+  repeated (JSON.array values) path = repeatedElements values zero path
+  repeated _ path = []
+
+  repeatedFields : List (Text × JSON.Value) → List Text → Path → List Path
+  repeatedFields [] seen path = []
+  repeatedFields ((name , value) ∷ rest) seen path with Objects.Names.present? name seen
+  ... | yes _ = (path ++ (V.fieldKey name ∷ [])) ∷
+    (repeated value (path ++ (V.fieldKey name ∷ [])) ++ repeatedFields rest (name ∷ seen) path)
+  ... | no _ = repeated value (path ++ (V.fieldKey name ∷ [])) ++ repeatedFields rest (name ∷ seen) path
+
+  repeatedElements : List JSON.Value → ℕ → Path → List Path
+  repeatedElements [] position path = []
+  repeatedElements (value ∷ rest) position path = repeated value (path ++ (V.index position ∷ [])) ++
+    repeatedElements rest (suc position) path
+
+identifiers : List (Text × JSON.Value) → List JSON.Value
+identifiers [] = []
+identifiers ((name , value) ∷ rest) with name ≟Text literal "id"
+... | yes _ = value ∷ identifiers rest
+... | no _ = identifiers rest
+
+uniqueIdentity : List JSON.Value → Identity
+uniqueIdentity [] = identity false JSON.null
+uniqueIdentity (value ∷ []) with validID value
+... | true = identity true value
+... | false = identity true JSON.null
+uniqueIdentity (_ ∷ _ ∷ _) = identity true JSON.null
+
+repeatedIdentity : JSON.Value → Identity
+repeatedIdentity (JSON.object fields) = uniqueIdentity (identifiers fields)
+repeatedIdentity _ = identity true JSON.null
+
+repeatedIssue : Path → Correction.Item
+repeatedIssue path = issue path V.duplicate
+  "This field occurs more than once; no business operation was executed."
+  "One intended value for each field."
+  "Send this field exactly once. Decide which value was intended; do not rely on a first-value or last-value rule."
+
+extract : JSON.Value → Problem ⊎ Request
+extract value with repeated value []
+... | [] = extractUnique value
+... | first ∷ rest = inj₁ (problem (repeatedIdentity value) -[1+ 32599 ]
+  (Correction.claim (repeatedIssue first) (map repeatedIssue rest)))
+
+admittedHasNoRepeatedFields : ∀ value admitted → extract value ≡ inj₂ admitted → repeated value [] ≡ []
+admittedHasNoRepeatedFields value admitted admission with repeated value []
+... | [] = refl
+... | first ∷ rest with admission
+...   | ()
 
 data Command : Set where
   initialize listTools : Command

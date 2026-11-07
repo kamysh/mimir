@@ -23,6 +23,17 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
     .await?;
     let project = format!("envelope-session-{}", Uuid::new_v4());
     let experience_id = Uuid::new_v4();
+    let other_project = format!("{project}-other");
+    let audit = mimir_core::db::connect(&fixture.database_config()).await?;
+    let other_id: Uuid = audit
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    service.record_experience(&serde_json::from_value(json!({
+        "id":other_id,"project":other_project,"context":"preserve the other possible project too",
+        "action":"reject ambiguous deletion","outcome":"unknown","source":"agent_report",
+        "evidence":["private fixture setup"]
+    }))?,0).await?;
     service
         .record_experience(
             &serde_json::from_value(json!({
@@ -96,6 +107,29 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         let correction: NeedsInput = serde_json::from_value(response["error"]["data"].clone())?;
         ensure!(!correction.issues().is_empty(), "missing repair details");
     }
+    // Repeated envelope/argument members are diagnosed before normalization
+    // could choose a handler, project or response identity.
+    let encoded_project = serde_json::to_string(&project)?;
+    let encoded_other_project = serde_json::to_string(&other_project)?;
+    for (message,id,path) in [
+        (format!(r#"{{"jsonrpc":"2.0","id":"duplicate-project","method":"tools/call","params":{{"name":"delete_project","arguments":{{"project":{encoded_other_project},"project":{encoded_project}}}}}}}"#),json!("duplicate-project"),json!(["params","arguments","project"])),
+        (format!(r#"{{"jsonrpc":"2.0","id":"duplicate-method","method":"tools/list","method":"tools/call","params":{delete}}}"#),json!("duplicate-method"),json!(["method"])),
+        (format!(r#"{{"jsonrpc":"2.0","id":"first-id","id":"last-id","method":"tools/call","params":{delete}}}"#),Value::Null,json!(["id"])),
+        (r#"{"jsonrpc":"2.0","id":"nested-array","method":"tools/call","params":{"name":"record_experience","arguments":{"experience":{"source_records":[{"actor":"one","actor":"two"}]}}}}"#.into(),json!("nested-array"),json!(["params","arguments","experience","source_records",0,"actor"])),
+    ] {
+        input.write_all(format!("{message}\n").as_bytes()).await?;
+        input.flush().await?;
+        let mut line=String::new();
+        ensure!(output.read_line(&mut line).await?!=0,"server stopped on duplicate fields");
+        let response:Value=serde_json::from_str(&line)?;
+        ensure!(response["id"]==id && response["error"]["code"]==-32600,"wrong ambiguous-request response: {response}");
+        let correction:NeedsInput=serde_json::from_value(response["error"]["data"].clone())?;
+        let details=serde_json::to_value(correction)?;
+        ensure!(details["issues"].as_array().unwrap().iter().any(|issue|issue["fault"]["path"]==path),"missing repeated-field path: {details}");
+    }
+    // This ambiguous notification must produce no response and no deletion.
+    input.write_all(format!(r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"name":"delete_project","arguments":{{"project":{encoded_project},"project":{encoded_project}}}}}}}
+"#).as_bytes()).await?;
     // Supplied invalid tool fields are corrected before handler execution.
     for params in [
         json!({}),
@@ -232,6 +266,11 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         "notification unexpectedly received a response"
     );
     ensure!(child.wait().await?.success(), "server failed on normal EOF");
+    ensure!(
+        service.get_experience(other_id).await?.is_some(),
+        "ambiguous request deleted the other project"
+    );
     service.delete_project(&project).await?;
+    service.delete_project(&other_project).await?;
     Ok(())
 }

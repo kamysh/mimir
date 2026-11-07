@@ -44,6 +44,9 @@ record Contract : Set₁ where
     cast : Fin (power 64) → Float.Number
     -- Generic Value parsing uses library object normalization.
     jsonValue : List Byte → JSONResult
+    -- MCP's Serde visitor observes every member before map insertion. This
+    -- separate boundary retains repeated names for pre-dispatch admission.
+    jsonMembers : List Byte → JSONResult
     readTyped : ∀ {A : Set} (decode : Value.Value → Validation.Fault ⊎ A) → List Byte → ReadResult decode
     compactJSON : Value.Value → List Byte
     prettyJSON : Value.Value → Text ⊎ List Byte
