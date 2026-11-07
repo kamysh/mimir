@@ -16,7 +16,150 @@ use crate::config::{EmbeddingBackend, EmbeddingsConfig};
 pub type EmbedFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<Vec<f32>>>> + Send + 'a>>;
 
 pub trait EmbeddingProvider: Send + Sync {
-    fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a>;
+    fn embed<'a>(
+        &'a self,
+        texts: &'a [String],
+        cancellation: EmbeddingCancellation,
+    ) -> EmbedFuture<'a>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Physical job state. Finished work can return either Ok or Err; inspect its result.
+pub enum EmbeddingStatus {
+    Running,
+    Cancelled,
+    Finished,
+}
+
+#[derive(Debug)]
+pub struct EmbeddingCancelled;
+impl std::fmt::Display for EmbeddingCancelled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("embedding job was cancelled; no embedding result was accepted")
+    }
+}
+impl std::error::Error for EmbeddingCancelled {}
+
+#[derive(Clone)]
+pub struct EmbeddingCancellation {
+    state: tokio::sync::watch::Receiver<EmbeddingStatus>,
+}
+impl EmbeddingCancellation {
+    pub fn status(&self) -> EmbeddingStatus {
+        *self.state.borrow()
+    }
+    pub fn check(&self) -> Result<()> {
+        match self.status() {
+            EmbeddingStatus::Running => Ok(()),
+            EmbeddingStatus::Cancelled => Err(EmbeddingCancelled.into()),
+            EmbeddingStatus::Finished => anyhow::bail!("embedding job has already finished"),
+        }
+    }
+    pub async fn ended(&mut self) -> EmbeddingStatus {
+        loop {
+            let state = self.status();
+            if state != EmbeddingStatus::Running {
+                return state;
+            }
+            if self.state.changed().await.is_err() {
+                return EmbeddingStatus::Cancelled;
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct EmbeddingStopHandle {
+    state: tokio::sync::watch::Sender<EmbeddingStatus>,
+}
+impl EmbeddingStopHandle {
+    /// Return whether this call stopped a running job. Finished results remain intact.
+    pub fn cancel(&self) -> bool {
+        self.state.send_if_modified(|state| {
+            if *state == EmbeddingStatus::Running {
+                *state = EmbeddingStatus::Cancelled;
+                true
+            } else {
+                false
+            }
+        })
+    }
+    pub fn status(&self) -> EmbeddingStatus {
+        *self.state.borrow()
+    }
+}
+
+struct EmbeddingOwner {
+    control: EmbeddingStopHandle,
+}
+impl EmbeddingOwner {
+    fn finish(self) -> bool {
+        self.control.state.send_if_modified(|state| {
+            if *state == EmbeddingStatus::Running {
+                *state = EmbeddingStatus::Finished;
+                true
+            } else {
+                false
+            }
+        })
+    }
+}
+impl Drop for EmbeddingOwner {
+    fn drop(&mut self) {
+        self.control.cancel();
+    }
+}
+
+#[must_use = "await the embedding job or cancel it; dropping it requests cancellation"]
+pub struct EmbeddingJob<'a> {
+    future: EmbedFuture<'a>,
+    control: EmbeddingStopHandle,
+}
+impl EmbeddingJob<'_> {
+    pub fn stop_handle(&self) -> EmbeddingStopHandle {
+        self.control.clone()
+    }
+}
+impl Future for EmbeddingJob<'_> {
+    type Output = Result<Vec<Vec<f32>>>;
+    fn poll(
+        self: Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.get_mut().future.as_mut().poll(context)
+    }
+}
+
+/// Every service embedding request enters through this owned wrapper.
+pub struct OwnedEmbeddingBackend {
+    provider: Box<dyn EmbeddingProvider>,
+}
+impl OwnedEmbeddingBackend {
+    pub fn embed<'a>(&'a self, texts: &'a [String]) -> EmbeddingJob<'a> {
+        let (state, received) = tokio::sync::watch::channel(EmbeddingStatus::Running);
+        let control = EmbeddingStopHandle { state };
+        let owner = EmbeddingOwner {
+            control: control.clone(),
+        };
+        let cancellation = EmbeddingCancellation { state: received };
+        let future = Box::pin(async move {
+            cancellation.check()?;
+            let mut ended = cancellation.clone();
+            let result = tokio::select! {
+                biased;
+                _ = ended.ended() => return Err(EmbeddingCancelled.into()),
+                result = self.provider.embed(texts, cancellation) => result,
+            };
+            // This transition is serialized with cancel(). A cancellation that
+            // won the race cannot subsequently become an accepted result.
+            if owner.finish() {
+                result
+            } else {
+                Err(EmbeddingCancelled.into())
+            }
+        });
+        EmbeddingJob { future, control }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -40,7 +183,11 @@ impl VoyageBackend {
 }
 
 impl EmbeddingProvider for VoyageBackend {
-    fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a> {
+    fn embed<'a>(
+        &'a self,
+        texts: &'a [String],
+        _cancellation: EmbeddingCancellation,
+    ) -> EmbedFuture<'a> {
         Box::pin(async move {
             let body = serde_json::json!({
                 "input": texts,
@@ -83,7 +230,11 @@ impl OpenAiBackend {
 }
 
 impl EmbeddingProvider for OpenAiBackend {
-    fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a> {
+    fn embed<'a>(
+        &'a self,
+        texts: &'a [String],
+        _cancellation: EmbeddingCancellation,
+    ) -> EmbedFuture<'a> {
         Box::pin(async move {
             let body = serde_json::json!({
                 "input": texts,
@@ -311,17 +462,25 @@ fn load_embed_state(cache_dir: Option<&std::path::Path>) -> Result<EmbedState> {
 }
 
 impl EmbeddingProvider for LocalBackend {
-    fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a> {
+    fn embed<'a>(
+        &'a self,
+        texts: &'a [String],
+        cancellation: EmbeddingCancellation,
+    ) -> EmbedFuture<'a> {
         let texts = texts.to_vec();
         let batch_size = self.batch_size;
         Box::pin(async move {
+            cancellation.check()?;
             if texts.is_empty() {
                 return Ok(vec![]);
             }
             let state = self.ensure_loaded()?;
-            tokio::task::spawn_blocking(move || embed_with_state(&state, &texts, batch_size))
-                .await
-                .map_err(|e| anyhow::anyhow!("local embeddings task failed: {e}"))?
+            cancellation.check()?;
+            tokio::task::spawn_blocking(move || {
+                embed_with_state(&state, &texts, batch_size, &cancellation)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("local embeddings task failed: {e}"))?
         })
     }
 }
@@ -330,11 +489,13 @@ fn embed_with_state(
     state: &EmbedState,
     texts: &[String],
     batch_size: Option<usize>,
+    cancellation: &EmbeddingCancellation,
 ) -> Result<Vec<Vec<f32>>> {
     let chunk_size = batch_size.unwrap_or(texts.len()).max(1);
     let mut all_embeddings = Vec::with_capacity(texts.len());
 
     for chunk in texts.chunks(chunk_size) {
+        cancellation.check()?;
         let mut encodings = state
             .tokenizer
             .encode_batch(chunk.to_vec(), true)
@@ -372,10 +533,12 @@ fn embed_with_state(
         let types_t: Tensor =
             tract_ndarray::Array2::from_shape_vec((batch, seq_len), token_type_ids)?.into();
 
-        let outputs = state
+        let model = state
             .model
             .lock()
-            .map_err(|_| anyhow::anyhow!("model mutex poisoned"))?
+            .map_err(|_| anyhow::anyhow!("model mutex poisoned"))?;
+        cancellation.check()?;
+        let outputs = model
             .run(tvec![ids_t.into(), mask_t.into(), types_t.into()])
             .context("running ONNX model")?;
 
@@ -410,8 +573,8 @@ fn embed_with_state(
 // Factory
 // ---------------------------------------------------------------------------
 
-pub fn make_backend(cfg: &EmbeddingsConfig) -> Box<dyn EmbeddingProvider> {
-    match cfg.backend {
+pub fn make_backend(cfg: &EmbeddingsConfig) -> OwnedEmbeddingBackend {
+    let provider: Box<dyn EmbeddingProvider> = match cfg.backend {
         EmbeddingBackend::Voyage => Box::new(VoyageBackend::new(
             cfg.api_key.clone().unwrap_or_default(),
             cfg.model.clone(),
@@ -423,6 +586,145 @@ pub fn make_backend(cfg: &EmbeddingsConfig) -> Box<dyn EmbeddingProvider> {
         EmbeddingBackend::Local => {
             Box::new(LocalBackend::new(cfg.batch_size, cfg.cache_dir.clone()))
         }
+    };
+    OwnedEmbeddingBackend { provider }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+    use std::{collections::VecDeque, future::poll_fn, task::Poll};
+    use tokio::sync::oneshot;
+
+    type Vectors = Vec<Vec<f32>>;
+    type Control = (
+        oneshot::Sender<EmbeddingCancellation>,
+        oneshot::Receiver<Vectors>,
+    );
+    type Observer = (
+        oneshot::Receiver<EmbeddingCancellation>,
+        oneshot::Sender<Vectors>,
+    );
+    struct ControlledProvider {
+        calls: Mutex<VecDeque<Control>>,
+    }
+    impl EmbeddingProvider for ControlledProvider {
+        fn embed<'a>(
+            &'a self,
+            _texts: &'a [String],
+            cancellation: EmbeddingCancellation,
+        ) -> EmbedFuture<'a> {
+            Box::pin(async move {
+                let (entered, release) = self.calls.lock().unwrap().pop_front().unwrap();
+                assert!(entered.send(cancellation.clone()).is_ok());
+                let result = release.await?;
+                cancellation.check()?;
+                Ok(result)
+            })
+        }
+    }
+
+    fn controlled(count: usize) -> (OwnedEmbeddingBackend, Vec<Observer>) {
+        let mut calls = VecDeque::new();
+        let mut observers = Vec::new();
+        for _ in 0..count {
+            let (entered, observed) = oneshot::channel();
+            let (release, result) = oneshot::channel();
+            calls.push_back((entered, result));
+            observers.push((observed, release));
+        }
+        (
+            OwnedEmbeddingBackend {
+                provider: Box::new(ControlledProvider {
+                    calls: Mutex::new(calls),
+                }),
+            },
+            observers,
+        )
+    }
+
+    #[tokio::test]
+    async fn dropping_a_job_notifies_its_cooperative_work() {
+        let (backend, mut observers) = controlled(1);
+        let (entered, _release) = observers.remove(0);
+        let texts = vec!["owned input".into()];
+        let mut job = Box::pin(backend.embed(&texts));
+        assert!(poll_fn(|cx| Poll::Ready(job.as_mut().poll(cx).is_pending())).await);
+        let mut cancellation = entered.await.unwrap();
+        let control = job.stop_handle();
+        let observed = tokio::spawn(async move { cancellation.ended().await });
+        drop(job);
+        assert_eq!(observed.await.unwrap(), EmbeddingStatus::Cancelled);
+        assert_eq!(control.status(), EmbeddingStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancellation_is_per_call_and_completion_releases_the_other_owner() {
+        let (backend, mut observers) = controlled(2);
+        let (entered_first, _release_first) = observers.remove(0);
+        let (entered_second, release_second) = observers.remove(0);
+        let texts = vec!["owned input".into()];
+        let mut first = Box::pin(backend.embed(&texts));
+        let mut second = Box::pin(backend.embed(&texts));
+        assert!(poll_fn(|cx| Poll::Ready(first.as_mut().poll(cx).is_pending())).await);
+        assert!(poll_fn(|cx| Poll::Ready(second.as_mut().poll(cx).is_pending())).await);
+        let mut first_signal = entered_first.await.unwrap();
+        let mut second_signal = entered_second.await.unwrap();
+        let first_control = first.stop_handle();
+        let second_control = second.stop_handle();
+        assert!(first_control.cancel());
+        assert!(first.await.unwrap_err().is::<EmbeddingCancelled>());
+        assert_eq!(first_signal.ended().await, EmbeddingStatus::Cancelled);
+        assert_eq!(second_control.status(), EmbeddingStatus::Running);
+        release_second.send(vec![vec![1.0]]).unwrap();
+        assert_eq!(second.await.unwrap(), vec![vec![1.0]]);
+        assert_eq!(second_signal.ended().await, EmbeddingStatus::Finished);
+        assert!(!second_control.cancel());
+        assert_eq!(second_control.status(), EmbeddingStatus::Finished);
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_poll_never_starts_the_provider() {
+        let (backend, mut observers) = controlled(1);
+        let (mut entered, _release) = observers.remove(0);
+        let texts = vec!["owned input".into()];
+        let job = backend.embed(&texts);
+        assert!(job.stop_handle().cancel());
+        assert!(!job.stop_handle().cancel());
+        assert!(job.await.unwrap_err().is::<EmbeddingCancelled>());
+        assert!(matches!(
+            entered.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_wins_before_an_already_ready_result_is_accepted() {
+        let (backend, mut observers) = controlled(1);
+        let (entered, release) = observers.remove(0);
+        let texts = vec!["owned input".into()];
+        let mut job = Box::pin(backend.embed(&texts));
+        assert!(poll_fn(|cx| Poll::Ready(job.as_mut().poll(cx).is_pending())).await);
+        let mut signal = entered.await.unwrap();
+        release.send(vec![vec![1.0]]).unwrap();
+        assert!(job.stop_handle().cancel());
+        assert!(job.await.unwrap_err().is::<EmbeddingCancelled>());
+        assert_eq!(signal.ended().await, EmbeddingStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn a_provider_error_also_releases_ownership() {
+        let (backend, mut observers) = controlled(1);
+        let (entered, release) = observers.remove(0);
+        let texts = vec!["owned input".into()];
+        let job = backend.embed(&texts);
+        let control = job.stop_handle();
+        drop(release);
+        let error = job.await.unwrap_err();
+        assert!(!error.is::<EmbeddingCancelled>());
+        let mut signal = entered.await.unwrap();
+        assert_eq!(signal.ended().await, EmbeddingStatus::Finished);
+        assert_eq!(control.status(), EmbeddingStatus::Finished);
     }
 }
 

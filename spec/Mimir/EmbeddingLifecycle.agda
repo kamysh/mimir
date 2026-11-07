@@ -6,12 +6,14 @@ module Mimir.EmbeddingLifecycle where
 open import Data.Bool using (Bool; true; false)
 open import Data.List using (List; []; _∷_; _++_; length; map)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ)
+open import Data.Nat using (ℕ; _≟_)
+open import Data.Empty using (⊥-elim)
+open import Relation.Nullary using (yes; no)
 open import Data.Product using (_×_; _,_)
 open import Data.String using (toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
 import Mimir.EmbeddingBackend as Backend
@@ -24,6 +26,51 @@ import Mimir.Validation as Validation
 import Mimir.Binary64 as Binary
 import Mimir.Effects as Effects
 import Data.Vec
+
+-- One source per embedding call. Stop and completion are terminal, ordered
+-- transitions; finishing cannot revive cancelled work or revoke a result.
+module Ownership where
+  data State : Set where running cancelled finished : State
+
+  stop complete : State → State
+  stop running = cancelled
+  stop cancelled = cancelled
+  stop finished = finished
+  complete running = finished
+  complete cancelled = cancelled
+  complete finished = finished
+
+  owned : State → Bool
+  owned running = true
+  owned cancelled = false
+  owned finished = false
+
+  stopReleasesOwnership : ∀ state → owned (stop state) ≡ false
+  stopReleasesOwnership running = refl
+  stopReleasesOwnership cancelled = refl
+  stopReleasesOwnership finished = refl
+
+  completionReleasesOwnership : ∀ state → owned (complete state) ≡ false
+  completionReleasesOwnership running = refl
+  completionReleasesOwnership cancelled = refl
+  completionReleasesOwnership finished = refl
+
+  completionCannotUndoStop : ∀ state → complete (stop state) ≡ stop state
+  completionCannotUndoStop running = refl
+  completionCannotUndoStop cancelled = refl
+  completionCannotUndoStop finished = refl
+
+  World = ℕ → State
+  stopJob : ℕ → World → World
+  stopJob identity world observed with observed ≟ identity
+  ... | yes _ = stop (world observed)
+  ... | no _ = world observed
+
+  otherJobsKeepTheirOwnership : ∀ identity other world → other ≢ identity →
+    stopJob identity world other ≡ world other
+  otherJobsKeepTheirOwnership identity other world different with other ≟ identity
+  ... | yes same = ⊥-elim (different same)
+  ... | no _ = refl
 
 root : Maybe Text → Maybe Path.NativePath → Maybe Path.Path
 root override home with Backend.cacheOverride override

@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use config::Config;
 use documents::{parse_markdown, QueryResult};
-use embed::{make_backend, EmbeddingProvider};
+use embed::{make_backend, OwnedEmbeddingBackend};
 use graph::{Belief, EdgeType, MemoryType, Pattern, Probability};
 use inference::InferenceEngine;
 use store::AgeStore;
@@ -104,7 +104,7 @@ pub struct GroundedBelief {
 pub struct MimirService {
     store: AgeStore,
     inference: InferenceEngine,
-    embeddings: Option<Box<dyn EmbeddingProvider>>,
+    embeddings: Option<OwnedEmbeddingBackend>,
 }
 
 impl MimirService {
