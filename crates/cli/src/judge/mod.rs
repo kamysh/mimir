@@ -233,8 +233,30 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                         |seconds| tokio::time::sleep(std::time::Duration::from_secs(seconds)),
                         || subscription.changed(),
                     ) => if let Err(error) = result {
-                        eprintln!("Review work listener disconnected: {error:#}. Restore the database connection and restart mimir judge watch; pending work remains stored.");
-                        return UNAVAILABLE;
+                        eprintln!("Review work listener disconnected: {error:#}. Reconnecting before checking saved pending work.");
+                        let settings = match config::load(config.as_deref()) {
+                            Ok(settings) => settings,
+                            Err(error) => {
+                                record_invalid_configuration(state_dir.as_deref(), &error);
+                                eprintln!("Unable to reload watcher configuration: {error:#}. Run mimir judge check-config, correct the configuration, then retry.");
+                                return INVALID_CONFIG;
+                            }
+                        };
+                        let connected = tokio::select! {
+                            result = mimir_core::db::ReviewQueueSubscription::connect(&settings.core.database) => result,
+                            _ = tokio::signal::ctrl_c() => return 0,
+                        };
+                        subscription = match connected {
+                            Ok(subscription) => subscription,
+                            Err(error) => {
+                                eprintln!("Unable to restore the review work listener: {error:#}. Restore the database connection and restart mimir judge watch; pending work remains stored.");
+                                return UNAVAILABLE;
+                            }
+                        };
+                        // Reuse the admitted value, just as at initial startup.
+                        // Continue through a durable scan, never straight to wait:
+                        // notifications emitted while disconnected are not saved.
+                        initial_settings = Some(settings);
                     },
                     _ = tokio::signal::ctrl_c() => return 0,
                 }

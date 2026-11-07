@@ -154,7 +154,10 @@ when a required account or permission step remains unresolved.
 one selected batch through `mimir-mcp`; `mimir judge watch` immediately checks
 for further eligible work after each successful non-idle batch. An empty queue
 waits for PostgreSQL work events and scans again when one arrives; it has no idle
-polling interval. Incomplete-work paths still wait five minutes by default
+polling interval. After a listener disconnects, it subscribes again and scans
+saved work before waiting, so missed notifications do not lose pending reviews.
+If restoring the connection fails, it reports how to correct the problem and
+restart. Incomplete-work paths still wait five minutes by default
 (`--interval-seconds`, positive values). After three consecutive incomplete or unavailable runs by default
 (`--max-consecutive-failures`), it backs off to hourly runs (removal tracked in #67). An empty queue
 makes no model call. `mimir judge status` reads the last local report and gives

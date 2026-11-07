@@ -92,6 +92,37 @@ async fn empty_review_queue_wakes_on_a_later_committed_experience() {
 }
 
 #[tokio::test]
+async fn reconnected_listener_finds_work_without_a_saved_notification() {
+    use std::future::{poll_fn, Future};
+    let svc = service().await;
+    let cfg = isolation::fixture().database_config();
+    let project = format!("reconnected-queue-{}", Uuid::new_v4());
+    let reviewed = experience(&project);
+    svc.record_experience(&reviewed, 0).await.unwrap();
+    svc.review_experience(&review(&reviewed), 0).await.unwrap();
+    let subscription = db::ReviewQueueSubscription::connect(&cfg).await.unwrap();
+    assert!(svc
+        .pending_experiences(Some(&project), 1)
+        .await
+        .unwrap()
+        .is_empty());
+    drop(subscription);
+
+    // No listener owns this commit's hint. A reconnect must scan rather than
+    // wait for an old notification that PostgreSQL does not retain.
+    let source = experience(&project);
+    svc.record_experience(&source, 0).await.unwrap();
+    let mut reconnected = db::ReviewQueueSubscription::connect(&cfg).await.unwrap();
+    let selected = svc.pending_experiences(Some(&project), 1).await.unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].experience.id, source.id);
+    let wake = reconnected.changed();
+    tokio::pin!(wake);
+    assert!(poll_fn(|cx| std::task::Poll::Ready(wake.as_mut().poll(cx).is_pending())).await);
+    svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
 async fn pending_queue_notifications_follow_commit_and_contain_no_source() {
     use std::future::poll_fn;
     use tokio_postgres::{AsyncMessage, Notification};

@@ -22,8 +22,10 @@ history, or digest reply. The timer acknowledgement on the remaining waiting
 paths is an external scheduling condition, not a proof about the operating
 system. `JudgeHost.idleBatchWaitsForWork` covers every idle batch and digest
 reply. Its continuation requires an actual listener event; cancellation exits
-the wait. A disconnected listener reports a restart instruction until the
-reconnection change in #65.
+the wait. A disconnected listener returns to the subscription phase, which
+requires a fresh configuration receipt, acknowledgement and queue scan before
+waiting again. A failed reconnection reports the missing prerequisite and
+restart instruction; waiting for configuration corrections follows in #66–#67.
 
 ## Completing stable work after recovery
 

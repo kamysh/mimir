@@ -187,7 +187,7 @@ step usizeMaximum interval threshold (digest state result) (inj₁ error) = afte
 step usizeMaximum interval threshold (digest state result) (inj₂ problem) = afterDigest usizeMaximum interval threshold state result problem
 step usizeMaximum interval threshold (continuing state messages) reply = running state
 step usizeMaximum interval threshold (awaitingWork state messages) workAvailable = running state
-step usizeMaximum interval threshold (awaitingWork state messages) disconnected = exited unavailable
+step usizeMaximum interval threshold (awaitingWork state messages) disconnected = subscribing state
 step usizeMaximum interval threshold (awaitingWork state messages) interrupted = exited success
 step usizeMaximum interval threshold (waiting state seconds messages) true = exited success
 step usizeMaximum interval threshold (waiting state seconds messages) false = running state
@@ -228,3 +228,9 @@ idleBatchWaitsForWork maximum interval threshold before (inj₂ problem) = subsc
 cancelAtWorkWait : ∀ maximum interval threshold state messages →
   step maximum interval threshold (awaitingWork state messages) interrupted ≡ exited success
 cancelAtWorkWait maximum interval threshold state messages = refl
+
+-- A lost connection never resumes the queue wait directly. The shared
+-- subscribing phase requires acknowledgement and a fresh first batch.
+disconnectionRequiresSubscription : ∀ maximum interval threshold state messages →
+  step maximum interval threshold (awaitingWork state messages) disconnected ≡ subscribing state
+disconnectionRequiresSubscription maximum interval threshold state messages = refl

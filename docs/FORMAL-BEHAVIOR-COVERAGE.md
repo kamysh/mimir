@@ -36,9 +36,11 @@ proves the connection and acknowledgement order. The Rust subscription retains
 incoming hints across the initial scan. Each batch hands its MCP child a private
 configuration copy, read back before use; `JudgeHostProtocol.PreparedMcpConfig`
 requires that the observed settings match. Editing the original file cannot
-redirect the admitted batch. Preparation failure starts no MCP child. Event
-waiting, reconnection, and configuration-change subscriptions follow in #64–#66;
-this startup change adds no polling timer.
+redirect the admitted batch. Preparation failure starts no MCP child. Idle
+waiting uses database events. A lost listener returns to the same subscribing
+phase and requires a new scan before waiting; missed hints cannot hide saved
+work. Configuration-change subscriptions follow in #66. No polling timer is
+added by subscription or reconnection.
 
 ## Stored belief evidence
 
