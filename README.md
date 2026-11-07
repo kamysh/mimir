@@ -2,6 +2,9 @@
 
 Persistent reasoning memory for AI coding agents through MCP.
 
+This source tree is version **2.3.0**, pending release. The archive installation
+commands below remain pinned to **2.2.3** until a 2.3.0 release is published.
+
 Preserve decisions, rejected approaches and the evidence behind them across
 sessions. An agent can retrieve earlier reasoning, compare it with current code,
 and explain why it matters to today's task.
