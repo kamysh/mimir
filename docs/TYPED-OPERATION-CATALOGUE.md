@@ -15,14 +15,14 @@ and order. It does not use a hardcoded tool count.
 The MCP request loop selects an entry by name and calls that entry. A caller
 cannot supply an arbitrary function where a `RegisteredOperation` is required;
 the fields and construction of those entries are private. The test dispatcher
-uses the same catalogue. Unknown names retain their existing response until
-the actionable correction changes in #82.
+uses the same catalogue. Unknown names receive an actionable correction with
+the advertised names, without executing an alternate tool.
 
-The present Rust input is still raw `serde_json::Value`, paired with the
-advertised schema. This registration does not claim that argument admission
-or operation-journal ownership is complete. Shared correction/admission work
-remains #80–#82, and the remaining recovery binding remains #85–#86. An input
-schema by itself is not evidence that a request was checked against it.
+The present Rust input is still `serde_json::Value`, paired with the advertised
+schema. Each registered entry checks required fields, input shapes and unknown
+fields before calling its handler. Semantic admission and operation-journal
+ownership remain separate work; the recovery binding remains #85–#86. An input
+schema by itself is not evidence that all business conditions were checked.
 
 Committed boundaries describe actual publication sites, rather than every SQL
 query inside a transaction. Propagation and document replacement each publish

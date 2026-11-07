@@ -34,6 +34,19 @@ fn is_type(kind: &str, value: &Value) -> bool {
         _ => false,
     }
 }
+fn compatible_tag(schema: &Value, value: &Value) -> bool {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .is_none_or(|properties| {
+            properties.iter().all(
+                |(name, child)| match (child.get("const"), value.get(name)) {
+                    (Some(expected), Some(supplied)) => expected == supplied,
+                    _ => true,
+                },
+            )
+        })
+}
 fn walk(schema: &Value, value: &Value, path: &mut Vec<Segment>, issues: &mut Vec<CorrectionItem>) {
     if let Some(kind) = schema.get("type") {
         let accepted = kind
@@ -80,6 +93,23 @@ fn walk(schema: &Value, value: &Value, path: &mut Vec<Segment>, issues: &mut Vec
         }
     }
     if let Some(fields) = value.as_object() {
+        if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
+            let allowed: Vec<String> = schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .map(|properties| properties.keys().cloned().collect())
+                .unwrap_or_default();
+            for name in fields.keys() {
+                if !allowed.contains(name) {
+                    path.push(Segment::Key(name.clone()));
+                    issues.push(
+                        CorrectionItem::unknown_argument(path.clone(), &allowed)
+                            .expect("known field names produce a complete correction"),
+                    );
+                    path.pop();
+                }
+            }
+        }
         if let Some(required) = schema.get("required").and_then(Value::as_array) {
             for name in required.iter().filter_map(Value::as_str) {
                 if !fields.contains_key(name) {
@@ -127,8 +157,19 @@ fn walk(schema: &Value, value: &Value, path: &mut Vec<Segment>, issues: &mut Vec
     }
     for (keyword, exclusive) in [("anyOf", false), ("oneOf", true)] {
         if let Some(branches) = schema.get(keyword).and_then(Value::as_array) {
-            let results: Vec<_> = branches
+            // A supplied constant tag selects its declared alternative. Do not
+            // diagnose fields of a different, explicitly excluded record kind.
+            let matching: Vec<_> = branches
                 .iter()
+                .filter(|branch| compatible_tag(branch, value))
+                .collect();
+            let candidates: Vec<_> = if matching.is_empty() {
+                branches.iter().collect()
+            } else {
+                matching
+            };
+            let results: Vec<_> = candidates
+                .into_iter()
                 .map(|branch| {
                     let mut errors = Vec::new();
                     walk(branch, value, path, &mut errors);
@@ -159,9 +200,59 @@ pub fn arguments(schema: &Value, value: &Value) -> Option<NeedsInput> {
     report(issues)
 }
 
+/// Publish the same closed field sets that admission enforces. Constraint-only
+/// alternatives inherit their containing record; they do not close an empty
+/// field set of their own.
+pub fn close_objects(schema: &mut Value) {
+    if schema.get("properties").is_some_and(Value::is_object) {
+        schema["additionalProperties"] = Value::Bool(false);
+        for child in schema["properties"].as_object_mut().unwrap().values_mut() {
+            close_objects(child);
+        }
+    }
+    if let Some(items) = schema.get_mut("items") {
+        close_objects(items);
+    }
+    for keyword in ["allOf", "anyOf", "oneOf"] {
+        if let Some(branches) = schema.get_mut(keyword).and_then(Value::as_array_mut) {
+            for branch in branches {
+                close_objects(branch);
+            }
+        }
+    }
+}
+
+pub fn unknown_tool(name: &str, accepted: &[String]) -> NeedsInput {
+    report(vec![issue(
+        Location::Request,
+        &[Segment::Key("params".into()), Segment::Key("name".into())],
+        Code::MalformedInput,
+        &format!("The tool name {name:?} is not advertised by this server."),
+        format!(
+            "Choose the intended tool from {}. No alternate tool was executed.",
+            json!(accepted)
+        ),
+    )])
+    .expect("an unknown tool has one described issue")
+}
+
 pub fn tool_parameters(params: &Value) -> Result<(&str, Value), NeedsInput> {
     let name = params.get("name");
     let mut issues = Vec::new();
+    if let Some(fields) = params.as_object() {
+        for name in fields
+            .keys()
+            .filter(|name| !["name", "arguments", "_meta"].contains(&name.as_str()))
+        {
+            issues.push(issue(
+                Location::Request,
+                &[Segment::Key("params".into()), Segment::Key(name.clone())],
+                Code::UnknownField,
+                "This tools/call parameter is not accepted.",
+                "Use only name, arguments and optional protocol _meta.".into(),
+            ));
+        }
+    }
     if !name.is_some_and(Value::is_string) {
         issues.push(issue(
             Location::Request,
@@ -205,6 +296,46 @@ pub fn tool_parameters(params: &Value) -> Result<(&str, Value), NeedsInput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_fields_keep_full_paths_and_do_not_choose_a_spelling() {
+        let mut schema = json!({"type":"object","properties":{"project":{"type":"string"},
+            "items":{"type":"array","items":{"oneOf":[
+                {"type":"object","properties":{"kind":{"const":"belief"},"content":{"type":"string"}},"required":["kind","content"]},
+                {"type":"object","properties":{"kind":{"const":"pattern"},"approach":{"type":"string"}},"required":["kind","approach"]}]}}}});
+        close_objects(&mut schema);
+        let input = json!({"project":"kept","projet":"do not guess", "items":[{"kind":"belief","content":"kept","contnet":"do not guess"}]});
+        let original = input.clone();
+        let correction = arguments(&schema, &input).unwrap();
+        assert_eq!(input, original);
+        assert!(!correction
+            .issues()
+            .iter()
+            .any(|item| item.fault().path.last() == Some(&Segment::Key("approach".into()))));
+        assert!(correction.issues().iter().any(|item| item.fault().path
+            == vec![Segment::Key("projet".into())]
+            && item.fault().code == Code::UnknownField));
+        assert!(correction.issues().iter().any(|item| item.fault().path
+            == vec![
+                Segment::Key("items".into()),
+                Segment::Index(0),
+                Segment::Key("contnet".into())
+            ]
+            && item.fault().code == Code::UnknownField));
+        assert!(arguments(
+            &schema,
+            &json!({"project":"kept","items":[{"kind":"belief","content":"kept"}]})
+        )
+        .is_none());
+        assert!(
+            tool_parameters(&json!({"name":"delete_project","argumnts":{"project":"kept"}}))
+                .is_err()
+        );
+        assert!(tool_parameters(
+            &json!({"name":"learning_capabilities","_meta":{"progressToken":0}})
+        )
+        .is_ok());
+    }
 
     #[test]
     fn required_and_nested_types_report_every_path_without_defaults() {

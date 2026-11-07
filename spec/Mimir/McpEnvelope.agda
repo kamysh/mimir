@@ -18,6 +18,7 @@ open import Mimir.Text public using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.Validation as V
 import Mimir.McpErrors as Errors
+open import Mimir.JsonObjects using (forbid)
 module Correction = Errors.AgentCorrection
 
 literal : String → Text
@@ -171,9 +172,15 @@ toolArguments fields with fields (literal "arguments")
   "Supply the intended argument fields as an object; do not replace a malformed supplied value with defaults.") []
 
 toolCommand : JSON.Value → Command
-toolCommand (JSON.object fields) with both (toolName (JSON.Object.normalize fields)) (toolArguments (JSON.Object.normalize fields))
-... | accepted (name , arguments) = callTool name arguments
-... | rejected first rest = invalidParams (Correction.claim first rest)
+toolCommand (JSON.object fields) with JSON.Object.checkUnknowns forbid
+  (literal "name" ∷ literal "arguments" ∷ literal "_meta" ∷ []) fields
+... | V.rejected detail invalid = invalidParams (Correction.claim
+  (Correction.item Correction.request (V.prependPath (V.key "params") detail)
+    (literal "Use only name, arguments and optional protocol _meta.")
+    (literal "Remove the unknown parameter. Preserve the intended action; do not execute a guessed correction.")) [])
+... | V.accepted known with both (toolName (JSON.Object.normalize fields)) (toolArguments (JSON.Object.normalize fields))
+...   | accepted (name , arguments) = callTool name arguments
+...   | rejected first rest = invalidParams (Correction.claim first rest)
 toolCommand _ = invalidParams (Correction.claim (issue (V.key "params" ∷ []) V.wrongType
   "MCP named parameters must be an object." "An object."
   "Supply named parameters as an object; do not replace an invalid supplied value with defaults.") [])

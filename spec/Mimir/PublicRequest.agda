@@ -1,7 +1,6 @@
 {-# OPTIONS --safe #-}
--- All 34 MCP tools decode to these concrete application operations. Unknown
--- fields at the outer hand-written dispatcher are ignored; typed nested
--- learning records retain their own strict serde rules.
+-- Public tools decode only after their supplied argument fields are known.
+-- Nested typed records retain their strict field rules.
 module Mimir.PublicRequest where
 
 open import Data.Bool using (Bool; true; false)
@@ -36,6 +35,7 @@ import Mimir.ReviewSchema as R
 import Mimir.AssessmentSelection as Assessment
 import Mimir.IndependentProvenance as Origin
 import Mimir.Validation as Validation
+open import Mimir.JsonObjects using (forbid)
 
 data Request : Set where
   mutation : Mutation.Request → Request
@@ -69,6 +69,43 @@ memoryField name fields with fields name
 defaultMemory : Maybe C.Memory → C.Memory
 defaultMemory nothing = C.fact
 defaultMemory (just kind) = kind
+
+-- Closed argument-field inventory. A new tool requires an explicit clause.
+acceptedFields : Tools.Tool → List Text
+acceptedFields Tools.insertBelief = Data.List.map toList ("confidence" ∷ "content" ∷ "memory_type" ∷ "probability" ∷ "project" ∷ "provenance" ∷ [])
+acceptedFields Tools.deleteBelief = Data.List.map toList ("id" ∷ [])
+acceptedFields Tools.deleteProject = Data.List.map toList ("project" ∷ [])
+acceptedFields Tools.deletePattern = Data.List.map toList ("id" ∷ [])
+acceptedFields Tools.insertPattern = Data.List.map toList ("approach" ∷ "project" ∷ "situation" ∷ "success_rate" ∷ [])
+acceptedFields Tools.recordSupport = Data.List.map toList ("from_id" ∷ "to_id" ∷ "weight" ∷ [])
+acceptedFields Tools.recordCause = Data.List.map toList ("from_id" ∷ "to_id" ∷ "weight" ∷ [])
+acceptedFields Tools.recordDefeat = Data.List.map toList ("from_id" ∷ "to_id" ∷ "weight" ∷ [])
+acceptedFields Tools.recordContradiction = Data.List.map toList ("id_a" ∷ "id_b" ∷ "weight" ∷ [])
+acceptedFields Tools.getBelief = Data.List.map toList ("id" ∷ [])
+acceptedFields Tools.listBeliefs = Data.List.map toList ("limit" ∷ "memory_type" ∷ "offset" ∷ "project" ∷ [])
+acceptedFields Tools.listPatterns = Data.List.map toList ("project" ∷ [])
+acceptedFields Tools.getContradictions = Data.List.map toList ("project" ∷ [])
+acceptedFields Tools.decayAll = Data.List.map toList ("decay_factor" ∷ "project" ∷ [])
+acceptedFields Tools.sweepExpiredDefeated = Data.List.map toList ("grace_hours" ∷ "prob_threshold" ∷ "project" ∷ [])
+acceptedFields Tools.queryRelevant = Data.List.map toList ("context" ∷ "evidence_per_belief" ∷ "include_evidence" ∷ "limit" ∷ "prefer_type" ∷ "project" ∷ [])
+acceptedFields Tools.addEvidence = Data.List.map toList ("belief_id" ∷ "chunk_id" ∷ "weight" ∷ [])
+acceptedFields Tools.getEvidence = Data.List.map toList ("belief_id" ∷ [])
+acceptedFields Tools.propagateFrom = Data.List.map toList ("id" ∷ [])
+acceptedFields Tools.queryIntervention = Data.List.map toList ("id" ∷ "value" ∷ [])
+acceptedFields Tools.loadDocument = Data.List.map toList ("path" ∷ "project" ∷ [])
+acceptedFields Tools.queryDocument = Data.List.map toList ("context" ∷ "limit" ∷ "project" ∷ [])
+acceptedFields Tools.clearDocument = Data.List.map toList ("path" ∷ [])
+acceptedFields Tools.getLearningReview = Data.List.map toList ("id" ∷ [])
+acceptedFields Tools.learningCapabilities = []
+acceptedFields Tools.getLessonAssessment = Data.List.map toList ("belief_id" ∷ "project" ∷ "rubric" ∷ "scope" ∷ [])
+acceptedFields Tools.lessonAssessmentHistory = Data.List.map toList ("belief_id" ∷ "limit" ∷ "offset" ∷ "project" ∷ "rubric" ∷ "scope" ∷ [])
+acceptedFields Tools.explainBelief = Data.List.map toList ("id" ∷ "limit" ∷ "offset" ∷ [])
+acceptedFields Tools.recordExperience = Data.List.map toList ("expected_revision" ∷ "experience" ∷ [])
+acceptedFields Tools.pendingExperiences = Data.List.map toList ("exclude_ids" ∷ "limit" ∷ "project" ∷ [])
+acceptedFields Tools.reviewExperience = Data.List.map toList ("expected_review_revision" ∷ "review" ∷ [])
+acceptedFields Tools.getExperience = Data.List.map toList ("id" ∷ [])
+acceptedFields Tools.experienceHistory = Data.List.map toList ("id" ∷ [])
+acceptedFields Tools.queryLearningContext = Data.List.map toList ("context" ∷ "limit" ∷ "project" ∷ [])
 
 module Decode (conversion : Conversion.Contract) where
   open Numbers conversion
@@ -203,8 +240,19 @@ module Decode (conversion : Conversion.Contract) where
   admittedFields tool fields = suppliedTypes fields >>= λ _ → decode tool fields
 
   readTool : Tools.Tool → V.Value → Fault ⊎ Request
-  readTool tool (V.object fields) = admittedFields tool (V.Object.normalize fields)
+  readTool tool (V.object fields) with V.Object.checkUnknowns forbid (acceptedFields tool) fields
+  ... | Validation.rejected detail invalid = inj₁ detail
+  ... | Validation.accepted known = admittedFields tool (V.Object.normalize fields)
   readTool tool _ = inj₁ (Validation.fault [] Validation.wrongType "Tool arguments must be an object")
+
+  successfulRequestHasKnownFields : ∀ tool fields requestValue →
+    readTool tool (V.object fields) ≡ inj₂ requestValue →
+    V.Object.UnknownsAllowed forbid (acceptedFields tool) fields
+  successfulRequestHasKnownFields tool fields requestValue proof
+    with V.Object.checkUnknowns forbid (acceptedFields tool) fields
+  ... | Validation.rejected detail invalid with proof
+  ...   | ()
+  successfulRequestHasKnownFields tool fields requestValue proof | Validation.accepted known = known
 
   invalidSuppliedValuePreventsExecution : ∀ tool fields detail →
     suppliedTypes fields ≡ inj₁ detail → admittedFields tool fields ≡ inj₁ detail

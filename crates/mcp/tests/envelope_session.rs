@@ -97,7 +97,11 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         ensure!(!correction.issues().is_empty(), "missing repair details");
     }
     // Supplied invalid tool fields are corrected before handler execution.
-    for params in [json!({}), json!({"name":7,"arguments":null})] {
+    for params in [
+        json!({}),
+        json!({"name":7,"arguments":null}),
+        json!({"name":"delete_project","argumnts":{"project":project}}),
+    ] {
         let message =
             json!({"jsonrpc":"2.0","id":"method-fields","method":"tools/call","params":params});
         input.write_all(format!("{message}\n").as_bytes()).await?;
@@ -128,6 +132,27 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             json!({"experience":{"project":project},"expected_revision":"0"}),
             "id",
         ),
+        (
+            "delete_project",
+            json!({"project":project,"projet":"do not guess"}),
+            "projet",
+        ),
+        (
+            "query_relevant",
+            json!({"context":"must not embed","limt":1}),
+            "limt",
+        ),
+        (
+            "insert_pattern",
+            json!({"project":project,"situation":"kept","approach":"kept","success_rate":0.5,"approch":"do not guess"}),
+            "approch",
+        ),
+        (
+            "record_experience",
+            json!({"experience":{"id":experience_id,"project":project,"context":"must not replace","action":"must not apply","outcome":"unknown","source":"agent_report","evidence":[],"evidnce":[]},"expected_revision":1}),
+            "evidnce",
+        ),
+        ("delete_porject", json!({"project":project}), "name"),
     ] {
         let message = json!({"jsonrpc":"2.0","id":"argument-fields","method":"tools/call","params":{"name":name,"arguments":args}});
         input.write_all(format!("{message}\n").as_bytes()).await?;
@@ -176,6 +201,29 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
     ensure!(
         body.to_string().contains(&experience_id.to_string()),
         "invalid message deleted project data: {body}"
+    );
+    ensure!(
+        !body.to_string().contains("must not replace"),
+        "invalid nested input changed the record: {body}"
+    );
+    let patterns = json!({"jsonrpc":"2.0","id":"no-hidden-pattern","method":"tools/call","params":{"name":"list_patterns","arguments":{"project":project}}});
+    input.write_all(format!("{patterns}\n").as_bytes()).await?;
+    input.flush().await?;
+    line.clear();
+    ensure!(
+        output.read_line(&mut line).await? != 0,
+        "server exited before checking pattern state"
+    );
+    let response: Value = serde_json::from_str(&line)?;
+    ensure!(
+        response["id"] == "no-hidden-pattern",
+        "unexpected extra response: {response}"
+    );
+    let patterns: Value =
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+    ensure!(
+        patterns == json!([]),
+        "invalid fields created a pattern: {patterns}"
     );
     drop(input);
     line.clear();

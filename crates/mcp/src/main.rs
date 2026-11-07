@@ -388,6 +388,9 @@ fn tools_list() -> Value {
         }
     ]);
     tools.as_array_mut().unwrap().extend(learning::tools());
+    for tool in tools.as_array_mut().unwrap() {
+        admission::close_objects(&mut tool["inputSchema"]);
+    }
     tools
 }
 

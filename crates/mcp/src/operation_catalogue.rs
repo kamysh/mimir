@@ -207,9 +207,11 @@ impl Catalogue {
                 descriptor["inputSchema"].is_object(),
                 "compiled tool {name} has no input schema"
             );
+            let mut descriptor = descriptor.clone();
+            super::admission::close_objects(&mut descriptor["inputSchema"]);
             entries.push(RegisteredOperation {
                 handler: *handler,
-                descriptor: descriptor.clone(),
+                descriptor,
             });
         }
         for name in available.keys() {
@@ -237,10 +239,17 @@ impl Catalogue {
             .find(|entry| entry.handler.name() == name)
     }
     pub async fn call(&self, service: &MimirService, name: &str, input: &Input) -> Result<Value> {
-        self.get(name)
-            .ok_or_else(|| anyhow!("unknown tool: {name}"))?
-            .call(service, input)
-            .await
+        match self.get(name) {
+            Some(operation) => operation.call(service, input).await,
+            None => Ok(serde_json::to_value(super::admission::unknown_tool(
+                name,
+                &self
+                    .entries
+                    .iter()
+                    .map(|entry| entry.handler().name().to_owned())
+                    .collect::<Vec<_>>(),
+            ))?),
+        }
     }
 }
 

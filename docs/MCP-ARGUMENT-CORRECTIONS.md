@@ -27,7 +27,7 @@ restriction-removal issues own those defaults. Invalid supplied values never
 become omission through this checker.
 
 This is field admission, not a complete JSON Schema validator. Unknown fields
-are #82. Numeric ranges, reference validity, revision conflicts and other
+are checked as described in [unknown fields](MCP-UNKNOWN-FIELDS.md). Numeric ranges, reference validity, revision conflicts and other
 business conditions retain their separate checks and follow-up issues. No
 claim is made here that every later refusal already uses the correction
 dialogue. The native/model binding work remains #85 and #91, and schema

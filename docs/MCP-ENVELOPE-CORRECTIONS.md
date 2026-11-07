@@ -27,8 +27,9 @@ obtain execution and a response. `notifications/initialized` remains supported.
 The existing JSON library supplies syntax and encoding behavior. Duplicate
 field detection before object normalization is a separate tracked change;
 this admission layer does not claim to recover fields already discarded by
-that decoder. Tool-argument admission and the judge's correction dialogue are
-separate follow-up issues.
+that decoder. Tool-argument admission is described in
+[argument corrections](MCP-ARGUMENT-CORRECTIONS.md). The judge's correction
+dialogue remains a separate follow-up issue.
 
 The Agda exchange proves that rejected input can only serialize/write/flush its
 correction, with no business-handler effect. It also proves that notification
