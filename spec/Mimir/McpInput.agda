@@ -12,6 +12,7 @@ import Mimir.StandardLibrary as Library
 import Mimir.ReadLine as Lines
 import Mimir.StructuredValue as JSON
 import Mimir.McpEnvelope as Envelope
+import Data.Sum
 
 data BodyOutcome (input : Text) : Set where
   blank : input ≡ [] → BodyOutcome input
@@ -47,9 +48,11 @@ module Parser where
   ... | Lines.invalidUTF8 framed error = invalidUTF8 framed error
   ... | Lines.success framed text = line framed text (readBody text)
 
-request : JSON.Value → Envelope.Request
+request : JSON.Value → Data.Sum._⊎_ Envelope.Problem Envelope.Request
 request = Envelope.extract
 
-command : JSON.Value → Envelope.Command
-command value = Envelope.dispatch (request value)
+command : JSON.Value → Data.Sum._⊎_ Envelope.Problem Envelope.Command
+command value with request value
+... | Data.Sum.inj₁ diagnostic = Data.Sum.inj₁ diagnostic
+... | Data.Sum.inj₂ admitted = Data.Sum.inj₂ (Envelope.dispatch admitted)
 

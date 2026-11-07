@@ -1,3 +1,4 @@
+mod envelope;
 mod learning;
 #[cfg(test)]
 mod learning_cycle_test;
@@ -857,17 +858,26 @@ async fn application_main() -> Result<()> {
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin);
-    let mut line = String::new();
+    let mut line = Vec::new();
 
     loop {
         line.clear();
-        let n = reader.read_line(&mut line).await?;
+        let n = reader.read_until(b'\n', &mut line).await?;
         if n == 0 {
             // EOF
             break;
         }
 
-        let trimmed = line.trim();
+        let text = match std::str::from_utf8(&line) {
+            Ok(text) => text,
+            Err(error) => {
+                let response = envelope::parse_error(&error.to_string());
+                stdout.write_all(format!("{response}\n").as_bytes()).await?;
+                stdout.flush().await?;
+                continue;
+            }
+        };
+        let trimmed = text.trim();
         if trimmed.is_empty() {
             continue;
         }
@@ -876,8 +886,7 @@ async fn application_main() -> Result<()> {
             Ok(v) => v,
             Err(e) => {
                 error!("parse error: {}", e);
-                // No id available — use null
-                let resp = err_response(&Value::Null, -32700, &format!("parse error: {e}"));
+                let resp = envelope::parse_error(&e.to_string());
                 let mut out = resp.to_string();
                 out.push('\n');
                 stdout.write_all(out.as_bytes()).await?;
@@ -886,13 +895,23 @@ async fn application_main() -> Result<()> {
             }
         };
 
-        let is_notification = request.get("id").is_none();
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
-        let params = request
-            .get("params")
-            .cloned()
-            .unwrap_or(Value::Object(serde_json::Map::new()));
+        let request = match envelope::decode(request) {
+            envelope::Incoming::Request(request) => request,
+            envelope::Incoming::Notification { method, diagnostic } => {
+                if let Some(diagnostic) = diagnostic {
+                    error!(method, correction = %serde_json::to_string(&diagnostic)?, "notification was not executed");
+                }
+                continue;
+            }
+            envelope::Incoming::Rejected(response) => {
+                stdout.write_all(format!("{response}\n").as_bytes()).await?;
+                stdout.flush().await?;
+                continue;
+            }
+        };
+        let id = request.id();
+        let method = request.method();
+        let params = request.params();
 
         let response = match method {
             "initialize" => ok_response(
@@ -932,12 +951,10 @@ async fn application_main() -> Result<()> {
             }
         };
 
-        if !is_notification {
-            let mut out = response.to_string();
-            out.push('\n');
-            stdout.write_all(out.as_bytes()).await?;
-            stdout.flush().await?;
-        }
+        let mut out = response.to_string();
+        out.push('\n');
+        stdout.write_all(out.as_bytes()).await?;
+        stdout.flush().await?;
     }
 
     Ok(())

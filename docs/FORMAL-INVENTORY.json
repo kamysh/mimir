@@ -3,6 +3,46 @@
   "purpose": "Source inventory and navigation to detailed behavioral contracts. Definition mappings are not Rust refinement proofs.",
   "files": [
     {
+      "path": "crates/cli/src/configuration.rs",
+      "definitions": [
+        {
+          "kind": "enum",
+          "name": "Command",
+          "line": 6,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/CLI.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "dispatch",
+          "line": 21,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/CLI.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        }
+      ],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/OperationalConfiguration.agda",
+        "spec/Mimir/ConfigurationUpgrade.agda",
+        "spec/Mimir/CLI.agda"
+      ],
+      "specification_status": "behavior-defined-and-aggregate-checked",
+      "proof_boundary_category": "application_protocol"
+    },
+    {
       "path": "crates/cli/src/judge/api.rs",
       "definitions": [
         {
@@ -928,6 +968,81 @@
         "spec/Mimir/ConfigurationProtocol.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
+    },
+    {
+      "path": "crates/cli/src/judge/diagnose.rs",
+      "definitions": [
+        {
+          "kind": "fn",
+          "name": "classified",
+          "line": 4,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalDiagnostics.agda",
+            "spec/Mimir/OperationalLifecycle.agda",
+            "spec/Mimir/JudgeStatusProtocol.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "cause",
+          "line": 16,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalDiagnostics.agda",
+            "spec/Mimir/OperationalLifecycle.agda",
+            "spec/Mimir/JudgeStatusProtocol.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "summary",
+          "line": 28,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalDiagnostics.agda",
+            "spec/Mimir/OperationalLifecycle.agda",
+            "spec/Mimir/JudgeStatusProtocol.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "show",
+          "line": 41,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalDiagnostics.agda",
+            "spec/Mimir/OperationalLifecycle.agda",
+            "spec/Mimir/JudgeStatusProtocol.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "actionable_public_summary_excludes_private_payload",
+          "line": 108,
+          "specification": [],
+          "status": "test-definition-not-production-behavior",
+          "behavioral_area": [],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        }
+      ],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/OperationalDiagnostics.agda",
+        "spec/Mimir/OperationalLifecycle.agda",
+        "spec/Mimir/JudgeStatusProtocol.agda"
+      ],
+      "specification_status": "behavior-defined-and-aggregate-checked",
+      "proof_boundary_category": "application_protocol"
     },
     {
       "path": "crates/cli/src/judge/digest.rs",
@@ -5116,6 +5231,14 @@
         "spec/Mimir/JudgeStatusProtocol.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
+    },
+    {
+      "path": "crates/cli/tests/judge_cancellation.rs",
+      "classification": "verification",
+      "behavioral_specification": [
+        "spec/Mimir/JudgeSignal.agda"
+      ],
+      "purpose": "Actual CLI interrupt/terminate delivery while model work is active; checks only owned child cleanup."
     },
     {
       "path": "crates/core/examples/connection_probe.rs",
@@ -10161,6 +10284,332 @@
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
     },
     {
+      "path": "crates/core/src/operations.rs",
+      "definitions": [
+        {
+          "kind": "const",
+          "name": "CONFIG_VERSION",
+          "line": 12,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "struct",
+          "name": "Logging",
+          "line": 15,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "default_bytes",
+          "line": 22,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "default_files",
+          "line": 25,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "struct",
+          "name": "Operations",
+          "line": 29,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "decode",
+          "line": 35,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "defaults",
+          "line": 73,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "header",
+          "line": 88,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "upgrade",
+          "line": 95,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "prepare",
+          "line": 159,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "open",
+          "line": 171,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "lock",
+          "line": 182,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "write",
+          "line": 187,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "event",
+          "line": 242,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "struct",
+          "name": "LogWriter",
+          "line": 261,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "new",
+          "line": 266,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "write",
+          "line": 274,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "flush",
+          "line": 282,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "drop",
+          "line": 291,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationalConfiguration.agda",
+            "spec/Mimir/ConfigurationUpgrade.agda",
+            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLifecycle.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "const",
+          "name": "DB",
+          "line": 299,
+          "specification": [],
+          "status": "test-definition-not-production-behavior",
+          "behavioral_area": [],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "directory",
+          "line": 300,
+          "specification": [],
+          "status": "test-definition-not-production-behavior",
+          "behavioral_area": [],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "upgrade_preserves_settings_is_idempotent_and_refuses_future_format",
+          "line": 306,
+          "specification": [],
+          "status": "test-definition-not-production-behavior",
+          "behavioral_area": [],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "required_directory_and_retention_bounds_are_enforced",
+          "line": 334,
+          "specification": [],
+          "status": "test-definition-not-production-behavior",
+          "behavioral_area": [],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "concurrent_repeated_errors_and_retention_reduction_remain_bounded",
+          "line": 345,
+          "specification": [],
+          "status": "test-definition-not-production-behavior",
+          "behavioral_area": [],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        }
+      ],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/OperationalConfiguration.agda",
+        "spec/Mimir/ConfigurationUpgrade.agda",
+        "spec/Mimir/OperationalLogRetention.agda",
+        "spec/Mimir/OperationalLifecycle.agda"
+      ],
+      "specification_status": "behavior-defined-and-aggregate-checked",
+      "proof_boundary_category": "application_protocol"
+    },
+    {
       "path": "crates/core/src/password.rs",
       "definitions": [
         {
@@ -12967,6 +13416,181 @@
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
     {
+      "path": "crates/core/src/validation.rs",
+      "definitions": [
+        {
+          "kind": "enum",
+          "name": "Segment",
+          "line": 8,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/FaultWire.agda",
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/JudgeErrorAdapter.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "enum",
+          "name": "Code",
+          "line": 15,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/FaultWire.agda",
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/JudgeErrorAdapter.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "struct",
+          "name": "Fault",
+          "line": 34,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/FaultWire.agda",
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/JudgeErrorAdapter.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "enum",
+          "name": "RefusalKind",
+          "line": 42,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/FaultWire.agda",
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/JudgeErrorAdapter.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "struct",
+          "name": "Refusal",
+          "line": 50,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/FaultWire.agda",
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/JudgeErrorAdapter.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "candidate_conflict",
+          "line": 56,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/FaultWire.agda",
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/JudgeErrorAdapter.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "undeclared_candidate",
+          "line": 66,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/FaultWire.agda",
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/JudgeErrorAdapter.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "invalid",
+          "line": 77,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/FaultWire.agda",
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/JudgeErrorAdapter.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "validation",
+          "line": 89,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/FaultWire.agda",
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/JudgeErrorAdapter.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "from_mcp",
+          "line": 95,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/FaultWire.agda",
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/JudgeErrorAdapter.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "fmt",
+          "line": 105,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/FaultWire.agda",
+            "spec/Mimir/McpErrors.agda",
+            "spec/Mimir/JudgeErrorAdapter.agda"
+          ],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "serialized_source_quote_failure_is_located_and_survives_mcp_round_trip",
+          "line": 117,
+          "specification": [],
+          "status": "test-definition-not-production-behavior",
+          "behavioral_area": [],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "unclassified_errors_never_claim_validation_or_rollback",
+          "line": 151,
+          "specification": [],
+          "status": "test-definition-not-production-behavior",
+          "behavioral_area": [],
+          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
+        }
+      ],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/FaultWire.agda",
+        "spec/Mimir/McpErrors.agda",
+        "spec/Mimir/JudgeErrorAdapter.agda"
+      ],
+      "specification_status": "behavior-defined-and-aggregate-checked",
+      "proof_boundary_category": "application_protocol"
+    },
+    {
       "path": "crates/core/tests/conformance_integration.rs",
       "definitions": [
         {
@@ -13651,6 +14275,189 @@
       "status": "unmapped",
       "proof_boundary_category": "verification_artifact",
       "classification": "verification-or-example-artifact"
+    },
+    {
+      "path": "crates/mcp/src/envelope.rs",
+      "definitions": [
+        {
+          "kind": "struct",
+          "name": "Request",
+          "line": 8,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "id",
+          "line": 14,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "method",
+          "line": 17,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "params",
+          "line": 20,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "enum",
+          "name": "Incoming",
+          "line": 24,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "item",
+          "line": 33,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "report",
+          "line": 52,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "error",
+          "line": 56,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "valid_id",
+          "line": 59,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "parse_error",
+          "line": 63,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "decode",
+          "line": 70,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "malformed_envelopes_are_not_executable_and_keep_usable_ids",
+          "line": 181,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "notifications_never_become_tool_requests_even_when_their_params_are_wrong",
+          "line": 216,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/McpEnvelope.agda",
+            "spec/Mimir/McpExchange.agda",
+            "spec/Mimir/McpRuntime.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        }
+      ],
+      "status": "mapped",
+      "proof_boundary_category": "application_protocol",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/McpEnvelope.agda",
+        "spec/Mimir/McpExchange.agda",
+        "spec/Mimir/McpRuntime.agda"
+      ],
+      "specification_status": "behavior-defined-and-aggregate-checked"
     },
     {
       "path": "crates/mcp/src/learning.rs",
@@ -16187,630 +16994,6 @@
       "status": "unmapped",
       "proof_boundary_category": "verification_artifact",
       "classification": "verification-or-example-artifact"
-    },
-    {
-      "path": "crates/core/src/operations.rs",
-      "definitions": [
-        {
-          "kind": "const",
-          "name": "CONFIG_VERSION",
-          "line": 12,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "struct",
-          "name": "Logging",
-          "line": 15,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "default_bytes",
-          "line": 22,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "default_files",
-          "line": 25,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "struct",
-          "name": "Operations",
-          "line": 29,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "decode",
-          "line": 35,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "defaults",
-          "line": 73,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "header",
-          "line": 88,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "upgrade",
-          "line": 95,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "prepare",
-          "line": 159,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "open",
-          "line": 171,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "lock",
-          "line": 182,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "write",
-          "line": 187,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "event",
-          "line": 242,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "struct",
-          "name": "LogWriter",
-          "line": 261,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "new",
-          "line": 266,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "write",
-          "line": 274,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "flush",
-          "line": 282,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "drop",
-          "line": 291,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "const",
-          "name": "DB",
-          "line": 299,
-          "specification": [],
-          "status": "test-definition-not-production-behavior",
-          "behavioral_area": [],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "directory",
-          "line": 300,
-          "specification": [],
-          "status": "test-definition-not-production-behavior",
-          "behavioral_area": [],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "upgrade_preserves_settings_is_idempotent_and_refuses_future_format",
-          "line": 306,
-          "specification": [],
-          "status": "test-definition-not-production-behavior",
-          "behavioral_area": [],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "required_directory_and_retention_bounds_are_enforced",
-          "line": 334,
-          "specification": [],
-          "status": "test-definition-not-production-behavior",
-          "behavioral_area": [],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "concurrent_repeated_errors_and_retention_reduction_remain_bounded",
-          "line": 345,
-          "specification": [],
-          "status": "test-definition-not-production-behavior",
-          "behavioral_area": [],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        }
-      ],
-      "status": "behavioral-area-mapped-rust-correspondence-open",
-      "classification": "production-behavior",
-      "behavioral_specification": [
-        "spec/Mimir/OperationalConfiguration.agda",
-        "spec/Mimir/ConfigurationUpgrade.agda",
-        "spec/Mimir/OperationalLogRetention.agda",
-        "spec/Mimir/OperationalLifecycle.agda"
-      ],
-      "specification_status": "behavior-defined-and-aggregate-checked",
-      "proof_boundary_category": "application_protocol"
-    },
-    {
-      "path": "crates/core/src/validation.rs",
-      "definitions": [
-        {
-          "kind": "enum",
-          "name": "Segment",
-          "line": 8,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/FaultWire.agda",
-            "spec/Mimir/McpErrors.agda",
-            "spec/Mimir/JudgeErrorAdapter.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "enum",
-          "name": "Code",
-          "line": 15,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/FaultWire.agda",
-            "spec/Mimir/McpErrors.agda",
-            "spec/Mimir/JudgeErrorAdapter.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "struct",
-          "name": "Fault",
-          "line": 34,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/FaultWire.agda",
-            "spec/Mimir/McpErrors.agda",
-            "spec/Mimir/JudgeErrorAdapter.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "enum",
-          "name": "RefusalKind",
-          "line": 42,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/FaultWire.agda",
-            "spec/Mimir/McpErrors.agda",
-            "spec/Mimir/JudgeErrorAdapter.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "struct",
-          "name": "Refusal",
-          "line": 50,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/FaultWire.agda",
-            "spec/Mimir/McpErrors.agda",
-            "spec/Mimir/JudgeErrorAdapter.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "candidate_conflict",
-          "line": 56,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/FaultWire.agda",
-            "spec/Mimir/McpErrors.agda",
-            "spec/Mimir/JudgeErrorAdapter.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "undeclared_candidate",
-          "line": 66,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/FaultWire.agda",
-            "spec/Mimir/McpErrors.agda",
-            "spec/Mimir/JudgeErrorAdapter.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "invalid",
-          "line": 77,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/FaultWire.agda",
-            "spec/Mimir/McpErrors.agda",
-            "spec/Mimir/JudgeErrorAdapter.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "validation",
-          "line": 89,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/FaultWire.agda",
-            "spec/Mimir/McpErrors.agda",
-            "spec/Mimir/JudgeErrorAdapter.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "from_mcp",
-          "line": 95,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/FaultWire.agda",
-            "spec/Mimir/McpErrors.agda",
-            "spec/Mimir/JudgeErrorAdapter.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "fmt",
-          "line": 105,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/FaultWire.agda",
-            "spec/Mimir/McpErrors.agda",
-            "spec/Mimir/JudgeErrorAdapter.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "serialized_source_quote_failure_is_located_and_survives_mcp_round_trip",
-          "line": 117,
-          "specification": [],
-          "status": "test-definition-not-production-behavior",
-          "behavioral_area": [],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "unclassified_errors_never_claim_validation_or_rollback",
-          "line": 151,
-          "specification": [],
-          "status": "test-definition-not-production-behavior",
-          "behavioral_area": [],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        }
-      ],
-      "status": "behavioral-area-mapped-rust-correspondence-open",
-      "classification": "production-behavior",
-      "behavioral_specification": [
-        "spec/Mimir/FaultWire.agda",
-        "spec/Mimir/McpErrors.agda",
-        "spec/Mimir/JudgeErrorAdapter.agda"
-      ],
-      "specification_status": "behavior-defined-and-aggregate-checked",
-      "proof_boundary_category": "application_protocol"
-    },
-    {
-      "path": "crates/cli/src/configuration.rs",
-      "definitions": [
-        {
-          "kind": "enum",
-          "name": "Command",
-          "line": 6,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/CLI.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "dispatch",
-          "line": 21,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/CLI.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        }
-      ],
-      "status": "behavioral-area-mapped-rust-correspondence-open",
-      "classification": "production-behavior",
-      "behavioral_specification": [
-        "spec/Mimir/OperationalConfiguration.agda",
-        "spec/Mimir/ConfigurationUpgrade.agda",
-        "spec/Mimir/CLI.agda"
-      ],
-      "specification_status": "behavior-defined-and-aggregate-checked",
-      "proof_boundary_category": "application_protocol"
-    },
-    {
-      "path": "crates/cli/src/judge/diagnose.rs",
-      "definitions": [
-        {
-          "kind": "fn",
-          "name": "classified",
-          "line": 4,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalDiagnostics.agda",
-            "spec/Mimir/OperationalLifecycle.agda",
-            "spec/Mimir/JudgeStatusProtocol.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "cause",
-          "line": 16,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalDiagnostics.agda",
-            "spec/Mimir/OperationalLifecycle.agda",
-            "spec/Mimir/JudgeStatusProtocol.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "summary",
-          "line": 28,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalDiagnostics.agda",
-            "spec/Mimir/OperationalLifecycle.agda",
-            "spec/Mimir/JudgeStatusProtocol.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "show",
-          "line": 41,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalDiagnostics.agda",
-            "spec/Mimir/OperationalLifecycle.agda",
-            "spec/Mimir/JudgeStatusProtocol.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "actionable_public_summary_excludes_private_payload",
-          "line": 108,
-          "specification": [],
-          "status": "test-definition-not-production-behavior",
-          "behavioral_area": [],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        }
-      ],
-      "status": "behavioral-area-mapped-rust-correspondence-open",
-      "classification": "production-behavior",
-      "behavioral_specification": [
-        "spec/Mimir/OperationalDiagnostics.agda",
-        "spec/Mimir/OperationalLifecycle.agda",
-        "spec/Mimir/JudgeStatusProtocol.agda"
-      ],
-      "specification_status": "behavior-defined-and-aggregate-checked",
-      "proof_boundary_category": "application_protocol"
-    },
-    {
-      "path": "crates/cli/tests/judge_cancellation.rs",
-      "classification": "verification",
-      "behavioral_specification": [
-        "spec/Mimir/JudgeSignal.agda"
-      ],
-      "purpose": "Actual CLI interrupt/terminate delivery while model work is active; checks only owned child cleanup."
     }
   ],
   "dependency_contracts": [

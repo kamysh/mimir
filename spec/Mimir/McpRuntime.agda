@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
--- Server control-state composition. Input failures terminate the loop; normal
--- JSON errors write a parse-error response and may continue after its flush.
+-- Server control-state composition. Malformed UTF-8 and JSON receive a
+-- correction and continue after its flush. Transport failures terminate.
 -- Each exchange finishes before the next read. Traces need not be infinite.
 import Mimir.StandardLibrary
 module Mimir.McpRuntime (library : Mimir.StandardLibrary.Contract) where
@@ -22,7 +22,6 @@ import Mimir.ReadLine as Lines
 data Exit : Set where
   eof : Exit
   readFailure : Text → Exit
-  invalidUTF8 : Text → Exit
   arithmeticPanic : Exit
   exchangeFailure : Exchange.Failure → Exit
 
@@ -39,7 +38,7 @@ bodyOutcome (Input.panicked message) = exited arithmeticPanic
 
 readOutcome : ∀ {input} → Input.Outcome input → State
 readOutcome (Input.eof proof) = exited eof
-readOutcome (Input.invalidUTF8 framed failure) = exited (invalidUTF8 failure)
+readOutcome (Input.invalidUTF8 framed failure) = executing (Exchange.parseError failure)
 readOutcome (Input.line framed textValue parsedBody) = bodyOutcome parsedBody
 
 finish : Exchange.Outcome → State
