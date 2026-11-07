@@ -109,9 +109,25 @@ pub struct MimirService {
 
 impl MimirService {
     pub async fn connect(cfg: &Config) -> Result<Self> {
+        let embeddings = cfg.embeddings.as_ref().map(make_backend);
+        Self::connect_with_embeddings(cfg, embeddings).await
+    }
+
+    /// SDK hosts without a private worker entry point select the executable explicitly.
+    pub async fn connect_with_worker(cfg: &Config, executable: std::path::PathBuf) -> Result<Self> {
+        let embeddings = cfg
+            .embeddings
+            .as_ref()
+            .map(|settings| embed::make_backend_with_worker(settings, executable.clone()));
+        Self::connect_with_embeddings(cfg, embeddings).await
+    }
+
+    async fn connect_with_embeddings(
+        cfg: &Config,
+        embeddings: Option<OwnedEmbeddingBackend>,
+    ) -> Result<Self> {
         db::migrate(&cfg.database).await?;
         let client = db::connect(&cfg.database).await?;
-        let embeddings = cfg.embeddings.as_ref().map(make_backend);
         Ok(Self {
             store: AgeStore::new(client, cfg.database.dbname.clone())?,
             inference: InferenceEngine::new(),

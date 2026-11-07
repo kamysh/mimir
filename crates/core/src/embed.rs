@@ -7,6 +7,8 @@ use tokenizers::Tokenizer;
 use tract_onnx::prelude::*;
 
 use crate::config::{EmbeddingBackend, EmbeddingsConfig};
+mod local_worker;
+pub use local_worker::worker_entrypoint;
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -270,13 +272,13 @@ struct EmbedState {
     model: Mutex<TractPlan>,
 }
 
-pub struct LocalBackend {
+struct LocalModel {
     state: Mutex<Option<Arc<EmbedState>>>,
     batch_size: Option<usize>,
     cache_dir: Option<PathBuf>,
 }
 
-impl LocalBackend {
+impl LocalModel {
     fn new(batch_size: usize, cache_dir: Option<String>) -> Self {
         let batch_size = if batch_size == 0 {
             None
@@ -461,30 +463,6 @@ fn load_embed_state(cache_dir: Option<&std::path::Path>) -> Result<EmbedState> {
     })
 }
 
-impl EmbeddingProvider for LocalBackend {
-    fn embed<'a>(
-        &'a self,
-        texts: &'a [String],
-        cancellation: EmbeddingCancellation,
-    ) -> EmbedFuture<'a> {
-        let texts = texts.to_vec();
-        let batch_size = self.batch_size;
-        Box::pin(async move {
-            cancellation.check()?;
-            if texts.is_empty() {
-                return Ok(vec![]);
-            }
-            let state = self.ensure_loaded()?;
-            cancellation.check()?;
-            tokio::task::spawn_blocking(move || {
-                embed_with_state(&state, &texts, batch_size, &cancellation)
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("local embeddings task failed: {e}"))?
-        })
-    }
-}
-
 fn embed_with_state(
     state: &EmbedState,
     texts: &[String],
@@ -583,11 +561,32 @@ pub fn make_backend(cfg: &EmbeddingsConfig) -> OwnedEmbeddingBackend {
             cfg.api_key.clone().unwrap_or_default(),
             cfg.model.clone(),
         )),
-        EmbeddingBackend::Local => {
-            Box::new(LocalBackend::new(cfg.batch_size, cfg.cache_dir.clone()))
-        }
+        EmbeddingBackend::Local => Box::new(local_worker::LocalBackend::new(
+            cfg.batch_size,
+            cfg.cache_dir.clone(),
+            None,
+        )),
     };
     OwnedEmbeddingBackend { provider }
+}
+
+/// For SDK hosts that do not implement `worker_entrypoint`, name a compatible
+/// Mimir executable explicitly. No installed executable is selected implicitly.
+pub fn make_backend_with_worker(
+    cfg: &EmbeddingsConfig,
+    executable: PathBuf,
+) -> OwnedEmbeddingBackend {
+    if matches!(cfg.backend, EmbeddingBackend::Local) {
+        OwnedEmbeddingBackend {
+            provider: Box::new(local_worker::LocalBackend::new(
+                cfg.batch_size,
+                cfg.cache_dir.clone(),
+                Some(executable),
+            )),
+        }
+    } else {
+        make_backend(cfg)
+    }
 }
 
 #[cfg(test)]

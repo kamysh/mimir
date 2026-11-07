@@ -797,8 +797,15 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
 // Main loop
 // ---------------------------------------------------------------------------
 
+fn main() -> Result<()> {
+    if let Some(result) = mimir_core::embed::worker_entrypoint() {
+        return result;
+    }
+    application_main()
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn application_main() -> Result<()> {
     // Mimir.Startup: only an empty invocation may load configuration or connect.
     // Keep OS strings intact so invalid Unicode is a usage error, not a panic.
     const USAGE: &str = "Usage: mimir-mcp [--help | --version]";

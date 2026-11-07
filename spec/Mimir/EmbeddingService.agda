@@ -32,7 +32,7 @@ module Run (float : Ranking.F32) (dimension maximumIndex : ℕ)
     module R = Lifecycle.Remote float dimension maximumIndex numeric
 
   data Failure : Set where
-    disabled missingHome : Failure
+    disabled missingHome cancelled : Failure
     localFailure : Text → Failure
     remoteFailure : R.Failure → Failure
 
@@ -75,6 +75,9 @@ module Run (float : Ranking.F32) (dimension maximumIndex : ℕ)
       Lifecycle.root (Config.Embeddings.cacheDirectory cfg) home ≡ just base →
       LocalTrace base (Config.Embeddings.batchSize cfg) texts (L.start cache texts) (L.returned after result) →
       Call (just cfg) cache texts after (localResult result)
+    localStopped : ∀ cfg cache texts base receipt → Config.Embeddings.backend cfg ≡ Config.local →
+      LocalTrace base (Config.Embeddings.batchSize cfg) texts (L.start cache texts) (L.stopped receipt) →
+      Call (just cfg) cache texts Backend.unloaded (inj₁ cancelled)
     remoteCall : ∀ cfg cache texts url events result →
       Backend.endpoint (Config.Embeddings.backend cfg) ≡ just url →
       R.P.Runs (R.run (Config.Embeddings.backend cfg) (key (Config.Embeddings.apiKey cfg))

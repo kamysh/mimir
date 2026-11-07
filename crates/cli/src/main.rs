@@ -322,8 +322,15 @@ fn parse_kv(s: &str) -> Result<(String, String), String> {
 // Entry point
 // ---------------------------------------------------------------------------
 
+fn main() -> Result<()> {
+    if let Some(result) = mimir_core::embed::worker_entrypoint() {
+        return result;
+    }
+    application_main()
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn application_main() -> Result<()> {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {

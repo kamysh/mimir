@@ -15,7 +15,7 @@ mod isolation;
 use mimir_core::{
     config::{Config, DatabaseConfig, EmbeddingBackend, EmbeddingsConfig},
     db,
-    embed::make_backend,
+    embed::make_backend_with_worker,
     store::AgeStore,
     MimirService,
 };
@@ -58,7 +58,7 @@ async fn vector_leg_ranking() {
         target.probability.value()
     );
 
-    let embedder = make_backend(&local_embeddings());
+    let embedder = make_backend_with_worker(&local_embeddings(), isolation::fixture().mcp.into());
 
     for (label, q) in [
         ("VERBOSE_PROMPT", VERBOSE_PROMPT),
@@ -111,7 +111,9 @@ async fn full_query_relevant_ranking() {
         judge: None,
         email: None,
     };
-    let svc = MimirService::connect(&cfg).await.expect("connect");
+    let svc = MimirService::connect_with_worker(&cfg, isolation::fixture().mcp.into())
+        .await
+        .expect("connect");
 
     for (label, q) in [
         ("VERBOSE_PROMPT", VERBOSE_PROMPT),
