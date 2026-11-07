@@ -7,7 +7,7 @@ open import Data.Integer using (ℤ)
 import Data.Integer.Properties as Integer
 open import Data.List using (List; []; _∷_; map; filterᵇ; length; drop; take)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_; _≤?_; _<?_; _+_)
+open import Data.Nat using (ℕ; suc; _≟_; _≤?_; _<?_; _+_)
 open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
@@ -52,7 +52,13 @@ pageBefore a b with G.BeliefValues.created a Integer.≟ G.BeliefValues.created 
 ... | no _ = does (G.BeliefValues.created a Integer.≤? G.BeliefValues.created b)
 
 pageAdmitted : ℕ → ℕ → Bool
-pageAdmitted limit offset = does (1 ≤? limit) ∧ does (limit ≤? 10) ∧ does (offset ≤? Bounds.i64Maximum)
+pageAdmitted limit offset = does (1 ≤? limit)
+
+everyPositivePageAdmitted : ∀ limit offset → pageAdmitted (suc limit) offset ≡ true
+everyPositivePageAdmitted limit offset = refl
+
+zeroPageRefused : ∀ offset → pageAdmitted 0 offset ≡ false
+zeroPageRefused offset = refl
 
 record Page : Set where
   constructor page

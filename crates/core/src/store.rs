@@ -2054,8 +2054,10 @@ impl AgeStore {
         limit: usize,
         offset: usize,
     ) -> Result<(Vec<Belief>, usize)> {
-        anyhow::ensure!((1..=10).contains(&limit), "limit must be in 1..=10");
-        anyhow::ensure!(offset <= i64::MAX as usize, "offset is too large");
+        anyhow::ensure!(
+            limit > 0,
+            "limit must be positive; omit selection to return all matching beliefs"
+        );
         let mut filters = Vec::new();
         if project.is_some() {
             filters.push("(n.project = $project OR n.project IS NULL)".to_owned());
@@ -2082,7 +2084,9 @@ impl AgeStore {
             .ok_or_else(|| anyhow::anyhow!("missing count"))?
             .parse()?;
         let stmt = format!("age_page_{}", Uuid::new_v4().simple());
-        let sql = format!("PREPARE {stmt}(agtype) AS SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project $$,$1) {BELIEF_RETURN_COLUMNS} ORDER BY trim(both '\"' from created_at::text)::timestamptz,id::text LIMIT {limit} OFFSET {offset}");
+        // Numeric comparisons express the requested slice without forcing a
+        // positive usize selection through PostgreSQL's bigint LIMIT/OFFSET.
+        let sql = format!("PREPARE {stmt}(agtype) AS SELECT * FROM (SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text,row_number() OVER (ORDER BY trim(both '\"' from created_at::text)::timestamptz,id::text) AS page_position FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project $$,$1) {BELIEF_RETURN_COLUMNS}) selected WHERE page_position::numeric > {offset}::numeric AND page_position::numeric <= {offset}::numeric + {limit}::numeric ORDER BY page_position");
         let rows = age_query_rows(&client, &stmt, &sql, &params).await?;
         Ok((
             rows.iter()

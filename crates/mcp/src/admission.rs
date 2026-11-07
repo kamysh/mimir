@@ -81,6 +81,25 @@ fn walk(schema: &Value, value: &Value, path: &mut Vec<Segment>, issues: &mut Vec
             ));
         }
     }
+    // Compare integer constraints as integers, without float conversion. The
+    // schema already declares these minimums; enforce them before dispatch.
+    if schema.get("type").and_then(Value::as_str) == Some("integer") {
+        if let Some(minimum) = schema.get("minimum").and_then(Value::as_u64) {
+            if value.as_u64().is_none_or(|supplied| supplied < minimum) {
+                let guidance = schema
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Use the field's declared integer range.");
+                issues.push(issue(
+                    Location::Arguments,
+                    path,
+                    Code::InvalidNumber,
+                    "The supplied integer is below the field's declared minimum.",
+                    format!("An integer at least {minimum}. {guidance}"),
+                ));
+            }
+        }
+    }
     if let Some(choices) = schema.get("enum").and_then(Value::as_array) {
         if !choices.contains(value) {
             issues.push(issue(
@@ -296,6 +315,25 @@ pub fn tool_parameters(params: &Value) -> Result<(&str, Value), NeedsInput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_minimums_are_checked_without_rounding_large_positive_values() {
+        let schema = json!({"type":"object","properties":{"limit":{"type":"integer","minimum":1,"description":"Use a positive integer or omit limit for all matches."}}});
+        for input in [json!({"limit":0}), json!({"limit":-1})] {
+            let correction = arguments(&schema, &input).unwrap();
+            assert_eq!(
+                correction.issues()[0].fault().path,
+                vec![Segment::Key("limit".into())]
+            );
+            assert_eq!(correction.issues()[0].fault().code, Code::InvalidNumber);
+            assert!(serde_json::to_string(&correction)
+                .unwrap()
+                .contains("omit limit for all matches"));
+        }
+        assert!(arguments(&schema, &json!({"limit":u64::MAX})).is_none());
+        assert!(arguments(&schema, &json!({"limit":12})).is_none());
+        assert!(arguments(&schema, &json!({})).is_none());
+    }
 
     #[test]
     fn unknown_fields_keep_full_paths_and_do_not_choose_a_spelling() {

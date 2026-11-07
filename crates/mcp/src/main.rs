@@ -239,7 +239,7 @@ fn tools_list() -> Value {
                 "properties": {
                     "project": { "type": "string", "description": "Restrict to this project's beliefs plus untagged (global) beliefs. Omit to list everything." },
                     "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Restrict to this memory type. Useful for orphan cleanup of leftover Working beliefs from an interrupted prior session — NOT a substitute for tracking the IDs of Working beliefs your own session wrote, since this filter has no session-identity concept and cannot distinguish your in-flight Working beliefs from a concurrent session's on a shared DB." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 10, "description": "Return a page of at most this many beliefs, ordered by created_at then id. When present, the result is an object with beliefs, total, offset, and next_offset." },
+                    "limit": { "type": "integer", "minimum": 1, "description": "Return a page of at most this many beliefs, ordered by created_at then id. Supply a positive integer, or omit limit to return all matching beliefs. Zero is invalid. When present, the result is an object with beliefs, total, offset, and next_offset." },
                     "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Zero-based position in the filtered, oldest-first result. Requires limit; use next_offset from the previous page." }
                 }
             }
@@ -600,9 +600,9 @@ async fn handle_graph_call(
                 Some(raw_limit) => {
                     let limit = raw_limit
                         .as_u64()
-                        .filter(|n| (1..=10).contains(n))
-                        .ok_or_else(|| anyhow::anyhow!("'limit' must be an integer from 1 to 10"))?
-                        as usize;
+                        .filter(|n| *n > 0)
+                        .and_then(|n| usize::try_from(n).ok())
+                        .ok_or_else(|| anyhow::anyhow!("'limit' must be a positive integer; omit it to return all matching beliefs"))?;
                     let offset = match args.get("offset") {
                         None => 0,
                         Some(raw_offset) => raw_offset

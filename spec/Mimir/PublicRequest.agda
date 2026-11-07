@@ -8,7 +8,7 @@ open import Data.Float.Base using (Float; _*_)
 open import Data.Integer using (ℤ; +_) renaming (_*_ to _*ℤ_)
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ)
+open import Data.Nat using (ℕ; zero; suc)
 open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (String; toList)
@@ -136,9 +136,10 @@ module Decode (conversion : Conversion.Contract) where
   ... | nothing with fields (toList "offset")
   ...   | nothing = inj₂ (read (Read.listBeliefs (project fields) memory))
   ...   | just _ = bad "offset requires limit"
-  listRequest fields memory | just raw = integer raw >>= λ limit →
-    defaulted "offset" 0 integer fields >>= λ offset →
-    inj₂ (read (Read.beliefPage (project fields) memory limit offset))
+  listRequest fields memory | just raw = integer raw >>= λ
+    { zero → bad "limit must be a positive integer; omit limit to return all matching beliefs"
+    ; limit@(suc _) → defaulted "offset" 0 integer fields >>= λ offset →
+        inj₂ (read (Read.beliefPage (project fields) memory limit offset)) }
 
   edgeRequest : R.Relation → V.Object.View → Fault ⊎ Request
   edgeRequest relation fields = required "from_id" V.asString fields >>= λ fromText →
