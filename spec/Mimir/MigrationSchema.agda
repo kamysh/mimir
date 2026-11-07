@@ -189,13 +189,13 @@ body reviewQueueNotifications = installReviewQueueNotifier ∷ []
 data QueueDataEffect : DDL → Learning.World → Learning.World → Database.Receipt →
   Learning.World → List Learning.ReviewQueueSignal → Set where
   queuePublication : ∀ {before proposed receipt actual}
-    (commit : Database.Atomic before proposed receipt actual) →
+    (commit : Database.Atomic before proposed receipt actual) {signals} → Learning.observedSignals commit signals →
     QueueDataEffect installReviewQueueNotifier before proposed receipt actual
-      (Learning.publishedSignals commit)
+      signals
 
 queueRollbackCannotWake : ∀ before proposed actual signals →
   QueueDataEffect installReviewQueueNotifier before proposed Database.aborted actual signals → signals ≡ []
-queueRollbackCannotWake before proposed .before .[] (queuePublication Database.abortedNone) = refl
+queueRollbackCannotWake before proposed .before signals (queuePublication Database.abortedNone noSignal) = noSignal
 
 -- PostgreSQL supplies the decoded historical rows and execution order. The
 -- application's data rule is insert-missing-only, linked to its general laws.

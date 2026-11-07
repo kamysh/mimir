@@ -182,6 +182,24 @@ async fn pending_queue_notifications_follow_commit_and_contain_no_source() {
         .unwrap();
     assert_eq!(signals_before_barrier(&listener, &mut received).await, 1);
 
+    // Notifications are hints, not a count of net changes. A transaction can
+    // stage a real source change and restore it before committing.
+    let tx = writer.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE mimir_experiences SET revision=3 WHERE id=$1",
+        &[&id],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "UPDATE mimir_experiences SET revision=2 WHERE id=$1",
+        &[&id],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 1);
+
     let tx = writer.transaction().await.unwrap();
     tx.execute(
         "UPDATE mimir_experiences SET revision=3 WHERE id=$1",

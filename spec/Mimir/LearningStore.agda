@@ -105,9 +105,31 @@ queueSignals before after with queueChanged before after
 ... | false = []
 ... | true = reviewQueueChanged ∷ []
 
+-- A net change requires a wake, but a trigger can also signal a committed
+-- intermediate change that was later restored in the same transaction.
+-- These extra empty hints are harmless: their meaning is "scan the queue",
+-- never "exactly one experience changed".
+data CoversQueueChange : Bool → List ReviewQueueSignal → Set where
+  unchanged : ∀ signals → CoversQueueChange false signals
+  changed : ∀ rest → CoversQueueChange true (reviewQueueChanged ∷ rest)
+
+observedSignals : ∀ {before proposed receipt actual} →
+  Database.Atomic before proposed receipt actual → List ReviewQueueSignal → Set
+observedSignals {before} {proposed} Database.committedAll signals = CoversQueueChange (queueChanged before proposed) signals
+observedSignals Database.abortedNone signals = signals ≡ []
+observedSignals Database.unknownBefore signals = signals ≡ []
+observedSignals {before} {proposed} Database.unknownAfter signals = CoversQueueChange (queueChanged before proposed) signals
+
+lostAcknowledgementPreservesObservedWake : ∀ before proposed signals →
+  observedSignals {before} {proposed} Database.committedAll signals →
+  observedSignals {before} {proposed} Database.unknownAfter signals
+lostAcknowledgementPreservesObservedWake before proposed signals covered = covered
+
 -- Model the native commit boundary, including both real possibilities after
 -- acknowledgement loss. This is not a claim that a transient NOTIFY is a
 -- durable receipt, nor a reimplementation of PostgreSQL's delivery mechanism.
+-- This function gives the minimum required hint, not an exact native count;
+-- observedSignals specifies acceptable native observations, including extras.
 publishedSignals : ∀ {before proposed receipt actual} →
   Database.Atomic before proposed receipt actual → List ReviewQueueSignal
 publishedSignals {before} {proposed} Database.committedAll = queueSignals before proposed
