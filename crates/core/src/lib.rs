@@ -1088,6 +1088,32 @@ impl MimirService {
         self.store.read_operation_binding(token).await
     }
 
+    pub async fn commit_operation_step<F>(
+        &self,
+        token: Uuid,
+        expected: &store::OperationBindingRequest,
+        step: &str,
+        apply: F,
+    ) -> Result<store::StepDecision>
+    where
+        F: for<'a, 'client> FnOnce(
+            &'a tokio_postgres::Transaction<'client>,
+            &'a store::OperationBindingRequest,
+        ) -> store::StepWork<'a>,
+    {
+        self.store
+            .commit_operation_step(token, expected, step, apply)
+            .await
+    }
+
+    pub async fn read_operation_step(
+        &self,
+        token: Uuid,
+        step: &str,
+    ) -> Result<Option<store::StepReceipt>> {
+        self.store.read_operation_step(token, step).await
+    }
+
     /// Collect graph statistics.
     pub async fn stats(&self) -> Result<MimirStats> {
         let beliefs = self.store.count_beliefs().await?;

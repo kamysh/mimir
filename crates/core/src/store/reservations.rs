@@ -65,7 +65,7 @@ pub enum OperationBindingDecision {
     UnknownToken,
 }
 
-fn decode_binding(row: &Row) -> Result<OperationBinding> {
+pub(super) fn decode_binding(row: &Row) -> Result<OperationBinding> {
     Ok(OperationBinding {
         operation_token: row.try_get("operation_token")?,
         bound_at: row.try_get("bound_at")?,

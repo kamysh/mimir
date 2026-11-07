@@ -1,8 +1,10 @@
 mod conformance;
 mod learning;
+mod operation_steps;
 mod reservations;
 use anyhow::{bail, Result};
 use chrono::DateTime;
+pub use operation_steps::{StepDecision, StepReceipt, StepWork};
 use pgvector::Vector;
 pub use reservations::{
     OperationBinding, OperationBindingDecision, OperationBindingRequest, OperationReservation,

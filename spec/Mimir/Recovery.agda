@@ -416,3 +416,44 @@ module Bindings (Business Request Timestamp : Set)
     with Entry.request requested ≟ Entry.request original
   ... | yes _ = refl
   ... | no different = ⊥-elim (different same)
+
+-- One named step after its request binding has been checked under the token
+-- lock. Business retains the complete surrounding world, including other
+-- tokens and steps. The selected reply is published with the business change.
+module SavedStep (Business Input : Set)
+  (apply : Input → Business → Business × Wire.Value) where
+
+  record State : Set where
+    constructor state
+    field business : Business; savedReply : Maybe Wire.Value
+
+  execute : Input → State → State × Wire.Value
+  execute input (state business (just saved)) = state business (just saved) , saved
+  execute input (state business nothing) with apply input business
+  ... | changed , reply = state changed (just reply) , reply
+
+  replayUsesOriginalReply : ∀ input business saved →
+    execute input (state business (just saved)) ≡ (state business (just saved) , saved)
+  replayUsesOriginalReply input business saved = refl
+
+  stable : ∀ input initial →
+    execute input (proj₁ (execute input initial)) ≡ execute input initial
+  stable input (state business (just saved)) = refl
+  stable input (state business nothing) with apply input business
+  ... | changed , reply = refl
+
+  -- The caller still owes the independent intended outcome over the WHOLE
+  -- State. Saving an answer does not prove that the business change is right.
+  statement : (intent : Over.Intent State Input) →
+    (∀ input initial → execute input initial ≡ Over.expected State intent (Over.invocation input initial)) →
+    Single.Statement State Input
+  statement intent correct = record { execute = execute ; intent = intent ; correct = correct }
+
+  recoverable : (intent : Over.Intent State Input) →
+    (∀ input initial → execute input initial ≡ Over.expected State intent (Over.invocation input initial)) →
+    Recoverable State Input
+  recoverable intent correct = Single.single (statement intent correct) (record { stable = stable })
+
+  rollbackPreservesBusinessAndReply : ∀ input before after →
+    Database.Atomic before (proj₁ (execute input before)) Database.aborted after → after ≡ before
+  rollbackPreservesBusinessAndReply input before .before Database.abortedNone = refl

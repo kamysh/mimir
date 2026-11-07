@@ -15,8 +15,8 @@ experience, vector or other business record. The additive migration creates
 that metadata table; it does not change historical migrations. The existing
 transaction and migration receipt rules still govern publication.
 
-This storage foundation adds no MCP tool or CLI command. Saved results,
-atomic saved steps and client integration remain #121–#123 and
+This storage foundation adds no MCP tool or CLI command. Whole-operation readback,
+registered step order and client integration remain #122–#123 and
 #85–#86. A reservation alone does not yet guard a business handler or establish
 that all operations recover correctly. Public reservation-control recovery is
 also an obligation of #163.
@@ -60,3 +60,32 @@ The binding model states that an existing request remains unchanged after any
 transaction receipt, including a lost acknowledgement, and that binding changes
 no business data. These are storage guarantees; completed business work still
 requires its own atomic step and saved result.
+
+## Publishing one step and its answer together
+
+`commit_operation_step` checks the token's original request under a database row
+lock before invoking any business change, even when that step already has a
+saved answer. Unknown bindings and changed requests never invoke the callback.
+The callback receives the stored request, including its original settings.
+
+The helper owns one transaction containing the business change and the saved
+answer. It returns the stored answer on both the first call and a retry. If
+saving the answer fails, the business change rolls back. Competing callers
+under the same token wait for the first transaction and read its answer instead
+of applying the change again. No timeout or attempt limit is involved.
+
+If a connection disappears around commit, keep the same token and step name.
+Use `read_operation_step` or retry that same admitted step. An absent answer is
+not permission to substitute a different request or silently reserve a token.
+
+The formal constructor proves replay stability over the complete business
+state and selected saved answer, and uses the existing recovery constructor to
+cover interruption before or after publication. Its caller must still prove
+that the business change matches an independently stated intended outcome.
+This is one step's guarantee. Registration/order enforcement remains #123,
+the theorem for a complete sequence remains #84, and public admission/dispatch
+remain #85–#86. No public write route is enabled by these storage helpers.
+
+Tests delete actual private-fixture experience rows, reject saving an answer,
+interrupt the test's own PostgreSQL connection, reconnect and retry, and race
+two callers. They check both business data and the original saved answer.

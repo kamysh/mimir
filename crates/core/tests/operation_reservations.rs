@@ -24,9 +24,9 @@ fn config() -> Config {
 
 async fn business_snapshot(client: &Client, graph: &str) -> Result<BTreeMap<String, Value>> {
     // Snapshot every column and row, including graph edges and vector tables.
-    // Only reservation/binding metadata is excluded; neither is business success.
+    // Reservation/binding/step receipts are control metadata, not business data.
     let tables = client.query(
-        "SELECT quote_ident(n.nspname)||'.'||quote_ident(c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public',$1) AND c.relkind IN ('r','p') AND c.relname NOT IN ('mimir_operation_reservations','mimir_operation_bindings') ORDER BY 1",
+        "SELECT quote_ident(n.nspname)||'.'||quote_ident(c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('public',$1) AND c.relkind IN ('r','p') AND c.relname NOT IN ('mimir_operation_reservations','mimir_operation_bindings','mimir_operation_step_replies') ORDER BY 1",
         &[&graph],
     ).await?;
     let mut snapshot = BTreeMap::new();
