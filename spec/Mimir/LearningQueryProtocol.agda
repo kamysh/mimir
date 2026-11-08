@@ -25,7 +25,7 @@ import Mimir.AssessmentSelection as Selection
 import Mimir.LearningAssessmentQueries as AssessmentView
 import Mimir.LearningRecompute as Recompute
 import Mimir.LearningTargets as Targets
-import Mimir.RevisionBounds as Bounds
+import Mimir.RetrievalRanking as Ranking
 import Mimir.Validation as Validation
 import Mimir.ApplicationStore as Physical
 
@@ -33,12 +33,12 @@ data Request : Set where
   experience currentReview history : ℕ → Request
   pending : Maybe Text → Maybe ℕ → List ℕ → Request
   score : Selection.Query → Request
-  assessmentHistory : Selection.Query → ℕ → ℕ → Request
+  assessmentHistory : Selection.Query → ℕ → Ranking.Selection → Request
 
 data Statement : Set where
   currentOf reviewOf sourceVersions reviewVersions : ℕ → Statement
   pendingRows : Maybe Text → Maybe ℕ → List ℕ → Statement
-  historicalScores : Selection.Query → ℕ → ℕ → Statement
+  historicalScores : Selection.Query → ℕ → Ranking.Selection → Statement
 
 data Effect : Set where
   openScoreTarget : Selection.Query → Effect
@@ -126,9 +126,7 @@ start (score q) with nonblank (Selection.Query.project q) ∧
   nonblank (Selection.Query.scope q) ∧ nonblank (Selection.Query.rubric q)
 ... | false = done (scoreResult Assessment.missingScope)
 ... | true = ask (openScoreTarget q) (scoreAfterBegin q)
-start (assessmentHistory q offset limit) with does (1 ≤? limit) ∧ does (offset ≤? Bounds.i64Maximum)
-... | false = done (assessmentHistoryResult Assessment.invalidPage)
-... | true with nonblank (Selection.Query.project q)
-...   | false = done (assessmentHistoryResult Assessment.missingProject)
-...   | true = read nothing (historicalScores q offset limit) (λ observed →
+start (assessmentHistory q offset limit) with nonblank (Selection.Query.project q)
+... | false = done (assessmentHistoryResult Assessment.missingProject)
+... | true = read nothing (historicalScores q offset limit) (λ observed →
   done (assessmentHistoryResult (AssessmentView.history q observed offset limit)))

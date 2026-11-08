@@ -33,7 +33,7 @@ data Request : Set where
   listBeliefs : Maybe Text → Maybe C.Memory → Request
   listPatterns : Maybe Text → Request
   beliefPage : Maybe Text → Maybe C.Memory → ℕ → ℕ → Request -- limit, offset
-  explain : ℕ → ℕ → ℕ → Request -- id, offset, limit
+  explain : ℕ → ℕ → Ranking.Selection → Request -- id, offset, optional positive selection
   stats : Request
 
 data Statement : Set where
@@ -104,22 +104,19 @@ countRelation relation w = length (filterᵇ (λ e → does (R.relationCode rela
 
 fromExplanation : Explanation.Result → Result
 fromExplanation Explanation.beliefMissing = missingBelief
-fromExplanation Explanation.invalidLimit = invalidPage
 fromExplanation Explanation.invalidStoredProvenance = invalidProvenance
 fromExplanation (Explanation.explained value) = explained value
 
-explanationAnswer : ℕ → ℕ → ℕ → Store.World → Result
+explanationAnswer : ℕ → ℕ → Ranking.Selection → Store.World → Result
 explanationAnswer id offset limit state = fromExplanation (Explanation.get id offset limit (Store.World.learning state))
 
-explanationFromViews : ℕ → ℕ → ℕ → Store.World → Store.World → Store.World → Store.World → Store.World → Result
+explanationFromViews : ℕ → ℕ → Ranking.Selection → Store.World → Store.World → Store.World → Store.World → Store.World → Result
 explanationFromViews id offset limit beliefView parentView reviewView candidateView originView
   with Explanation.findBelief id (Store.nodes beliefView)
 ... | nothing = missingBelief
-... | just b with does (1 ≤? limit)
-...   | false = invalidPage
-...   | true with Explanation.origin id (Store.World.learning originView)
-...     | Origin.malformed = invalidProvenance
-...     | source = explained (Explanation.explanation b
+... | just b with Explanation.origin id (Store.World.learning originView)
+...   | Origin.malformed = invalidProvenance
+...   | source = explained (Explanation.explanation b
   (Explanation.parents id (Store.nodes parentView)
     (Publication.World.edges (Learning.World.publication (Store.World.learning parentView))))
   (Explanation.paginate offset limit (Explanation.reviews id
@@ -134,24 +131,20 @@ explanationFromOneView : ∀ id offset limit original parentsView reviewsView ca
 explanationFromOneView id offset limit original .original .original .original .original refl refl refl refl
   with Explanation.findBelief id (Store.nodes original)
 ... | nothing = refl
-... | just b with does (1 ≤? limit)
-...   | false = refl
-...   | true with Explanation.origin id (Store.World.learning original)
-...     | Origin.malformed = refl
-...     | Origin.noProvenance = refl
-...     | Origin.found origin = refl
+... | just b with Explanation.origin id (Store.World.learning original)
+...   | Origin.malformed = refl
+...   | Origin.noProvenance = refl
+...   | Origin.found origin = refl
 
 pinnedRead : ℕ → Store.World → Statement → (Store.World → Script Result) → Script Result
 pinnedRead tx original statement next = ask (explanationSnapshot tx original statement) λ where
   (inj₁ error) → close (just tx) (failed error)
   (inj₂ observed) → next observed
 
-explainFromBelief : ℕ → ℕ → ℕ → ℕ → Store.World → Script Result
+explainFromBelief : ℕ → ℕ → Ranking.Selection → ℕ → Store.World → Script Result
 explainFromBelief id offset limit tx original with Explanation.findBelief id (Store.nodes original)
 ... | nothing = close (just tx) missingBelief
-... | just b with does (1 ≤? limit)
-...   | false = close (just tx) invalidPage
-...   | true = pinnedRead tx original (incoming id) λ parentsView →
+... | just b = pinnedRead tx original (incoming id) λ parentsView →
   pinnedRead tx original (reviews id) λ reviewsView →
   pinnedRead tx original (candidate id) λ candidateView →
   pinnedRead tx original (independent id) λ originView →

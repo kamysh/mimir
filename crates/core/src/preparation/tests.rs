@@ -626,7 +626,9 @@ async fn preparation_has_no_belief_and_publication_commits_complete_data() -> Re
         )
         .await?
         .get(0);
-    let explanation = service.explain_belief(published.id, 0, 1).await?;
+    let explanation = service
+        .explain_belief(published.id, 0, std::num::NonZeroUsize::new(1))
+        .await?;
     service.delete_project(&project).await?;
     assert_eq!(
         serde_json::to_value(published)?,

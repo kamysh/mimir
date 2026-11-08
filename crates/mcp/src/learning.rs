@@ -40,8 +40,8 @@ pub fn tools() -> Vec<Value> {
         json!({"name":"get_learning_review","description":"Read current source coverage and extracted items atomically. A null review means pending; unresolved coverage is not complete extraction.","inputSchema":{"type":"object","properties":{"id":uuid},"required":["id"]}}),
         json!({"name":"learning_capabilities","description":"Read the installed typed learning contract and assessment model version.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({"name":"get_lesson_assessment","description":"Get separate numeric correctness and usefulness for an explicit lesson, applicability scope and benefit rubric. Uses current review versions only; never grants authority. Values are uncalibrated and distinct from generic graph probability.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"belief_id":uuid,"scope":{"type":"string"},"rubric":{"type":"string"}},"required":["project","belief_id","scope","rubric"]}}),
-        json!({"name":"lesson_assessment_history","description":"Page through immutable assessment contributions with active/stale status and exact experience/review revisions. Evidence indices address that experience version.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"belief_id":uuid,"scope":{"type":"string"},"rubric":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}},"required":["project","belief_id","scope","rubric"]}}),
-        json!({"name":"explain_belief","description":"Inspect the belief's incoming reasoning edges and a requested page of active evidence-backed reviews. Follow experience_id with get_experience or experience_history for observations and past revisions. This explains provenance, not causal identification.","inputSchema":{"type":"object","properties":{"id":uuid,"offset":{"type":"integer","minimum":0,"default":0},"limit":{"type":"integer","minimum":1,"default":10}},"required":["id"]}}),
+        json!({"name":"lesson_assessment_history","description":"Read immutable assessment contributions with active/stale status and exact experience/review revisions. Omit limit for all matches, or supply a positive count. Evidence indices address that experience version.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"belief_id":uuid,"scope":{"type":"string"},"rubric":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"description":"Positive result count; omit for all remaining matches. Zero is invalid."}},"required":["project","belief_id","scope","rubric"]}}),
+        json!({"name":"explain_belief","description":"Inspect the belief's incoming reasoning edges and active evidence-backed reviews. Omit limit for all matches, or supply a positive count. Follow experience_id with get_experience or experience_history for observations and past revisions. This explains provenance, not causal identification.","inputSchema":{"type":"object","properties":{"id":uuid,"offset":{"type":"integer","minimum":0,"default":0},"limit":{"type":"integer","minimum":1,"description":"Positive result count; omit for all remaining matches. Zero is invalid."}},"required":["id"]}}),
         json!({"name":"record_experience","description":"Record one observed action and outcome for incremental LLM review. Use a stable UUID for the same incident, expected_revision=0 to create, or the returned revision to correct it. Do not also insert a standalone conclusion from this same incident; review-owned candidates avoid that duplicate prior. Exact retries do not duplicate evidence. ToolResult/UserFeedback are caller-reported provenance, not server verification. A correction invalidates the old review and retracts its effects atomically.","inputSchema":{"type":"object","properties":{
             "expected_revision":{"type":"integer","minimum":0},
             "experience":{"type":"object","additionalProperties":false,"properties":{
@@ -79,14 +79,15 @@ fn integer(args: &Value, key: &str) -> Result<i64> {
         .as_i64()
         .ok_or_else(|| anyhow!("'{key}' must be an integer"))
 }
-fn limit(args: &Value, default: usize) -> Result<usize> {
-    args.get("limit")
-        .map(|x| {
-            x.as_u64()
-                .and_then(|n| usize::try_from(n).ok())
-                .ok_or_else(|| anyhow!("limit must be a nonnegative integer"))
-        })
-        .unwrap_or(Ok(default))
+fn page_selection(
+    args: &Value,
+) -> std::result::Result<(usize, mimir_core::Selection), mimir_core::interaction::NeedsInput> {
+    let offset = args
+        .get("offset")
+        .map(super::admission::page_offset)
+        .transpose()?
+        .unwrap_or(0);
+    Ok((offset, super::admission::selection(args, "limit")?))
 }
 pub async fn call(svc: &MimirService, operation: LearningOperation, args: &Value) -> Result<Value> {
     Ok(match operation {
@@ -103,37 +104,27 @@ pub async fn call(svc: &MimirService, operation: LearningOperation, args: &Value
             .await?
         }
         LearningOperation::LessonAssessmentHistory => {
+            let (offset, limit) = match page_selection(args) {
+                Ok(page) => page,
+                Err(correction) => return Ok(serde_json::to_value(correction)?),
+            };
             svc.lesson_assessment_history(
                 text(args, "project")?,
                 text(args, "belief_id")?.parse()?,
                 text(args, "scope")?,
                 text(args, "rubric")?,
-                args.get("offset")
-                    .map(|v| {
-                        v.as_u64()
-                            .and_then(|x| usize::try_from(x).ok())
-                            .ok_or_else(|| anyhow!("invalid offset"))
-                    })
-                    .transpose()?
-                    .unwrap_or(0),
-                limit(args, 20)?,
+                offset,
+                limit,
             )
             .await?
         }
         LearningOperation::ExplainBelief => {
-            svc.explain_belief(
-                text(args, "id")?.parse()?,
-                args.get("offset")
-                    .map(|v| {
-                        v.as_u64()
-                            .and_then(|n| usize::try_from(n).ok())
-                            .ok_or_else(|| anyhow!("offset must be nonnegative"))
-                    })
-                    .transpose()?
-                    .unwrap_or(0),
-                limit(args, 10)?,
-            )
-            .await?
+            let (offset, limit) = match page_selection(args) {
+                Ok(page) => page,
+                Err(correction) => return Ok(serde_json::to_value(correction)?),
+            };
+            svc.explain_belief(text(args, "id")?.parse()?, offset, limit)
+                .await?
         }
         LearningOperation::RecordExperience => serde_json::to_value(
             svc.record_experience(

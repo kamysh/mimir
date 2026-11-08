@@ -88,6 +88,68 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
 }
 
 #[tokio::test]
+async fn learning_history_and_explanations_return_all_or_the_explicit_positive_selection(
+) -> Result<()> {
+    use mimir_core::graph::MemoryType;
+    let service = test_service().await?;
+    let id = fixture_identity().await?;
+    let project = format!("remaining-selection-{id}");
+    let belief = isolation::seed_belief_in_project(
+        "selection fixture",
+        0.5,
+        0.1,
+        &project,
+        MemoryType::Fact,
+    )
+    .await?;
+    let mut client = Client::start(id)?;
+    let checked = async {
+        for assessment in [false,true] {
+            for index in 0..21 {
+                let experience_id = fixture_identity().await?;
+                let source = json!({"id":experience_id,"project":project,"context":format!("selection {assessment} {index}"),"action":"record complete selection fixture","outcome":"unknown","source":"tool_result","evidence":["isolated fixture observation"],"belief_ids":[belief.id]});
+                client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?;
+                let mut review = json!({"experience_id":experience_id,"experience_revision":1,"reviewer":"fixture","rationale":"unresolved fixture observation"});
+                if assessment {
+                    review["assessments"] = json!([{"target":{"belief_id":belief.id},"scope":"fixture","rubric":"fixture","correctness":{"value":null,"weight":0},"usefulness":{"value":null,"weight":0},"evidence_indices":[],"rationale":"unresolved"}]);
+                } else {
+                    review["feedback"] = json!([{"belief_id":belief.id,"verdict":"support","weight":0}]);
+                }
+                ensure!(client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?["review_revision"]==1);
+            }
+        }
+        let history = json!({"project":project,"belief_id":belief.id,"scope":"fixture","rubric":"fixture"});
+        let explanation = json!({"id":belief.id});
+        for (name,base,field) in [("lesson_assessment_history",history,"entries"),("explain_belief",explanation,"reviews")] {
+            for (limit,offset,want,next) in [(None,0,21,None),(Some(21),0,21,None),(Some(3),0,3,Some(3)),(None,3,18,None),(Some(3),3,3,Some(6)),(Some(u64::MAX),0,21,None),(None,u64::MAX,0,None)] {
+                let mut request = base.clone();
+                if let Some(count)=limit { request["limit"]=json!(count); }
+                if offset!=0 { request["offset"]=json!(offset); }
+                let result=client.call(name,request).await?;
+                let page=if name=="explain_belief" { &result["learning"] } else { &result };
+                ensure!(page[field].as_array().map(Vec::len)==Some(want),"wrong {name} selection: {result}");
+                ensure!(page["next_offset"]==json!(next),"wrong {name} continuation: {result}");
+            }
+            for bad in [json!(0),json!(-1),json!("all"),json!(null)] {
+                let mut request=base.clone();request["limit"]=bad;
+                let correction:NeedsInput=serde_json::from_value(client.call(name,request).await?)?;
+                ensure!(serde_json::to_value(&correction.issues()[0].fault().path)?==json!(["limit"]));
+                ensure!(!correction.issues()[0].suggested_correction().is_empty());
+            }
+            ensure!(client.call(name,base).await?["status"]!="needs_input");
+        }
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    let cleanup = service.delete_project(&project).await;
+    checked?;
+    ensure!(stopped.success());
+    cleanup?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn review_source_dialogues_precede_embedding_and_preserve_literal_evidence() -> Result<()> {
     use mimir_core::graph::MemoryType;
     let service = test_service().await?;

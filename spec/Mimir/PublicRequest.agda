@@ -219,10 +219,10 @@ module Decode (conversion : Conversion.Contract) where
   decode Tools.learningCapabilities fields = inj₂ capabilities
   decode Tools.getLessonAssessment fields = mapResult (λ q → learningQuery (Query.score q)) (assessmentQuery fields)
   decode Tools.lessonAssessmentHistory fields = assessmentQuery fields >>= λ q →
-    defaulted "offset" 0 integer fields >>= λ offset → defaulted "limit" 20 integer fields >>= λ limit →
+    defaulted "offset" 0 integer fields >>= λ offset → selection "limit" fields >>= λ limit →
     inj₂ (learningQuery (Query.assessmentHistory q offset limit))
   decode Tools.explainBelief fields = required "id" uuid fields >>= λ id →
-    defaulted "offset" 0 integer fields >>= λ offset → defaulted "limit" 10 integer fields >>= λ limit →
+    defaulted "offset" 0 integer fields >>= λ offset → selection "limit" fields >>= λ limit →
     inj₂ (read (Read.explain id offset limit))
   decode Tools.recordExperience fields = required "experience" L.experienceInput fields >>= λ experience →
     required "expected_revision" i64 fields >>= λ expected → inj₂ (learning (Learning.recordExperience experience expected))

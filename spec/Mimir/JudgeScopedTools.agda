@@ -102,8 +102,19 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
   byID : Text → V.Value
   byID id = Encoding.object (("id" , V.string id) ∷ [])
 
-  looseLimit : ℕ → V.Value → ℕ
-  looseLimit fallback args = Input.loose "limit" fallback (Input.unsigned maximum) (Input.view args)
+  selectedCount : V.Value → Bool
+  selectedCount args with Input.view args (toList "limit")
+  ... | nothing = true
+  ... | just raw with Input.unsigned maximum raw
+  ...   | inj₁ error = false
+  ...   | inj₂ count = does (1 ≤? count)
+
+  selectedOffset : V.Value → Bool
+  selectedOffset args with Input.view args (toList "offset")
+  ... | nothing = true
+  ... | just raw with Input.unsigned maximum raw
+  ...   | inj₁ error = false
+  ...   | inj₂ offset = true
 
   snapshot : V.Value → Failure ⊎ Observation.Snapshot
   snapshot value with S.snapshot value
@@ -146,12 +157,8 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
 
   graphArguments : Tools.Query → V.Value → Script (Failure ⊎ V.Value)
   graphArguments Tools.explanation args = chain (require
-    (does (1 ≤? (looseLimit 0 args))) "invalid explain limit" args) offset
-    where
-    offset : V.Value → Script (Failure ⊎ V.Value)
-    offset value with Input.unsigned maximum (get "offset" value)
-    ... | inj₁ _ = done (inj₁ (rejected (toList "missing explain offset")))
-    ... | inj₂ _ = done (inj₂ value)
+    (selectedCount args) "limit must be positive or omitted for all matches" args)
+    (λ value → require (selectedOffset value) "offset must be nonnegative or omitted" value)
   graphArguments Tools.intervention args with D.float (get "value" args)
   ... | inj₁ _ = done (inj₁ (rejected (toList "invalid intervention value")))
   ... | inj₂ value = require (Numeric.probability value) "invalid intervention value" args
@@ -181,7 +188,8 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
   before (Tools.query Tools.lessonAssessment) args = require (textIs project (get "project" args)) "assessment is outside selected project" args
   before (Tools.query Tools.assessmentHistory) args = chain
     (require (textIs project (get "project" args)) "assessment is outside selected project" args)
-    (λ value → require (does (1 ≤? (looseLimit 20 value))) "history limit must be positive" value)
+    (λ value → chain (require (selectedCount value) "limit must be positive or omitted for all matches" value)
+      (λ selected → require (selectedOffset selected) "offset must be nonnegative or omitted" selected))
   before (Tools.query Tools.experience) args = require (textIs canonicalID (get "id" args)) "experience is outside pinned batch" args
   before (Tools.query Tools.learningReview) args = require (textIs canonicalID (get "id" args)) "experience is outside pinned batch" args
   before (Tools.query Tools.experienceHistory) args = chain
@@ -189,7 +197,7 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
   before (Tools.query Tools.contradictions) args = require (textIs project (get "project" args)) "query is outside selected project" args
   before (Tools.query Tools.relevant) args = chain
     (require (textIs project (get "project" args)) "query is outside selected project" args)
-    (λ value → require (does (1 ≤? (looseLimit 0 value))) "query limit must be positive" value)
+    (λ value → require (selectedCount value) "limit must be positive or omitted for all matches" value)
   before (Tools.query Tools.learningContext) args = before (Tools.query Tools.relevant) args
   before (Tools.query Tools.belief) args = graph Tools.belief args
   before (Tools.query Tools.explanation) args = graph Tools.explanation args

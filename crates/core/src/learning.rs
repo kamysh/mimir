@@ -443,7 +443,7 @@ impl crate::MimirService {
         scope: &str,
         rubric: &str,
         offset: usize,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<serde_json::Value> {
         self.store
             .lesson_assessment_history(project, belief_id, scope, rubric, offset, limit)
@@ -635,7 +635,7 @@ impl crate::MimirService {
         &self,
         id: Uuid,
         offset: usize,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<serde_json::Value> {
         self.store.explain_belief_snapshot(id, offset, limit).await
     }

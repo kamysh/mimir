@@ -42,7 +42,7 @@ different IDs cannot automatically be recognized as the same real event.
 A target is an existing `belief_id` or a belief candidate declared in that same
 review. A procedure can be represented by an explicit belief about its behavior
 and benefit; standalone Pattern records retain their existing success-count
-semantics. Scope and rubric keys are required, at most 200 bytes, and participate
+semantics. Scope and rubric keys are required and participate
 in aggregation identity. Different keys never pool evidence automatically.
 
 Correctness values are in [0,1], usefulness values in [-1,1], and weights in
@@ -80,16 +80,19 @@ neutral benefit. Neither score grants authority or proves causal benefit.
 `get_lesson_assessment` requires `project`, `belief_id`, `scope`, and `rubric`.
 It validates project ownership and returns the current scores. Querying a valid
 lesson with no active evidence returns the prior. `lesson_assessment_history`
-accepts the same keys plus `offset` and `limit` (1–100) and returns immutable
+accepts the same keys plus an optional nonnegative `offset` and positive `limit` and returns immutable
 contributions, their source/review revisions, current applicability flag and a
 next-page offset. `experience_history` supplies the matching source versions.
+Omitting `limit` returns all remaining matches, starting at `offset` or zero.
+An explicit count has no extra server ceiling; zero requests a correction.
+`explain_belief` uses the same selection rule for its active review list.
+The judge accepts these optional selections and does not add a result ceiling.
 History remains inspectable after a target is removed, while current-score reads
 require an existing target.
 
 `query_learning_context` includes `assessments` for the returned beliefs, grouped
-by exact applicability scope and rubric. It caps groups at 100 and explicitly
-sets `assessments_truncated`. Use exact assessment/history queries for known
-groups beyond that retrieval budget. This does not change similarity ranking or
+by exact applicability scope and rubric, without an extra group cutoff.
+`assessments_truncated` remains false for compatibility. This does not change similarity ranking or
 silently substitute a learning score for generic belief probability.
 
 Revising an experience immediately makes its old review contributions inactive.

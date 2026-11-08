@@ -105,6 +105,11 @@ async fn visible_belief(client: &mut Client, id: &str, project: &str) -> Result<
     Ok(!belief.is_null() && (belief["project"] == project || belief["project"].is_null()))
 }
 
+fn valid_result_selection(args: &Value) -> bool {
+    args.get("limit")
+        .is_none_or(|value| value.as_u64().is_some_and(|count| count > 0))
+}
+
 async fn scoped_tool(
     client: &mut Client,
     selected: &ExperienceState,
@@ -121,8 +126,15 @@ async fn scoped_tool(
                 "assessment is outside selected project"
             );
             if name == "lesson_assessment_history" {
-                let limit = args["limit"].as_u64().unwrap_or(20);
-                input_ensure!(limit > 0, "history limit must be positive");
+                input_ensure!(
+                    valid_result_selection(&args),
+                    "limit must be positive or omitted for all matches"
+                );
+                input_ensure!(
+                    args.get("offset")
+                        .is_none_or(|value| value.as_u64().is_some()),
+                    "offset must be nonnegative or omitted"
+                );
             }
         }
         "get_experience" | "experience_history" | "get_learning_review" => {
@@ -173,8 +185,10 @@ async fn scoped_tool(
                 "query is outside selected project"
             );
             if name != "get_contradictions" {
-                let limit = args["limit"].as_u64().unwrap_or(0);
-                input_ensure!(limit > 0, "query limit must be positive");
+                input_ensure!(
+                    valid_result_selection(&args),
+                    "limit must be positive or omitted for all matches"
+                );
             }
         }
         "get_belief" | "explain_belief" | "query_intervention" => {
@@ -195,12 +209,14 @@ async fn scoped_tool(
             }
             if name == "explain_belief" {
                 input_ensure!(
-                    args["limit"]
-                        .as_u64()
-                        .is_some_and(|n| (1..=20).contains(&n)),
-                    "invalid explain limit"
+                    valid_result_selection(&args),
+                    "limit must be positive or omitted for all matches"
                 );
-                input_ensure!(args["offset"].as_u64().is_some(), "missing explain offset");
+                input_ensure!(
+                    args.get("offset")
+                        .is_none_or(|value| value.as_u64().is_some()),
+                    "offset must be nonnegative or omitted"
+                );
             }
             if name == "query_intervention" {
                 input_ensure!(
@@ -934,6 +950,66 @@ mod tests {
                 }
             })
         }
+    }
+
+    #[tokio::test]
+    async fn scoped_result_selection_accepts_omission_and_large_counts_without_a_judge_ceiling(
+    ) -> Result<()> {
+        let fixture = isolation::fixture();
+        let config = Config::load_from_path(&fixture.root.join("config.toml"))?;
+        fixture.assert_database(&config.database);
+        let service = MimirService::connect(&config).await?;
+        let db = mimir_core::db::connect(&config.database).await?;
+        let id: Uuid = db.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+        let project = format!("judge-selection-{id}");
+        let belief = isolation::seed_belief_in_project(
+            "judge selection fixture",
+            0.5,
+            0.1,
+            &project,
+            mimir_core::graph::MemoryType::Fact,
+        )
+        .await?;
+        let source = Experience {
+            id,
+            project: project.clone(),
+            context: "selection fixture".into(),
+            action: "honor explicit selection".into(),
+            outcome: Outcome::Unknown,
+            source: ObservationSource::AgentReport,
+            evidence: vec![],
+            belief_ids: vec![belief.id],
+            pattern_id: None,
+            learning_items: vec![],
+            source_records: vec![],
+        };
+        let selected = service.record_experience(&source, 0).await?;
+        let mut client =
+            Client::start(&fixture.mcp, &[], &fixture.root.join("config.toml")).await?;
+        let checked=async {
+            for (name,base) in [
+                ("query_relevant",json!({"context":"judge selection fixture","project":project})),
+                ("query_learning_context",json!({"context":"judge selection fixture","project":project})),
+                ("explain_belief",json!({"id":belief.id})),
+                ("lesson_assessment_history",json!({"project":project,"belief_id":belief.id,"scope":"fixture","rubric":"fixture"})),
+            ] {
+                for limit in [None,Some(21),Some(u64::MAX)] {
+                    let mut args=base.clone();if let Some(limit)=limit {args["limit"]=json!(limit);}
+                    let result=scoped_tool(&mut client,&selected,name,args).await?;
+                    ensure!(result["status"]!="needs_input","valid selection refused: {result}");
+                }
+                for limit in [json!(0),json!(-1),json!("all"),json!(null)] {
+                    let mut args=base.clone();args["limit"]=limit;
+                    ensure!(scoped_tool(&mut client,&selected,name,args).await.unwrap_err().is::<InputRejected>());
+                }
+            }
+            Ok::<_,anyhow::Error>(())
+        }.await;
+        drop(client);
+        let cleanup = service.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
     }
 
     #[test]

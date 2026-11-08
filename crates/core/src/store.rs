@@ -3162,7 +3162,9 @@ mod snapshot_read_tests {
                 assessments: vec![],
             };
             writer.review_experience(&review, 0).await?;
-            let before = writer.explain_belief(belief.id, 0, 1).await?;
+            let before = writer
+                .explain_belief(belief.id, 0, std::num::NonZeroUsize::new(1))
+                .await?;
             anyhow::ensure!(before["incoming_edges"].as_array().unwrap().len() == 1);
             anyhow::ensure!(
                 before["learning"]["total"] == 1
@@ -3170,18 +3172,21 @@ mod snapshot_read_tests {
             );
             anyhow::ensure!(before["independent_provenance"]["reference"] == reference);
             let interruption = reader
-                .explanation_after_belief(belief.id, 0, 1, || async {
+                .explanation_after_belief(belief.id, 0, std::num::NonZeroUsize::new(1), || async {
                     anyhow::bail!("controlled interruption after explanation belief")
                 })
                 .await
                 .unwrap_err();
             anyhow::ensure!(interruption.to_string().contains("controlled interruption"));
             anyhow::ensure!(
-                reader.explain_belief_snapshot(belief.id, 0, 1).await? == before,
+                reader
+                    .explain_belief_snapshot(belief.id, 0, std::num::NonZeroUsize::new(1))
+                    .await?
+                    == before,
                 "an interrupted explanation must release its transaction and connection"
             );
             let during = reader
-                .explanation_after_belief(belief.id, 0, 1, || async {
+                .explanation_after_belief(belief.id, 0, std::num::NonZeroUsize::new(1), || async {
                     anyhow::ensure!(
                         writer.delete_project(&project).await? >= 2,
                         "the independent writer must commit project deletion"
@@ -3195,7 +3200,7 @@ mod snapshot_read_tests {
             );
             anyhow::ensure!(
                 writer
-                    .explain_belief(belief.id, 0, 1)
+                    .explain_belief(belief.id, 0, std::num::NonZeroUsize::new(1))
                     .await
                     .unwrap_err()
                     .to_string()

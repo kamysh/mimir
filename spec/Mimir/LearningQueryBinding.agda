@@ -104,8 +104,8 @@ module AssessmentReads (format : Encoding.Formatting) where
   module Encode = Encoding.Encode format
   data Request : Set where
     scores : Selection.Query → Request
-    history : Selection.Query → ℕ → ℕ → Request
-    explanation : ℕ → ℕ → ℕ → Request
+    history : Selection.Query → ℕ → Ranking.Selection → Request
+    explanation : ℕ → ℕ → Ranking.Selection → Request
 
   data Answer : Set where
     scoreResult : Assessment.ScoreResult → Answer

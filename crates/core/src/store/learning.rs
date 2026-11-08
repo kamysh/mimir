@@ -271,18 +271,16 @@ impl AgeStore {
         scope: &str,
         rubric: &str,
         offset: usize,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<serde_json::Value> {
-        ensure!(
-            limit > 0 && offset <= i64::MAX as usize,
-            "invalid history page"
-        );
         ensure!(!project.trim().is_empty(), "project must be explicit");
         let client = self.client.lock().await;
-        let rows = client.query("SELECT a.experience_id,a.review_revision,r.experience_revision,a.payload::text,r.created_at,(e.review_revision=r.revision AND e.revision=r.experience_revision) AS active FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 ORDER BY r.created_at,a.experience_id,a.review_revision LIMIT $5 OFFSET $6", &[&project,&belief_id,&scope,&rubric,&(i64::try_from(limit)?.checked_add(1).ok_or_else(|| anyhow::anyhow!("page size exceeds PostgreSQL integer range"))?),&(offset as i64)]).await?;
-        let entries = rows.iter().take(limit).map(|r| Ok(serde_json::json!({"experience_id":r.get::<_,Uuid>(0),"review_revision":r.get::<_,i64>(1),"experience_revision":r.get::<_,i64>(2),"assessment":serde_json::from_str::<serde_json::Value>(r.get::<_,&str>(3))?,"created_at":r.get::<_,chrono::DateTime<chrono::Utc>>(4),"active":r.get::<_,bool>(5)}))).collect::<Result<Vec<_>>>()?;
+        let rows = client.query("SELECT a.experience_id,a.review_revision,r.experience_revision,a.payload::text,r.created_at,(e.review_revision=r.revision AND e.revision=r.experience_revision) AS active FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 ORDER BY r.created_at,a.experience_id,a.review_revision", &[&project,&belief_id,&scope,&rubric]).await?;
+        let count = limit.map(|count| count.get()).unwrap_or(rows.len());
+        let entries = rows.iter().skip(offset).take(count).map(|r| Ok(serde_json::json!({"experience_id":r.get::<_,Uuid>(0),"review_revision":r.get::<_,i64>(1),"experience_revision":r.get::<_,i64>(2),"assessment":serde_json::from_str::<serde_json::Value>(r.get::<_,&str>(3))?,"created_at":r.get::<_,chrono::DateTime<chrono::Utc>>(4),"active":r.get::<_,bool>(5)}))).collect::<Result<Vec<_>>>()?;
+        let next = offset + entries.len();
         Ok(
-            serde_json::json!({"entries":entries,"next_offset":if rows.len()>limit {Some(offset.checked_add(limit).ok_or_else(|| anyhow::anyhow!("page offset exceeds platform range"))?)}else{None}}),
+            serde_json::json!({"entries":entries,"next_offset":if next<rows.len() {Some(next)}else{None}}),
         )
     }
     pub async fn get_experience(&self, id: Uuid) -> Result<Option<ExperienceState>> {
@@ -1385,9 +1383,8 @@ impl AgeStore {
         &self,
         id: Uuid,
         offset: usize,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<serde_json::Value> {
-        ensure!(limit > 0, "limit must be positive");
         let client = self.client.lock().await;
         self.reviews_for_belief_on(&client, id, offset, limit).await
     }
@@ -1397,9 +1394,8 @@ impl AgeStore {
         client: &Client,
         id: Uuid,
         offset: usize,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<serde_json::Value> {
-        ensure!(limit > 0, "limit must be positive");
         let id_text = id.to_string();
         let sql = format!("{ACTIVE_REVIEWS} WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.payload->'feedback','[]'::jsonb)) f WHERE f->>'belief_id'=$1) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(r.payload->'superseded_beliefs','[]'::jsonb)) s WHERE s=$1) OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.payload->'links','[]'::jsonb)) l WHERE l->>'from_id'=$1 OR l->>'to_id'=$1)");
         let mut reviews: Vec<Review> = client
@@ -1410,8 +1406,9 @@ impl AgeStore {
             .collect::<std::result::Result<_, _>>()?;
         reviews.sort_by_key(|r| r.experience_id);
         let total = reviews.len();
-        let page: Vec<_> = reviews.into_iter().skip(offset).take(limit).collect();
-        let next = offset.saturating_add(page.len());
+        let count = limit.map(|count| count.get()).unwrap_or(total);
+        let page: Vec<_> = reviews.into_iter().skip(offset).take(count).collect();
+        let next = offset + page.len();
         Ok(
             serde_json::json!({"reviews":page,"total":total,"next_offset":if next<total {Some(next)} else {None}}),
         )
@@ -1421,7 +1418,7 @@ impl AgeStore {
         &self,
         id: Uuid,
         offset: usize,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<serde_json::Value> {
         self.explanation_after_belief(id, offset, limit, || async { Ok(()) })
             .await
@@ -1431,7 +1428,7 @@ impl AgeStore {
         &self,
         id: Uuid,
         offset: usize,
-        limit: usize,
+        limit: crate::Selection,
         after_belief: F,
     ) -> Result<serde_json::Value>
     where
@@ -1444,7 +1441,6 @@ impl AgeStore {
             .get_belief_on(tx.client(), id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("belief not found"))?;
-        ensure!(limit > 0, "limit must be positive");
         after_belief().await?;
         let incoming = self.get_incoming_edges_on(tx.client(), &[id]).await?;
         let parents: Vec<_> = incoming.iter().map(|(from,to,relation,weight,mean)|serde_json::json!({
