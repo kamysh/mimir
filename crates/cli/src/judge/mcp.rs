@@ -702,11 +702,11 @@ mod tests {
         use tokio::io::AsyncBufReadExt;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let script = format!(
-            "exec 3<>/dev/tcp/127.0.0.1/{}; bash -c 'printf \"%s %s\\n\" \"$PPID\" \"$BASHPID\" >&3; read -r -u 3 stop'; wait",
-            listener.local_addr().unwrap().port()
+            "exec 3<>/dev/tcp/127.0.0.1/{port}; bash -c 'exec 4<>/dev/tcp/127.0.0.1/{port}; printf \"%s %s\\n\" \"$PPID\" \"$$\" >&4; read -r -u 4 stop' & descendant=$!; printf '%s %s\\n' \"$$\" \"$descendant\" >&3; wait",
+            port = listener.local_addr().unwrap().port()
         );
-        // Both the MCP parent and its waiting descendant retain this socket.
-        // The descendant announces readiness only after inheriting its handle.
+        // Each process retains a connection until it stops. The descendant
+        // announces its own identity after opening its lifetime connection.
         let startup = tokio::spawn(async move {
             Client::start(
                 "bash",
@@ -728,6 +728,11 @@ mod tests {
             pids[0], pids[1],
             "the fixture must include a real descendant"
         );
+        let (descendant, _) = listener.accept().await.unwrap();
+        let mut descendant = BufReader::new(descendant);
+        let mut descendant_ready = String::new();
+        assert!(descendant.read_line(&mut descendant_ready).await.unwrap() > 0);
+        assert_eq!(descendant_ready, ready);
         assert!(
             !startup.is_finished(),
             "startup unexpectedly completed without an MCP reply"
@@ -736,6 +741,8 @@ mod tests {
         assert!(matches!(startup.await, Err(error) if error.is_cancelled()));
         let mut remaining = Vec::new();
         transport.read_to_end(&mut remaining).await.unwrap();
+        assert!(remaining.is_empty());
+        descendant.read_to_end(&mut remaining).await.unwrap();
         assert!(remaining.is_empty());
     }
 }
