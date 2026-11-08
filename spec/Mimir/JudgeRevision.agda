@@ -27,7 +27,6 @@ import Mimir.BatchReport as Batch
 import Mimir.JudgeStateRecords as Records
 import Mimir.JudgeBatchReadback as Readback
 import Mimir.SourceFailure as Source
-import Mimir.DiagnosticText as Bounded
 import Mimir.StructuredValue as V
 import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
@@ -114,7 +113,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   fatal w reason failure = finished (outcome (Work.account w)
     (record (R.captureSource (Error.source failure) (Work.report w))
       { status = toList "blocked" ; blockReason = just reason
-      ; failureDetail = just (Bounded.bounded 512 (Error.detail failure)) }) true true)
+      ; failureDetail = just (Error.detail failure) }) true true)
 
   trace : Work → String → Maybe Text → Maybe Text → Script State → Script State
   trace w kind name detail next with R.Report.diagnosticsId (Work.report w)
@@ -175,7 +174,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   ... | zero = record w
     { policy = Policy.Step.state (Policy.step (Work.policy w) event)
     ; report = record (R.captureSource source (Work.report w))
-      { blockReason = just (toList reason) ; failureDetail = Data.Maybe.map (Bounded.bounded 512) detail } }
+      { blockReason = just (toList reason) ; failureDetail = detail } }
 
   sourceError : String → V.Value → Validation.Fault → Error
   sourceError stage value failure = error (Source.display source) (just source)
@@ -223,7 +222,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       { policy = Policy.Step.state (Policy.step (Work.policy w) (Policy.inputRejected message))
       ; last = just (feedback "invalid_tool_arguments" message
           "Correct the tool arguments and resubmit the request. The rejected call changed nothing.")
-      ; lastRejection = just (rejection name (Bounded.bounded 512 (Error.detail diagnostic)) (Error.source diagnostic)) })))
+      ; lastRejection = just (rejection name (Error.detail diagnostic) (Error.source diagnostic)) })))
     where diagnostic = scopedError failure
 
   ordinaryFailure : Work → Text → Scoped.Failure → Script State

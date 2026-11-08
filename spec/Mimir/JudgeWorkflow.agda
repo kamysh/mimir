@@ -25,7 +25,6 @@ import Mimir.ReviewObservation as Observation
 import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
 import Mimir.SourceFailure as Source
-import Mimir.DiagnosticText as Bounded
 import Mimir.Validation as Validation
 
 module R = Records.Over ℕ
@@ -83,7 +82,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   failed : R.Report → Text → Revision.Error → Script R.Report
   failed report reason failureValue = finish (record (R.captureSource (Revision.Error.source failureValue) report)
     { status = toList "blocked" ; blockReason = just reason
-    ; failureDetail = just (Bounded.bounded 512 (Revision.Error.detail failureValue)) })
+    ; failureDetail = just (Revision.Error.detail failureValue) })
 
   finalReads : List Observation.Pin → R.Report → Bool → Script R.Report
   finalReads original report failure = liftReadback (Readback.finish original report failure

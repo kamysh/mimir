@@ -17,7 +17,6 @@ open import Relation.Nullary using (does)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
-import Mimir.DiagnosticText as Bounded
 import Mimir.JudgeStateRecords as Records
 import Mimir.Effects as Effects
 import Mimir.NotificationConfig as Email
@@ -105,7 +104,7 @@ incident mode report = ask (recordIncident report) (afterIncident mode report)
 
 afterTrace : NotificationMode → R.Report → Text ⊎ ⊤ → Script R.Report
 afterTrace mode report (inj₁ error) = incident mode (record (blocked (toList "diagnostics_write_error") report)
-  { failureDetail = just (Bounded.bounded 512 error) })
+  { failureDetail = just error })
 afterTrace mode report (inj₂ tt) with does (R.Report.status report ≟Text toList "complete")
 ... | true = incident mode (record report { diagnosticsId = nothing })
 ... | false = incident mode report

@@ -517,7 +517,7 @@ fn record_invalid_configuration(state_dir: Option<&std::path::Path>, error: &any
     };
     let mut report = state::Report::new("blocked", 0, 0, 0, 0, 0);
     report.block_reason = Some("invalid_config".into());
-    report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
+    report.failure_detail = Some(format!("{error:#}"));
     let _ = state.record_incident(&report);
     let _ = state.write(&report);
 }
@@ -681,6 +681,27 @@ async fn run_with_settings(
 mod watch_tests {
     use super::*;
     use std::os::unix::fs::OpenOptionsExt;
+
+    #[test]
+    fn private_configuration_failure_keeps_the_complete_repair_explanation() {
+        let work = harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
+        let state_dir = work.path().join("state");
+        let explanation = format!(
+            "first line\n{}\nrepair: correct the named configuration field",
+            "x".repeat(10_000)
+        );
+        let error = anyhow::anyhow!(explanation).context("fixture configuration rejected");
+        let complete = format!("{error:#}");
+        record_invalid_configuration(Some(&state_dir), &error);
+        let saved = state::read(&state_dir).unwrap().unwrap();
+        assert_eq!(saved.failure_detail.as_deref(), Some(complete.as_str()));
+        let incident = state::read_failure(&state_dir).unwrap().unwrap();
+        assert_eq!(
+            incident.first.failure_detail.as_deref(),
+            Some(complete.as_str())
+        );
+        assert!(complete.ends_with("repair: correct the named configuration field"));
+    }
 
     #[tokio::test]
     async fn malformed_config_waits_for_correction_without_replacing_admitted_settings() {

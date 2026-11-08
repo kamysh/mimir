@@ -35,7 +35,6 @@ import Mimir.JudgePersistence as Persistence
 import Mimir.JudgeLock as Lock
 import Mimir.UnixPath as Path
 import Mimir.UnixMetadata as Metadata
-import Mimir.DiagnosticText as Bounded
 import Mimir.Effects as Effects
 import Mimir.JudgeMcpLifecycle as Client
 import Mimir.NotificationCodec as Codec
@@ -96,7 +95,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   setupReport : Maybe ℕ → Text → R.Report
   setupReport now detail = record (R.newReport now (toList "blocked") 0 0 0 0 0)
-    { blockReason = just (toList "backend_configuration") ; failureDetail = just (Bounded.bounded 512 detail) }
+    { blockReason = just (toList "backend_configuration") ; failureDetail = just detail }
 
   data Dropped : Maybe Client.Client → Set where
     absent : Dropped nothing
@@ -181,7 +180,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   invalidReport : Maybe ℕ → Text → R.Report
   invalidReport observed detail = record (R.newReport observed (toList "blocked") 0 0 0 0 0)
-    { blockReason = just (toList "invalid_config") ; failureDetail = just (Bounded.bounded 512 detail) }
+    { blockReason = just (toList "invalid_config") ; failureDetail = just detail }
 
   persistInvalid : Text → Script ⊤
   persistInvalid detail = ask resolveState λ where

@@ -351,7 +351,7 @@ pub async fn run<B: Backend>(
             }
             .into(),
         );
-        report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
+        report.failure_detail = Some(format!("{error:#}"));
         report.capture_source(&error);
     }
     finish_report(settings, state, report, delivery).await
@@ -395,7 +395,7 @@ pub async fn setup_failure(
 ) -> Report {
     let mut report = Report::new("blocked", 0, 0, 0, 0, 0);
     report.block_reason = Some(reason.into());
-    report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
+    report.failure_detail = Some(format!("{error:#}"));
     report.capture_source(error);
     finish_report(settings, state, report, delivery).await
 }
@@ -414,7 +414,7 @@ pub(super) async fn finish_report(
             Err(error) => {
                 report.status = "blocked".into();
                 report.block_reason = Some("diagnostics_write_error".into());
-                report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
+                report.failure_detail = Some(format!("{error:#}"));
             }
         }
     }
@@ -566,7 +566,7 @@ async fn run_inner<B: Backend>(
                     if candidate_rejections == 0 {
                         failed = true;
                         report.block_reason = Some("backend_error".into());
-                        report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
+                        report.failure_detail = Some(format!("{error:#}"));
                         report.capture_source(&error);
                     }
                     break;
@@ -715,7 +715,7 @@ async fn run_inner<B: Backend>(
                             });
                             last_rejection = Some((
                                 name,
-                                state::bounded(&format!("{error:#}"), 512),
+                                format!("{error:#}"),
                                 focused.or_else(|| error.downcast_ref::<SourceFailure>().cloned()),
                             ));
                         }
