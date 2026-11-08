@@ -1157,7 +1157,7 @@ mod tests {
             &settings,
             &state,
             &mut backend,
-            crate::judge::notification::Mode::Inline,
+            crate::judge::notification::Mode::Standalone,
         )
         .await;
         assert_eq!(report.status, "blocked");
@@ -1195,7 +1195,7 @@ mod tests {
             &settings,
             &state,
             &mut backend,
-            crate::judge::notification::Mode::Inline,
+            crate::judge::notification::Mode::Standalone,
         )
         .await;
         assert_eq!(report.status, "complete");

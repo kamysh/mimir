@@ -67,7 +67,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   module L = Lock.With Path.Path ℕ Text
   notificationMode : Bool → Finalization.NotificationMode
   notificationMode true = Finalization.queuedDelivery
-  notificationMode false = Finalization.inlineDelivery
+  notificationMode false = Finalization.standaloneDelivery
 
   module W (watch : Bool) (settings : Config.Runtime) program path configPath = Workflow.Compose conversion format libraries environment errors
     (Config.Runtime.llm settings) program contract model

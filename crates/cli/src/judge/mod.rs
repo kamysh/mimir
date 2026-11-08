@@ -146,7 +146,7 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
             interval_seconds,
             max_consecutive_failures,
         } => {
-            let notifications = notification::Worker::start();
+            let mut notifications = None;
             let result = async {
             if interval_seconds == 0 || max_consecutive_failures == 0 {
                 println!(
@@ -185,6 +185,15 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                     return UNAVAILABLE;
                 }
             };
+            let notification_path = match state::resolve(state_dir.as_deref()) {
+                Ok(path) => path,
+                Err(error) => { eprintln!("Invalid notification state path: {error:#}"); return UNAVAILABLE; }
+            };
+            notifications = match notification::Worker::start(&settings, &notification_path) {
+                Ok(worker) => Some(worker),
+                Err(error) => { eprintln!("Cannot start notification owner: {error:#}. Review processing continues and pending mail remains saved; stop another watcher owning this directory or correct the reported path problem, then restart this watcher."); None }
+            };
+            let notifications = notifications.as_ref();
             let mut subscription = match mimir_core::db::ReviewQueueSubscription::connect(
                 &settings.core.database,
             )
@@ -199,9 +208,14 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
             let mut watch = WatchState::default();
             let mut digest_problem = false;
             loop {
-                let outcome = run_with_settings(&settings, state_dir.clone(), true, notification::Mode::Queued(&notifications)).await;
+                let delivery = notifications.map_or(notification::Mode::Standalone, notification::Mode::Queued);
+                let outcome = run_with_settings(&settings, state_dir.clone(), true, delivery).await;
                 let problem = state::resolve(state_dir.as_deref())
-                    .and_then(|path| notifications.digest(&settings, &path, &outcome)).is_err();
+                    .and_then(|path| match notifications {
+                        Some(worker) => worker.digest(&settings, &path, &outcome),
+                        None if settings.email.enabled => Err(anyhow::anyhow!("notification worker is unavailable")),
+                        None => Ok(()),
+                    }).is_err();
                 if problem != digest_problem {
                     eprintln!(
                         "judge daily email queue: {}",
@@ -296,7 +310,9 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
                 }
             }
             }.await;
-            notifications.shutdown().await;
+            if let Some(notifications) = notifications {
+                notifications.shutdown().await;
+            }
             result
         }
         JudgeCommand::Status { state_dir } => {
@@ -545,7 +561,13 @@ async fn run_once(
             };
         }
     };
-    run_with_settings(&settings, state_dir, watch_mode, notification::Mode::Inline).await
+    run_with_settings(
+        &settings,
+        state_dir,
+        watch_mode,
+        notification::Mode::Standalone,
+    )
+    .await
 }
 
 // Used by watcher startup after it subscribes with these exact settings. It

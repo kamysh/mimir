@@ -6,21 +6,21 @@ use anyhow::Result;
 use chrono::{DateTime, Local, Utc};
 use mimir_core::config::DatabaseConfig;
 use mimir_notifications::config::EmailConfig;
-use mimir_notifications::{Event, EventStatus, Notifier};
+use mimir_notifications::{Event, EventConsumer, EventStatus, IncomingEvents, Notifier};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[derive(Clone, Copy)]
 pub enum Mode<'a> {
-    Inline,
+    Standalone,
     Queued(&'a Worker),
 }
 
 enum Job {
+    #[cfg(test)]
+    Idle(tokio::sync::oneshot::Sender<()>),
     Alert {
         email: EmailConfig,
-        path: PathBuf,
-        event: Event,
     },
     Digest {
         email: EmailConfig,
@@ -33,15 +33,52 @@ enum Job {
 /// Own one consumer; queue admission never waits for SMTP or OAuth.
 pub struct Worker {
     pending: tokio::sync::mpsc::UnboundedSender<Job>,
+    path: PathBuf,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Worker {
-    pub fn start() -> Self {
+    pub fn start(settings: &RuntimeConfig, path: &Path) -> Result<Self> {
+        let incoming = IncomingEvents::new(path)?;
+        let consumer = incoming.claim()?;
+        // Subscribe before scanning saved events, including events from another
+        // standalone process while this watcher is idle.
+        let mut file_events =
+            super::config_events::ConfigEvents::new(&path.join("notification-incoming.json"))?;
+        let mut email = settings.email.clone();
+        let owned_path = path.to_owned();
         let (pending, mut received) = tokio::sync::mpsc::unbounded_channel();
         let task = tokio::spawn(async move {
             let mut digest_problem = false;
-            while let Some(job) = received.recv().await {
+            let mut scan = true;
+            loop {
+                if scan && email.enabled {
+                    if let Err(error) = drain(&email, &owned_path, &consumer).await {
+                        eprintln!("judge pending mail: {error:#}. Pending events remain saved; correct the reported problem and restart the watcher.");
+                    }
+                }
+                scan = false;
+                let job = tokio::select! {
+                    job = received.recv() => match job { Some(job) => job, None => break },
+                    changed = file_events.changed() => {
+                        if let Err(error) = changed.and_then(|()| file_events.rearm()) {
+                            eprintln!("judge pending-mail file events: {error:#}. Pending mail remains saved; restart the watcher after correcting the reported problem.");
+                            break;
+                        }
+                        scan = true;
+                        continue;
+                    }
+                };
+                #[cfg(test)]
+                if let Job::Idle(ready) = job {
+                    let _ = ready.send(());
+                    continue;
+                }
+                if let Job::Alert { email: replacement } = job {
+                    email = replacement;
+                    scan = true;
+                    continue;
+                }
                 let digest = matches!(&job, Job::Digest { .. });
                 match deliver(job).await {
                     Ok(Some(problem)) => {
@@ -67,10 +104,11 @@ impl Worker {
                 }
             }
         });
-        Self {
+        Ok(Self {
             pending,
+            path: path.to_owned(),
             task: Some(task),
-        }
+        })
     }
 
     fn send(&self, job: Job) -> Result<()> {
@@ -88,11 +126,24 @@ impl Worker {
         if !settings.email.enabled {
             return Ok("disabled");
         }
-        self.send(Job::Alert {
-            email: settings.email.clone(),
-            path: path.to_owned(),
-            event: event(settings, path, report)?,
-        })?;
+        anyhow::ensure!(
+            self.path == path,
+            "notification worker owns a different state directory"
+        );
+        IncomingEvents::new(path)?.enqueue(&event(settings, path, report)?)?;
+        // The durable file event is also a wake-up. A closed in-memory channel
+        // cannot retract successful admission or turn a review into a failure.
+        if self
+            .send(Job::Alert {
+                email: settings.email.clone(),
+            })
+            .is_err()
+        {
+            eprintln!(
+                "judge notification worker stopped; pending mail remains saved. {}",
+                resume_command(settings, path)
+            );
+        }
         Ok("queued")
     }
 
@@ -135,18 +186,9 @@ impl Drop for Worker {
 
 async fn deliver(job: Job) -> Result<Option<bool>> {
     match job {
-        Job::Alert { email, path, event } => {
-            let outcome = Notifier::new(&email, path)?.submit(&event).await?;
-            if !matches!(
-                outcome,
-                mimir_notifications::Outcome::Sent
-                    | mimir_notifications::Outcome::Disabled
-                    | mimir_notifications::Outcome::NotNeeded
-            ) {
-                eprintln!("judge notification delivery: {}", outcome.as_str());
-            }
-            Ok(None)
-        }
+        #[cfg(test)]
+        Job::Idle(_) => unreachable!("test readiness is handled before delivery"),
+        Job::Alert { .. } => unreachable!("alert wake-ups are handled before delivery"),
         Job::Digest {
             email,
             database,
@@ -158,6 +200,36 @@ async fn deliver(job: Job) -> Result<Option<bool>> {
     }
 }
 
+async fn drain(email: &EmailConfig, path: &Path, consumer: &EventConsumer) -> Result<()> {
+    let notifier = Notifier::new(email, path)?;
+    while let Some(pending) = consumer.front()? {
+        let outcome = notifier.submit(&pending.event).await?;
+        // Every returned outcome has already reconciled the event durably. A
+        // failed send remains in the incident outbox, and must not prevent a
+        // later recovery event from reaching the incident policy.
+        consumer.acknowledge(&pending.id)?;
+        if !matches!(
+            outcome,
+            mimir_notifications::Outcome::Sent | mimir_notifications::Outcome::NotNeeded
+        ) {
+            eprintln!("judge notification delivery: {}", outcome.as_str());
+        }
+    }
+    Ok(())
+}
+
+fn shell_path(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+fn resume_command(settings: &RuntimeConfig, path: &Path) -> String {
+    format!(
+        "Resume delivery: mimir judge watch --config {} --state-dir {}",
+        shell_path(&settings.path),
+        shell_path(path)
+    )
+}
+
 pub async fn notify_with(
     mode: Mode<'_>,
     settings: &RuntimeConfig,
@@ -165,7 +237,7 @@ pub async fn notify_with(
     report: &mut Report,
 ) -> Result<()> {
     match mode {
-        Mode::Inline => notify(settings, state, report).await,
+        Mode::Standalone => notify(settings, state, report).await,
         Mode::Queued(worker) => {
             report.notification = worker.alert(settings, state.path(), report)?.into();
             Ok(())
@@ -317,12 +389,16 @@ fn event(settings: &RuntimeConfig, path: &Path, report: &Report) -> Result<Event
 }
 
 pub async fn notify(settings: &RuntimeConfig, state: &State, report: &mut Report) -> Result<()> {
-    let notifier = Notifier::new(&settings.email, state.path())?;
-    report.notification = notifier
-        .submit(&event(settings, state.path(), report)?)
-        .await?
-        .as_str()
-        .into();
+    if !settings.email.enabled {
+        report.notification = "disabled".into();
+        return Ok(());
+    }
+    IncomingEvents::new(state.path())?.enqueue(&event(settings, state.path(), report)?)?;
+    report.notification = "queued".into();
+    eprintln!(
+        "Pending mail is saved for the watcher. {}",
+        resume_command(settings, state.path())
+    );
     Ok(())
 }
 
@@ -330,6 +406,42 @@ pub async fn notify(settings: &RuntimeConfig, state: &State, report: &mut Report
 mod tests {
     use super::super::state::ConfirmedReview;
     use super::*;
+
+    #[tokio::test]
+    async fn idle_watcher_observes_standalone_alert_without_an_in_memory_wakeup() {
+        use std::future::{poll_fn, Future};
+        use tokio::io::AsyncReadExt;
+        let work = crate::judge::harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let text = format!(
+            "config_version=1\n[logging]\ndirectory={}\n[database]\nhost='127.0.0.1'\nport=15432\nuser='fixture-user'\ndbname='fixture'\n[judge]\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n[email]\nenabled=true\nhost='127.0.0.1'\nport={}\ntls='starttls'\nfrom='sender@example.test'\nto=['recipient@example.test']\nauth='none'\n",
+            toml::Value::String(work.path().join("logs").display().to_string()), server.local_addr().unwrap().port()
+        );
+        let path = work.write("config.toml", text.as_bytes()).unwrap();
+        let settings = crate::judge::config::load(Some(&path)).unwrap();
+        let state = State::lock(work.path().join("state")).unwrap().unwrap();
+        let worker = Worker::start(&settings, state.path()).unwrap();
+        let (ready, idle) = tokio::sync::oneshot::channel();
+        worker.pending.send(Job::Idle(ready)).unwrap();
+        idle.await.unwrap();
+        assert!(poll_fn(|cx| std::task::Poll::Ready(server.poll_accept(cx).is_pending())).await);
+        let mut report = Report::new("blocked", 1, 0, 0, 1, 0);
+        // This path has no reference to Worker and cannot send it a channel job.
+        let save = notify_with(Mode::Standalone, &settings, &state, &mut report);
+        tokio::pin!(save);
+        let std::task::Poll::Ready(Ok(())) =
+            poll_fn(|cx| std::task::Poll::Ready(save.as_mut().poll(cx))).await
+        else {
+            panic!("standalone notification was not saved immediately")
+        };
+        drop(save);
+        let (mut transport, _) = server.accept().await.unwrap();
+        worker.shutdown().await;
+        let mut received = Vec::new();
+        transport.read_to_end(&mut received).await.unwrap();
+        let incoming = IncomingEvents::new(state.path()).unwrap();
+        assert!(incoming.claim().unwrap().front().unwrap().is_some());
+    }
 
     #[tokio::test]
     async fn stalled_smtp_does_not_block_reports_and_shutdown_releases_transport_and_lock() {
@@ -344,13 +456,12 @@ mod tests {
         let path = work.write("config.toml", text.as_bytes()).unwrap();
         let settings = crate::judge::config::load(Some(&path)).unwrap();
         let state = State::lock(work.path().join("state")).unwrap().unwrap();
-        let worker = Worker::start();
         {
             let first = crate::judge::runner::finish_report(
                 &settings,
                 &state,
                 Report::new("blocked", 1, 0, 0, 1, 0),
-                Mode::Queued(&worker),
+                Mode::Standalone,
             );
             tokio::pin!(first);
             let std::task::Poll::Ready(first) =
@@ -360,6 +471,8 @@ mod tests {
             };
             assert_eq!(first.notification, "queued");
         }
+        assert!(poll_fn(|cx| std::task::Poll::Ready(server.poll_accept(cx).is_pending())).await);
+        let worker = Worker::start(&settings, state.path()).unwrap();
         // Accepting establishes a real SMTP connection. Withhold the greeting;
         // its delivery future cannot complete successfully in this state.
         let (mut transport, _) = server.accept().await.unwrap();
@@ -392,6 +505,25 @@ mod tests {
             .unwrap()
             .digest_state()
             .is_ok());
+        let saved = IncomingEvents::new(state.path()).unwrap();
+        let consumer = saved.claim().unwrap();
+        let first = consumer.front().unwrap().unwrap();
+        assert!(matches!(first.event.status, EventStatus::Failure { .. }));
+        consumer.acknowledge(&first.id).unwrap();
+        assert_eq!(
+            consumer.front().unwrap().unwrap().event.status,
+            EventStatus::Progress
+        );
+        drop(consumer);
+        assert!(saved.claim().is_ok());
+        assert_eq!(
+            resume_command(&settings, state.path()),
+            format!(
+                "Resume delivery: mimir judge watch --config {} --state-dir {}",
+                shell_path(&settings.path),
+                shell_path(state.path())
+            )
+        );
     }
 
     #[test]

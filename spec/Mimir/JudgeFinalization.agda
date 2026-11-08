@@ -1,7 +1,7 @@
 {-# OPTIONS --safe #-}
 -- Exact finish_report order: stamp, finalize trace, persist incident, persist
--- status, notify inline or enqueue, then persist status again. Watch mode uses
--- queue admission; an active SMTP/OAuth exchange is not a core prerequisite.
+-- status, save pending notification, then persist status again. Both modes
+-- use durable admission; SMTP/OAuth completion is not a core prerequisite.
 module Mimir.JudgeFinalization where
 
 open import Data.Bool using (Bool; true; false)
@@ -27,7 +27,7 @@ import Mimir.JudgeHost as Host
 
 module R = Records.Over ℕ
 
-data NotificationMode : Set where inlineDelivery queuedDelivery : NotificationMode
+data NotificationMode : Set where standaloneDelivery queuedDelivery : NotificationMode
 
 -- Jobs capture the admitted settings. Queue admission is independent of an
 -- active delivery's completion; cancellation explicitly ends the owned worker.
@@ -63,14 +63,13 @@ data Effect : Set where
   clock : Effect
   finishTrace : ℕ → R.Report → Effect
   recordIncident writeStatus : R.Report → Effect
-  notify enqueueNotification : R.Report → Effect
+  enqueueNotification : R.Report → Effect
 
 Reply : Effect → Set
 Reply clock = Maybe ℕ
 Reply (finishTrace id report) = Text ⊎ ⊤
 Reply (recordIncident report) = Text ⊎ ⊤
 Reply (writeStatus report) = Text ⊎ ⊤
-Reply (notify report) = Text ⊎ Text -- delivery outcome
 Reply (enqueueNotification report) = Text ⊎ Text -- queue admission, no SMTP wait
 
 module E = Effects.Protocol Effect Reply
@@ -91,8 +90,7 @@ afterNotification report (inj₂ value) = ask (writeStatus updated) (afterLastWr
 
 afterFirstWrite : NotificationMode → R.Report → Text ⊎ ⊤ → Script R.Report
 afterFirstWrite mode report (inj₁ error) = done (blocked (toList "state_write_error") report)
-afterFirstWrite inlineDelivery report (inj₂ tt) = ask (notify report) (afterNotification report)
-afterFirstWrite queuedDelivery report (inj₂ tt) = ask (enqueueNotification report) (afterNotification report)
+afterFirstWrite mode report (inj₂ tt) = ask (enqueueNotification report) (afterNotification report)
 
 afterIncident : NotificationMode → R.Report → Text ⊎ ⊤ → Script R.Report
 afterIncident mode report (inj₁ error) = ask (writeStatus updated) (afterFirstWrite mode updated)
@@ -118,7 +116,7 @@ finishWith : NotificationMode → R.Report → Script R.Report
 finishWith mode report = ask clock (λ observed → afterStamp mode (R.stamp observed report))
 
 finish : R.Report → Script R.Report
-finish = finishWith inlineDelivery
+finish = finishWith standaloneDelivery
 
 counts : R.Report → ℕ × (ℕ × (ℕ × (ℕ × ℕ)))
 counts report = R.Report.selected report , R.Report.confirmed report , R.Report.corrected report ,
@@ -131,11 +129,11 @@ firstWriteFailureStops : ∀ mode report error → afterFirstWrite mode report (
   done (blocked (toList "state_write_error") report)
 firstWriteFailureStops mode report error = refl
 
--- A core finalization on the worker path never requests synchronous delivery.
--- Its completion therefore owes no SMTP/OAuth completion receipt.
+-- Effect has no synchronous delivery constructor. This structural property
+-- covers both modes and every receipt; neither can introduce an SMTP/OAuth
+-- completion dependency. It is separate from the saved-state recovery goal.
 NoInlineDelivery : ∀ {A} → Script A → Set
 NoInlineDelivery (done value) = ⊤
-NoInlineDelivery (ask (notify report) next) = ⊥
 NoInlineDelivery (ask effect next) = ∀ reply → NoInlineDelivery (next reply)
 
 lastWriteNoDelivery : ∀ report reply → NoInlineDelivery (afterLastWrite report reply)
@@ -146,27 +144,30 @@ notificationNoDelivery : ∀ report reply → NoInlineDelivery (afterNotificatio
 notificationNoDelivery report (inj₁ error) = lastWriteNoDelivery _
 notificationNoDelivery report (inj₂ result) = lastWriteNoDelivery _
 
-firstWriteNoDelivery : ∀ report reply → NoInlineDelivery (afterFirstWrite queuedDelivery report reply)
-firstWriteNoDelivery report (inj₁ error) = tt
-firstWriteNoDelivery report (inj₂ tt) = notificationNoDelivery report
+firstWriteNoDelivery : ∀ mode report reply → NoInlineDelivery (afterFirstWrite mode report reply)
+firstWriteNoDelivery mode report (inj₁ error) = tt
+firstWriteNoDelivery mode report (inj₂ tt) = notificationNoDelivery report
 
-incidentReplyNoDelivery : ∀ report reply → NoInlineDelivery (afterIncident queuedDelivery report reply)
-incidentReplyNoDelivery report (inj₁ error) = firstWriteNoDelivery _
-incidentReplyNoDelivery report (inj₂ tt) = firstWriteNoDelivery _
+incidentReplyNoDelivery : ∀ mode report reply → NoInlineDelivery (afterIncident mode report reply)
+incidentReplyNoDelivery mode report (inj₁ error) = firstWriteNoDelivery mode _
+incidentReplyNoDelivery mode report (inj₂ tt) = firstWriteNoDelivery mode _
 
-incidentNoDelivery : ∀ report → NoInlineDelivery (incident queuedDelivery report)
-incidentNoDelivery report = incidentReplyNoDelivery report
+incidentNoDelivery : ∀ mode report → NoInlineDelivery (incident mode report)
+incidentNoDelivery mode report = incidentReplyNoDelivery mode report
 
-traceNoDelivery : ∀ report reply → NoInlineDelivery (afterTrace queuedDelivery report reply)
-traceNoDelivery report (inj₁ error) = incidentNoDelivery _
-traceNoDelivery report (inj₂ tt) with does (R.Report.status report ≟Text toList "complete")
-... | true = incidentNoDelivery _
-... | false = incidentNoDelivery _
+traceNoDelivery : ∀ mode report reply → NoInlineDelivery (afterTrace mode report reply)
+traceNoDelivery mode report (inj₁ error) = incidentNoDelivery mode _
+traceNoDelivery mode report (inj₂ tt) with does (R.Report.status report ≟Text toList "complete")
+... | true = incidentNoDelivery mode _
+... | false = incidentNoDelivery mode _
 
-stampNoDelivery : ∀ report → NoInlineDelivery (afterStamp queuedDelivery report)
-stampNoDelivery report with R.Report.diagnosticsId report
-... | nothing = incidentNoDelivery _
-... | just id = traceNoDelivery _
+stampNoDelivery : ∀ mode report → NoInlineDelivery (afterStamp mode report)
+stampNoDelivery mode report with R.Report.diagnosticsId report
+... | nothing = incidentNoDelivery mode _
+... | just id = traceNoDelivery mode _
 
 queuedFinalizationNeedsNoDelivery : ∀ report → NoInlineDelivery (finishWith queuedDelivery report)
-queuedFinalizationNeedsNoDelivery report observed = stampNoDelivery (R.stamp observed report)
+queuedFinalizationNeedsNoDelivery report observed = stampNoDelivery queuedDelivery (R.stamp observed report)
+
+standaloneFinalizationNeedsNoDelivery : ∀ report → NoInlineDelivery (finishWith standaloneDelivery report)
+standaloneFinalizationNeedsNoDelivery report observed = stampNoDelivery standaloneDelivery (R.stamp observed report)

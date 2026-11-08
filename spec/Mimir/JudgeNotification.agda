@@ -141,10 +141,9 @@ outcomeText I.exhausted = toList "exhausted"
 outcomeText I.authRequired = toList "auth_required"
 outcomeText I.unavailable = toList "unavailable"
 
-data Effect : Set where readFailure : Effect; submit enqueue : I.Event → Effect
+data Effect : Set where readFailure : Effect; enqueue : I.Event → Effect
 Reply : Effect → Set
 Reply readFailure = Text ⊎ Maybe R.Incident
-Reply (submit _) = N.Result
 Reply (enqueue _) = Text ⊎ ⊤
 open Effects.Protocol Effect Reply public
 
@@ -153,11 +152,7 @@ module Run (format : Encoding.Formatting) (localTime : ℕ → Text)
   module D = Details format localTime
 
   submitDetails : Finalization.NotificationMode → R.Report → Maybe Text → Script (Text ⊎ Text)
-  submitDetails Finalization.inlineDelivery report details = ask (submit (I.event (toList "judge") (incidentKey project) (status report) details)) λ where
-    (inj₁ _) → done (inj₁ (toList "notification unavailable"))
-    (inj₂ value) → done (inj₂ (outcomeText value))
-
-  submitDetails Finalization.queuedDelivery report details =
+  submitDetails mode report details =
     ask (enqueue (I.event (toList "judge") (incidentKey project) (status report) details)) λ where
       (inj₁ error) → done (inj₁ error)
       (inj₂ tt) → done (inj₂ (toList "queued"))
@@ -175,7 +170,9 @@ module Run (format : Encoding.Formatting) (localTime : ℕ → Text)
     (inj₂ (just savedIncident)) → submitDetails mode report (just (D.recovery project report savedIncident))
 
   notify : R.Report → Script (Text ⊎ Text)
-  notify = notifyWith Finalization.inlineDelivery
+  notify report with Config.Config.enabled cfg
+  ... | false = done (inj₂ (toList "disabled"))
+  ... | true = notifyWith Finalization.standaloneDelivery report
 
   queue : R.Report → Script (Text ⊎ Text)
   queue report with Config.Config.enabled cfg

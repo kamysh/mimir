@@ -1200,7 +1200,13 @@ mod tests {
             let settings = super::super::config::load(Some(&config_path)).unwrap();
             let state = State::lock(dir.join("state")).unwrap().unwrap();
             let mut backend = ToolCorrection { case, calls: 0 };
-            let report = run(&settings, &state, &mut backend, notification::Mode::Inline).await;
+            let report = run(
+                &settings,
+                &state,
+                &mut backend,
+                notification::Mode::Standalone,
+            )
+            .await;
             if matches!(case, RejectionCase::Exhausted) {
                 assert_eq!(report.status, "blocked");
                 assert_eq!(backend.calls, 26);
@@ -1247,7 +1253,13 @@ mod tests {
         let settings = super::super::config::load(Some(&config_path)).unwrap();
         let state = State::lock(dir.join("state")).unwrap().unwrap();
         let mut backend = NoReview { calls: 0 };
-        let failed = run(&settings, &state, &mut backend, notification::Mode::Inline).await;
+        let failed = run(
+            &settings,
+            &state,
+            &mut backend,
+            notification::Mode::Standalone,
+        )
+        .await;
         assert_eq!(failed.status, "blocked");
         assert_eq!(
             failed.block_reason.as_deref(),
@@ -1278,7 +1290,13 @@ mod tests {
             case: RejectionCase::LocalValidation,
             calls: 0,
         };
-        let completed = run(&settings, &state, &mut recovery, notification::Mode::Inline).await;
+        let completed = run(
+            &settings,
+            &state,
+            &mut recovery,
+            notification::Mode::Standalone,
+        )
+        .await;
         assert_eq!(completed.status, "complete");
         assert!(state::read_diagnostics(state.path())
             .unwrap()
@@ -1321,7 +1339,13 @@ mod tests {
             let settings = super::super::config::load(Some(&config_path)).unwrap();
             let state = State::lock(dir.join("state")).unwrap().unwrap();
             let mut backend = ReferenceCorrection { calls: 0, correct };
-            let report = run(&settings, &state, &mut backend, notification::Mode::Inline).await;
+            let report = run(
+                &settings,
+                &state,
+                &mut backend,
+                notification::Mode::Standalone,
+            )
+            .await;
             assert_eq!(report.status, expected_status, "correct={correct}");
             assert_eq!(backend.calls, if correct { 2 } else { 4 });
             assert_eq!(report.confirmed, usize::from(correct));
@@ -1408,7 +1432,7 @@ mod tests {
                 &settings,
                 &state,
                 &mut ReviewEach,
-                notification::Mode::Inline,
+                notification::Mode::Standalone,
             )
             .await;
             ensure!(
@@ -1474,7 +1498,7 @@ mod tests {
             calls: 0,
             service: service.clone(),
         };
-        let success = run(&settings, &state, &mut fake, notification::Mode::Inline).await;
+        let success = run(&settings, &state, &mut fake, notification::Mode::Standalone).await;
         assert_eq!(success.status, "complete");
         assert_eq!(success.confirmed, 1);
         assert_eq!(fake.calls, 1);
@@ -1483,7 +1507,7 @@ mod tests {
         let history = service.experience_history(e.id).await.unwrap();
         assert_eq!(history["reviews"][0]["payload"]["reviewer"], "mimir-judge");
         fake.calls = 0;
-        let idle = run(&settings, &state, &mut fake, notification::Mode::Inline).await;
+        let idle = run(&settings, &state, &mut fake, notification::Mode::Standalone).await;
         assert_eq!(idle.status, "idle");
         assert_eq!(fake.calls, 0);
         assert_eq!(
@@ -1499,7 +1523,7 @@ mod tests {
         corrected.evidence = vec!["user corrected the observed result".into()];
         service.record_experience(&corrected, 1).await.unwrap();
         fake.calls = 0;
-        let correction = run(&settings, &state, &mut fake, notification::Mode::Inline).await;
+        let correction = run(&settings, &state, &mut fake, notification::Mode::Standalone).await;
         assert_eq!(correction.status, "complete");
         assert_eq!(correction.confirmed, 1);
         assert_eq!(
@@ -1520,7 +1544,13 @@ mod tests {
                 calls: 0,
                 service: service.clone(),
             };
-            let report = run(&settings, &state, &mut backend, notification::Mode::Inline).await;
+            let report = run(
+                &settings,
+                &state,
+                &mut backend,
+                notification::Mode::Standalone,
+            )
+            .await;
             assert_eq!(report.status, "blocked");
             if matches!(mode, Mode::Correct) {
                 assert_eq!(report.corrected, 1);
@@ -1577,7 +1607,13 @@ mod tests {
             calls: 0,
             service: service.clone(),
         };
-        let report = run(&settings, &state, &mut partial, notification::Mode::Inline).await;
+        let report = run(
+            &settings,
+            &state,
+            &mut partial,
+            notification::Mode::Standalone,
+        )
+        .await;
         assert_eq!(report.status, "partial");
         assert_eq!(report.confirmed, 1);
         assert_eq!(report.pending, 1);
