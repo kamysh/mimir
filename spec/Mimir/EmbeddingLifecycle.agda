@@ -209,16 +209,15 @@ module Remote (float : Ranking.F32) (dimension maximumIndex : ℕ)
   decode raw = V.asObject raw >>= λ fields →
     Input.required "data" V.asArray (V.Object.normalize fields) >>= rows
 
+  requestFields : Config.Backend → List (Text × V.Value)
+  requestFields Config.voyage = (toList "input_type" , V.string (toList "document")) ∷
+    (toList "truncation" , V.boolean false) ∷ []
+  requestFields Config.openai = []
+  requestFields Config.local = []
+
   request : Config.Backend → Text → List Text → V.Value
   request backend model texts = V.object
-    ((toList "input" , V.array (map V.string texts)) ∷ (toList "model" , V.string model) ∷ extra)
-    where
-    extra : List (Text × V.Value)
-    extra with backend
-    ... | Config.voyage = (toList "input_type" , V.string (toList "document")) ∷
-      (toList "truncation" , V.boolean false) ∷ []
-    ... | Config.openai = []
-    ... | Config.local = []
+    ((toList "input" , V.array (map V.string texts)) ∷ (toList "model" , V.string model) ∷ requestFields backend)
 
   data Failure : Set where
     invalidBackend : Failure
