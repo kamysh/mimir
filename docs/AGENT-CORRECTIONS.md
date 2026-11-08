@@ -45,6 +45,23 @@ instruction to remove it or use the correct field while preserving the user's
 meaning. The response never fills a missing value with a fabricated project,
 identifier, zero, empty string or placeholder request.
 
+Relationship requests name a missing `from_id` or `to_id`; contradictions use
+their advertised `id_a` and `id_b` names. Grounding requests name `chunk_id` or
+`belief_id`, and intervention requests name `id`. These checks use the existing
+transaction or read-only snapshot before a business write. The correction
+suggests the relevant belief or document lookup and asks for a user decision
+when the intended record is unknown. Both MCP and the corresponding CLI
+commands preserve this guidance. An absent-record read still returns its
+advertised absence result; deleting an already absent belief still returns
+`deleted: false`.
+
+An inner refusal is not enough to certify a larger operation. For example,
+document loading can already have committed its document before automatic
+grounding encounters a missing record. That error cannot be projected as
+`business_changes: "none"` for the entire load. Only the checked atomic graph
+requests and read-only intervention use the new stored-reference projection;
+remaining learning-reference and project-conflict checks stay in #93.
+
 A response must name at least one issue and provide a nonblank explanation,
 expected input and suggested correction. These requirements make the response
 actionable; they do not bound request size, text length or the number of issues.

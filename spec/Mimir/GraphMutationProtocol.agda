@@ -12,7 +12,7 @@ open import Data.Nat using (ℕ)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
-open import Relation.Binary.PropositionalEquality using (_≡_)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.Binary64 using (Number)
 import Mimir.ApplicationFloat as Numeric
@@ -29,6 +29,8 @@ import Mimir.ReviewSchema as R
 import Mimir.DatabaseTransaction as DB
 import Mimir.Effects as Effects
 import Mimir.Validation as Validation
+import Mimir.McpErrors as Errors
+module Correction = Errors.AgentCorrection
 
 data Request : Set where
   belief : Text → Float → Float → Maybe Text → C.Memory → Maybe Origin.Provenance → Request
@@ -43,10 +45,22 @@ meaning : Statement → Store.World → Writes.Result
 meaning (insertPattern p) w = Writes.applied (Writes.insertPattern p w)
 meaning (insertEdge from to relation weight) w = Writes.insertEdge from to relation weight w
 
--- A successful statement receipt is tied to this statement's write set.
-data StatementReceipt (command : Statement) (before : Store.World) : DB.Receipt → Store.World → Set where
+data StatementReply : Set where
+  rejected : Correction.Claim → StatementReply
+  receipt : DB.Receipt → StatementReply
+
+-- A refused endpoint check cannot describe a changed world. Successful writes
+-- still require their atomic receipt; an unknown outcome is not a refusal.
+data StatementReceipt (command : Statement) (before : Store.World) : StatementReply → Store.World → Set where
+  missing : ∀ report → meaning command before ≡ Writes.missingEndpoint →
+    StatementReceipt command before (rejected report) before
   published : ∀ proposed receipt after → meaning command before ≡ Writes.applied proposed →
-    DB.Atomic before proposed receipt after → StatementReceipt command before receipt after
+    DB.Atomic before proposed receipt after → StatementReceipt command before (StatementReply.receipt receipt) after
+
+refusalCertified : ∀ {command before after report} →
+  StatementReceipt command before (rejected report) after →
+  Correction.Certified Store.World before after
+refusalCertified (missing report absent) = Correction.certified report refl
 
 data Effect : Set where
   newIdentityAndTime : Effect
@@ -58,7 +72,7 @@ data Effect : Set where
 Reply : Effect → Set
 Reply newIdentityAndTime = ℕ × ℤ
 Reply (newBeliefOwner project) = Text ⊎ (ℕ × ℤ)
-Reply (statement command) = Text ⊎ DB.Receipt
+Reply (statement command) = Text ⊎ StatementReply
 Reply (embedding effect) = Embedding.Reply effect
 Reply (inference effect) = Inference.Reply effect
 
@@ -68,6 +82,7 @@ open E
 data Result : Set where
   invalidNumbers invalidOrigin : Result
   failed : Text → Result
+  needsInput : Correction.Claim → Result
   aborted uncertain : Result
   insertedBelief : G.BeliefValues → Result
   insertedPattern : G.PatternValues → Result
@@ -96,9 +111,10 @@ makeBelief enabled content probability confidence project memory origin (id , no
 write : Statement → Script Result → Script Result
 write command next = ask (statement command) (λ
   { (inj₁ error) → done (failed error)
-  ; (inj₂ DB.committed) → next
-  ; (inj₂ DB.aborted) → done aborted
-  ; (inj₂ DB.acknowledgementLost) → done uncertain })
+  ; (inj₂ (rejected report)) → done (needsInput report)
+  ; (inj₂ (receipt DB.committed)) → next
+  ; (inj₂ (receipt DB.aborted)) → done aborted
+  ; (inj₂ (receipt DB.acknowledgementLost)) → done uncertain })
 
 makePattern : Text → Text → Float → Maybe Text → ℕ × ℤ → Script Result
 makePattern situation approach success project (id , now) with Records.newPattern id now situation approach success

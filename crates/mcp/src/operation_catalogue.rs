@@ -42,6 +42,27 @@ impl RegisteredOperation {
             }
         }
         let result = call(self.handler, service, input).await;
+        // A refusal from an inner step does not certify a larger operation
+        // with earlier commits (for example document loading and grounding).
+        if matches!(
+            self.handler,
+            Operation::Graph(
+                GraphOperation::RecordSupport
+                    | GraphOperation::RecordCause
+                    | GraphOperation::RecordDefeat
+                    | GraphOperation::RecordContradiction
+                    | GraphOperation::AddEvidence
+                    | GraphOperation::QueryIntervention
+            )
+        ) {
+            if let Err(error) = &result {
+                if let Some(refusal) =
+                    error.downcast_ref::<mimir_core::interaction::RequestCorrection>()
+                {
+                    return Ok(serde_json::to_value(refusal.correction())?);
+                }
+            }
+        }
         if matches!(
             self.handler,
             Operation::Graph(GraphOperation::InsertBelief)

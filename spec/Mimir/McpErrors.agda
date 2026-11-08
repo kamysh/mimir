@@ -11,7 +11,7 @@ open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Empty using (⊥; ⊥-elim)
-open import Data.String using (toList)
+open import Data.String using (String; toList)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
 open import Mimir.Text using (Text; trim)
@@ -179,6 +179,13 @@ module AgentCorrection where
     (fault path malformedInput "The supplied identifier is not a valid UUID.")
     (toList "A UUID returned by Mimir for the intended record, in a form accepted by the tool's UUID parser.")
     (toList "Copy the stored UUID from the relevant Mimir lookup result. For a new record, omit the ID only if this tool explicitly assigns it. If the intended record is unknown, ask the user. Do not invent an identifier.")
+
+  missingStoredReference : String → Text → Text → Item
+  missingStoredReference fieldName explanation lookup = item arguments
+    (Mimir.Validation.problem (Mimir.Validation.key fieldName ∷ [])
+      Mimir.Validation.missingReference explanation)
+    (toList "An identifier of the intended record that is currently stored in Mimir.")
+    lookup
 
   record Certified (World : Set) (before after : World) : Set where
     constructor certified

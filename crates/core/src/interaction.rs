@@ -176,6 +176,43 @@ impl<'de> Deserialize<'de> for NeedsInput {
     }
 }
 
+/// A known pre-publication refusal. Only a check before business writes may
+/// construct this error; arbitrary database errors cannot be converted into it.
+#[derive(Debug)]
+pub struct RequestCorrection {
+    correction: NeedsInput,
+}
+
+impl RequestCorrection {
+    pub(crate) fn missing_reference(field: &str, message: String, lookup: &str) -> Self {
+        let issue = CorrectionItem::new(
+            Location::Arguments,
+            Fault {
+                path: vec![Segment::Key(field.into())],
+                code: Code::MissingReference,
+                message,
+            },
+            "An identifier of the intended record that is currently stored in Mimir.".into(),
+            lookup.into(),
+        )
+        .expect("reference refusals retain field and lookup guidance");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained reference refusal"),
+        }
+    }
+
+    pub fn correction(&self) -> &NeedsInput {
+        &self.correction
+    }
+}
+
+impl std::fmt::Display for RequestCorrection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.correction.issues()[0].fault().message)
+    }
+}
+impl std::error::Error for RequestCorrection {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,6 +17,24 @@ fn response(mut issues: Vec<CorrectionItem>) -> Option<NeedsInput> {
     Some(NeedsInput::new(issues.pop().unwrap(), rest).expect("checked CLI issues"))
 }
 
+/// Use only at the boundary of one read-only or atomic request. An inner
+/// refusal after earlier committed work cannot certify the whole command.
+pub(super) fn reference<T>(result: anyhow::Result<T>) -> anyhow::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) => {
+            if let Some(refusal) =
+                error.downcast_ref::<mimir_core::interaction::RequestCorrection>()
+            {
+                println!("{}", serde_json::to_string(refusal.correction())?);
+                Ok(None)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 fn uuid(value: &str, field: &str, issues: &mut Vec<CorrectionItem>) {
     if uuid::Uuid::parse_str(value).is_err() {
         issues.push(CorrectionItem::invalid_uuid(vec![Segment::Key(

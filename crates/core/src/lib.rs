@@ -566,7 +566,10 @@ impl MimirService {
             .await?
             .is_none()
         {
-            anyhow::bail!("belief {} not found", target_id);
+            return Err(interaction::RequestCorrection::missing_reference(
+                "id", format!("The requested belief {target_id} was not found in Mimir."),
+                "Use list_beliefs or query_relevant_beliefs to find the intended stored belief, then retry with its ID. If the intended record is unknown, ask the user. Do not invent an identifier.",
+            ).into());
         }
         after_target().await?;
         let mut downstream = self

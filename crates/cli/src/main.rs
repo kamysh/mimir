@@ -708,7 +708,9 @@ async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
             let belief = belief_id
                 .parse::<uuid::Uuid>()
                 .map_err(|_| anyhow::anyhow!("invalid belief UUID: {}", belief_id))?;
-            svc.add_evidence(belief, chunk, weight).await?;
+            if corrections::reference(svc.add_evidence(belief, chunk, weight).await)?.is_none() {
+                return Ok(());
+            }
             println!("grounded {} ← {}  (w={:.2})", belief, chunk, weight);
         }
         EvidenceCmd::List { belief_id } => {
@@ -747,7 +749,9 @@ async fn cmd_intervene(id: &str, value: f64) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("invalid UUID: {}", id))?;
 
     let svc = connect().await?;
-    let updates = svc.query_intervention(target, value).await?;
+    let Some(updates) = corrections::reference(svc.query_intervention(target, value).await)? else {
+        return Ok(());
+    };
 
     if updates.is_empty() {
         println!("(no causal descendants affected)");

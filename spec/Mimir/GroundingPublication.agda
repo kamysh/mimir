@@ -26,7 +26,7 @@ data Request : Set where
 
 data Failure : Set where
   storageFailure : Text → Failure
-  invalidWeight missingEndpoint invalidNumericInput invalidNumericWrite foreignTarget : Failure
+  invalidWeight missingEndpoint missingChunk missingBelief invalidNumericInput invalidNumericWrite foreignTarget : Failure
 
 admitted : Request → Bool
 admitted (add chunk belief weight) = Numeric.probability weight
@@ -57,8 +57,8 @@ module Operation (database : ℕ) where
   plan (add chunk belief weight) before with Numeric.probability weight
   ... | false = T.reject invalidWeight
   ... | true with Store.chunk chunk (Store.World.chunks before) | Ranking.lookup belief (Store.beliefs before)
-  ...   | nothing | _ = T.reject missingEndpoint
-  ...   | just _ | nothing = T.reject missingEndpoint
+  ...   | nothing | _ = T.reject missingChunk
+  ...   | just _ | nothing = T.reject missingBelief
   ...   | just _ | just _ = recompute belief (record before
     { grounds = Store.World.grounds before ++ (Store.ground chunk belief weight ∷ []) })
 

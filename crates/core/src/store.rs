@@ -1144,6 +1144,9 @@ $$) {PATTERN_RETURN_COLUMNS}"#
     }
 
     async fn insert_edge_on(&self, client: &Client, edge: &Edge) -> Result<()> {
+        self.require_belief_on(client, edge.from_id, "from_id")
+            .await?;
+        self.require_belief_on(client, edge.to_id, "to_id").await?;
         let g = &self.graph_name;
         let from_id = edge.from_id.to_string();
         let to_id = edge.to_id.to_string();
@@ -1194,6 +1197,8 @@ $$) AS (weight ag_catalog.agtype)"#
         to_id: Uuid,
         weight: Probability,
     ) -> Result<()> {
+        self.require_belief_on(client, from_id, "id_a").await?;
+        self.require_belief_on(client, to_id, "id_b").await?;
         let g = &self.graph_name;
         let a = from_id.to_string();
         let b = to_id.to_string();
@@ -2074,6 +2079,14 @@ $$) {CHUNK_RETURN_COLUMNS}"#
         belief_id: Uuid,
         weight: Probability,
     ) -> Result<()> {
+        if self.get_chunk_by_id_on(client, chunk_id).await?.is_none() {
+            return Err(crate::interaction::RequestCorrection::missing_reference(
+                "chunk_id", format!("The requested document passage {chunk_id} is not stored in Mimir."),
+                "Use query_document or list_documents to find the intended indexed passage. If the document is missing, ask the user whether to index it; do not invent a passage ID.",
+            ).into());
+        }
+        self.require_belief_on(client, belief_id, "belief_id")
+            .await?;
         let g = &self.graph_name;
         let c = chunk_id.to_string();
         let b = belief_id.to_string();
@@ -2096,6 +2109,21 @@ $$) AS (weight ag_catalog.agtype)"#
             );
         }
 
+        Ok(())
+    }
+
+    pub(crate) async fn require_belief_on(
+        &self,
+        client: &Client,
+        id: Uuid,
+        field: &str,
+    ) -> Result<()> {
+        if self.get_belief_on(client, id).await?.is_none() {
+            return Err(crate::interaction::RequestCorrection::missing_reference(
+                field, format!("The requested belief {id} was not found in Mimir."),
+                "Use list_beliefs or query_relevant_beliefs to find the intended stored belief, then retry with its ID. If the intended record is unknown, ask the user. Do not invent an identifier.",
+            ).into());
+        }
         Ok(())
     }
 

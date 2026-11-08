@@ -17,6 +17,7 @@ import Mimir.StructuredValue as V
 import Mimir.PublicEncoding as Encoding
 import Mimir.ApplicationProtocol as Application
 import Mimir.GraphMutationProtocol as Mutation
+import Mimir.GroundingPublication as Ground
 import Mimir.GraphReadProtocol as Read
 import Mimir.GraphRecords as Records
 import Mimir.InferenceProtocol as Inference
@@ -119,6 +120,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project (A.mutated (Mutation.insertedBelief b)) = success (belief b)
   project (A.mutated (Mutation.insertedPattern p)) = success (patternValue p)
   project (A.mutated Mutation.edgeInserted) = success (flag "ok" true)
+  project (A.mutated (Mutation.needsInput report)) = decision report
   project (A.mutated (Mutation.embeddingFailed (Embedding.needsUserDecision report))) = decision report
   project original@(A.mutated _) = failure original
   project original@(A.readResult result) = projectRead original result
@@ -134,8 +136,17 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project (A.inferred (Inference.changed n)) = success (count "decayed" n)
   project (A.inferred (Inference.deleted n)) = success (count "deleted" n)
   project (A.inferred (Inference.pairs pairs)) = success (V.array (map identityPair pairs))
+  project (A.inferred Inference.missingBelief) = decision (Errors.AgentCorrection.claim
+    (Errors.AgentCorrection.missingStoredReference "id" (Data.String.toList "The requested belief is not stored in Mimir.")
+      (Data.String.toList "Use list_beliefs or query_relevant_beliefs to find the intended stored belief, then retry with its ID. If the intended record is unknown, ask the user. Do not invent an identifier.")) [])
   project original@(A.inferred _) = failure original
   project (A.grounded (A.Grounding.T.applied tt)) = success (flag "ok" true)
+  project (A.grounded (A.Grounding.T.refused Ground.missingChunk (inj₂ tt))) = decision (Errors.AgentCorrection.claim
+    (Errors.AgentCorrection.missingStoredReference "chunk_id" (Data.String.toList "The requested document passage is not stored in Mimir.")
+      (Data.String.toList "Use query_document or list_documents to find the intended indexed passage. If the document is missing, ask the user whether to index it; do not invent a passage ID.")) [])
+  project (A.grounded (A.Grounding.T.refused Ground.missingBelief (inj₂ tt))) = decision (Errors.AgentCorrection.claim
+    (Errors.AgentCorrection.missingStoredReference "belief_id" (Data.String.toList "The requested belief is not stored in Mimir.")
+      (Data.String.toList "Use list_beliefs or query_relevant_beliefs to find the intended stored belief, then retry with its ID. If the intended record is unknown, ask the user. Do not invent an identifier.")) [])
   project original@(A.grounded _) = failure original
   project original@A.invalidGrounding = failure original
   project (A.evidenceResult (inj₂ refs)) = success (V.array (map reference refs))
