@@ -79,8 +79,7 @@ exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_prel
  -c ssl_ca_file=/fixture/ca.crt
 """.replace("HBA", config.name).replace("TLS", "on" if tls else "off")
     run(["docker", "create", "--name", name, "--label", "connection-test=" + str(ROOT),
-         "--user", "999:999", "--memory", "512m", "--tmpfs",
-         "/var/lib/postgresql/data:rw,size=256m,uid=999,gid=999,mode=0700",
+         "--user", "999:999",
          "--publish", "127.0.0.1::5432", "--mount", f"type=bind,src={ROOT},dst=/fixture,readonly",
          "--env", "PGHOST=/var/lib/postgresql/data", "--entrypoint", "/bin/bash", IMAGE, "-c", script])
     CONTAINERS.append(name)
@@ -247,7 +246,7 @@ finally:
         result = run(["docker", "inspect", "--format", '{{index .Config.Labels "connection-test"}}', name])
         assert result.stdout.strip() == str(ROOT), "cleanup identity mismatch"
         run(["docker", "logs", name], check=False)
-        run(["docker", "rm", "-f", name])
+        run(["docker", "rm", "-f", "--volumes", name])
     # Keep complete logs; generated test-only keys/config are not needed later.
     for pattern in ["*.key", "*.csr", "*.srl", "config.toml", "*passwords"]:
         for entry in ROOT.glob(pattern):

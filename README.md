@@ -579,12 +579,15 @@ used by the connection fixtures; that image must be available to Docker.
 It builds and invokes the checkout's binaries. It never installs them, changes
 the deployment's configuration, or controls deployment services. Model adapters
 use fake harnesses; deployment credentials and provider keys are excluded from
-the test environment.
+the test environment. The runner imposes no memory, CPU, data-filesystem or
+build-job quota. Database files use disposable container storage, without a
+fixed-size tmpfs mount.
 
 Database tests require the runner's matching ownership manifest, connection and
 private password file. Missing or conflicting settings fail before connecting;
 setting `MIMIR_DBNAME` alone cannot select a deployment database. The runner
-removes only its own labelled container on completion or failure, and retains
+removes only its own labelled container and its anonymous volumes on completion
+or failure, and retains
 complete command logs and exit statuses in the printed artifact directory.
 
 The default runs formatting, Clippy, the workspace build/tests and doc tests,

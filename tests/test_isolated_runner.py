@@ -1,11 +1,13 @@
 """Regression checks for rejecting deployment settings before opening a connection."""
 import importlib.util
+import ast
 import json
 import os
 from pathlib import Path
 import tempfile
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
@@ -158,6 +160,73 @@ class IsolationTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 run.cleanup()
         self.assertFalse(any("rm" in call.args[1] for call in command.call_args_list))
+
+    def assert_unrestricted_private_container(self, arguments):
+        for option in ("--memory", "--memory-swap", "--cpus", "--cpu-quota", "--tmpfs", "--storage-opt"):
+            self.assertNotIn(option, arguments)
+        self.assertIn("127.0.0.1::5432", arguments)
+        self.assertIn("--user", arguments)
+        self.assertEqual(arguments[arguments.index("--user") + 1], "999:999")
+        self.assertIn("--label", arguments)
+
+    def test_release_fixture_keeps_guards_without_resource_quotas(self):
+        child = self.root / "resource-fixture"
+        child.mkdir(mode=0o700)
+        run = runner.Run(child)
+        calls = []
+
+        def command(name, arguments, **kwargs):
+            calls.append(arguments)
+            if name == "create-database-container":
+                return 0, "a" * 64
+            if name == "database-port":
+                return 0, "127.0.0.1:43217\n"
+            if name == "database-ownership":
+                return 0, json.dumps([{"Id": run.container, "Config": {"Labels": {runner.LABEL: run.token}}}])
+            return 0, ""
+
+        prior_mask = os.umask(0o077)
+        try:
+            with patch.object(run, "command", side_effect=command):
+                run.fixture()
+                fixture.validate(run.env)
+                container = run.container
+                run.cleanup()
+        finally:
+            os.umask(prior_mask)
+        create = next(args for args in calls if args[:2] == ["docker", "create"])
+        self.assert_unrestricted_private_container(create)
+        self.assertIn(runner.LABEL + "=" + run.token, create)
+        removed = next(args for args in calls if args[:2] == ["docker", "rm"])
+        self.assertIn("--volumes", removed)
+        self.assertEqual(removed[-1], container)
+        self.assertNotIn("CARGO_BUILD_JOBS", run.env)
+
+    def test_connection_fixture_has_no_resource_quota(self):
+        # Load the actual argument-generating function without executing the
+        # script's live TLS campaign or its module-level setup.
+        path = REPO / "tests/database-connections.py"
+        definition = next(node for node in ast.parse(path.read_text()).body
+                          if isinstance(node, ast.FunctionDef) and node.name == "start")
+        child = self.root / "connection-resource-fixture"
+        child.mkdir()
+        calls = []
+
+        def command(arguments, **kwargs):
+            calls.append(arguments)
+            return SimpleNamespace(returncode=0, stdout="127.0.0.1:43217\n")
+
+        context = {"APP": "mimir", "ROOT": child, "IMAGE": "fixture-image", "CONTAINERS": [],
+                   "secrets": runner.secrets, "time": runner.time, "run": command, "sql": lambda *args: None}
+        exec(compile(ast.Module(body=[definition], type_ignores=[]), str(path), "exec"), context)
+        for tls in (False, True):
+            context["start"](tls)
+        created = [args for args in calls if args[:2] == ["docker", "create"]]
+        self.assertEqual(len(created), 2)
+        for arguments in created:
+            self.assert_unrestricted_private_container(arguments)
+            self.assertIn("connection-test=" + str(child), arguments)
+            self.assertIn(f"type=bind,src={child},dst=/fixture,readonly", arguments)
 
 
 if __name__ == "__main__":

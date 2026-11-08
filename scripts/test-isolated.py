@@ -33,7 +33,7 @@ def isolated_environment(root, inherited):
                 "XDG_STATE_HOME": str(root / "state"), "XDG_CACHE_HOME": str(root / "cache"),
                 "TMPDIR": str(root / "scratch"), "CARGO_TARGET_DIR": str(root / "target"),
                 "MIMIR_EVAL_TARGET_DIR": str(root / "eval-target"),
-                "CARGO_BUILD_JOBS": "4", "CI": "true", "PYTHONDONTWRITEBYTECODE": "1"})
+                "CI": "true", "PYTHONDONTWRITEBYTECODE": "1"})
     for key in ("HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR"):
         Path(env[key]).mkdir(mode=0o700)
     return env
@@ -101,8 +101,7 @@ exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_prel
 """
         _, output = self.command("create-database-container", [
             "docker", "create", "--name", name, "--label", LABEL + "=" + self.token,
-            "--user", "999:999", "--memory", "1g", "--cpus", "2", "--tmpfs",
-            "/var/lib/postgresql/data:rw,size=512m,uid=999,gid=999,mode=0700",
+            "--user", "999:999",
             "--publish", "127.0.0.1::5432", "--env", "PGHOST=/var/lib/postgresql/data",
             "--entrypoint", "/bin/bash", IMAGE, "-c", script])
         self.container = output.strip()
@@ -162,7 +161,7 @@ exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_prel
         info = json.loads(raw)[0]
         if info["Id"] != self.container or info["Config"]["Labels"].get(LABEL) != self.token:
             raise RuntimeError("refusing cleanup of a container this run does not own")
-        self.command("remove-owned-database", ["docker", "rm", "--force", self.container])
+        self.command("remove-owned-database", ["docker", "rm", "--force", "--volumes", self.container])
         self.container = None
 
     def guard_regression(self):
