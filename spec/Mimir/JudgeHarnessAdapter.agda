@@ -34,7 +34,6 @@ import Mimir.ExperienceSchema as Experience
 import Mimir.SourceFailure as Source
 import Mimir.Effects as Effects
 import Mimir.Binary64 as Binary
-import Mimir.DiagnosticText as Diagnostic
 
 record Libraries : Set where
   field display : Revision.Display
@@ -168,7 +167,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting) (li
   processFailure (Process.nativeFailure detail) = Revision.error detail nothing
   processFailure (Process.unsuccessfulExit status stderr) = Revision.error
     (toList "harness exited with " ++ status ++ toList ": " ++
-      Diagnostic.bounded 512 (Conversion.Contract.lossyUTF8 conversion stderr)) nothing
+      Conversion.Contract.lossyUTF8 conversion stderr) nothing
 
   process : Process.Spawn → Script (Revision.Error ⊎ List Byte)
   process request = ask (runProcess request) (λ receipt → done (convert (ProcessReceipt.outcome receipt)))
