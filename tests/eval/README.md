@@ -185,6 +185,16 @@ instead of silently accepting a setting that never controlled retrieval.
 
 ### Resume / API-exhaustion semantics
 
+Evaluation subprocesses wait for completion or explicit cancellation, with no
+execution deadline or turn allowance. Remove retired `timeout_seconds` and
+`max_turns` fields from `config.json`; their presence reports that repair before
+any trial starts. Ctrl-C or SIGTERM cancels the active owned process group and
+reaps its child. Standard input, output and error are handled concurrently;
+neither output stream is clipped. Existing bubblewrap and actor permission
+settings are unchanged. The standalone learning comparison uses the same wait
+for its later-action actor. No model call is needed for the local lifecycle tests.
+
+New result rows retain `timed_out: false` for compatibility with saved results.
 Every result row carries `is_error` / `timed_out`. On `--resume`, a
 (task,arm,trial) key with a prior NON-error, NON-timeout row is skipped; an
 error/timeout row is re-run. The analyzer NEVER treats `is_error` rows as data —
@@ -276,7 +286,7 @@ the built-in Rust predicate (`naive` is trapped; `correct` is not).
   task (`distractor.json`); the mimir arm's net trap-hit/solve then reflects the
   cost of stale beliefs and whether comply-or-override saves it.
 - **Tier-B heavyweight tasks** — real Nix/build tasks; same fixture contract, just
-  slower; gate them behind a config `heavy: true` and a longer timeout.
+  slower; choose them explicitly for the experiment. They need no larger time budget.
 - **Phase gating** — each phase maps to a metric it must move: do-operator → a
   causal-prediction task battery beating keyword retrieval; log-odds → dense
   re-convergent-graph tasks where propagation order changes the surfaced ordering;

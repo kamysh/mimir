@@ -8,8 +8,6 @@
   "arms": ["control", "static", "mimir"],
   "trials": 12,
   "min_n_per_arm": 30,
-  "max_turns": 40,
-  "timeout_seconds": 600,
 
   "tasks_dir": "tasks",
   "out_dir": "runs",

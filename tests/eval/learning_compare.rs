@@ -1,5 +1,5 @@
 //! Isolated Step-11 judge comparison. Live calls require --live and two explicit configs.
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use clap::Parser;
 use serde_json::{json, Value};
 use std::fs::{self, DirBuilder, OpenOptions};
@@ -7,7 +7,7 @@ use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+mod process;
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -240,30 +240,15 @@ fn actor(arm: &Arm, run: &RunDir, name: &str, context: &Value) -> Result<Value> 
         .arg(schema)
         .arg("--output-last-message")
         .arg(&answer)
-        .arg("-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut child = command.spawn().context("start later-action actor")?;
+        .arg("-");
     let prompt = format!("You are a later agent in a fresh session. You have only the retrieved Mimir context below. For each situation, state the next concrete action you would actually choose, using the context only if it is relevant. Situation one: keyboard layout indicator stays stale after a configuration change. Situation two: a disk quota alert appears during a build. Return only schema JSON. Retrieved context: {context}");
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow!("actor stdin missing"))?
-        .write_all(prompt.as_bytes())?;
-    let deadline = Instant::now() + Duration::from_secs(300);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            ensure!(status.success(), "later-action actor failed");
-            break;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("later-action actor timed out");
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let output =
+        process::run(&mut command, Some(prompt.as_bytes())).context("run later-action actor")?;
+    ensure!(
+        output.status.success(),
+        "later-action actor failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     serde_json::from_slice(&fs::read(answer)?).map_err(|_| anyhow!("invalid later-action answer"))
 }
 

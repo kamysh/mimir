@@ -9,7 +9,9 @@ use std::num::NonZeroUsize;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+mod process;
 
 #[derive(Parser)]
 #[command(
@@ -171,6 +173,46 @@ mod selection_tests {
     }
 }
 
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn retired_budgets_have_an_actionable_config_error() {
+        for key in ["max_turns", "timeout_seconds"] {
+            for value in [json!(0), json!(40), Value::Null] {
+                let config = Value::Object([(key.to_owned(), value)].into_iter().collect());
+                let error = validate_config(&config, Path::new("config.json"))
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains(key) && error.contains("remove that field"));
+            }
+        }
+    }
+
+    #[test]
+    fn actor_keeps_isolation_and_permissions_without_a_turn_allowance() {
+        let task = Task {
+            dir: PathBuf::from("task"),
+            name: "task".into(),
+            belief: json!({}),
+            prompt: "task prompt".into(),
+        };
+        let config = json!({"claude_bin":"offline-actor", "allowed_tools":"Read", "skip_permissions":false, "strict_mcp_isolation":true});
+        let args = actor_cmd(&task, None, &config, Path::new("empty-mcp.json"));
+        assert!(!args
+            .iter()
+            .any(|arg| arg == "--max-turns" || arg == "--dangerously-skip-permissions"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--allowedTools", "Read"]));
+        assert!(args.iter().any(|arg| arg == "--strict-mcp-config"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--mcp-config", "empty-mcp.json"]));
+    }
+}
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -208,6 +250,11 @@ fn validate_config(config: &Value, path: &Path) -> Result<()> {
     })?;
     if fields.contains_key("mimir_query_limit") {
         bail!("mimir_query_limit in {} was unused and is retired; remove that field. Explicit positive selections defined by an experiment are unchanged", path.display());
+    }
+    for retired in ["max_turns", "timeout_seconds"] {
+        if fields.contains_key(retired) {
+            bail!("{retired} in {} is retired; remove that field. Evaluation waits for completion or explicit cancellation; it has no turn or execution deadline", path.display());
+        }
     }
     Ok(())
 }
@@ -773,24 +820,8 @@ fn analyze(path: &Path, judge_path: Option<&Path>, min_n_override: Option<usize>
     Ok(())
 }
 
-fn run_script(script: &Path, args: &[&str], timeout: Duration) -> Result<std::process::Output> {
-    let mut child = Command::new("bash")
-        .arg(script)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let start = Instant::now();
-    loop {
-        if let Some(_) = child.try_wait()? {
-            return Ok(child.wait_with_output()?);
-        }
-        if start.elapsed() > timeout {
-            child.kill()?;
-            return child.wait_with_output().map_err(Into::into);
-        }
-        std::thread::sleep(Duration::from_millis(30));
-    }
+fn run_script(script: &Path, args: &[&str]) -> Result<std::process::Output> {
+    process::run(Command::new("bash").arg(script).args(args), None)
 }
 fn task_check(dir: &Path) -> Result<()> {
     let required = [
@@ -845,11 +876,7 @@ fn task_check(dir: &Path) -> Result<()> {
     let _cleanup = Cleanup(parent.clone());
     let pristine = parent.join("pristine");
     fs::create_dir(&pristine)?;
-    let out = run_script(
-        &dir.join("setup.sh"),
-        &[pristine.to_str().unwrap()],
-        Duration::from_secs(30),
-    )?;
+    let out = run_script(&dir.join("setup.sh"), &[pristine.to_str().unwrap()])?;
     if !out.status.success() {
         bail!("setup.sh failed")
     }
@@ -873,46 +900,26 @@ fn task_check(dir: &Path) -> Result<()> {
         let naive = meta["naive_fails"]
             .as_str()
             .ok_or_else(|| anyhow!("trap_avoidance requires naive_fails"))?;
-        let o = run_script(
-            &dir.join(naive),
-            &[pristine.to_str().unwrap()],
-            Duration::from_secs(30),
-        )?;
+        let o = run_script(&dir.join(naive), &[pristine.to_str().unwrap()])?;
         if !o.status.success() {
             bail!("naive state materialization failed")
         }
     }
-    let verify = run_script(
-        &dir.join("verify.sh"),
-        &[pristine.to_str().unwrap()],
-        Duration::from_secs(30),
-    )?;
+    let verify = run_script(&dir.join("verify.sh"), &[pristine.to_str().unwrap()])?;
     if verify.status.success() {
         bail!("control-fails contract violated: pristine task solves")
     }
     let fixed = parent.join("fixed");
     fs::create_dir(&fixed)?;
-    let out = run_script(
-        &dir.join("setup.sh"),
-        &[fixed.to_str().unwrap()],
-        Duration::from_secs(30),
-    )?;
+    let out = run_script(&dir.join("setup.sh"), &[fixed.to_str().unwrap()])?;
     if !out.status.success() {
         bail!("setup.sh failed for solution fixture")
     }
-    let out = run_script(
-        &dir.join("solution.sh"),
-        &[fixed.to_str().unwrap()],
-        Duration::from_secs(30),
-    )?;
+    let out = run_script(&dir.join("solution.sh"), &[fixed.to_str().unwrap()])?;
     if !out.status.success() {
         bail!("solution.sh failed")
     }
-    let out = run_script(
-        &dir.join("verify.sh"),
-        &[fixed.to_str().unwrap()],
-        Duration::from_secs(30),
-    )?;
+    let out = run_script(&dir.join("verify.sh"), &[fixed.to_str().unwrap()])?;
     if !out.status.success() {
         bail!("solution does not satisfy verify.sh")
     }
@@ -1529,16 +1536,16 @@ fn positive_gate(cfg: &Value) -> Result<()> {
             fs::remove_dir_all(&wd)?
         }
         fs::create_dir(&wd)?;
-        let setup = run_shell(&dir.join("setup.sh"), &wd, 60)?;
+        let setup = run_shell(&dir.join("setup.sh"), &wd)?;
         if !setup.status.success() {
             bail!("probe setup failed")
         };
         let mcp = wd.join(".mimir-eval-mcp.json");
         fs::write(&mcp, "{\"mcpServers\":{}}")?;
         let cmd = actor_cmd(&task, inject, cfg, &mcp);
-        let (raw, _, _) = sandbox_run(&cmd, &wd, cfg["timeout_seconds"].as_u64().unwrap_or(600))?;
+        let (raw, _) = sandbox_run(&cmd, &wd)?;
         fs::write(out.join(format!("{label}.ndjson")), &raw)?;
-        let verify = run_shell(&dir.join("verify.sh"), &wd, 60)?;
+        let verify = run_shell(&dir.join("verify.sh"), &wd)?;
         let _ = fs::remove_dir_all(wd);
         Ok((verify.status.success(), raw))
     };
@@ -1679,25 +1686,11 @@ fn load_tasks(cfg: &Value, filter: Option<&str>) -> Result<Vec<Task>> {
         })
         .collect()
 }
-fn run_shell(script: &Path, wd: &Path, seconds: u64) -> Result<std::process::Output> {
-    let mut c = Command::new("bash")
-        .arg(script)
-        .arg(wd)
-        .current_dir(wd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let start = Instant::now();
-    loop {
-        if c.try_wait()?.is_some() {
-            return Ok(c.wait_with_output()?);
-        }
-        if start.elapsed() > Duration::from_secs(seconds) {
-            c.kill()?;
-            return c.wait_with_output().map_err(Into::into);
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
+fn run_shell(script: &Path, wd: &Path) -> Result<std::process::Output> {
+    process::run(
+        Command::new("bash").arg(script).arg(wd).current_dir(wd),
+        None,
+    )
 }
 fn injection(task: &Task, arm: &str, cfg: &Value) -> Result<(Option<String>, Option<bool>)> {
     let content = task.belief["content"].as_str().unwrap_or("");
@@ -1808,8 +1801,6 @@ fn actor_cmd(task: &Task, inject: Option<&str>, cfg: &Value, mcp: &Path) -> Vec<
             .as_str()
             .unwrap_or("Bash,Read,Edit,Write,Glob,Grep")
             .into(),
-        "--max-turns".into(),
-        cfg["max_turns"].as_u64().unwrap_or(40).to_string(),
     ];
     if let Some(m) = cfg["model"].as_str() {
         c.extend(["--model".into(), m.into()])
@@ -1829,7 +1820,7 @@ fn actor_cmd(task: &Task, inject: Option<&str>, cfg: &Value, mcp: &Path) -> Vec<
     }
     c
 }
-fn sandbox_run(cmd: &[String], wd: &Path, timeout: u64) -> Result<(String, i32, bool)> {
+fn sandbox_run(cmd: &[String], wd: &Path) -> Result<(String, i32)> {
     let bwrap = which("bwrap").ok_or_else(|| anyhow!("bwrap unavailable"))?;
     let claude = which("claude").ok_or_else(|| anyhow!("claude unavailable"))?;
     let host = home_path();
@@ -1940,32 +1931,18 @@ fn sandbox_run(cmd: &[String], wd: &Path, timeout: u64) -> Result<(String, i32, 
     for x in cmd {
         b.arg(x);
     }
-    let mut child = b
-        .env("PATH", "/usr/bin:/bin")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let start = Instant::now();
-    let mut timed = false;
-    loop {
-        if child.try_wait()?.is_some() {
-            break;
-        }
-        if start.elapsed() > Duration::from_secs(timeout) {
-            timed = true;
-            child.kill()?;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(40));
-    }
-    let out = child.wait_with_output()?;
+    let outcome = process::run(b.env("PATH", "/usr/bin:/bin"), None);
     let _ = fs::remove_dir_all(sh);
+    let out = outcome?;
+    if !out.status.success() {
+        eprintln!("sandbox stderr: {}", String::from_utf8_lossy(&out.stderr));
+    }
     Ok((
         String::from_utf8_lossy(&out.stdout).into_owned(),
         out.status.code().unwrap_or(-1),
-        timed,
     ))
 }
+
 fn run_matrix(
     cfg: &Value,
     trials: usize,
@@ -2051,7 +2028,7 @@ fn run_matrix(
                     fs::remove_dir_all(&wd)?
                 }
                 fs::create_dir(&wd)?;
-                let setup = run_shell(&task.dir.join("setup.sh"), &wd, 60)?;
+                let setup = run_shell(&task.dir.join("setup.sh"), &wd)?;
                 if !setup.status.success() {
                     bail!(
                         "setup failed for {}: {}",
@@ -2064,8 +2041,7 @@ fn run_matrix(
                 fs::write(&mcp, "{\"mcpServers\":{}}")?;
                 let cmd = actor_cmd(&task, inject.as_deref(), cfg, &mcp);
                 let start = Instant::now();
-                let (raw, rc, timed) =
-                    sandbox_run(&cmd, &wd, cfg["timeout_seconds"].as_u64().unwrap_or(600))?;
+                let (raw, rc) = sandbox_run(&cmd, &wd)?;
                 let dir = out.join(&task.name).join(arm);
                 fs::create_dir_all(&dir)?;
                 let raw_path = dir.join(format!("trial-{n:03}.ndjson"));
@@ -2077,12 +2053,13 @@ fn run_matrix(
                 rec["raw"] = json!(raw_path);
                 rec["injected"] = json!(inject.is_some());
                 rec["belief_surfaced"] = surfaced.map_or(Value::Null, |x| json!(x));
-                rec["returncode"] = if timed { Value::Null } else { json!(rc) };
-                rec["timed_out"] = json!(timed);
+                rec["returncode"] = json!(rc);
+                // Retain the saved-row field for readers of historical results.
+                rec["timed_out"] = json!(false);
                 rec["wall_s"] = json!(start.elapsed().as_secs_f64());
-                let verify = run_shell(&task.dir.join("verify.sh"), &wd, 60)?;
+                let verify = run_shell(&task.dir.join("verify.sh"), &wd)?;
                 rec["solved"] = json!(verify.status.success());
-                if timed || rc != 0 {
+                if rc != 0 {
                     rec["is_error"] = json!(true)
                 }
                 writeln!(output, "{}", serde_json::to_string(&rec)?)?;
