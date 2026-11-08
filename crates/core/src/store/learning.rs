@@ -518,6 +518,8 @@ impl AgeStore {
             }
         }
         Self::check_review_retention(&tx, &identity_view, current.review_revision).await?;
+        crate::learning_sources::validate_review_sources(review, &current.experience)
+            .map_err(RequestCorrection::review_source)?;
         for (index, assessment) in review.assessments.iter().enumerate() {
             for (key_index, key) in assessment.item_keys.iter().enumerate() {
                 if !review
@@ -897,6 +899,7 @@ impl AgeStore {
         Self::resolve_item_references(&tx, &mut allocated).await?;
         let review = &allocated;
         crate::learning_sources::validate_review(review, &current.experience)
+            .map_err(RequestCorrection::review_source)
             .map_err(crate::validation::Refusal::validation)?;
         Self::check_review_retention(&tx, review, current.review_revision).await?;
 

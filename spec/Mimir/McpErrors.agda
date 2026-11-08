@@ -228,6 +228,11 @@ module AgentCorrection where
     (toList "A review correction retains every original extracted item's assigned identity, source, actor, exact quotation and kind. Interpretation may change and new items may be added.")
     (toList "Call get_learning_review and experience_history with the same experience ID. Retain all original extracted items using their saved IDs or stable item keys and original source, actor, statement and kind. Put revised interpretation in conditions, predictions or assessment rationale. Ask the user if the intended correction is uncertain. Do not omit an original item, invent its identity or rewrite the quoted evidence.")
 
+  reviewSourceItem : Fault → Item
+  reviewSourceItem detail = item arguments detail
+    (toList "Exactly one coverage record per stored source, and extracted items quoting that source's literal text with its recorded actor. Source reviews use typed assessments rather than legacy contributions.")
+    (toList "Call get_experience with the same experience ID and read its source_records. Use their exact source_ref and actor; copy a contiguous quotation without decoding or changing literal backslashes, JSON escapes or whitespace. Account for every source once in source_coverage with a reason and honest complete or unresolved status. Use typed assessments for source reviews. Ask the user if evidence or the intended interpretation is unknown. Do not invent quotes, actors, coverage or outcomes.")
+
   record Certified (World : Set) (before after : World) : Set where
     constructor certified
     field report : Claim; unchanged : after ≡ before

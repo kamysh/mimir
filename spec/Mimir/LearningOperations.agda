@@ -196,6 +196,29 @@ retentionCorrection (reviewFailure (Reviewing.invalid detail@(Validation.problem
 ... | _ | _ = nothing
 retentionCorrection _ = nothing
 
+sourceReviewPath : List Validation.Segment → Validation.Code → Bool
+sourceReviewPath (Validation.fieldKey outer ∷ []) Validation.unsupportedCombination = fieldIs outer "review"
+sourceReviewPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ []) Validation.unsupportedCombination =
+  fieldIs outer "review" ∧ (fieldIs collection "source_coverage" ∨ fieldIs collection "extracted_items")
+sourceReviewPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ []) Validation.missingReference =
+  fieldIs outer "review" ∧ fieldIs collection "source_coverage"
+sourceReviewPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ []) Validation.duplicate =
+  fieldIs outer "review" ∧ fieldIs collection "source_coverage"
+sourceReviewPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ []) Validation.missingReference =
+  fieldIs outer "review" ∧ (fieldIs collection "source_coverage" ∨ fieldIs collection "extracted_items") ∧ fieldIs leaf "source_ref"
+sourceReviewPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ []) Validation.wrongActor =
+  fieldIs outer "review" ∧ fieldIs collection "extracted_items" ∧ fieldIs leaf "actor"
+sourceReviewPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ []) Validation.quotationMismatch =
+  fieldIs outer "review" ∧ fieldIs collection "extracted_items" ∧ fieldIs leaf "statement"
+sourceReviewPath _ _ = false
+
+sourceReviewCorrection : Failure → Maybe Correction.Claim
+sourceReviewCorrection (reviewFailure (Reviewing.invalid detail))
+  with sourceReviewPath (Validation.Fault.path detail) (Validation.Fault.code detail)
+... | true = just (Correction.claim (Correction.reviewSourceItem detail) [])
+... | false = nothing
+sourceReviewCorrection _ = nothing
+
 requestCorrection : Failure → Maybe Correction.Claim
 requestCorrection failure with revisionCorrection failure
 ... | just report = just report
@@ -205,7 +228,9 @@ requestCorrection failure with revisionCorrection failure
 ...     | just report = just report
 ...     | nothing with candidateCorrection failure
 ...       | just report = just report
-...       | nothing = retentionCorrection failure
+...       | nothing with retentionCorrection failure
+...         | just report = just report
+...         | nothing = sourceReviewCorrection failure
 
 expectedValid : ℤ → Data.Bool.Bool
 expectedValid expected = does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))

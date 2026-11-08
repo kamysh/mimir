@@ -88,6 +88,74 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
 }
 
 #[tokio::test]
+async fn review_source_dialogues_precede_embedding_and_preserve_literal_evidence() -> Result<()> {
+    use mimir_core::graph::MemoryType;
+    let service = test_service().await?;
+    let id = fixture_identity().await?;
+    let bare_id = fixture_identity().await?;
+    let project = format!("review-sources-{id}");
+    let belief =
+        isolation::seed_belief_in_project("source fixture", 0.5, 0.1, &project, MemoryType::Fact)
+            .await?;
+    let db = db::connect(&isolation::fixture().database_config()).await?;
+    let mut client = Client::start(id)?;
+    let checked = async {
+        let source = json!({"id":id,"project":project,"context":"literal evidence","action":"read the saved source before extraction","outcome":"unknown","source":"agent_report","evidence":["event/0","wrapped/1"],"belief_ids":[belief.id],"source_records":[
+            {"source_ref":"event/0","actor":"agent","provenance":"agent_report","text":"Proceed carefully."},
+            {"source_ref":"wrapped/1","actor":"controller","provenance":"tool_result","text":"{\"actor\":\"agent\",\"message\":\"Check first\\nThen proceed\"}"}]});
+        ensure!(client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?["revision"]==1);
+        let history = service.experience_history(id).await?;
+        let item = json!({"kind":"suggestion","key":"check-first","source_ref":"wrapped/1","actor":"controller","statement":"Check first\\nThen proceed","conditions":"nested speaker remains interpretation"});
+        let review = json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"literal source words","extracted_items":[item],"source_coverage":[
+            {"source_ref":"event/0","status":"unresolved","reason":"no outcome yet"},
+            {"source_ref":"wrapped/1","status":"unresolved","reason":"no outcome yet"}]});
+        let mut missing = review.clone(); missing["source_coverage"] = json!([]);
+        let mut duplicate = review.clone(); duplicate["source_coverage"][1] = duplicate["source_coverage"][0].clone();
+        let mut unknown_coverage = review.clone(); unknown_coverage["source_coverage"][1]["source_ref"] = json!("absent/2");
+        let mut unknown_source = review.clone(); unknown_source["extracted_items"][0]["source_ref"] = json!("absent/2");
+        let mut actor = review.clone(); actor["extracted_items"][0]["actor"] = json!("agent");
+        let mut quote = review.clone(); quote["extracted_items"][0]["statement"] = json!("Check first\nThen proceed");
+        let mut legacy = review.clone(); legacy["feedback"] = json!([{"belief_id":belief.id,"verdict":"support","weight":0.5}]);
+        for (mut invalid,path,code) in [
+            (missing,json!(["review","source_coverage"]),Code::MissingReference),
+            (duplicate,json!(["review","source_coverage"]),Code::Duplicate),
+            (unknown_coverage,json!(["review","source_coverage",1,"source_ref"]),Code::MissingReference),
+            (unknown_source,json!(["review","extracted_items",0,"source_ref"]),Code::MissingReference),
+            (actor,json!(["review","extracted_items",0,"actor"]),Code::WrongActor),
+            (quote,json!(["review","extracted_items",0,"statement"]),Code::QuotationMismatch),
+            (legacy,json!(["review"]),Code::UnsupportedCombination),
+        ] {
+            reference_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,path.clone(),code)?;
+            invalid["candidates"] = json!([{"kind":"belief","key":"must-not-embed","content":"complete candidate fixture","memory_type":"Fact"}]);
+            reference_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,path,code)?;
+            ensure!(service.experience_history(id).await? == history);
+            for table in ["mimir_learning_item_owners","mimir_review_candidates"] {
+                ensure!(db.query_one(&format!("SELECT count(*) FROM {table} WHERE experience_id=$1"),&[&id]).await?.get::<_,i64>(0)==0);
+            }
+        }
+        let bare = json!({"id":bare_id,"project":project,"context":"no source records","action":"do not invent sources","outcome":"unknown","source":"agent_report","evidence":[]});
+        client.call("record_experience",json!({"experience":bare,"expected_revision":0})).await?;
+        let mut invalid = review.clone(); invalid["experience_id"] = json!(bare_id);
+        reference_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,json!(["review","source_coverage"]),Code::UnsupportedCombination)?;
+        invalid["source_coverage"] = json!([]);
+        reference_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,json!(["review","extracted_items"]),Code::UnsupportedCombination)?;
+        let answer = client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
+        ensure!(answer["review_revision"]==1 && answer["item_ids"]["check-first"].is_string());
+        ensure!(client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await? == answer);
+        let saved = client.call("get_learning_review",json!({"id":id})).await?;
+        ensure!(saved.to_string().contains("Check first\\\\nThen proceed"),"readback changed literal source escapes: {saved}");
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    let cleanup = service.delete_project(&project).await;
+    checked?;
+    ensure!(stopped.success());
+    cleanup?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn review_retention_is_checked_before_embedding_without_rewriting_original_items(
 ) -> Result<()> {
     let service = test_service().await?;

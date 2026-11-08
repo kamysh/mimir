@@ -129,6 +129,16 @@ or stable keys, and put revised interpretation in conditions, predictions or
 assessment rationale. New items can be added. The publication transaction
 rechecks retention, and a refused correction cannot publish new items or nodes.
 
+Source coverage, actor and quotation checks also run before candidate embedding.
+Their `needs_input` response points to the affected source reference, actor,
+statement or coverage array. Read the saved experience: each source needs one
+coverage record, and extracted text must copy a contiguous passage with its
+recorded actor. Preserve literal backslashes, JSON escapes and whitespace;
+speakers named inside a message belong in interpretation rather than replacing
+the source record's actor. Source reviews use typed assessments rather than
+legacy feedback or links. Complete validation still checks allocated identities
+and whether each item has an assessment or unresolved coverage before commit.
+
 ## Compatibility and formal contract
 
 ### PostgreSQL-owned item identities

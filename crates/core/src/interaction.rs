@@ -187,6 +187,52 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    /// Called only around the pure source validator before publication.
+    pub(crate) fn review_source(error: anyhow::Error) -> anyhow::Error {
+        let refusal = match error.downcast::<crate::validation::Refusal>() {
+            Ok(refusal) => refusal,
+            Err(error) => return error,
+        };
+        let recognized = match (refusal.fault.code, refusal.fault.path.as_slice()) {
+            (Code::UnsupportedCombination, []) => true,
+            (Code::UnsupportedCombination, [Segment::Key(collection)]) => {
+                collection == "source_coverage" || collection == "extracted_items"
+            }
+            (Code::MissingReference | Code::Duplicate, [Segment::Key(collection)]) => {
+                collection == "source_coverage"
+            }
+            (
+                Code::MissingReference,
+                [Segment::Key(collection), Segment::Index(_), Segment::Key(leaf)],
+            ) => {
+                (collection == "source_coverage" || collection == "extracted_items")
+                    && leaf == "source_ref"
+            }
+            (
+                Code::WrongActor,
+                [Segment::Key(collection), Segment::Index(_), Segment::Key(leaf)],
+            ) => collection == "extracted_items" && leaf == "actor",
+            (
+                Code::QuotationMismatch,
+                [Segment::Key(collection), Segment::Index(_), Segment::Key(leaf)],
+            ) => collection == "extracted_items" && leaf == "statement",
+            _ => false,
+        };
+        if !recognized {
+            return refusal.into();
+        }
+        let mut fault = refusal.fault;
+        fault.path.insert(0, Segment::Key("review".into()));
+        let issue = CorrectionItem::new(Location::Arguments, fault,
+            "Exactly one coverage record per stored source, and extracted items quoting that source's literal text with its recorded actor. Source reviews use typed assessments rather than legacy contributions.".into(),
+            "Call get_experience with the same experience ID and read its source_records. Use their exact source_ref and actor; copy a contiguous quotation without decoding or changing literal backslashes, JSON escapes or whitespace. Account for every source once in source_coverage with a reason and honest complete or unresolved status. Use typed assessments for source reviews. Ask the user if evidence or the intended interpretation is unknown. Do not invent quotes, actors, coverage or outcomes.".into())
+            .expect("source correction retains complete guidance");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained source correction"),
+        }
+        .into()
+    }
+
     pub(crate) fn review_retention(message: String) -> Self {
         let issue = CorrectionItem::new(Location::Arguments,
             Fault { path: vec![Segment::Key("review".into()),Segment::Key("extracted_items".into())], code: Code::MissingReference, message },

@@ -132,10 +132,10 @@ module For (env : Environment) (requested : Review) where
     result (checkPin env requested) >>= λ pinned →
     result (Targets.checkReferences (Experience.project (Environment.experience env))
       (Environment.beliefs env) (existingReferences requested)) >>= λ existingTargetsValid →
-    result (validateReviewSources (Environment.experience env) requested) >>= λ sourcesValid →
+    result (at (key "review") (validateReviewSources (Environment.experience env) requested)) >>= λ sourcesValid →
     result (at (key "review") (checkPrior (Environment.prior env) requested)) >>= λ retained →
     Resolution.prepareReview requested (Environment.registry env) >>= λ prepared →
-    result (validateReviewSources (Environment.experience env) (materialized prepared)) >>= λ materializedSourcesValid →
+    result (at (key "review") (validateReviewSources (Environment.experience env) (materialized prepared))) >>= λ materializedSourcesValid →
     result (Targets.validate (Experience.project (Environment.experience env))
       (Environment.beliefs env) (targetIDs (materialized prepared))) >>= λ targetsValid →
     result (checkRecordedEvidence (Environment.experience env) (materialized prepared)) >>= λ evidence →

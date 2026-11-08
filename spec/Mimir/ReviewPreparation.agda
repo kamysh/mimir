@@ -92,13 +92,13 @@ module For (before : Input) (requested : Review) (clock : Candidate → ℤ) whe
     result (Admission.checkPin originalEnvironment requested) >>= λ pinned →
     result (Targets.checkReferences (Experience.project current) (beliefs (Input.nodes before))
       (Admission.existingReferences requested)) >>= λ existingReferences →
-    result (validateReviewSources current requested) >>= λ sources →
+    result (at (key "review") (validateReviewSources current requested)) >>= λ sources →
     result (at (key "review") (Admission.checkPrior (Input.prior before) requested)) >>= λ retained →
     Ownership.prepare (Review.experienceID requested) (Input.owners before) (Review.extracted requested)
       >>= λ { (afterOwners , ownershipPlan) →
     map₁ (prependPath (key "review"))
       (Candidates.prepareValid occupied (Input.registry before) requested structure fresh) >>= λ reservation →
-    result (validateReviewSources current (Candidates.materialized reservation)) >>= λ materializedSources →
+    result (at (key "review") (validateReviewSources current (Candidates.materialized reservation))) >>= λ materializedSources →
     result (Targets.validate (Experience.project current) (beliefs (proposedNodes reservation))
       (Admission.targetIDs (Candidates.materialized reservation))) >>= λ targets →
     result (Admission.checkRecordedEvidence current (Candidates.materialized reservation)) >>= λ evidence →

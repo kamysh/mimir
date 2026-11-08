@@ -1,4 +1,5 @@
 //! Source coverage belongs to the existing judge, never a second analyzer.
+use crate::validation::{Code, Refusal, Segment};
 use crate::{
     assessment::validate_items,
     learning::{Experience, ObservationSource, Review},
@@ -45,49 +46,80 @@ pub fn validate_sources(sources: &[SourceRecord]) -> Result<()> {
     }
     Ok(())
 }
-pub fn validate_review(review: &Review, experience: &Experience) -> Result<()> {
+/// Checks source text and coverage without allocating or requiring new item IDs.
+pub(crate) fn validate_review_sources(review: &Review, experience: &Experience) -> Result<()> {
     validate_items(&review.extracted_items)?;
     if experience.source_records.is_empty() {
-        ensure!(
-            review.source_coverage.is_empty() && review.extracted_items.is_empty(),
-            "extraction requires source records"
-        );
+        for (field, empty) in [
+            ("source_coverage", review.source_coverage.is_empty()),
+            ("extracted_items", review.extracted_items.is_empty()),
+        ] {
+            if !empty {
+                return Err(Refusal::invalid(Code::UnsupportedCombination,vec![Segment::Key(field.into())],format!("{field} requires stored source records; read get_experience before extracting or claiming coverage.")).into());
+            }
+        }
         return Ok(());
     }
-    ensure!(
-        review.feedback.is_empty()
-            && review.candidate_feedback.is_empty()
-            && review.links.is_empty()
-            && review.candidate_links.is_empty(),
-        "source reviews use typed assessments, not legacy evidence contributions"
-    );
+    if !(review.feedback.is_empty()
+        && review.candidate_feedback.is_empty()
+        && review.links.is_empty()
+        && review.candidate_links.is_empty())
+    {
+        return Err(Refusal::invalid(Code::UnsupportedCombination,vec![],"Source reviews use typed assessments; feedback, candidate_feedback, links and candidate_links must be empty. Do not count the same source through both contribution formats.").into());
+    }
     let sources: HashMap<_, _> = experience
         .source_records
         .iter()
         .map(|s| (&s.source_ref, s))
         .collect();
     let mut seen = HashSet::new();
-    ensure!(
-        review.source_coverage.len() == sources.len(),
-        "every source needs explicit coverage"
-    );
-    for c in &review.source_coverage {
-        ensure!(
-            sources.contains_key(&c.source_ref) && seen.insert(&c.source_ref),
-            "invalid or duplicate coverage reference"
-        );
+    if review.source_coverage.len() != sources.len() {
+        return Err(Refusal::invalid(Code::MissingReference,vec![Segment::Key("source_coverage".into())],format!("Every stored source needs exactly one coverage record: expected {}, received {}. Read get_experience and account for each stored source_ref.",sources.len(),review.source_coverage.len())).into());
+    }
+    for (index, c) in review.source_coverage.iter().enumerate() {
+        if !sources.contains_key(&c.source_ref) {
+            return Err(Refusal::invalid(
+                Code::MissingReference,
+                vec![
+                    Segment::Key("source_coverage".into()),
+                    Segment::Index(index),
+                    Segment::Key("source_ref".into()),
+                ],
+                format!(
+                    "Coverage source {:?} is not in the stored experience.",
+                    c.source_ref
+                ),
+            )
+            .into());
+        }
+        if !seen.insert(&c.source_ref) {
+            return Err(Refusal::invalid(
+                Code::Duplicate,
+                vec![Segment::Key("source_coverage".into())],
+                format!(
+                    "Coverage repeats source {:?}; account for each stored source exactly once.",
+                    c.source_ref
+                ),
+            )
+            .into());
+        }
         ensure!(!c.reason.trim().is_empty(), "coverage needs a reason");
     }
-    let mut ids: HashSet<_> = experience
-        .learning_items
-        .iter()
-        .filter_map(|i| i.id)
-        .collect();
     for (index, item) in review.extracted_items.iter().enumerate() {
-        use crate::validation::{Code, Refusal, Segment};
-        let source = sources
-            .get(&item.source_ref)
-            .ok_or_else(|| anyhow::anyhow!("extracted item has no source"))?;
+        let source = sources.get(&item.source_ref).ok_or_else(|| {
+            Refusal::invalid(
+                Code::MissingReference,
+                vec![
+                    Segment::Key("extracted_items".into()),
+                    Segment::Index(index),
+                    Segment::Key("source_ref".into()),
+                ],
+                format!(
+                    "Extracted item source {:?} is not in the stored experience.",
+                    item.source_ref
+                ),
+            )
+        })?;
         // Keyed UUIDs remain tentative until commit. Identify the stable key
         // in correction feedback, including when allocation is rolled back.
         let identity = item
@@ -101,13 +133,6 @@ pub fn validate_review(review: &Review, experience: &Experience) -> Result<()> {
                 format!("extracted_items[{index}].actor (item {identity:?}, source {:?}): expected {:?}, received {:?}. Copy actor exactly from the cited source_records entry's actor field. A speaker named inside its text or embedded JSON does not replace that recorded actor; explain nested authorship in conditions.", item.source_ref, source.actor, item.actor),
             ).into());
         }
-        if !item.id.is_some_and(|id| ids.insert(id)) {
-            return Err(Refusal::invalid(
-                Code::Duplicate,
-                vec![Segment::Key("extracted_items".into()), Segment::Index(index), Segment::Key("id".into())],
-                format!("extracted_items[{index}].id (item {identity:?}, source {:?}) must be allocated and distinct from existing and other extracted items. Reference an already recorded item in the assessment instead of extracting it again.", item.source_ref),
-            ).into());
-        }
         // Statement is an exact quotation. Interpretations belong in conditions/rationale.
         if !source.text.contains(&item.statement) {
             // New PostgreSQL UUIDs are still tentative until review commit.
@@ -118,6 +143,30 @@ pub fn validate_review(review: &Review, experience: &Experience) -> Result<()> {
                 vec![Segment::Key("extracted_items".into()), Segment::Index(index), Segment::Key("statement".into())],
                 format!("extracted statement is not in its cited source: extracted_items[{index}].statement (item {}, source {}). Copy an exact contiguous substring of that source record's text. Preserve literal backslashes, escaped quotes and whitespace when the text contains serialized JSON; put interpretation in conditions.", identity, item.source_ref),
             ).into());
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_review(review: &Review, experience: &Experience) -> Result<()> {
+    validate_review_sources(review, experience)?;
+    if experience.source_records.is_empty() {
+        return Ok(());
+    }
+    let mut ids: HashSet<_> = experience
+        .learning_items
+        .iter()
+        .filter_map(|i| i.id)
+        .collect();
+    for (index, item) in review.extracted_items.iter().enumerate() {
+        if !item.id.is_some_and(|id| ids.insert(id)) {
+            let identity = item
+                .key
+                .clone()
+                .unwrap_or_else(|| item.id.map(|id| id.to_string()).unwrap_or_default());
+            return Err(Refusal::invalid(Code::Duplicate,
+                vec![Segment::Key("extracted_items".into()),Segment::Index(index),Segment::Key("id".into())],
+                format!("extracted_items[{index}].id (item {identity:?}, source {:?}) must be allocated and distinct from existing and other extracted items. Reference an already recorded item in the assessment instead of extracting it again.",item.source_ref)).into());
         }
     }
     // Each extracted item must participate in an assessment or be explicitly
