@@ -115,6 +115,9 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   ... | nothing = failure original
   ... | just s = success (assessmentResult q s)
   projectQuery original (Query.assessmentHistoryResult (Assessment.found p)) = success (assessmentPage p)
+  projectQuery original (Query.scoreResult (Assessment.invalidTarget detail)) with Operations.beliefReferenceCorrection detail
+  ... | just report = decision report
+  ... | nothing = failure original
   projectQuery original _ = failure original
 
   project : A.Result → Projection
@@ -168,10 +171,14 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project (A.learned q (A.Learn.reviewTransacted (A.Learn.Full.refused (Operations.preparationFailure report) cleanup))) = decision report
   project original@(A.learned q (A.Learn.transacted (A.Learn.T.refused reason (inj₂ tt)))) with Operations.revisionCorrection reason
   ... | just report = decision report
-  ... | nothing = failure original
+  ... | nothing with Operations.referenceCorrection reason
+  ...   | just report = decision report
+  ...   | nothing = failure original
   project original@(A.learned q (A.Learn.reviewTransacted (A.Learn.Full.refused reason (inj₂ tt)))) with Operations.revisionCorrection reason
   ... | just report = decision report
-  ... | nothing = failure original
+  ... | nothing with Operations.referenceCorrection reason
+  ...   | just report = decision report
+  ...   | nothing = failure original
   project original@(A.learned q _) = failure original
   project original@(A.learningQueryResult result) = projectQuery original result
   project original@(A.contextResult result) with contextAssessments (Context.Assessments.values (ContextProtocol.Output.assessments result))

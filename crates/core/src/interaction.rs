@@ -187,6 +187,25 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    pub(crate) fn belief_reference(path: Vec<Segment>, code: Code, message: String) -> Self {
+        let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
+            "A currently stored fact or experiential belief owned by the experience's exact project; global and working beliefs are not learning targets.".into(),
+            "Use list_beliefs or query_learning_context for the stated project, inspect the returned project's value and memory type, and select the intended project-owned belief. If the intended reference or project is uncertain, ask the user. Do not invent an ID, move a belief, change the project, or change its memory type to bypass this check.".into())
+            .expect("learning reference has complete field and repair guidance");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained learning reference"),
+        }
+    }
+
+    pub(crate) fn pattern_reference(path: Vec<Segment>, code: Code, message: String) -> Self {
+        let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
+            "A currently stored pattern belonging to the experience project, or an untagged global pattern.".into(),
+            "Use list_patterns for the experience project and inspect the returned pattern. Select the intended permitted pattern, omit the optional pattern reference only if no pattern was used, or ask the user. Do not invent an ID or move a pattern between projects.".into())
+            .expect("pattern reference has complete field and repair guidance");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained pattern reference"),
+        }
+    }
     pub(crate) fn stale_revision(path: Vec<Segment>, message: String, readback: &str) -> Self {
         let issue = CorrectionItem::new(
             Location::Arguments,

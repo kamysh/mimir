@@ -193,6 +193,16 @@ module AgentCorrection where
     (toList "The current revision returned by Mimir for the same stored experience and review.")
     readback
 
+  beliefReferenceItem : Fault → Item
+  beliefReferenceItem detail = item arguments detail
+    (toList "A currently stored fact or experiential belief owned by the experience's exact project; global and working beliefs are not learning targets.")
+    (toList "Use list_beliefs or query_learning_context for the stated project, inspect the returned project's value and memory type, and select the intended project-owned belief. If the intended reference or project is uncertain, ask the user. Do not invent an ID, move a belief, change the project, or change its memory type to bypass this check.")
+
+  patternReferenceItem : Fault → Item
+  patternReferenceItem detail = item arguments detail
+    (toList "A currently stored pattern belonging to the experience project, or an untagged global pattern.")
+    (toList "Use list_patterns for the experience project and inspect the returned pattern. Select the intended permitted pattern, omit the optional pattern reference only if no pattern was used, or ask the user. Do not invent an ID or move a pattern between projects.")
+
   record Certified (World : Set) (before after : World) : Set where
     constructor certified
     field report : Claim; unchanged : after ≡ before

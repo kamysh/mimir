@@ -1,7 +1,7 @@
 use super::*;
 use crate::interaction::{RequestCorrection, RECORD_REVISION_READBACK, REVIEW_REVISION_READBACK};
 use crate::learning::*;
-use crate::validation::Segment;
+use crate::validation::{Code, Segment};
 use anyhow::{ensure, Context};
 use std::collections::HashSet;
 use tokio_postgres::Transaction;
@@ -176,7 +176,11 @@ impl AgeStore {
         let beliefs = self
             .learning_beliefs_for_ids(&tx, &HashSet::from([belief_id]))
             .await?;
-        validate_targets(&beliefs, project, [belief_id].into_iter())?;
+        validate_named_targets(
+            &beliefs,
+            project,
+            [(belief_id, vec![Segment::Key("belief_id".into())])],
+        )?;
         after_target().await?;
         let row = tx.query_one("SELECT COALESCE(sum(a.positive),0), COALESCE(sum(a.negative),0), COALESCE(sum(a.benefit),0), COALESCE(sum(a.benefit_weight),0), count(*), count(*) FILTER (WHERE a.positive+a.negative=0), count(*) FILTER (WHERE a.benefit_weight=0) FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 AND e.review_revision=r.revision AND e.revision=r.experience_revision", &[&project,&belief_id,&scope,&rubric]).await?;
         let scores = crate::assessment::Scores::from_totals(
@@ -405,6 +409,11 @@ impl AgeStore {
                 current.review_revision,
             ));
         }
+        let references = review_references(review);
+        let beliefs = self
+            .learning_beliefs_for_ids(&tx, &references.iter().map(|(id, _)| *id).collect())
+            .await?;
+        validate_named_targets(&beliefs, &current.experience.project, references)?;
         let mut new = Vec::new();
         for (index, candidate) in review.candidates.iter().enumerate() {
             let row = tx.query_opt("SELECT kind,declaration::text,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2",
@@ -602,22 +611,43 @@ impl AgeStore {
         }
         let target_ids: HashSet<_> = experience.belief_ids.iter().copied().collect();
         let beliefs = self.learning_beliefs_for_ids(&tx, &target_ids).await?;
-        validate_targets(
+        validate_named_targets(
             &beliefs,
             &experience.project,
-            experience.belief_ids.iter().copied(),
+            experience.belief_ids.iter().enumerate().map(|(index, id)| {
+                (
+                    *id,
+                    vec![
+                        Segment::Key("experience".into()),
+                        Segment::Key("belief_ids".into()),
+                        Segment::Index(index),
+                    ],
+                )
+            }),
         )?;
         if let Some(id) = experience.pattern_id {
             let g = &self.graph_name;
             let rows = tx.query(&format!("SELECT project::text FROM ag_catalog.cypher('{g}', $$ MATCH (p:Pattern {{id:'{id}'}}) RETURN p.project $$) AS (project ag_catalog.agtype)"), &[]).await?;
-            ensure!(!rows.is_empty(), "pattern not found");
+            if rows.is_empty() {
+                return Err(RequestCorrection::pattern_reference(
+                    vec![
+                        Segment::Key("experience".into()),
+                        Segment::Key("pattern_id".into()),
+                    ],
+                    Code::MissingReference,
+                    format!("The requested pattern {id} was not found in Mimir."),
+                )
+                .into());
+            }
             let project: Option<&str> = rows[0].get(0);
-            ensure!(
-                project.is_none()
-                    || project == Some("null")
-                    || project == Some(experience.project.as_str()),
-                "pattern belongs to another project"
-            );
+            if !(project.is_none()
+                || project == Some("null")
+                || project == Some(experience.project.as_str()))
+            {
+                return Err(RequestCorrection::pattern_reference(
+                    vec![Segment::Key("experience".into()), Segment::Key("pattern_id".into())], Code::WrongIdentity,
+                    format!("The requested pattern {id} belongs to project {project:?}, not the experience project {:?}.", experience.project)).into());
+            }
         }
         let old_review = Self::active_review(&tx, experience.id).await?;
         let affected = review_targets(old_review.iter());
@@ -699,6 +729,11 @@ impl AgeStore {
             ));
         }
         let request = serde_json::to_string(review)?;
+        let references = review_references(review);
+        let beliefs = self
+            .learning_beliefs_for_ids(&tx, &references.iter().map(|(id, _)| *id).collect())
+            .await?;
+        validate_named_targets(&beliefs, &current.experience.project, references)?;
         let mut allocated = review.clone();
         Self::resolve_item_ids(&tx, review.experience_id, &mut allocated.extracted_items).await?;
         Self::resolve_item_references(&tx, &mut allocated).await?;
@@ -909,6 +944,87 @@ impl AgeStore {
         Ok(())
     }
 }
+fn review_references(review: &Review) -> Vec<(Uuid, Vec<Segment>)> {
+    fn path(field: &str, index: usize, suffix: &[&str]) -> Vec<Segment> {
+        let mut path = vec![
+            Segment::Key("review".into()),
+            Segment::Key(field.into()),
+            Segment::Index(index),
+        ];
+        path.extend(suffix.iter().map(|name| Segment::Key((*name).into())));
+        path
+    }
+    fn target(
+        references: &mut Vec<(Uuid, Vec<Segment>)>,
+        target: &BeliefTarget,
+        path: Vec<Segment>,
+    ) {
+        if let BeliefTarget::Existing { belief_id } = target {
+            references.push((*belief_id, path));
+        }
+    }
+    let mut references = Vec::new();
+    for (i, value) in review.feedback.iter().enumerate() {
+        references.push((value.belief_id, path("feedback", i, &["belief_id"])));
+    }
+    for (i, id) in review.superseded_beliefs.iter().enumerate() {
+        references.push((*id, path("superseded_beliefs", i, &[])));
+    }
+    for (i, value) in review.links.iter().enumerate() {
+        references.push((value.from_id, path("links", i, &["from_id"])));
+        references.push((value.to_id, path("links", i, &["to_id"])));
+    }
+    for (i, value) in review.assessments.iter().enumerate() {
+        target(
+            &mut references,
+            &value.target,
+            path("assessments", i, &["target", "belief_id"]),
+        );
+    }
+    for (i, value) in review.candidate_feedback.iter().enumerate() {
+        target(
+            &mut references,
+            &value.target,
+            path("candidate_feedback", i, &["target", "belief_id"]),
+        );
+    }
+    for (i, value) in review.candidate_links.iter().enumerate() {
+        target(
+            &mut references,
+            &value.from,
+            path("candidate_links", i, &["from", "belief_id"]),
+        );
+        target(
+            &mut references,
+            &value.to,
+            path("candidate_links", i, &["to", "belief_id"]),
+        );
+    }
+    references
+}
+
+fn validate_named_targets(
+    beliefs: &[Belief],
+    project: &str,
+    references: impl IntoIterator<Item = (Uuid, Vec<Segment>)>,
+) -> Result<()> {
+    for (id, path) in references {
+        let Some(belief) = beliefs.iter().find(|belief| belief.id == id) else {
+            return Err(RequestCorrection::belief_reference(path, Code::MissingReference,
+                format!("Belief {id} was not found; the request requires a belief owned by project {project:?}.")).into());
+        };
+        if belief.project.as_deref() != Some(project) {
+            return Err(RequestCorrection::belief_reference(path, Code::WrongIdentity,
+                format!("Belief {id} belongs to project {:?}, not the requested learning project {project:?}.", belief.project)).into());
+        }
+        if belief.memory_type == MemoryType::Working {
+            return Err(RequestCorrection::belief_reference(path, Code::UnsupportedCombination,
+                format!("Belief {id} is working memory; a learning target must be fact or experiential memory.")).into());
+        }
+    }
+    Ok(())
+}
+
 fn validate_targets(
     beliefs: &[Belief],
     project: &str,

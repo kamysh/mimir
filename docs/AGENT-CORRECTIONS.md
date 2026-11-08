@@ -60,7 +60,25 @@ document loading can already have committed its document before automatic
 grounding encounters a missing record. That error cannot be projected as
 `business_changes: "none"` for the entire load. Only the checked atomic graph
 requests and read-only intervention use the new stored-reference projection;
-remaining learning-reference and project-conflict checks stay in #93.
+other learning conflicts retain their separate checks in #93.
+
+Learning requests retain the exact position of each existing belief reference,
+such as `experience.belief_ids[0]` or
+`review.candidate_links[0].from.belief_id`. Missing beliefs, beliefs owned by a
+different project, global beliefs and temporary working beliefs receive a
+correction explaining the existing target rules. Assessment reads identify
+`belief_id`. These responses suggest a lookup, require inspection of the
+returned project and memory type, and ask the user when the intended reference
+is unclear. They never move a belief or change its memory type to make a
+request pass.
+
+Existing review references are checked before embedding preparation and again
+inside the publication transaction. A failed check leaves the source pending
+without publishing a review or changing its acknowledgement. Missing or
+wrong-project pattern references identify `experience.pattern_id` and suggest
+`list_patterns`; project-owned patterns and permitted global patterns retain
+their existing behavior. Candidate declarations and item-identity conflicts
+remain separate parts of #93.
 
 A response must name at least one issue and provide a nonblank explanation,
 expected input and suggested correction. These requirements make the response

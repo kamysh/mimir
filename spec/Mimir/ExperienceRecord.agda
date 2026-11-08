@@ -104,8 +104,9 @@ checkPattern before e expected now old with Experience.patternID e
 ...   | just true = prepare before e expected now old
 
 checkTargets : Store.World → Experience → ℕ → ℤ → Maybe Observation.Snapshot → Decision
-checkTargets before e expected now old with Targets.validate (Experience.project e)
-  (map Recompute.target (Recompute.beliefs (Publication.World.nodes (Store.World.publication before)))) (Experience.beliefIDs e)
+checkTargets before e expected now old with Validation.at (Validation.key "experience")
+  (Validation.at (Validation.key "belief_ids") (Targets.validate (Experience.project e)
+  (map Recompute.target (Recompute.beliefs (Publication.World.nodes (Store.World.publication before)))) (Experience.beliefIDs e)))
 ... | Validation.rejected failure refutation = rejected (invalid failure)
 ... | Validation.accepted valid = checkPattern before e expected now old
 

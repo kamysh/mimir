@@ -54,7 +54,9 @@ impl RegisteredOperation {
                     | GraphOperation::AddEvidence
                     | GraphOperation::QueryIntervention
             ) | Operation::Learning(
-                LearningOperation::RecordExperience | LearningOperation::ReviewExperience
+                LearningOperation::RecordExperience
+                    | LearningOperation::ReviewExperience
+                    | LearningOperation::GetLessonAssessment
             )
         ) {
             if let Err(error) = &result {

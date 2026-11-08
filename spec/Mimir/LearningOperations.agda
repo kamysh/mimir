@@ -89,6 +89,32 @@ revisionCorrection (recordFailure Recording.staleRevision) = just (Correction.cl
 revisionCorrection (reviewFailure (Reviewing.invalid detail)) = reviewRevisionCorrection detail
 revisionCorrection _ = nothing
 
+beliefReferenceCorrection : Validation.Fault → Maybe Correction.Claim
+beliefReferenceCorrection detail with Validation.Fault.code detail
+... | Validation.missingReference = just (Correction.claim (Correction.beliefReferenceItem detail) [])
+... | Validation.wrongIdentity = just (Correction.claim (Correction.beliefReferenceItem detail) [])
+... | Validation.unsupportedCombination = just (Correction.claim (Correction.beliefReferenceItem detail) [])
+... | _ = nothing
+
+referenceCorrection : Failure → Maybe Correction.Claim
+referenceCorrection (recordFailure Recording.missingPattern) = just (Correction.claim
+  (Correction.patternReferenceItem (Validation.fault (Validation.key "experience" ∷ Validation.key "pattern_id" ∷ [])
+    Validation.missingReference "The requested pattern was not found in Mimir.")) [])
+referenceCorrection (recordFailure Recording.foreignPattern) = just (Correction.claim
+  (Correction.patternReferenceItem (Validation.fault (Validation.key "experience" ∷ Validation.key "pattern_id" ∷ [])
+    Validation.wrongIdentity "The requested pattern belongs to another project.")) [])
+referenceCorrection (recordFailure (Recording.invalid detail@(Validation.problem
+  (Validation.fieldKey outer ∷ Validation.fieldKey inner ∷ rest) code reason)))
+  with outer ≟Text Data.String.toList "experience" | inner ≟Text Data.String.toList "belief_ids"
+... | yes _ | yes _ = beliefReferenceCorrection detail
+... | _ | _ = nothing
+referenceCorrection (reviewFailure (Reviewing.invalid detail@(Validation.problem
+  (Validation.fieldKey outer ∷ Validation.fieldKey inner ∷ rest) code reason)))
+  with outer ≟Text Data.String.toList "review"
+... | no _ = nothing
+... | yes _ = beliefReferenceCorrection detail
+referenceCorrection _ = nothing
+
 expectedValid : ℤ → Data.Bool.Bool
 expectedValid expected = does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))
 

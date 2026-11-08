@@ -86,7 +86,8 @@ getAssessment : Selection.Query → List Targets.Belief → World → ScoreResul
 getAssessment q beliefs w with nonblank (Selection.Query.project q) ∧
   nonblank (Selection.Query.scope q) ∧ nonblank (Selection.Query.rubric q)
 ... | false = missingScope
-... | true with Targets.validate (Selection.Query.project q) beliefs (Selection.Query.belief q ∷ [])
+... | true with Targets.checkReference (Selection.Query.project q) beliefs
+  (Targets.reference (Selection.Query.belief q) (Validation.key "belief_id" ∷ []))
 ...   | Validation.rejected failure invalid = invalidTarget failure
 ...   | Validation.accepted valid = assessed q (scores q w)
 
