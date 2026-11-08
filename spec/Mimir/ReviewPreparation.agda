@@ -93,7 +93,7 @@ module For (before : Input) (requested : Review) (clock : Candidate → ℤ) whe
     result (Targets.checkReferences (Experience.project current) (beliefs (Input.nodes before))
       (Admission.existingReferences requested)) >>= λ existingReferences →
     result (validateReviewSources current requested) >>= λ sources →
-    result (Admission.checkPrior (Input.prior before) requested) >>= λ retained →
+    result (at (key "review") (Admission.checkPrior (Input.prior before) requested)) >>= λ retained →
     Ownership.prepare (Review.experienceID requested) (Input.owners before) (Review.extracted requested)
       >>= λ { (afterOwners , ownershipPlan) →
     map₁ (prependPath (key "review"))

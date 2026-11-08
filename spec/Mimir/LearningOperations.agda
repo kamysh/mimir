@@ -189,6 +189,11 @@ retentionCorrection (recordFailure (Recording.invalid detail@(Validation.problem
 ... | true | true | _ | Validation.wrongIdentity = just (Correction.claim (Correction.sourceRetentionItem detail) [])
 ... | true | _ | true | Validation.missingReference = just (Correction.claim (Correction.sourceRetentionItem detail) [])
 ... | _ | _ | _ | _ = nothing
+retentionCorrection (reviewFailure (Reviewing.invalid detail@(Validation.problem
+  (Validation.fieldKey outer ∷ Validation.fieldKey leaf ∷ []) Validation.missingReference reason)))
+  with fieldIs outer "review" | fieldIs leaf "extracted_items"
+... | true | true = just (Correction.claim (Correction.reviewRetentionItem detail) [])
+... | _ | _ = nothing
 retentionCorrection _ = nothing
 
 requestCorrection : Failure → Maybe Correction.Claim

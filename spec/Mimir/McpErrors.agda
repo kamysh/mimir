@@ -223,6 +223,11 @@ module AgentCorrection where
     (toList "An experience keeps its original project and every original source record unchanged. Corrections append a separate source record.")
     (toList "Call get_experience and experience_history with the same experience ID. Copy the original project and source records, including actor, provenance, text and recorded_at; append a separate correction record when needed. Ask the user if the original evidence or intended project is uncertain. Do not rewrite, omit or invent original evidence, or move the existing experience to another project.")
 
+  reviewRetentionItem : Fault → Item
+  reviewRetentionItem detail = item arguments detail
+    (toList "A review correction retains every original extracted item's assigned identity, source, actor, exact quotation and kind. Interpretation may change and new items may be added.")
+    (toList "Call get_learning_review and experience_history with the same experience ID. Retain all original extracted items using their saved IDs or stable item keys and original source, actor, statement and kind. Put revised interpretation in conditions, predictions or assessment rationale. Ask the user if the intended correction is uncertain. Do not omit an original item, invent its identity or rewrite the quoted evidence.")
+
   record Certified (World : Set) (before after : World) : Set where
     constructor certified
     field report : Claim; unchanged : after ≡ before

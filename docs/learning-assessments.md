@@ -121,6 +121,14 @@ append a separate correction record. A project change identifies
 `experience.project`; it cannot move the existing experience to another project.
 These refusals roll back any item allocations made by the rejected request.
 
+A review correction retains every original extracted item's identity, source,
+actor, exact quotation and kind. An omitted or rewritten item produces
+`needs_input` at `review.extracted_items` before new candidate embedding starts.
+Read the original review and history, retain those items under their saved IDs
+or stable keys, and put revised interpretation in conditions, predictions or
+assessment rationale. New items can be added. The publication transaction
+rechecks retention, and a refused correction cannot publish new items or nodes.
+
 ## Compatibility and formal contract
 
 ### PostgreSQL-owned item identities

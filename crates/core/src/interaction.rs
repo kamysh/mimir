@@ -187,6 +187,18 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    pub(crate) fn review_retention(message: String) -> Self {
+        let issue = CorrectionItem::new(Location::Arguments,
+            Fault { path: vec![Segment::Key("review".into()),Segment::Key("extracted_items".into())], code: Code::MissingReference, message },
+            "A review correction retains every original extracted item's assigned identity, source, actor, exact quotation and kind. Interpretation may change and new items may be added.".into(),
+            "Call get_learning_review and experience_history with the same experience ID. Retain all original extracted items using their saved IDs or stable item keys and original source, actor, statement and kind. Put revised interpretation in conditions, predictions or assessment rationale. Ask the user if the intended correction is uncertain. Do not omit an original item, invent its identity or rewrite the quoted evidence.".into())
+            .expect("review retention correction retains complete guidance");
+        Self {
+            correction: NeedsInput::new(issue, vec![])
+                .expect("explained review retention correction"),
+        }
+    }
+
     pub(crate) fn source_retention(path: Vec<Segment>, code: Code, message: String) -> Self {
         let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
             "An experience keeps its original project and every original source record unchanged. Corrections append a separate source record.".into(),

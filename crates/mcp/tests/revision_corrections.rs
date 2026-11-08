@@ -88,6 +88,56 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
 }
 
 #[tokio::test]
+async fn review_retention_is_checked_before_embedding_without_rewriting_original_items(
+) -> Result<()> {
+    let service = test_service().await?;
+    let id = fixture_identity().await?;
+    let project = format!("review-retention-{id}");
+    let db = db::connect(&isolation::fixture().database_config()).await?;
+    let mut client = Client::start(id)?;
+    let checked = async {
+        let source = json!({"id":id,"project":project,"context":"review retention","action":"preserve extracted evidence","outcome":"unknown","source":"agent_report","evidence":["original/0"],"source_records":[{"source_ref":"original/0","actor":"agent","provenance":"agent_report","text":"Check first. Then verify."}]});
+        ensure!(client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?["revision"]==1);
+        let item = json!({"kind":"suggestion","key":"check-first","source_ref":"original/0","actor":"agent","statement":"Check first.","conditions":"not yet observed"});
+        let review = json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"keep the original quotation","extracted_items":[item],"source_coverage":[{"source_ref":"original/0","status":"unresolved","reason":"no observed outcome"}]});
+        let original = client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
+        ensure!(original["review_revision"]==1 && original["item_ids"]["check-first"].is_string());
+        let history = service.experience_history(id).await?;
+        let mut omitted = review.clone(); omitted["extracted_items"] = json!([]);
+        let mut rewritten = review.clone(); rewritten["extracted_items"][0]["statement"] = json!("Then verify.");
+        let mut kind = review.clone(); kind["extracted_items"][0]["kind"] = json!("decision");
+        let mut renamed = review.clone(); renamed["extracted_items"][0]["key"] = json!("new-name");
+        for mut invalid in [omitted.clone(),rewritten,kind,renamed] {
+            reference_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":1})).await?,json!(["review","extracted_items"]),Code::MissingReference)?;
+            // A missing embedding backend must not mask this input mistake.
+            invalid["candidates"] = json!([{"kind":"belief","key":"must-not-embed","content":"complete candidate fixture","memory_type":"Fact"}]);
+            reference_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":1})).await?,json!(["review","extracted_items"]),Code::MissingReference)?;
+            ensure!(service.experience_history(id).await? == history);
+            ensure!(db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1",&[&id]).await?.get::<_,i64>(0)==1);
+            ensure!(db.query_one("SELECT count(*) FROM mimir_review_candidates WHERE experience_id=$1",&[&id]).await?.get::<_,i64>(0)==0);
+        }
+        ensure!(client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await? == original);
+        let mut revised = review.clone(); revised["extracted_items"][0]["conditions"] = json!("interpretation revised; quotation retained");
+        let next = json!({"kind":"suggestion","key":"verify-next","source_ref":"original/0","actor":"agent","statement":"Then verify.","conditions":"not yet observed"});
+        revised["extracted_items"].as_array_mut().unwrap().push(next);
+        let answer = client.call("review_experience",json!({"review":revised,"expected_review_revision":1})).await?;
+        ensure!(answer["review_revision"]==2 && answer["item_ids"]["check-first"]==original["item_ids"]["check-first"] && answer["item_ids"]["verify-next"].is_string());
+        ensure!(client.call("review_experience",json!({"review":revised,"expected_review_revision":1})).await? == answer);
+        let readback = client.call("get_learning_review",json!({"id":id})).await?;
+        ensure!(readback["review_revision"]==2);
+        ensure!(db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1",&[&id]).await?.get::<_,i64>(0)==2);
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    let cleanup = service.delete_project(&project).await;
+    checked?;
+    ensure!(stopped.success());
+    cleanup?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn source_retention_corrections_preserve_original_evidence_and_allow_appended_corrections(
 ) -> Result<()> {
     let service = test_service().await?;

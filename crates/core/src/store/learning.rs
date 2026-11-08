@@ -407,6 +407,27 @@ impl AgeStore {
             .map(|row| Ok(serde_json::from_str(row.get::<_, &str>(0))?))
             .transpose()
     }
+
+    async fn check_review_retention(
+        tx: &Transaction<'_>,
+        review: &Review,
+        revision: i64,
+    ) -> Result<()> {
+        let Some(row) = tx.query_opt("SELECT payload::text FROM mimir_review_versions WHERE experience_id=$1 AND revision=$2", &[&review.experience_id,&revision]).await? else { return Ok(()); };
+        let prior: Review = serde_json::from_str(row.get(0))?;
+        for item in prior.extracted_items {
+            if !review.extracted_items.iter().any(|i| {
+                i.id == item.id
+                    && i.source_ref == item.source_ref
+                    && i.actor == item.actor
+                    && i.statement == item.statement
+                    && i.kind == item.kind
+            }) {
+                return Err(RequestCorrection::review_retention(format!("Original extracted item {:?} (ID {:?}, source {:?}) is missing or changed. Retain its original identity, actor, exact statement and kind; put revised interpretation in conditions, predictions or rationale.",item.key,item.id,item.source_ref)).into());
+            }
+        }
+        Ok(())
+    }
     async fn candidate_ids(
         tx: &Transaction<'_>,
         experience_id: Uuid,
@@ -482,16 +503,21 @@ impl AgeStore {
             .learning_beliefs_for_ids(&tx, &references.iter().map(|(id, _)| *id).collect())
             .await?;
         validate_named_targets(&beliefs, &current.experience.project, references)?;
-        for (index, item) in review.extracted_items.iter().enumerate() {
-            Self::lookup_item_identity(
+        let mut identity_view = review.clone();
+        for (index, item) in identity_view.extracted_items.iter_mut().enumerate() {
+            if let ItemIdentity::Recorded(id) = Self::lookup_item_identity(
                 &tx,
                 review.experience_id,
                 item,
                 &["review", "extracted_items"],
                 index,
             )
-            .await?;
+            .await?
+            {
+                item.id = Some(id);
+            }
         }
+        Self::check_review_retention(&tx, &identity_view, current.review_revision).await?;
         for (index, assessment) in review.assessments.iter().enumerate() {
             for (key_index, key) in assessment.item_keys.iter().enumerate() {
                 if !review
@@ -872,12 +898,7 @@ impl AgeStore {
         let review = &allocated;
         crate::learning_sources::validate_review(review, &current.experience)
             .map_err(crate::validation::Refusal::validation)?;
-        if let Some(prior)=tx.query_opt("SELECT payload::text FROM mimir_review_versions WHERE experience_id=$1 AND revision=$2", &[&review.experience_id,&current.review_revision]).await? {
-            let prior:Review=serde_json::from_str(prior.get(0))?;
-            for item in prior.extracted_items {
-                ensure!(review.extracted_items.iter().any(|i|i.id==item.id && i.source_ref==item.source_ref && i.actor==item.actor && i.statement==item.statement && i.kind==item.kind),"review corrections must retain extracted identities and original quotations");
-            }
-        }
+        Self::check_review_retention(&tx, review, current.review_revision).await?;
 
         let old_review = Self::active_review(&tx, review.experience_id).await?;
         let candidate_ids = self

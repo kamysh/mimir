@@ -85,8 +85,12 @@ ReviewCorrection old new = ItemRetention.Retained
   (map itemKey (Review.extracted old)) (map itemKey (Review.extracted new))
 
 validateReviewCorrection : ∀ old new → Checked (ReviewCorrection old new)
-validateReviewCorrection old new = at (key "extracted_items") (ItemRetention.validate
-  (map itemKey (Review.extracted old)) (map itemKey (Review.extracted new)))
+validateReviewCorrection old new with ItemRetention.validate
+  (map itemKey (Review.extracted old)) (map itemKey (Review.extracted new))
+... | accepted retained = accepted retained
+... | rejected detail refutation = rejected
+  (fault (key "extracted_items" ∷ []) missingReference
+    "review correction must retain original extracted identities, quotations, kinds, sources and actors") refutation
 
 reviewCorrectionsCompose : ∀ first second third →
   ReviewCorrection first second → ReviewCorrection second third → ReviewCorrection first third

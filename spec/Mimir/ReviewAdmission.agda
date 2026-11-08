@@ -133,7 +133,7 @@ module For (env : Environment) (requested : Review) where
     result (Targets.checkReferences (Experience.project (Environment.experience env))
       (Environment.beliefs env) (existingReferences requested)) >>= λ existingTargetsValid →
     result (validateReviewSources (Environment.experience env) requested) >>= λ sourcesValid →
-    result (checkPrior (Environment.prior env) requested) >>= λ retained →
+    result (at (key "review") (checkPrior (Environment.prior env) requested)) >>= λ retained →
     Resolution.prepareReview requested (Environment.registry env) >>= λ prepared →
     result (validateReviewSources (Environment.experience env) (materialized prepared)) >>= λ materializedSourcesValid →
     result (Targets.validate (Experience.project (Environment.experience env))
