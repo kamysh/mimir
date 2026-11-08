@@ -5,7 +5,7 @@
 module Mimir.ReviewPlanning where
 
 open import Data.Bool using (true; false)
-open import Data.List using ([]; map)
+open import Data.List using ([]; _∷_; map)
 open import Data.List.Relation.Unary.All using (All)
 open import Data.Integer using (ℤ; +_)
 open import Data.Nat using (ℕ; _<?_; _≟_)
@@ -17,7 +17,7 @@ open import Mimir.ExperienceSchema using (Experience)
 open import Mimir.ReviewSchema using (Review; validateReview)
 open import Mimir.LearningCandidates using (Candidate)
 open import Mimir.SourceReview using (_≟Text_)
-open import Mimir.Validation using (Fault; fault; staleRevision; wrongIdentity; accepted; rejected)
+open import Mimir.Validation using (Fault; fault; key; staleRevision; wrongIdentity; accepted; rejected)
 open import Mimir.RevisionBounds using (i64Maximum)
 import Mimir.LearningKeys as Keys
 import Mimir.CandidateRegistry as Registry
@@ -67,7 +67,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
   ...           | accepted declarations = replay (replayed retry pinned declarations)
   plan identities | accepted structure | yes room | accepted pinned | yes project | false
     with expected ≟ Ledger.R.Cell.review F.state
-  ... | no different = refused (fault [] staleRevision "stale review revision")
+  ... | no different = refused (fault (key "expected_review_revision" ∷ []) staleRevision "stale review revision")
   ... | yes same with F.P.prepare identities
   ...   | inj₁ failure = refused failure
   ...   | inj₂ preparation = fresh (F.fresh project same retry room preparation)

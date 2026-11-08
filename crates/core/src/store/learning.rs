@@ -1,8 +1,33 @@
 use super::*;
+use crate::interaction::{RequestCorrection, RECORD_REVISION_READBACK, REVIEW_REVISION_READBACK};
 use crate::learning::*;
+use crate::validation::Segment;
 use anyhow::{ensure, Context};
 use std::collections::HashSet;
 use tokio_postgres::Transaction;
+
+fn record_revision_refusal(supplied: i64, current: i64) -> anyhow::Error {
+    RequestCorrection::stale_revision(vec![Segment::Key("expected_revision".into())],
+        format!("stale experience revision: supplied {supplied}; current is {current}. New experiences require expected_revision=0."), RECORD_REVISION_READBACK).into()
+}
+
+fn review_revision_refusal(source: bool, supplied: i64, current: i64) -> anyhow::Error {
+    let path = if source {
+        vec![
+            Segment::Key("review".into()),
+            Segment::Key("experience_revision".into()),
+        ]
+    } else {
+        vec![Segment::Key("expected_review_revision".into())]
+    };
+    let kind = if source { "experience" } else { "review" };
+    RequestCorrection::stale_revision(
+        path,
+        format!("stale {kind} revision: supplied {supplied}; current is {current}."),
+        REVIEW_REVISION_READBACK,
+    )
+    .into()
+}
 
 fn state(row: &Row) -> Result<ExperienceState> {
     let experience: Experience = serde_json::from_str(row.get::<_, &str>("payload"))?;
@@ -357,10 +382,13 @@ impl AgeStore {
             .await?
             .ok_or_else(|| anyhow::anyhow!("experience not found"))?,
         )?;
-        ensure!(
-            review.experience_revision == current.revision,
-            "stale review: experience has changed"
-        );
+        if review.experience_revision != current.revision {
+            return Err(review_revision_refusal(
+                true,
+                review.experience_revision,
+                current.revision,
+            ));
+        }
         if Self::active_request(&tx, review.experience_id)
             .await?
             .as_ref()
@@ -370,11 +398,13 @@ impl AgeStore {
             tx.commit().await?;
             return Ok(None);
         }
-        ensure!(
-            expected == current.review_revision,
-            "stale review revision: current is {}",
-            current.review_revision
-        );
+        if expected != current.review_revision {
+            return Err(review_revision_refusal(
+                false,
+                expected,
+                current.review_revision,
+            ));
+        }
         let mut new = Vec::new();
         for (index, candidate) in review.candidates.iter().enumerate() {
             let row = tx.query_opt("SELECT kind,declaration::text,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2",
@@ -532,7 +562,9 @@ impl AgeStore {
             .map(state)
             .transpose()?;
         if prior.is_none() {
-            ensure!(expected == 0, "new experience requires expected_revision=0");
+            if expected != 0 {
+                return Err(record_revision_refusal(expected, 0));
+            }
             // The ownership FK needs its experience row. All validation and
             // allocation below still roll back together on any refusal.
             tx.execute(
@@ -560,13 +592,13 @@ impl AgeStore {
             {
                 return Ok(p.clone());
             }
-            ensure!(
-                expected == p.revision,
-                "stale experience revision: current is {}",
-                p.revision
-            );
+            if expected != p.revision {
+                return Err(record_revision_refusal(expected, p.revision));
+            }
         } else {
-            ensure!(expected == 0, "new experience requires expected_revision=0");
+            if expected != 0 {
+                return Err(record_revision_refusal(expected, 0));
+            }
         }
         let target_ids: HashSet<_> = experience.belief_ids.iter().copied().collect();
         let beliefs = self.learning_beliefs_for_ids(&tx, &target_ids).await?;
@@ -636,10 +668,13 @@ impl AgeStore {
             .await?
             .ok_or_else(|| anyhow::anyhow!("experience not found"))?,
         )?;
-        ensure!(
-            review.experience_revision == current.revision,
-            "stale review: experience has changed"
-        );
+        if review.experience_revision != current.revision {
+            return Err(review_revision_refusal(
+                true,
+                review.experience_revision,
+                current.revision,
+            ));
+        }
         let old_request = Self::active_request(&tx, review.experience_id).await?;
         if let Some(old) = old_request.as_ref() {
             if old == review
@@ -656,11 +691,13 @@ impl AgeStore {
                 return Ok(result);
             }
         }
-        ensure!(
-            expected == current.review_revision,
-            "stale review revision: current is {}",
-            current.review_revision
-        );
+        if expected != current.review_revision {
+            return Err(review_revision_refusal(
+                false,
+                expected,
+                current.review_revision,
+            ));
+        }
         let request = serde_json::to_string(review)?;
         let mut allocated = review.clone();
         Self::resolve_item_ids(&tx, review.experience_id, &mut allocated.extracted_items).await?;

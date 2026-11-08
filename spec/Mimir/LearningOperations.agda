@@ -18,6 +18,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 import Data.Integer.Properties as Integer
 open import Relation.Nullary using (does; yes; no)
 open import Mimir.Text using (Text)
+open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.ExperienceSchema using (Experience)
 open import Mimir.ReviewSchema using (Review)
 open import Mimir.LearningCandidates using (Candidate)
@@ -57,6 +58,36 @@ data Failure : Set where
   externalFailure : Text → Failure
   allocationFailure : Validation.Fault → Failure
   preparationFailure : Errors.AgentCorrection.Claim → Failure
+
+module Correction = Errors.AgentCorrection
+
+recordReadback : Text
+recordReadback = Data.String.toList "Call get_experience with the same experience ID to read its current revision, and experience_history if the changes need inspection. Compare the stored content with the intended correction before resubmitting with the current expected_revision. Keep the same incident ID; do not blindly overwrite newer work or invent a revision."
+
+reviewReadback : Text
+reviewReadback = Data.String.toList "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values."
+
+-- Only the two identified public revision fields are correctable here. A
+-- similarly coded internal snapshot-integrity fault stays an ordinary error.
+reviewRevisionCorrection : Validation.Fault → Maybe Correction.Claim
+reviewRevisionCorrection detail@(Validation.problem (Validation.fieldKey name ∷ []) Validation.staleRevision reason)
+  with name ≟Text Data.String.toList "expected_review_revision"
+... | no _ = nothing
+... | yes _ = just (Correction.claim
+  (Correction.staleRevisionItem (Validation.Fault.path detail) (Validation.Fault.explanation detail) reviewReadback) [])
+reviewRevisionCorrection detail@(Validation.problem (Validation.fieldKey outer ∷ Validation.fieldKey inner ∷ []) Validation.staleRevision reason)
+  with outer ≟Text Data.String.toList "review" | inner ≟Text Data.String.toList "experience_revision"
+... | yes _ | yes _ = just (Correction.claim
+  (Correction.staleRevisionItem (Validation.Fault.path detail) (Validation.Fault.explanation detail) reviewReadback) [])
+... | _ | _ = nothing
+reviewRevisionCorrection _ = nothing
+
+revisionCorrection : Failure → Maybe Correction.Claim
+revisionCorrection (recordFailure Recording.staleRevision) = just (Correction.claim
+  (Correction.staleRevisionItem (Validation.key "expected_revision" ∷ [])
+    (Data.String.toList "The supplied experience revision is no longer current.") recordReadback) [])
+revisionCorrection (reviewFailure (Reviewing.invalid detail)) = reviewRevisionCorrection detail
+revisionCorrection _ = nothing
 
 expectedValid : ℤ → Data.Bool.Bool
 expectedValid expected = does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))

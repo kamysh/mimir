@@ -187,6 +187,12 @@ module AgentCorrection where
     (toList "An identifier of the intended record that is currently stored in Mimir.")
     lookup
 
+  staleRevisionItem : List Mimir.Validation.Segment → Text → Text → Item
+  staleRevisionItem path explanation readback = item arguments
+    (Mimir.Validation.problem path Mimir.Validation.staleRevision explanation)
+    (toList "The current revision returned by Mimir for the same stored experience and review.")
+    readback
+
   record Certified (World : Set) (before after : World) : Set where
     constructor certified
     field report : Claim; unchanged : after ≡ before

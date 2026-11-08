@@ -183,7 +183,27 @@ pub struct RequestCorrection {
     correction: NeedsInput,
 }
 
+pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the same experience ID to read its current revision, and experience_history if the changes need inspection. Compare the stored content with the intended correction before resubmitting with the current expected_revision. Keep the same incident ID; do not blindly overwrite newer work or invent a revision.";
+pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
+
 impl RequestCorrection {
+    pub(crate) fn stale_revision(path: Vec<Segment>, message: String, readback: &str) -> Self {
+        let issue = CorrectionItem::new(
+            Location::Arguments,
+            Fault {
+                path,
+                code: Code::StaleRevision,
+                message,
+            },
+            "The current revision returned by Mimir for the same stored experience and review."
+                .into(),
+            readback.into(),
+        )
+        .expect("revision refusals identify the field and exact readback");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained revision refusal"),
+        }
+    }
     pub(crate) fn missing_reference(field: &str, message: String, lookup: &str) -> Self {
         let issue = CorrectionItem::new(
             Location::Arguments,

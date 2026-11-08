@@ -53,6 +53,8 @@ impl RegisteredOperation {
                     | GraphOperation::RecordContradiction
                     | GraphOperation::AddEvidence
                     | GraphOperation::QueryIntervention
+            ) | Operation::Learning(
+                LearningOperation::RecordExperience | LearningOperation::ReviewExperience
             )
         ) {
             if let Err(error) = &result {

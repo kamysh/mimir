@@ -12,6 +12,7 @@ open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (tt)
 open import Data.String using (String; toList)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.StructuredValue as V
 import Mimir.PublicEncoding as Encoding
@@ -165,6 +166,12 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project (A.learned q (A.Learn.reviewTransacted (A.Learn.Full.replayed s cleanup))) = success (snapshot s)
   project (A.learned q (A.Learn.preparationDecision report)) = decision report
   project (A.learned q (A.Learn.reviewTransacted (A.Learn.Full.refused (Operations.preparationFailure report) cleanup))) = decision report
+  project original@(A.learned q (A.Learn.transacted (A.Learn.T.refused reason (inj₂ tt)))) with Operations.revisionCorrection reason
+  ... | just report = decision report
+  ... | nothing = failure original
+  project original@(A.learned q (A.Learn.reviewTransacted (A.Learn.Full.refused reason (inj₂ tt)))) with Operations.revisionCorrection reason
+  ... | just report = decision report
+  ... | nothing = failure original
   project original@(A.learned q _) = failure original
   project original@(A.learningQueryResult result) = projectQuery original result
   project original@(A.contextResult result) with contextAssessments (Context.Assessments.values (ContextProtocol.Output.assessments result))
@@ -176,3 +183,18 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project original@(A.failed _) = failure original
   project original@A.invalidContext = failure original
   project original@A.invalidAssessment = failure original
+
+  -- A lost acknowledgement may have committed. Even when its error carries
+  -- revision information, it cannot use the no-business-changes correction.
+  module RevisionOutcomeLaws (q : Operations.Request) where
+    module L = A.Learn q
+
+    uncertainRecordRequiresReadback : ∀ value reason →
+      project (A.learned q (L.transacted (L.T.commitUncertain value reason))) ≡
+      failure (A.learned q (L.transacted (L.T.commitUncertain value reason)))
+    uncertainRecordRequiresReadback value reason = refl
+
+    uncertainReviewRequiresReadback : ∀ value reason →
+      project (A.learned q (L.reviewTransacted (L.Full.commitUncertain value reason))) ≡
+      failure (A.learned q (L.reviewTransacted (L.Full.commitUncertain value reason)))
+    uncertainReviewRequiresReadback value reason = refl

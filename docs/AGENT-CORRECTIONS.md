@@ -112,6 +112,21 @@ guidance in private diagnostics and public instructions to open the user dialog.
 Other selected reviews continue. No invented value, automatic cancellation,
 attempt limit or retry timer is used.
 
+Revision conflicts also return an actionable correction when the request was
+refused before publication. `record_experience` identifies `expected_revision`
+and directs the agent to `get_experience` and, when needed, `experience_history`.
+`review_experience` identifies either `review.experience_revision` or
+`expected_review_revision`, and directs the agent to `get_experience` and
+`get_learning_review`. The response includes the supplied and current values.
+The agent must compare the current source or review with its intended change
+before resubmitting; it must not blindly replace newer work or invent a token.
+Exact retries of completed requests still return the original saved result.
+
+These responses are emitted only for the identified revision checks. Internal
+snapshot faults, ordinary database errors and uncertain commits do not become
+corrections merely because their diagnostic mentions a revision. Both the
+record and review projection laws preserve readback after a lost acknowledgement.
+
 A database failure around publication can leave its outcome unknown. That
 failure is not converted into `business_changes: "none"`. Read back the original
 identity and saved operation outcome before deciding what to repeat.
@@ -131,9 +146,9 @@ decision. The response does not create a placeholder. This check adds no
 maximum length and does not impose a new whitespace rule.
 
 The shared response from #75 is used by MCP admission and the judge's correction
-dialogue. Stored-reference and stale-revision corrections, complete schema
+dialogue. Remaining stored-reference corrections, complete schema
 parity and mandatory recovery dispatch retain their separate obligations in
-#93–#94, #102 and #74/#76. A response format alone does not establish those
+#93, #102 and #74/#76. A response format alone does not establish those
 properties.
 
 The CLI also prints this JSON response and exits successfully when its request
