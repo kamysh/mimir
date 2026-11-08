@@ -2241,6 +2241,83 @@ mod snapshot_read_tests {
     }
 
     #[tokio::test]
+    async fn history_snapshot_keeps_both_ledgers_during_a_new_revision() -> Result<()> {
+        use crate::learning::{Experience, ObservationSource, Outcome};
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let mut setup = db::connect(&cfg.database).await?;
+        let id: Uuid = setup
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-history-{id}");
+        let reader = AgeStore::new(
+            db::connect(&cfg.database).await?,
+            cfg.database.dbname.clone(),
+        )?;
+        let mut source = Experience {
+            id,
+            project: project.clone(),
+            context: "one coherent history response".into(),
+            action: "initial source".into(),
+            outcome: Outcome::Success,
+            source: ObservationSource::ToolResult,
+            evidence: vec!["observed first revision".into()],
+            belief_ids: vec![],
+            pattern_id: None,
+            learning_items: vec![],
+            source_records: vec![],
+        };
+        let checked = async {
+            writer.record_experience(&source, 0).await?;
+            source.action = "second source".into();
+            writer.record_experience(&source, 1).await?;
+            let historical_source = serde_json::json!({"older_payload_shape": [null, "λ original source", {"field": "retained"}]});
+            let historical_review = serde_json::json!({"older_review_shape": {"complete": "λ original review ".repeat(200)}});
+            let tx = setup.transaction().await?;
+            tx.execute("UPDATE mimir_experience_versions SET payload=$2::text::jsonb WHERE experience_id=$1 AND revision=1", &[&id, &historical_source.to_string()]).await?;
+            tx.execute("INSERT INTO mimir_review_versions(experience_id,revision,experience_revision,payload) VALUES($1,1,2,$2::text::jsonb)", &[&id,&historical_review.to_string()]).await?;
+            tx.execute("UPDATE mimir_experiences SET review_revision=1,reviewed_revision=2 WHERE id=$1", &[&id]).await?;
+            tx.commit().await?;
+            let before = writer.experience_history(id).await?;
+            anyhow::ensure!(before["experiences"][0]["payload"] == historical_source);
+            anyhow::ensure!(before["reviews"][0]["payload"] == historical_review);
+            anyhow::ensure!(writer.learning_review(id).await?["review"] == historical_review,
+                "current review must preserve raw historical fields");
+            source.action = "third source".into();
+            let current_payload = serde_json::to_string(&source)?;
+            let next_review = serde_json::json!({"new_review_shape": {"unchanged": [true, 4, "全文"]}}).to_string();
+            let during = reader.experience_history_after_sources(id, || async {
+                let tx = setup.transaction().await?;
+                tx.execute("INSERT INTO mimir_experience_versions(experience_id,revision,payload) VALUES($1,3,$2::text::jsonb)", &[&id, &current_payload]).await?;
+                tx.execute("INSERT INTO mimir_review_versions(experience_id,revision,experience_revision,payload) VALUES($1,2,3,$2::text::jsonb)", &[&id, &next_review]).await?;
+                tx.execute("UPDATE mimir_experiences SET revision=3,review_revision=2,reviewed_revision=3 WHERE id=$1", &[&id]).await?;
+                tx.commit().await?;
+                Ok(())
+            }).await?;
+            anyhow::ensure!(during == before, "both complete histories must retain the original source snapshot");
+            let after = writer.experience_history(id).await?;
+            anyhow::ensure!(after["experiences"].as_array().unwrap().len() == 3 && after["reviews"].as_array().unwrap().len() == 2,
+                "the next request must see both parts of the committed revision");
+            let current = writer.get_experience(id).await?.unwrap();
+            anyhow::ensure!(current.revision == 3 && current.experience.action == source.action);
+            anyhow::ensure!(!writer.pending_experiences(Some(&project), None).await?.iter().any(|row| row.experience.id == id),
+                "reading history must not create pending review work");
+            let failure = reader.experience_history_after_sources(id, || async {
+                anyhow::bail!("controlled interruption after source history")
+            }).await.unwrap_err();
+            anyhow::ensure!(failure.to_string().contains("controlled interruption"));
+            anyhow::ensure!(reader.experience_history(id).await? == after,
+                "an interrupted history response must release its transaction and connection");
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn contradictions_snapshot_keeps_endpoints_during_committed_delete() -> Result<()> {
         let cfg = config();
         let writer = MimirService::connect(&cfg).await?;

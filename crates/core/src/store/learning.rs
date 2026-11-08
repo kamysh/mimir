@@ -203,18 +203,34 @@ impl AgeStore {
         row.map(|r| Ok(serde_json::json!({"experience_id":id,"revision":r.get::<_,i64>(0),"review_revision":r.get::<_,i64>(1),"reviewed_revision":r.get::<_,i64>(2),"review":r.get::<_,Option<&str>>(3).map(serde_json::from_str::<serde_json::Value>).transpose()?}))).transpose().map(|v|v.unwrap_or(serde_json::Value::Null))
     }
     pub async fn experience_history(&self, id: Uuid) -> Result<serde_json::Value> {
-        let client = self.client.lock().await;
-        let mut result = serde_json::json!({"experiences": [], "reviews": []});
-        for (table, key) in [
-            ("mimir_experience_versions", "experiences"),
-            ("mimir_review_versions", "reviews"),
-        ] {
-            let rows = client.query(&format!("SELECT revision,payload::text,created_at FROM {table} WHERE experience_id=$1 ORDER BY revision"), &[&id]).await?;
-            result[key] = serde_json::Value::Array(rows.iter().map(|row| {
-                Ok(serde_json::json!({"revision":row.get::<_,i64>(0), "payload":serde_json::from_str::<serde_json::Value>(row.get::<_,&str>(1))?, "created_at":row.get::<_,chrono::DateTime<chrono::Utc>>(2)}))
-            }).collect::<Result<_>>()?);
-        }
-        Ok(result)
+        self.experience_history_after_sources(id, || async { Ok(()) })
+            .await
+    }
+
+    pub(super) async fn experience_history_after_sources<F, W>(
+        &self,
+        id: Uuid,
+        after_sources: F,
+    ) -> Result<serde_json::Value>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let sources = Self::history_rows_on(tx.client(), id, "mimir_experience_versions").await?;
+        after_sources().await?;
+        let reviews = Self::history_rows_on(tx.client(), id, "mimir_review_versions").await?;
+        tx.commit().await?;
+        Ok(serde_json::json!({"experiences": sources, "reviews": reviews}))
+    }
+
+    async fn history_rows_on(client: &Client, id: Uuid, table: &str) -> Result<serde_json::Value> {
+        // The two callers supply fixed table names, never request content.
+        let rows = client.query(&format!("SELECT revision,payload::text,created_at FROM {table} WHERE experience_id=$1 ORDER BY revision"), &[&id]).await?;
+        Ok(serde_json::Value::Array(rows.iter().map(|row| {
+            Ok(serde_json::json!({"revision":row.get::<_,i64>(0), "payload":serde_json::from_str::<serde_json::Value>(row.get::<_,&str>(1))?, "created_at":row.get::<_,chrono::DateTime<chrono::Utc>>(2)}))
+        }).collect::<Result<_>>()?))
     }
     async fn learning_beliefs_for_ids(
         &self,

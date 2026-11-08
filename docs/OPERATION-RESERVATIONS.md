@@ -298,3 +298,19 @@ Ordinary CLI output prints selected belief and pattern text and supporting
 document passages in full, including their original whitespace. Record
 selection, ordering and numeric display do not impose a text-width ceiling.
 Legacy hook clipping remains separate work in #168/#171.
+
+Experience lookup, current review, source/review history and pending selection
+also have concrete read recovery values. Their full answers retain revisions,
+payload fields, timestamps and explicit positive selection. Reading these
+values leaves all business data and operation records unchanged.
+
+Stored history JSON is included in the same shared application world. Current
+review and historical rows preserve older payload shapes instead of decoding
+them through the current schema. Project ownership comes from the physical
+experience header, so project deletion also removes those raw history rows.
+
+The two experience-history queries use one read-only repeatable-read
+transaction. A revision and review committed by another client between those
+queries become visible together on the next request. The formal binding pins
+the review query to the source query's snapshot. Completion or interruption
+releases the transaction. Mandatory dispatcher assembly remains #74/#76.

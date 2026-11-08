@@ -136,17 +136,6 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   projectRead original Read.missingBelief = failure original
   projectRead original Read.invalidProvenance = failure original
 
-  rawCurrent : ℕ → RawHistory.Current → V.Value
-  rawCurrent id currentRecord = object (("experience_id" , uuid id) ∷
-    ("revision" , V.signed (RawHistory.Current.revision currentRecord)) ∷
-    ("review_revision" , V.signed (RawHistory.Current.reviewRevision currentRecord)) ∷
-    ("reviewed_revision" , V.signed (RawHistory.Current.reviewedRevision currentRecord)) ∷
-    ("review" , optional (λ value → value) (RawHistory.Current.review currentRecord)) ∷ [])
-
-  rawHistoryEntry : RawHistory.Entry → V.Value
-  rawHistoryEntry storedEntry = object (("revision" , V.signed (RawHistory.Entry.revision storedEntry)) ∷
-    ("payload" , RawHistory.Entry.payload storedEntry) ∷ ("created_at" , timestamp (RawHistory.Entry.createdAt storedEntry)) ∷ [])
-
   projectQuery : A.Result → Query.Result → Projection
   projectQuery original (Query.experienceResult s) = success (optional snapshot s)
   projectQuery original (Query.reviewResult r) = success (optional currentReview r)

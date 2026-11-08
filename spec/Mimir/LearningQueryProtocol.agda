@@ -1,12 +1,13 @@
 {-# OPTIONS --safe #-}
--- Read protocols use a separate committed snapshot for each successful SELECT.
--- A transaction handle does not imply a repeatable snapshot at READ COMMITTED.
+-- Ordinary SELECTs observe their own committed state. History uses an explicit
+-- read-only stable transaction so its source and review lists agree.
 module Mimir.LearningQueryProtocol where
 
 open import Data.Bool using (Bool; true; false; _∧_)
 open import Data.List using (List; []; _∷_; map; length)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤?_)
+open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤)
 open import Mimir.Text using (Text; nonblank)
@@ -26,6 +27,7 @@ import Mimir.LearningRecompute as Recompute
 import Mimir.LearningTargets as Targets
 import Mimir.RevisionBounds as Bounds
 import Mimir.Validation as Validation
+import Mimir.ApplicationStore as Physical
 
 data Request : Set where
   experience currentReview history : ℕ → Request
@@ -42,14 +44,16 @@ data Statement : Set where
 data Effect : Set where
   beginRead : Effect
   readReviewHeader : ℕ → Effect
-  readHistoryRows : RawHistory.Kind → ℕ → Effect
+  openHistory : ℕ → Effect
+  historySnapshotReviews : ℕ → Physical.World → ℕ → Effect
   select : Maybe ℕ → Statement → Effect
   dropTransaction : ℕ → Effect
 
 Reply : Effect → Set
 Reply beginRead = Text ⊎ ℕ
 Reply (readReviewHeader _) = Text ⊎ Maybe RawHistory.Current
-Reply (readHistoryRows _ _) = Text ⊎ List RawHistory.Entry
+Reply (openHistory _) = Text ⊎ (ℕ × Physical.World × List RawHistory.Entry)
+Reply (historySnapshotReviews _ _ _) = Text ⊎ List RawHistory.Entry
 Reply (select handle statement) = Text ⊎ Store.World
 Reply (dropTransaction tx) = ⊤
 
@@ -104,11 +108,11 @@ start (experience id) = read nothing (currentOf id) (λ observed →
 start (currentReview id) = ask (readReviewHeader id) λ where
   (inj₁ error) → done (failed error)
   (inj₂ current) → done (rawReviewResult id current)
-start (history id) = ask (readHistoryRows RawHistory.sources id) λ where
+start (history id) = ask (openHistory id) λ where
   (inj₁ error) → done (failed error)
-  (inj₂ sources) → ask (readHistoryRows RawHistory.reviews id) λ where
-    (inj₁ error) → done (failed error)
-    (inj₂ reviews) → done (rawHistoryResult sources reviews)
+  (inj₂ (tx , first , sources)) → ask (historySnapshotReviews tx first id) λ where
+    (inj₁ error) → close (just tx) (failed error)
+    (inj₂ reviews) → close (just tx) (rawHistoryResult sources reviews)
 start (pending project nothing excluded) = read nothing (pendingRows project nothing excluded) (λ observed →
   done (pendingResult (Experiences.pendingExperiences project nothing excluded (Store.World.current observed))))
 start (pending project (just limit) excluded) with does (1 ≤? limit)

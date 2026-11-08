@@ -12,12 +12,14 @@ open import Data.Integer using (ℤ)
 import Data.Integer.Properties as Integer
 open import Relation.Nullary using (does; yes; no)
 import Mimir.StructuredValue as V
+open import Mimir.Text using (Text)
 
 data Kind : Set where sources reviews : Kind
 
 record Head : Set where
   constructor head
   field identity : ℕ; revision reviewRevision reviewedRevision : ℤ
+        project : Text -- physical experience column, independent of payload decoding
 
 record Row : Set where
   constructor row

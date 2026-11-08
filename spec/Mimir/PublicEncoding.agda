@@ -35,6 +35,7 @@ import Mimir.AssessmentRead as Assessment
 import Mimir.AssessmentWrites as Contributions
 import Mimir.LearningHistory as History
 import Mimir.GraphRecords as Records
+import Mimir.LearningHistoryWire as RawHistory
 
 record Formatting : Set where
   field
@@ -114,6 +115,17 @@ module Encode (format : Formatting) where
 
   identityPair : ℕ × ℕ → V.Value
   identityPair (a , b) = V.array (uuid a ∷ uuid b ∷ [])
+
+  rawCurrent : ℕ → RawHistory.Current → V.Value
+  rawCurrent id currentRecord = object (("experience_id" , uuid id) ∷
+    ("revision" , V.signed (RawHistory.Current.revision currentRecord)) ∷
+    ("review_revision" , V.signed (RawHistory.Current.reviewRevision currentRecord)) ∷
+    ("reviewed_revision" , V.signed (RawHistory.Current.reviewedRevision currentRecord)) ∷
+    ("review" , optional (λ value → value) (RawHistory.Current.review currentRecord)) ∷ [])
+
+  rawHistoryEntry : RawHistory.Entry → V.Value
+  rawHistoryEntry storedEntry = object (("revision" , V.signed (RawHistory.Entry.revision storedEntry)) ∷
+    ("payload" , RawHistory.Entry.payload storedEntry) ∷ ("created_at" , timestamp (RawHistory.Entry.createdAt storedEntry)) ∷ [])
 
   prediction : L.Prediction → V.Value
   prediction p = object (("quantity" , V.string (L.Prediction.quantity p)) ∷ ("value" , V.floating (L.Prediction.point p)) ∷

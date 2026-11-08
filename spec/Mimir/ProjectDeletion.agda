@@ -17,6 +17,7 @@ open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
 import Mimir.GraphWrites as Writes
 import Mimir.LearningStore as Learning
+import Mimir.LearningHistoryWire as RawHistory
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.ReviewLedger as Ledger
 import Mimir.ExperienceRead as Read
@@ -144,6 +145,23 @@ ownedGround selected edge = Ranking.member (Store.Ground.belief edge) (Closure.b
 
 -- One resulting state, defined field by field from ownership. This function
 -- contains no SQL statements, commit order, receipt or execution cursor.
+historyOwned : Text → RawHistory.Head → Bool
+historyOwned project header = does (project ≟Text RawHistory.Head.project header)
+
+historyIDs : Text → Store.World → List ℕ
+historyIDs project before = map RawHistory.Head.identity
+  (filterᵇ (historyOwned project) (RawHistory.Database.heads (Store.World.history before)))
+
+ownedHistoryRow : Text → Store.World → RawHistory.Row → Bool
+ownedHistoryRow project before storedRow = Ranking.member (RawHistory.Row.experience storedRow) (historyIDs project before)
+
+eraseHistory : Text → Store.World → RawHistory.Database
+eraseHistory project before = record
+  { heads = Retention.retain (historyOwned project) (RawHistory.Database.heads prior)
+  ; sourceRows = Retention.retain (ownedHistoryRow project before) (RawHistory.Database.sourceRows prior)
+  ; reviewRows = Retention.retain (ownedHistoryRow project before) (RawHistory.Database.reviewRows prior) }
+  where prior = Store.World.history before
+
 eraseProject : Text → Store.World → Store.World
 eraseProject project before = record before
   { learning = record learn
@@ -155,12 +173,28 @@ eraseProject project before = record before
   ; chunks = Retention.retain (λ chunk → Writes.tagged project (Documents.Chunk.project chunk)) (Store.World.chunks before)
   ; beliefVectors = Retention.retain (λ row → Ranking.member (proj₁ row) (Closure.beliefs selected)) (Store.World.beliefVectors before)
   ; chunkVectors = Retention.retain (λ row → Ranking.member (proj₁ row) (Closure.chunks selected)) (Store.World.chunkVectors before)
-  ; grounds = Retention.retain (ownedGround selected) (Store.World.grounds before) }
+  ; grounds = Retention.retain (ownedGround selected) (Store.World.grounds before)
+  ; history = eraseHistory project before }
   where
   selected = ownership project before
   roots = Closure.beliefs selected ++ Closure.patterns selected
   learn = Store.World.learning (forgetLearning project before)
   publication = Learning.World.publication learn
+
+noProjectHistoryHeaders : ∀ project before → All (λ header → historyOwned project header ≡ false)
+  (RawHistory.Database.heads (Store.World.history (eraseProject project before)))
+noProjectHistoryHeaders project before = Retention.excludesOwned (historyOwned project)
+  (RawHistory.Database.heads (Store.World.history before))
+
+noOriginalProjectSourceHistory : ∀ project before → All (λ row → ownedHistoryRow project before row ≡ false)
+  (RawHistory.Database.sourceRows (Store.World.history (eraseProject project before)))
+noOriginalProjectSourceHistory project before = Retention.excludesOwned (ownedHistoryRow project before)
+  (RawHistory.Database.sourceRows (Store.World.history before))
+
+noOriginalProjectReviewHistory : ∀ project before → All (λ row → ownedHistoryRow project before row ≡ false)
+  (RawHistory.Database.reviewRows (Store.World.history (eraseProject project before)))
+noOriginalProjectReviewHistory project before = Retention.excludesOwned (ownedHistoryRow project before)
+  (RawHistory.Database.reviewRows (Store.World.history before))
 
 noOriginalBeliefVectors : ∀ project before →
   All (λ row → Ranking.member (proj₁ row) (Closure.beliefs (ownership project before)) ≡ false)

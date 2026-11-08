@@ -27,6 +27,7 @@ import Mimir.RetrievalRanking as Ranking
 import Mimir.LearningRecompute as Recompute
 import Mimir.IndependentProvenance as Independent
 import Mimir.StructuredValue as Wire
+import Mimir.LearningHistoryWire as RawHistory
 
 -- At an external embedding boundary each binary32 component may be widened
 -- exactly to Float for transport/storage description. No binary64 dot product
@@ -76,6 +77,7 @@ record World : Set where
     chunks : List Documents.Chunk
     beliefVectors chunkVectors : List (ℕ × Vector)
     grounds : List Ground
+    history : RawHistory.Database -- original JSONB, including older payload shapes
     operations : OperationTables
 
 replyKey? : ∀ token step row → Dec (token ≡ SavedReplyRow.token row × step ≡ SavedReplyRow.step row)
@@ -138,11 +140,11 @@ otherSavedAnswerPreserved before token step proposed otherToken otherStep differ
 -- This projection is only a frame assertion. Recovery still observes the
 -- complete World, including all operation tables, without a smaller-world API.
 BusinessSnapshot = Learning.World × List Documents.Chunk ×
-  List (ℕ × Vector) × List (ℕ × Vector) × List Ground
+  List (ℕ × Vector) × List (ℕ × Vector) × List Ground × RawHistory.Database
 
 businessSnapshot : World → BusinessSnapshot
 businessSnapshot before = World.learning before , World.chunks before ,
-  World.beliefVectors before , World.chunkVectors before , World.grounds before
+  World.beliefVectors before , World.chunkVectors before , World.grounds before , World.history before
 
 savingAnswerPreservesBusiness : ∀ before token step proposed →
   businessSnapshot (saveAnswer before token step proposed) ≡ businessSnapshot before
