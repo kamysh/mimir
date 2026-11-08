@@ -27,7 +27,6 @@ module With (Path Handle NativeError : Set) where
   display nativeDisplay unsafeReport = toList "unsafe state report"
   display nativeDisplay oversizedReport = toList "oversized state report"
   display nativeDisplay invalidReport = toList "invalid state report"
-  display nativeDisplay oversizedWrite = toList "state file is too large"
   display nativeDisplay (native error) = nativeDisplay error
 
   nativePreserved : ∀ nativeDisplay error → display nativeDisplay (native error) ≡ nativeDisplay error

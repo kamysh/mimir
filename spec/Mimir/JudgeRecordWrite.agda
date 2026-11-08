@@ -1,10 +1,9 @@
 {-# OPTIONS --safe #-}
--- Mimir supplies the persisted fields and enforces the limit on the actual
--- library-produced bytes. JSON serialization itself is a trusted operation.
+-- Mimir supplies the persisted fields and writes all library-produced bytes.
+-- JSON serialization itself is a trusted operation.
 module Mimir.JudgeRecordWrite where
 
-import Mimir.OptionalLimit as Limit
-open import Data.List using (List; length)
+open import Data.List using (List)
 open import Data.Nat using (ℕ)
 open import Data.Empty using (⊥)
 open import Data.Sum using (inj₂)
@@ -42,11 +41,6 @@ module Size (library : Library.Contract) (sizeMaximum : ℕ) where
 
     write : ∀ {name} → Path → Endian → Value name → W.P.Script W.Outcome
     write {name} directory endian value = W.writeBytes directory name endian (bytes value)
-
-    successFits : ∀ {name} directory endian (value : Value name) {events} →
-      W.P.Runs (write directory endian value) events (W.returned (inj₂ tt)) →
-      Limit.Within (Names.limit name) (length (bytes value))
-    successFits {name} directory endian value run = W.successRequiresBound directory name endian (bytes value) run
 
     successReceipts : ∀ {name} directory endian (value : Value name) {events} →
       W.P.Runs (write directory endian value) events (W.returned (inj₂ tt)) →

@@ -74,7 +74,7 @@ module With (Path Handle NativeError : Set) where
   data Error : Set where
     noParent inspectParent parentKind parentWritable createParent : Error
     inspectDirectory directoryKind directoryOwnership createDirectory : Error
-    unsafeLock unsafeReport oversizedReport invalidReport oversizedWrite : Error
+    unsafeLock unsafeReport oversizedReport invalidReport : Error
     native : IOError → Error
 
   Result : Set → Set
