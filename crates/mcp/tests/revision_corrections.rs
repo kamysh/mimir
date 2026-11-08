@@ -324,6 +324,53 @@ async fn item_identity_corrections_keep_authorship_and_roll_back_every_reservati
     Ok(())
 }
 
+#[tokio::test]
+async fn completed_review_readback_survives_candidate_deletion_without_resurrection() -> Result<()>
+{
+    let service = test_service().await?;
+    let id = fixture_identity().await?;
+    let project = format!("completed-review-readback-{id}");
+    let unrelated = fixture_pattern(Some(&project)).await?;
+    let db = db::connect(&isolation::fixture().database_config()).await?;
+    let mut client = Client::start(id)?;
+    let checked = async {
+        let source = json!({"id":id,"project":project,"context":"completed review fixture","action":"record one observation","outcome":"unknown","source":"agent_report","evidence":["isolated fixture receipt"]});
+        client.call("record_experience", json!({"experience":source,"expected_revision":0})).await?;
+        let review = json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"retain the original completed answer",
+            "candidates":[{"kind":"pattern","key":"retry-step","situation":"retry an observed operation","approach":"read the saved result before repeating it"}]});
+        let original = client.call("review_experience", json!({"review":review,"expected_review_revision":0})).await?;
+        let assigned: uuid::Uuid = original["candidate_ids"]["retry-step"].as_str().unwrap().parse()?;
+        ensure!(service.get_pattern(assigned).await?.is_some());
+        let history = service.experience_history(id).await?;
+        let deleted = client.call("delete_pattern", json!({"id":assigned})).await?;
+        ensure!(deleted == json!({"deleted":true}));
+        ensure!(service.get_pattern(assigned).await?.is_none());
+        for expected in [0, 1] {
+            let replayed = client.call("review_experience", json!({"review":review,"expected_review_revision":expected})).await?;
+            ensure!(replayed == original, "completed retry changed its original answer: {replayed}");
+            ensure!(service.get_pattern(assigned).await?.is_none(), "readback resurrected the deleted candidate");
+            ensure!(service.get_pattern(unrelated.id).await?.is_some(), "readback changed unrelated data");
+            ensure!(service.experience_history(id).await? == history, "readback appended or rewrote review history");
+        }
+        let row = db.query_one("SELECT node_id,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2", &[&id, &"retry-step"]).await?;
+        ensure!(row.get::<_, uuid::Uuid>(0) == assigned && row.get::<_, bool>(1), "readback changed the saved identity or retirement");
+        let mut fresh = review.clone(); fresh["rationale"] = json!("a genuinely new review request");
+        let fresh: mimir_core::learning::Review = serde_json::from_value(fresh)?;
+        let refusal = service.review_experience(&fresh, 1).await.unwrap_err();
+        ensure!(refusal.to_string().contains("deleted"), "new publication reused a retired key");
+        ensure!(service.get_pattern(assigned).await?.is_none() && service.experience_history(id).await? == history);
+        ensure!(client.call("get_learning_review", json!({"id":id})).await?["review_revision"] == 1);
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    let cleanup = service.delete_project(&project).await;
+    checked?;
+    ensure!(stopped.success());
+    cleanup?;
+    Ok(())
+}
+
 fn correction(value: Value, path: &[&str], reads: &[&str]) -> Result<()> {
     let response: NeedsInput = serde_json::from_value(value)?;
     let issue = &response.issues()[0];

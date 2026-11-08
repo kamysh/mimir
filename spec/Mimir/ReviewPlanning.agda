@@ -44,7 +44,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
     field
       same : Ledger.R.replay F.state expected (Keys.review requested) ≡ true
       pinned : Admission.Pinned F.P.originalEnvironment requested
-      declarations : All (Batch.Declared (Review.experienceID requested) (Publication.World.registry before))
+      declarations : All (Replay.Declared (Review.experienceID requested) (Publication.World.registry before))
         (Review.candidates requested)
 
   data Decision : Set where
@@ -81,7 +81,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
   replayBindings receipt = Read.bindings (Review.candidates requested) (Replayed.declarations receipt)
 
   replayBindingsSupported : ∀ receipt →
-    All (Batch.Supported (Review.experienceID requested) (Publication.World.registry before)) (replayBindings receipt)
+    All (Replay.Supported (Review.experienceID requested) (Publication.World.registry before)) (replayBindings receipt)
   replayBindingsSupported receipt = Read.allSupported (Review.candidates requested)
     (Replayed.declarations receipt)
 

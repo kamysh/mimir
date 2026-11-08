@@ -156,6 +156,13 @@ The agent must compare the current source or review with its intended change
 before resubmitting; it must not blindly replace newer work or invent a token.
 Exact retries of completed requests still return the original saved result.
 
+Deleting a candidate after a review completes does not erase that review's
+saved name-to-ID answer. An exact retry reconstructs the original mapping
+without recreating the candidate, changing its deletion marker, reapplying
+learning effects or appending review history. A new review still cannot reuse
+a deleted candidate name. A missing or changed saved declaration remains a
+readback error; the server never guesses an original ID.
+
 These responses are emitted only for the identified revision checks. Internal
 snapshot faults, ordinary database errors and uncertain commits do not become
 corrections merely because their diagnostic mentions a revision. Both the

@@ -188,8 +188,11 @@ setNodes ns w = record w { learning = record learn { publication = record pub { 
 insertNode : Graph.Node → World → World
 insertNode node w = setNodes (nodes w ++ (node ∷ [])) w
 
+retireEntry : List ℕ → Registry.Entry → Registry.Entry
+retireEntry ids r = record r { retired = Registry.Entry.retired r ∨ Ranking.member (Registry.Entry.nodeID r) ids }
+
 retire : List ℕ → Registry.Registry → Registry.Registry
-retire ids = map (λ r → record r { retired = Registry.Entry.retired r ∨ Ranking.member (Registry.Entry.nodeID r) ids })
+retire ids = map (retireEntry ids)
 
 detach : List ℕ → List Edges.Edge → List Edges.Edge
 detach ids = filterᵇ (λ e → not (Ranking.member (Edges.Edge.from e) ids ∨ Ranking.member (Edges.Edge.to e) ids))

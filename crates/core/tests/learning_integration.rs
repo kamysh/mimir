@@ -1437,6 +1437,15 @@ async fn deleting_candidate_recomputes_linked_belief_and_keeps_tombstone() {
     assert!(svc.get_belief(target.id).await.unwrap().unwrap().alpha > target.alpha0);
     assert!(svc.delete_belief(source).await.unwrap());
     assert!((svc.get_belief(target.id).await.unwrap().unwrap().alpha - target.alpha0).abs() < 1e-8);
+    let history = svc.experience_history(e.id).await.unwrap();
+    let replayed = svc.review_experience(&r, 0).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&replayed).unwrap(),
+        serde_json::to_value(&applied).unwrap()
+    );
+    assert!(svc.get_belief(source).await.unwrap().is_none());
+    assert!((svc.get_belief(target.id).await.unwrap().unwrap().alpha - target.alpha0).abs() < 1e-8);
+    assert_eq!(svc.experience_history(e.id).await.unwrap(), history);
     let mut later = r.clone();
     later.rationale = "try to reuse deleted candidate".into();
     assert!(svc.review_experience(&later, 1).await.is_err());

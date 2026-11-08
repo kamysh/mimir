@@ -405,17 +405,17 @@ impl AgeStore {
     ) -> Result<HashMap<String, Uuid>> {
         let mut ids = HashMap::new();
         for candidate in candidates {
-            let row = tx.query_opt("SELECT kind,node_id,declaration::text,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2", &[&experience_id, &candidate.key()]).await?;
+            // This reconstructs an already completed answer. A later deletion
+            // blocks new publication, but does not change its saved identity.
+            let row = tx.query_opt("SELECT kind,node_id,declaration::text FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2", &[&experience_id, &candidate.key()]).await?;
             let Some(row) = row else {
                 anyhow::bail!("candidate key is not reserved");
             };
             let kind: &str = row.get(0);
             let declaration: serde_json::Value = serde_json::from_str(row.get(2))?;
-            let retired: bool = row.get(3);
             if kind != candidate.kind() || declaration != serde_json::to_value(candidate)? {
                 return Err(crate::validation::Refusal::candidate_conflict().into());
             }
-            ensure!(!retired, "candidate identity was deleted");
             ids.insert(candidate.key().to_owned(), row.get(1));
         }
         Ok(ids)
