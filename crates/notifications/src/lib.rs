@@ -18,7 +18,8 @@ use std::{
 };
 use uuid::Uuid;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Event {
     pub source: String,
     pub incident_key: String,
@@ -27,7 +28,8 @@ pub struct Event {
     pub details: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum EventStatus {
     Failure {
         code: String,
@@ -265,6 +267,98 @@ fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |value| value.as_secs())
+}
+
+/// Durable admission is independent of SMTP, OAuth and the sender's state lock.
+/// This handle owns no lock. Each append holds only a short file-update lock.
+pub struct IncomingEvents {
+    path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingEvent {
+    pub id: String,
+    pub event: Event,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IncomingState {
+    schema_version: u32,
+    events: std::collections::VecDeque<PendingEvent>,
+}
+
+impl IncomingState {
+    fn read(state: &StateDir) -> Result<Self> {
+        let incoming: Self = state.read_incoming()?.unwrap_or_else(|| Self {
+            schema_version: 1,
+            events: Default::default(),
+        });
+        ensure!(
+            incoming.schema_version == 1,
+            "unsupported incoming notification version"
+        );
+        for pending in &incoming.events {
+            pending.event.validate()?;
+        }
+        Ok(incoming)
+    }
+}
+
+impl IncomingEvents {
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        // Perform the same private-path checks even before the first append.
+        let path = path.as_ref().to_owned();
+        drop(StateDir::incoming(&path)?);
+        Ok(Self { path })
+    }
+
+    pub fn enqueue(&self, event: &Event) -> Result<String> {
+        event.validate()?;
+        let state = StateDir::incoming(&self.path)?;
+        let mut incoming = IncomingState::read(&state)?;
+        let id = Uuid::new_v4().to_string();
+        incoming.events.push_back(PendingEvent {
+            id: id.clone(),
+            event: event.clone(),
+        });
+        state.write_incoming(&incoming)?;
+        Ok(id)
+    }
+
+    /// The watcher holds this ownership until it stops. Producers never acquire it.
+    pub fn claim(&self) -> Result<EventConsumer> {
+        Ok(EventConsumer {
+            owner: StateDir::consumer(&self.path)?,
+        })
+    }
+}
+
+/// One consumer owns reconciliation and delivery. Dropping it releases ownership;
+/// an unacknowledged event remains available to the next watcher.
+pub struct EventConsumer {
+    owner: StateDir,
+}
+
+impl EventConsumer {
+    pub fn front(&self) -> Result<Option<PendingEvent>> {
+        let state = StateDir::incoming(self.owner.path())?;
+        Ok(IncomingState::read(&state)?.events.pop_front())
+    }
+
+    /// Call only after the event was durably reconciled into the sender's outbox.
+    /// A delivery failure can still be acknowledged there: the sender retains it.
+    pub fn acknowledge(&self, id: &str) -> Result<()> {
+        let state = StateDir::incoming(self.owner.path())?;
+        let mut incoming = IncomingState::read(&state)?;
+        ensure!(
+            incoming.events.front().is_some_and(|event| event.id == id),
+            "incoming notification changed; read the pending event before acknowledging"
+        );
+        incoming.events.pop_front();
+        state.write_incoming(&incoming)
+    }
 }
 
 /// Owns an independent outbox lock; clients do not depend on the judge.

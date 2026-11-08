@@ -13,6 +13,7 @@ use std::{
 const STATE_FILE: &str = "notification-outbox.json";
 const OAUTH_FILE: &str = "notification-oauth.json";
 const DIGEST_FILE: &str = "notification-digest.json";
+const INCOMING_FILE: &str = "notification-incoming.json";
 
 pub(crate) struct StateDir {
     path: PathBuf,
@@ -62,7 +63,23 @@ fn ensure_dir(path: &Path) -> Result<()> {
 }
 
 impl StateDir {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub(crate) fn lock(path: &Path) -> Result<Self> {
+        Self::lock_named(path, "notification.lock", true)
+    }
+
+    pub(crate) fn incoming(path: &Path) -> Result<Self> {
+        Self::lock_named(path, "notification-incoming.lock", false)
+    }
+
+    pub(crate) fn consumer(path: &Path) -> Result<Self> {
+        Self::lock_named(path, "notification-consumer.lock", true)
+    }
+
+    fn lock_named(path: &Path, name: &str, nonblocking: bool) -> Result<Self> {
         ensure_dir(path)?;
         let lock = OpenOptions::new()
             .read(true)
@@ -70,7 +87,7 @@ impl StateDir {
             .create(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path.join("notification.lock"))?;
+            .open(path.join(name))?;
         let meta = lock.metadata()?;
         ensure!(
             meta.is_file()
@@ -78,7 +95,8 @@ impl StateDir {
                 && meta.permissions().mode() & 0o077 == 0,
             "unsafe notification lock"
         );
-        let result = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        let flags = libc::LOCK_EX | if nonblocking { libc::LOCK_NB } else { 0 };
+        let result = unsafe { libc::flock(lock.as_raw_fd(), flags) };
         if result != 0 {
             return Err(anyhow!("notification outbox is busy"));
         }
@@ -98,6 +116,10 @@ impl StateDir {
 
     pub(crate) fn read_digest<T: DeserializeOwned>(&self) -> Result<Option<T>> {
         self.read_named(DIGEST_FILE)
+    }
+
+    pub(crate) fn read_incoming<T: DeserializeOwned>(&self) -> Result<Option<T>> {
+        self.read_named(INCOMING_FILE)
     }
 
     fn read_named<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
@@ -134,6 +156,10 @@ impl StateDir {
 
     pub(crate) fn write_digest<T: Serialize>(&self, value: &T) -> Result<()> {
         self.write_named(DIGEST_FILE, value)
+    }
+
+    pub(crate) fn write_incoming<T: Serialize>(&self, value: &T) -> Result<()> {
+        self.write_named(INCOMING_FILE, value)
     }
 
     fn write_named<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {

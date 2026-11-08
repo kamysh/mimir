@@ -11,6 +11,7 @@ open import Data.Nat using (ℕ; _≟_; _≤?_)
 open import Data.Product using (_×_; _,_; proj₁; proj₂)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
+import Data.Empty
 open import Data.String using (toList)
 open import Relation.Nullary using (yes; no; does)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -205,3 +206,37 @@ writeFailureStops : ∀ value next events outcome →
   Runs (saveThen value next) ((writeOutbox value , D.refused) ∷ events) outcome →
   events ≡ [] × outcome ≡ inj₁ storage
 writeFailureStops value next events outcome (replied _ _ _ (returned _)) = refl , refl
+
+-- Durable admission has a separate, short-lived file lock. Its consumer keeps
+-- the delivery ownership lock, but never the admission lock, during SMTP.
+-- Reopening observes this saved list; no process-local mailbox is its owner.
+module Admission where
+  record Pending : Set where
+    constructor pending
+    field identity : Text; event : I.Event
+
+  Queue = List Pending
+
+  append : Pending → Queue → Queue
+  append item before = before ++ (item ∷ [])
+
+  acknowledge : Text → Queue → Maybe Queue
+  acknowledge id [] = nothing
+  acknowledge id (item ∷ rest) with id ≟Text Pending.identity item
+  ... | yes _ = just rest
+  ... | no _ = nothing
+
+  -- An acknowledgement made after a concurrent append removes exactly the
+  -- event that was read. All intervening appends survive, in their original order.
+  acknowledgePreservesAppends : ∀ head (rest later : Queue) →
+    acknowledge (Pending.identity head) ((head ∷ rest) ++ later) ≡ just (rest ++ later)
+  acknowledgePreservesAppends head rest later with Pending.identity head ≟Text Pending.identity head
+  ... | yes _ = refl
+  ... | no different = Data.Empty.⊥-elim (different refl)
+
+  wrongAcknowledgementCannotRemove : ∀ id head rest →
+    (id ≡ Pending.identity head → Data.Empty.⊥) →
+    acknowledge id (head ∷ rest) ≡ nothing
+  wrongAcknowledgementCannotRemove id head rest different with id ≟Text Pending.identity head
+  ... | yes same = Data.Empty.⊥-elim (different same)
+  ... | no _ = refl
