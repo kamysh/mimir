@@ -251,11 +251,7 @@ impl Logging {
         self.open(&current, true)?.write_all(bytes)
     }
     pub fn event(&self, component: &str, message: &str) -> Result<()> {
-        let message: String = message
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(8192)
-            .collect();
+        let message: String = message.chars().filter(|c| !c.is_control()).collect();
         self.write(
             format!(
                 "{} {component}: {message}\n",
@@ -267,7 +263,7 @@ impl Logging {
     }
 }
 
-/// Tracing builds one bounded event buffer; Drop publishes it under the same
+/// Tracing retains the complete event buffer; Drop publishes it under the same
 /// process-independent lock as judge events. Never duplicate errors to stderr.
 pub struct LogWriter {
     logging: Logging,
@@ -283,11 +279,7 @@ impl LogWriter {
 }
 impl Write for LogWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let remaining = (self.logging.max_file_bytes as usize)
-            .min(32768)
-            .saturating_sub(self.buffer.len());
-        self.buffer
-            .extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+        self.buffer.extend_from_slice(bytes);
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -377,6 +369,37 @@ mod tests {
             assert!(Operations::decode(&toml::from_str::<toml::Value>(metadata).unwrap()).is_err());
         }
     }
+    #[test]
+    fn log_entries_and_tracing_buffers_keep_complete_text() {
+        let dir = directory();
+        let logging = Logging {
+            directory: dir.clone(),
+            max_file_bytes: 1_048_576,
+            retained_files: 4,
+        };
+        logging.prepare().unwrap();
+        let message = format!("{}-repair-instruction", "資料".repeat(10_000));
+        logging.event("test", &message).unwrap();
+        let event = fs::read(dir.join("mimir.log")).unwrap();
+        assert!(event.ends_with(format!(" test: {message}\n").as_bytes()));
+        let first = format!("{}-first-end", "first".repeat(20_000));
+        let second = format!("{}-second-end", "second".repeat(15_000));
+        let third = b"after-flush";
+        {
+            let mut writer = LogWriter::new(logging.clone());
+            assert_eq!(writer.write(first.as_bytes()).unwrap(), first.len());
+            assert_eq!(writer.write(second.as_bytes()).unwrap(), second.len());
+            writer.flush().unwrap();
+            assert_eq!(writer.write(third).unwrap(), third.len());
+        }
+        let mut expected = event;
+        expected.extend_from_slice(first.as_bytes());
+        expected.extend_from_slice(second.as_bytes());
+        expected.extend_from_slice(third);
+        assert_eq!(fs::read(dir.join("mimir.log")).unwrap(), expected);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn concurrent_repeated_errors_and_retention_reduction_remain_bounded() {
         let dir = directory();
