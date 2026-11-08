@@ -26,6 +26,8 @@ import Mimir.ExperienceRead as Experiences
 import Mimir.RetrievalRanking as Ranking
 import Mimir.AssessmentRead as Assessment
 import Mimir.LearningAssessmentQueries as AssessmentView
+import Mimir.AssessmentSelection as Selection
+import Mimir.BeliefExplanation as Explanation
 
 module Bind (typed : Committed.Contract Physical.World) where
   module T = Committed.Contract typed
@@ -83,6 +85,51 @@ module ExperienceReads (format : Encoding.Formatting) where
     (map Experiences.storedSnapshot (Ranking.cap count
       (Experiences.sort (Experiences.select project true excluded
         (Learning.World.current (Physical.learningView state)))))))
+
+  module Checked = Recovery.ReadOnly answer
+
+  operation : Recovery.Recoverable Physical.World Request
+  operation = Checked.operation
+
+  completeReplyAndUnchangedWorld : ∀ request initial interrupted final reply →
+    Checked.Checked.X.Interrupted (Checked.Checked.script request) initial interrupted →
+    Checked.Checked.X.Completed (Checked.Checked.script request) interrupted final reply →
+    final ≡ initial × reply ≡ answer request initial
+  completeReplyAndUnchangedWorld = Checked.completedRetryPreservesStateAndAnswer
+
+-- Keep the complete existing semantic result until application projection.
+-- Missing targets and malformed stored data cannot disappear as JSON null,
+-- nor can a caller supply a desired answer or a successful-world certificate.
+module AssessmentReads (format : Encoding.Formatting) where
+  module Encode = Encoding.Encode format
+  data Request : Set where
+    scores : Selection.Query → Request
+    history : Selection.Query → ℕ → ℕ → Request
+    explanation : ℕ → ℕ → ℕ → Request
+
+  data Answer : Set where
+    scoreResult : Assessment.ScoreResult → Answer
+    historyResult : Assessment.HistoryResult → Answer
+    explanationResult : Explanation.Result → Answer
+
+  answer : Request → Physical.World → Answer
+  answer (scores selection) state = scoreResult
+    (AssessmentView.scores selection (Physical.learningView state))
+  answer (history selection offset limit) state = historyResult
+    (AssessmentView.history selection (Physical.learningView state) offset limit)
+  answer (explanation id offset limit) state = explanationResult
+    (Explanation.get id offset limit (Physical.learningView state))
+
+  -- Successful public projections share the application's exact encoders.
+  -- An unsuccessful semantic answer remains in Answer; this projection is
+  -- not its replacement and cannot be used as a completed-work witness.
+  successfulWire : Answer → Maybe Wire.Value
+  successfulWire (scoreResult (Assessment.assessed selection evaluated)) with Encode.evaluation evaluated
+  ... | nothing = nothing
+  ... | just encodedScores = just (Encode.assessmentResult selection encodedScores)
+  successfulWire (historyResult (Assessment.found page)) = just (Encode.assessmentPage page)
+  successfulWire (explanationResult (Explanation.explained value)) = just (Encode.explanation value)
+  successfulWire _ = nothing
 
   module Checked = Recovery.ReadOnly answer
 

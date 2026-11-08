@@ -333,3 +333,18 @@ every component to use the initial belief snapshot, and the shared-view law
 identifies the complete response with the explanation of that one world.
 Completion and interruption release the transaction. Mandatory dispatcher
 assembly remains #74/#76.
+
+Assessment scores, assessment history and belief explanations now have
+concrete read recovery values over the entire shared application world. Their
+intended answers call the existing score, history and explanation meanings;
+requests contain query fields only. Complete typed answers retain missing
+targets and invalid stored data as well as successful results. No assumed
+successful starting state or caller-supplied answer is required.
+
+The shared recovery interface retains that result type until public
+projection. Existing JSON-valued operations use the same JSON result type as
+before. Score and explanation success projections share the application's
+encoders, preserving full revisions, references, values and provenance.
+Retry convergence proves equality of the entire state and typed reply, not
+just the presence of a successful JSON projection. This supplies #131's
+concrete values; mandatory dispatcher assembly remains #74/#76.

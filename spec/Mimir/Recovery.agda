@@ -22,16 +22,16 @@ open import Data.Unit using (⊤; tt)
 -- Assembly fixes World once for the entire dispatcher. An operation over a
 -- smaller world cannot be supplied where this dispatcher expects the larger
 -- one. The observation retains the WHOLE world and the complete semantic reply.
-module Over (World : Set) where
-  Observation = World × Wire.Value
+module Outcome (World Result : Set) where
+  Observation = World × Result
 
-  observe : World → Wire.Value → Observation
+  observe : World → Result → Observation
   observe state reply = state , reply
 
   record Intent (Input : Set) : Set where
     field
       intended : Input → World → World
-      expectedReply : Input → World → Wire.Value
+      expectedReply : Input → World → Result
 
   record Invocation (Input : Set) : Set where
     constructor invocation
@@ -44,7 +44,7 @@ module Over (World : Set) where
     (Intent.intended intent (Invocation.input call) (Invocation.initial call))
     (Intent.expectedReply intent (Invocation.input call) (Invocation.initial call))
 
-  Goal : ∀ {Input} → Intent Input → Invocation Input → World → Wire.Value → Set
+  Goal : ∀ {Input} → Intent Input → Invocation Input → World → Result → Set
   Goal intent call final reply = observe final reply ≡ expected intent call
 
   -- Both conclusions use the same original invocation. A retry cannot change
@@ -56,6 +56,8 @@ module Over (World : Set) where
   goalDeterminesStateAndReply intent call firstState firstReply secondState secondReply first second =
     cong proj₁ same , cong proj₂ same
     where same = trans first (sym second)
+
+module Over (World : Set) = Outcome World Wire.Value
 
 -- Concrete application operations share every represented store component:
 -- graph and learning history, document chunks, BOTH vector tables and grounds.
@@ -136,22 +138,25 @@ module Transactions (World Statement : Set) (proposed : Statement → World → 
 -- execution from every represented starting world, as well as retry safety.
 record Recoverable (World Input : Set) : Set₁ where
   field
+    -- Preserve a semantic result before its public encoding. In particular,
+    -- a read's missing-target or invalid-data result is not a JSON null.
+    Result : Set
     Effect : Set
     Reply : Effect → Set
   module E = Effects.Protocol Effect Reply
   field
-    script : Input → E.Script Wire.Value
+    script : Input → E.Script Result
     Atomic : World → (effect : Effect) → Reply effect → World → Set
-    intent : Over.Intent World Input
+    intent : Outcome.Intent World Result Input
   module X = Execution World Effect Reply Atomic
-  module G = Over World
+  module G = Outcome World Result
   field
     converges : ∀ input initial interrupted final reply →
       X.Interrupted (script input) initial interrupted →
       X.Completed (script input) interrupted final reply →
       G.Goal intent (G.invocation input initial) final reply
     progress : ∀ input initial →
-      Σ World (λ final → Σ Wire.Value (λ reply →
+      Σ World (λ final → Σ Result (λ reply →
         X.Completed (script input) initial final reply))
 
   -- Ordinary completion is also checked: interrupting before the first effect
@@ -165,7 +170,7 @@ record Recoverable (World Input : Set) : Set₁ where
       execution
 
   progressReachesIntent : ∀ input initial →
-    Σ World (λ final → Σ Wire.Value (λ reply →
+    Σ World (λ final → Σ Result (λ reply →
       X.Completed (script input) initial final reply ×
       G.Goal intent (G.invocation input initial) final reply))
   progressReachesIntent input initial with progress input initial
@@ -175,13 +180,13 @@ record Recoverable (World Input : Set) : Set₁ where
 -- One committed statement is not automatically repeatable. Its physical
 -- meaning and independently reviewed intent are separate, and the complete
 -- observation (including the reply) must be stable on replay.
-module Single where
+module SingleResult (Result : Set) where
   record Statement (World Input : Set) : Set where
     field
-      execute : Input → World → World × Wire.Value
-      intent : Over.Intent World Input
+      execute : Input → World → World × Result
+      intent : Outcome.Intent World Result Input
       correct : ∀ input initial → execute input initial ≡
-        Over.expected World intent (Over.invocation input initial)
+        Outcome.expected World Result intent (Outcome.invocation input initial)
 
   record Idempotent {World Input} (statement : Statement World Input) : Set where
     field
@@ -191,20 +196,20 @@ module Single where
 
   module Semantics {World Input} (statement : Statement World Input) where
     execute = Statement.execute statement
-    module G = Over World
+    module G = Outcome World Result
 
     -- Only a confirmed statement supplies a completed reply. Aborts and lost
     -- acknowledgements remain interruption states, covered below directly
     -- from every constructor of the existing PostgreSQL atomicity contract.
-    Atomic : World → Input → Wire.Value → World → Set
+    Atomic : World → Input → Result → World → Set
     Atomic before input reply after =
       Database.Atomic before (proj₁ (execute input before)) Database.committed after ×
       reply ≡ proj₂ (execute input before)
 
-    module X = Execution World Input (λ _ → Wire.Value) Atomic
+    module X = Execution World Input (λ _ → Result) Atomic
     module E = X.E
 
-    script : Input → E.Script Wire.Value
+    script : Input → E.Script Result
     script input = E.ask input E.done
 
     oneObservation : ∀ input before after reply →
@@ -260,7 +265,7 @@ module Single where
       (trans (cong (execute input) afterEquality)
         (trans (Idempotent.stable repeatable input initial) (Statement.correct statement input initial)))
 
-    progress : ∀ input initial → Σ World (λ final → Σ Wire.Value (λ reply →
+    progress : ∀ input initial → Σ World (λ final → Σ Result (λ reply →
       X.Completed (script input) initial final reply))
     progress input initial = proj₁ (execute input initial) , proj₂ (execute input initial) ,
       X.completed ((input , proj₂ (execute input initial)) ∷ [])
@@ -270,8 +275,9 @@ module Single where
   single : ∀ {World Input} (statement : Statement World Input) →
     Idempotent statement → Recoverable World Input
   single {Input = Input} statement repeatable = record
-    { Effect = Input
-    ; Reply = λ _ → Wire.Value
+    { Result = Result
+    ; Effect = Input
+    ; Reply = λ _ → Result
     ; script = S.script
     ; Atomic = S.Atomic
     ; intent = Statement.intent statement
@@ -280,14 +286,14 @@ module Single where
     }
     where module S = Semantics statement
 
-  readStatement : ∀ {World Input} → (Input → World → Wire.Value) → Statement World Input
+  readStatement : ∀ {World Input} → (Input → World → Result) → Statement World Input
   readStatement answer = record
     { execute = λ input initial → initial , answer input initial
     ; intent = record { intended = λ _ initial → initial; expectedReply = answer }
     ; correct = λ _ _ → refl
     }
 
-  readIsIdempotent : ∀ {World Input} (answer : Input → World → Wire.Value) →
+  readIsIdempotent : ∀ {World Input} (answer : Input → World → Result) →
     Idempotent (readStatement answer)
   readIsIdempotent answer = record { stable = λ _ _ → refl }
 
@@ -298,20 +304,23 @@ module Single where
   replyMustRepeat statement repeatable input initial =
     cong proj₂ (Idempotent.stable repeatable input initial)
 
+module Single = SingleResult Wire.Value
+
 -- A read owes its complete answer, not just a flag saying that it is read-only.
 -- The application world is fixed here: graph, learning history, both vector
 -- tables, documents and the operation journal all remain observable.
-module ReadOnly {Input : Set} (answer : Input → Store.World → Wire.Value) where
+module ReadOnly {Input Result : Set} (answer : Input → Store.World → Result) where
+  module S = SingleResult Result
   operation : Recoverable Store.World Input
-  operation = Single.single (Single.readStatement answer) (Single.readIsIdempotent answer)
+  operation = S.single (S.readStatement answer) (S.readIsIdempotent answer)
 
   module Checked = Recoverable operation
-  module S = Single.Semantics (Single.readStatement answer)
+  module Read = S.Semantics (S.readStatement answer)
 
   interruptedPreservesAllState : ∀ input initial interrupted →
     Checked.X.Interrupted (Checked.script input) initial interrupted → interrupted ≡ initial
   interruptedPreservesAllState input initial interrupted interruption
-    with S.interruptionState input initial interrupted interruption
+    with Read.interruptionState input initial interrupted interruption
   ... | inj₁ unchanged = unchanged
   ... | inj₂ unchanged = unchanged
 
@@ -816,7 +825,8 @@ module SavedSequence (Business Action : Set)
   recoverable : (intent : G.Intent ⊤) →
     (∀ initial → normalize initial ≡ G.expected intent (G.invocation tt initial)) → Recoverable State ⊤
   recoverable intent correct = record
-    { Effect = Effect
+    { Result = Wire.Value
+    ; Effect = Effect
     ; Reply = Reply
     ; script = start
     ; Atomic = Atomic

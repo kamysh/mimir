@@ -55,41 +55,6 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   count : String → ℕ → V.Value
   count fieldKey value = object ((fieldKey , V.unsigned value) ∷ [])
 
-  provenance : Provenance.Provenance → V.Value
-  provenance p = object (("experience_id" , uuid (Provenance.Provenance.experienceID p)) ∷
-    ("candidate_key" , V.string (Provenance.Provenance.candidateKey p)) ∷
-    ("kind" , V.string (kind (Provenance.Provenance.kind p))) ∷
-    ("active" , V.boolean (Provenance.Provenance.active p)) ∷ ("retired" , V.boolean (Provenance.Provenance.retired p)) ∷ [])
-    where
-    kind : Provenance.Kind → Text
-    kind Provenance.beliefKind = toList "belief"
-    kind Provenance.patternKind = toList "pattern"
-
-  independent : Origin.Read → V.Value
-  independent Origin.noProvenance = V.null
-  independent Origin.malformed = V.null -- classified as failure before success projection
-  independent (Origin.found p) = object (("basis" , V.string (basis (Origin.Provenance.basis p))) ∷
-    ("reference" , V.string (Origin.Provenance.reference p)) ∷ [])
-    where
-    basis : Origin.Basis → Text
-    basis Origin.userInstruction = toList "user_instruction"
-    basis Origin.document = toList "document"
-
-  incoming : Explain.Incoming → V.Value
-  incoming p = object (("from_id" , uuid (Edges.Edge.from e)) ∷ ("to_id" , uuid (Edges.Edge.to e)) ∷
-    ("relation" , V.string (relationText (Edges.Edge.relation e))) ∷ ("weight" , V.floating (Edges.Edge.weight e)) ∷
-    ("source_probability" , real (Explain.Incoming.sourceProbability p)) ∷ [])
-    where e = Explain.Incoming.edge p
-
-  explanation : Explain.Explanation → V.Value
-  explanation e = object (("belief" , belief (Explain.Explanation.belief e)) ∷
-    ("incoming_edges" , V.array (map incoming (Explain.Explanation.incomingEdges e))) ∷
-    ("learning" , object (("reviews" , V.array (map review (Explain.Page.entries page))) ∷
-      ("total" , V.unsigned (Explain.Page.total page)) ∷ ("next_offset" , optional V.unsigned (Explain.Page.nextOffset page)) ∷ [])) ∷
-    ("candidate_provenance" , optional provenance (Explain.Explanation.candidateProvenance e)) ∷
-    ("independent_provenance" , independent (Explain.Explanation.independentProvenance e)) ∷ [])
-    where page = Explain.Explanation.learning e
-
   patternResult : Pattern.Result → V.Value
   patternResult p = object (("pattern" , patternValue (Pattern.Result.patternValue p)) ∷
     ("successes" , V.unsigned (Pattern.Counts.successes counts)) ∷ ("failures" , V.unsigned (Pattern.Counts.failures counts)) ∷
@@ -107,11 +72,6 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     ("reviewed_revision" , V.signed (Observation.Snapshot.reviewedRevision s)) ∷
     ("review" , optional review (History.CurrentReview.applied r)) ∷ [])
     where s = History.CurrentReview.state r
-
-  evaluation : Evaluation.Result → Maybe V.Value
-  evaluation Evaluation.invalidStoredNumber = nothing
-  evaluation (Evaluation.scored (Scores.rejected why)) = nothing
-  evaluation (Evaluation.scored (Scores.accepted s)) = just (scores s)
 
   contextAssessments : List (Context.Key × Evaluation.Result) → Maybe (List V.Value)
   contextAssessments [] = just []
@@ -148,11 +108,8 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   projectQuery original (Query.pendingResult (Experiences.selected ss)) = success (V.array (map snapshot ss))
   projectQuery original (Query.scoreResult (Assessment.assessed q result)) with evaluation result
   ... | nothing = failure original
-  ... | just s = success (object (("project" , V.string (Selection.Query.project q)) ∷ ("belief_id" , uuid (Selection.Query.belief q)) ∷
-    ("scope" , V.string (Selection.Query.scope q)) ∷ ("rubric" , V.string (Selection.Query.rubric q)) ∷ ("scores" , s) ∷ []))
-  projectQuery original (Query.assessmentHistoryResult (Assessment.found p)) = success (object
-    (("entries" , V.array (map assessmentEntry (Assessment.Page.entries p))) ∷
-    ("next_offset" , optional V.unsigned (Assessment.Page.nextOffset p)) ∷ []))
+  ... | just s = success (assessmentResult q s)
+  projectQuery original (Query.assessmentHistoryResult (Assessment.found p)) = success (assessmentPage p)
   projectQuery original _ = failure original
 
   project : A.Result → Projection
