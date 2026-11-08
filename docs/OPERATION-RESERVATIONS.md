@@ -164,9 +164,14 @@ result cannot recreate the project. Unrelated owners remain valid.
 
 If preparation fails, the calling agent receives a normal request for a user
 decision before any belief is stored. Owner metadata and private diagnostics
-may remain. Binding these owners to public operation tokens and stopping active
-computation on revocation remain #79, #85–#86 and #124. This publication fence
-alone does not claim that the worker has already stopped.
+may remain. Independent preparation subscribes to ownership-change events before
+reading its owner, then rechecks that exact owner after each hint. Revocation
+drops the owned embedding future: the local worker is killed and reaped before
+the decision response returns. A hint about another owner leaves the job active.
+A disconnected monitor stops the job and explains the lost prerequisite.
+There is no retry timer or polling interval. Binding these owners to public
+operation tokens, document/backfill work and public cancellation remain
+#78–#79, #85–#86 and #124.
 
 Belief-vector writes now check their belief while holding the same database
 lock and transaction used by deletion. A result that arrives after its belief

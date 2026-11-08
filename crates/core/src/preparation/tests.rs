@@ -30,6 +30,103 @@ impl EmbeddingProvider for FixedProvider {
     }
 }
 
+#[tokio::test]
+async fn project_revocation_terminates_only_its_blocked_worker() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (seed, project) = service(None).await?;
+    let other_project = format!("{project}-other");
+    passage(&seed, Some(&other_project), 9, "worker-survives").await?;
+    let directory = std::env::temp_dir().join(&project);
+    std::fs::create_dir(&directory)?;
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+    let socket = directory.join("ready.sock");
+    let listener = tokio::net::UnixListener::bind(&socket)?;
+    let program = directory.join("blocked-worker.py");
+    std::fs::write(&program, format!(
+        "#!/usr/bin/env python3\nimport sys,json,socket,os\nrequest=json.loads(sys.stdin.readline())\nprint(json.dumps({{'status':'started','version':1}}),flush=True)\ns=socket.socket(socket.AF_UNIX)\ns.connect({:?})\ns.sendall((str(os.getpid())+'\\n').encode())\ns.recv(1)\nv=[0.0]*768\nv[9]=1.0\nprint(json.dumps({{'status':'complete','vectors':[v]}}),flush=True)\nsys.stdin.read()\n", socket.to_str().unwrap()))?;
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
+    let mut cfg = Config {
+        database: isolation::fixture().database_config(),
+        embeddings: Some(EmbeddingsConfig {
+            backend: EmbeddingBackend::Local,
+            model: String::new(),
+            api_key: None,
+            batch_size: 0,
+            cache_dir: Some(directory.join("model-cache").display().to_string()),
+        }),
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: None,
+    };
+    let first =
+        std::sync::Arc::new(MimirService::connect_with_worker(&cfg, program.clone()).await?);
+    let second = std::sync::Arc::new(MimirService::connect_with_worker(&cfg, program).await?);
+    let first_task = {
+        let service = first.clone();
+        let project = project.clone();
+        tokio::spawn(async move {
+            service
+                .prepare_belief(
+                    "first complete belief",
+                    0.6,
+                    0.4,
+                    Some(&project),
+                    MemoryType::Fact,
+                    None,
+                )
+                .await
+        })
+    };
+    let (first_control, _) = listener.accept().await?;
+    let mut first_control = BufReader::new(first_control);
+    let mut first_pid = String::new();
+    first_control.read_line(&mut first_pid).await?;
+    let second_task = {
+        let service = second.clone();
+        let project = other_project.clone();
+        tokio::spawn(async move {
+            service
+                .prepare_belief(
+                    "second complete belief",
+                    0.6,
+                    0.4,
+                    Some(&project),
+                    MemoryType::Fact,
+                    None,
+                )
+                .await
+        })
+    };
+    let (second_control, _) = listener.accept().await?;
+    let mut second_control = BufReader::new(second_control);
+    let mut second_pid = String::new();
+    second_control.read_line(&mut second_pid).await?;
+    cfg.embeddings = None;
+    let deletion = MimirService::connect(&cfg).await?;
+    assert_eq!(deletion.delete_project(&project).await?, 0);
+    let error = first_task.await?.unwrap_err();
+    let report = error
+        .downcast_ref::<PreparationRequired>()
+        .expect("revocation opens the user dialog");
+    assert!(report.to_string().contains("ownership was revoked"));
+    #[cfg(target_os = "linux")]
+    {
+        assert!(!std::path::Path::new(&format!("/proc/{}", first_pid.trim())).exists());
+        assert!(std::path::Path::new(&format!("/proc/{}", second_pid.trim())).exists());
+    }
+    assert!(seed.list_beliefs(Some(&project)).await?.is_empty());
+    second_control.write_all(b"x").await?;
+    let prepared = second_task.await??;
+    let published = second.publish_prepared_belief(&prepared).await?;
+    assert_eq!(published.project.as_deref(), Some(other_project.as_str()));
+    drop(first);
+    drop(second);
+    std::fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
 fn vector(axis: usize) -> Vec<f32> {
     let mut vector = vec![0.0; 768];
     vector[axis] = 1.0;

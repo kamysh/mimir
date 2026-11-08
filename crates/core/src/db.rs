@@ -150,13 +150,17 @@ pub struct ReviewQueueSubscription {
 
 impl ReviewQueueSubscription {
     pub async fn connect(cfg: &DatabaseConfig) -> Result<Self> {
+        Self::connect_channel(cfg, REVIEW_QUEUE_CHANNEL).await
+    }
+
+    async fn connect_channel(cfg: &DatabaseConfig, channel: &'static str) -> Result<Self> {
         let (client, mut connection) = postgres_config(cfg).connect(tls_connector(cfg)?).await?;
         let (sent, events) = tokio::sync::mpsc::unbounded_channel();
         let reader = tokio::spawn(async move {
             while let Some(message) = std::future::poll_fn(|cx| connection.poll_message(cx)).await {
                 let event = match message {
                     Ok(tokio_postgres::AsyncMessage::Notification(notification))
-                        if notification.channel() == REVIEW_QUEUE_CHANNEL =>
+                        if notification.channel() == channel =>
                     {
                         Ok(())
                     }
@@ -170,7 +174,7 @@ impl ReviewQueueSubscription {
                     return;
                 }
             }
-            let _ = sent.send(Err(anyhow::anyhow!("review queue listener disconnected")));
+            let _ = sent.send(Err(anyhow::anyhow!("{channel} listener disconnected")));
         });
         let subscription = Self {
             client,
@@ -179,7 +183,7 @@ impl ReviewQueueSubscription {
         };
         subscription
             .client
-            .batch_execute(&format!("LISTEN {REVIEW_QUEUE_CHANNEL}"))
+            .batch_execute(&format!("LISTEN {channel}"))
             .await?;
         Ok(subscription)
     }
@@ -190,6 +194,22 @@ impl ReviewQueueSubscription {
             .recv()
             .await
             .ok_or_else(|| anyhow::anyhow!("review queue listener stopped"))?
+    }
+}
+
+/// Subscribed before checking an owner's durable row. Empty hints never
+/// identify which job stopped; each request must recheck its own owner.
+pub(crate) struct EmbeddingOwnerSubscription(ReviewQueueSubscription);
+
+impl EmbeddingOwnerSubscription {
+    pub(crate) async fn connect(cfg: &DatabaseConfig) -> Result<Self> {
+        Ok(Self(
+            ReviewQueueSubscription::connect_channel(cfg, "mimir_embedding_owners_changed").await?,
+        ))
+    }
+
+    pub(crate) async fn changed(&mut self) -> Result<()> {
+        self.0.changed().await
     }
 }
 

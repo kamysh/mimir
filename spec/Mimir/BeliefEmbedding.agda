@@ -34,6 +34,7 @@ import Mimir.GroundingPublication as Publication
 import Mimir.LearningTransaction as Transaction
 open import Mimir.SourceReview using (_≟Text_)
 open import Relation.Nullary using (does)
+import Mimir.EmbeddingLifecycle as Lifecycle
 module Correction = Errors.AgentCorrection
 
 Support = Documents.Chunk × Float
@@ -106,6 +107,39 @@ ownsPreparation belief (owner ∷ rest) =
    does (Maybes.≡-dec _≟Text_ (G.BeliefValues.project belief) (Store.EmbeddingOwnerRow.project owner))) ∨
   ownsPreparation belief rest
 
+module OwnerSubscription where
+  data Effect : Set where
+    connect : ℕ → Effect
+    listen : ℕ → Text → Effect
+  Reply : Effect → Set
+  Reply (connect database) = Text ⊎ ℕ
+  Reply (listen handle channel) = Text ⊎ ⊤
+  module E = Effects.Protocol Effect Reply
+  start : ℕ → E.Script (Text ⊎ ℕ)
+  start database = E.ask (connect database) λ where
+    (inj₁ error) → E.done (inj₁ error)
+    (inj₂ handle) → E.ask (listen handle (toList "mimir_embedding_owners_changed")) λ where
+      (inj₁ error) → E.done (inj₁ error)
+      (inj₂ tt) → E.done (inj₂ handle)
+
+-- Database hints are not stop instructions for every request. Recheck this
+-- exact preparation; only a missing owner revokes its per-call worker.
+checkedOwnership : G.BeliefValues → Store.World → Lifecycle.Ownership.State → Lifecycle.Ownership.State
+checkedOwnership belief before state with ownsPreparation belief (Store.World.embeddingOwners before)
+... | true = state
+... | false = Lifecycle.Ownership.stop state
+
+missingOwnerStopsItsJob : ∀ belief before state →
+  ownsPreparation belief (Store.World.embeddingOwners before) ≡ false →
+  checkedOwnership belief before state ≡ Lifecycle.Ownership.stop state
+missingOwnerStopsItsJob belief before state missing
+  rewrite missing = refl
+
+retainedOwnerKeepsItsJob : ∀ belief before state →
+  ownsPreparation belief (Store.World.embeddingOwners before) ≡ true →
+  checkedOwnership belief before state ≡ state
+retainedOwnerKeepsItsJob belief before state present rewrite present = refl
+
 -- User-visible intent: one complete new belief, its provenance, its vector,
 -- and every prepared supporting passage. Rechecking cannot silently discard
 -- a passage selected during preparation. Numerical effects reuse the existing
@@ -155,6 +189,7 @@ missingBackend = preparationDecision Correction.configuration (Validation.key "e
 
 data Effect : Set where
   embed : Text → Effect
+  prepareEmbedding : G.BeliefValues → Effect
   upsert : ℕ → Store.Vector → Effect
   listBeliefs embeddedIDs : Effect
   progress : G.BeliefValues → Effect
@@ -163,6 +198,7 @@ data Effect : Set where
 
 Reply : Effect → Set
 Reply (embed content) = Text ⊎ List Store.Vector
+Reply (prepareEmbedding belief) = Text ⊎ List Store.Vector
 Reply (upsert id vector) = Text ⊎ ⊤
 Reply listBeliefs = Text ⊎ List G.BeliefValues
 Reply embeddedIDs = Text ⊎ List ℕ
@@ -222,7 +258,7 @@ afterPreparationEmbedding b origin (inj₂ _) = done (inj₁ (needsUserDecision
 
 start : Bool → G.BeliefValues → Maybe Origin.Provenance → Script InsertionResult
 start false b origin = done (inj₁ (needsUserDecision missingBackend))
-start true b origin = ask (embed (G.BeliefValues.content b)) (afterPreparationEmbedding b origin)
+start true b origin = ask (prepareEmbedding b) (afterPreparationEmbedding b origin)
 
 unconfiguredCannotStartPublication : ∀ b origin →
   start false b origin ≡ done (inj₁ (needsUserDecision missingBackend))

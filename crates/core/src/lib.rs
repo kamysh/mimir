@@ -111,6 +111,7 @@ extern crate self as mimir_core;
 
 pub struct MimirService {
     store: AgeStore,
+    database: config::DatabaseConfig,
     inference: InferenceEngine,
     embeddings: Option<OwnedEmbeddingBackend>,
     retirement: Option<toml::Value>,
@@ -139,6 +140,7 @@ impl MimirService {
         let client = db::connect(&cfg.database).await?;
         Ok(Self {
             store: AgeStore::new(client, cfg.database.dbname.clone())?,
+            database: cfg.database.clone(),
             inference: InferenceEngine::new(),
             embeddings,
             retirement: cfg.retirement.clone(),
@@ -263,7 +265,8 @@ impl MimirService {
         belief.id = id;
         belief.created_at = created_at;
         belief.last_activated_at = created_at;
-        let vectors = embedder.embed(std::slice::from_ref(&belief.content)).await.map_err(|error| {
+        let vectors = self.embed_prepared_belief(embedder, &belief).await.map_err(|error| {
+            if error.is::<PreparationRequired>() { return error; }
             if error.is::<embed::EmbeddingCancelled>() { return error; }
             PreparationRequired::new(Location::Configuration, vec![Segment::Key("embeddings".into())], Code::MissingEvidence,
                 format!("Embedding preparation failed before publication: {error:#}. No belief was stored.")).into()
@@ -292,6 +295,45 @@ impl MimirService {
             vector,
             support,
         })
+    }
+
+    async fn embed_prepared_belief(
+        &self,
+        embedder: &OwnedEmbeddingBackend,
+        belief: &Belief,
+    ) -> Result<Vec<Vec<f32>>> {
+        use interaction::Location;
+        use preparation::PreparationRequired;
+        use validation::Code;
+        let stopped = |cause: String| {
+            PreparationRequired::new(
+            Location::Request, vec![], Code::MissingReference,
+            format!("Preparation {} stopped before publication: {cause}. No belief was stored. Read its original state and ask the user before starting new work.", belief.id))
+        };
+        // Subscribe first: revocation before the first read is seen in that
+        // read, and revocation afterward leaves an event for this wait.
+        let mut changes = db::EmbeddingOwnerSubscription::connect(&self.database)
+            .await
+            .map_err(|error| stopped(format!("cannot observe ownership changes: {error:#}")))?;
+        if !self.store.owns_belief_preparation(belief).await? {
+            return Err(stopped("publication ownership was revoked".into()).into());
+        }
+        let job = embedder.embed(std::slice::from_ref(&belief.content));
+        tokio::pin!(job);
+        loop {
+            tokio::select! {
+                biased;
+                change = changes.changed() => {
+                    change.map_err(|error| stopped(format!("ownership monitoring disconnected: {error:#}")))?;
+                    if !self.store.owns_belief_preparation(belief).await? {
+                        // Returning drops the owned provider future. A local
+                        // worker is killed and reaped before this returns.
+                        return Err(stopped("publication ownership was revoked".into()).into());
+                    }
+                }
+                result = &mut job => return result,
+            }
+        }
     }
 
     pub async fn publish_prepared_belief(

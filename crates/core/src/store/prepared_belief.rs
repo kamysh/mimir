@@ -13,6 +13,13 @@ use pgvector::Vector;
 use uuid::Uuid;
 
 impl AgeStore {
+    pub(crate) async fn owns_belief_preparation(&self, belief: &Belief) -> Result<bool> {
+        Ok(self.client.lock().await.query_one(
+            "SELECT EXISTS(SELECT 1 FROM mimir_embedding_owners WHERE owner_token=$1 AND project IS NOT DISTINCT FROM $2)",
+            &[&belief.id, &belief.project],
+        ).await?.get(0))
+    }
+
     pub(crate) async fn reserve_belief_preparation(
         &self,
         project: Option<&str>,
