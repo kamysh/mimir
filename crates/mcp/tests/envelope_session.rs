@@ -154,6 +154,11 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         let _: NeedsInput = serde_json::from_value(response["error"]["data"].clone())?;
     }
     for (name, args, field) in [
+        (
+            "sweep_expired_defeated",
+            json!({"project":project,"prob_threshold":2}),
+            "prob_threshold",
+        ),
         ("delete_project", json!({}), "project"),
         ("delete_project", json!({"project":4}), "project"),
         ("list_beliefs", json!({"project":false}), "project"),
@@ -205,6 +210,12 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         let correction: NeedsInput =
             serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
         let encoded = serde_json::to_value(&correction)?;
+        if name == "sweep_expired_defeated" {
+            ensure!(
+                correction.issues()[0].fault().code == mimir_core::validation::Code::InvalidNumber,
+                "numeric admission must precede the configuration prerequisite: {encoded}"
+            );
+        }
         ensure!(
             encoded.to_string().contains(field),
             "correction omitted {field}: {encoded}"

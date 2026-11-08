@@ -25,6 +25,31 @@ mod sweep_policy_tests {
         assert!(Cli::try_parse_from(["mimir", "sweep-defeated"]).is_ok());
         assert!(Cli::try_parse_from(["mimir", "sweep-defeated", "--grace-hours", "0"]).is_err());
     }
+    #[test]
+    fn threshold_is_a_finite_probability_before_connecting() {
+        for value in ["0", "0.3", "1"] {
+            assert!(Cli::try_parse_from(["mimir", "sweep-defeated", "--threshold", value]).is_ok());
+        }
+        for value in ["NaN", "inf", "2", "-0.1"] {
+            assert!(Cli::try_parse_from([
+                "mimir",
+                "sweep-defeated",
+                &format!("--threshold={value}")
+            ])
+            .is_err());
+        }
+    }
+}
+
+fn probability_argument(raw: &str) -> std::result::Result<f64, String> {
+    let value = raw
+        .parse::<f64>()
+        .map_err(|_| "Supply a finite probability between 0 and 1 inclusive.".to_owned())?;
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err("Supply a finite probability between 0 and 1 inclusive; do not clamp or guess a replacement.".into())
+    }
 }
 
 #[cfg(test)]
@@ -182,7 +207,7 @@ enum Command {
     /// or per-call retention override is selected.
     SweepDefeated {
         /// Probability below which a defeated belief becomes eligible for deletion.
-        #[arg(long, short, default_value_t = 0.3)]
+        #[arg(long, short, default_value_t = 0.3, value_parser = probability_argument)]
         threshold: f64,
 
         /// Restrict the sweep to this project plus untagged beliefs.

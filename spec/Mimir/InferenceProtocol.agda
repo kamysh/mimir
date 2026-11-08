@@ -166,7 +166,9 @@ start (contradictions project) = read (contradictionPairs project) refl decide
   decide [] = done (pairs [])
   decide candidates@(_ ∷ _) = read (listBeliefs project) refl
     (λ beliefs → done (pairs (N.activeContradictions beliefs candidates)))
-start (sweep project threshold grace) = read (defeatTimes project) refl decide
+start (sweep project threshold grace) with N.probability threshold
+... | false = done invalidProbability
+... | true = read (defeatTimes project) refl decide
   where
   open import Relation.Binary.PropositionalEquality using (refl)
   decide : List N.Defeat → Script Result
@@ -174,3 +176,12 @@ start (sweep project threshold grace) = read (defeatTimes project) refl decide
   decide edges@(_ ∷ _) = read (listBeliefs project) refl (λ beliefs → ask clock (λ now →
     ask (hashIteration (Ranking.unique (map N.Defeat.target edges))) (λ { (order , sameMembers) →
       sweepDeletes 0 (N.expiredTargets now grace threshold beliefs edges order) })))
+
+-- An invalid threshold cannot even read the store, whatever the project,
+-- retention policy or replies a caller might otherwise supply.
+invalidSweepHasNoEffects : ∀ project threshold grace events result →
+  N.probability threshold ≡ false →
+  E.Runs (start (sweep project threshold grace)) events result →
+  events ≡ [] × result ≡ invalidProbability
+invalidSweepHasNoEffects project threshold grace events result rejected run
+  rewrite rejected = E.completedCannotProduceEffects run

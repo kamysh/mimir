@@ -98,6 +98,28 @@ fn walk(schema: &Value, value: &Value, path: &mut Vec<Segment>, issues: &mut Vec
             ));
         }
     }
+    if let Some(number) = value.as_f64() {
+        for (keyword, below) in [("minimum", true), ("maximum", false)] {
+            if let Some(bound) = schema.get(keyword).and_then(Value::as_f64) {
+                if (below && number < bound) || (!below && number > bound) {
+                    let relation = if below { "at least" } else { "at most" };
+                    issues.push(issue(
+                        Location::Arguments,
+                        path,
+                        Code::InvalidNumber,
+                        "The supplied number is outside this field's advertised domain.",
+                        format!(
+                            "A number {relation} {bound}. {}",
+                            schema
+                                .get("description")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                        ),
+                    ));
+                }
+            }
+        }
+    }
     if let Some(fields) = value.as_object() {
         if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
             let allowed: Vec<String> = schema
@@ -346,6 +368,48 @@ pub fn tool_parameters(params: &Value) -> Result<(&str, Value), NeedsInput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_domains_cover_nested_values_without_capping_selections() {
+        let schema = json!({"type":"object","properties":{
+            "limit":{"type":"integer","minimum":1},
+            "items":{"type":"array","items":{"type":"object","properties":{
+                "probability":{"type":["number","null"],"minimum":0,"maximum":1},
+                "benefit":{"type":"number","minimum":-1,"maximum":1}
+            }}}
+        }});
+        for value in [json!(0), json!(1), json!(null)] {
+            assert!(arguments(
+                &schema,
+                &json!({"limit":u64::MAX,"items":[{"probability":value,"benefit":-1}]})
+            )
+            .is_none());
+        }
+        let input =
+            json!({"items":[{"probability":-0.1,"benefit":-1.1},{"probability":2,"benefit":1.1}]});
+        let original = input.clone();
+        let correction = arguments(&schema, &input).unwrap();
+        assert_eq!(input, original, "admission must not clamp invalid numbers");
+        assert_eq!(correction.issues().len(), 4);
+        for (index, field) in [
+            (0, "probability"),
+            (0, "benefit"),
+            (1, "probability"),
+            (1, "benefit"),
+        ] {
+            assert!(correction.issues().iter().any(|issue| issue.fault().code
+                == Code::InvalidNumber
+                && issue.fault().path
+                    == vec![
+                        Segment::Key("items".into()),
+                        Segment::Index(index),
+                        Segment::Key(field.into())
+                    ]));
+        }
+        assert!(serde_json::to_string(&correction)
+            .unwrap()
+            .contains("do not guess"));
+    }
 
     #[test]
     fn selections_reject_zero_without_rounding_large_positive_values() {

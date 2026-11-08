@@ -25,6 +25,7 @@ import Mimir.StandardLibrary as Conversion
 import Mimir.ToolCatalog as Tools
 import Mimir.RetrievalRanking as Ranking
 import Mimir.GraphMutationProtocol as Mutation
+import Mimir.GraphNumerics as Numerics
 import Mimir.GraphReadProtocol as Read
 import Mimir.GraphDeletion as Delete
 import Mimir.InferenceProtocol as Inference
@@ -121,6 +122,15 @@ module Decode (conversion : Conversion.Contract) where
     ... | nothing = bad "nonfinite JSON number"
     ... | just value = inj₂ value
 
+  unitProbability : V.Value → Fault ⊎ Float
+  unitProbability raw = float raw >>= checked
+    where
+    checked : Float → Fault ⊎ Float
+    checked value with Numerics.probability value
+    ... | true = inj₂ value
+    ... | false = inj₁ (Validation.fault [] Validation.invalidNumber
+      "Supply a finite probability between 0 and 1 inclusive; do not clamp or guess a replacement")
+
   project : V.Object.View → Maybe Text
   project = looseOptional "project" V.asString
 
@@ -165,14 +175,14 @@ module Decode (conversion : Conversion.Contract) where
 
   decode : Tools.Tool → V.Object.View → Fault ⊎ Request
   decode Tools.insertBelief fields = required "provenance" validOrigin fields >>= λ origin →
-    required "content" V.asString fields >>= λ content → required "probability" float fields >>= λ probability →
-    required "confidence" float fields >>= λ confidence → memoryField (toList "memory_type") fields >>= λ kind →
+    required "content" V.asString fields >>= λ content → required "probability" unitProbability fields >>= λ probability →
+    required "confidence" unitProbability fields >>= λ confidence → memoryField (toList "memory_type") fields >>= λ kind →
     inj₂ (mutation (Mutation.belief content probability confidence (project fields) (defaultMemory kind) (just origin)))
   decode Tools.deleteBelief fields = mapResult (delete Delete.belief) (required "id" uuid fields)
   decode Tools.deletePattern fields = mapResult (delete Delete.patternNode) (required "id" uuid fields)
   decode Tools.deleteProject fields = mapResult deleteProject (required "project" V.asString fields)
   decode Tools.insertPattern fields = required "situation" V.asString fields >>= λ situation →
-    required "approach" V.asString fields >>= λ approach → required "success_rate" float fields >>= λ success →
+    required "approach" V.asString fields >>= λ approach → required "success_rate" unitProbability fields >>= λ success →
     present "project" V.asString fields >>= λ project → inj₂ (mutation (Mutation.patternNode situation approach success project))
   decode Tools.recordSupport fields = edgeRequest R.supports fields
   decode Tools.recordCause fields = edgeRequest R.causes fields
@@ -186,8 +196,8 @@ module Decode (conversion : Conversion.Contract) where
   decode Tools.listPatterns fields = inj₂ (read (Read.listPatterns (project fields)))
   decode Tools.getContradictions fields = inj₂ (inference (Inference.contradictions (project fields)))
   decode Tools.decayAll fields = inj₂ (inference (Inference.decay (project fields) (loose "decay_factor" 0.99 float fields)))
-  decode Tools.sweepExpiredDefeated fields = inj₂ (sweepConfigured (project fields)
-    (loose "prob_threshold" 0.3 float fields))
+  decode Tools.sweepExpiredDefeated fields = defaulted "prob_threshold" 0.3 unitProbability fields >>= λ threshold →
+    inj₂ (sweepConfigured (project fields) threshold)
   decode Tools.queryRelevant fields = required "context" V.asString fields >>= λ context →
     memoryField (toList "prefer_type") fields >>= λ preference →
     selection "limit" fields >>= λ limit → selection "evidence_per_belief" fields >>= λ per →
@@ -241,9 +251,10 @@ module Decode (conversion : Conversion.Contract) where
     supplied "offset" integer fields >>= λ _ →
     supplied "evidence_per_belief" integer fields >>= λ _ →
     supplied "include_evidence" V.asBoolean fields >>= λ _ →
-    supplied "decay_factor" float fields >>= λ _ →
-    supplied "prob_threshold" float fields >>= λ _ →
-    supplied "weight" float fields
+    supplied "decay_factor" unitProbability fields >>= λ _ →
+    supplied "prob_threshold" unitProbability fields >>= λ _ →
+    supplied "weight" unitProbability fields >>= λ _ →
+    supplied "value" unitProbability fields
 
   admittedFields : Tools.Tool → V.Object.View → Fault ⊎ Request
   admittedFields tool fields = suppliedTypes fields >>= λ _ → decode tool fields

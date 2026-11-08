@@ -546,6 +546,13 @@ impl MimirService {
         prob_threshold: f64,
         project: Option<&str>,
     ) -> Result<usize> {
+        if !prob_threshold.is_finite() || !(0.0..=1.0).contains(&prob_threshold) {
+            return Err(validation::Refusal::invalid(
+                validation::Code::InvalidNumber,
+                vec![validation::Segment::Key("prob_threshold".into())],
+                "Supply a finite probability between 0 and 1 inclusive; no beliefs were read or deleted.",
+            ).into());
+        }
         let grace_period = self.retirement_policy()?.duration();
         let edges = match project {
             Some(p) => self.store.get_defeats_with_timestamps_by_project(p).await?,

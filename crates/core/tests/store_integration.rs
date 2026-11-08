@@ -1277,6 +1277,29 @@ async fn test_intervene_counts_out_of_set_cocause() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn test_sweep_expired_defeated_rejects_invalid_threshold() {
+    let ctx = TestCtx::new().await;
+    let svc = service_with_retirement(Some(0.0)).await;
+    let defeater = ctx.belief("invalid-threshold-defeater".into(), 0.9, 0.9);
+    let defeated = ctx.belief("invalid-threshold-target".into(), 0.9, 0.9);
+    ctx.store.insert_belief(&defeater).await.unwrap();
+    ctx.store.insert_belief(&defeated).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(defeater.id, defeated.id, EdgeType::Defeats, 1.0).unwrap())
+        .await
+        .unwrap();
+    let result = svc.sweep_expired_defeated(2.0, Some(&ctx.project)).await;
+    let retained = ctx.store.get_belief(defeated.id).await.unwrap().is_some();
+    // Clean the owned fixture even when demonstrating the old destructive bug.
+    ctx.cleanup().await;
+    assert!(
+        result.is_err(),
+        "an out-of-range probability must be rejected: {result:?}"
+    );
+    assert!(retained, "an invalid threshold must never delete a belief");
+}
+
+#[tokio::test]
 async fn test_sweep_expired_defeated_deletes_low_prob_past_grace() {
     let ctx = TestCtx::new().await;
     let svc = service_with_retirement(Some(0.0)).await;
