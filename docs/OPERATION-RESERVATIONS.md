@@ -266,5 +266,13 @@ second to match the first snapshot. Its general result law then states that
 the page total and rows are projections of that same stored state. PostgreSQL's
 [repeatable-read guarantee](https://www.postgresql.org/docs/current/transaction-iso.html#XACT-REPEATABLE-READ)
 is an external dependency, rather than a database algorithm to re-prove.
-Evidence and contradiction response consistency remain #236–#237; the
-concrete read recovery instances remain #129.
+Direct evidence responses now use the same read-only transaction policy for
+grounding links and every selected passage. A document removed after link
+selection remains visible to that response's snapshot; a later response sees
+its removal. Strongest-first ordering and explicit positive passage selection
+are preserved. The formal read binding requires each passage to come from the
+original link snapshot, and transaction cleanup applies to unfinished reads.
+
+Contradiction response consistency remains #237, and the concrete basic-read
+recovery instances remain #129. Evidence-enriched retrieval has its separate
+operation proof in #132; this does not claim to certify that larger query.

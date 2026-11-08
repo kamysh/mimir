@@ -1,7 +1,8 @@
 {-# OPTIONS --safe #-}
 -- Evidence enrichment preserves retrieval order, ranks each belief's grounding
--- edges strongest-first, caps before fetching chunks, and caches both present
--- and absent chunk reads for the duration of one enriched query.
+-- edges strongest-first, applies only explicit passage selection, and caches
+-- chunk reads for enriched queries. A direct evidence response pins its links
+-- and passage reads to one read-only stable transaction.
 module Mimir.EvidenceRead where
 
 open import Data.Bool using (Bool; true; false; not)
@@ -11,6 +12,7 @@ open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≟_)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.Unit using (⊤)
 open import Relation.Nullary using (does)
 open import Mimir.Text using (Text; trim)
 import Mimir.ApplicationStore as Store
@@ -42,10 +44,16 @@ Cache = List (ℕ × Maybe Documents.Chunk)
 data Effect : Set where
   readGrounds : List ℕ → Effect
   readChunk : ℕ → Effect
+  openSnapshot : ℕ → Effect
+  readSnapshotChunk : ℕ → Store.World → ℕ → Effect
+  closeSnapshot : ℕ → Effect
 
 Reply : Effect → Set
 Reply (readGrounds ids) = Text ⊎ List Store.Ground
 Reply (readChunk id) = Text ⊎ Maybe Documents.Chunk
+Reply (openSnapshot belief) = Text ⊎ (ℕ × Store.World × List Store.Ground)
+Reply (readSnapshotChunk tx first id) = Text ⊎ Maybe Documents.Chunk
+Reply (closeSnapshot tx) = ⊤
 
 module E = Effects.Protocol Effect Reply
 open E
@@ -74,11 +82,11 @@ enrich limit grounds (belief ∷ rest) cache = refs (ranked (G.BeliefValues.iden
       { (inj₁ error) → done (inj₁ error)
       ; (inj₂ later) → done (inj₂ (grounded belief evidence ∷ later)) } }
 
-uncached : List Store.Ground → Script (Text ⊎ List Reference)
-uncached [] = done (inj₂ [])
-uncached (edge ∷ rest) = ask (readChunk (Store.Ground.chunk edge)) (λ
+uncached : ℕ → Store.World → List Store.Ground → Script (Text ⊎ List Reference)
+uncached tx first [] = done (inj₂ [])
+uncached tx first (edge ∷ rest) = ask (readSnapshotChunk tx first (Store.Ground.chunk edge)) (λ
   { (inj₁ error) → done (inj₁ error)
-  ; (inj₂ observed) → uncached rest >>= λ
+  ; (inj₂ observed) → uncached tx first rest >>= λ
       { (inj₁ error) → done (inj₁ error)
       ; (inj₂ later) → done (append observed later) } })
   where
@@ -87,9 +95,10 @@ uncached (edge ∷ rest) = ask (readChunk (Store.Ground.chunk edge)) (λ
   append (just chunk) later = inj₂ (referenceOf (Store.Ground.weight edge) chunk ∷ later)
 
 one : ℕ → Ranking.Selection → Script (Text ⊎ List Reference)
-one belief limit = ask (readGrounds (belief ∷ [])) (λ
+one belief limit = ask (openSnapshot belief) (λ
   { (inj₁ error) → done (inj₁ error)
-  ; (inj₂ grounds) → uncached (ranked belief limit grounds) })
+  ; (inj₂ (tx , first , grounds)) → uncached tx first (ranked belief limit grounds) >>= λ result →
+      ask (closeSnapshot tx) (λ _ → done result) })
 
 many : Ranking.Selection → List G.BeliefValues → Script (Text ⊎ List Grounded)
 many limit [] = done (inj₂ [])

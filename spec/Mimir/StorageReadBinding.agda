@@ -14,7 +14,7 @@ open import Data.Product using (_×_; _,_; proj₁; proj₂; Σ)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.Unit using (⊤)
 open import Relation.Nullary using (does)
-open import Relation.Binary.PropositionalEquality using (_≡_)
+open import Relation.Binary.PropositionalEquality using (_≡_; cong; trans)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.ApplicationStore as Store
@@ -74,6 +74,13 @@ EvidenceMeaning snapshot (Evidence.readGrounds ids) (inj₁ error) = ⊤
 EvidenceMeaning snapshot (Evidence.readGrounds ids) (inj₂ rows) = rows ↭ evidenceGrounds ids snapshot
 EvidenceMeaning snapshot (Evidence.readChunk id) (inj₁ error) = ⊤
 EvidenceMeaning snapshot (Evidence.readChunk id) (inj₂ row) = row ≡ Store.chunk id (Store.World.chunks snapshot)
+EvidenceMeaning snapshot (Evidence.openSnapshot belief) (inj₁ error) = ⊤
+EvidenceMeaning snapshot (Evidence.openSnapshot belief) (inj₂ (tx , first , rows)) =
+  first ≡ snapshot × rows ↭ evidenceGrounds (belief ∷ []) snapshot
+EvidenceMeaning snapshot (Evidence.readSnapshotChunk tx first id) (inj₁ error) = ⊤
+EvidenceMeaning snapshot (Evidence.readSnapshotChunk tx first id) (inj₂ row) =
+  snapshot ≡ first × row ≡ Store.chunk id (Store.World.chunks snapshot)
+EvidenceMeaning snapshot (Evidence.closeSnapshot tx) reply = ⊤
 
 module Read (ops : VectorOperations) where
   module V = Vectors ops
@@ -125,7 +132,16 @@ module Observed (reads : Committed.Contract Store.World) where
   EvidenceReply : (effect : Evidence.Effect) → Evidence.Reply effect → Set
   EvidenceReply (Evidence.readGrounds ids) (inj₁ error) = ⊤
   EvidenceReply (Evidence.readChunk id) (inj₁ error) = ⊤
+  EvidenceReply (Evidence.openSnapshot belief) (inj₁ error) = ⊤
+  EvidenceReply (Evidence.readSnapshotChunk tx first id) (inj₁ error) = ⊤
+  EvidenceReply (Evidence.closeSnapshot tx) reply = ⊤
   EvidenceReply effect reply = Σ Read (λ read → EvidenceMeaning (snapshot read) effect reply)
+
+  passageUsesSelectedSnapshot : ∀ tx first id row →
+    EvidenceReply (Evidence.readSnapshotChunk tx first id) (inj₂ row) →
+    row ≡ Store.chunk id (Store.World.chunks first)
+  passageUsesSelectedSnapshot tx first id row (read , stable , selected) =
+    trans selected (cong (λ world → Store.chunk id (Store.World.chunks world)) stable)
 
   SuccessfulInferenceReply : (databaseSum : List Float → Float) → (effect : Inference.Effect) → Inference.Reply effect → Set
   SuccessfulInferenceReply databaseSum effect reply = Σ Read (λ read → Semantics.InferenceRead databaseSum (snapshot read) effect reply)

@@ -982,30 +982,15 @@ impl MimirService {
     }
 
     /// The grounding passages for a single belief, strongest first.
-    /// `limit = 0` means no cap.
+    /// Omit passage selection for all support; a supplied count is positive.
     pub async fn evidence_for_belief(
         &self,
         belief_id: Uuid,
         limit: Selection,
     ) -> Result<Vec<EvidenceRef>> {
-        let mut ev = self.store.get_evidence_for_beliefs(&[belief_id]).await?;
-        ev.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        if let Some(count) = limit {
-            ev.truncate(count.get());
-        }
-        let mut out = Vec::with_capacity(ev.len());
-        for (_belief, chunk_id, weight) in ev {
-            if let Some(c) = self.store.get_chunk_by_id(chunk_id).await? {
-                out.push(EvidenceRef {
-                    chunk_id,
-                    document_path: c.document_path,
-                    section_path: c.section_path,
-                    snippet: c.content.trim().to_string(),
-                    weight,
-                });
-            }
-        }
-        Ok(out)
+        self.store
+            .evidence_for_belief_snapshot(belief_id, limit)
+            .await
     }
 
     /// `query_relevant`, enriched with the top-k grounding passages per belief.

@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use crate::documents::DocumentChunk;
 use crate::graph::{Belief, Edge, EdgeType, MemoryType, Pattern, Probability};
+use crate::EvidenceRef;
 
 // The approved READ COMMITTED contract requires the application to select
 // isolation explicitly. Inheriting REPEATABLE READ could freeze a snapshot
@@ -1783,6 +1784,11 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Fetch a single DocumentChunk by ID.
     pub async fn get_chunk_by_id(&self, id: Uuid) -> Result<Option<DocumentChunk>> {
+        let client = self.client.lock().await;
+        self.get_chunk_by_id_on(&client, id).await
+    }
+
+    async fn get_chunk_by_id_on(&self, client: &Client, id: Uuid) -> Result<Option<DocumentChunk>> {
         let g = &self.graph_name;
         let id_str = id.to_string();
         let sql = format!(
@@ -1798,7 +1804,6 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN c.id, c.documentPath, c.sectionPath, c.content, c.parentId, c.project
 $$) {CHUNK_RETURN_COLUMNS}"#
         );
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(None);
@@ -1900,6 +1905,18 @@ $$) AS (belief_id ag_catalog.agtype, total_weight ag_catalog.agtype)"#
         if belief_ids.is_empty() {
             return Ok(vec![]);
         }
+        let client = self.client.lock().await;
+        self.get_evidence_for_beliefs_on(&client, belief_ids).await
+    }
+
+    async fn get_evidence_for_beliefs_on(
+        &self,
+        client: &Client,
+        belief_ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Uuid, f64)>> {
+        if belief_ids.is_empty() {
+            return Ok(vec![]);
+        }
         let g = &self.graph_name;
         let id_list = belief_ids
             .iter()
@@ -1914,7 +1931,6 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN b.id, c.id, r.weight
 $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catalog.agtype)"#
         );
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -1924,6 +1940,51 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
             out.push((belief_id, chunk_id, weight));
         }
         Ok(out)
+    }
+
+    pub(crate) async fn evidence_for_belief_snapshot(
+        &self,
+        belief_id: Uuid,
+        limit: crate::Selection,
+    ) -> Result<Vec<EvidenceRef>> {
+        self.evidence_after_links(belief_id, limit, || async { Ok(()) })
+            .await
+    }
+
+    async fn evidence_after_links<F, W>(
+        &self,
+        belief_id: Uuid,
+        limit: crate::Selection,
+        after_links: F,
+    ) -> Result<Vec<EvidenceRef>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let mut evidence = self
+            .get_evidence_for_beliefs_on(tx.client(), &[belief_id])
+            .await?;
+        evidence.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some(count) = limit {
+            evidence.truncate(count.get());
+        }
+        after_links().await?;
+        let mut result = Vec::with_capacity(evidence.len());
+        for (_, chunk_id, weight) in evidence {
+            if let Some(chunk) = self.get_chunk_by_id_on(tx.client(), chunk_id).await? {
+                result.push(EvidenceRef {
+                    chunk_id,
+                    document_path: chunk.document_path,
+                    section_path: chunk.section_path,
+                    snippet: chunk.content.trim().to_owned(),
+                    weight,
+                });
+            }
+        }
+        tx.commit().await?;
+        Ok(result)
     }
 
     /// Remove a specific GROUNDS edge. (Edges are also GC'd automatically by the
@@ -2122,6 +2183,71 @@ mod snapshot_read_tests {
             email: None,
             retirement: None,
         }
+    }
+
+    #[tokio::test]
+    async fn evidence_snapshot_keeps_selected_passages_during_document_removal() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let suffix: String = setup
+            .query_one("SELECT gen_random_uuid()::text", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-evidence-{suffix}");
+        let document = format!("/mimir-test/{project}.md");
+        let writer_store = AgeStore::new(setup, cfg.database.dbname.clone())?;
+        let reader = AgeStore::new(
+            db::connect(&cfg.database).await?,
+            cfg.database.dbname.clone(),
+        )?;
+        let belief = writer
+            .add_belief_in_project(
+                "retain the selected supporting passages",
+                0.5,
+                0.1,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
+        let checked = async {
+            let ids = db::connect(&cfg.database).await?;
+            for (section, weight) in [("first", 0.9), ("second", 0.5)] {
+                let id: Uuid = ids.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+                let chunk = DocumentChunk::with_id(id, document.clone(), vec![section.into()],
+                    format!("{} complete {section} passage", "λ supporting text ".repeat(200)), None, Some(project.clone()));
+                writer_store.insert_document_chunk(&chunk).await?;
+                writer_store.insert_chunk_embedding(id, &[1.0, 0.0, 0.0]).await?;
+                writer.add_evidence(belief.id, id, weight).await?;
+            }
+            let before = writer.evidence_for_belief(belief.id, None).await?;
+            anyhow::ensure!(before.len() == 2 && before[0].weight > before[1].weight);
+            let view = |refs: &[EvidenceRef]| refs.iter().map(|r| (r.chunk_id, r.document_path.clone(),
+                r.section_path.clone(), r.snippet.clone(), r.weight.to_bits())).collect::<Vec<_>>();
+            let selected = writer.evidence_for_belief(belief.id, std::num::NonZeroUsize::new(1)).await?;
+            anyhow::ensure!(view(&selected) == view(&before[..1]),
+                "only an explicit positive selection may restrict the supporting passages");
+            let during = reader.evidence_after_links(belief.id, None, || async {
+                anyhow::ensure!(writer.clear_document(&document).await? == 2,
+                    "the independent writer must remove the selected document before passage reads");
+                Ok(())
+            }).await?;
+            anyhow::ensure!(view(&during) == view(&before),
+                "all selected passage fields must come from the link query's original snapshot");
+            anyhow::ensure!(writer.evidence_for_belief(belief.id, None).await?.is_empty(),
+                "the next response must observe the committed document removal");
+            let failure = reader.evidence_after_links(belief.id, None, || async {
+                anyhow::bail!("controlled interruption after grounding selection")
+            }).await.unwrap_err();
+            anyhow::ensure!(failure.to_string().contains("controlled interruption"));
+            anyhow::ensure!(reader.evidence_for_belief_snapshot(belief.id, None).await?.is_empty(),
+                "an interrupted evidence read must release its transaction and connection");
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
     }
 
     #[tokio::test]
