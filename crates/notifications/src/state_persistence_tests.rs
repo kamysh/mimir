@@ -99,7 +99,7 @@ fn successful_replacement_is_private_and_replaces_the_whole_file() {
 }
 
 #[test]
-fn encoding_and_size_rejection_preserve_all_named_files() {
+fn encoding_rejection_preserves_all_named_files() {
     struct Fails;
     impl Serialize for Fails {
         fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
@@ -108,15 +108,44 @@ fn encoding_and_size_rejection_preserve_all_named_files() {
     }
     let directory = Directory::new();
     let state = StateDir::lock(&directory.0).unwrap();
-    let oversized = "x".repeat(MAX_STATE as usize);
     for name in [STATE_FILE, OAUTH_FILE, DIGEST_FILE] {
         state.write_named(name, &"original").unwrap();
         let before = fs::read(directory.0.join(name)).unwrap();
         let count = fs::read_dir(&directory.0).unwrap().count();
         assert!(state.write_named(name, &Fails).is_err());
-        assert!(state.write_named(name, &oversized).is_err());
         assert_eq!(fs::read(directory.0.join(name)).unwrap(), before);
         assert_eq!(fs::read_dir(&directory.0).unwrap().count(), count);
+    }
+}
+
+#[test]
+fn complete_large_named_files_survive_replacement_and_reopening() {
+    let directory = Directory::new();
+    let complete = format!(
+        "{}last-complete-state-field",
+        "λ state field ".repeat(100_000)
+    );
+    assert!(complete.len() > 1024 * 1024);
+    {
+        let state = StateDir::lock(&directory.0).unwrap();
+        for name in [STATE_FILE, OAUTH_FILE, DIGEST_FILE] {
+            state.write_named(name, &complete).unwrap();
+        }
+    }
+    let reopened = StateDir::lock(&directory.0).unwrap();
+    for name in [STATE_FILE, OAUTH_FILE, DIGEST_FILE] {
+        assert_eq!(
+            reopened.read_named::<String>(name).unwrap().as_ref(),
+            Some(&complete)
+        );
+        assert_eq!(
+            fs::metadata(directory.0.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 }
 

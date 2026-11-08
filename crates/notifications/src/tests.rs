@@ -347,6 +347,92 @@ fn progress(source: &str, incident: &str) -> Event {
 }
 
 #[tokio::test]
+async fn complete_notification_fields_reach_sender_and_survive_reopening() {
+    let config = config();
+    let path = std::env::temp_dir().join(format!("mimir-complete-notification-{}", Uuid::new_v4()));
+    let notifier = Notifier::new(&config, &path).unwrap();
+    let source = "source-component-".repeat(20);
+    let incident_key = "complete-project-資料-".repeat(40);
+    let code = "complete-reason-".repeat(20);
+    let summary = "complete summary 資料 ".repeat(100);
+    let details = format!(
+        "{}\nlast-complete-notification-detail",
+        "affected review details\n".repeat(50_000)
+    );
+    let event = Event {
+        source: source.clone(),
+        incident_key: incident_key.clone(),
+        status: EventStatus::Failure {
+            code: code.clone(),
+            summary: summary.clone(),
+        },
+        details: Some(details.clone()),
+    };
+    event.validate().unwrap();
+    let outcome = notifier
+        .submit_with(&event, 100, |message| async move {
+            let complete = String::from_utf8(message.formatted()).unwrap();
+            assert!(complete.contains("last-complete-notification-detail"));
+            Err(SendFailure::Retryable)
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome, Outcome::RetryPending);
+    let saved: Outbox = StateDir::lock(&path).unwrap().read().unwrap().unwrap();
+    let incident = &saved.incidents[&event.map_key()];
+    assert_eq!(incident.source, source);
+    assert_eq!(incident.incident_key, incident_key);
+    let alert = incident.outbox.as_ref().unwrap();
+    assert_eq!(alert.code, code);
+    assert_eq!(alert.summary, summary);
+    assert_eq!(alert.details.as_ref(), Some(&details));
+    assert!(
+        std::fs::metadata(path.join("notification-outbox.json"))
+            .unwrap()
+            .len()
+            > 1024 * 1024
+    );
+    drop(saved);
+    drop(notifier);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[tokio::test]
+async fn complete_large_daily_body_reaches_sender() {
+    let config = config();
+    let path = std::env::temp_dir().join(format!("mimir-complete-daily-{}", Uuid::new_v4()));
+    let notifier = Notifier::new(&config, &path).unwrap();
+    let digest = Digest {
+        through_day: "2026-11-08".into(),
+        body: format!(
+            "{}final-daily-row-identifier\n",
+            "daily statistics line\n".repeat(20_000)
+        ),
+    };
+    assert!(digest.body.len() > 256 * 1024);
+    let outcome = notifier
+        .send_digest_at(
+            &digest,
+            100,
+            Some(|message: lettre::Message| async move {
+                let complete = String::from_utf8(message.formatted()).unwrap();
+                assert_eq!(complete.matches("daily statistics line").count(), 20_000);
+                assert!(complete.contains("final-daily-row-identifier"));
+                Ok(())
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, Outcome::Sent);
+    assert_eq!(
+        notifier.digest_state().unwrap().through_day.as_deref(),
+        Some("2026-11-08")
+    );
+    drop(notifier);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[tokio::test]
 async fn independent_components_retry_restart_suppress_and_recover() {
     let config = config();
     let path = directory();

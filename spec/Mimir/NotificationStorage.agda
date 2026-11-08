@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- Independent notification lock, three named files, 1 MiB bounds, private
+-- Independent notification lock, three named files, complete contents, private
 -- ownership checks, and durable replacement. Parent creation races tolerate
 -- AlreadyExists only because the entire chain is subsequently re-inspected.
 module Mimir.NotificationStorage where
@@ -78,19 +78,16 @@ module File (library : Library.Contract) (Handle NativeError : Set) where
 
   module Decoded (Value DecodeError : Set) (decode : List Byte → DecodeError ⊎ Value) where
     module R = Read.With Path.Path Handle NativeError Value DecodeError decode
-    read : L.Locked → Name → Script (Result (Maybe (R.Read (just 1048576))))
+    read : L.Locked → Name → Script (Result (Maybe (R.Read nothing)))
     read held name = ask (openFile (Path.join (L.Locked.path held) (filename name)) readNoFollowCloseOnExec)
-      (R.afterOpen (just 1048576))
+      (R.afterOpen nothing)
 
   -- Required ownership rule is shared with JudgeWrite: failure to create an
   -- exclusive temporary file grants no right to remove an existing file.
   data WriteResult : Set where
-    oversized : WriteResult
     replaced : W.Outcome → WriteResult
 
   write : L.Locked → Name → UUID.UUID → List Byte → Script WriteResult
-  write held name id bytes with length bytes ≤? 1048576
-  ... | no _ = done oversized
-  ... | yes _ = W.replace (Path.join directory (temporary library id))
+  write held name id bytes = W.replace (Path.join directory (temporary library id))
       (Path.join directory (filename name)) directory bytes >>= λ outcome → done (replaced outcome)
     where directory = L.Locked.path held

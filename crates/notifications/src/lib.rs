@@ -23,7 +23,7 @@ pub struct Event {
     pub source: String,
     pub incident_key: String,
     pub status: EventStatus,
-    /// Bounded, component-supplied facts safe to include in email.
+    /// Component-supplied facts safe to include in email.
     pub details: Option<String>,
 }
 
@@ -193,7 +193,6 @@ impl Default for Outbox {
 
 fn token(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= 64
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
@@ -203,24 +202,19 @@ impl Event {
     pub fn validate(&self) -> Result<()> {
         ensure!(token(&self.source), "invalid notification source");
         ensure!(
-            !self.incident_key.is_empty()
-                && self.incident_key.len() <= 128
-                && !self.incident_key.chars().any(char::is_control),
+            !self.incident_key.is_empty() && !self.incident_key.chars().any(char::is_control),
             "invalid notification incident key"
         );
         if let EventStatus::Failure { code, summary } = &self.status {
             ensure!(token(code), "invalid notification code");
             ensure!(
-                !summary.trim().is_empty()
-                    && summary.len() <= 160
-                    && !summary.chars().any(char::is_control),
+                !summary.trim().is_empty() && !summary.chars().any(char::is_control),
                 "invalid notification summary"
             );
         }
         if let Some(details) = &self.details {
             ensure!(
                 !details.is_empty()
-                    && details.len() <= 2048
                     && details
                         .chars()
                         .all(|character| character == '\n' || !character.is_control()),
@@ -331,7 +325,6 @@ impl<'a> Notifier<'a> {
                 }),
             "invalid digest day"
         );
-        ensure!(digest.body.len() <= 256 * 1024, "digest body is too large");
         let state = StateDir::lock(&self.state_dir)?;
         let mut cursor: DigestState = state.read_digest()?.unwrap_or_default();
         if cursor.through_day.as_deref() >= Some(digest.through_day.as_str()) {
