@@ -228,7 +228,7 @@ module Run (environment : Environment) where
   start (Public.learningQuery q) = queryState (Query.start q)
   start (Public.learningContext query project limit) = contextState
     (LearningContext.begin (Context.contextRequest query project limit embeddingsEnabled))
-  start Public.capabilities = finished (capabilitiesResult (Capabilities.capabilities 2 1 true true true true))
+  start Public.capabilities = finished (capabilitiesResult Capabilities.current)
 
   Event = Σ Effect Reply
 

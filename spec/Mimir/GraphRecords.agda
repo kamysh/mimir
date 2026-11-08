@@ -64,8 +64,8 @@ record Page : Set where
   constructor page
   field beliefs : List G.BeliefValues; total offset : ℕ; nextOffset : Maybe ℕ
 
--- Count and page SELECTs are separate READ COMMITTED observations. The total
--- must therefore not be silently recalculated from the later page snapshot.
+-- Count and page rows are explicit inputs. GraphReadProtocol ties both inputs
+-- to the same stable read snapshot; this projection preserves the total.
 pageResult : Maybe Text → Maybe C.Memory → ℕ → ℕ → ℕ → List G.BeliefValues → Page
 pageResult project memory limit offset total observed = page rows total offset next
   where

@@ -34,6 +34,7 @@ import Mimir.AssessmentScores as Scores
 import Mimir.AssessmentRead as Assessment
 import Mimir.AssessmentWrites as Contributions
 import Mimir.LearningHistory as History
+import Mimir.GraphRecords as Records
 
 record Formatting : Set where
   field
@@ -105,6 +106,14 @@ module Encode (format : Formatting) where
     ("situation" , V.string (G.PatternValues.situation p)) ∷ ("approach" , V.string (G.PatternValues.approach p)) ∷
     ("success_rate" , real (G.PatternValues.successRate p)) ∷ ("activation_count" , V.unsigned (G.PatternValues.activationCount p)) ∷
     ("created_at" , timestamp (G.PatternValues.created p)) ∷ ("project" , optional V.string (G.PatternValues.project p)) ∷ [])
+
+  beliefPage : Records.Page → V.Value
+  beliefPage p = object (("beliefs" , V.array (map belief (Records.Page.beliefs p))) ∷
+    ("total" , V.unsigned (Records.Page.total p)) ∷ ("offset" , V.unsigned (Records.Page.offset p)) ∷
+    ("next_offset" , optional V.unsigned (Records.Page.nextOffset p)) ∷ [])
+
+  identityPair : ℕ × ℕ → V.Value
+  identityPair (a , b) = V.array (uuid a ∷ uuid b ∷ [])
 
   prediction : L.Prediction → V.Value
   prediction p = object (("quantity" , V.string (L.Prediction.quantity p)) ∷ ("value" , V.floating (L.Prediction.point p)) ∷

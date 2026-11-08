@@ -280,6 +280,16 @@ request observes the deletion. The Agda relation requires the endpoint read to
 use the pair selection's snapshot, and its general law preserves the resulting
 active contradictions. Completed and interrupted reads release their transaction.
 
-The concrete basic-read
-recovery instances remain #129. Evidence-enriched retrieval has its separate
-operation proof in #132; this does not claim to certify that larger query.
+Concrete recovery values now cover belief lookup, complete belief lists,
+explicit positive pages, pattern lists, active contradictions, direct evidence
+and learning capabilities. Their inputs contain only the request's identities
+and filters. Their result definitions retain every public field, including
+page totals and offsets and the supporting passages' complete contents. They
+reuse the same public encoders as ordinary output.
+
+For any represented initial state and interrupted read, a completed retry
+preserves the entire application state and returns that request's complete
+defined answer. The capability answer uses contract version 3, matching the
+current MCP handler. These values are prerequisites for mandatory dispatcher
+assembly in #74/#76; those issues are still unfinished. Evidence-enriched
+retrieval has its separate operation proof in #132.

@@ -9,7 +9,7 @@ open import Data.Float.Base using (Float)
 open import Data.List using (List; []; _∷_; map; filterᵇ)
 open import Data.List.Relation.Binary.Permutation.Propositional using (_↭_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ)
+open import Data.Nat using (ℕ; suc)
 open import Data.Product using (_×_; _,_; proj₁; proj₂; Σ)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.Unit using (⊤)
@@ -30,6 +30,11 @@ import Mimir.GraphRecords as Records
 import Mimir.GraphNumerics as Numeric
 import Mimir.InferenceProtocol as Inference
 import Mimir.DatabaseReadCommitted as Committed
+import Mimir.Recovery as Recovery
+import Mimir.PublicEncoding as Encoding
+import Mimir.StructuredValue as Wire
+import Mimir.LearningCandidates as Candidates
+import Mimir.LearningCapabilities as Capabilities
 
 eligibleVectors : Maybe (List ℕ) → List (ℕ × Store.Vector) → List (ℕ × Store.Vector)
 eligibleVectors nothing rows = rows
@@ -155,3 +160,52 @@ module Observed (reads : Committed.Contract Store.World) where
     (read , Semantics.readSnapshotBeliefs .tx .first .scope stable) =
     cong (λ world → Numeric.activeContradictions
       (Records.listBeliefs scope nothing (Store.beliefs world)) candidates) stable
+
+-- Concrete read requests carry filters and identities only. In particular,
+-- neither a desired answer nor a correctness certificate is an input. Wire
+-- scalar formatting is the existing standard-library dependency boundary.
+module BasicReads (format : Encoding.Formatting) where
+  module Encode = Encoding.Encode format
+
+  data Request : Set where
+    getBelief : ℕ → Request
+    listBeliefs : Maybe Text → Maybe Candidates.Memory → Request
+    beliefPage : Maybe Text → Maybe Candidates.Memory → ℕ → ℕ → Request
+    listPatterns : Maybe Text → Request
+    contradictions : Maybe Text → Request
+    evidence : ℕ → Request
+    capabilities : Request
+
+  -- The page constructor receives count-minus-one: every admitted page is
+  -- positive, without an upper ceiling or a zero-means-all convention.
+  supportingPassages : Store.World → List Store.Ground → List Evidence.Reference
+  supportingPassages state [] = []
+  supportingPassages state (edgeRow ∷ later) with Store.chunk (Store.Ground.chunk edgeRow) (Store.World.chunks state)
+  ... | nothing = supportingPassages state later
+  ... | just chunk = Evidence.referenceOf (Store.Ground.weight edgeRow) chunk ∷ supportingPassages state later
+
+  answer : Request → Store.World → Wire.Value
+  answer (getBelief id) state = Encoding.optional Encode.belief (Ranking.lookup id (Store.beliefs state))
+  answer (listBeliefs project memory) state = Wire.array
+    (map Encode.belief (Records.listBeliefs project memory (Store.beliefs state)))
+  answer (beliefPage project memory count offset) state = Encode.beliefPage
+    (Graph.pageAnswer project memory (suc count) offset state)
+  answer (listPatterns project) state = Wire.array
+    (map Encode.patternValue (Records.listPatterns project (Store.patterns (Store.nodes state))))
+  answer (contradictions project) state = Wire.array (map Encode.identityPair
+    (Numeric.activeContradictions (Records.listBeliefs project nothing (Store.beliefs state))
+      (Semantics.contradictions project state)))
+  answer (evidence id) state = Wire.array (map Encode.reference
+    (supportingPassages state (Evidence.ranked id nothing (Semantics.groundRows state))))
+  answer capabilities state = Capabilities.encode Capabilities.current
+
+  module Checked = Recovery.ReadOnly answer
+
+  operation : Recovery.Recoverable Store.World Request
+  operation = Checked.operation
+
+  completeReplyAndUnchangedWorld : ∀ request initial interrupted final reply →
+    Checked.Checked.X.Interrupted (Checked.Checked.script request) initial interrupted →
+    Checked.Checked.X.Completed (Checked.Checked.script request) interrupted final reply →
+    final ≡ initial × reply ≡ answer request initial
+  completeReplyAndUnchangedWorld = Checked.completedRetryPreservesStateAndAnswer

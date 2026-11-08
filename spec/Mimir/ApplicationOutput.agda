@@ -125,9 +125,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   projectRead original (Read.patternResult p) = success (optional patternValue p)
   projectRead original (Read.beliefList bs) = success (V.array (map belief bs))
   projectRead original (Read.patternList ps) = success (V.array (map patternValue ps))
-  projectRead original (Read.paged p) = success (object (("beliefs" , V.array (map belief (Records.Page.beliefs p))) ∷
-    ("total" , V.unsigned (Records.Page.total p)) ∷ ("offset" , V.unsigned (Records.Page.offset p)) ∷
-    ("next_offset" , optional V.unsigned (Records.Page.nextOffset p)) ∷ []))
+  projectRead original (Read.paged p) = success (beliefPage p)
   projectRead original (Read.explained e) = success (explanation e)
   projectRead original (Read.counted s) = success (object (("beliefs" , V.unsigned (Read.Statistics.beliefCount s)) ∷
     ("patterns" , V.unsigned (Read.Statistics.patternCount s)) ∷ ("supports" , V.unsigned (Read.Statistics.supportCount s)) ∷
@@ -185,7 +183,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     object (("id" , uuid id) ∷ ("projected_probability" , real p) ∷ []) }) writes))
   project (A.inferred (Inference.changed n)) = success (count "decayed" n)
   project (A.inferred (Inference.deleted n)) = success (count "deleted" n)
-  project (A.inferred (Inference.pairs pairs)) = success (V.array (map (λ { (a , b) → V.array (uuid a ∷ uuid b ∷ []) }) pairs))
+  project (A.inferred (Inference.pairs pairs)) = success (V.array (map identityPair pairs))
   project original@(A.inferred _) = failure original
   project (A.grounded (A.Grounding.T.applied tt)) = success (flag "ok" true)
   project original@(A.grounded _) = failure original
