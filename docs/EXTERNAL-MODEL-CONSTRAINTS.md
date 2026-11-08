@@ -1,8 +1,9 @@
-# Model constraints requiring a user decision
+# Approved external model constraints
 
-Status: proposals below are awaiting explicit user approval. This document does
-not approve retaining an application limit or silently changing content. Sources
-were checked on 2026-11-07. No live account or downloaded model was used.
+Status: the user explicitly approved the two constraints below on 2026-11-07.
+Approval permits complete-input compatibility validation and the required model
+output field. It permits no silent content change or smaller application quota.
+Sources were checked on 2026-11-07. No live account or downloaded model was used.
 
 ## Local BGE input capacity
 
@@ -18,7 +19,7 @@ copies only a prefix of longer encodings into the model input. A condition near
 position 580 can therefore be absent from the vector input while the caller
 receives no warning that part of the source was excluded. This clipping is a bug.
 
-Proposed behavior for #113: encode the complete input without tokenizer clipping.
+Approved behavior for #113: encode the complete input without tokenizer clipping.
 Check it against this specific model's declared capacity. If it cannot fit,
 explain the model, actual encoded size and supported size to the calling agent;
 the agent must open a user dialog before belief publication. Reserved operation
@@ -31,7 +32,7 @@ or selecting another model would change behavior and is not approved. Removing
 the check cannot enlarge the model's position table. A different model needs its
 own declared capacity, rather than inheriting the number 512.
 
-Requested decision: permit this model-declared compatibility check, with complete
+Approved decision: use this model-declared compatibility check, with complete
 input validation and a user dialog when the input cannot be represented.
 
 ## Anthropic's required output field
@@ -52,7 +53,7 @@ unavailable, explain that prerequisite and ask the user to resolve the model or
 backend choice. Do not guess a number, silently change models or claim a review
 completed from an incomplete provider response.
 
-Requested decision: permit the required field to use the configured model's own
+Approved decision: the required field uses the configured model's own
 reported maximum, without an additional application budget. Provider input/context
 constraints remain external prerequisites; this is not a claim that every prompt
 fits every model.
