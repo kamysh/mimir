@@ -5,8 +5,6 @@ config_version = 1
 # It is intentionally unset here; see docs/BELIEF-RETENTION.md. Do not guess it.
 [logging]
 directory = "/ABSOLUTE/HOME/.local/state/mimir/logs"
-max_file_bytes = 1048576
-retained_files = 4
 
 # Merge these optional sections into ~/.config/mimir/config.toml.
 # Keep [database] and optional [embeddings]. Directory 0700; file 0600.

@@ -39,6 +39,6 @@ pub fn dispatch(command: Command) -> Result<()> {
     if core.judge.is_some() || core.llm.is_some() {
         super::judge::config::load(Some(&path))?;
     }
-    println!("Configuration compatible with Mimir {} (format {}).\nConfig: {}\nLogs: {}\nRetention: {} files × {} bytes ({} bytes maximum).\nNo database or model request was made.",env!("CARGO_PKG_VERSION"),operations.config_version,path.display(),operations.logging.directory.display(),operations.logging.retained_files,operations.logging.max_file_bytes,operations.logging.retained_files as u64*operations.logging.max_file_bytes);
+    println!("Configuration compatible with Mimir {} (format {}).\nConfig: {}\nLogs: {}\nLogs append complete entries; Mimir applies no rotation or retention limit.\nNo database or model request was made.",env!("CARGO_PKG_VERSION"),operations.config_version,path.display(),operations.logging.directory.display());
     Ok(())
 }

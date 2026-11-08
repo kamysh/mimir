@@ -28,31 +28,40 @@ retired key = (does (key ≟Text toList "timeout_seconds")) ∨ (does (key ≟Te
 
 Fields = List (Text × V.Value)
 
-removeRetired : Fields → Fields
-removeRetired [] = []
-removeRetired ((key , value) ∷ rest) with retired key
-... | true = removeRetired rest
-... | false = (key , value) ∷ removeRetired rest
+module Filter (isRetired : Text → Bool) where
+  removeRetired : Fields → Fields
+  removeRetired [] = []
+  removeRetired ((key , value) ∷ rest) with isRetired key
+  ... | true = removeRetired rest
+  ... | false = (key , value) ∷ removeRetired rest
 
--- A receipt accounts for every input setting; only a retired key can disappear.
-data Migration : Fields → Fields → Set where
-  empty : Migration [] []
-  removed : ∀ key value before after → retired key ≡ true → Migration before after →
-    Migration ((key , value) ∷ before) after
-  preserved : ∀ key value before after → retired key ≡ false → Migration before after →
-    Migration ((key , value) ∷ before) ((key , value) ∷ after)
+  -- A receipt accounts for every input setting; only a retired key can disappear.
+  data Migration : Fields → Fields → Set where
+    empty : Migration [] []
+    removed : ∀ key value before after → isRetired key ≡ true → Migration before after →
+      Migration ((key , value) ∷ before) after
+    preserved : ∀ key value before after → isRetired key ≡ false → Migration before after →
+      Migration ((key , value) ∷ before) ((key , value) ∷ after)
 
-migrationComplete : ∀ fields → Migration fields (removeRetired fields)
-migrationComplete [] = empty
-migrationComplete ((key , value) ∷ rest) with retired key in eq
-... | true = removed key value rest (removeRetired rest) eq (migrationComplete rest)
-... | false = preserved key value rest (removeRetired rest) eq (migrationComplete rest)
+  migrationComplete : ∀ fields → Migration fields (removeRetired fields)
+  migrationComplete [] = empty
+  migrationComplete ((key , value) ∷ rest) with isRetired key in eq
+  ... | true = removed key value rest (removeRetired rest) eq (migrationComplete rest)
+  ... | false = preserved key value rest (removeRetired rest) eq (migrationComplete rest)
 
-migrationIdempotent : ∀ fields → removeRetired (removeRetired fields) ≡ removeRetired fields
-migrationIdempotent [] = refl
-migrationIdempotent ((key , value) ∷ rest) with retired key in eq
-... | true = migrationIdempotent rest
-... | false rewrite eq = cong ((key , value) ∷_) (migrationIdempotent rest)
+  migrationIdempotent : ∀ fields → removeRetired (removeRetired fields) ≡ removeRetired fields
+  migrationIdempotent [] = refl
+  migrationIdempotent ((key , value) ∷ rest) with isRetired key in eq
+  ... | true = migrationIdempotent rest
+  ... | false rewrite eq = cong ((key , value) ∷_) (migrationIdempotent rest)
+
+module Llm = Filter retired
+open Llm public
+
+loggingRetired : Text → Bool
+loggingRetired name = does (name ≟Text toList "max_file_bytes") ∨ does (name ≟Text toList "retained_files")
+
+module Logging = Filter loggingRetired
 
 upgradeLlm : Maybe Fields → Maybe Fields
 upgradeLlm nothing = nothing
@@ -61,16 +70,19 @@ upgradeLlm (just fields) = just (removeRetired fields)
 module Document (Payload : Set) where
   record Before : Set where
     constructor before
-    field version : Maybe ℕ; logging : O.Logging; llm : Maybe Fields; payload : Payload
+    field version : Maybe ℕ; logging : Fields; llm : Maybe Fields; payload : Payload
   record After : Set where
     constructor after
-    field operations : O.Admitted; llm : Maybe Fields; payload : Payload
+    field operations : O.Admitted; logging : Fields; llm : Maybe Fields; payload : Payload
   data Failure : Set where futureVersion : Failure; invalid : Fault → Failure
 
   validate : Before → Failure ⊎ After
-  validate old with O.admit (O.settings O.formatVersion (Before.logging old))
+  validate old with O.decodeLogging (V.object (Logging.removeRetired (Before.logging old)))
   ... | inj₁ fault = inj₁ (invalid fault)
-  ... | inj₂ accepted = inj₂ (after accepted (upgradeLlm (Before.llm old)) (Before.payload old))
+  ... | inj₂ logs with O.admit (O.settings O.formatVersion logs)
+  ...   | inj₁ fault = inj₁ (invalid fault)
+  ...   | inj₂ accepted = inj₂ (after accepted (Logging.removeRetired (Before.logging old))
+    (upgradeLlm (Before.llm old)) (Before.payload old))
 
   upgrade : Before → Failure ⊎ After
   upgrade old with Before.version old
@@ -80,10 +92,14 @@ module Document (Payload : Set) where
   ...   | no _ = inj₁ futureVersion
 
   payloadPreserved : ∀ old new → validate old ≡ inj₂ new → After.payload new ≡ Before.payload old
-  payloadPreserved old new proof with O.admit (O.settings O.formatVersion (Before.logging old))
+  payloadPreserved old new proof with O.decodeLogging (V.object (Logging.removeRetired (Before.logging old)))
   ... | inj₁ fault with proof
   ...   | ()
-  payloadPreserved old .(after accepted (upgradeLlm (Before.llm old)) (Before.payload old)) refl | inj₂ accepted = refl
+  payloadPreserved old new proof | inj₂ logs with O.admit (O.settings O.formatVersion logs)
+  ... | inj₁ fault with proof
+  ...   | ()
+  payloadPreserved old .(after accepted (Logging.removeRetired (Before.logging old))
+    (upgradeLlm (Before.llm old)) (Before.payload old)) refl | inj₂ logs | inj₂ accepted = refl
 
   -- Startup requires the admitted value, so the new package cannot execute
   -- application I/O using absent or incompatible operational settings.

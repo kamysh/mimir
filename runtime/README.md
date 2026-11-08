@@ -15,7 +15,7 @@ updating its binary. An old running process continues to use its old code.
 
 When an email reports a failure, run `mimir judge diagnose` on that computer.
 See [operations and troubleshooting](../docs/operations.md) for exact recovery
-steps, bounded log retention and private diagnostic handling.
+steps, append-only operational logs and private diagnostic handling.
 
 ## Configure a scheduled judge
 

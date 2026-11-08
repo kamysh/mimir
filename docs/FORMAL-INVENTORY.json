@@ -10137,34 +10137,6 @@
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
         },
         {
-          "kind": "fn",
-          "name": "default_bytes",
-          "line": 22,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "default_files",
-          "line": 25,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/ConfigurationUpgrade.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
-            "spec/Mimir/OperationalLifecycle.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem."
-        },
-        {
           "kind": "struct",
           "name": "Operations",
           "line": 29,
@@ -10403,7 +10375,7 @@
         },
         {
           "kind": "fn",
-          "name": "required_directory_and_retention_bounds_are_enforced",
+          "name": "required_directory_and_retired_settings_are_reported",
           "line": 334,
           "specification": [],
           "status": "test-definition-not-production-behavior",
@@ -10412,7 +10384,7 @@
         },
         {
           "kind": "fn",
-          "name": "concurrent_repeated_errors_and_retention_reduction_remain_bounded",
+          "name": "concurrent_appends_preserve_every_entry_and_existing_archives",
           "line": 345,
           "specification": [],
           "status": "test-definition-not-production-behavior",
@@ -17907,7 +17879,7 @@
         "formal_status": "One external-interface postulate outside the safe spec import graph; the Rust adapter correspondence remains open.",
         "approval": "User selected Approve for the PostgreSQL transaction-atomicity question on 2026-10-30.",
         "module_file": "assumptions/Mimir/Assumptions/PostgreSQL.agda",
-        "declaration": "atomicTransactions : (State : Set) \u2192 Mimir.DatabaseTransaction.Contract State",
+        "declaration": "atomicTransactions : (State : Set) → Mimir.DatabaseTransaction.Contract State",
         "isolation_audit": "/tmp/mimir-assumption-isolation-audit-eejzpx6r.json",
         "verification": "/tmp/mimir-agda-approved-postgresql-vetBrZBn.log and .exit",
         "verification_limit": "Checks the declaration and imports; PostgreSQL behavior is assumed, not proved."

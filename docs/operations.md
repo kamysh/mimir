@@ -15,8 +15,6 @@ config_version = 1
 
 [logging]
 directory = "/absolute/path/to/mimir/logs"
-max_file_bytes = 1048576
-retained_files = 4
 ```
 
 For an existing configuration:
@@ -108,27 +106,29 @@ model replies and arbitrary failure details. Report persistent failures at
 <https://github.com/kamysh/mimir/issues>, including the summary, version, time
 and diagnostic ID. Never include credentials.
 
-## Log bounds and locations
+## Log locations and preservation
 
-CLI judge events and MCP tracing share `logging.directory/mimir.log`, with
-fixed numbered rotation files. Writers use one process-independent file lock.
-`retained_files` includes the current file: defaults retain at most **4 MiB**
-across four files. Values are limited to 1–16 files and 4 KiB–16 MiB per file.
-Oversized events are bounded; repeated errors cannot create new filenames or
-increase this budget. Reducing limits prunes/truncates owned log files on the
-next successful write. Unrelated files are never removed.
+CLI judge events and MCP tracing append complete entries to
+`logging.directory/mimir.log` under one process-independent file lock. Mimir
+applies no file-size limit, rotation or automatic deletion. Existing numbered
+archives and unrelated files are left untouched. The current log grows as new
+entries arrive.
+
+`logging.max_file_bytes` and `logging.retained_files` are retired. Configuration
+checking reports them and points to `mimir config upgrade`, which removes those
+settings while preserving the directory, unrelated settings and comments. Run
+the upgrade explicitly for the intended configuration, then check it again.
 
 Private judge diagnostics remain in the existing state directory, selected by
 `--state-dir` or the XDG state default. This preserves locks and restart history.
-The trace store is separately limited to **3 MiB**, eight attempts and 48 events
-per attempt; individual traces are capped at 256 KiB. Status, last-failure and
-runtime snapshots replace bounded files rather than append indefinitely.
-These are diagnostic retention files, not backups.
+Traces retain all attempts, events and selected IDs. Status, last-failure and
+runtime snapshots replace their previous files; private diagnostic records have
+no application byte ceiling. New source diagnostics keep the complete rendered
+input. Historical partial records retain their original omissions. These files
+are diagnostics, not backups.
 
-Application rotation does not control a supervisor's own journal or files to
-which a shell redirects stdout/stderr. Use the supervisor's bounded journal or
-an explicitly configured rotation policy; avoid indefinite append-only shell
-redirection. Configuration errors that prevent opening the log are also printed
+Mimir does not manage a supervisor's journal or shell redirections. Any external
+retention policy is a separate user choice. Configuration errors that prevent opening the log are also printed
 to stderr for one-shot commands and recorded in judge state when available.
 
 ## Confirm recovery

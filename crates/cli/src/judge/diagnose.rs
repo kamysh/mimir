@@ -51,7 +51,7 @@ pub fn show(config_path: Option<&Path>, state_dir: Option<&Path>) -> anyhow::Res
         path.display()
     );
     match config::load(Some(&selected)) {
-        Ok(settings) => println!("Configuration: compatible (format {})\nOperational logs: {}\nLog limit: {} bytes across {} files\nReviews have no Mimir-imposed execution deadline or request limit",settings.operations.config_version,settings.operations.logging.directory.display(),settings.operations.logging.max_file_bytes * settings.operations.logging.retained_files as u64,settings.operations.logging.retained_files),
+        Ok(settings) => println!("Configuration: compatible (format {})\nOperational logs: {}\nLogs append complete entries without application rotation or retention limits\nReviews have no Mimir-imposed execution deadline or request limit",settings.operations.config_version,settings.operations.logging.directory.display()),
         Err(error) => println!("Configuration: INVALID\n{error}\nRun: mimir config check --config {}",selected.display()),
     }
     if let Some(runtime) = state::read_runtime(&path)? {

@@ -215,13 +215,13 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   logFailureStops : ∀ watch loadedConfiguration observed detail files →
     Operational.LogAttempt.outcome observed ≡ Operational.LogAt.failed
-      {coreOf loadedConfiguration} {Operational.LogAttempt.archives observed} detail files →
+      {coreOf loadedConfiguration} detail files →
     afterLog watch loadedConfiguration observed ≡ failed watch (logUnavailable detail) Host.unavailable
   logFailureStops watch loadedConfiguration observed detail files failure rewrite failure = refl
 
   logFailureEvents : ∀ watch loadedConfiguration observed detail files events result →
     Operational.LogAttempt.outcome observed ≡ Operational.LogAt.failed
-      {coreOf loadedConfiguration} {Operational.LogAttempt.archives observed} detail files →
+      {coreOf loadedConfiguration} detail files →
     P.Runs (afterLog watch loadedConfiguration observed) events result →
     (events ≡ []) ⊎ (events ≡ ((stdout (logUnavailable detail) , tt) ∷ []))
   logFailureEvents true loadedConfiguration observed detail files events result failure execution
