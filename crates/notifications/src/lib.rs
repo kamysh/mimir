@@ -46,7 +46,6 @@ pub enum Outcome {
     NotNeeded,
     Sent,
     RetryPending,
-    Exhausted,
     AuthRequired,
     Unavailable,
 }
@@ -96,7 +95,6 @@ impl Outcome {
             Self::NotNeeded => "not_needed",
             Self::Sent => "sent",
             Self::RetryPending => "retry_pending",
-            Self::Exhausted => "exhausted",
             Self::AuthRequired => "auth_required",
             Self::Unavailable => "unavailable",
         }
@@ -151,7 +149,7 @@ struct Alert {
 }
 
 impl Alert {
-    fn new(kind: AlertKind, event: &Event, code: &str, summary: &str, now: u64) -> Self {
+    fn new(kind: AlertKind, event: &Event, code: &str, summary: &str, _now: u64) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             kind,
@@ -160,7 +158,7 @@ impl Alert {
             summary: summary.into(),
             details: event.details.clone(),
             attempts: 0,
-            next_due: now,
+            next_due: 0,
             delivery: Delivery::Pending,
             last_error: None,
         }
@@ -253,7 +251,6 @@ fn reconcile(incident: &mut Incident, event: &Event, now: u64) {
 
 fn outcome(incident: &Incident) -> Outcome {
     match incident.outbox.as_ref() {
-        Some(alert) if alert.delivery == Delivery::Exhausted => Outcome::Exhausted,
         Some(alert) => match alert.last_error {
             Some(AlertError::AuthRequired) => Outcome::AuthRequired,
             Some(AlertError::Unavailable) => Outcome::Unavailable,
@@ -390,7 +387,7 @@ impl<'a> Notifier<'a> {
         Ok(state.read_digest()?.unwrap_or_default())
     }
 
-    /// Reserve an hourly retry before SMTP, then advance the cursor only on acceptance.
+    /// Save pending delivery before SMTP; advance the cursor only on acceptance.
     pub async fn send_digest(&self, digest: &Digest) -> Result<Outcome> {
         self.send_digest_at(digest, now(), None::<NoSender>).await
     }
@@ -398,7 +395,7 @@ impl<'a> Notifier<'a> {
     async fn send_digest_at<F, Fut>(
         &self,
         digest: &Digest,
-        current: u64,
+        _current: u64,
         send_override: Option<F>,
     ) -> Result<Outcome>
     where
@@ -424,11 +421,8 @@ impl<'a> Notifier<'a> {
         if cursor.through_day.as_deref() >= Some(digest.through_day.as_str()) {
             return Ok(Outcome::NotNeeded);
         }
-        if current < cursor.next_due {
-            return Ok(Outcome::RetryPending);
-        }
         let message = smtp::digest_message(self.config, digest)?;
-        cursor.next_due = current.saturating_add(3600);
+        cursor.next_due = 0;
         cursor.last_attempt_failed = true;
         state.write_digest(&cursor)?;
         let sent = match send_override {
@@ -446,11 +440,7 @@ impl<'a> Notifier<'a> {
         }
     }
 
-    pub async fn retry_due(&self, limit: usize) -> Result<Vec<(String, String, Outcome)>> {
-        ensure!(
-            (1..=20).contains(&limit),
-            "notification retry limit must be 1..=20"
-        );
+    pub async fn retry_due(&self) -> Result<Vec<(String, String, Outcome)>> {
         if !self.config.enabled {
             return Ok(Vec::new());
         }
@@ -464,12 +454,7 @@ impl<'a> Notifier<'a> {
         let keys: Vec<_> = outbox
             .incidents
             .iter()
-            .filter(|(_, incident)| {
-                incident.outbox.as_ref().is_some_and(|alert| {
-                    alert.delivery == Delivery::Pending && alert.next_due <= current
-                })
-            })
-            .take(limit)
+            .filter(|(_, incident)| incident.outbox.is_some())
             .map(|(key, _)| key.clone())
             .collect();
         let mut outcomes = Vec::new();
@@ -511,6 +496,40 @@ impl<'a> Notifier<'a> {
         if !self.config.enabled {
             return Ok(Outcome::Disabled);
         }
+        let Some((state, mut outbox, key)) = self.reconcile_event(event, current)? else {
+            return Ok(Outcome::NotNeeded);
+        };
+        self.attempt_with(&state, &mut outbox, &key, current, send_override)
+            .await
+    }
+
+    /// Save incident changes without opening a transport. The watcher can
+    /// reconcile later recovery events before it attempts pending deliveries.
+    pub fn accept(&self, event: &Event) -> Result<Outcome> {
+        event.validate()?;
+        if !self.config.enabled {
+            return Ok(Outcome::Disabled);
+        }
+        let Some((state, mut outbox, key)) = self.reconcile_event(event, now())? else {
+            return Ok(Outcome::NotNeeded);
+        };
+        let incident = &outbox.incidents[&key];
+        if incident.active_code.is_none()
+            && incident.delivered_code.is_none()
+            && incident.outbox.is_none()
+        {
+            outbox.incidents.remove(&key);
+            state.write(&outbox)?;
+            return Ok(Outcome::NotNeeded);
+        }
+        Ok(outcome(&outbox.incidents[&key]))
+    }
+
+    fn reconcile_event(
+        &self,
+        event: &Event,
+        current: u64,
+    ) -> Result<Option<(StateDir, Outbox, String)>> {
         let state = StateDir::lock(&self.state_dir)?;
         let mut outbox: Outbox = state.read()?.unwrap_or_default();
         ensure!(
@@ -521,7 +540,7 @@ impl<'a> Notifier<'a> {
         if !matches!(&event.status, EventStatus::Failure { .. })
             && !outbox.incidents.contains_key(&key)
         {
-            return Ok(Outcome::NotNeeded);
+            return Ok(None);
         }
         let incident = outbox
             .incidents
@@ -536,8 +555,7 @@ impl<'a> Notifier<'a> {
         if *incident != old {
             state.write(&outbox)?;
         }
-        self.attempt_with(&state, &mut outbox, &key, current, send_override)
-            .await
+        Ok(Some((state, outbox, key)))
     }
 
     async fn attempt_with<F, Fut>(
@@ -545,7 +563,7 @@ impl<'a> Notifier<'a> {
         state: &StateDir,
         outbox: &mut Outbox,
         key: &str,
-        current: u64,
+        _current: u64,
         send_override: Option<F>,
     ) -> Result<Outcome>
     where
@@ -562,19 +580,12 @@ impl<'a> Notifier<'a> {
             }
             return Ok(Outcome::NotNeeded);
         };
-        if alert.delivery == Delivery::Exhausted || alert.next_due > current {
-            return Ok(outcome(incident));
-        }
-        if alert.attempts >= self.config.max_attempts {
-            alert.delivery = Delivery::Exhausted;
-            state.write(outbox)?;
-            return Ok(Outcome::Exhausted);
-        }
         let message = smtp::message(self.config, alert)?;
-        // Durable reservation precedes SMTP. A crash may consume an attempt or
-        // duplicate a message accepted before the final outbox write.
-        alert.attempts += 1;
-        alert.next_due = current.saturating_add(self.config.retry_seconds);
+        // Persist pending delivery before SMTP. Historical deadlines and exhausted
+        // flags do not prevent a caller from retrying. Keep the Message-ID.
+        alert.attempts = alert.attempts.saturating_add(1);
+        alert.next_due = 0;
+        alert.delivery = Delivery::Pending;
         state.write(outbox)?;
         let sent = match send_override {
             Some(send) => send(message).await,
@@ -590,15 +601,6 @@ impl<'a> Notifier<'a> {
                 }
                 incident.outbox = None;
                 Outcome::Sent
-            }
-            Err(failure) if alert.attempts >= self.config.max_attempts => {
-                alert.delivery = Delivery::Exhausted;
-                alert.last_error = match failure {
-                    SendFailure::Retryable => None,
-                    SendFailure::AuthRequired => Some(AlertError::AuthRequired),
-                    SendFailure::Unavailable => Some(AlertError::Unavailable),
-                };
-                Outcome::Exhausted
             }
             Err(SendFailure::Retryable) => {
                 alert.last_error = None;

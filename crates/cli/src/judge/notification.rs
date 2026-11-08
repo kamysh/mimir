@@ -46,20 +46,29 @@ impl Worker {
         let mut file_events =
             super::config_events::ConfigEvents::new(&path.join("notification-incoming.json"))?;
         let mut email = settings.email.clone();
+        let mut retry_signal =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
         let owned_path = path.to_owned();
         let (pending, mut received) = tokio::sync::mpsc::unbounded_channel();
         let task = tokio::spawn(async move {
             let mut digest_problem = false;
             let mut scan = true;
+            let mut force_retry = true;
             loop {
                 if scan && email.enabled {
-                    if let Err(error) = drain(&email, &owned_path, &consumer).await {
+                    if let Err(error) = drain(&email, &owned_path, &consumer, force_retry).await {
                         eprintln!("judge pending mail: {error:#}. Pending events remain saved; correct the reported problem and restart the watcher.");
                     }
                 }
                 scan = false;
+                force_retry = false;
                 let job = tokio::select! {
                     job = received.recv() => match job { Some(job) => job, None => break },
+                    _ = retry_signal.recv() => {
+                        scan = true;
+                        force_retry = true;
+                        continue;
+                    }
                     changed = file_events.changed() => {
                         if let Err(error) = changed.and_then(|()| file_events.rearm()) {
                             eprintln!("judge pending-mail file events: {error:#}. Pending mail remains saved; restart the watcher after correcting the reported problem.");
@@ -200,19 +209,26 @@ async fn deliver(job: Job) -> Result<Option<bool>> {
     }
 }
 
-async fn drain(email: &EmailConfig, path: &Path, consumer: &EventConsumer) -> Result<()> {
+async fn drain(
+    email: &EmailConfig,
+    path: &Path,
+    consumer: &EventConsumer,
+    force_retry: bool,
+) -> Result<()> {
     let notifier = Notifier::new(email, path)?;
+    let mut admitted = false;
     while let Some(pending) = consumer.front()? {
-        let outcome = notifier.submit(&pending.event).await?;
-        // Every returned outcome has already reconciled the event durably. A
-        // failed send remains in the incident outbox, and must not prevent a
-        // later recovery event from reaching the incident policy.
+        notifier.accept(&pending.event)?;
         consumer.acknowledge(&pending.id)?;
-        if !matches!(
-            outcome,
-            mimir_notifications::Outcome::Sent | mimir_notifications::Outcome::NotNeeded
-        ) {
-            eprintln!("judge notification delivery: {}", outcome.as_str());
+        admitted = true;
+    }
+    // Acknowledgements also change the watched file. An empty rescan is not
+    // a new retry request, so our own writes cannot create a delivery loop.
+    if admitted || force_retry {
+        for (_, _, outcome) in notifier.retry_due().await? {
+            if outcome != mimir_notifications::Outcome::Sent {
+                eprintln!("judge notification delivery: {}. Pending mail is saved. Correct the prerequisite and send SIGHUP to process {} or restart mimir judge watch to retry.", outcome.as_str(), std::process::id());
+            }
         }
     }
     Ok(())
@@ -407,6 +423,17 @@ mod tests {
     use super::super::state::ConfirmedReview;
     use super::*;
 
+    fn has_saved_alert(path: &Path) -> bool {
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path.join("notification-outbox.json")).unwrap())
+                .unwrap();
+        stored["incidents"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|incident| incident["outbox"].is_object())
+    }
+
     #[tokio::test]
     async fn idle_watcher_observes_standalone_alert_without_an_in_memory_wakeup() {
         use std::future::{poll_fn, Future};
@@ -435,12 +462,25 @@ mod tests {
             panic!("standalone notification was not saved immediately")
         };
         drop(save);
+        let (transport, _) = server.accept().await.unwrap();
+        // A failed exchange stays pending without a timer or self-triggered
+        // delivery loop. An explicit SIGHUP requests the next attempt.
+        drop(transport);
+        let (ready, idle) = tokio::sync::oneshot::channel();
+        worker.pending.send(Job::Idle(ready)).unwrap();
+        idle.await.unwrap();
+        assert!(poll_fn(|cx| std::task::Poll::Ready(server.poll_accept(cx).is_pending())).await);
+        assert_eq!(
+            unsafe { libc::kill(std::process::id() as libc::pid_t, libc::SIGHUP) },
+            0
+        );
         let (mut transport, _) = server.accept().await.unwrap();
         worker.shutdown().await;
         let mut received = Vec::new();
         transport.read_to_end(&mut received).await.unwrap();
         let incoming = IncomingEvents::new(state.path()).unwrap();
-        assert!(incoming.claim().unwrap().front().unwrap().is_some());
+        assert!(incoming.claim().unwrap().front().unwrap().is_none());
+        assert!(has_saved_alert(state.path()));
     }
 
     #[tokio::test]
@@ -508,14 +548,20 @@ mod tests {
         let saved = IncomingEvents::new(state.path()).unwrap();
         let consumer = saved.claim().unwrap();
         let first = consumer.front().unwrap().unwrap();
-        assert!(matches!(first.event.status, EventStatus::Failure { .. }));
+        assert_eq!(first.event.status, EventStatus::Progress);
+        assert!(has_saved_alert(state.path()));
         consumer.acknowledge(&first.id).unwrap();
-        assert_eq!(
-            consumer.front().unwrap().unwrap().event.status,
-            EventStatus::Progress
-        );
+        assert!(consumer.front().unwrap().is_none());
         drop(consumer);
-        assert!(saved.claim().is_ok());
+        let reclaimed = saved.claim().unwrap();
+        drop(reclaimed);
+        // Restart must retry the saved sender state immediately, without an
+        // incoming event or the former five-minute reservation delay.
+        let restarted = Worker::start(&settings, state.path()).unwrap();
+        let (mut retry_transport, _) = server.accept().await.unwrap();
+        restarted.shutdown().await;
+        retry_transport.read_to_end(&mut Vec::new()).await.unwrap();
+        assert!(has_saved_alert(state.path()));
         assert_eq!(
             resume_command(&settings, state.path()),
             format!(

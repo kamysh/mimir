@@ -78,7 +78,7 @@ notCoveredAdvances (cursor (just previous) due failed) requested notCovered =
   notReverseImpliesForward previous requested notCovered
 
 reserve : ℕ → ℕ → Cursor → Cursor
-reserve maximum now before = record before { nextDue = Sat.add maximum now 3600 ; lastAttemptFailed = true }
+reserve maximum now before = record before { nextDue = 0 ; lastAttemptFailed = true }
 
 advance : Digest → Cursor
 advance d = cursor (just (Digest.throughDay d)) 0 false
@@ -114,9 +114,7 @@ eligible maximum now before d = ask (buildMessage d) λ where
 afterValidation : ℕ → ℕ → Cursor → Digest → Script Result
 afterValidation maximum now before d with covered? before (Digest.throughDay d)
 ... | yes _ = done notNeeded
-... | no _ with Cursor.nextDue before ≤? now
-...   | no _ = done retryPending
-...   | yes _ = eligible maximum now before d
+... | no _ = eligible maximum now before d
 
 send : Bool → ℕ → ℕ → Cursor → Digest → Script Result
 send false maximum now before d = done disabled
@@ -128,8 +126,6 @@ reservationPreservesCursor : ∀ maximum now before →
   Cursor.throughDay (reserve maximum now before) ≡ Cursor.throughDay before
 reservationPreservesCursor maximum now before = refl
 
-reservationBounded : ∀ maximum now before → Cursor.nextDue (reserve maximum now before) ≤ maximum
-reservationBounded maximum now before = Sat.bounded maximum now 3600
 
 data SentEvidence (maximum now : ℕ) (before : Cursor) (d : Digest) : List Event → Set where
   sentWithReceipts : SentEvidence maximum now before d

@@ -307,7 +307,12 @@ pub fn load(explicit: Option<&Path>) -> Result<RuntimeConfig> {
     }
     let llm: LlmConfig = section(core.llm.as_ref(), "llm")?;
     let email: EmailConfig = match core.email.as_ref() {
-        Some(table) => section(Some(table), "email")?,
+        Some(table) => {
+            for retired in ["timeout_seconds", "retry_seconds", "max_attempts"] {
+                ensure!(!table.contains_key(retired), "email.{retired} is obsolete: remove this field from [email] and run `mimir judge check-config` again. Notification delivery uses explicit cancellation and retry events, without a deadline or attempt quota");
+            }
+            section(Some(table), "email")?
+        }
         None => EmailConfig::default(),
     };
     judge.validate()?;
@@ -357,6 +362,26 @@ mod tests {
     fn valid(text: &str) -> bool {
         let fixture = Fixture::new(0o700);
         load(Some(&fixture.config(text, 0o600))).is_ok()
+    }
+
+    #[test]
+    fn retired_email_limits_name_the_field_and_the_correction() {
+        for key in ["timeout_seconds", "retry_seconds", "max_attempts"] {
+            for value in ["0", "5", "'wrong-type'"] {
+                let fixture = Fixture::new(0o700);
+                let text = format!("{DATABASE}{HARNESS}[email]\n{key}={value}\n");
+                let error = load(Some(&fixture.config(&text, 0o600)))
+                    .err()
+                    .unwrap()
+                    .to_string();
+                assert!(
+                    error.contains(&format!("email.{key} is obsolete")),
+                    "{error}"
+                );
+                assert!(error.contains("remove this field from [email]"), "{error}");
+                assert!(error.contains("mimir judge check-config"), "{error}");
+            }
+        }
     }
 
     #[test]

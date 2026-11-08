@@ -282,11 +282,15 @@ confirmed by a later completed batch from reviews whose completion is
 unverified. An idle queue closes the alert episode but does not prove that a
 specific review completed. Email excludes belief contents, model output, tool
 arguments and responses, and credentials. Each incident has independent
-failure suppression, recovery, retry, and exhaustion state. The crate owns
+failure suppression, recovery, and pending-delivery state. The crate owns
 `notification.lock` and a private atomic `notification-outbox.json` in the Mimir
 state directory; other components can use the same crate and directory without
-depending on the judge. `Notifier::retry_due` lets a future caller retry due
-alerts independently of a new judge run. It does not schedule itself.
+depending on the judge. `Notifier::retry_due()` retries all saved alerts independently of a new review,
+without a result quota, delay, or attempt ceiling. It does not schedule itself.
+The watcher owns delivery. Standalone review commands save pending events and
+print the exact `mimir judge watch` command; they never wait for mail. The
+private incoming-event queue is separate from the sender lock, so stalled SMTP
+or OAuth cannot stop a review from saving its result and notification.
 
 With `[email].enabled=true`, password, OAuth2, or unauthenticated SMTP uses the
 configured relay with required STARTTLS or implicit TLS and certificate
@@ -297,7 +301,7 @@ the same notification lock. A changed account, client, tenant, scope, client
 secret, SMTP host, or bootstrap refresh token is refused rather than silently
 reusing the previous cache. Notification status is separate from the judge's
 database-confirmed learning status: `disabled`, `not_needed`, `sent`,
-`retry_pending`, `auth_required`, `exhausted`, or `unavailable` for a local
+`retry_pending`, `auth_required`, or `unavailable` for a local
 state failure. A failed email cannot undo a committed review.
 
 OAuth setup is a separate account action: register a client, grant the SMTP
@@ -362,8 +366,7 @@ refresh is not an atomic transaction with the provider: if the provider rotates
 its token and the local state write fails, Mimir blocks SMTP, but recovery may
 require a new authorization if the provider invalidated the previous token.
 Token revocation, expired consent, malformed responses, and changed account
-identity surface as `auth_required` while attempts remain; the final failed attempt is
-reported as `exhausted`. Network/server failures remain retryable. A rejected
+identity surface as `auth_required`. Network/server failures remain retryable. A rejected
 cached access token is cleared without losing the refresh token, then refreshed
 and tried once more. No live Google or Microsoft account has been verified.
 
@@ -372,11 +375,25 @@ Provider references: [Google SMTP XOAUTH2](https://developers.google.com/workspa
 [Microsoft SMTP OAuth](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth/),
 and [Microsoft refresh-token rotation](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow).
 
-Each attempt is persisted before SMTP; a later invocation retries when due,
-up to `max_attempts`, reusing the same Message-ID. SMTP acceptance means the
-relay accepted the message, not that it reached an inbox. A crash after relay
-acceptance and before the final outbox write may cause a duplicate; a crash
-before sending can consume an attempt and eventually exhaust the retry budget.
+Pending delivery is persisted before SMTP, reusing the same Message-ID across
+retries. There is no SMTP/OAuth deadline, retry delay, attempt ceiling, or
+notification batch quota. Remove obsolete `email.timeout_seconds`,
+`email.retry_seconds` and `email.max_attempts` from configuration and run
+`mimir judge check-config`; they are refused rather than ignored. Historical
+saved deadlines and exhaustion flags do not block a retry. OAuth tokens remain
+usable until the provider's reported expiry, without an invented early cutoff.
+
+The watcher retries saved work on startup, incoming events and SIGHUP. After
+correcting an unresolved prerequisite, send `kill -HUP <watcher-pid>` or restart
+`mimir judge watch` with the same configuration and state directory. Delivery
+errors leave mail pending and print recovery instructions. A sender's own queue
+acknowledgements do not cause a retry loop. Stopping the watcher cancels and
+joins delivery; no detached sender remains. Configuration, accounts and services
+are never changed by this retry mechanism.
+
+SMTP acceptance means the relay accepted the message, not that it reached an
+inbox. A crash after relay acceptance and before the final outbox write may
+cause a duplicate. This uncertainty is not treated as confirmed delivery.
 The Tokio SMTP transport reports success after the server accepts DATA; a subsequent QUIT
 failure does not turn that accepted message into a failed send. All SMTP tests
 use loopback fixtures and generated test certificates; no external mail was

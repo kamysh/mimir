@@ -64,8 +64,8 @@ scope oauth with Config.OAuth.provider oauth
 
 record Request : Set where
   constructor request
-  field url : Text; form : List (Text × Text); timeoutSeconds : ℕ
-        followRedirects : Bool; maximumReply : ℕ
+  field url : Text; form : List (Text × Text)
+        followRedirects : Bool
 
 prepare : Config.Config → Config.OAuth → Text → Cache.AuthError ⊎ Request
 prepare cfg oauth current with endpoint oauth | scope oauth
@@ -74,7 +74,7 @@ prepare cfg oauth current with endpoint oauth | scope oauth
 ... | inj₂ url | inj₂ scopes = inj₂ (request url
   ((toList "grant_type" , toList "refresh_token") ∷
    (toList "refresh_token" , current) ∷ (toList "client_id" , Config.OAuth.clientID oauth) ∷
-   (secret oauth ++ scopes)) (Config.Config.timeoutSeconds cfg) false 16384)
+   (secret oauth ++ scopes)) false)
 
 data Effect : Set where
   clock : Effect

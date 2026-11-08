@@ -50,22 +50,6 @@ pub struct EmailConfig {
     pub auth: Option<Auth>,
     pub password: Option<String>,
     pub oauth: Option<OAuthConfig>,
-    #[serde(default = "default_timeout")]
-    pub timeout_seconds: u64,
-    #[serde(default = "default_retry")]
-    pub retry_seconds: u64,
-    #[serde(default = "default_attempts")]
-    pub max_attempts: usize,
-}
-
-fn default_timeout() -> u64 {
-    15
-}
-fn default_retry() -> u64 {
-    300
-}
-fn default_attempts() -> usize {
-    5
 }
 
 fn nonempty(value: &str, name: &'static str) -> Result<()> {
@@ -111,18 +95,6 @@ impl EmailConfig {
             !self.to.is_empty() && self.to.iter().all(|s| address(s)),
             "invalid email.to"
         );
-        ensure!(
-            (1..=300).contains(&self.timeout_seconds),
-            "email.timeout_seconds must be 1..=300"
-        );
-        ensure!(
-            (1..=86400).contains(&self.retry_seconds),
-            "email.retry_seconds must be 1..=86400"
-        );
-        ensure!(
-            (1..=100).contains(&self.max_attempts),
-            "email.max_attempts must be 1..=100"
-        );
         match self.auth.ok_or_else(|| anyhow!("email.auth is required"))? {
             Auth::Password => {
                 nonempty(
@@ -159,16 +131,8 @@ impl EmailConfig {
                     .ok_or_else(|| anyhow!("email.oauth is required"))?;
                 nonempty(&oauth.client_id, "email.oauth.client_id")?;
                 nonempty(&oauth.refresh_token, "email.oauth.refresh_token")?;
-                ensure!(
-                    oauth.client_id.len() <= 1024 && oauth.refresh_token.len() <= 8192,
-                    "email.oauth credential is too long"
-                );
                 if let Some(secret) = &oauth.client_secret {
                     nonempty(secret, "email.oauth.client_secret")?;
-                    ensure!(
-                        secret.len() <= 8192,
-                        "email.oauth.client_secret is too long"
-                    );
                 }
                 match oauth.provider {
                     OAuthProvider::Google => {
@@ -191,7 +155,6 @@ impl EmailConfig {
                             .ok_or_else(|| anyhow!("email.oauth.tenant is required"))?;
                         ensure!(
                             !tenant.is_empty()
-                                && tenant.len() <= 253
                                 && !tenant.contains("..")
                                 && tenant.bytes().all(|byte| byte.is_ascii_alphanumeric()
                                     || matches!(byte, b'-' | b'.')),

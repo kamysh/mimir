@@ -43,9 +43,6 @@ to = ["you@gmail.com"]
 username = "you@gmail.com"
 auth = "password" # password | oauth2 | none (authenticated relay configured separately)
 password = "YOUR_APP_PASSWORD"
-timeout_seconds = 15
-retry_seconds = 300
-max_attempts = 5
 
 # For OAuth2 use auth = "oauth2", remove password, and add the matching
 # provider settings. See runtime/README.md for complete Google/Microsoft examples

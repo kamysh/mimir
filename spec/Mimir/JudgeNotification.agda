@@ -137,7 +137,6 @@ outcomeText I.disabled = toList "disabled"
 outcomeText I.notNeeded = toList "not_needed"
 outcomeText I.sent = toList "sent"
 outcomeText I.retryPending = toList "retry_pending"
-outcomeText I.exhausted = toList "exhausted"
 outcomeText I.authRequired = toList "auth_required"
 outcomeText I.unavailable = toList "unavailable"
 

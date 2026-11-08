@@ -226,9 +226,7 @@ module Run (calendar : Calendar) where
   cursor settings path through now run (inj₂ previous) with first (Delivery.Cursor.throughDay previous) through
   ... | inj₁ error = done (inj₁ error)
   ... | inj₂ nothing = done (inj₂ false)
-  ... | inj₂ (just first) with Delivery.Cursor.nextDue previous Data.Nat.≤? Now.unixSeconds now
-  ...   | no _ = done (inj₂ (Delivery.Cursor.lastAttemptFailed previous))
-  ...   | yes _ = collect settings path first through now run
+  ... | inj₂ (just first) = collect settings path first through now run
 
   configured : ℤ → Now → Host.Outcome → Config.Runtime → Script (Text ⊎ Bool)
   configured through now run settings with Email.Config.enabled (Config.Runtime.email settings)

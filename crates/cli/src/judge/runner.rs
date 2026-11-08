@@ -1598,9 +1598,6 @@ mod tests {
             auth: Some(Auth::None),
             password: None,
             oauth: None,
-            timeout_seconds: 3,
-            retry_seconds: 10,
-            max_attempts: 2,
         };
         let mut partial = Fake {
             mode: Mode::Partial,

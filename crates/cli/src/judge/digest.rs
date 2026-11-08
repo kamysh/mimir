@@ -153,7 +153,16 @@ pub async fn tick(
     state_dir: Option<&Path>,
     run: &RunOutcome,
 ) -> Result<bool> {
-    let now = Local::now();
+    tick_at(email, database, state_dir, run, Local::now()).await
+}
+
+async fn tick_at(
+    email: &mimir_notifications::config::EmailConfig,
+    database: &mimir_core::config::DatabaseConfig,
+    state_dir: Option<&Path>,
+    run: &RunOutcome,
+    now: DateTime<Local>,
+) -> Result<bool> {
     let Some(through) = reporting_day(now) else {
         return Ok(false);
     };
@@ -166,9 +175,6 @@ pub async fn tick(
     let Some(first) = first_day(cursor.through_day.as_deref(), through)? else {
         return Ok(false);
     };
-    if (now.timestamp().max(0) as u64) < cursor.next_due {
-        return Ok(cursor.last_attempt_failed);
-    }
     let client = mimir_core::db::connect(database).await?;
     let mut body = content(
         &client,
@@ -195,6 +201,54 @@ pub async fn tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn legacy_digest_retry_deadline_does_not_skip_the_database_read() {
+        use std::future::{poll_fn, Future};
+        let work = crate::judge::harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
+        work.write(
+            "notification-digest.json",
+            serde_json::json!({
+                "through_day":null,"next_due":u64::MAX,"last_attempt_failed":true
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let database = toml::from_str(&format!(
+            "host='127.0.0.1'\nport={}\nuser='fixture'\ndbname='fixture'\npassword='unused-fixture-password'\n",
+            listener.local_addr().unwrap().port()
+        ))
+        .unwrap();
+        let email = toml::from_str(
+            "enabled=true\nhost='127.0.0.1'\nport=2525\ntls='starttls'\nfrom='sender@example.test'\nto=['recipient@example.test']\nauth='none'\n"
+        ).unwrap();
+        let outcome = RunOutcome {
+            code: 0,
+            degraded: false,
+            idle: true,
+        };
+        let now = Local
+            .with_ymd_and_hms(2026, 11, 8, 9, 0, 0)
+            .single()
+            .unwrap();
+        let request = tick_at(&email, &database, Some(work.path()), &outcome, now);
+        tokio::pin!(request);
+        assert!(
+            poll_fn(|cx| std::task::Poll::Ready(request.as_mut().poll(cx).is_pending())).await,
+            "a saved retry hint suppressed the database request"
+        );
+        let peer = async {
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket);
+        };
+        let (_, result) = tokio::join!(peer, request);
+        assert!(
+            result.is_err(),
+            "the owned database peer deliberately closed the connection"
+        );
+    }
 
     #[test]
     fn nine_am_boundary_and_catch_up_start() {

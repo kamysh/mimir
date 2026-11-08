@@ -50,10 +50,9 @@ record Config : Set where
     username password : Maybe Text
     auth : Maybe Auth
     oauth : Maybe OAuth
-    timeoutSeconds retrySeconds maximumAttempts : ℕ
 
 defaults : Config
-defaults = config false nothing nothing nothing nothing [] nothing nothing nothing nothing 15 300 5
+defaults = config false nothing nothing nothing nothing [] nothing nothing nothing nothing
 
 Required : ∀ {A : Set} → (A → Set) → Maybe A → Set
 Required p nothing = ⊥
@@ -90,11 +89,11 @@ Trimmed text = Nonblank text × (text ≡ trim text × NoControls text)
 trimmed? : ∀ text → Dec (Trimmed text)
 trimmed? text = nonblank? text ×-dec ((text ≟Text trim text) ×-dec noControls? text)
 
-Credential : ℕ → Text → Set
-Credential maximum text = Trimmed text × Bounded maximum text
+Credential : Text → Set
+Credential = Trimmed
 
-credential? : ∀ maximum text → Dec (Credential maximum text)
-credential? maximum text = trimmed? text ×-dec bounded? maximum text
+credential? : ∀ text → Dec (Credential text)
+credential? = trimmed?
 
 Host : Text → Set
 Host text = Trimmed text × All (λ c → ¬ c ≡ '/' × ¬ c ≡ ':') text
@@ -119,10 +118,10 @@ tenantChar? : ∀ c → Dec (TenantChar c)
 tenantChar? c = asciiAlphaNumeric? c ⊎-dec ((c ≟ '-') ⊎-dec (c ≟ '.'))
 
 Tenant : Text → Set
-Tenant text = Nonempty text × (Bounded 253 text × (NoDoubleDot text × All TenantChar text))
+Tenant text = Nonempty text × (NoDoubleDot text × All TenantChar text)
 
 tenant? : ∀ text → Dec (Tenant text)
-tenant? text = nonempty? text ×-dec (bounded? 253 text ×-dec (noDoubleDot? text ×-dec all? tenantChar? text))
+tenant? text = nonempty? text ×-dec (noDoubleDot? text ×-dec all? tenantChar? text)
 
 MicrosoftScopes : Text → Set
 MicrosoftScopes text = WholeWord (toList "https://outlook.office.com/SMTP.Send") text ×
@@ -145,14 +144,14 @@ providerValid? (oauthSettings microsoft clientID refreshToken secret tenant scop
   required? tenant? tenant ×-dec required? microsoftScopes? scope
 
 OAuthValid : OAuth → Set
-OAuthValid value = Credential 1024 (OAuth.clientID value) ×
-  (Credential 8192 (OAuth.refreshToken value) ×
-  (Optional (Credential 8192) (OAuth.clientSecret value) × ProviderValid value))
+OAuthValid value = Credential (OAuth.clientID value) ×
+  (Credential (OAuth.refreshToken value) ×
+  (Optional (Credential) (OAuth.clientSecret value) × ProviderValid value))
 
 oauthValid? : ∀ value → Dec (OAuthValid value)
-oauthValid? value = credential? 1024 (OAuth.clientID value) ×-dec
-  (credential? 8192 (OAuth.refreshToken value) ×-dec
-  (optional? (credential? 8192) (OAuth.clientSecret value) ×-dec providerValid? value))
+oauthValid? value = credential? (OAuth.clientID value) ×-dec
+  (credential? (OAuth.refreshToken value) ×-dec
+  (optional? (credential?) (OAuth.clientSecret value) ×-dec providerValid? value))
 
 AuthValid : Config → Auth → Set
 AuthValid cfg passwordAuth = Required Trimmed (Config.username cfg) ×
@@ -188,8 +187,7 @@ EnabledValid : Config → Set
 EnabledValid cfg = Required Host (Config.host cfg) ×
   (Required (Range 65535) (Config.port cfg) × (Present (Config.tls cfg) ×
   (Required Address (Config.fromAddress cfg) × (Recipients (Config.recipients cfg) ×
-  (Range 300 (Config.timeoutSeconds cfg) × (Range 86400 (Config.retrySeconds cfg) ×
-  (Range 100 (Config.maximumAttempts cfg) × Required (AuthValid cfg) (Config.auth cfg))))))))
+    Required (AuthValid cfg) (Config.auth cfg)))))
 
 atCheck : ∀ {P : Set} → String → Dec P → Checked P
 atCheck name decision = at (key name) (check (fault [] malformedInput "invalid notification configuration field") decision)
@@ -200,10 +198,7 @@ checkEnabled cfg = combine (atCheck "host" (required? host? (Config.host cfg)))
   (combine (atCheck "tls" (present? (Config.tls cfg)))
   (combine (atCheck "from" (required? address? (Config.fromAddress cfg)))
   (combine (atCheck "to" (recipients? (Config.recipients cfg)))
-  (combine (atCheck "timeout_seconds" (range? 300 (Config.timeoutSeconds cfg)))
-  (combine (atCheck "retry_seconds" (range? 86400 (Config.retrySeconds cfg)))
-  (combine (atCheck "max_attempts" (range? 100 (Config.maximumAttempts cfg)))
-    (atCheck "auth" (required? (authValid? cfg) (Config.auth cfg))))))))))
+    (atCheck "auth" (required? (authValid? cfg) (Config.auth cfg)))))))
 
 Valid : Config → Set
 Valid cfg with Config.enabled cfg

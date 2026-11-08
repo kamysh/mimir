@@ -36,7 +36,7 @@ struct Captured {
 }
 
 fn certificate() -> (PathBuf, Vec<u8>, Vec<u8>, Vec<u8>) {
-    let dir = PathBuf::from(format!("/var/tmp/mimir/step9/cert-{}", Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("mimir-notification-cert-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let root = dir.join("root.pem");
     let root_key = dir.join("root-key.pem");
@@ -306,14 +306,11 @@ fn config() -> EmailConfig {
         auth: Some(Auth::None),
         password: None,
         oauth: None,
-        timeout_seconds: 3,
-        retry_seconds: 10,
-        max_attempts: 2,
     }
 }
 
 fn directory() -> PathBuf {
-    PathBuf::from(format!("/var/tmp/mimir/step9/state-{}", Uuid::new_v4()))
+    std::env::temp_dir().join(format!("mimir-notification-state-{}", Uuid::new_v4()))
 }
 
 fn failure(source: &str, incident: &str, code: &str) -> Event {
@@ -474,7 +471,7 @@ async fn independent_components_retry_restart_suppress_and_recover() {
     let notifier = Notifier::new(&config, &path).unwrap();
     assert_eq!(
         notifier
-            .submit_with(&event, 105, |_| async { panic!("retry is not due") })
+            .submit_with(&event, 100, |_| async { Err(SendFailure::Retryable) })
             .await
             .unwrap(),
         Outcome::RetryPending
@@ -599,7 +596,7 @@ async fn progress_keeps_failure_incident_open_until_idle_recovery() {
 }
 
 #[tokio::test]
-async fn exhaustion_and_latest_status_replacement_are_per_incident() {
+async fn failures_remain_retryable_and_latest_status_replaces_the_pending_alert() {
     let config = config();
     let path = directory();
     let notifier = Notifier::new(&config, &path).unwrap();
@@ -612,12 +609,10 @@ async fn exhaustion_and_latest_status_replacement_are_per_incident() {
     }
     assert_eq!(
         notifier
-            .submit_with(&blocked, 200, |_| async {
-                panic!("exhausted alert must not retry")
-            })
+            .submit_with(&blocked, 100, |_| async { Err(SendFailure::Retryable) })
             .await
             .unwrap(),
-        Outcome::Exhausted
+        Outcome::RetryPending
     );
     let previous: Outbox = StateDir::lock(&path).unwrap().read().unwrap().unwrap();
     let old_id = previous.incidents[&blocked.map_key()]
@@ -742,7 +737,7 @@ async fn digest_uses_host_and_real_loopback_smtp() {
 }
 
 #[tokio::test]
-async fn digest_cursor_suppresses_repeats_and_throttles_failed_delivery() {
+async fn digest_cursor_suppresses_repeats_and_allows_immediate_failed_delivery_retry() {
     use std::os::unix::fs::PermissionsExt;
     let config = config();
     let path = directory();
@@ -763,7 +758,7 @@ async fn digest_cursor_suppresses_repeats_and_throttles_failed_delivery() {
         Outcome::RetryPending
     );
     let state = notifier.digest_state().unwrap();
-    assert_eq!(state.next_due, 3700);
+    assert_eq!(state.next_due, 0);
     assert_eq!(state.through_day, None);
     assert!(state.last_attempt_failed);
     assert_eq!(
@@ -776,14 +771,7 @@ async fn digest_cursor_suppresses_repeats_and_throttles_failed_delivery() {
     );
     assert_eq!(
         notifier
-            .send_digest_at(&digest, 3699, Some(|_| async { panic!("too early") }))
-            .await
-            .unwrap(),
-        Outcome::RetryPending
-    );
-    assert_eq!(
-        notifier
-            .send_digest_at(&digest, 3700, Some(|_| async { Ok(()) }))
+            .send_digest_at(&digest, 100, Some(|_| async { Ok(()) }))
             .await
             .unwrap(),
         Outcome::Sent
@@ -914,7 +902,7 @@ async fn refused_recipient_acceptance_close_and_crash_retry() {
 }
 
 #[tokio::test]
-async fn shared_outbox_lock_privacy_and_due_retry() {
+async fn shared_outbox_lock_privacy_and_unbounded_retry() {
     use std::os::unix::fs::PermissionsExt;
     let (cert_dir, _root, cert, key) = certificate();
     let mut config = config();
@@ -949,10 +937,10 @@ async fn shared_outbox_lock_privacy_and_due_retry() {
     .await;
     config.port = Some(port);
     let notifier = Notifier::new(&config, &path).unwrap();
-    let retried = notifier.retry_due(1).await.unwrap();
+    let retried = notifier.retry_due().await.unwrap();
     assert_eq!(
         retried,
-        vec![("mcp".into(), "transport".into(), Outcome::Exhausted)]
+        vec![("mcp".into(), "transport".into(), Outcome::RetryPending)]
     );
     assert!(!server.await.unwrap().accepted); // untrusted local certificate
     let saved: Outbox = StateDir::lock(&path).unwrap().read().unwrap().unwrap();
@@ -979,13 +967,14 @@ fn oauth_config(provider: OAuthProvider) -> EmailConfig {
 }
 
 fn oauth_directory() -> PathBuf {
-    PathBuf::from(format!("/var/tmp/mimir/step10/state-{}", Uuid::new_v4()))
+    std::env::temp_dir().join(format!("mimir-oauth-state-{}", Uuid::new_v4()))
 }
 
 async fn token_fixture(
     status: &'static str,
-    reply: &'static str,
+    reply: impl Into<String>,
 ) -> (String, tokio::task::JoinHandle<(String, String)>) {
+    let reply = reply.into();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/token", listener.local_addr().unwrap());
     let task = tokio::spawn(async move {
@@ -1011,6 +1000,144 @@ async fn token_fixture(
         (request, String::from_utf8(body).unwrap())
     });
     (url, task)
+}
+
+#[tokio::test]
+async fn all_legacy_pending_alerts_retry_without_deadlines_or_attempt_ceilings() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = config();
+    config.port = Some(listener.local_addr().unwrap().port());
+    let path = directory();
+    let notifier = Notifier::new(&config, &path).unwrap();
+    for number in 0..27 {
+        let event = failure("judge", &format!("project-{number}"), "pending");
+        assert_eq!(notifier.accept(&event).unwrap(), Outcome::RetryPending);
+    }
+    let state = StateDir::lock(&path).unwrap();
+    let mut saved: Outbox = state.read().unwrap().unwrap();
+    let original_ids: Vec<_> = saved
+        .incidents
+        .values()
+        .map(|incident| incident.outbox.as_ref().unwrap().id.clone())
+        .collect();
+    for incident in saved.incidents.values_mut() {
+        let alert = incident.outbox.as_mut().unwrap();
+        alert.delivery = Delivery::Exhausted;
+        alert.next_due = u64::MAX;
+        alert.attempts = 999;
+    }
+    state.write(&saved).unwrap();
+    drop(state);
+    let server = tokio::spawn(async move {
+        for _ in 0..27 {
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket);
+        }
+    });
+    let outcomes = notifier.retry_due().await.unwrap();
+    server.await.unwrap();
+    assert_eq!(outcomes.len(), 27);
+    assert!(outcomes
+        .iter()
+        .all(|(_, _, outcome)| *outcome == Outcome::RetryPending));
+    let saved: Outbox = StateDir::lock(&path).unwrap().read().unwrap().unwrap();
+    for (incident, original_id) in saved.incidents.values().zip(original_ids) {
+        let alert = incident.outbox.as_ref().unwrap();
+        assert_eq!(alert.id, original_id);
+        assert_eq!(alert.attempts, 1000);
+        assert_eq!(alert.next_due, 0);
+        assert!(alert.delivery == Delivery::Pending);
+    }
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn admission_reconciles_unsent_recovery_before_opening_a_transport() {
+    let config = config();
+    let path = directory();
+    let notifier = Notifier::new(&config, &path).unwrap();
+    assert_eq!(
+        notifier
+            .accept(&failure("judge", "project", "blocked"))
+            .unwrap(),
+        Outcome::RetryPending
+    );
+    assert_eq!(
+        notifier.accept(&recovery("judge", "project")).unwrap(),
+        Outcome::NotNeeded
+    );
+    let saved: Outbox = StateDir::lock(&path).unwrap().read().unwrap().unwrap();
+    assert!(saved.incidents.is_empty());
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[tokio::test]
+async fn complete_oauth_response_and_credentials_remain_valid_until_provider_expiry() {
+    let mut config = oauth_config(OAuthProvider::Google);
+    let oauth = config.oauth.as_mut().unwrap();
+    oauth.client_id = "client".repeat(1000);
+    oauth.client_secret = Some("secret".repeat(2000));
+    oauth.refresh_token = "refresh".repeat(2000);
+    config.validate().unwrap();
+    let path = oauth_directory();
+    let state = StateDir::lock(&path).unwrap();
+    let access = "access".repeat(5000);
+    let rotated = "rotated".repeat(2000);
+    let reply = serde_json::json!({"access_token":&access,"refresh_token":&rotated,"token_type":"Bearer","expires_in":1}).to_string();
+    assert!(reply.len() > 16 * 1024);
+    let (url, server) = token_fixture("200 OK", reply).await;
+    let first = oauth::access_token(&config, &state, 100, false, Some(&url))
+        .await
+        .unwrap();
+    server.await.unwrap();
+    assert_eq!(first.value, access);
+    assert!(!first.cached);
+    let cached = oauth::access_token(&config, &state, 100, false, Some("http://127.0.0.1:1"))
+        .await
+        .unwrap();
+    assert!(cached.cached);
+    assert_eq!(cached.value, access);
+    let saved: serde_json::Value = state.read_oauth().unwrap().unwrap();
+    assert_eq!(saved["refresh_token"], rotated);
+    drop(state);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_stalled_oauth_releases_the_transport_and_state_lock() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/token", listener.local_addr().unwrap());
+    let path = oauth_directory();
+    let task_path = path.clone();
+    let task = tokio::spawn(async move {
+        let state = StateDir::lock(&task_path).unwrap();
+        oauth::access_token(
+            &oauth_config(OAuthProvider::Google),
+            &state,
+            100,
+            false,
+            Some(&endpoint),
+        )
+        .await
+    });
+    let (mut socket, _) = listener.accept().await.unwrap();
+    assert!(read_line(&mut socket)
+        .await
+        .unwrap()
+        .starts_with("POST /token"));
+    assert!(!task.is_finished());
+    task.abort();
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    let mut bytes = Vec::new();
+    if let Err(error) = socket.read_to_end(&mut bytes).await {
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+        ));
+    }
+    assert!(StateDir::lock(&path).is_ok());
+    assert!(!path.join("notification-oauth.json").exists());
+    std::fs::remove_dir_all(path).unwrap();
 }
 
 #[tokio::test]
@@ -1300,7 +1427,7 @@ async fn oauth_rejected_cached_access_refreshes_once_and_sends() {
 }
 
 #[tokio::test]
-async fn oauth_attention_status_persists_until_retry_is_due() {
+async fn oauth_attention_is_preserved_on_an_immediate_explicit_retry() {
     let config = oauth_config(OAuthProvider::Google);
     let path = oauth_directory();
     let notifier = Notifier::new(&config, &path).unwrap();
@@ -1314,9 +1441,7 @@ async fn oauth_attention_status_persists_until_retry_is_due() {
     );
     assert_eq!(
         notifier
-            .submit_with(&event, 105, |_| async {
-                panic!("auth failure must stay visible before retry")
-            })
+            .submit_with(&event, 100, |_| async { Err(SendFailure::AuthRequired) })
             .await
             .unwrap(),
         Outcome::AuthRequired
@@ -1324,6 +1449,6 @@ async fn oauth_attention_status_persists_until_retry_is_due() {
     let saved: Outbox = StateDir::lock(&path).unwrap().read().unwrap().unwrap();
     let alert = saved.incidents[&event.map_key()].outbox.as_ref().unwrap();
     assert_eq!(alert.last_error, Some(AlertError::AuthRequired));
-    assert_eq!(alert.attempts, 1);
+    assert_eq!(alert.attempts, 2);
     std::fs::remove_dir_all(path).unwrap();
 }

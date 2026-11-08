@@ -8,10 +8,6 @@ use reqwest::{redirect::Policy, Client};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const MAX_REPLY: usize = 16 * 1024;
-const MAX_TOKEN: usize = 8192;
-const EXPIRY_MARGIN: u64 = 60;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AuthError {
     Retryable,
@@ -43,7 +39,7 @@ struct RefreshReply {
 }
 
 fn valid_token(token: &str) -> bool {
-    !token.is_empty() && token.len() <= MAX_TOKEN && !token.chars().any(char::is_control)
+    !token.is_empty() && !token.chars().any(char::is_control)
 }
 
 fn identity(config: &EmailConfig) -> Result<Vec<u8>, AuthError> {
@@ -83,11 +79,18 @@ async fn refresh(
     url: &str,
 ) -> Result<RefreshReply, AuthError> {
     let oauth = config.oauth.as_ref().ok_or(AuthError::NeedsAttention)?;
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(config.timeout_seconds))
-        .redirect(Policy::none())
-        .build()
-        .map_err(|_| AuthError::Retryable)?;
+    let builder = Client::builder()
+        .pool_idle_timeout(None)
+        .tcp_keepalive(None)
+        .tcp_keepalive_interval(None)
+        .tcp_keepalive_retries(None)
+        .retry(reqwest::retry::never())
+        .redirect(Policy::none());
+    // Reqwest selects a 30-second TCP user timeout on these targets unless
+    // explicitly cleared. This exchange is owned by caller cancellation.
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    let builder = builder.tcp_user_timeout(None);
+    let client = builder.build().map_err(|_| AuthError::Retryable)?;
     let mut form = vec![
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
@@ -116,17 +119,8 @@ async fn refresh(
             AuthError::Retryable
         });
     }
-    if response
-        .content_length()
-        .is_some_and(|size| size > MAX_REPLY as u64)
-    {
-        return Err(AuthError::NeedsAttention);
-    }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| AuthError::Retryable)? {
-        if bytes.len().saturating_add(chunk.len()) > MAX_REPLY {
-            return Err(AuthError::NeedsAttention);
-        }
         bytes.extend_from_slice(&chunk);
     }
     let reply: RefreshReply =
@@ -166,7 +160,7 @@ pub(crate) async fn access_token(
         {
             return Err(AuthError::NeedsAttention);
         }
-        if !force_refresh && cache.expires_at > now.saturating_add(EXPIRY_MARGIN) {
+        if !force_refresh && cache.expires_at > now {
             if let Some(access) = &cache.access_token {
                 return Ok(AccessToken {
                     value: access.clone(),

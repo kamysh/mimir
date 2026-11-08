@@ -96,7 +96,7 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
   ... | inj₂ value = inj₂ value
 
   email : Maybe V.Value → Text ⊎ Email.Config
-  email nothing = inj₂ (record Email.defaults { timeoutSeconds = 0 ; retrySeconds = 0 ; maximumAttempts = 0 })
+  email nothing = inj₂ Email.defaults
   email (just raw) = section "email" E.decode (just raw)
 
   sections : Core.Config → Text ⊎ Runtime
