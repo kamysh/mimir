@@ -208,6 +208,16 @@ module AgentCorrection where
     (toList "A new learning item with a stable local key and no supplied ID, or an existing item owned by this experience with its original source and actor. Assessment item keys must resolve within that experience.")
     (toList "Call get_experience and get_learning_review with the same experience ID; use experience_history to inspect prior item keys, assigned IDs and recorded authorship. For a new item, supply its stable local key and omit id so PostgreSQL assigns it. Reuse the returned mapping on retries. If the intended item is unknown, ask the user. Do not invent or silently replace an ID, change source_ref or actor, or create another observation to bypass the conflict.")
 
+  candidateDeclarationItem : Fault → Item
+  candidateDeclarationItem detail = item arguments detail
+    (toList "Each candidate key names one unchanged belief or pattern declaration in this experience. Declare it once; a deleted key cannot be published again.")
+    (toList "Call get_learning_review and experience_history with the same experience ID to inspect the original declaration and assigned ID. Reuse that declaration on retry. If different knowledge was intended, ask the user which declaration or new stable key is appropriate. Do not silently rename a candidate, duplicate it, or recreate a deleted candidate.")
+
+  candidateTargetItem : Fault → Item
+  candidateTargetItem detail = item arguments detail
+    (toList "A key declared by a belief candidate in this review, or an existing belief_id target. A pattern candidate is not a belief target.")
+    (toList "Declare the intended belief candidate once with its stable key, or use an existing belief_id returned by list_beliefs. If the intended target is uncertain, ask the user. Do not invent a key or UUID, or treat a pattern as a belief.")
+
   record Certified (World : Set) (before after : World) : Set where
     constructor certified
     field report : Claim; unchanged : after ≡ before

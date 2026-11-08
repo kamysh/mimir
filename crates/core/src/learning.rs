@@ -1,6 +1,8 @@
 //! Outcome evidence is distinct from an agent's asserted belief confidence.
 //! Reviews interpret observations; success alone never proves a belief true.
 use crate::graph::{Belief, EdgeType, Pattern};
+use crate::interaction::RequestCorrection;
+use crate::validation::{Code, Segment};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -271,10 +273,11 @@ impl Review {
         let mut candidate_keys = std::collections::HashSet::new();
         for candidate in &self.candidates {
             candidate.validate()?;
-            ensure!(
-                candidate_keys.insert(candidate.key()),
-                "duplicate candidate key"
-            );
+            if !candidate_keys.insert(candidate.key()) {
+                return Err(RequestCorrection::candidate_declaration(
+                    vec![Segment::Key("review".into()), Segment::Key("candidates".into())], Code::Duplicate,
+                    format!("Duplicate candidate key {:?}: declare each candidate key only once in this review.", candidate.key())).into());
+            }
         }
         let belief_candidates: std::collections::HashSet<&str> = self
             .candidates
@@ -284,22 +287,38 @@ impl Review {
                 Candidate::Pattern { .. } => None,
             })
             .collect();
-        let validate_target = |target: &BeliefTarget| -> Result<()> {
+        let target_path = |collection: &str, index: usize, endpoint: &str| {
+            vec![
+                Segment::Key("review".into()),
+                Segment::Key(collection.into()),
+                Segment::Index(index),
+                Segment::Key(endpoint.into()),
+                Segment::Key("candidate_key".into()),
+            ]
+        };
+        let validate_target = |target: &BeliefTarget, path: Vec<Segment>| -> Result<()> {
             if let BeliefTarget::Candidate { candidate_key } = target {
                 if !belief_candidates.contains(candidate_key.as_str()) {
-                    return Err(crate::validation::Refusal::undeclared_candidate().into());
+                    return Err(RequestCorrection::candidate_target(path,
+                        format!("Candidate belief key {candidate_key:?} must be declared by a belief candidate in this review; a pattern key cannot be used as a belief target.")).into());
                 }
             }
             Ok(())
         };
-        for feedback in &self.candidate_feedback {
+        for (index, feedback) in self.candidate_feedback.iter().enumerate() {
             crate::graph::Probability::new(feedback.weight)?;
-            validate_target(&feedback.target)?;
+            validate_target(
+                &feedback.target,
+                target_path("candidate_feedback", index, "target"),
+            )?;
         }
         let mut assessment_keys = std::collections::HashSet::new();
-        for assessment in &self.assessments {
+        for (index, assessment) in self.assessments.iter().enumerate() {
             assessment.validate()?;
-            validate_target(&assessment.target)?;
+            validate_target(
+                &assessment.target,
+                target_path("assessments", index, "target"),
+            )?;
             ensure!(
                 assessment_keys.insert((
                     serde_json::to_string(&assessment.target)?,
@@ -333,10 +352,10 @@ impl Review {
                 "typed and legacy evidence overlap"
             );
         }
-        for link in &self.candidate_links {
+        for (index, link) in self.candidate_links.iter().enumerate() {
             crate::graph::Probability::new(link.weight)?;
-            validate_target(&link.from)?;
-            validate_target(&link.to)?;
+            validate_target(&link.from, target_path("candidate_links", index, "from"))?;
+            validate_target(&link.to, target_path("candidate_links", index, "to"))?;
         }
         let mut link_keys = std::collections::HashSet::new();
         for link in &self.links {

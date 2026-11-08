@@ -48,9 +48,9 @@ ExistingValid c e = c ≡ Entry.declaration e × Entry.retired e ≡ false
 
 checkExisting : ∀ c e → Checked (ExistingValid c e)
 checkExisting c e = combine
-  (check (fault [] wrongIdentity "candidate key has a different declaration")
+  (check (fault (key "key" ∷ []) wrongIdentity "candidate key has a different declaration")
     (candidateEqual c (Entry.declaration e)))
-  (check (fault [] wrongIdentity "candidate identity was deleted") (false? (Entry.retired e)))
+  (check (fault (key "key" ∷ []) missingReference "candidate identity was deleted") (false? (Entry.retired e)))
 
 data Plan (registry : Registry) (occupied : List ℕ) (experience : ℕ) (c : Candidate) : Set where
   reuse : (e : Entry) → lookup (experience , candidateKey c) registry ≡ just e → ExistingValid c e →

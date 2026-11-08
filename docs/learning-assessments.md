@@ -98,6 +98,20 @@ or ambiguously acknowledged request reuses the same IDs, expected revision and
 payload. Conflicting or stale payloads fail. Historical rows remain immutable;
 queries join the active revision pointers so obsolete evidence cannot contribute.
 
+Candidate names belong to one experience. Declare each name once in a review;
+later reviews must retain its original belief or pattern declaration. A belief
+target using `candidate_key` must name a belief candidate declared in that same
+review. A pattern name cannot be used as a belief target.
+
+Duplicate or undeclared names, changed declarations and attempts to publish a
+deleted candidate return `needs_input` with the affected field and repair
+guidance before publication. Use `get_learning_review` and `experience_history`
+to inspect the original declaration and assigned ID. If different knowledge was
+intended, ask the user which declaration or new stable name is appropriate;
+do not silently rename or recreate a candidate. Refusal leaves the review and
+candidate history unchanged. Retrying an already completed review still returns
+its original answer after a candidate is deleted, without recreating that node.
+
 ## Compatibility and formal contract
 
 ### PostgreSQL-owned item identities

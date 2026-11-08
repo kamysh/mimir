@@ -76,6 +76,15 @@ fn item_path(prefix: &[&str], index: usize, field: &str) -> Vec<Segment> {
     path
 }
 
+fn candidate_path(index: usize) -> Vec<Segment> {
+    vec![
+        Segment::Key("review".into()),
+        Segment::Key("candidates".into()),
+        Segment::Index(index),
+        Segment::Key("key".into()),
+    ]
+}
+
 impl AgeStore {
     async fn item_id_by_key(
         tx: &Transaction<'_>,
@@ -517,9 +526,20 @@ impl AgeStore {
                 if row.get::<_, &str>(0) != candidate.kind()
                     || declaration != serde_json::to_value(candidate)?
                 {
-                    return Err(crate::validation::Refusal::candidate_conflict().into());
+                    return Err(RequestCorrection::candidate_declaration(
+                        candidate_path(index),
+                        Code::WrongIdentity,
+                        format!(
+                            "Candidate key {:?} has a different stored declaration.",
+                            candidate.key()
+                        ),
+                    )
+                    .into());
                 }
-                ensure!(!row.get::<_, bool>(2), "candidate identity was deleted");
+                if row.get::<_, bool>(2) {
+                    return Err(RequestCorrection::candidate_declaration(candidate_path(index), Code::MissingReference,
+                        format!("Candidate identity {:?} was deleted; its key cannot be published again.", candidate.key())).into());
+                }
             } else {
                 new.push((index, candidate.clone()));
             }
@@ -536,15 +556,19 @@ impl AgeStore {
         prepared: &HashMap<String, crate::preparation::PreparedBelief>,
     ) -> Result<HashMap<String, Uuid>> {
         let mut ids = HashMap::new();
-        for candidate in candidates {
+        for (index, candidate) in candidates.iter().enumerate() {
             if let Some(row) = tx.query_opt("SELECT kind,node_id,declaration::text,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2", &[&experience_id, &candidate.key()]).await? {
                 let kind: &str = row.get(0);
                 let declaration: serde_json::Value = serde_json::from_str(row.get(2))?;
                 let retired: bool = row.get(3);
                 if kind != candidate.kind() || declaration != serde_json::to_value(candidate)? {
-                    return Err(crate::validation::Refusal::candidate_conflict().into());
+                    return Err(RequestCorrection::candidate_declaration(candidate_path(index), Code::WrongIdentity,
+                        format!("Candidate key {:?} has a different stored declaration.", candidate.key())).into());
                 }
-                ensure!(!retired, "candidate identity was deleted");
+                if retired {
+                    return Err(RequestCorrection::candidate_declaration(candidate_path(index), Code::MissingReference,
+                        format!("Candidate identity {:?} was deleted; its key cannot be published again.", candidate.key())).into());
+                }
                 ids.insert(candidate.key().to_owned(), row.get(1));
                 continue;
             }

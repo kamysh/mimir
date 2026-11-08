@@ -4,7 +4,7 @@
 -- assessments, edges and numerical graph writes in its one proposed world.
 module Mimir.LearningOperations where
 
-open import Data.Bool using (true; false; _∧_)
+open import Data.Bool using (Bool; true; false; _∧_; _∨_)
 open import Data.List using (List; []; _∷_; _++_; map; length)
 open import Data.List.Relation.Unary.Any using (Any; here; there)
 open import Data.Maybe using (Maybe; just; nothing)
@@ -101,6 +101,21 @@ beliefReferenceCorrection detail with Validation.Fault.code detail
 ... | Validation.unsupportedCombination = just (Correction.claim (Correction.beliefReferenceItem detail) [])
 ... | _ = nothing
 
+fieldIs : Text → Data.String.String → Bool
+fieldIs value name = does (value ≟Text Data.String.toList name)
+
+existingReferencePath : List Validation.Segment → Bool
+existingReferencePath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ []) =
+  fieldIs outer "review" ∧ fieldIs collection "superseded_beliefs"
+existingReferencePath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ []) =
+  fieldIs outer "review" ∧ ((fieldIs collection "feedback" ∧ fieldIs leaf "belief_id") ∨
+    (fieldIs collection "links" ∧ (fieldIs leaf "from_id" ∨ fieldIs leaf "to_id")))
+existingReferencePath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey target ∷ Validation.fieldKey leaf ∷ []) =
+  fieldIs outer "review" ∧ fieldIs leaf "belief_id" ∧
+    ((((fieldIs collection "assessments" ∨ fieldIs collection "candidate_feedback") ∧ fieldIs target "target")) ∨
+      (fieldIs collection "candidate_links" ∧ (fieldIs target "from" ∨ fieldIs target "to")))
+existingReferencePath _ = false
+
 referenceCorrection : Failure → Maybe Correction.Claim
 referenceCorrection (recordFailure Recording.missingPattern) = just (Correction.claim
   (Correction.patternReferenceItem (Validation.fault (Validation.key "experience" ∷ Validation.key "pattern_id" ∷ [])
@@ -113,11 +128,9 @@ referenceCorrection (recordFailure (Recording.invalid detail@(Validation.problem
   with outer ≟Text Data.String.toList "experience" | inner ≟Text Data.String.toList "belief_ids"
 ... | yes _ | yes _ = beliefReferenceCorrection detail
 ... | _ | _ = nothing
-referenceCorrection (reviewFailure (Reviewing.invalid detail@(Validation.problem
-  (Validation.fieldKey outer ∷ Validation.fieldKey inner ∷ rest) code reason)))
-  with outer ≟Text Data.String.toList "review"
-... | no _ = nothing
-... | yes _ = beliefReferenceCorrection detail
+referenceCorrection (reviewFailure (Reviewing.invalid detail)) with existingReferencePath (Validation.Fault.path detail)
+... | false = nothing
+... | true = beliefReferenceCorrection detail
 referenceCorrection _ = nothing
 
 -- A PostgreSQL allocation collision has no item-field suffix and stays an
@@ -143,12 +156,40 @@ allocationCollisionIsNotAgentMisuse : ∀ position explanation →
     Validation.wrongIdentity explanation)) ≡ nothing
 allocationCollisionIsNotAgentMisuse position explanation = refl
 
+candidateDeclarationPath : List Validation.Segment → Bool
+candidateDeclarationPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ []) =
+  fieldIs outer "review" ∧ fieldIs collection "candidates"
+candidateDeclarationPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ []) =
+  fieldIs outer "review" ∧ fieldIs collection "candidates" ∧ fieldIs leaf "key"
+candidateDeclarationPath _ = false
+
+candidateTargetPath : List Validation.Segment → Bool
+candidateTargetPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey target ∷ Validation.fieldKey leaf ∷ []) =
+  fieldIs outer "review" ∧ fieldIs leaf "candidate_key" ∧
+    ((((fieldIs collection "assessments" ∨ fieldIs collection "candidate_feedback") ∧ fieldIs target "target")) ∨
+      (fieldIs collection "candidate_links" ∧ (fieldIs target "from" ∨ fieldIs target "to")))
+candidateTargetPath _ = false
+
+candidateCorrection : Failure → Maybe Correction.Claim
+candidateCorrection (reviewFailure (Reviewing.invalid detail)) with candidateDeclarationPath (Validation.Fault.path detail)
+... | true with Validation.Fault.code detail
+...   | Validation.duplicate = just (Correction.claim (Correction.candidateDeclarationItem detail) [])
+...   | Validation.wrongIdentity = just (Correction.claim (Correction.candidateDeclarationItem detail) [])
+...   | Validation.missingReference = just (Correction.claim (Correction.candidateDeclarationItem detail) [])
+...   | _ = nothing
+candidateCorrection (reviewFailure (Reviewing.invalid detail)) | false with candidateTargetPath (Validation.Fault.path detail) | Validation.Fault.code detail
+... | true | Validation.missingReference = just (Correction.claim (Correction.candidateTargetItem detail) [])
+... | _ | _ = nothing
+candidateCorrection _ = nothing
+
 requestCorrection : Failure → Maybe Correction.Claim
 requestCorrection failure with revisionCorrection failure
 ... | just report = just report
 ... | nothing with referenceCorrection failure
 ...   | just report = just report
-...   | nothing = allocationCorrection failure
+...   | nothing with allocationCorrection failure
+...     | just report = just report
+...     | nothing = candidateCorrection failure
 
 expectedValid : ℤ → Data.Bool.Bool
 expectedValid expected = does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))

@@ -187,6 +187,26 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    pub(crate) fn candidate_declaration(path: Vec<Segment>, code: Code, message: String) -> Self {
+        let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
+            "Each candidate key names one unchanged belief or pattern declaration in this experience. Declare it once; a deleted key cannot be published again.".into(),
+            "Call get_learning_review and experience_history with the same experience ID to inspect the original declaration and assigned ID. Reuse that declaration on retry. If different knowledge was intended, ask the user which declaration or new stable key is appropriate. Do not silently rename a candidate, duplicate it, or recreate a deleted candidate.".into())
+            .expect("candidate declaration correction retains complete guidance");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained declaration correction"),
+        }
+    }
+
+    pub(crate) fn candidate_target(path: Vec<Segment>, message: String) -> Self {
+        let issue = CorrectionItem::new(Location::Arguments,
+            Fault { path, code: Code::MissingReference, message },
+            "A key declared by a belief candidate in this review, or an existing belief_id target. A pattern candidate is not a belief target.".into(),
+            "Declare the intended belief candidate once with its stable key, or use an existing belief_id returned by list_beliefs. If the intended target is uncertain, ask the user. Do not invent a key or UUID, or treat a pattern as a belief.".into())
+            .expect("candidate target correction retains complete guidance");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained candidate target"),
+        }
+    }
     pub(crate) fn learning_item(path: Vec<Segment>, code: Code, message: String) -> Self {
         let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
             "A new learning item with a stable local key and no supplied ID, or an existing item owned by this experience with its original source and actor. Assessment item keys must resolve within that experience.".into(),

@@ -17,7 +17,7 @@ open import Mimir.ExperienceSchema using (Experience)
 open import Mimir.ReviewSchema using (Review; validateReview)
 open import Mimir.LearningCandidates using (Candidate)
 open import Mimir.SourceReview using (_≟Text_)
-open import Mimir.Validation using (Fault; fault; key; staleRevision; wrongIdentity; accepted; rejected)
+open import Mimir.Validation using (Fault; fault; key; prependPath; staleRevision; wrongIdentity; accepted; rejected)
 open import Mimir.RevisionBounds using (i64Maximum)
 import Mimir.LearningKeys as Keys
 import Mimir.CandidateRegistry as Registry
@@ -54,7 +54,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
 
   plan : (Candidate → ℕ) → Decision
   plan identities with validateReview requested
-  ... | rejected failure invalid = refused failure
+  ... | rejected failure invalid = refused (prependPath (key "review") failure)
   ... | accepted structure with expected <? i64Maximum
   ...   | no invalid = refused (fault [] staleRevision "expected review revision exceeds storage range")
   ...   | yes room with Admission.checkPin F.P.originalEnvironment requested

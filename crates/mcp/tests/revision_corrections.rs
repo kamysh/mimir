@@ -87,6 +87,81 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
         .get(0))
 }
 
+#[tokio::test]
+async fn candidate_name_corrections_preserve_declarations_history_and_completed_answers(
+) -> Result<()> {
+    use mimir_core::graph::MemoryType;
+    let service = test_service().await?;
+    let id = fixture_identity().await?;
+    let project = format!("candidate-names-{id}");
+    let belief = isolation::seed_belief_in_project(
+        "candidate fixture",
+        0.5,
+        0.1,
+        &project,
+        MemoryType::Fact,
+    )
+    .await?;
+    let database = isolation::fixture().database_config();
+    let db = db::connect(&database).await?;
+    let mut client = Client::start(id)?;
+    let checked = async {
+        let source = json!({"id":id,"project":project,"context":"candidate names","action":"read saved declarations","outcome":"unknown","source":"agent_report","evidence":["isolated fixture receipt"],"belief_ids":[belief.id]});
+        ensure!(client.call("record_experience", json!({"experience":source,"expected_revision":0})).await?["revision"] == 1);
+        let history = service.experience_history(id).await?;
+        let candidate = json!({"kind":"pattern","key":"retry-step","situation":"retry an observed operation","approach":"read its saved answer first"});
+        let review = json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"one stable declaration","candidates":[candidate]});
+        let mut duplicate = review.clone();
+        duplicate["candidates"] = json!([candidate,candidate]);
+        reference_correction(client.call("review_experience", json!({"review":duplicate,"expected_review_revision":0})).await?, json!(["review","candidates"]), Code::Duplicate)?;
+        ensure!(service.experience_history(id).await? == history);
+        let absent = json!({"candidate_key":"not-declared"});
+        let present = json!({"belief_id":belief.id});
+        let cases = [
+            ("candidate_feedback",json!([{"target":absent,"verdict":"support","weight":0.5}]),json!(["review","candidate_feedback",0,"target","candidate_key"])),
+            ("candidate_links",json!([{"from":absent,"to":present,"relation":"Supports","weight":0.5}]),json!(["review","candidate_links",0,"from","candidate_key"])),
+            ("candidate_links",json!([{"from":present,"to":absent,"relation":"Supports","weight":0.5}]),json!(["review","candidate_links",0,"to","candidate_key"])),
+            ("assessments",json!([{"target":absent,"scope":"fixture","rubric":"fixture","correctness":{"value":null,"weight":0},"usefulness":{"value":null,"weight":0},"evidence_indices":[],"rationale":"unresolved"}]),json!(["review","assessments",0,"target","candidate_key"])),
+        ];
+        for (field,value,path) in cases {
+            let mut invalid = review.clone(); invalid[field] = value;
+            reference_correction(client.call("review_experience", json!({"review":invalid,"expected_review_revision":0})).await?, path, Code::MissingReference)?;
+            ensure!(service.experience_history(id).await? == history);
+        }
+        let mut wrong_kind = review.clone();
+        wrong_kind["candidate_feedback"] = json!([{"target":{"candidate_key":"retry-step"},"verdict":"support","weight":0.5}]);
+        reference_correction(client.call("review_experience", json!({"review":wrong_kind,"expected_review_revision":0})).await?,json!(["review","candidate_feedback",0,"target","candidate_key"]),Code::MissingReference)?;
+        ensure!(service.experience_history(id).await? == history);
+        ensure!(db.query_one("SELECT count(*) FROM mimir_review_candidates WHERE experience_id = $1", &[&id]).await?.get::<_,i64>(0) == 0);
+        let original = client.call("review_experience", json!({"review":review,"expected_review_revision":0})).await?;
+        let history = service.experience_history(id).await?;
+        let node:uuid::Uuid = db.query_one("SELECT node_id FROM mimir_review_candidates WHERE experience_id = $1 AND candidate_key = 'retry-step'", &[&id]).await?.get(0);
+        let mut changed = review.clone(); changed["candidates"][0]["approach"] = json!("changed declaration");
+        reference_correction(client.call("review_experience",json!({"review":changed,"expected_review_revision":1})).await?,json!(["review","candidates",0,"key"]),Code::WrongIdentity)?;
+        let mut batch = changed.clone();
+        batch["candidates"] = json!([{"kind":"pattern","key":"new-first","situation":"must not publish","approach":"wait for a valid whole request"},changed["candidates"][0]]);
+        reference_correction(client.call("review_experience",json!({"review":batch,"expected_review_revision":1})).await?,json!(["review","candidates",1,"key"]),Code::WrongIdentity)?;
+        ensure!(service.experience_history(id).await? == history);
+        ensure!(db.query_one("SELECT count(*) FROM mimir_review_candidates WHERE experience_id = $1", &[&id]).await?.get::<_,i64>(0) == 1);
+        ensure!(client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await? == original);
+        client.call("delete_pattern",json!({"id":node})).await?;
+        let mut fresh = review.clone(); fresh["rationale"] = json!("new review after deletion");
+        reference_correction(client.call("review_experience",json!({"review":fresh,"expected_review_revision":1})).await?,json!(["review","candidates",0,"key"]),Code::MissingReference)?;
+        ensure!(service.get_pattern(node).await?.is_none());
+        ensure!(service.experience_history(id).await? == history);
+        ensure!(client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await? == original);
+        ensure!(client.call("get_learning_review",json!({"id":id})).await?["review_revision"] == 1);
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    let cleanup = service.delete_project(&project).await;
+    checked?;
+    ensure!(stopped.success());
+    cleanup?;
+    Ok(())
+}
+
 async fn fixture_pattern(project: Option<&str>) -> Result<mimir_core::graph::Pattern> {
     let database = isolation::fixture().database_config();
     let db = db::connect(&database).await?;

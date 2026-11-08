@@ -104,7 +104,7 @@ TargetValid candidates (candidate name) = Keys.Present name (beliefKeys candidat
 validateTarget : ∀ candidates target → Checked (TargetValid candidates target)
 validateTarget candidates (existing id) = accepted tt
 validateTarget candidates (candidate name) = check
-  (fault [] missingReference "candidate belief must be declared in this review")
+  (fault (key "candidate_key" ∷ []) missingReference "candidate belief must be declared in this review")
   (Keys.present? name (beliefKeys candidates))
 
 targetEqual : (x y : Target) → Dec (x ≡ y)
