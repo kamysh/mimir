@@ -298,6 +298,31 @@ module Single where
   replyMustRepeat statement repeatable input initial =
     cong proj₂ (Idempotent.stable repeatable input initial)
 
+-- A read owes its complete answer, not just a flag saying that it is read-only.
+-- The application world is fixed here: graph, learning history, both vector
+-- tables, documents and the operation journal all remain observable.
+module ReadOnly {Input : Set} (answer : Input → Store.World → Wire.Value) where
+  operation : Recoverable Store.World Input
+  operation = Single.single (Single.readStatement answer) (Single.readIsIdempotent answer)
+
+  module Checked = Recoverable operation
+  module S = Single.Semantics (Single.readStatement answer)
+
+  interruptedPreservesAllState : ∀ input initial interrupted →
+    Checked.X.Interrupted (Checked.script input) initial interrupted → interrupted ≡ initial
+  interruptedPreservesAllState input initial interrupted interruption
+    with S.interruptionState input initial interrupted interruption
+  ... | inj₁ unchanged = unchanged
+  ... | inj₂ unchanged = unchanged
+
+  completedRetryPreservesStateAndAnswer : ∀ input initial interrupted final reply →
+    Checked.X.Interrupted (Checked.script input) initial interrupted →
+    Checked.X.Completed (Checked.script input) interrupted final reply →
+    final ≡ initial × reply ≡ answer input initial
+  completedRetryPreservesStateAndAnswer input initial interrupted final reply interruption completion =
+    cong proj₁ outcome , cong proj₂ outcome
+    where outcome = Checked.converges input initial interrupted final reply interruption completion
+
 -- Reservation metadata is separate from business publication. Identities and
 -- timestamps are supplied by PostgreSQL; this module has no identity generator
 -- or uniqueness proposition. The database primary-key/default contracts apply.

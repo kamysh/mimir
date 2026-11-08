@@ -238,3 +238,17 @@ provide a separate pure intent and prove that completing the plan produces
 that entire state and reply. The shared recovery goal remains unchanged.
 Concrete operation proofs and the mandatory dispatcher assembly still have to
 use this constructor; merely defining it does not complete #74 or #76.
+
+## Reads and their complete answers
+
+`Recovery.ReadOnly.operation` takes the independently defined complete answer
+for a read and supplies its recovery value over the whole shared application
+world. An identity state update alone, or a boolean read-only label, is not an
+argument to this constructor. The caller must supply the answer's actual
+contract for every input and world.
+
+General laws establish that every interrupted read preserves all stored state,
+including the operation journal, and that a completed retry returns that same
+state and the complete original answer. No readiness condition or narrower
+state projection is introduced. Individual query definitions and the mandatory
+dispatcher still need to use this constructor in their own issues.
