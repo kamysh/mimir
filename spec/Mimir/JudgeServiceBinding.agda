@@ -112,6 +112,10 @@ module Bind (conversion : Conversion.Contract) (format : Encoding.Formatting)
       H.Handled (Envelope.literal (Catalog.wireName tool)) args []
         (H.inputCorrection (Correction.Certified.report proof)) →
       Dialogue tool args (inj₂ (Correction.emitCorrection proof))
+    preparation : ∀ {before after} events (proof : Correction.Certified Store.World before after) →
+      H.Handled (Envelope.literal (Catalog.wireName tool)) args events
+        (H.preparationDecision (Correction.Certified.report proof)) →
+      Dialogue tool args (inj₂ (Correction.emitCorrection proof))
 
   record Receipt (id : ℕ) (tool : Catalog.Tool) (args : V.Value) (reply : Scope.Failure ⊎ V.Value) : Set where
     field client : ClientCall id tool args reply

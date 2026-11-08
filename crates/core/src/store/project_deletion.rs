@@ -39,6 +39,11 @@ impl AgeStore {
     async fn delete_project_in(&self, tx: &Transaction<'_>, project: &str) -> Result<usize> {
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
+        tx.execute(
+            "DELETE FROM mimir_embedding_owners WHERE project=$1",
+            &[&project],
+        )
+        .await?;
         let client = tx.client();
         // Keep every discovery key until the dependent rows are known.
         let beliefs = self.project_node_ids(client, project, "Belief").await?;

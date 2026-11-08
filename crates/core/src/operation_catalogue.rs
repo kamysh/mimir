@@ -5,6 +5,7 @@
 /// a transaction. Instrumentation and native/spec comparison follow in #88.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommitSite {
+    EmbeddingOwnerReservation,
     BeliefPublication,
     BeliefVectorPublication,
     EvidencePublication,
@@ -25,7 +26,8 @@ pub enum CommitSite {
 impl CommitSite {
     pub fn name(self) -> &'static str {
         match self {
-            Self::BeliefPublication => "store.insert_belief_with_provenance",
+            Self::EmbeddingOwnerReservation => "store.reserve_belief_preparation",
+            Self::BeliefPublication => "store.publish_prepared_belief",
             Self::BeliefVectorPublication => "store.insert_belief_embedding",
             Self::EvidencePublication => "store.insert_evidence",
             Self::BeliefDeletion => "store.delete_belief",
@@ -91,7 +93,7 @@ macro_rules! operations {
 use CommitSite::*;
 operations! {
     graph {
-        InsertBelief => "insert_belief" [once(BeliefPublication), once(BeliefVectorPublication), repeated(EvidencePublication)],
+        InsertBelief => "insert_belief" [once(EmbeddingOwnerReservation), once(BeliefPublication)],
         DeleteBelief => "delete_belief" [once(BeliefDeletion)],
         DeleteProject => "delete_project" [once(ProjectDeletion)],
         DeletePattern => "delete_pattern" [once(PatternDeletion)],

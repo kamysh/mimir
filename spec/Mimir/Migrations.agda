@@ -14,7 +14,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 
 data Migration : Set where
   initial searchPath beliefEmbeddings evidenceEdges betaBeliefs learningLedger
-    reviewCandidates assessments itemOwners postgresItemAllocation reviewQueueNotifications operationReservations operationBindings operationStepReplies operationPlans operationRequestKeys candidateKeyContent : Migration
+    reviewCandidates assessments itemOwners postgresItemAllocation reviewQueueNotifications operationReservations operationBindings operationStepReplies operationPlans operationRequestKeys candidateKeyContent embeddingOwners : Migration
 
 name : Migration → String
 name initial = "initial"
@@ -34,6 +34,7 @@ name operationStepReplies = "operation-step-replies"
 name operationPlans = "operation-plans"
 name operationRequestKeys = "operation-request-keys"
 name candidateKeyContent = "candidate-key-content"
+name embeddingOwners = "embedding-publication-owners"
 
 predecessor : Migration → Maybe Migration
 predecessor initial = nothing
@@ -53,11 +54,12 @@ predecessor operationStepReplies = just operationBindings
 predecessor operationPlans = just operationStepReplies
 predecessor operationRequestKeys = just operationPlans
 predecessor candidateKeyContent = just operationRequestKeys
+predecessor embeddingOwners = just candidateKeyContent
 
 manifest : List Migration
 manifest = initial ∷ searchPath ∷ beliefEmbeddings ∷ evidenceEdges ∷
   betaBeliefs ∷ learningLedger ∷ reviewCandidates ∷ assessments ∷ itemOwners ∷ postgresItemAllocation ∷
-  reviewQueueNotifications ∷ operationReservations ∷ operationBindings ∷ operationStepReplies ∷ operationPlans ∷ operationRequestKeys ∷ candidateKeyContent ∷ []
+  reviewQueueNotifications ∷ operationReservations ∷ operationBindings ∷ operationStepReplies ∷ operationPlans ∷ operationRequestKeys ∷ candidateKeyContent ∷ embeddingOwners ∷ []
 
 -- The executable lifecycle is MigrationDriver. The former untyped state
 -- table was removed because it conflated queued rollback with acknowledgement

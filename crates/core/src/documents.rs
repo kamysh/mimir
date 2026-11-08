@@ -8,7 +8,7 @@ use uuid::Uuid;
 // parent_id mirrors the CONTAINS edge parent for easy lookup in queries.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DocumentChunk {
     pub id: Uuid,
     pub document_path: String,

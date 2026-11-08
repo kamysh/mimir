@@ -3,7 +3,7 @@
 `crates/core/src/operation_catalogue.rs` defines the existing public tool set
 and commit boundaries once, for both core storage and MCP.
 Each declaration supplies its wire name, typed handler identity and current
-committed business-write sites. Graph and learning handlers match closed Rust
+committed write sites, including preparation ownership. Graph and learning handlers match closed Rust
 enums, without a catch-all branch. Adding a declared operation without adding
 its handler is therefore a compile error.
 
@@ -33,6 +33,12 @@ roots, dependent vectors, chunks and learning records publish together. Its
 registered token path saves the original result in that same transaction.
 This declaration describes the native publication boundary; the independent
 intended-outcome and recovery proofs remain separate obligations.
+
+Belief insertion first reserves a PostgreSQL-issued preparation owner. It then
+prepares the complete embedding and indexed supporting passages without
+publishing a belief. One publication transaction writes the belief, provenance,
+vector and grounding links and consumes that owner. These are two registered
+boundaries; vector and grounding writes are not separate publication steps.
 
 A boundary can be skipped when execution stops earlier or its branch is not
 taken. Grounding and sweeping can revisit the same site for multiple selected

@@ -41,7 +41,17 @@ impl RegisteredOperation {
                 return Ok(serde_json::to_value(issue.correction())?);
             }
         }
-        call(self.handler, service, input).await
+        let result = call(self.handler, service, input).await;
+        if self.handler == Operation::Graph(GraphOperation::InsertBelief) {
+            if let Err(error) = &result {
+                if let Some(decision) =
+                    error.downcast_ref::<mimir_core::preparation::PreparationRequired>()
+                {
+                    return Ok(serde_json::to_value(decision.correction())?);
+                }
+            }
+        }
+        result
     }
 }
 

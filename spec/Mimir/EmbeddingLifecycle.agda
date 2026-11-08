@@ -214,9 +214,11 @@ module Remote (float : Ranking.F32) (dimension maximumIndex : ℕ)
     ((toList "input" , V.array (map V.string texts)) ∷ (toList "model" , V.string model) ∷ extra)
     where
     extra : List (Text × V.Value)
-    extra with Backend.inputType backend
-    ... | nothing = []
-    ... | just value = (toList "input_type" , V.string value) ∷ []
+    extra with backend
+    ... | Config.voyage = (toList "input_type" , V.string (toList "document")) ∷
+      (toList "truncation" , V.boolean false) ∷ []
+    ... | Config.openai = []
+    ... | Config.local = []
 
   data Failure : Set where
     invalidBackend : Failure

@@ -2,6 +2,7 @@ mod conformance;
 mod learning;
 mod operation_plans;
 mod operation_steps;
+mod prepared_belief;
 mod project_deletion;
 mod reservations;
 #[cfg(test)]
@@ -538,6 +539,22 @@ impl AgeStore {
         belief: &Belief,
         provenance: Option<&crate::learning::IndependentProvenance>,
     ) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_belief_on(tx.client(), belief, provenance)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_belief_on(
+        &self,
+        client: &Client,
+        belief: &Belief,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+    ) -> Result<()> {
         let g = &self.graph_name;
         let id = belief.id.to_string();
         let probability = belief.probability.value();
@@ -596,12 +613,7 @@ impl AgeStore {
             },
         );
 
-        let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
-        age_execute(tx.client(), &stmt, &prepare, &agtype_json).await?;
-        tx.commit().await?;
+        age_execute(client, &stmt, &prepare, &agtype_json).await?;
         Ok(())
     }
 
@@ -1826,15 +1838,27 @@ $$) AS (ok ag_catalog.agtype)"#
         if self.get_belief_on(tx.client(), belief_id).await?.is_none() {
             return Err(BeliefEmbeddingTargetMissing { belief_id }.into());
         }
+        self.insert_belief_embedding_on(tx.client(), belief_id, embedding)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_belief_embedding_on(
+        &self,
+        client: &Client,
+        belief_id: Uuid,
+        embedding: &[f32],
+    ) -> Result<()> {
         let vec = Vector::from(embedding.to_vec());
-        tx.execute(
-            "INSERT INTO public.belief_embeddings (belief_id, embedding) \
+        client
+            .execute(
+                "INSERT INTO public.belief_embeddings (belief_id, embedding) \
                  VALUES ($1, $2) \
                  ON CONFLICT (belief_id) DO UPDATE SET embedding = EXCLUDED.embedding",
-            &[&belief_id, &vec],
-        )
-        .await?;
-        tx.commit().await?;
+                &[&belief_id, &vec],
+            )
+            .await?;
         Ok(())
     }
 
@@ -2031,6 +2055,25 @@ $$) {CHUNK_RETURN_COLUMNS}"#
         belief_id: Uuid,
         weight: Probability,
     ) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_grounding_on(tx.client(), chunk_id, belief_id, weight)
+            .await?;
+        self.recompute_learning(&tx, None, [belief_id].into())
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_grounding_on(
+        &self,
+        client: &Client,
+        chunk_id: Uuid,
+        belief_id: Uuid,
+        weight: Probability,
+    ) -> Result<()> {
         let g = &self.graph_name;
         let c = chunk_id.to_string();
         let b = belief_id.to_string();
@@ -2043,13 +2086,8 @@ $$) {CHUNK_RETURN_COLUMNS}"#
   RETURN r.weight
 $$) AS (weight ag_catalog.agtype)"#
         );
-        let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
-
         // Step 1: create the GROUNDS edge (errors if endpoints missing).
-        let rows = tx.query(&create_sql, &[]).await?;
+        let rows = client.query(&create_sql, &[]).await?;
         if rows.is_empty() {
             bail!(
                 "insert_evidence: chunk or belief not found (chunk={}, belief={})",
@@ -2058,12 +2096,6 @@ $$) AS (weight ag_catalog.agtype)"#
             );
         }
 
-        // Recompute from the fixed prior and every current evidence source.
-        // This also updates descendants within the same transaction.
-        self.recompute_learning(&tx, None, [belief_id].into())
-            .await?;
-
-        tx.commit().await?;
         Ok(())
     }
 

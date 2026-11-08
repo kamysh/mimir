@@ -40,6 +40,8 @@ import Mimir.AssessmentSelection as Selection
 import Mimir.AssessmentEvaluation as Evaluation
 import Mimir.AssessmentScores as Scores
 import Mimir.LearningCapabilities as Capabilities
+import Mimir.BeliefEmbedding as Embedding
+import Mimir.McpErrors as Errors
 
 module Project (environment : Application.Environment) (format : Encoding.Formatting) where
   module A = Application.Run environment
@@ -49,6 +51,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   data Projection : Set where
     success : V.Value → Projection
     failure : A.Result → Projection
+    decision : Errors.AgentCorrection.Claim → Projection
 
   flag : String → Bool → V.Value
   flag fieldKey value = object ((fieldKey , V.boolean value) ∷ [])
@@ -116,6 +119,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project (A.mutated (Mutation.insertedBelief b)) = success (belief b)
   project (A.mutated (Mutation.insertedPattern p)) = success (patternValue p)
   project (A.mutated Mutation.edgeInserted) = success (flag "ok" true)
+  project (A.mutated (Mutation.embeddingFailed (Embedding.needsUserDecision report))) = decision report
   project original@(A.mutated _) = failure original
   project original@(A.readResult result) = projectRead original result
   project (A.deleted (A.Delete.T.applied value)) = success (flag "deleted" value)

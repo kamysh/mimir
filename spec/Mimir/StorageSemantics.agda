@@ -218,9 +218,6 @@ module Bound (database : ℕ) where
     replayed : ∀ events cleanup → D.T.E.Runs (D.Run.start Deletion.belief id) events (D.T.replayed value cleanup) → Deleted id value
 
   data EmbeddingWrite : Embedding.Effect → Store.World → Store.World → Set where
-    readBelief : ∀ value origin before after →
-      StatementPublication (insertBelief value origin) before DB.committed after →
-      EmbeddingWrite (Embedding.insert value origin) before after
     upserted : ∀ id values before after → StatementPublication (beliefVector id values) before DB.committed after →
       EmbeddingWrite (Embedding.upsert id values) before after
 

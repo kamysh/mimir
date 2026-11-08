@@ -139,6 +139,11 @@ pub struct OwnedEmbeddingBackend {
     provider: Box<dyn EmbeddingProvider>,
 }
 impl OwnedEmbeddingBackend {
+    #[cfg(test)]
+    pub(crate) fn for_test(provider: Box<dyn EmbeddingProvider>) -> Self {
+        Self { provider }
+    }
+
     pub fn embed<'a>(&'a self, texts: &'a [String]) -> EmbeddingJob<'a> {
         let (state, received) = tokio::sync::watch::channel(EmbeddingStatus::Running);
         let control = EmbeddingStopHandle { state };
@@ -184,6 +189,15 @@ impl VoyageBackend {
             http: reqwest::Client::new(),
         }
     }
+
+    fn request_body(&self, texts: &[String]) -> serde_json::Value {
+        serde_json::json!({
+            "input": texts,
+            "model": self.model,
+            "input_type": "document",
+            "truncation": false
+        })
+    }
 }
 
 impl EmbeddingProvider for VoyageBackend {
@@ -193,22 +207,15 @@ impl EmbeddingProvider for VoyageBackend {
         _cancellation: EmbeddingCancellation,
     ) -> EmbedFuture<'a> {
         Box::pin(async move {
-            let body = serde_json::json!({
-                "input": texts,
-                "model": self.model,
-                "input_type": "document"
-            });
-            let resp: serde_json::Value = self
+            let body = self.request_body(texts);
+            let response = self
                 .http
                 .post("https://api.voyageai.com/v1/embeddings")
                 .bearer_auth(&self.api_key)
                 .json(&body)
                 .send()
-                .await?
-                .error_for_status()?
-                .json()
                 .await?;
-            parse_embeddings(&resp, texts.len())
+            remote_embeddings(response, texts.len(), &self.api_key).await
         })
     }
 }
@@ -244,17 +251,14 @@ impl EmbeddingProvider for OpenAiBackend {
                 "input": texts,
                 "model": self.model
             });
-            let resp: serde_json::Value = self
+            let response = self
                 .http
                 .post("https://api.openai.com/v1/embeddings")
                 .bearer_auth(&self.api_key)
                 .json(&body)
                 .send()
-                .await?
-                .error_for_status()?
-                .json()
                 .await?;
-            parse_embeddings(&resp, texts.len())
+            remote_embeddings(response, texts.len(), &self.api_key).await
         })
     }
 }
@@ -264,10 +268,32 @@ impl EmbeddingProvider for OpenAiBackend {
 // ---------------------------------------------------------------------------
 
 const HF_MODEL_ID: &str = "BAAI/bge-base-en-v1.5";
-const MAX_SEQ_LEN: usize = 512;
+// BGE's declared position-table capacity, including special tokens. This
+// external model requirement was explicitly approved; it never selects a
+// shorter source prefix. See docs/EXTERNAL-MODEL-CONSTRAINTS.md.
+const LOCAL_MAX_POSITIONS: usize = 512;
 pub const LOCAL_DIM: usize = 768;
 
 type TractPlan = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
+
+async fn remote_embeddings(
+    response: reqwest::Response,
+    count: usize,
+    api_key: &str,
+) -> Result<Vec<Vec<f32>>> {
+    let status = response.status();
+    if !status.is_success() {
+        let detail = response.text().await?;
+        let detail = if api_key.is_empty() {
+            detail
+        } else {
+            detail.replace(api_key, "[redacted API key]")
+        };
+        anyhow::bail!("Embedding provider returned HTTP {status}: {detail}");
+    }
+    let body = response.json().await?;
+    parse_embeddings(&body, count)
+}
 
 struct EmbedState {
     tokenizer: Tokenizer,
@@ -450,8 +476,9 @@ fn load_embed_state(cache_dir: Option<&std::path::Path>) -> Result<EmbedState> {
     )
     .context("downloading onnx/model.onnx")?;
 
-    let tokenizer = Tokenizer::from_file(&tokenizer_path)
+    let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
+    configure_complete_tokenizer(&mut tokenizer)?;
 
     let model = tract_onnx::onnx()
         .model_for_path(&model_path)
@@ -465,6 +492,134 @@ fn load_embed_state(cache_dir: Option<&std::path::Path>) -> Result<EmbedState> {
         tokenizer,
         model: Mutex::new(model),
     })
+}
+
+fn configure_complete_tokenizer(tokenizer: &mut Tokenizer) -> Result<()> {
+    tokenizer
+        .with_truncation(None)
+        .map_err(|error| anyhow::anyhow!("disabling tokenizer truncation: {error}"))?;
+    tokenizer.with_padding(None);
+    Ok(())
+}
+
+fn complete_sequence_length(encodings: &[tokenizers::Encoding]) -> Result<usize> {
+    let mut longest = 0;
+    for (index, encoding) in encodings.iter().enumerate() {
+        let positions = encoding.get_ids().len();
+        anyhow::ensure!(positions <= LOCAL_MAX_POSITIONS,
+            "Embedding input {index} in this batch contains {positions} encoded positions, including special tokens; {HF_MODEL_ID} supports {LOCAL_MAX_POSITIONS}. No input was truncated. Open a user dialog to choose an appropriate backend or revise the input; do not split the source, change models, or invent a processing policy automatically.");
+        longest = longest.max(positions);
+    }
+    Ok(longest)
+}
+
+#[cfg(test)]
+mod complete_input_tests {
+    use super::*;
+
+    fn encoded(count: usize) -> tokenizers::Encoding {
+        tokenizers::Encoding::from_tokens(
+            (0..count)
+                .map(|index| tokenizers::Token {
+                    id: index as u32,
+                    value: format!("token{index}"),
+                    offsets: (index, index + 1),
+                })
+                .collect(),
+            0,
+        )
+    }
+
+    #[test]
+    fn full_encodings_are_checked_without_discarding_the_last_condition() {
+        let accepted = vec![encoded(3), encoded(LOCAL_MAX_POSITIONS)];
+        assert_eq!(
+            complete_sequence_length(&accepted).unwrap(),
+            LOCAL_MAX_POSITIONS
+        );
+        assert_eq!(accepted[1].get_ids().last(), Some(&511));
+        let oversized = vec![encoded(3), encoded(LOCAL_MAX_POSITIONS + 1)];
+        let ids = oversized[1].get_ids().to_vec();
+        let report = complete_sequence_length(&oversized)
+            .unwrap_err()
+            .to_string();
+        assert!(report.contains(HF_MODEL_ID));
+        assert!(report.contains("513") && report.contains("512"));
+        assert!(report.contains("Open a user dialog"));
+        assert_eq!(oversized[1].get_ids(), ids);
+        assert_eq!(oversized[1].get_ids().last(), Some(&512));
+    }
+
+    #[test]
+    fn loaded_tokenizer_settings_cannot_silently_clip_or_pad_input() {
+        let mut tokenizer = Tokenizer::new(tokenizers::models::wordlevel::WordLevel::default());
+        tokenizer
+            .with_truncation(Some(tokenizers::TruncationParams {
+                max_length: 8,
+                ..Default::default()
+            }))
+            .unwrap();
+        tokenizer.with_padding(Some(tokenizers::PaddingParams::default()));
+        configure_complete_tokenizer(&mut tokenizer).unwrap();
+        assert!(tokenizer.get_truncation().is_none());
+        assert!(tokenizer.get_padding().is_none());
+    }
+
+    #[test]
+    fn voyage_request_disables_provider_clipping_and_preserves_complete_text() {
+        let backend =
+            VoyageBackend::new("fixture-only-no-account".into(), "configured-model".into());
+        let texts = vec![
+            format!(
+                "{}final important condition",
+                "complete source π ".repeat(4000)
+            ),
+            "second complete input".into(),
+        ];
+        let body = backend.request_body(&texts);
+        assert_eq!(body["truncation"], false);
+        assert_eq!(body["input"], serde_json::json!(texts));
+        assert_eq!(body["model"], "configured-model");
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[tokio::test]
+    async fn provider_rejection_retains_complete_cause_without_exposing_the_key() -> Result<()> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let explanation = format!(
+            "{} input has 8193 positions; configured provider accepts 8192; fixture-api-key",
+            "complete provider explanation; ".repeat(400)
+        );
+        let body = serde_json::json!({"error":{"message":explanation}}).to_string();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let mut stream = BufReader::new(stream);
+            loop {
+                let mut line = String::new();
+                if stream.read_line(&mut line).await? == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            stream.get_mut().write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
+            stream.get_mut().shutdown().await?;
+            Ok::<_, anyhow::Error>(())
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/"))
+            .send()
+            .await?;
+        let report = remote_embeddings(response, 1, "fixture-api-key")
+            .await
+            .unwrap_err()
+            .to_string();
+        server.await??;
+        assert!(report.contains(&explanation.replace("fixture-api-key", "[redacted API key]")));
+        assert!(report.contains("8193") && report.contains("8192"));
+        assert!(!report.contains("fixture-api-key"));
+        Ok(())
+    }
 }
 
 fn embed_with_state(
@@ -483,13 +638,9 @@ fn embed_with_state(
             .encode_batch(chunk.to_vec(), true)
             .map_err(|e| anyhow::anyhow!("tokenizer encode_batch: {e}"))?;
 
-        // Pad all sequences in the chunk to the same length, capped at MAX_SEQ_LEN.
-        let seq_len = encodings
-            .iter()
-            .map(|e| e.get_ids().len())
-            .max()
-            .unwrap_or(0)
-            .min(MAX_SEQ_LEN);
+        // Validate complete encodings before any model call. Padding extends
+        // shorter inputs; it never truncates a longer one.
+        let seq_len = complete_sequence_length(&encodings)?;
         let batch = chunk.len();
 
         let mut input_ids = vec![0i64; batch * seq_len];
@@ -500,7 +651,7 @@ fn embed_with_state(
             let ids = enc.get_ids();
             let masks = enc.get_attention_mask();
             let types = enc.get_type_ids();
-            let len = ids.len().min(seq_len);
+            let len = ids.len();
             for s in 0..len {
                 input_ids[b * seq_len + s] = ids[s] as i64;
                 attention_mask[b * seq_len + s] = masks[s] as i64;

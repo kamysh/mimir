@@ -3,7 +3,7 @@
 -- before propagation; propagation failure does not imply the edge disappeared.
 module Mimir.GraphMutationProtocol where
 
-open import Data.Bool using (Bool; true; false)
+open import Data.Bool using (Bool; true; false; _∧_)
 open import Data.Float.Base using (Float)
 open import Data.Integer using (ℤ)
 open import Data.List using (List; []; _∷_)
@@ -50,12 +50,14 @@ data StatementReceipt (command : Statement) (before : Store.World) : DB.Receipt 
 
 data Effect : Set where
   newIdentityAndTime : Effect
+  newBeliefOwner : Maybe Text → Effect
   statement : Statement → Effect
   embedding : Embedding.Effect → Effect
   inference : Inference.Effect → Effect
 
 Reply : Effect → Set
 Reply newIdentityAndTime = ℕ × ℤ
+Reply (newBeliefOwner project) = Text ⊎ (ℕ × ℤ)
 Reply (statement command) = Text ⊎ DB.Receipt
 Reply (embedding effect) = Embedding.Reply effect
 Reply (inference effect) = Inference.Reply effect
@@ -73,7 +75,7 @@ data Result : Set where
   propagationFailed : Inference.Result → Result
   edgeInserted : Result
 
-liftEmbedding : Embedding.E.Script Embedding.Result → Script Embedding.Result
+liftEmbedding : ∀ {A : Set} → Embedding.E.Script A → Script A
 liftEmbedding (Embedding.E.done result) = done result
 liftEmbedding (Embedding.E.ask effect next) = ask (embedding effect) (λ reply → liftEmbedding (next reply))
 
@@ -81,9 +83,9 @@ liftInference : Inference.E.Script Inference.Result → Script Inference.Result
 liftInference (Inference.E.done result) = done result
 liftInference (Inference.E.ask effect next) = ask (inference effect) (λ reply → liftInference (next reply))
 
-afterEmbedding : G.BeliefValues → Embedding.Result → Script Result
+afterEmbedding : G.BeliefValues → Embedding.InsertionResult → Script Result
 afterEmbedding b (inj₁ error) = done (embeddingFailed error)
-afterEmbedding b (inj₂ tt) = done (insertedBelief b)
+afterEmbedding b (inj₂ storedBelief) = done (insertedBelief storedBelief)
 
 makeBelief : Bool → Text → Float → Float → Maybe Text → C.Memory → Maybe Origin.Provenance → ℕ × ℤ → Script Result
 makeBelief enabled content probability confidence project memory origin (id , now)
@@ -115,11 +117,25 @@ afterEdge R.causes from = done edgeInserted
 afterEdge R.contradicts from = done edgeInserted
 
 start : Bool → Request → Script Result
-start enabled (belief content probability confidence project memory nothing) = ask newIdentityAndTime
-  (makeBelief enabled content probability confidence project memory nothing)
+start enabled (belief content probability confidence project memory nothing)
+  with Numbers.probability probability ∧ Numbers.probability confidence
+... | false = done invalidNumbers
+... | true with enabled
+...   | false = done (embeddingFailed (Embedding.needsUserDecision Embedding.missingBackend))
+...   | true = ask (newBeliefOwner project) λ where
+  (inj₁ error) → done (embeddingFailed (Embedding.needsUserDecision
+    (Embedding.preparationDecision Embedding.Correction.configuration (Validation.key "database" ∷ []) error)))
+  (inj₂ value) → makeBelief true content probability confidence project memory nothing value
 start enabled (belief content probability confidence project memory (just origin)) with Origin.validate origin
 ... | Validation.rejected fault invalid = done invalidOrigin
-... | Validation.accepted valid = ask newIdentityAndTime (makeBelief enabled content probability confidence project memory (just origin))
+... | Validation.accepted valid with Numbers.probability probability ∧ Numbers.probability confidence
+...   | false = done invalidNumbers
+...   | true with enabled
+...     | false = done (embeddingFailed (Embedding.needsUserDecision Embedding.missingBackend))
+...     | true = ask (newBeliefOwner project) λ where
+  (inj₁ error) → done (embeddingFailed (Embedding.needsUserDecision
+    (Embedding.preparationDecision Embedding.Correction.configuration (Validation.key "database" ∷ []) error)))
+  (inj₂ value) → makeBelief true content probability confidence project memory (just origin) value
 start enabled (patternNode situation approach success project) = ask newIdentityAndTime (makePattern situation approach success project)
 start enabled (edge from to relation weight) with Numeric.number weight
 ... | nothing = done invalidNumbers

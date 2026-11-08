@@ -305,6 +305,46 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             );
         }
     }
+    // Required preparation is an ordinary user decision, with no belief
+    // written and no loss of the existing connection.
+    let request = json!({"jsonrpc":"2.0","id":"required-preparation","method":"tools/call","params":{
+        "name":"insert_belief","arguments":{"content":"must not store without preparation","probability":0.7,"confidence":0.5,
+        "project":project,"memory_type":"fact","provenance":{"basis":"user_instruction","reference":"explicit isolated test instruction"}}}});
+    input.write_all(format!("{request}\n").as_bytes()).await?;
+    input.flush().await?;
+    let mut line = String::new();
+    ensure!(
+        output.read_line(&mut line).await? != 0,
+        "server exited on unavailable preparation"
+    );
+    let response: Value = serde_json::from_str(&line)?;
+    ensure!(
+        response.get("error").is_none(),
+        "preparation must open the dialog, not become a tool failure: {response}"
+    );
+    let decision: NeedsInput =
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+    let decision = serde_json::to_value(decision)?;
+    ensure!(
+        decision["business_changes"] == "none" && decision["status"] == "needs_input",
+        "untruthful preparation outcome: {decision}"
+    );
+    ensure!(
+        decision["issues"][0]["fault"]["path"] == json!(["embeddings"]),
+        "missing preparation location: {decision}"
+    );
+    ensure!(
+        decision["issues"][0]["suggested_correction"]
+            .as_str()
+            .unwrap()
+            .contains("Open a dialog"),
+        "missing user decision path: {decision}"
+    );
+    ensure!(
+        service.list_beliefs(Some(&project)).await?.is_empty(),
+        "failed preparation stored a belief"
+    );
+
     // Retention is configuration owned by the user, not an agent argument.
     for arguments in [
         json!({"project":project}),

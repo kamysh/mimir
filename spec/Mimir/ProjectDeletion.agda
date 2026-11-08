@@ -174,12 +174,30 @@ eraseProject project before = record before
   ; beliefVectors = Retention.retain (λ row → Ranking.member (proj₁ row) (Closure.beliefs selected)) (Store.World.beliefVectors before)
   ; chunkVectors = Retention.retain (λ row → Ranking.member (proj₁ row) (Closure.chunks selected)) (Store.World.chunkVectors before)
   ; grounds = Retention.retain (ownedGround selected) (Store.World.grounds before)
-  ; history = eraseHistory project before }
+  ; history = eraseHistory project before
+  ; embeddingOwners = Retention.retain
+      (λ owner → Writes.tagged project (Store.EmbeddingOwnerRow.project owner))
+      (Store.World.embeddingOwners before) }
   where
   selected = ownership project before
   roots = Closure.beliefs selected ++ Closure.patterns selected
   learn = Store.World.learning (forgetLearning project before)
   publication = Learning.World.publication learn
+
+projectWorkIsRevoked : ∀ project before → All
+  (λ owner → Writes.tagged project (Store.EmbeddingOwnerRow.project owner) ≡ false)
+  (Store.World.embeddingOwners (eraseProject project before))
+projectWorkIsRevoked project before = Retention.excludesOwned
+  (λ owner → Writes.tagged project (Store.EmbeddingOwnerRow.project owner))
+  (Store.World.embeddingOwners before)
+
+unrelatedWorkKeepsOwnership : ∀ project before owner →
+  Writes.tagged project (Store.EmbeddingOwnerRow.project owner) ≡ false →
+  Any (owner ≡_) (Store.World.embeddingOwners before) →
+  Any (owner ≡_) (Store.World.embeddingOwners (eraseProject project before))
+unrelatedWorkKeepsOwnership project before owner = Retention.preservesUnowned
+  (λ row → Writes.tagged project (Store.EmbeddingOwnerRow.project row)) owner
+  (Store.World.embeddingOwners before)
 
 noProjectHistoryHeaders : ∀ project before → All (λ header → historyOwned project header ≡ false)
   (RawHistory.Database.heads (Store.World.history (eraseProject project before)))

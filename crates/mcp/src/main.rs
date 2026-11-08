@@ -106,7 +106,7 @@ fn tools_list() -> Value {
     let mut tools = json!([
         {
             "name": "insert_belief",
-            "description": "Add a belief grounded in an explicit user instruction or document independent of a queued incident. Provenance is required and persisted. Incident-derived conclusions must use record_experience and review_experience candidates; a standalone prior plus review feedback would count one incident twice.",
+            "description": "Store a belief from an explicit user instruction or document independent of a queued incident. Provenance is required. Before storing anything, Mimir requires a complete embedding and a supporting passage from an indexed, project-compatible document. If either prerequisite is unavailable, the normal result is needs_input: open a dialog with the user using its explanation and suggested correction. Do not invent evidence, shorten the source, or change the model automatically. Incident-derived conclusions must use record_experience and review_experience candidates; a standalone prior plus review feedback would count one incident twice.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,

@@ -14,17 +14,22 @@ implies that an encoding with 600 positions cannot fit its declared position
 table. Positions include the model's special tokens; this is not a character or
 UTF-8 byte count.
 
-Current Mimir code in `crates/core/src/embed.rs` uses `MAX_SEQ_LEN = 512` and
-copies only a prefix of longer encodings into the model input. A condition near
-position 580 can therefore be absent from the vector input while the caller
-receives no warning that part of the source was excluded. This clipping is a bug.
+The former `MAX_SEQ_LEN` clamp copied only a prefix of longer encodings into
+the model input. A condition near position 580 could disappear without a
+warning. The local backend now disables tokenizer truncation, validates the
+complete encoded length and pads shorter inputs without cutting longer ones.
+Unsupported input identifies the model, actual position count and declared
+capacity, with instructions to open the user dialog. This local check uses no
+downloaded model or account in its tests.
 
 Approved behavior for #113: encode the complete input without tokenizer clipping.
 Check it against this specific model's declared capacity. If it cannot fit,
 explain the model, actual encoded size and supported size to the calling agent;
 the agent must open a user dialog before belief publication. Reserved operation
 metadata and private diagnostics may remain. Embedding and grounding must both
-succeed before any belief is published, as required by #95–#98.
+succeed before any belief is published, as required by #95–#98. Independent
+publication enforces that preparation first; review-created belief publication
+still requires the corresponding #98–#99 integration before #113 is complete.
 
 The user can choose an appropriate embedding backend or approve a text-processing
 policy. Automatically shortening the source, splitting it and combining vectors,
@@ -59,6 +64,13 @@ constraints remain external prerequisites; this is not a claim that every prompt
 fits every model.
 
 ## Scope of a decision
+
+Voyage requests explicitly set `truncation: false`. Its
+[API documentation](https://docs.voyageai.com/reference/embeddings-api) says
+truncation is otherwise enabled by default. Mimir supplies the complete text
+and preserves the provider's rejection explanation so preparation can request
+a user decision. This removes silent clipping; it adds no Mimir input quota.
+Offline tests check the actual request builder and complete rejection details.
 
 Approval applies only to the two cases above. It grants no other count, timeout,
 retry, retention or content limit. Implementation remains local source work;

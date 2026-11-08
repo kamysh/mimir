@@ -154,6 +154,20 @@ by the later MCP and CLI integration issues.
 
 ## Atomic project deletion
 
+New belief preparation reserves a database-issued identity and timestamp in
+`mimir_embedding_owners`. This metadata publishes no belief. It has no automatic
+expiry. Publication requires the same active owner and consumes it in the
+transaction that publishes the belief, provenance, embedding and grounding.
+Project deletion revokes that project's owners in its deletion transaction,
+including preparations that have not published any belief yet. An old prepared
+result cannot recreate the project. Unrelated owners remain valid.
+
+If preparation fails, the calling agent receives a normal request for a user
+decision before any belief is stored. Owner metadata and private diagnostics
+may remain. Binding these owners to public operation tokens and stopping active
+computation on revocation remain #79, #85–#86 and #124. This publication fence
+alone does not claim that the worker has already stopped.
+
 Belief-vector writes now check their belief while holding the same database
 lock and transaction used by deletion. A result that arrives after its belief
 or project was deleted is refused with the belief ID and instructions to read

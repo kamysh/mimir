@@ -98,7 +98,7 @@ Bind the answers as shell variables once, then re-use in every command below:
 | `VOLUME` | Docker volume for the postgres data dir (e.g. `mimir_data`). If sharing a container with muninn, use the same volume. |
 | `DB_USER` | PostgreSQL role for mimir. |
 | `DB_NAME` | Database for mimir. |
-| `EMBEDDING_BACKEND` | `local` (no API key, downloads ~120 MB) \| `voyage` \| `openai`. Required only for `load_document` / `query_document`; omit the `[embeddings]` section entirely if you only need the belief graph. |
+| `EMBEDDING_BACKEND` | `local` (no API key, downloads ~120 MB) \| `voyage` \| `openai`. Required for new belief publication and document embedding. New beliefs also need support from an indexed document. Omit only for operations that need no embedding, such as reading existing beliefs. |
 
 ## Preflight (must all pass)
 
@@ -255,7 +255,7 @@ without user confirmation.
 
 If the config is absent, choose **one** creation command:
 
-Belief graph only (omit the embedding arguments entirely):
+Existing graph reads and operations that need no embedding (omit the embedding arguments):
 
 ```sh
 mimir init host=localhost port="${PORT}" dbname="${DB_NAME}" user="${DB_USER}"

@@ -61,6 +61,12 @@ record SavedReplyRow : Set where
   constructor savedReplyRow
   field token : ℕ; step : Text; reply : Wire.Value
 
+-- PostgreSQL-issued ownership for work prepared before business publication.
+-- Deletion/cancellation revoke it; there is deliberately no expiry timer.
+record EmbeddingOwnerRow : Set where
+  constructor embeddingOwnerRow
+  field token : ℕ; project : Maybe Text; reservedAt : ℤ; operationToken : Maybe ℕ
+
 record OperationTables : Set where
   constructor operationTables
   field
@@ -79,6 +85,7 @@ record World : Set where
     grounds : List Ground
     history : RawHistory.Database -- original JSONB, including older payload shapes
     operations : OperationTables
+    embeddingOwners : List EmbeddingOwnerRow
 
 replyKey? : ∀ token step row → Dec (token ≡ SavedReplyRow.token row × step ≡ SavedReplyRow.step row)
 replyKey? token step row = (token ≟ SavedReplyRow.token row) ×-dec (step ≟Text SavedReplyRow.step row)

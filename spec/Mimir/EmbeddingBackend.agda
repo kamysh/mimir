@@ -5,16 +5,17 @@
 -- checking this specification.
 module Mimir.EmbeddingBackend where
 
-open import Data.Bool using (Bool; true; false)
-open import Data.List using (List; []; _∷_; _++_; length; take; drop; foldl)
+open import Data.Bool using (Bool; true; false; _∧_)
+open import Data.List using (List; []; _∷_; _++_; length; take; drop; foldl; replicate)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; zero; suc; _⊓_; _⊔_)
+open import Data.Nat using (ℕ; zero; suc; _⊔_; _∸_; _≤?_)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Data.String using (toList)
 import Data.Vec as V
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Nullary using (does)
 open import Mimir.Text using (Text; trim)
 import Mimir.RetrievalRanking as Ranking
 import Mimir.ConfigurationValues as Config
@@ -60,12 +61,20 @@ record Tokens : Set where
   field ids masks types : List ℕ
 
 sequenceLength : List Tokens → ℕ
-sequenceLength inputs = 512 ⊓ foldl (λ n t → n ⊔ length (Tokens.ids t)) 0 inputs
+sequenceLength inputs = foldl (λ n t → n ⊔ length (Tokens.ids t)) 0 inputs
+
+-- This is the configured BGE model's declared position table, explicitly
+-- approved by the user. It is checked against complete encodings, including
+-- special tokens, before model execution; it never selects a source prefix.
+withinModelCapacity : List Tokens → Bool
+withinModelCapacity [] = true
+withinModelCapacity (first ∷ rest) = does (length (Tokens.ids first) ≤? 512) ∧ withinModelCapacity rest
 
 pad : ℕ → List ℕ → List ℕ
-pad zero values = []
-pad (suc n) [] = 0 ∷ pad n []
-pad (suc n) (x ∷ xs) = x ∷ pad n xs
+pad size values = values ++ replicate (size ∸ length values) 0
+
+paddingRetainsCompleteInput : ∀ size values → pad size values ≡ values ++ replicate (size ∸ length values) 0
+paddingRetainsCompleteInput size values = refl
 
 padTokens : ℕ → Tokens → Tokens
 padTokens size t = tokens (pad size (Tokens.ids t)) (pad size (Tokens.masks t)) (pad size (Tokens.types t))
@@ -148,7 +157,9 @@ module Arithmetic (float : Ranking.F32) where
   pool (encoded V.∷ rest) (hidden V.∷ later) = meanPool (masked (Tokens.masks encoded) hidden) ∷ pool rest later
 
   encodedBatch : ∀ {count} → V.Vec Tokens count → Script (Text ⊎ List Vector)
-  encodedBatch encoded = ask (runModel inputs size) (λ
+  encodedBatch encoded with withinModelCapacity (V.toList encoded)
+  ... | false = done (inj₁ (toList "Complete input exceeds BAAI/bge-base-en-v1.5's declared 512 positions, including special tokens. Open a user dialog; do not truncate, split, or change models automatically."))
+  ... | true = ask (runModel inputs size) (λ
     { (inj₁ error) → done (inj₁ error)
     ; (inj₂ hidden) → done (inj₂ (pool (V.fromList inputs) hidden)) })
     where

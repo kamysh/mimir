@@ -60,6 +60,19 @@ uncertain write requires outcome readback first. Saved operation metadata and
 private diagnostics are distinct from publishing a belief or other business
 data.
 
+`insert_belief` requires an embedding of the complete content and a supporting
+passage from an indexed, compatible document before publication. Missing
+configuration, embedding rejection, absent support or support removed before
+publication returns this normal decision response with the cause and repair
+instructions. The agent must open a dialog with the user. It must not invent
+support, shorten the content, change the model or store an ungrounded belief
+to bypass the decision. A successful publication stores all components in one
+transaction.
+
+A database failure around publication can leave its outcome unknown. That
+failure is not converted into `business_changes: "none"`. Read back the original
+identity and saved operation outcome before deciding what to repeat.
+
 Malformed UUID arguments use this response before a handler executes. For
 example, `record_support` with `from_id: "not-a-uuid"` identifies `from_id`,
 explains the accepted identifier and directs the agent to look up the intended

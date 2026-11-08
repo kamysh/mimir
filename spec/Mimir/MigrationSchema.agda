@@ -19,7 +19,7 @@ import Mimir.ItemOwners as Owners
 import Mimir.LearningStore as Learning
 import Mimir.DatabaseTransaction as Database
 open import Mimir.Migrations public
-  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys; candidateKeyContent)
+  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys; candidateKeyContent; embeddingOwners)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation;
@@ -148,6 +148,13 @@ requestKeyTable = table "mimir_operation_request_keys"
   (references ("operation_token" ∷ []) "mimir_operation_reservations" ("operation_token" ∷ []) restrict ∷ [])
   (less (number "0" ∷ charLength (trimSpaces (columnValue "request_key" ∷ []) ∷ []) ∷ []) ∷ [])
 
+embeddingOwnerTable : Table
+embeddingOwnerTable = table "mimir_embedding_owners"
+  (column "owner_token" uuid false postgresUUID ∷ optional "project" text ∷
+   column "reserved_at" timestamp false now ∷ optional "operation_token" uuid ∷ [])
+  ("owner_token" ∷ []) []
+  (references ("operation_token" ∷ []) "mimir_operation_reservations" ("operation_token" ∷ []) restrict ∷ []) []
+
 -- Label creation catches all PostgreSQL exceptions in the existing SQL; that
 -- native behavior is explicit and must not be confused with a label-exists proof.
 data DDL : Set where
@@ -163,7 +170,7 @@ data DDL : Set where
   addUniqueConstraint : String → String → List String → DDL
   addCheckConstraint : String → String → Expr → DDL
   dropCheckConstraint : String → String → DDL
-  installReviewQueueNotifier installImmutableOperationBindings installImmutableStepReplies installImmutableOperationPlans installImmutableRequestKeys : DDL
+  installReviewQueueNotifier installEmbeddingOwnerNotifier installImmutableOperationBindings installImmutableStepReplies installImmutableOperationPlans installImmutableRequestKeys : DDL
 
 kappa alpha beta : Expr
 kappa = add (number "2.0" ∷ multiply (columnValue "confidence" ∷ number "198.0" ∷ []) ∷ [])
@@ -201,6 +208,7 @@ body operationBindings = installImmutableOperationBindings ∷ []
 body operationStepReplies = installImmutableStepReplies ∷ []
 body operationPlans = installImmutableOperationPlans ∷ []
 body operationRequestKeys = create requestKeyTable ∷ installImmutableRequestKeys ∷ []
+body embeddingOwners = create embeddingOwnerTable ∷ installEmbeddingOwnerNotifier ∷ []
 body candidateKeyContent =
   dropCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_check" ∷
   addCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_nonempty"

@@ -214,26 +214,98 @@ impl MimirService {
         belief: Belief,
         provenance: Option<&crate::learning::IndependentProvenance>,
     ) -> Result<Belief> {
-        self.store
-            .insert_belief_with_provenance(&belief, provenance)
-            .await?;
-        if let Some(embedder) = &self.embeddings {
-            let mut vecs = embedder
-                .embed(std::slice::from_ref(&belief.content))
-                .await?;
-            if let Some(v) = vecs.pop() {
-                self.store.insert_belief_embedding(belief.id, &v).await?;
-                self.auto_ground_belief(&belief, &v).await?;
+        let prepared = self.prepare_belief_value(belief, provenance).await?;
+        self.publish_prepared_belief(&prepared).await
+    }
+
+    pub async fn prepare_belief(
+        &self,
+        content: &str,
+        probability: f64,
+        confidence: f64,
+        project: Option<&str>,
+        memory_type: MemoryType,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+    ) -> Result<preparation::PreparedBelief> {
+        let belief = match project {
+            Some(project) => {
+                Belief::new_in_project(content.into(), probability, confidence, project.into())?
             }
+            None => Belief::new(content.into(), probability, confidence)?,
         }
-        Ok(belief)
+        .with_memory_type(memory_type);
+        self.prepare_belief_value(belief, provenance).await
+    }
+
+    async fn prepare_belief_value(
+        &self,
+        mut belief: Belief,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+    ) -> Result<preparation::PreparedBelief> {
+        use interaction::Location;
+        use preparation::{PreparationRequired, PreparedBelief};
+        use validation::{Code, Segment};
+        if let Some(origin) = provenance {
+            origin.validate()?;
+        }
+        let embedder = self.embeddings.as_ref().ok_or_else(|| {
+            PreparationRequired::new(
+                Location::Configuration,
+                vec![Segment::Key("embeddings".into())],
+                Code::MissingEvidence,
+                "Embedding is not configured; no belief was stored.".into(),
+            )
+        })?;
+        let (id, created_at) = self
+            .store
+            .reserve_belief_preparation(belief.project.as_deref())
+            .await?;
+        belief.id = id;
+        belief.created_at = created_at;
+        belief.last_activated_at = created_at;
+        let vectors = embedder.embed(std::slice::from_ref(&belief.content)).await.map_err(|error| {
+            if error.is::<embed::EmbeddingCancelled>() { return error; }
+            PreparationRequired::new(Location::Configuration, vec![Segment::Key("embeddings".into())], Code::MissingEvidence,
+                format!("Embedding preparation failed before publication: {error:#}. No belief was stored.")).into()
+        })?;
+        let vector = match vectors.as_slice() {
+            [vector] if preparation::usable_vector(vector) => vector.clone(),
+            _ => return Err(PreparationRequired::new(Location::Configuration, vec![Segment::Key("embeddings".into())], Code::MissingEvidence,
+                "The backend must return exactly one complete, finite, nonzero vector for this belief; no belief was stored.".into()).into()),
+        };
+        let support = self.store.prepare_belief_support(&belief, &vector).await.map_err(|error| PreparationRequired::new(
+            Location::Configuration, vec![Segment::Key("database".into())], Code::MissingEvidence,
+            format!("Indexed grounding preparation failed before publication: {error:#}. No belief was stored.")))?;
+        if support.is_empty() {
+            return Err(PreparationRequired::new(
+                Location::Arguments,
+                vec![Segment::Key("content".into())],
+                Code::MissingEvidence,
+                "No supporting passage was found in an indexed document; no belief was stored."
+                    .into(),
+            )
+            .into());
+        }
+        Ok(PreparedBelief {
+            belief,
+            provenance: provenance.cloned(),
+            vector,
+            support,
+        })
+    }
+
+    pub async fn publish_prepared_belief(
+        &self,
+        prepared: &preparation::PreparedBelief,
+    ) -> Result<Belief> {
+        self.store.publish_prepared_belief(prepared).await
     }
 
     /// Embed a belief's content and upsert the vector into `belief_embeddings`
     /// when an embedding backend is configured. No-op when `[embeddings]` is
     /// absent (the vector half of `query_relevant` simply degrades to empty).
-    /// Called by `add_belief` / `add_belief_in_project` and by the `reembed`
-    /// CLI to backfill existing beliefs.
+    /// Backfills existing beliefs. New belief insertion instead requires both
+    /// embedding and indexed grounding before one atomic publication.
     pub async fn embed_and_store_belief(&self, belief: &Belief) -> Result<()> {
         if let Some(embedder) = &self.embeddings {
             let mut vecs = embedder
@@ -241,39 +313,6 @@ impl MimirService {
                 .await?;
             if let Some(v) = vecs.pop() {
                 self.store.insert_belief_embedding(belief.id, &v).await?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Auto-ground a newly inserted belief against existing document chunks.
-    /// Finds chunks with cosine similarity ≥ GROUND_THRESHOLD that are
-    /// project-compatible (same project, or either side is unscoped), then
-    /// creates GROUNDS edges. No-op when embeddings are not configured.
-    /// Formalised as Evidence.autoGroundBelief in the Agda spec.
-    async fn auto_ground_belief(&self, belief: &Belief, embedding: &[f32]) -> Result<()> {
-        // Find project-scoped chunk IDs to restrict the search, then search
-        // all global (unscoped) chunks too. We do a single scored search over
-        // all chunks, then filter by project compatibility in Rust.
-        let candidates = self
-            .store
-            .query_chunks_by_vector_scored(embedding, None, None)
-            .await?;
-        for (chunk_id, sim) in candidates {
-            if sim < GROUND_THRESHOLD {
-                break; // results are ordered by similarity desc
-            }
-            // Check project compatibility: fetch the chunk's project tag.
-            if let Some(chunk) = self.store.get_chunk_by_id(chunk_id).await? {
-                let compatible = match (&belief.project, &chunk.project) {
-                    (None, _) | (_, None) => true,
-                    (Some(bp), Some(cp)) => bp == cp,
-                };
-                if compatible {
-                    self.store
-                        .insert_evidence(chunk_id, belief.id, Probability::new(sim)?)
-                        .await?;
-                }
             }
         }
         Ok(())
@@ -1282,3 +1321,4 @@ impl MimirService {
 }
 
 pub mod operations;
+pub mod preparation;
