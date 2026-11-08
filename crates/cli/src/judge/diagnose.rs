@@ -21,6 +21,7 @@ fn cause(code: Option<&str>) -> &'static str {
         Some("backend_timeout") => "The model did not finish within the configured batch deadline.",
         Some("model_budget_exhausted") => "The model used the configured request budget before completing the review.",
         Some("tool_error") => "A database or tool operation failed; its outcome must be read back.",
+        Some("needs_input") => "A request needs correction or a user decision. The affected review remains pending; its complete guidance is in the private diagnostic report.",
         Some("review_deferred") => "The review was deferred after incompatible candidate declarations.",
         _ => "The batch could not complete. Inspect the local diagnostic report for the exact failure.",
     }
@@ -33,6 +34,7 @@ pub fn summary(report: Option<&state::Report>) -> String {
     let code = classified(report);
     let action = match code {
         Some("invalid_config") => "Run mimir config check. If required settings are missing, run mimir config upgrade --log-directory /absolute/path/to/logs, then check again.",
+        Some("needs_input") => "Run mimir judge diagnose and open the user dialog using the stored explanation and suggested correction. Correct the request or resolve its prerequisite, then rerun mimir judge run or explicitly resume the running watcher with SIGHUP.",
         Some(_) => "Run mimir judge diagnose on this computer. It shows the cause, affected work and private diagnostic location. If failures persist, attach its public summary to a Mimir issue.",
         None => "No repair is indicated by this snapshot.",
     };
@@ -122,5 +124,10 @@ mod tests {
         report.failure_source = None;
         report.block_reason = Some("invalid_config".into());
         assert!(summary(Some(&report)).contains("config upgrade --log-directory"));
+        report.block_reason = Some("needs_input".into());
+        let pending = summary(Some(&report));
+        assert!(pending.contains("user decision") && pending.contains("SIGHUP"));
+        assert!(pending.contains("1 pending"));
+        assert!(!pending.contains("PRIVATE"));
     }
 }

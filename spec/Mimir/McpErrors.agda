@@ -14,7 +14,8 @@ open import Data.Empty using (⊥; ⊥-elim)
 open import Data.String using (toList)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
-open import Mimir.Text using (Text)
+open import Mimir.Text using (Text; trim)
+open import Data.Unit using (⊤; tt)
 open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.Validation using (Fault; fault; malformedInput)
 open import Mimir.StructuredValue
@@ -205,3 +206,73 @@ module AgentCorrection where
      (toList "message" , string instruction) ∷
      (toList "issues" , array (map encodeItem (Claim.first report ∷ Claim.rest report))) ∷ [])
     where report = Certified.report proof
+
+  -- Decode the application response, not JSON syntax. A tag alone cannot
+  -- bypass the ordinary tool-result checks or certify the remote database.
+  record Decoded : Set where
+    constructor decoded
+    field message : Text; report : Claim
+
+  nonblank : Value → Fault ⊎ Text
+  nonblank raw = asString raw >>= λ text → keep text (trim text)
+    where
+    keep : Text → Text → Fault ⊎ Text
+    keep text [] = inj₁ (fault [] malformedInput "correction guidance must not be blank")
+    keep text (_ ∷ _) = inj₂ text
+
+  literal : Text → Value → Fault ⊎ ⊤
+  literal expected raw = asString raw >>= λ actual → equal expected actual
+    where
+    equal : Text → Text → Fault ⊎ ⊤
+    equal expected actual with expected ≟Text actual
+    ... | yes _ = inj₂ tt
+    ... | no _ = inj₁ (fault [] malformedInput "unexpected correction response field value")
+
+  readLocation : Value → Fault ⊎ Location
+  readLocation raw = asString raw >>= choose
+    where
+    choose : Text → Fault ⊎ Location
+    choose text with text ≟Text toList "request"
+    ... | yes _ = inj₂ request
+    ... | no _ with text ≟Text toList "arguments"
+    ...   | yes _ = inj₂ arguments
+    ...   | no _ with text ≟Text toList "configuration"
+    ...     | yes _ = inj₂ configuration
+    ...     | no _ = inj₁ (fault [] malformedInput "unknown correction location")
+
+  explainedFault : Value → Fault ⊎ Fault
+  explainedFault raw = FaultWire.decode raw >>= λ detail →
+    nonblank (string (Fault.explanation detail)) >>= λ _ → inj₂ detail
+
+  readItem : Value → Fault ⊎ Item
+  readItem = readRecord forbid rejectKnownRepeated
+    (toList "location" ∷ toList "fault" ∷ toList "expected" ∷ toList "suggested_correction" ∷ []) λ fields →
+      required (toList "location") readLocation fields >>= λ location →
+      required (toList "fault") explainedFault fields >>= λ failure →
+      required (toList "expected") nonblank fields >>= λ expected →
+      required (toList "suggested_correction") nonblank fields >>= λ suggested →
+      inj₂ (item location failure expected suggested)
+
+  readClaim : Value → Fault ⊎ Claim
+  readClaim raw = readArray readItem raw >>= requireIssue
+    where
+    requireIssue : List Item → Fault ⊎ Claim
+    requireIssue [] = inj₁ (fault [] malformedInput "a correction response must name an issue")
+    requireIssue (first ∷ rest) = inj₂ (claim first rest)
+
+  decode : Value → Fault ⊎ Decoded
+  decode = readRecord forbid rejectKnownRepeated
+    (toList "status" ∷ toList "business_changes" ∷ toList "next_action" ∷ toList "message" ∷ toList "issues" ∷ []) λ fields →
+      required (toList "status") (literal (toList "needs_input")) fields >>= λ _ →
+      required (toList "business_changes") (literal (toList "none")) fields >>= λ _ →
+      required (toList "next_action") (literal (toList "correct_request_or_ask_user")) fields >>= λ _ →
+      required (toList "message") nonblank fields >>= λ message →
+      required (toList "issues") readClaim fields >>= λ report → inj₂ (decoded message report)
+
+  inspect : Value → Fault ⊎ Maybe Decoded
+  inspect value@(object fields) with Object.normalize fields (toList "status")
+  ... | just (string status) with status ≟Text toList "needs_input"
+  ...   | yes _ = mapResult just (decode value)
+  ...   | no _ = inj₂ nothing
+  inspect (object fields) | _ = inj₂ nothing
+  inspect _ = inj₂ nothing

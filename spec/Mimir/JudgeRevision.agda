@@ -32,6 +32,7 @@ import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
 import Mimir.Validation as Validation
 import Mimir.JudgePrompt as Prompt
+import Mimir.McpErrors as Errors
 
 module R = Records.Over ℕ
 
@@ -81,6 +82,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     constructor work
     field account : Queue.Account initial; report : R.Report
           policy : Policy.State; last : Maybe V.Value; lastRejection : Maybe Rejection
+          pendingCorrection : Maybe (Text × V.Value)
 
   record Outcome : Set where
     constructor outcome
@@ -155,8 +157,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     ... | just message = message
     ... | nothing = toList "review correction was not confirmed"
 
-  end : Work → Script State
-  end w with Policy.State.settled (Work.policy w) | Work.lastRejection w
+  endRejections : Work → Script State
+  endRejections w with Policy.State.settled (Work.policy w) | Work.lastRejection w
   ... | true | _ = afterRejection w
   ... | false | nothing = afterRejection w
   ... | false | just rejected = firstDiagnostic w (Rejection.name rejected)
@@ -167,6 +169,18 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     reason r with R.Report.blockReason r
     ... | just _ = r
     ... | nothing = record r { blockReason = just (toList "tool_rejected") }
+
+  end : Work → Script State
+  end w with Policy.State.settled (Work.policy w) | Work.pendingCorrection w
+  ... | true | _ = endRejections w
+  ... | false | nothing = endRejections w
+  ... | false | just (name , value) = firstDiagnostic w name (Display.json display value) nothing >>= λ updated →
+      endRejections (record updated { report = reason (Work.report updated) })
+    where
+    reason : R.Report → R.Report
+    reason r with R.Report.blockReason r
+    ... | just _ = r
+    ... | nothing = record r { blockReason = just (toList "needs_input") }
 
   conditional : Work → Policy.Event → String → Maybe Text → Maybe Source.Failure → Work
   conditional w event reason detail source with Policy.State.conflicts (Work.policy w)
@@ -237,18 +251,35 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   ... | Policy.mkStep next _ = trace w "candidate_conflict" (just name) (just detail)
       (end (record w { policy = next }))
 
+  clearCorrection : Text → Maybe (Text × V.Value) → Maybe (Text × V.Value)
+  clearCorrection name nothing = nothing
+  clearCorrection name (just (pending , detail)) with does (name ≟Text pending)
+  ... | true = nothing
+  ... | false = just (pending , detail)
+
   afterTool : Work → Text → Scoped.Failure ⊎ V.Value → Script State
   afterTool w name (inj₁ (Scoped.candidateConflict detail)) with does (name ≟Text toList "review_experience")
   ... | true = conflict w name detail
   ... | false = ordinaryFailure w name (Scoped.candidateConflict detail)
   afterTool w name (inj₁ failure) = ordinaryFailure w name failure
-  afterTool w name (inj₂ value) = trace w "tool_result" (just name) (just (Display.json display value)) next
+  afterTool w name (inj₂ value) with Errors.AgentCorrection.inspect value
+  ... | inj₁ failure = ordinaryFailure w name (Scoped.invalidResponse (Validation.Fault.explanation failure))
+  ... | inj₂ (just correction) = trace w "tool_correction" (just name) (just (Display.json display value))
+      (done (loop (record w { last = just value ; pendingCorrection = just (name , value) })))
+  ... | inj₂ nothing = trace w "tool_result" (just name) (just (Display.json display value)) next
     where
-    updated = record w { last = just value }
+    updated = record w { last = just value ; pendingCorrection = clearCorrection name (Work.pendingCorrection w) }
     next : Script State
     next with does (name ≟Text toList "review_experience")
     ... | true = ask observe (afterObservation updated)
     ... | false = done (loop updated)
+
+  correctionContinuesTheDialogue : ∀ w name value correction →
+    Errors.AgentCorrection.inspect value ≡ inj₂ (just correction) →
+    afterTool w name (inj₂ value) ≡ trace w "tool_correction" (just name)
+      (just (Display.json display value))
+      (done (loop (record w { last = just value ; pendingCorrection = just (name , value) })))
+  correctionContinuesTheDialogue w name value correction valid rewrite valid = refl
 
   attempt : Work → Text → V.Value → Script State
   attempt w name arguments = fromScoped (Scope.run name arguments) >>=
@@ -302,7 +333,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       Trace middle events after → Trace before (event ∷ events) after
 
   start : Queue.Account initial → R.Report → State
-  start currentAccount report = loop (work currentAccount report Policy.initial nothing nothing)
+  start currentAccount report = loop (work currentAccount report Policy.initial nothing nothing nothing)
 
   -- Applies to every outcome, including fatal diagnostic or transport errors.
   -- Account construction itself contains the original, shared charge trace.

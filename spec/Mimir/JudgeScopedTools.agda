@@ -36,6 +36,7 @@ import Mimir.GraphNumerics as Numeric
 import Mimir.Binary64 as Binary
 import Mimir.Effects as Effects
 import Mimir.SourceFailure as Source
+import Mimir.McpErrors as Errors
 
 get : String → V.Value → V.Value
 get key value with Input.view value (toList key)
@@ -234,40 +235,57 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
         (inj₂ later) → done (inj₂ (V.array (V.string a ∷ V.string b ∷ []) ∷ later))
   filterPairs (_ ∷ _) = done (inj₁ (invalidResponse (toList "invalid contradiction pair")))
 
-  after : Tools.Kind → V.Value → Script (Failure ⊎ V.Value)
-  after (Tools.query Tools.experience) value with snapshot value
+  afterValue : Tools.Kind → V.Value → Script (Failure ⊎ V.Value)
+  afterValue (Tools.query Tools.experience) value with snapshot value
   ... | inj₁ error = done (inj₁ error)
   ... | inj₂ state with does (Experience.Experience.identity (Observation.Snapshot.experience state) ≟ selectedID) ∧
     textIs project (V.string (Experience.Experience.project (Observation.Snapshot.experience state)))
   ...   | true = done (inj₂ value)
   ...   | false = done (inj₁ (invalidResponse (toList "MCP returned out-of-scope experience")))
-  after (Tools.query Tools.relevant) value with array value
+  afterValue (Tools.query Tools.relevant) value with array value
   ... | inj₁ error = done (inj₁ error)
   ... | inj₂ rows with allVisible project rows
   ...   | true = done (inj₂ value)
   ...   | false = done (inj₁ (invalidResponse (toList "MCP returned out-of-scope beliefs")))
-  after (Tools.query Tools.learningContext) value with array (get "beliefs" value) | array (get "patterns" value)
+  afterValue (Tools.query Tools.learningContext) value with array (get "beliefs" value) | array (get "patterns" value)
   ... | inj₁ error | _ = done (inj₁ error)
   ... | _ | inj₁ error = done (inj₁ error)
   ... | inj₂ beliefs | inj₂ patterns with allVisible project beliefs ∧ allVisible project (Data.List.map (get "pattern") patterns)
   ...   | true = done (inj₂ value)
   ...   | false = done (inj₁ (invalidResponse (toList "MCP returned out-of-scope learning context")))
-  after (Tools.query Tools.explanation) value with array (get "incoming_edges" value)
+  afterValue (Tools.query Tools.explanation) value with array (get "incoming_edges" value)
   ... | inj₁ error = done (inj₁ error)
   ... | inj₂ edges = filterEdges edges then λ where
     (inj₁ error) → done (inj₁ error)
     (inj₂ filtered) → done (inj₂ (put "incoming_edges" (V.array filtered) value))
-  after (Tools.query Tools.intervention) value with array value
+  afterValue (Tools.query Tools.intervention) value with array value
   ... | inj₁ error = done (inj₁ error)
   ... | inj₂ rows = checkTargets rows then λ where
     (inj₁ error) → done (inj₁ error)
     (inj₂ tt) → done (inj₂ value)
-  after (Tools.query Tools.contradictions) value with array value
+  afterValue (Tools.query Tools.contradictions) value with array value
   ... | inj₁ error = done (inj₁ error)
   ... | inj₂ rows = filterPairs rows then λ where
     (inj₁ error) → done (inj₁ error)
     (inj₂ filtered) → done (inj₂ (V.array filtered))
-  after _ value = done (inj₂ value)
+  afterValue _ value = done (inj₂ value)
+
+  after : Tools.Kind → V.Value → Script (Failure ⊎ V.Value)
+  after kind value with Errors.AgentCorrection.inspect value
+  ... | inj₁ failure = done (inj₁ (invalidResponse (Validation.Fault.explanation failure)))
+  ... | inj₂ (just correction) = done (inj₂ value)
+  ... | inj₂ nothing = afterValue kind value
+
+  correctionIsNotParsedAsSearchResults : ∀ kind value correction →
+    Errors.AgentCorrection.inspect value ≡ inj₂ (just correction) →
+    after kind value ≡ done (inj₂ value)
+  correctionIsNotParsedAsSearchResults kind value correction valid rewrite valid = refl
+
+  correctionMakesNoAdditionalScopeCalls : ∀ kind value correction events result →
+    Errors.AgentCorrection.inspect value ≡ inj₂ (just correction) →
+    P.Runs (after kind value) events result → events ≡ [] × result ≡ inj₂ value
+  correctionMakesNoAdditionalScopeCalls kind value correction events result valid execution
+    rewrite valid = P.completedCannotProduceEffects execution
 
   run : Text → V.Value → Script (Failure ⊎ V.Value)
   run name args@(V.object fields) with Tools.decode name

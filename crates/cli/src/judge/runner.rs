@@ -214,6 +214,13 @@ async fn scoped_tool(
         _ => return Err(InputRejected("tool is not allowed for judge".into()).into()),
     }
     let mut value = client.tool(name, args).await?;
+    // A correction is a complete tool outcome of its own. Decode the entire
+    // envelope before skipping result-shape checks; a status string alone is
+    // not evidence that the server certified no business changes.
+    if value.get("status").and_then(Value::as_str) == Some("needs_input") {
+        serde_json::from_value::<mimir_core::interaction::NeedsInput>(value.clone())?;
+        return Ok(value);
+    }
     if name == "get_experience" {
         let state = parse_state(value.clone())?;
         ensure!(
@@ -528,6 +535,7 @@ async fn run_inner<B: Backend>(
         let mut candidate_rejections = 0;
         let mut candidate_rejection_detail = None;
         let mut last_rejection: Option<(String, String, Option<SourceFailure>)> = None;
+        let mut pending_correction: Option<(String, mimir_core::interaction::NeedsInput)> = None;
         let mut confirmed_review = false;
         loop {
             let will_call_model = backend.will_call_model(selected);
@@ -613,6 +621,28 @@ async fn run_inner<B: Backend>(
                     let attempted_review = arguments.get("review").cloned();
                     match scoped_tool(&mut client, selected, &name, arguments).await {
                         Ok(value) => {
+                            if value.get("status").and_then(Value::as_str) == Some("needs_input") {
+                                let correction: mimir_core::interaction::NeedsInput =
+                                    serde_json::from_value(value.clone())?;
+                                trace(
+                                    state,
+                                    report,
+                                    selected,
+                                    "tool_correction",
+                                    (model_used, tool_used),
+                                    Some(&name),
+                                    Some(&value.to_string()),
+                                )?;
+                                pending_correction = Some((name, correction));
+                                last = Some(value);
+                                continue;
+                            }
+                            if pending_correction
+                                .as_ref()
+                                .is_some_and(|(tool, _)| tool == &name)
+                            {
+                                pending_correction = None;
+                            }
                             trace(
                                 state,
                                 report,
@@ -740,6 +770,18 @@ async fn run_inner<B: Backend>(
             }
         }
         if !confirmed_review {
+            if let Some((name, correction)) = pending_correction {
+                if report.block_reason.is_none() {
+                    report.block_reason = Some("needs_input".into());
+                }
+                if report.diagnostic.is_none() {
+                    report.diagnostic = Some(FailureDiagnostic::new(
+                        selected.experience.id,
+                        &name,
+                        &serde_json::to_string(&correction)?,
+                    ));
+                }
+            }
             if let Some((name, detail, source)) = last_rejection {
                 if report.diagnostic.is_none() {
                     report.diagnostic = Some(FailureDiagnostic::new(
@@ -1281,9 +1323,30 @@ mod tests {
             .iter()
             .any(|event| event.kind == "model_request"));
         assert!(trace.events.iter().any(|event| event.kind == "tool_result"));
-        assert!(
-            trace.events_omitted > 0,
-            "bounded diagnostics must not stop the review"
+        assert_eq!(trace.events_omitted, 0, "retain every diagnostic event");
+        assert_eq!(
+            trace
+                .events
+                .iter()
+                .filter(|event| event.kind == "model_request")
+                .count(),
+            26
+        );
+        assert_eq!(
+            trace
+                .events
+                .iter()
+                .filter(|event| event.kind == "tool_request")
+                .count(),
+            25
+        );
+        assert_eq!(
+            trace
+                .events
+                .iter()
+                .filter(|event| event.kind == "tool_result")
+                .count(),
+            25
         );
         assert_eq!(trace.events[1].tool.as_deref(), Some("get_experience"));
         let mut recovery = ToolCorrection {
@@ -1371,6 +1434,235 @@ mod tests {
             drop(state);
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn normal_correction_result_remains_in_the_judge_dialogue() -> Result<()> {
+        struct CorrectQuery {
+            step: usize,
+        }
+        impl Backend for CorrectQuery {
+            fn next<'a>(
+                &'a mut self,
+                selected: &'a ExperienceState,
+                last: Option<&'a Value>,
+                _tools: &'a [Value],
+            ) -> Pin<Box<dyn Future<Output = Result<Action>> + Send + 'a>> {
+                Box::pin(async move {
+                    let action = match self.step {
+                        0 => Action::Tool {
+                            name: "query_learning_context".into(),
+                            arguments: json!({"context":"check this source","project":selected.experience.project,"limit":1,"limt":1}),
+                        },
+                        1 => {
+                            let value =
+                                last.ok_or_else(|| anyhow!("missing correction feedback"))?;
+                            let correction: mimir_core::interaction::NeedsInput =
+                                serde_json::from_value(value.clone())?;
+                            ensure!(
+                                correction.issues().iter().any(|item| item.fault().path
+                                    == vec![mimir_core::validation::Segment::Key("limt".into())]),
+                                "correction lost its exact path"
+                            );
+                            Action::Tool {
+                                name: "query_learning_context".into(),
+                                arguments: json!({"context":"check this source","project":selected.experience.project,"limit":1}),
+                            }
+                        }
+                        2 => {
+                            let value =
+                                last.ok_or_else(|| anyhow!("missing corrected query response"))?;
+                            ensure!(
+                                value["beliefs"].is_array() && value["patterns"].is_array(),
+                                "corrected query did not execute"
+                            );
+                            Action::Tool {
+                                name: "review_experience".into(),
+                                arguments: json!({
+                                "expected_review_revision":selected.review_revision,"review":{
+                                    "experience_id":selected.experience.id,"experience_revision":selected.revision,
+                                    "reviewer":"fixture","rationale":"corrected the query before completing review"}}),
+                            }
+                        }
+                        _ => bail!("completed review should have been observed"),
+                    };
+                    self.step += 1;
+                    Ok(action)
+                })
+            }
+        }
+        let fixture = isolation::fixture();
+        let mut settings = super::super::config::load(Some(&fixture.root.join("config.toml")))?;
+        let project = format!("judge-correction-{}", Uuid::new_v4());
+        settings.judge.project = Some(project.clone());
+        settings.judge.mcp_command = fixture.mcp.clone();
+        let core = Config::load_from_path(&settings.path)?;
+        fixture.assert_database(&core.database);
+        let service = MimirService::connect(&core).await?;
+        let allocated = mimir_core::db::connect(&core.database)
+            .await?
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?;
+        let source = Experience {
+            id: allocated.get(0),
+            project: project.clone(),
+            context: "check this source".into(),
+            action: "repair a misspelled request field".into(),
+            outcome: Outcome::Success,
+            source: ObservationSource::ToolResult,
+            evidence: vec!["owned correction fixture".into()],
+            belief_ids: vec![],
+            pattern_id: None,
+            learning_items: vec![],
+            source_records: vec![],
+        };
+        service.record_experience(&source, 0).await?;
+        let directory = super::super::harness::RunDir::new_in(&std::env::temp_dir())?;
+        let state = State::lock(directory.path().join("state"))?.unwrap();
+        let mut backend = CorrectQuery { step: 0 };
+        let report = run(
+            &settings,
+            &state,
+            &mut backend,
+            notification::Mode::Standalone,
+        )
+        .await;
+        service.delete_project(&project).await?;
+        ensure!(
+            report.status == "complete" && report.confirmed == 1 && report.pending == 0,
+            "correction became a failed review: {} {:?} {:?}",
+            report.status,
+            report.block_reason,
+            report
+                .diagnostic
+                .as_ref()
+                .map(|value| value.detail.as_str())
+        );
+        ensure!(
+            backend.step == 3,
+            "judge did not finish the actual correction dialogue"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unresolved_preparation_keeps_its_dialogue_and_other_reviews_continue() -> Result<()> {
+        struct PendingOne {
+            blocked: Uuid,
+        }
+        impl Backend for PendingOne {
+            fn next<'a>(
+                &'a mut self,
+                selected: &'a ExperienceState,
+                last: Option<&'a Value>,
+                _tools: &'a [Value],
+            ) -> Pin<Box<dyn Future<Output = Result<Action>> + Send + 'a>> {
+                Box::pin(async move {
+                    if let Some(value) = last {
+                        let correction: mimir_core::interaction::NeedsInput =
+                            serde_json::from_value(value.clone())?;
+                        ensure!(correction.issues()[0]
+                            .suggested_correction()
+                            .contains("Open a dialog"));
+                        return Ok(Action::Done);
+                    }
+                    let mut review = json!({"experience_id":selected.experience.id,"experience_revision":selected.revision,
+                        "reviewer":"fixture","rationale":"other work must continue while a prerequisite awaits the user"});
+                    if selected.experience.id == self.blocked {
+                        review["candidates"] = json!([{"kind":"belief","key":"needs-support","content":"requires configured embedding and indexed support"}]);
+                    }
+                    Ok(Action::Tool {
+                        name: "review_experience".into(),
+                        arguments: json!({
+                        "expected_review_revision":selected.review_revision,"review":review}),
+                    })
+                })
+            }
+        }
+        let fixture = isolation::fixture();
+        let mut settings = super::super::config::load(Some(&fixture.root.join("config.toml")))?;
+        let project = format!("judge-pending-decision-{}", Uuid::new_v4());
+        settings.judge.project = Some(project.clone());
+        settings.judge.mcp_command = fixture.mcp.clone();
+        let core = Config::load_from_path(&settings.path)?;
+        fixture.assert_database(&core.database);
+        let service = MimirService::connect(&core).await?;
+        let client = mimir_core::db::connect(&core.database).await?;
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let id: Uuid = client
+                .query_one("SELECT gen_random_uuid()", &[])
+                .await?
+                .get(0);
+            service
+                .record_experience(
+                    &Experience {
+                        id,
+                        project: project.clone(),
+                        context: "await the required user decision".into(),
+                        action: "keep other review work moving".into(),
+                        outcome: Outcome::Success,
+                        source: ObservationSource::ToolResult,
+                        evidence: vec!["owned fixture receipt".into()],
+                        belief_ids: vec![],
+                        pattern_id: None,
+                        learning_items: vec![],
+                        source_records: vec![],
+                    },
+                    0,
+                )
+                .await?;
+            ids.push(id);
+        }
+        let directory = super::super::harness::RunDir::new_in(&std::env::temp_dir())?;
+        let state = State::lock(directory.path().join("state"))?.unwrap();
+        let report = run(
+            &settings,
+            &state,
+            &mut PendingOne { blocked: ids[0] },
+            notification::Mode::Standalone,
+        )
+        .await;
+        ensure!(
+            report.status == "partial" && report.confirmed == 1 && report.pending == 1,
+            "decision stopped other work: {} {:?}",
+            report.status,
+            report.block_reason
+        );
+        ensure!(
+            report.block_reason.as_deref() == Some("needs_input"),
+            "decision was classified as a tool failure"
+        );
+        let diagnostic = report
+            .diagnostic
+            .as_ref()
+            .ok_or_else(|| anyhow!("user decision was discarded"))?;
+        ensure!(diagnostic.experience_id == ids[0]);
+        let correction: mimir_core::interaction::NeedsInput =
+            serde_json::from_str(&diagnostic.detail)?;
+        ensure!(correction.issues()[0]
+            .fault()
+            .message
+            .contains("candidate needs-support"));
+        ensure!(
+            service
+                .get_experience(ids[0])
+                .await?
+                .unwrap()
+                .reviewed_revision
+                == 0
+        );
+        ensure!(
+            service
+                .get_experience(ids[1])
+                .await?
+                .unwrap()
+                .reviewed_revision
+                == 1
+        );
+        ensure!(service.list_beliefs(Some(&project)).await?.is_empty());
+        service.delete_project(&project).await?;
+        Ok(())
     }
 
     #[tokio::test]
@@ -1583,10 +1875,6 @@ mod tests {
         service.record_experience(&second, 0).await.unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let smtp = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            drop(socket); // local SMTP transport failure after a committed review
-        });
         settings.email = EmailConfig {
             enabled: true,
             host: Some("127.0.0.1".into()),
@@ -1614,7 +1902,21 @@ mod tests {
         assert_eq!(report.status, "partial");
         assert_eq!(report.confirmed, 1);
         assert_eq!(report.pending, 1);
-        assert_eq!(report.notification, "retry_pending");
+        assert_eq!(report.notification, "queued");
+        let incoming = mimir_notifications::IncomingEvents::new(&state_path).unwrap();
+        let consumer = incoming.claim().unwrap();
+        assert!(
+            consumer.front().unwrap().is_some(),
+            "mail must remain durably queued for its watcher"
+        );
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                listener.poll_accept(cx).is_pending()
+            ))
+            .await,
+            "standalone review must not wait on SMTP"
+        );
+        drop(consumer);
         let reviewed = service
             .get_experience(first.id)
             .await
@@ -1628,7 +1930,6 @@ mod tests {
                 .unwrap()
                 .reviewed_revision;
         assert_eq!(reviewed, 1);
-        smtp.await.unwrap();
         service.delete_project(&project).await.unwrap();
         drop(state);
         std::fs::remove_dir_all(state_path).unwrap();

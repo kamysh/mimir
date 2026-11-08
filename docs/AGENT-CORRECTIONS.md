@@ -84,6 +84,17 @@ reserved operation/ownership metadata as explicitly allowed by the user. This
 response condition does not narrow the recovery goal: recovery still compares
 the complete application world and original reply.
 
+The judge recognizes a complete `needs_input` response before checking the
+ordinary result shape. For example, a misspelled field in a learning-context
+query returns correction guidance, rather than an "invalid learning context"
+failure caused by looking for search results in that response. The complete
+guidance reaches the same agent conversation, which can correct and retry.
+Correcting the same tool clears its pending correction. If the agent stops
+while a decision is unresolved, the review remains pending with its complete
+guidance in private diagnostics and public instructions to open the user dialog.
+Other selected reviews continue. No invented value, automatic cancellation,
+attempt limit or retry timer is used.
+
 A database failure around publication can leave its outcome unknown. That
 failure is not converted into `business_changes: "none"`. Read back the original
 identity and saved operation outcome before deciding what to repeat.
@@ -102,7 +113,8 @@ points to `review.candidates[0].key` and asks for the intended key or a user
 decision. The response does not create a placeholder. This check adds no
 maximum length and does not impose a new whitespace rule.
 
-This is the shared response from #75. Routing malformed, missing, incorrectly
-typed and unknown fields through it remains #80–#82, and continuing the judge's
-correction dialogue remains #100. Defining the response does not claim those
-call paths are already connected.
+The shared response from #75 is used by MCP admission and the judge's correction
+dialogue. Stored-reference and stale-revision corrections, complete schema
+parity and mandatory recovery dispatch retain their separate obligations in
+#93–#94, #102 and #74/#76. A response format alone does not establish those
+properties.

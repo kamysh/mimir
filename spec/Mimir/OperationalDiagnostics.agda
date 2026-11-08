@@ -30,7 +30,9 @@ cause (just code) with does (code ≟Text toList "quotation_mismatch")
 ...         | true = toList "A database or tool operation failed; its outcome must be read back."
 ...         | false with does (code ≟Text toList "review_deferred")
 ...           | true = toList "The review was deferred after incompatible candidate declarations."
-...           | false = toList "The batch could not complete. Inspect the local diagnostic report for the exact failure."
+...           | false with does (code ≟Text toList "needs_input")
+...             | true = toList "A request needs correction or a user decision. The affected review remains pending; its complete guidance is in the private diagnostic report."
+...             | false = toList "The batch could not complete. Inspect the local diagnostic report for the exact failure."
 
 classify : Maybe Source.Failure → Maybe Text → Maybe Text
 classify nothing reason = reason
@@ -45,7 +47,9 @@ advice : Maybe Text → Text
 advice nothing = toList "No repair is indicated by this snapshot."
 advice (just value) with does (value ≟Text toList "invalid_config")
 ... | true = toList "Run mimir config check. If required settings are missing, run mimir config upgrade --log-directory /absolute/path/to/logs, then check again."
-... | false = toList "Run mimir judge diagnose on this computer. It shows the cause, affected work and private diagnostic location. If failures persist, attach its summary summary to a Mimir issue."
+... | false with does (value ≟Text toList "needs_input")
+...   | true = toList "Run mimir judge diagnose and open the user dialog using the stored explanation and suggested correction. Correct the request or resolve its prerequisite, then rerun mimir judge run or explicitly resume the running watcher with SIGHUP."
+...   | false = toList "Run mimir judge diagnose on this computer. It shows the cause, affected work and private diagnostic location. If failures persist, attach its public summary to a Mimir issue."
 
 summary : Maybe R.Report → Text
 summary nothing = toList "No local run report is available. Run mimir judge diagnose on this computer.\n"
