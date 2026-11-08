@@ -12,6 +12,7 @@ open import Data.Nat using (ℕ; _≟_)
 open import Data.Product using (_×_; _,_; Σ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
+open import Data.Empty using (⊥)
 open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
@@ -153,16 +154,29 @@ apply (beliefVector id vector) state = record state
   { beliefVectors = Store.putVector id vector (Store.World.beliefVectors state) }
 apply (posterior writes) state = Store.setNodes (Recompute.apply writes (Store.nodes state)) state
 
-AdmittedStatement : Statement → Set
-AdmittedStatement (insertBelief belief origin) = Evidence.ValidBelief belief
-AdmittedStatement (beliefVector id vector) = ⊤
-AdmittedStatement (posterior writes) = Posterior.ValidState writes
+AdmittedStatement : Statement → Store.World → Set
+AdmittedStatement (insertBelief belief origin) before = Evidence.ValidBelief belief
+AdmittedStatement (beliefVector id vector) before =
+  Σ Graph.BeliefValues (λ belief → Ranking.lookup id (Store.beliefs before) ≡ just belief)
+AdmittedStatement (posterior writes) before = Posterior.ValidState writes
 
 record StatementPublication (statement : Statement) (before : Store.World)
   (receipt : DB.Receipt) (after : Store.World) : Set where
   field
-    admitted : AdmittedStatement statement
+    admitted : AdmittedStatement statement before
     publication : DB.Atomic before (apply statement before) receipt after
+
+-- The checked target is from the same transaction as the vector write. A
+-- result computed before deletion cannot recreate its vector afterwards.
+missingBeliefCannotPublishVector : ∀ id vector before receipt after →
+  Ranking.lookup id (Store.beliefs before) ≡ nothing →
+  StatementPublication (beliefVector id vector) before receipt after → ⊥
+missingBeliefCannotPublishVector id vector before receipt after absent evidence
+  with Ranking.lookup id (Store.beliefs before)
+     | absent
+     | StatementPublication.admitted evidence
+... | nothing | refl | belief , ()
+... | just belief | () | _
 
 -- A failed/lost acknowledgement has the same invariant on either possible
 -- published state. Admission never licenses replacing the original priors.

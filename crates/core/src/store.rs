@@ -29,6 +29,19 @@ use crate::documents::DocumentChunk;
 use crate::graph::{Belief, Edge, EdgeType, MemoryType, Pattern, Probability};
 use crate::EvidenceRef;
 
+#[derive(Debug)]
+pub struct BeliefEmbeddingTargetMissing {
+    pub belief_id: Uuid,
+}
+
+impl std::fmt::Display for BeliefEmbeddingTargetMissing {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Belief {} does not exist; no embedding vector was stored. Read the current beliefs and ask the user whether this work should resume. Do not automatically recreate a deleted belief.", self.belief_id)
+    }
+}
+
+impl std::error::Error for BeliefEmbeddingTargetMissing {}
+
 // The approved READ COMMITTED contract requires the application to select
 // isolation explicitly. Inheriting REPEATABLE READ could freeze a snapshot
 // before the learning advisory lock becomes available.
@@ -1802,18 +1815,26 @@ $$) AS (ok ag_catalog.agtype)"#
         Ok(result)
     }
 
-    /// Insert or replace the embedding for a belief.
+    /// Insert or replace a live belief's vector. The target check and write
+    /// share deletion's lock and transaction, so late results cannot recreate
+    /// vectors after deletion has committed.
     pub async fn insert_belief_embedding(&self, belief_id: Uuid, embedding: &[f32]) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        if self.get_belief_on(tx.client(), belief_id).await?.is_none() {
+            return Err(BeliefEmbeddingTargetMissing { belief_id }.into());
+        }
         let vec = Vector::from(embedding.to_vec());
-        let client = self.client.lock().await;
-        client
-            .execute(
-                "INSERT INTO public.belief_embeddings (belief_id, embedding) \
+        tx.execute(
+            "INSERT INTO public.belief_embeddings (belief_id, embedding) \
                  VALUES ($1, $2) \
                  ON CONFLICT (belief_id) DO UPDATE SET embedding = EXCLUDED.embedding",
-                &[&belief_id, &vec],
-            )
-            .await?;
+            &[&belief_id, &vec],
+        )
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 

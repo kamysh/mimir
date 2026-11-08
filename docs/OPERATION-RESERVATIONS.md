@@ -154,6 +154,15 @@ by the later MCP and CLI integration issues.
 
 ## Atomic project deletion
 
+Belief-vector writes now check their belief while holding the same database
+lock and transaction used by deletion. A result that arrives after its belief
+or project was deleted is refused with the belief ID and instructions to read
+current state and ask the user before resuming. It cannot recreate an orphaned
+vector, and an unrelated belief remains writable. The formal write admission
+requires that live target from the transaction's own state. This closes the
+late-vector race; revoking whole in-flight operations and stopping their
+embedding workers remain separate requirements in #78–#79 and #124.
+
 The store and service project-deletion methods now use one transaction for
 beliefs, patterns, their graph edges, belief vectors, document chunks, chunk
 vectors and project learning records with their dependent history. IDs are
