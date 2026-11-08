@@ -7,7 +7,6 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
-const MAX_FAILURE_SOURCE: usize = 32 * 1024;
 const STATUS_FILE: &str = "judge-status.json";
 const FAILURE_FILE: &str = "judge-last-failure.json";
 const DIAGNOSTICS_FILE: &str = "judge-diagnostics.json";
@@ -20,8 +19,8 @@ pub fn bounded(value: &str, limit: usize) -> String {
         .collect()
 }
 
-/// A private, bounded excerpt of input that could not be parsed. It is never
-/// copied into notification mail or transition logs.
+/// Complete private source text for input that could not be parsed. Legacy
+/// field names remain readable; source text is not copied into mail or logs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SourceFailure {
     pub stage: String,
@@ -33,39 +32,17 @@ pub struct SourceFailure {
 
 impl SourceFailure {
     pub fn input(stage: &str, source: &[u8], detail: &str) -> Self {
-        let end = source.len().min(MAX_FAILURE_SOURCE);
         Self {
             stage: stage.into(),
             detail: detail.into(),
             total_bytes: source.len(),
             excerpt_start: 0,
-            excerpt: String::from_utf8_lossy(&source[..end]).into_owned(),
+            excerpt: String::from_utf8_lossy(source).into_owned(),
         }
     }
 
     pub fn json(stage: &str, source: &[u8], error: serde_json::Error) -> Self {
-        let mut offset = 0usize;
-        for _ in 1..error.line() {
-            match source[offset..].iter().position(|byte| *byte == b'\n') {
-                Some(end) => offset += end + 1,
-                None => {
-                    offset = source.len();
-                    break;
-                }
-            }
-        }
-        offset = offset
-            .saturating_add(error.column().saturating_sub(1))
-            .min(source.len());
-        let start = offset.saturating_sub(MAX_FAILURE_SOURCE / 2);
-        let end = start.saturating_add(MAX_FAILURE_SOURCE).min(source.len());
-        Self {
-            stage: stage.into(),
-            detail: error.to_string(),
-            total_bytes: source.len(),
-            excerpt_start: start,
-            excerpt: String::from_utf8_lossy(&source[start..end]).into_owned(),
-        }
+        Self::input(stage, source, &error.to_string())
     }
 }
 
@@ -819,16 +796,29 @@ mod tests {
     }
 
     #[test]
-    fn malformed_source_is_bounded_near_the_error() {
+    fn malformed_source_is_complete_and_legacy_partial_records_remain_readable() {
         let source = format!("{{\"items\":[{}]}}", "0,".repeat(100_000));
         let error = serde_json::from_str::<serde_json::Value>(&source)
             .err()
             .unwrap();
         let failure = SourceFailure::json("invalid response", source.as_bytes(), error);
         assert_eq!(failure.total_bytes, source.len());
-        assert!(failure.excerpt.len() <= MAX_FAILURE_SOURCE);
-        assert!(failure.excerpt_start > 0);
-        assert!(failure.excerpt.contains("]}"));
+        assert_eq!(failure.excerpt, source);
+        assert_eq!(failure.excerpt_start, 0);
+        let saved: SourceFailure =
+            serde_json::from_str(&serde_json::to_string(&failure).unwrap()).unwrap();
+        assert_eq!(saved.excerpt, source);
+        assert_eq!(saved.total_bytes, source.len());
+        let input = SourceFailure::input("invalid input", source.as_bytes(), "unable to parse");
+        assert_eq!(input.excerpt, source);
+        let legacy: SourceFailure = serde_json::from_value(serde_json::json!({
+            "stage":"old response","detail":"old error","total_bytes":70000,
+            "excerpt_start":2000,"excerpt":"historical partial text"
+        }))
+        .unwrap();
+        assert_eq!(legacy.excerpt_start, 2000);
+        assert_eq!(legacy.total_bytes, 70000);
+        assert_eq!(legacy.excerpt, "historical partial text");
     }
 
     #[test]

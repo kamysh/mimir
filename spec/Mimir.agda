@@ -210,8 +210,6 @@ import Mimir.McpErrorDelivery
 import Mimir.WriteAllFlush
 import Mimir.McpSendBytes
 import Mimir.DiagnosticText
-import Mimir.SourceWindow
-import Mimir.SourceLineOffset
 import Mimir.SourceFailure
 import Mimir.JudgeStateRecords
 import Mimir.JudgeConfirmationLedger

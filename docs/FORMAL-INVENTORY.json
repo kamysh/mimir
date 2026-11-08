@@ -3245,29 +3245,6 @@
         },
         {
           "kind": "const",
-          "name": "MAX_FAILURE_SOURCE",
-          "line": 16,
-          "specification": [
-            "Mimir.SourceFailure"
-          ],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "open_obligations": [
-            "Native Rust implementation/refinement and complete adapter correspondence remain open.",
-            "Instantiate and verify the concrete native constant across the parameterized protocol and its callers."
-          ],
-          "behavioral_area": [
-            "spec/Mimir/JudgeStateOperations.agda",
-            "spec/Mimir/JudgePersistenceComposition.agda",
-            "spec/Mimir/JudgeStateWire.agda",
-            "spec/Mimir/JudgeStateMap.agda",
-            "spec/Mimir/JudgeStatePath.agda",
-            "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeStateRoundTrip.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "const",
           "name": "STATUS_FILE",
           "line": 17,
           "specification": [
@@ -3408,8 +3385,7 @@
           "name": "json",
           "line": 51,
           "specification": [
-            "Mimir.SourceFailure",
-            "Mimir.SourceLineOffset"
+            "Mimir.SourceFailure"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [

@@ -486,12 +486,10 @@
         "Mimir.ReviewSerialization",
         "Mimir.ReviewTransaction",
         "Mimir.SourceFailure",
-        "Mimir.SourceLineOffset",
         "Mimir.SourceProtocol",
         "Mimir.SourceReview",
         "Mimir.SourceSchema",
         "Mimir.SourceText",
-        "Mimir.SourceWindow",
         "Mimir.SourceWire"
       ]
     },
