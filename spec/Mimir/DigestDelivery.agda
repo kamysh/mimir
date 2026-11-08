@@ -15,7 +15,7 @@ open import Data.Empty using (⊥; ⊥-elim)
 open import Relation.Nullary using (Dec; yes; no; ¬_)
 open import Relation.Nullary.Decidable.Core using (_×-dec_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
-open import Mimir.Text using (Text; Bounded; bounded?)
+open import Mimir.Text using (Text)
 open import Mimir.TextOrder
 import Mimir.Saturating as Sat
 open import Mimir.Effects
@@ -51,10 +51,10 @@ record Digest : Set where
   field throughDay body : Text
 
 DigestValid : Digest → Set
-DigestValid d = Matches daySlots (Digest.throughDay d) × Bounded 262144 (Digest.body d)
+DigestValid d = Matches daySlots (Digest.throughDay d)
 
 digestValid? : ∀ d → Dec (DigestValid d)
-digestValid? d = matches? daySlots (Digest.throughDay d) ×-dec bounded? 262144 (Digest.body d)
+digestValid? d = matches? daySlots (Digest.throughDay d)
 
 record Cursor : Set where
   constructor cursor
