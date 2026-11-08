@@ -5,6 +5,7 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
+use std::num::NonZeroUsize;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -46,8 +47,9 @@ enum Cmd {
     /// Run the optional blind Claude trajectory judge; this spends model budget.
     Judge {
         results: PathBuf,
-        #[arg(long, default_value_t = 0)]
-        sample: usize,
+        /// Positive saved-row count; omit to grade all saved rows.
+        #[arg(long, value_parser = positive_sample)]
+        sample: Option<NonZeroUsize>,
     },
     /// Run the Claude trial matrix.
     Run {
@@ -86,6 +88,89 @@ enum Cmd {
     ParseStream,
 }
 
+fn positive_sample(raw: &str) -> std::result::Result<NonZeroUsize, String> {
+    raw.parse().map_err(|_| {
+        "sample must be a positive integer; omit --sample to grade all saved rows".into()
+    })
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn grade_count_distinguishes_omission_positive_and_invalid_values() {
+        let omitted = Cli::try_parse_from(["mimir-eval", "judge", "results.jsonl"]).unwrap();
+        assert!(matches!(omitted.command, Cmd::Judge { sample: None, .. }));
+        for count in [1, 12, usize::MAX] {
+            let supplied = format!("--sample={count}");
+            let parsed =
+                Cli::try_parse_from(["mimir-eval", "judge", "results.jsonl", &supplied]).unwrap();
+            assert!(
+                matches!(parsed.command, Cmd::Judge { sample: Some(value), .. } if value.get() == count)
+            );
+        }
+        for invalid in ["0", "-1", "1.5", "not-a-count"] {
+            let supplied = format!("--sample={invalid}");
+            let error = Cli::try_parse_from(["mimir-eval", "judge", "results.jsonl", &supplied])
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains("positive integer"), "{error}");
+            assert!(error.contains("omit --sample"), "{error}");
+        }
+    }
+
+    #[test]
+    fn an_explicit_trial_count_keeps_its_meaning() {
+        let parsed = Cli::try_parse_from(["mimir-eval", "run", "--trials=12"]).unwrap();
+        assert!(matches!(parsed.command, Cmd::Run { trials: 12, .. }));
+    }
+
+    #[test]
+    fn unused_selection_config_has_a_repair_instruction() {
+        let path = Path::new("owned-fixture/config.json");
+        let original = json!({"trials":12,"model":null});
+        validate_config(&original, path).unwrap();
+        assert_eq!(original["trials"], 12);
+        for value in [json!(5), json!(0), json!(null)] {
+            let mut old = original.clone();
+            old["mimir_query_limit"] = value;
+            let error = validate_config(&old, path).unwrap_err().to_string();
+            assert!(error.contains("mimir_query_limit"), "{error}");
+            assert!(error.contains("was unused"), "{error}");
+            assert!(error.contains("remove that field"), "{error}");
+            assert!(error.contains("owned-fixture/config.json"), "{error}");
+        }
+        for malformed in [json!(null), json!([]), json!(false)] {
+            assert!(validate_config(&malformed, path)
+                .unwrap_err()
+                .to_string()
+                .contains("JSON object"));
+        }
+    }
+
+    #[test]
+    fn snapshot_lists_without_a_zero_sentinel() {
+        let directory =
+            std::env::temp_dir().join(format!("mimir-eval-selection-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let script = directory.join("mimir-fixture");
+        fs::write(&script, "#!/bin/sh\nif [ \"$#\" -ne 1 ] || [ \"$1\" != list ]; then\n echo 'Expected list without a result count' >&2\n exit 9\nfi\nprintf '%s\\n' '00000000-0000-0000-0000-000000000003 fixture' '00000000-0000-0000-0000-000000000001 fixture' '00000000-0000-0000-0000-000000000002 fixture'\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let actual = run_mimir_list(script.to_str().unwrap());
+        fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(
+            actual.unwrap(),
+            vec![
+                "00000000-0000-0000-0000-000000000001",
+                "00000000-0000-0000-0000-000000000002",
+                "00000000-0000-0000-0000-000000000003",
+            ]
+        );
+    }
+}
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -109,7 +194,22 @@ fn load_json(path: &Path) -> Result<Value> {
     serde_json::from_str(&s).with_context(|| format!("parse {}", path.display()))
 }
 fn load_config() -> Result<Value> {
-    load_json(&config_path())
+    let path = config_path();
+    let config = load_json(&path)?;
+    validate_config(&config, &path)?;
+    Ok(config)
+}
+fn validate_config(config: &Value, path: &Path) -> Result<()> {
+    let fields = config.as_object().with_context(|| {
+        format!(
+            "{} must contain a JSON object; correct the evaluation configuration",
+            path.display()
+        )
+    })?;
+    if fields.contains_key("mimir_query_limit") {
+        bail!("mimir_query_limit in {} was unused and is retired; remove that field. Explicit positive selections defined by an experiment are unchanged", path.display());
+    }
+    Ok(())
 }
 fn collect_tool_calls(v: &Value, calls: &mut Vec<Value>, result: &mut Option<Value>) {
     match v {
@@ -1044,7 +1144,7 @@ fn preflight(cfg: &Value, skip: bool) -> Result<Value> {
     Ok(report)
 }
 fn run_mimir_list(bin: &str) -> Result<Vec<String>> {
-    let o = Command::new(bin).args(["list", "--limit", "0"]).output()?;
+    let o = Command::new(bin).arg("list").output()?;
     if !o.status.success() {
         bail!("mimir list failed: {}", String::from_utf8_lossy(&o.stderr))
     };
@@ -1473,15 +1573,15 @@ fn tripwire_lines(text: &str) -> Vec<String> {
         .map(|l| l.chars().take(400).collect())
         .collect()
 }
-fn judge(results: &Path, sample: usize, cfg: &Value) -> Result<()> {
+fn judge(results: &Path, sample: Option<NonZeroUsize>, cfg: &Value) -> Result<()> {
     let text = fs::read_to_string(results)?;
     let mut rows: Vec<Value> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(serde_json::from_str)
         .collect::<std::result::Result<_, _>>()?;
-    if sample > 0 {
-        rows.truncate(sample)
+    if let Some(count) = sample {
+        rows.truncate(count.get())
     }
     let parent = PathBuf::from("/var/tmp/mimir");
     fs::create_dir_all(&parent)?;

@@ -170,6 +170,19 @@ cd tests/eval
 `./eval full --trials 30` runs the whole runbook in order and PROMPTS for
 confirmation before the two API-spending steps (isolation gate + matrix).
 
+### Selecting rows for the optional grader
+
+`./eval judge runs/results.jsonl` grades all saved rows when that model work is
+authorized. A supplied `--sample` count must be a positive integer; omission
+means all rows. Zero is rejected with a correction explaining how to omit the
+count. The requested trial matrix and positive selections deliberately defined
+by an experiment are unchanged.
+
+Snapshots call `mimir list` without a count, following the same explicit selection
+contract. The unused `mimir_query_limit` configuration field is retired. Remove it
+from an older evaluation config; the harness diagnoses it before invoking models
+instead of silently accepting a setting that never controlled retrieval.
+
 ### Resume / API-exhaustion semantics
 
 Every result row carries `is_error` / `timed_out`. On `--resume`, a

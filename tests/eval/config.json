@@ -18,7 +18,6 @@
   "skip_permissions": true,
   "strict_mcp_isolation": true,
 
-  "mimir_query_limit": 5,
   "with_distractors": false,
 
   "_comment": "model=null uses your Claude Code default. strict_mcp_isolation passes --strict-mcp-config with an empty --mcp-config so ambient mimir does not leak into control/static. 'arms' is the DEFAULT subset run; the full registry also has 'grounded' (Phase 4 evidence-grounded retrieval) and 'mimir_sys' (top-1 clean), opt in via --arms. 'mimir_agentic' is de-scoped (not registered). See README 'Seams' before first run."
