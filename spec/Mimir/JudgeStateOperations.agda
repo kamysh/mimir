@@ -21,19 +21,16 @@ import Mimir.JudgePersistence as Names
 import Mimir.JudgeIncident as Incident
 import Mimir.JudgeTraceStart as Start
 import Mimir.JudgeTraceMutation as Mutation
-import Mimir.JudgeStateMap as Mapping
-import Mimir.JudgeStateWire as Native
 import Mimir.JudgeStateRecords as Records
 import Mimir.PublicInput as Input
 import Mimir.UUIDGroups as UUID
 import Mimir.UUIDV4 as Random
 import Mimir.UnixPath as Path
-import Mimir.SignedMachine as Machine
 import Mimir.Effects as Effects
 
 module R = Records.Over ℕ
 module I = Incident.Over ℕ _≟_
-module Begin = Start.Over ℕ _≟_ 8
+module Begin = Start.Over ℕ _≟_
 
 data Effect : Set where
   readFailure : Effect
@@ -58,7 +55,7 @@ module Bound (conversion : Conversion.Contract) (sizeMaximum : ℕ)
     module Store = Persistence.Storage conversion sizeMaximum endian
     module Failure = Store.Reading Names.failure
     module Diagnostics = Store.Reading Names.diagnostics
-    module M = Mutation.Over ℕ _≟_ sizeMaximum 48 262144 Machine.disabled
+    module M = Mutation.Over ℕ _≟_
 
   ReadReceipt : (name : Names.Name) → Text ⊎ Maybe (Persistence.Logical name) → Set
   ReadReceipt name = Store.Reading.Receipt name path
@@ -87,7 +84,6 @@ module Bound (conversion : Conversion.Contract) (sizeMaximum : ℕ)
 
   BeginReceipt : (effect : Begin.Operation) → Begin.Reply effect → Set
   BeginReceipt Begin.readDiagnostics reply = ReadDiagnostics reply
-  BeginReceipt Begin.readFailure reply = Failure.Receipt path reply
   BeginReceipt Begin.clock reply = ⊤
   BeginReceipt Begin.newId reply = Σ UUID.UUID (λ value → Input.uuidNumber value ≡ reply)
   BeginReceipt (Begin.writeDiagnostics values) reply = Store.Written path Names.diagnostics values reply
@@ -103,16 +99,9 @@ module Bound (conversion : Conversion.Contract) (sizeMaximum : ℕ)
           receipts : All (λ { (effect , value) → BeginReceipt effect value }) events
           exact : startedResult result ≡ reply
 
-  Serialized : R.Trace → Text ⊎ List Byte → Set
-  Serialized trace (inj₁ _) = ⊥
-  Serialized trace (inj₂ bytes) = Σ Native.R.Trace (λ native →
-    Mapping.Native.trace native ≡ trace ×
-      bytes ≡ Conversion.Contract.compactJSON conversion (Native.With.trace conversion native))
-
   MutationReceipt : (effect : M.Operation) → M.Reply effect → Set
   MutationReceipt M.readDiagnostics reply = ReadDiagnostics reply
   MutationReceipt M.clock reply = ⊤
-  MutationReceipt (M.serialize trace) reply = Serialized trace reply
   MutationReceipt (M.writeDiagnostics values) reply = Store.Written path Names.diagnostics values reply
 
   data Acknowledges : M.Result → Text ⊎ ⊤ → Set where

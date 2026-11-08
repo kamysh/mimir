@@ -7,9 +7,6 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
-const MAX_TRACE: usize = 256 * 1024;
-const MAX_TRACE_EVENTS: usize = 48;
-const MAX_TRACE_ATTEMPTS: usize = 8;
 const MAX_FAILURE_SOURCE: usize = 32 * 1024;
 const STATUS_FILE: &str = "judge-status.json";
 const FAILURE_FILE: &str = "judge-last-failure.json";
@@ -414,27 +411,12 @@ impl State {
             finished_at: None,
             status: "running".into(),
             block_reason: None,
-            selected_ids: report
-                .selected_ids
-                .iter()
-                .take(MAX_TRACE_EVENTS)
-                .copied()
-                .collect(),
+            selected_ids: report.selected_ids.clone(),
             model_requests: Some(initial_count),
             tool_attempts: Some(initial_count),
             events: Vec::new(),
             events_omitted: 0,
         });
-        if diagnostics.attempts.len() > MAX_TRACE_ATTEMPTS {
-            let pinned =
-                read_failure(&self.path)?.and_then(|incident| incident.first.diagnostics_id);
-            let oldest_unpinned = diagnostics
-                .attempts
-                .iter()
-                .position(|trace| Some(trace.id) != pinned && trace.id != id)
-                .unwrap_or(0);
-            diagnostics.attempts.remove(oldest_unpinned);
-        }
         self.write_named(DIAGNOSTICS_FILE, &diagnostics)?;
         Ok(id)
     }
@@ -448,15 +430,7 @@ impl State {
             .ok_or_else(|| anyhow!("active diagnostic trace is missing"))?;
         trace.model_requests = event.model_requests;
         trace.tool_attempts = event.tool_attempts;
-        if trace.events.len() < MAX_TRACE_EVENTS {
-            trace.events.push(event);
-            if serde_json::to_vec(trace)?.len() > MAX_TRACE {
-                trace.events.pop();
-                trace.events_omitted += 1;
-            }
-        } else {
-            trace.events_omitted += 1;
-        }
+        trace.events.push(event);
         self.write_named(DIAGNOSTICS_FILE, &diagnostics)
     }
 
@@ -467,22 +441,10 @@ impl State {
             .iter()
             .position(|trace| trace.id == id)
             .ok_or_else(|| anyhow!("diagnostic trace is missing"))?;
-        if report.status == "complete" {
-            diagnostics.attempts.remove(index);
-        } else {
-            let trace = &mut diagnostics.attempts[index];
-            trace.status = report.status.clone();
-            trace.block_reason = report.block_reason.clone();
-            trace.finished_at = Some(now());
-            while serde_json::to_vec(&*trace)?.len() > MAX_TRACE {
-                ensure!(
-                    !trace.events.is_empty(),
-                    "diagnostic trace metadata is too large"
-                );
-                trace.events.pop();
-                trace.events_omitted += 1;
-            }
-        }
+        let trace = &mut diagnostics.attempts[index];
+        trace.status = report.status.clone();
+        trace.block_reason = report.block_reason.clone();
+        trace.finished_at = Some(now());
         self.write_named(DIAGNOSTICS_FILE, &diagnostics)
     }
 
@@ -684,6 +646,34 @@ mod tests {
     }
 
     #[test]
+    fn new_events_preserve_historical_omission_counts_without_new_loss() {
+        let dir = std::env::temp_dir().join(format!("mimir-legacy-omissions-{}", Uuid::new_v4()));
+        let state = State::lock(dir.clone()).unwrap().unwrap();
+        let report = Report::new("complete", 0, 0, 0, 0, 0);
+        let id = state.begin_trace(&report, 0).unwrap();
+        let mut old = read_diagnostics(&dir).unwrap();
+        old.attempts[0].events_omitted = 5;
+        state.write_named(DIAGNOSTICS_FILE, &old).unwrap();
+        state
+            .trace_event(
+                id,
+                DiagnosticEvent::new(Uuid::new_v4(), "new evidence", 1, 0, None, Some("retained")),
+            )
+            .unwrap();
+        state.finish_trace(id, &report).unwrap();
+        let saved = read_diagnostics(&dir).unwrap();
+        assert_eq!(saved.attempts[0].events_omitted, 5);
+        assert_eq!(saved.attempts[0].events.len(), 1);
+        assert_eq!(
+            saved.attempts[0].events[0].detail.as_deref(),
+            Some("retained")
+        );
+        assert_eq!(saved.attempts[0].status, "complete");
+        drop(state);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn recovery_evidence_requires_a_completed_batch_for_the_affected_review() {
         let dir = std::env::temp_dir().join(format!("mimir-judge-recovery-{}", Uuid::new_v4()));
         let state = State::lock(dir.clone()).unwrap().unwrap();
@@ -856,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_trace_is_private_bounded_and_survives_success() {
+    fn diagnostic_trace_keeps_all_attempts_events_and_selected_work() {
         let dir = std::env::temp_dir().join(format!("mimir-judge-trace-{}", Uuid::new_v4()));
         let state = State::lock(dir.clone()).unwrap().unwrap();
         let experience_id = Uuid::new_v4();
@@ -865,18 +855,12 @@ mod tests {
         failed.block_reason = Some("model_budget_exhausted".into());
         let id = state.begin_trace(&failed, 5).unwrap();
         failed.diagnostics_id = Some(id);
+        let detail = "x".repeat(8_000);
         for _ in 0..80 {
             state
                 .trace_event(
                     id,
-                    DiagnosticEvent::new(
-                        experience_id,
-                        "model_request",
-                        0,
-                        1,
-                        None,
-                        Some(&"x".repeat(100_000)),
-                    ),
+                    DiagnosticEvent::new(experience_id, "model_request", 0, 1, None, Some(&detail)),
                 )
                 .unwrap();
         }
@@ -886,14 +870,20 @@ mod tests {
         let later_id = state.begin_trace(&completed, 5).unwrap();
         state.finish_trace(later_id, &completed).unwrap();
         let diagnostics = read_diagnostics(&dir).unwrap();
-        assert_eq!(diagnostics.attempts.len(), 1);
+        assert_eq!(diagnostics.attempts.len(), 2);
+        assert_eq!(diagnostics.attempts[1].id, later_id);
+        assert_eq!(diagnostics.attempts[1].status, "complete");
+        assert!(diagnostics.attempts[1].finished_at.is_some());
         let trace = &diagnostics.attempts[0];
         assert_eq!(trace.id, id);
-        assert!(!trace.events.is_empty() && trace.events.len() <= MAX_TRACE_EVENTS);
-        assert_eq!(trace.events_omitted, 80 - trace.events.len());
-        assert!(serde_json::to_vec(trace).unwrap().len() <= MAX_TRACE);
-        assert_eq!(trace.events[0].detail_bytes, Some(100_000));
-        assert_eq!(trace.events[0].detail.as_ref().unwrap().len(), 100_000);
+        assert_eq!(trace.events.len(), 80);
+        assert_eq!(trace.events_omitted, 0);
+        assert!(serde_json::to_vec(trace).unwrap().len() > 256 * 1024);
+        assert!(trace
+            .events
+            .iter()
+            .all(|event| event.detail_bytes == Some(8_000)
+                && event.detail.as_deref() == Some(detail.as_str())));
         assert_eq!(
             trace.block_reason.as_deref(),
             Some("model_budget_exhausted")
@@ -910,7 +900,7 @@ mod tests {
             state.record_incident(&newer).unwrap();
         }
         let retained = read_diagnostics(&dir).unwrap();
-        assert_eq!(retained.attempts.len(), MAX_TRACE_ATTEMPTS);
+        assert_eq!(retained.attempts.len(), 12);
         assert!(retained.attempts.iter().any(|trace| trace.id == id));
         let path = dir.join(DIAGNOSTICS_FILE);
         let metadata = fs::metadata(&path).unwrap();

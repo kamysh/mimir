@@ -3245,120 +3245,6 @@
         },
         {
           "kind": "const",
-          "name": "MAX_DIAGNOSTICS",
-          "line": 11,
-          "specification": [
-            "Mimir.JudgePersistence"
-          ],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "open_obligations": [
-            "Native Rust implementation/refinement and complete adapter correspondence remain open."
-          ],
-          "behavioral_area": [
-            "spec/Mimir/JudgeStateOperations.agda",
-            "spec/Mimir/JudgePersistenceComposition.agda",
-            "spec/Mimir/JudgeStateWire.agda",
-            "spec/Mimir/JudgeStateMap.agda",
-            "spec/Mimir/JudgeStatePath.agda",
-            "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeStateRoundTrip.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "const",
-          "name": "MAX_TRACE",
-          "line": 12,
-          "specification": [
-            "Mimir.JudgeTraceEvent",
-            "Mimir.JudgeTraceTrim"
-          ],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "open_obligations": [
-            "Native Rust implementation/refinement and complete adapter correspondence remain open.",
-            "Instantiate and verify the concrete native constant across the parameterized protocol and its callers."
-          ],
-          "behavioral_area": [
-            "spec/Mimir/JudgeStateOperations.agda",
-            "spec/Mimir/JudgePersistenceComposition.agda",
-            "spec/Mimir/JudgeStateWire.agda",
-            "spec/Mimir/JudgeStateMap.agda",
-            "spec/Mimir/JudgeStatePath.agda",
-            "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeStateRoundTrip.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "const",
-          "name": "MAX_TRACE_EVENTS",
-          "line": 13,
-          "specification": [
-            "Mimir.JudgeTraceEvent"
-          ],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "open_obligations": [
-            "Native Rust implementation/refinement and complete adapter correspondence remain open.",
-            "Instantiate and verify the concrete native constant across the parameterized protocol and its callers."
-          ],
-          "behavioral_area": [
-            "spec/Mimir/JudgeStateOperations.agda",
-            "spec/Mimir/JudgePersistenceComposition.agda",
-            "spec/Mimir/JudgeStateWire.agda",
-            "spec/Mimir/JudgeStateMap.agda",
-            "spec/Mimir/JudgeStatePath.agda",
-            "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeStateRoundTrip.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "const",
-          "name": "MAX_TRACE_ATTEMPTS",
-          "line": 14,
-          "specification": [
-            "Mimir.JudgeTraceRetention"
-          ],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "open_obligations": [
-            "Native Rust implementation/refinement and complete adapter correspondence remain open.",
-            "Instantiate and verify the concrete native constant across the parameterized protocol and its callers."
-          ],
-          "behavioral_area": [
-            "spec/Mimir/JudgeStateOperations.agda",
-            "spec/Mimir/JudgePersistenceComposition.agda",
-            "spec/Mimir/JudgeStateWire.agda",
-            "spec/Mimir/JudgeStateMap.agda",
-            "spec/Mimir/JudgeStatePath.agda",
-            "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeStateRoundTrip.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "const",
-          "name": "MAX_EVENT_DETAIL",
-          "line": 15,
-          "specification": [
-            "Mimir.JudgeStateRecords"
-          ],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "open_obligations": [
-            "Native Rust implementation/refinement and complete adapter correspondence remain open."
-          ],
-          "behavioral_area": [
-            "spec/Mimir/JudgeStateOperations.agda",
-            "spec/Mimir/JudgePersistenceComposition.agda",
-            "spec/Mimir/JudgeStateWire.agda",
-            "spec/Mimir/JudgeStateMap.agda",
-            "spec/Mimir/JudgeStatePath.agda",
-            "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeStateRoundTrip.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "const",
           "name": "MAX_FAILURE_SOURCE",
           "line": 16,
           "specification": [
@@ -4107,8 +3993,7 @@
           "name": "begin_trace",
           "line": 396,
           "specification": [
-            "Mimir.JudgeTraceStart",
-            "Mimir.JudgeTraceRetention"
+            "Mimir.JudgeTraceStart"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "open_obligations": [
@@ -4132,7 +4017,6 @@
           "line": 431,
           "specification": [
             "Mimir.JudgeTraceMutation",
-            "Mimir.JudgeTraceEvent",
             "Mimir.JudgeTraceSelection"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",
@@ -4157,7 +4041,6 @@
           "line": 452,
           "specification": [
             "Mimir.JudgeTraceMutation",
-            "Mimir.JudgeTraceTrim",
             "Mimir.JudgeTraceSelection"
           ],
           "status": "behavioral-area-mapped-rust-correspondence-open",

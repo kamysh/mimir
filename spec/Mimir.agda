@@ -218,12 +218,8 @@ import Mimir.JudgeConfirmationLedger
 import Mimir.JudgeIncident
 import Mimir.JudgeIncidentEvidence
 import Mimir.UnsignedMachine
-import Mimir.JudgeTraceEvent
-import Mimir.LastElement
-import Mimir.JudgeTraceTrim
 import Mimir.FirstListMatch
 import Mimir.JudgeTraceSelection
-import Mimir.JudgeTraceRetention
 import Mimir.JudgeTraceStart
 import Mimir.JudgeTraceMutation
 import Mimir.UUIDGroups
