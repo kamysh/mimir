@@ -291,28 +291,11 @@ pub fn load(explicit: Option<&Path>) -> Result<RuntimeConfig> {
     let path = resolved_path(explicit)?;
     validate_file_security(&path)?;
     let (core, operations) = Config::load_with_operations(&path)?;
-    ensure!(core.judge.as_ref().is_none_or(|judge| !judge.contains_key("batch_size")),
-        "judge.batch_size is obsolete: the judge selects all eligible work. Run `mimir config upgrade` to remove it, then `mimir config check`");
+    mimir_core::operations::check_retired_limits(&core)?;
     let judge: JudgeConfig = section(core.judge.as_ref(), "judge")?;
-    if let Some(llm) = &core.llm {
-        for retired in [
-            "timeout_seconds",
-            "max_calls",
-            "max_output_tokens",
-            "max_budget_usd",
-        ] {
-            ensure!(!llm.contains_key(retired),
-                "llm.{retired} is obsolete: Mimir no longer imposes review budgets. Run `mimir config upgrade` to remove obsolete limits, then `mimir config check`");
-        }
-    }
     let llm: LlmConfig = section(core.llm.as_ref(), "llm")?;
     let email: EmailConfig = match core.email.as_ref() {
-        Some(table) => {
-            for retired in ["timeout_seconds", "retry_seconds", "max_attempts"] {
-                ensure!(!table.contains_key(retired), "email.{retired} is obsolete: remove this field from [email] and run `mimir judge check-config` again. Notification delivery uses explicit cancellation and retry events, without a deadline or attempt quota");
-            }
-            section(Some(table), "email")?
-        }
+        Some(table) => section(Some(table), "email")?,
         None => EmailConfig::default(),
     };
     judge.validate()?;
@@ -378,8 +361,8 @@ mod tests {
                     error.contains(&format!("email.{key} is obsolete")),
                     "{error}"
                 );
-                assert!(error.contains("remove this field from [email]"), "{error}");
-                assert!(error.contains("mimir judge check-config"), "{error}");
+                assert!(error.contains("mimir config upgrade"), "{error}");
+                assert!(error.contains("mimir config check"), "{error}");
             }
         }
     }

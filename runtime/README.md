@@ -200,8 +200,7 @@ Codex runs with `--json` and reads its structured answer from
 structured reply from that wrapper. Codex's human-readable mode echoes the prompt
 to stderr, so it is unsuitable for the judge's potentially large history payloads.
 Subprocess stdin, stdout and structured answer files are read completely. Stderr
-is continuously drained, with only 64 KiB retained for diagnostics; a noisy
-stderr stream does not fail useful work. MCP frames and notification sequences
+is continuously drained and retained completely for diagnostics. MCP frames and notification sequences
 have no Mimir-imposed byte/count ceiling. Model call arrays are executed in order,
 with one result per call. Successful process output alone never acknowledges a
 review; the database-receipt rule remains in force.
@@ -209,7 +208,9 @@ review; the database-receipt rule remains in force.
 After updating, run `mimir config check`. Retired `[llm]` settings
 `timeout_seconds`, `max_calls`, `max_output_tokens`, and `max_budget_usd` are
 rejected with migration instructions. `mimir config upgrade` removes those four
-settings, preserves the other settings and comments, and creates no backup.
+settings along with retired judge, email and logging limits listed in
+[operations](../docs/operations.md#review-limit-migration), preserves other
+settings and comments, and creates no backup.
 Run `mimir config check` again, then restart your existing application process.
 No service definitions need changing. The judge selects all currently eligible
 work in its project scope. `judge.batch_size` is retired: run

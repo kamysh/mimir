@@ -33,6 +33,7 @@ pub fn dispatch(command: Command) -> Result<()> {
         operations::upgrade(&path, directory.as_deref())?;
     }
     let (core, operations) = Config::load_with_operations(&path)?;
+    operations::check_retired_limits(&core)?;
     if core.retirement.is_some() {
         core.retirement_policy()?;
     }

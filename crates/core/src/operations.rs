@@ -11,6 +11,47 @@ use std::{
 };
 
 pub const CONFIG_VERSION: u32 = 1;
+
+pub const RETIRED_LIMIT_SETTINGS: &[(&str, &[&str])] = &[
+    ("logging", &["max_file_bytes", "retained_files"]),
+    ("judge", &["batch_size"]),
+    (
+        "llm",
+        &[
+            "timeout_seconds",
+            "max_calls",
+            "max_output_tokens",
+            "max_budget_usd",
+        ],
+    ),
+    (
+        "email",
+        &["timeout_seconds", "retry_seconds", "max_attempts"],
+    ),
+];
+
+/// Offline validation of retired optional settings, independent of whether
+/// the judge is enabled. Ordinary graph startup need not load optional features.
+pub fn check_retired_limits(config: &crate::config::Config) -> Result<()> {
+    for (section, table) in [
+        ("judge", config.judge.as_ref()),
+        ("llm", config.llm.as_ref()),
+        ("email", config.email.as_ref()),
+    ] {
+        let Some(table) = table else {
+            continue;
+        };
+        let keys = RETIRED_LIMIT_SETTINGS
+            .iter()
+            .find(|(name, _)| *name == section)
+            .expect("known optional configuration section")
+            .1;
+        for key in keys {
+            ensure!(!table.contains_key(*key),"{section}.{key} is obsolete: run `mimir config upgrade` to remove retired application limits, then `mimir config check`. Other settings and comments are preserved");
+        }
+    }
+    Ok(())
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Logging {
     pub directory: PathBuf,
@@ -79,32 +120,17 @@ pub fn upgrade(path: &Path, directory: Option<&Path>) -> Result<()> {
             "unsupported config_version; no changes made (automatic downgrades are forbidden)"
         );
     }
-    document["config_version"] = toml_edit::value(i64::from(CONFIG_VERSION));
-    if let Some(judge) = document
-        .get_mut("judge")
-        .and_then(toml_edit::Item::as_table_like_mut)
-    {
-        judge.remove("batch_size");
+    if document.get("config_version").is_none() {
+        document["config_version"] = toml_edit::value(i64::from(CONFIG_VERSION));
     }
-    if let Some(logging) = document
-        .get_mut("logging")
-        .and_then(toml_edit::Item::as_table_like_mut)
-    {
-        for retired in ["max_file_bytes", "retained_files"] {
-            logging.remove(retired);
-        }
-    }
-    if let Some(llm) = document
-        .get_mut("llm")
-        .and_then(toml_edit::Item::as_table_like_mut)
-    {
-        for retired in [
-            "timeout_seconds",
-            "max_calls",
-            "max_output_tokens",
-            "max_budget_usd",
-        ] {
-            llm.remove(retired);
+    for (section, keys) in RETIRED_LIMIT_SETTINGS {
+        if let Some(table) = document
+            .get_mut(section)
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            for key in *keys {
+                table.remove(key);
+            }
         }
     }
     if let Some(logging) = document.get("logging") {
@@ -121,9 +147,10 @@ pub fn upgrade(path: &Path, directory: Option<&Path>) -> Result<()> {
     let parsed: toml::Value =
         toml::from_str(&content).map_err(|_| anyhow::anyhow!("invalid upgraded config TOML"))?;
     Operations::decode(&parsed)?;
-    let _: crate::config::Config = parsed
+    let config: crate::config::Config = parsed
         .try_into()
         .map_err(|_| anyhow::anyhow!("invalid application configuration; no changes made"))?;
+    check_retired_limits(&config)?;
     if content == original {
         return Ok(());
     }

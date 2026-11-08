@@ -34,6 +34,7 @@ import Mimir.ConfigurationSchema as Core
 import Mimir.NotificationConfig as Email
 import Mimir.NotificationConfigurationWire as EmailWire
 import Mimir.Effects as Effects
+import Mimir.ConfigurationUpgrade as Upgrade
 
 infixl 1 _>>=_
 _>>=_ : ∀ {E A B : Set} → E ⊎ A → (A → E ⊎ B) → E ⊎ B
@@ -100,7 +101,10 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
   email (just raw) = section "email" E.decode (just raw)
 
   sections : Core.Config → Text ⊎ Runtime
-  sections core = section "judge" judge (Core.Config.judge core) >>= λ j →
+  sections core = Upgrade.checkOptional "judge" Upgrade.judgeKeys (Core.Config.judge core) >>= λ _ →
+    Upgrade.checkOptional "llm" Upgrade.llmKeys (Core.Config.llm core) >>= λ _ →
+    Upgrade.checkOptional "email" Upgrade.emailKeys (Core.Config.email core) >>= λ _ →
+    section "judge" judge (Core.Config.judge core) >>= λ j →
     section "llm" llm (Core.Config.llm core) >>= λ l → email (Core.Config.email core) >>= λ e →
     inj₂ (runtime core j l e)
 

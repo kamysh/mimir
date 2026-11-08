@@ -80,7 +80,7 @@ queue admission, not confirmed email delivery. Delivery problems are logged by
 the worker. Stopping the watcher cancels and awaits the worker: existing notifier
 outbox entries remain on disk, while jobs not yet submitted are cancelled.
 Completed review reports remain stored. Standalone `judge run` delivery is still
-synchronous; its remaining deadline is tracked in #110.
+synchronous; its remaining delivery ownership work is tracked in #180.
 
 Common cases:
 
@@ -142,16 +142,27 @@ the optional judge and of any external agent harness.
 
 ### Review limit migration
 
-The judge no longer imposes deadlines, request or retry quotas, transport-size
-caps, or learning-content/count caps. `mimir config check` rejects retired
-`[llm]` keys: `timeout_seconds`, `max_calls`, `max_output_tokens`, and
-`max_budget_usd`. Run `mimir config upgrade` to remove them while preserving
-other settings, then check again and restart the existing application. No
-system service changes are required. Stop/cancel remains available through
-normal process control and releases owned child processes.
+`mimir config check` names retired settings and points to `mimir config upgrade`.
+Checking and upgrading use the same list:
 
-Diagnostic logs, excerpts and trace history retain their storage bounds. These
-bounds do not truncate model input or stop a review. New trace fields
+| Section | Retired fields |
+| --- | --- |
+| `logging` | `max_file_bytes`, `retained_files` |
+| `judge` | `batch_size` |
+| `llm` | `timeout_seconds`, `max_calls`, `max_output_tokens`, `max_budget_usd` |
+| `email` | `timeout_seconds`, `retry_seconds`, `max_attempts` |
+
+Run `mimir config upgrade` against the chosen configuration, then check again.
+The upgrade removes only those fields from their named sections and preserves
+other settings and comments, including credentials, model choice and nested
+email authentication. It chooses no replacement limit, changes no service,
+creates no backup and makes no database or model request. Repeating it leaves
+the upgraded file unchanged. Restart the existing application when applying
+an upgrade to an installation. Stop/cancel remains available through normal
+process control and releases owned child processes.
+
+Diagnostic logs, excerpts and trace history retain complete content. Private
+file and ownership checks remain in force. New trace fields
 `model_requests` and `tool_attempts` count work performed; for legacy traces they
 are absent. Batch state can contain every selected/deferred revision without a
 fixed file-size ceiling. Provider/platform limits remain external constraints;
