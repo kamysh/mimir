@@ -472,7 +472,8 @@ The application loop is:
    the returned revision when correcting it. Replaying the same submission does
    not count another observation. Evidence references are supplied by the
    caller; Mimir does not independently verify their contents.
-2. `pending_experiences` returns a bounded batch of new or changed experiences,
+2. `pending_experiences` returns all matching new or changed experiences when its
+   optional positive count is omitted,
    oldest first. The runner can run frequently and exit immediately on an empty
    batch. A successful review removes that version from the pending set. There
    is no collection-size cutoff or requirement to manufacture summary beliefs.

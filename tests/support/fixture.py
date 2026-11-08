@@ -107,7 +107,7 @@ def main():
     if not args.path.is_absolute() or not args.path.parent.resolve().is_relative_to(root):
         raise ValueError("generated configuration must stay in the isolated test root")
     text = (root / "database.toml").read_text()
-    text += f'\n[judge]\nbatch_size = 1\nmcp_command = {json.dumps(data["mcp"])}\n'
+    text += f'\n[judge]\nmcp_command = {json.dumps(data["mcp"])}\n'
     if args.project:
         text += f'project = {json.dumps(args.project)}\n'
     text += f'\n[llm]\nbackend = {json.dumps(args.backend)}\nmodel = {json.dumps(args.model)}\n'

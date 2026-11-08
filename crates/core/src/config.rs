@@ -534,7 +534,6 @@ user   = "mimir"       # PostgreSQL role used by mimir at runtime
 #
 # Optional learning runtime (see runtime/config.example.toml for email and APIs):
 # [judge]
-# batch_size = 5
 # mcp_command = "mimir-mcp"
 #
 # [llm]

@@ -35,23 +35,23 @@ checkEligible excluded s = combine
   (check (fault Data.List.[] wrongIdentity "pending selection returned an excluded experience")
     (IDs.absent? (identity s) excluded))
 
-Valid : ℕ → Maybe Text → List ℕ → List Observation.Snapshot → Set
-Valid limit scope excluded batch = Observation.BatchValid limit scope batch × All (Eligible excluded) batch
+Valid : Maybe Text → List ℕ → List Observation.Snapshot → Set
+Valid scope excluded batch = Observation.BatchValid scope batch × All (Eligible excluded) batch
 
-validate : ∀ limit scope excluded batch → Checked (Valid limit scope excluded batch)
-validate limit scope excluded batch = combine (Observation.validateBatch limit scope batch)
+validate : ∀ scope excluded batch → Checked (Valid scope excluded batch)
+validate scope excluded batch = combine (Observation.validateBatch scope batch)
   (allChecked (checkEligible excluded) batch)
 
-everySelectedIsPending : ∀ {limit scope excluded batch} → Valid limit scope excluded batch → All Pending batch
+everySelectedIsPending : ∀ {scope excluded batch} → Valid scope excluded batch → All Pending batch
 everySelectedIsPending (batchValid , eligible) = All.map proj₁ eligible
 
-noSelectedIsExcluded : ∀ {limit scope excluded batch} → Valid limit scope excluded batch →
+noSelectedIsExcluded : ∀ {scope excluded batch} → Valid scope excluded batch →
   All (λ s → IDs.Absent (identity s) excluded) batch
 noSelectedIsExcluded (batchValid , eligible) = All.map proj₂ eligible
 
 excludedNeverEligible : ∀ excluded s → IDs.Present (identity s) excluded → Eligible excluded s → ⊥
 excludedNeverEligible excluded s present (pending , absent) = IDs.presentAbsentContradiction present absent
 
-validSelectionNeverRejected : ∀ limit scope excluded batch → Valid limit scope excluded batch →
-  reported (validate limit scope excluded batch) ≡ Data.List.[]
-validSelectionNeverRejected limit scope excluded batch = noFalseRejection (validate limit scope excluded batch)
+validSelectionNeverRejected : ∀ scope excluded batch → Valid scope excluded batch →
+  reported (validate scope excluded batch) ≡ Data.List.[]
+validSelectionNeverRejected scope excluded batch = noFalseRejection (validate scope excluded batch)

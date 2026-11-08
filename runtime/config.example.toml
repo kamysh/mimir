@@ -11,7 +11,6 @@ directory = "/ABSOLUTE/HOME/.local/state/mimir/logs"
 # Select a model available to your account; no provider/model fallback occurs.
 
 [judge]
-batch_size = 5
 # project = "my-project" # omit to process pending experiences across projects
 mcp_command = "mimir-mcp"
 mcp_args = []

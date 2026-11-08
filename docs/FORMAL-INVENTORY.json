@@ -637,20 +637,6 @@
         },
         {
           "kind": "fn",
-          "name": "default_batch_size",
-          "line": 94,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/JudgeConfiguration.agda",
-            "spec/Mimir/JudgeConfigurationComposition.agda",
-            "spec/Mimir/ConfigurationSchema.agda",
-            "spec/Mimir/ConfigurationProtocol.agda"
-          ],
-          "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
-        },
-        {
-          "kind": "fn",
           "name": "default_mcp_command",
           "line": 97,
           "specification": [],

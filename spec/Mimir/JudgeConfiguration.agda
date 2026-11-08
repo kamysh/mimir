@@ -50,7 +50,7 @@ data Effort : Set where minimal low medium high xhigh : Effort
 
 record Judge : Set where
   constructor judgeSettings
-  field batchSize : ℕ; project : Maybe Text; mcpCommand : Text; mcpArgs : List Text
+  field project : Maybe Text; mcpCommand : Text; mcpArgs : List Text
 
 record Llm : Set where
   constructor llmSettings
@@ -72,10 +72,13 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
   module E = EmailWire.Decode sizeMaximum
 
   judge : V.Value → Validation.Fault ⊎ Judge
-  judge = recordOf ("batch_size" ∷ "project" ∷ "mcp_command" ∷ "mcp_args" ∷ []) (λ fields →
-    defaulted "batch_size" 5 (unsigned sizeMaximum) fields >>= λ batch → optional "project" V.asString fields >>= λ project →
+  judge raw with view raw (toList "batch_size")
+  ... | just _ = inj₁ (Validation.fault (Validation.key "batch_size" ∷ []) Validation.unsupportedCombination
+    "judge.batch_size is obsolete; run mimir config upgrade to remove it, then mimir config check")
+  ... | nothing = recordOf ("project" ∷ "mcp_command" ∷ "mcp_args" ∷ []) (λ fields →
+    optional "project" V.asString fields >>= λ project →
     defaulted "mcp_command" (toList "mimir-mcp") V.asString fields >>= λ cmd →
-    defaulted "mcp_args" [] (readArray V.asString) fields >>= λ args → inj₂ (judgeSettings batch project cmd args))
+    defaulted "mcp_args" [] (readArray V.asString) fields >>= λ args → inj₂ (judgeSettings project cmd args)) raw
 
   llm : V.Value → Validation.Fault ⊎ Llm
   llm = recordOf ("backend" ∷ "model" ∷ "reasoning_effort" ∷ "provider" ∷ "api_key" ∷ "base_url" ∷ "command" ∷ "args" ∷ [])
@@ -148,7 +151,7 @@ module Validate (libraries : Libraries) where
       "llm.base_url must not contain credentials, query, or fragment"
 
   judge : Judge → Text ⊎ ⊤
-  judge j = ensure (does (1 ≤? Judge.batchSize j)) "judge.batch_size must be positive" >>= λ _ →
+  judge j =
     optionalCheck (λ p → ensure (clean p) "invalid judge.project") (Judge.project j) >>= λ _ →
     ensure (clean (Judge.mcpCommand j)) "invalid judge.mcp_command" >>= λ _ →
     ensure (plainCommand (Libraries.path libraries (Judge.mcpCommand j)) ∨ absoluteCommand (Judge.mcpCommand j))

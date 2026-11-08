@@ -80,6 +80,12 @@ pub fn upgrade(path: &Path, directory: Option<&Path>) -> Result<()> {
         );
     }
     document["config_version"] = toml_edit::value(i64::from(CONFIG_VERSION));
+    if let Some(judge) = document
+        .get_mut("judge")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    {
+        judge.remove("batch_size");
+    }
     if let Some(logging) = document
         .get_mut("logging")
         .and_then(toml_edit::Item::as_table_like_mut)
@@ -265,6 +271,30 @@ mod tests {
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn upgrade_removes_only_the_judges_retired_batch_count() {
+        let dir = directory();
+        let path = dir.join("config.toml");
+        fs::write(&path, format!("config_version=1\n{DB}\n[logging]\ndirectory={}\n[embeddings]\nbackend='local'\nbatch_size=4 # preserve embedding setting\n[judge]\nbatch_size=5\nproject='user-project' # preserve scope\nmcp_args=['user-argument']\n[llm]\nbackend='command'\nmodel='chosen'\ncommand='/bin/true'\n",
+            toml::Value::String(dir.join("logs").display().to_string()))).unwrap();
+        upgrade(&path, None).unwrap();
+        let first = fs::read_to_string(&path).unwrap();
+        let value: toml::Value = toml::from_str(&first).unwrap();
+        assert!(value["judge"].get("batch_size").is_none());
+        assert_eq!(value["judge"]["project"].as_str(), Some("user-project"));
+        assert_eq!(
+            value["judge"]["mcp_args"][0].as_str(),
+            Some("user-argument")
+        );
+        assert_eq!(value["embeddings"]["batch_size"].as_integer(), Some(4));
+        assert!(first.contains("# preserve embedding setting"));
+        assert!(first.contains("# preserve scope"));
+        assert!(first.contains(DB));
+        upgrade(&path, None).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), first);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn upgrade_removes_only_retired_model_limits() {
         let dir = directory();

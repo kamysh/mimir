@@ -70,7 +70,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   notificationMode false = Finalization.inlineDelivery
 
   module W (watch : Bool) (settings : Config.Runtime) program path configPath = Workflow.Compose conversion format libraries environment errors
-    (Config.Runtime.llm settings) program contract model (Config.Judge.batchSize (Config.Runtime.judge settings))
+    (Config.Runtime.llm settings) program contract model
     (Config.Judge.project (Config.Runtime.judge settings))
     (Config.Judge.mcpCommand (Config.Runtime.judge settings)) (Config.Judge.mcpArgs (Config.Runtime.judge settings)) configPath
     (Config.Runtime.email settings) localTime sizeMaximum clockMaximum endian path json buildMessage (notificationMode watch)

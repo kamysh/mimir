@@ -79,9 +79,9 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   byID : ℕ → V.Value
   byID id = Encoding.object (("id" , V.string (Encoding.Formatting.uuidText format id)) ∷ [])
-  pendingArgs : Maybe Text → ℕ → List ℕ → V.Value
-  pendingArgs project limit excluded = Encoding.object
-    (("limit" , V.unsigned limit) ∷ ("exclude_ids" , V.array (map
+  pendingArgs : Maybe Text → List ℕ → V.Value
+  pendingArgs project excluded = Encoding.object
+    (("exclude_ids" , V.array (map
       (λ id → V.string (Encoding.Formatting.uuidText format id)) excluded)) ∷ extra project)
     where
     extra : Maybe Text → List (String Data.Product.× V.Value)
@@ -92,9 +92,9 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     retained : ∀ reply → Storage.ReadReceipt Names.status reply → SelectionReceipt Selection.previousDeferred (previous reply)
     observed : ∀ id requestID reply → S.Receipt requestID Catalog.getExperience (byID id) reply →
       SelectionReceipt (Selection.current id) (current reply)
-    selected : ∀ project limit excluded requestID reply →
-      S.Receipt requestID Catalog.pendingExperiences (pendingArgs project limit excluded) reply →
-      SelectionReceipt (Selection.pending project limit excluded) (pending reply)
+    selected : ∀ project excluded requestID reply →
+      S.Receipt requestID Catalog.pendingExperiences (pendingArgs project excluded) reply →
+      SelectionReceipt (Selection.pending project excluded) (pending reply)
 
   readback : Revision.Error ⊎ Maybe Observation.Snapshot → Readback.Failure ⊎ Maybe Observation.Snapshot
   readback (inj₁ failure) = inj₁ (Readback.failure (Revision.Error.detail failure) (Revision.Error.source failure))
@@ -109,7 +109,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   selectionCalls : ∀ {effect reply} → SelectionReceipt effect reply → List Client.Issued
   selectionCalls (retained _ _) = []
   selectionCalls (observed _ _ _ receipt) = S.issued receipt ∷ []
-  selectionCalls (selected _ _ _ _ _ receipt) = S.issued receipt ∷ []
+  selectionCalls (selected _ _ _ _ receipt) = S.issued receipt ∷ []
 
   readbackCalls : ∀ {effect reply} → ReadbackReceipt effect reply → List Client.Issued
   readbackCalls (clock _) = []

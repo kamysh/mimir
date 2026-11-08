@@ -132,7 +132,6 @@ fn variant(arm: &Arm, run: &RunDir, name: &str, project: &str, mcp: &Path) -> Re
         .and_then(toml::Value::as_table_mut)
         .ok_or_else(|| anyhow!("missing judge section"))?;
     judge.insert("project".into(), toml::Value::String(project.into()));
-    judge.insert("batch_size".into(), toml::Value::Integer(1));
     judge.insert(
         "mcp_command".into(),
         toml::Value::String(mcp.to_string_lossy().into_owned()),

@@ -17,5 +17,5 @@ The existing formal pending-query model distinguishes omission from a positive
 count. Its eligibility laws cover both paths. Wire admission explains invalid
 counts before the query can run.
 
-This addresses #229 under #103. Removing the judge's own `batch_size` quota is
-separate work in #162; until then the judge still sends its explicit count.
+This addresses #229 under #103. The judge's own `batch_size` quota is removed
+by #162; its selection omits the count to request all matching pending work.

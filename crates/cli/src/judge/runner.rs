@@ -476,7 +476,7 @@ async fn run_inner<B: Backend>(
             report.deferred_reviews.push(deferred);
         }
     }
-    let mut arguments = json!({"limit":settings.judge.batch_size});
+    let mut arguments = json!({});
     arguments["exclude_ids"] = json!(report
         .deferred_reviews
         .iter()
@@ -493,10 +493,6 @@ async fn run_inner<B: Backend>(
             error,
         )
     })?;
-    ensure!(
-        batch.len() <= settings.judge.batch_size,
-        "MCP returned oversized pending batch"
-    );
     let mut seen = std::collections::HashSet::new();
     for item in &batch {
         ensure!(
@@ -1195,7 +1191,7 @@ mod tests {
             std::fs::write(
                 &config_path,
                 format!(
-                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
                     dir.join("logs").display(), fixture.display(), id
                 ),
             )
@@ -1242,7 +1238,7 @@ mod tests {
         std::fs::write(
             &config_path,
             format!(
-                "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
                 dir.join("logs").display(), fixture.display(), Uuid::new_v4()
             ),
         )
@@ -1316,7 +1312,7 @@ mod tests {
             std::fs::write(
                 &config_path,
                 format!(
-                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nmcp_command='bash'\nmcp_args=['{}','{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
                     dir.join("logs").display(), fixture.display(), id, review_log.display()
                 ),
             )
@@ -1354,6 +1350,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn isolated_judge_reviews_every_pending_experience_in_one_run() -> Result<()> {
+        struct ReviewEach;
+        impl Backend for ReviewEach {
+            fn next<'a>(
+                &'a mut self,
+                selected: &'a ExperienceState,
+                last: Option<&'a Value>,
+                _tools: &'a [Value],
+            ) -> Pin<Box<dyn Future<Output = Result<Action>> + Send + 'a>> {
+                Box::pin(async move {
+                    if last.is_some() {
+                        return Ok(Action::Done);
+                    }
+                    Ok(Action::Tool {
+                        name: "review_experience".into(),
+                        arguments: json!({"expected_review_revision":selected.review_revision,
+                            "review":{"experience_id":selected.experience.id,
+                                "experience_revision":selected.revision,"reviewer":"fixture",
+                                "rationale":"review each owned fixture source"}}),
+                    })
+                })
+            }
+        }
+        let fixture = isolation::fixture();
+        let mut settings = super::super::config::load(Some(&fixture.root.join("config.toml")))?;
+        let project = format!("all-judge-work-{}", Uuid::new_v4());
+        settings.judge.project = Some(project.clone());
+        settings.judge.mcp_command = fixture.mcp.clone();
+        let core = Config::load_from_path(&settings.path)?;
+        fixture.assert_database(&core.database);
+        let service = MimirService::connect(&core).await?;
+        let work = super::super::harness::RunDir::new_in(&std::env::temp_dir())?;
+        let state = State::lock(work.path().join("state"))?.unwrap();
+        let result = async {
+            for _ in 0..12 {
+                service
+                    .record_experience(
+                        &Experience {
+                            id: Uuid::new_v4(),
+                            project: project.clone(),
+                            context: "complete selection".into(),
+                            action: "verify all reviews in one run".into(),
+                            outcome: Outcome::Success,
+                            source: ObservationSource::ToolResult,
+                            evidence: vec!["owned fixture receipt".into()],
+                            belief_ids: vec![],
+                            pattern_id: None,
+                            learning_items: vec![],
+                            source_records: vec![],
+                        },
+                        0,
+                    )
+                    .await?;
+            }
+            let report = run(
+                &settings,
+                &state,
+                &mut ReviewEach,
+                notification::Mode::Inline,
+            )
+            .await;
+            ensure!(
+                report.status == "complete",
+                "{}: {:?}",
+                report.status,
+                report.failure_detail
+            );
+            ensure!(
+                report.selected == 12 && report.confirmed == 12 && report.pending == 0,
+                "selection/review totals: {}/{}/{}",
+                report.selected,
+                report.confirmed,
+                report.pending
+            );
+            ensure!(
+                service
+                    .pending_experiences(Some(&project), None)
+                    .await?
+                    .is_empty(),
+                "unreviewed fixture work remains"
+            );
+            Ok(())
+        }
+        .await;
+        service.delete_project(&project).await?;
+        result
+    }
+
+    #[tokio::test]
     async fn isolated_mcp_review_cycle() {
         let fixture = isolation::fixture();
         let path = fixture.root.join("config.toml");
@@ -1362,7 +1447,6 @@ mod tests {
         let mut settings = super::super::config::load(Some(&path)).unwrap();
         settings.judge.project = Some(project.clone());
         settings.judge.mcp_command = binary;
-        settings.judge.batch_size = 1;
         let core = Config::load_from_path(&settings.path).unwrap();
         fixture.assert_database(&core.database);
         let service = Arc::new(MimirService::connect(&core).await.unwrap());
@@ -1463,7 +1547,6 @@ mod tests {
                 .await
                 .unwrap();
         }
-        settings.judge.batch_size = 2;
         let first = make_experience();
         let second = make_experience();
         service.record_experience(&first, 0).await.unwrap();

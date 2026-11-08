@@ -30,7 +30,6 @@ Choose a model actually available to the authenticated Claude account:
 
 ```toml
 [judge]
-batch_size = 5
 mcp_command = "/ABSOLUTE/HOME/.local/bin/mimir-mcp"
 mcp_args = []
 
@@ -130,7 +129,8 @@ must precede bootstrap. A calendar job normally has no PID between runs.
 ### Verify the actual scheduled job
 
 A registered job or valid config is not a completed model review. When a live
-bounded batch is authorized, start the actual service and inspect its report:
+review run covering all currently eligible work is authorized, start the actual
+service and inspect its report:
 
 ```sh
 launchctl kickstart "gui/$(id -u)/org.mimir.judge"
@@ -174,15 +174,14 @@ the ID of a retained failure trace. `mimir judge diagnostics` reads the first
 failure trace of the current incident; `--list` shows retained attempt IDs and
 `--id UUID` selects a specific attempt. The private trace records ordered model
 requests, tool requests and outcomes, cumulative model-request and tool-attempt counts, and the final
-failure reason. It retains at
-most eight attempts, 48 events, the first 48 selected IDs, and 256 KiB per attempt, and truncates event
-details to 3,072 characters. Later successful runs do not erase an earlier
+failure reason. It retains every attempt, selected ID and event with complete
+details. Later successful runs do not erase an earlier
 failure trace. The database review receipt is authoritative; a local status
 snapshot or model claim does not establish completion. The runner restricts
 tool calls to the selected experience and project.
 After a committed review, it checks the pinned database revision and finishes
 that item without requiring a separate model "done" turn. A failed or interrupted run leaves the revision pending for the next run and reports a
-bounded `block_reason` without exposing provider or experience text.
+`block_reason` without exposing provider or experience text.
 
 The `claude-code`, `codex`, and `command` LLM backends are implemented. Claude
 Code and Codex use explicit CLI flags for structured output and isolation, and
@@ -212,15 +211,20 @@ After updating, run `mimir config check`. Retired `[llm]` settings
 rejected with migration instructions. `mimir config upgrade` removes those four
 settings, preserves the other settings and comments, and creates no backup.
 Run `mimir config check` again, then restart your existing application process.
-No service definitions need changing. Batch/page sizes remain caller-selected
-positive work granularity, with no arbitrary upper bound in the learning APIs.
+No service definitions need changing. The judge selects all currently eligible
+work in its project scope. `judge.batch_size` is retired: run
+`mimir config upgrade`, then `mimir config check`, for a configuration that still
+contains it. A separately configured embedding batch setting is preserved.
+An explicit pending-query result count must be positive; omission returns all
+matches. See [judge selection](../docs/JUDGE-SELECTION.md).
 
 Review and experience content, source records, extracted items, predictions,
 assessment references, candidate declarations and text fields have no application
 size/count ceilings. Required fields, exact quotations, numeric domains,
 provenance, unique identities, transactions and revision checks remain enforced.
 Native integer/storage limits can still produce explicit errors. Complete batch
-state is retained; private diagnostic history and operational logs remain bounded.
+state and private diagnostic history are retained. Operational logs append complete
+entries without application rotation or automatic deletion.
 Legacy diagnostic files load, but their remaining-budget values are not presented
 as cumulative work counts: new count fields are absent for old records.
 

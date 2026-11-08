@@ -52,8 +52,6 @@ impl ReasoningEffort {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JudgeConfig {
-    #[serde(default = "default_batch_size")]
-    pub batch_size: usize,
     pub project: Option<String>,
     #[serde(default = "default_mcp_command")]
     pub mcp_command: String,
@@ -85,9 +83,6 @@ pub struct RuntimeConfig {
     pub email: EmailConfig,
 }
 
-fn default_batch_size() -> usize {
-    5
-}
 fn default_mcp_command() -> String {
     "mimir-mcp".into()
 }
@@ -216,7 +211,6 @@ fn endpoint(raw: &str) -> Result<()> {
 
 impl JudgeConfig {
     fn validate(&self) -> Result<()> {
-        ensure!(self.batch_size > 0, "judge.batch_size must be positive");
         if let Some(project) = &self.project {
             nonempty(project, "judge.project")?;
         }
@@ -297,6 +291,8 @@ pub fn load(explicit: Option<&Path>) -> Result<RuntimeConfig> {
     let path = resolved_path(explicit)?;
     validate_file_security(&path)?;
     let (core, operations) = Config::load_with_operations(&path)?;
+    ensure!(core.judge.as_ref().is_none_or(|judge| !judge.contains_key("batch_size")),
+        "judge.batch_size is obsolete: the judge selects all eligible work. Run `mimir config upgrade` to remove it, then `mimir config check`");
     let judge: JudgeConfig = section(core.judge.as_ref(), "judge")?;
     if let Some(llm) = &core.llm {
         for retired in [
@@ -334,14 +330,13 @@ mod tests {
 
     const DATABASE: &str =
         "config_version=1\n[logging]\ndirectory='/tmp/mimir-fixture-logs'\n[database]\nhost='localhost'\nport=5432\ndbname='mimir'\nuser='mimir'\n";
-    const HARNESS: &str =
-        "[judge]\nbatch_size=5\n[llm]\nbackend='claude-code'\nmodel='test-model'\n";
+    const HARNESS: &str = "[judge]\n[llm]\nbackend='claude-code'\nmodel='test-model'\n";
 
     struct Fixture(PathBuf);
     impl Fixture {
         fn new(mode: u32) -> Self {
-            let base = Path::new("/var/tmp/mimir/step4");
-            std::fs::create_dir_all(base).unwrap();
+            let base = std::env::temp_dir().join("mimir-step4");
+            std::fs::create_dir_all(&base).unwrap();
             let path = base.join(format!("fixture-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&path).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
@@ -362,6 +357,21 @@ mod tests {
     fn valid(text: &str) -> bool {
         let fixture = Fixture::new(0o700);
         load(Some(&fixture.config(text, 0o600))).is_ok()
+    }
+
+    #[test]
+    fn retired_batch_count_explains_the_upgrade_for_every_value() {
+        for value in ["0", "5", "1000000", "'wrong-type'"] {
+            let fixture = Fixture::new(0o700);
+            let text = format!("{DATABASE}[judge]\nbatch_size={value}\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n");
+            let error = load(Some(&fixture.config(&text, 0o600)))
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains("judge.batch_size is obsolete"), "{error}");
+            assert!(error.contains("mimir config upgrade"), "{error}");
+            assert!(error.contains("mimir config check"), "{error}");
+        }
     }
 
     #[test]

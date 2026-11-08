@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- Upgrade edits operational metadata and removes retired review limits; unrelated payload and
+-- Upgrade edits operational metadata and removes retired application limits; unrelated payload and
 -- comments are preserved by the TOML document editor. No fallback on malformed
 -- input and no downgrade of a future format. Publication uses the existing
 -- owned-temporary-file, fsync, rename protocol; no backup is produced.
@@ -63,6 +63,15 @@ loggingRetired name = does (name ≟Text toList "max_file_bytes") ∨ does (name
 
 module Logging = Filter loggingRetired
 
+judgeRetired : Text → Bool
+judgeRetired name = does (name ≟Text toList "batch_size")
+
+module Judge = Filter judgeRetired
+
+upgradeJudge : Maybe Fields → Maybe Fields
+upgradeJudge nothing = nothing
+upgradeJudge (just fields) = just (Judge.removeRetired fields)
+
 upgradeLlm : Maybe Fields → Maybe Fields
 upgradeLlm nothing = nothing
 upgradeLlm (just fields) = just (removeRetired fields)
@@ -70,10 +79,10 @@ upgradeLlm (just fields) = just (removeRetired fields)
 module Document (Payload : Set) where
   record Before : Set where
     constructor before
-    field version : Maybe ℕ; logging : Fields; llm : Maybe Fields; payload : Payload
+    field version : Maybe ℕ; logging : Fields; llm judge : Maybe Fields; payload : Payload
   record After : Set where
     constructor after
-    field operations : O.Admitted; logging : Fields; llm : Maybe Fields; payload : Payload
+    field operations : O.Admitted; logging : Fields; llm judge : Maybe Fields; payload : Payload
   data Failure : Set where futureVersion : Failure; invalid : Fault → Failure
 
   validate : Before → Failure ⊎ After
@@ -82,7 +91,7 @@ module Document (Payload : Set) where
   ... | inj₂ logs with O.admit (O.settings O.formatVersion logs)
   ...   | inj₁ fault = inj₁ (invalid fault)
   ...   | inj₂ accepted = inj₂ (after accepted (Logging.removeRetired (Before.logging old))
-    (upgradeLlm (Before.llm old)) (Before.payload old))
+    (upgradeLlm (Before.llm old)) (upgradeJudge (Before.judge old)) (Before.payload old))
 
   upgrade : Before → Failure ⊎ After
   upgrade old with Before.version old
@@ -99,7 +108,7 @@ module Document (Payload : Set) where
   ... | inj₁ fault with proof
   ...   | ()
   payloadPreserved old .(after accepted (Logging.removeRetired (Before.logging old))
-    (upgradeLlm (Before.llm old)) (Before.payload old)) refl | inj₂ logs | inj₂ accepted = refl
+    (upgradeLlm (Before.llm old)) (upgradeJudge (Before.judge old)) (Before.payload old)) refl | inj₂ logs | inj₂ accepted = refl
 
   -- Startup requires the admitted value, so the new package cannot execute
   -- application I/O using absent or incompatible operational settings.

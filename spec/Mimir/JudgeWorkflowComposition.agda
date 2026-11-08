@@ -37,7 +37,7 @@ open import Data.Product using (_×_)
 module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
   (libraries : Harness.Libraries) (environment : Application.Environment) (errors : Service.Display)
   (config : Config.Llm) (program : Text)
-  (contract model batchLimit : ℕ) (project : Maybe Text)
+  (contract model : ℕ) (project : Maybe Text)
   (mcpProgram : Text) (mcpArguments : List Text) (configurationPath : Path.Path)
   (email : Email.Config) (localTime : ℕ → Text) (sizeMaximum clockMaximum : ℕ)
   (endian : UUID.Endian) (path : Path.Path)
@@ -48,7 +48,7 @@ module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
     module S = State.Bound conversion sizeMaximum endian path
     module Batch = BatchService.Bound conversion format (Harness.Libraries.display libraries) errors environment sizeMaximum endian path
   module W = Workflow.Run conversion format (Harness.Libraries.display libraries)
-    contract model batchLimit project deliveryMode
+    contract model project deliveryMode
   private
     module B (clientReady : Handshake.Contract.Ready contract model) selected = Backend.Bound conversion format libraries environment errors config program W.initial selected
       (Handshake.CheckedCatalogue.exposed (Handshake.Contract.Ready.catalogue clientReady))

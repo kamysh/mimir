@@ -301,8 +301,8 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
       field excluded : List ℕ
             queried : Any (_≡ (P.selection (Selection.pending
               (Config.Judge.project (Config.Runtime.judge settings))
-              (Config.Judge.batchSize (Config.Runtime.judge settings)) excluded) , inj₂ selected)) events
-            ordered : selected ≡ take (Config.Judge.batchSize (Config.Runtime.judge settings)) remaining
+              excluded) , inj₂ selected)) events
+            ordered : selected ≡ remaining
             confirmed : All (ConfirmedRead events) selected
 
     evidence : ∀ {events remaining selected} → BatchEvidence events remaining selected → All Confirmed selected

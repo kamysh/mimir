@@ -148,7 +148,7 @@ exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_prel
                            "user": user, "pgpassfile": str(passfile), "ssl_mode": "disable"}.items():
             text += key + " = " + json.dumps(value) + "\n"
         (self.root / "database.toml").write_text(text)
-        text += '\n[judge]\nbatch_size = 1\nmcp_command = ' + json.dumps(str(mcp))
+        text += '\n[judge]\nmcp_command = ' + json.dumps(str(mcp))
         text += '\n[llm]\nbackend = "command"\nmodel = "fixture"\ncommand = "/bin/true"\n'
         text += '[email]\nenabled = false\n'
         (self.root / "config.toml").write_text(text)
