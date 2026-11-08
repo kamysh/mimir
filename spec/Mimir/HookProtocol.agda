@@ -60,6 +60,8 @@ sessionFile : Text → Text
 sessionFile id = toList "mimir-session-project-" ++ id
 
 data Message : Set where
+  -- Every selected belief retains its complete content in the injected or
+  -- working-belief message; terminal/JSON encoding adds no excerpt width.
   promptContext pretoolContext : List Graph.BeliefValues → Message
   unconsolidated : List Graph.BeliefValues → Message
   preexisting : Text → List Graph.BeliefValues → Message
@@ -113,10 +115,6 @@ module Run (environment : Application.Environment) where
     (just project) → done project
     nothing → ask currentDirectory done
 
-  width : CLI.HookCommand → ℕ
-  width CLI.prompt = 500
-  width _ = 200
-
   message : CLI.HookCommand → List Graph.BeliefValues → Message
   message CLI.prompt = promptContext
   message _ = pretoolContext
@@ -124,7 +122,7 @@ module Run (environment : Application.Environment) where
   inject : CLI.HookCommand → Text → Maybe Text → Script ℕ
   inject kind text scope = ask connect λ where
     (inj₁ _) → done 0
-    (inj₂ tt) → ask (execute (Public.relevant (CLI.trunc (width kind) text) nothing scope nothing false nothing)) λ where
+    (inj₂ tt) → ask (execute (Public.relevant text nothing scope nothing false nothing)) λ where
       (A.relevantResult []) → done 0
       (A.relevantResult beliefs@(_ ∷ _)) → ask (stdout (message kind beliefs)) (λ _ → done 0)
       _ → done 0

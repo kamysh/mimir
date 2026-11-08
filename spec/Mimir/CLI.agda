@@ -6,7 +6,7 @@ module Mimir.CLI where
 
 open import Data.Bool using (Bool; true; false; not; _∧_)
 open import Data.Float.Base using (Float; _<ᵇ_)
-open import Data.List using (List; []; _∷_; _++_; map; take; length)
+open import Data.List using (List; []; _∷_; map)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc; _≟_; _≤?_)
 open import Data.Product using (_×_; _,_)
@@ -15,7 +15,7 @@ open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
-open import Mimir.Text using (Text; trim)
+open import Mimir.Text using (Text)
 import Mimir.ConfigurationPath as Path
 import Mimir.PublicRequest as Public
 import Mimir.PublicEncoding as Encoding
@@ -107,16 +107,6 @@ request conversion (docLoad path project) = inj₂ (Public.loadDocument path pro
 request conversion (docQuery text project limit) = inj₂ (Public.queryDocument text project limit)
 request conversion (docClear path) = inj₂ (Public.clearDocument path)
 request conversion (intervene id value) = mapResult (λ target → Public.inference (Inference.intervention target value)) (Input.readUUID conversion (V.string id))
-
--- Legacy hook input shortening only. Ordinary CLI output preserves complete
--- selected content; removing this hook policy is tracked separately.
-trunc : ℕ → Text → Text
-trunc maximum text with does (length clean ≤? maximum)
-  where clean = trim text
-... | true = trim text
-... | false with maximum
-...   | zero = []
-...   | suc n = take n (trim text) ++ toList "…"
 
 listRows : Ranking.Selection → List Graph.BeliefValues → List Graph.BeliefValues
 listRows limit rows = Ranking.cap limit (Ranking.sort

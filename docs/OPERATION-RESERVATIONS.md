@@ -297,7 +297,10 @@ retrieval has its separate operation proof in #132.
 Ordinary CLI output prints selected belief and pattern text and supporting
 document passages in full, including their original whitespace. Record
 selection, ordering and numeric display do not impose a text-width ceiling.
-Legacy hook clipping remains separate work in #168/#171.
+Existing hook retrieval also passes the complete nonblank query and returns
+all matching beliefs without fixed result counts. Injected knowledge and
+working-belief messages retain complete selected content. No hook is installed
+or enabled by this source change; the separate legacy Stop policy remains.
 
 Experience lookup, current review, source/review history and pending selection
 also have concrete read recovery values. Their full answers retain revisions,

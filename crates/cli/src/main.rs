@@ -478,20 +478,6 @@ async fn connect() -> Result<MimirService> {
     MimirService::connect(&cfg).await
 }
 
-fn trunc(s: &str, max: usize) -> String {
-    let s = s.trim();
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let end: usize = s
-            .char_indices()
-            .nth(max - 1)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
-        format!("{}…", &s[..end])
-    }
-}
-
 // ---------------------------------------------------------------------------
 // mimir init
 // ---------------------------------------------------------------------------
@@ -1096,7 +1082,7 @@ async fn cmd_hook_set_project(name: &str) -> Result<()> {
                     working.len()
                 );
                 for b in &working {
-                    println!("  {}  {}", b.id, trunc(&b.content, 160));
+                    println!("  {}  {}", b.id, &b.content);
                 }
             }
         }
@@ -1204,7 +1190,7 @@ async fn cmd_hook_stop(project: Option<&str>) -> Result<()> {
         working.len()
     );
     for b in &working {
-        msg.push_str(&format!("  {}  {}\n", b.id, trunc(&b.content, 160)));
+        msg.push_str(&format!("  {}  {}\n", b.id, &b.content));
     }
     eprintln!("{}", msg.trim_end());
     std::process::exit(2);
@@ -1224,7 +1210,7 @@ async fn cmd_hook_prompt() -> Result<()> {
     let project = session_project_from_hook_json(&v);
     let svc = connect().await?;
     let beliefs = svc
-        .query_relevant(&trunc(&prompt, 500), None, project.as_deref(), None)
+        .query_relevant(&prompt, None, project.as_deref(), None)
         .await?;
     if beliefs.is_empty() {
         return Ok(());
@@ -1272,7 +1258,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
     let project = session_project_from_hook_json(&v);
     let svc = connect().await?;
     let beliefs = svc
-        .query_relevant(&trunc(query_raw, 200), None, project.as_deref(), None)
+        .query_relevant(query_raw, None, project.as_deref(), None)
         .await?;
     if beliefs.is_empty() {
         return Ok(());
@@ -1290,7 +1276,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            trunc(&b.content, 200),
+            &b.content,
             proj,
         ));
     }
