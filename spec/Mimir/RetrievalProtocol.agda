@@ -131,11 +131,11 @@ module Run (ops : R.F32) (unicode : R.Unicode) where
   advance (vectorQuery r retired all token v) (inj₂ vector) = seeded r retired all token vector
   advance (closure c id seeds) (inj₁ error) = failed error
   advance (closure c id seeds) (inj₂ rows) with appendNew (Context.matched c)
-    (filterᵇ (R.eligible nothing (Context.superseded c)) rows)
+    (R.byIdentity (filterᵇ (R.eligible nothing (Context.superseded c)) rows))
   ... | matched , ids = seed (record c { matched = matched }) seeds
   advance (neighbors c project id seeds frontier next) (inj₁ error) = failed error
   advance (neighbors c project id seeds frontier next) (inj₂ rows) with
-    appendNew (Context.matched c) (filterᵇ (R.eligible (just project) (Context.superseded c)) rows)
+    appendNew (Context.matched c) (R.byIdentity (filterᵇ (R.eligible (just project) (Context.superseded c)) rows))
   ... | matched , ids = nextHop (record c { matched = matched }) project seeds frontier (next ++ ids)
   advance s@(finished result) reply = s
   advance s@(failed error) reply = s

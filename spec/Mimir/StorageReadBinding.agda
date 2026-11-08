@@ -4,17 +4,17 @@
 -- dependency operations; Mimir owns filtering, the selected table and LIMIT.
 module Mimir.StorageReadBinding where
 
-open import Data.Bool using (Bool; true)
+open import Data.Bool using (Bool; true; false)
 open import Data.Float.Base using (Float)
 open import Data.List using (List; []; _∷_; map; filterᵇ)
 open import Data.List.Relation.Binary.Permutation.Propositional using (_↭_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; suc)
+open import Data.Nat using (ℕ; suc; _≤?_)
 open import Data.Product using (_×_; _,_; proj₁; proj₂; Σ)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.Unit using (⊤)
 open import Relation.Nullary using (does)
-open import Relation.Binary.PropositionalEquality using (_≡_; cong; trans; sym; subst)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; trans; sym; subst)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.ApplicationStore as Store
@@ -56,7 +56,8 @@ module Vectors (ops : VectorOperations) where
         (VectorOperations.cosineDistance ops query (proj₂ second)) ≡ true →
       Ordered query (second ∷ rest) → Ordered query (first ∷ second ∷ rest)
 
-  -- Equal-distance rows may appear in either order. IDs are SQL table keys;
+  -- This base ordering allows equal distances in either order. Belief search
+  -- additionally requires StableSelected below. IDs are SQL table keys;
   -- absent graph endpoints are not prefiltered by vector-only SQL statements.
   record Selected (query : Store.Vector) (limit : Ranking.Selection) (filter : Maybe (List ℕ))
     (rows : List (ℕ × Store.Vector)) (result : List ℕ) : Set where
@@ -64,6 +65,33 @@ module Vectors (ops : VectorOperations) where
           complete : sorted ↭ eligibleVectors filter rows
           ordered : Ordered query sorted
           capped : result ≡ Ranking.cap limit (map proj₁ sorted)
+
+  -- Ordered already requires the forward distance comparison. If the reverse
+  -- comparison also holds, ascending identity decides that equal-distance tie.
+  tieBefore : Store.Vector → (ℕ × Store.Vector) → (ℕ × Store.Vector) → Bool
+  tieBefore query first second with VectorOperations.databaseLessEqual ops
+    (VectorOperations.cosineDistance ops query (proj₂ second))
+    (VectorOperations.cosineDistance ops query (proj₂ first))
+  ... | false = true
+  ... | true = does (proj₁ first ≤? proj₁ second)
+
+  StableTies : Store.Vector → List (ℕ × Store.Vector) → Set
+  StableTies query [] = ⊤
+  StableTies query (row ∷ []) = ⊤
+  StableTies query (first ∷ second ∷ rest) =
+    tieBefore query first second ≡ true × StableTies query (second ∷ rest)
+
+  record StableSelected (query : Store.Vector) (limit : Ranking.Selection) (filter : Maybe (List ℕ))
+    (rows : List (ℕ × Store.Vector)) (result : List ℕ) : Set where
+    field selected : Selected query limit filter rows result
+          stableTies : StableTies query (Selected.sorted selected)
+
+  equalDistancesUseIdentity : ∀ query first second →
+    VectorOperations.databaseLessEqual ops
+      (VectorOperations.cosineDistance ops query (proj₂ second))
+      (VectorOperations.cosineDistance ops query (proj₂ first)) ≡ true →
+    tieBefore query first second ≡ does (proj₁ first ≤? proj₁ second)
+  equalDistancesUseIdentity query first second equal rewrite equal = refl
 
 projectChunks : Text → Store.World → List ℕ
 projectChunks project snapshot = map Documents.Chunk.identity
@@ -110,7 +138,7 @@ module Read (ops : VectorOperations) where
   RetrievalMeaning state@(Retrieval.vectorQuery requestValue retired beliefs token vector) snapshot (inj₁ error) = ⊤
   RetrievalMeaning state@(Retrieval.vectorQuery requestValue retired beliefs token vector) snapshot (inj₂ ids)
     with Retrieval.command state
-  ... | just (Retrieval.queryVector query limit filter) = V.Selected query limit filter (Store.World.beliefVectors snapshot) ids
+  ... | just (Retrieval.queryVector query limit filter) = V.StableSelected query limit filter (Store.World.beliefVectors snapshot) ids
   ... | _ = Data.Empty.⊥
     where import Data.Empty
   RetrievalMeaning state snapshot reply = RetrievalReads.ReadMeaning state snapshot reply

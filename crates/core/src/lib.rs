@@ -713,12 +713,14 @@ impl MimirService {
                 })
                 .collect();
             scored.sort_by(|a, b| {
-                b.0.cmp(&a.0).then_with(|| {
-                    b.1.probability
-                        .value()
-                        .partial_cmp(&a.1.probability.value())
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
+                b.0.cmp(&a.0)
+                    .then_with(|| {
+                        b.1.probability
+                            .value()
+                            .partial_cmp(&a.1.probability.value())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .then_with(|| a.1.id.cmp(&b.1.id))
             });
             scored.into_iter().map(|(_, b)| b.id).collect()
         };
@@ -800,10 +802,11 @@ impl MimirService {
                     while !frontier.is_empty() {
                         let mut next_frontier = Vec::new();
                         for fid in frontier {
-                            let neighbors = self
+                            let mut neighbors = self
                                 .store
                                 .direct_downstream_by_project_on(client, fid, p)
                                 .await?;
+                            neighbors.sort_by_key(|belief| belief.id);
                             for b in neighbors {
                                 if b.memory_type == MemoryType::Working
                                     || superseded.contains(&b.id)
@@ -876,6 +879,7 @@ impl MimirService {
             prob_of[b]
                 .partial_cmp(&prob_of[a])
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.cmp(b))
         });
         // Type-preference list: matching-type beliefs first (stable order
         // preserved within each half), so they occupy the low-rank/high-weight
@@ -904,7 +908,9 @@ impl MimirService {
         matched.sort_by(|a, b| {
             let sa = fused.get(&a.id).copied().unwrap_or(0.0);
             let sb = fused.get(&b.id).copied().unwrap_or(0.0);
-            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+            sb.partial_cmp(&sa)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
         });
 
         if let Some(count) = limit {
@@ -1123,7 +1129,11 @@ impl MimirService {
             if let Some(entries) = by_belief.get(&belief.id) {
                 let mut entries = entries.clone();
                 // Strongest grounding first.
-                entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                entries.sort_by(|a, b| {
+                    b.1.partial_cmp(&a.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.0.cmp(&b.0))
+                });
                 if let Some(count) = evidence_per_belief {
                     entries.truncate(count.get());
                 }

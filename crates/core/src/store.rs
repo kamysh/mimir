@@ -459,9 +459,9 @@ fn vector_query(
     filtered: bool,
     scored: bool,
 ) -> String {
-    let (table, id) = match table {
-        VectorTable::Chunks => ("chunk_embeddings", "chunk_id"),
-        VectorTable::Beliefs => ("belief_embeddings", "belief_id"),
+    let (table, id, stable_ties) = match table {
+        VectorTable::Chunks => ("chunk_embeddings", "chunk_id", false),
+        VectorTable::Beliefs => ("belief_embeddings", "belief_id", true),
     };
     let filter = if filtered {
         format!("WHERE {id} = ANY($2)")
@@ -474,9 +474,14 @@ fn vector_query(
         ""
     };
     let base=format!("SELECT {id}::text{score}, embedding <=> $1 AS selection_distance FROM public.{table} {filter}");
+    let order = if stable_ties {
+        format!("selection_distance, {id}")
+    } else {
+        "selection_distance".into()
+    };
     match selection {
-        None=>format!("{base} ORDER BY selection_distance"),
-        Some(count)=>format!("SELECT * FROM (SELECT source.*, row_number() OVER (ORDER BY selection_distance) AS selection_position FROM ({base}) source) selected WHERE selection_position::numeric <= {}::numeric ORDER BY selection_position",count.get()),
+        None=>format!("{base} ORDER BY {order}"),
+        Some(count)=>format!("SELECT * FROM (SELECT source.*, row_number() OVER (ORDER BY {order}) AS selection_position FROM ({base}) source) selected WHERE selection_position::numeric <= {}::numeric ORDER BY selection_position",count.get()),
     }
 }
 
@@ -2368,6 +2373,244 @@ mod snapshot_read_tests {
             email: None,
             retirement: None,
         }
+    }
+
+    #[tokio::test]
+    async fn retrieval_tie_break_ignores_belief_insertion_order() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(
+                setup
+                    .query_one("SELECT gen_random_uuid()", &[])
+                    .await?
+                    .get::<_, Uuid>(0),
+            );
+        }
+        ids.sort();
+        let project = format!("retrieval-ties-{}", ids[0]);
+        let term = format!("tiedbelief{}", ids[0].simple());
+        let mut beliefs = Vec::new();
+        for (index, &id) in ids.iter().enumerate() {
+            let mut belief = Belief::new_in_project(
+                term.clone(),
+                if index == 2 { 0.9 } else { 0.5 },
+                0.2,
+                project.clone(),
+            )?;
+            belief.id = id;
+            beliefs.push(belief);
+        }
+        let checked = async {
+            for order in [[1, 0], [0, 1]] {
+                writer.delete_project(&project).await?;
+                for index in order {
+                    writer.store.insert_belief(&beliefs[index]).await?;
+                }
+                let all = reader
+                    .query_relevant(&term, None, Some(&project), None)
+                    .await?;
+                anyhow::ensure!(all.iter().map(|value| value.id).collect::<Vec<_>>() == ids[..2]);
+                let selected = reader
+                    .query_relevant(&term, std::num::NonZeroUsize::new(1), Some(&project), None)
+                    .await?;
+                anyhow::ensure!(
+                    selected.len() == 1 && selected[0].id == ids[0],
+                    "equal matches must select the lower UUID"
+                );
+                writer.store.insert_belief(&beliefs[2]).await?;
+                let selected = reader
+                    .query_relevant(&term, std::num::NonZeroUsize::new(1), Some(&project), None)
+                    .await?;
+                anyhow::ensure!(
+                    selected.len() == 1 && selected[0].id == ids[2],
+                    "UUID must not override the existing probability key"
+                );
+            }
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retrieval_tie_break_orders_equal_belief_vectors() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(
+                setup
+                    .query_one("SELECT gen_random_uuid()", &[])
+                    .await?
+                    .get::<_, Uuid>(0),
+            );
+        }
+        ids.sort();
+        let project = format!("retrieval-vector-ties-{}", ids[0]);
+        let checked = async {
+            for index in [2, 1, 0] {
+                let mut belief = Belief::new_in_project(
+                    "equal-distance vector".into(),
+                    0.5,
+                    0.2,
+                    project.clone(),
+                )?;
+                belief.id = ids[index];
+                writer.store.insert_belief(&belief).await?;
+                writer
+                    .store
+                    .insert_belief_embedding(
+                        belief.id,
+                        if index == 0 {
+                            &[0.0, 1.0, 0.0]
+                        } else {
+                            &[1.0, 0.0, 0.0]
+                        },
+                    )
+                    .await?;
+            }
+            let expected = vec![ids[1], ids[2], ids[0]];
+            let filtered = writer
+                .store
+                .query_beliefs_by_vector_filtered(&[1.0, 0.0, 0.0], None, &ids)
+                .await?;
+            anyhow::ensure!(
+                filtered == expected,
+                "distance precedes UUID; equal distances use UUID"
+            );
+            let first = writer
+                .store
+                .query_beliefs_by_vector_filtered(
+                    &[1.0, 0.0, 0.0],
+                    std::num::NonZeroUsize::new(1),
+                    &ids,
+                )
+                .await?;
+            anyhow::ensure!(first == vec![ids[1]]);
+            let all = writer
+                .store
+                .query_beliefs_by_vector(&[1.0, 0.0, 0.0], None)
+                .await?;
+            anyhow::ensure!(
+                all.iter()
+                    .copied()
+                    .filter(|id| ids.contains(id))
+                    .collect::<Vec<_>>()
+                    == expected
+            );
+            let first = writer
+                .store
+                .query_beliefs_by_vector(&[1.0, 0.0, 0.0], std::num::NonZeroUsize::new(1))
+                .await?;
+            anyhow::ensure!(first == all[..1]);
+            let scored = writer
+                .store
+                .query_beliefs_by_vector_scored(&[1.0, 0.0, 0.0], None)
+                .await?;
+            anyhow::ensure!(scored.iter().map(|(id, _)| *id).collect::<Vec<_>>() == all);
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retrieval_tie_break_orders_equal_weight_enriched_passages() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(
+                setup
+                    .query_one("SELECT gen_random_uuid()", &[])
+                    .await?
+                    .get::<_, Uuid>(0),
+            );
+        }
+        ids.sort();
+        let project = format!("retrieval-passage-ties-{}", ids[0]);
+        let term = format!("tiedpassage{}", ids[0].simple());
+        let checked = async {
+            let belief = writer
+                .add_belief_in_project(&term, 0.5, 0.2, &project, MemoryType::Fact)
+                .await?;
+            for index in [1, 0] {
+                let chunk = DocumentChunk::with_id(
+                    ids[index],
+                    format!("/mimir-test/{project}.md"),
+                    vec![format!("section {index}")],
+                    format!("complete supporting passage {index}"),
+                    None,
+                    Some(project.clone()),
+                );
+                writer.store.insert_document_chunk(&chunk).await?;
+                writer.add_evidence(belief.id, chunk.id, 0.5).await?;
+            }
+            let all = reader
+                .query_relevant_grounded(&term, None, None, Some(&project))
+                .await?;
+            anyhow::ensure!(
+                all.len() == 1
+                    && all[0]
+                        .evidence
+                        .iter()
+                        .map(|entry| entry.chunk_id)
+                        .collect::<Vec<_>>()
+                        == ids[..2]
+            );
+            let selected = reader
+                .query_relevant_grounded(
+                    &term,
+                    None,
+                    std::num::NonZeroUsize::new(1),
+                    Some(&project),
+                )
+                .await?;
+            anyhow::ensure!(
+                selected[0].evidence.len() == 1 && selected[0].evidence[0].chunk_id == ids[0]
+            );
+            let stronger = DocumentChunk::with_id(
+                ids[2],
+                format!("/mimir-test/{project}.md"),
+                vec!["stronger".into()],
+                "a more strongly weighted passage".into(),
+                None,
+                Some(project.clone()),
+            );
+            writer.store.insert_document_chunk(&stronger).await?;
+            writer.add_evidence(belief.id, stronger.id, 0.9).await?;
+            let selected = reader
+                .query_relevant_grounded(
+                    &term,
+                    None,
+                    std::num::NonZeroUsize::new(1),
+                    Some(&project),
+                )
+                .await?;
+            anyhow::ensure!(
+                selected[0].evidence.len() == 1 && selected[0].evidence[0].chunk_id == ids[2],
+                "UUID must not override a stronger passage"
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
     }
 
     #[tokio::test]

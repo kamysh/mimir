@@ -9,7 +9,8 @@ open import Data.Bool using (Bool; true; false; not)
 open import Data.Float.Base using (Float; _<ᵇ_)
 open import Data.List using (List; []; _∷_; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Data.Nat using (ℕ; _≟_; _≤?_)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤)
@@ -38,6 +39,23 @@ ranked : ℕ → Ranking.Selection → List Store.Ground → List Store.Ground
 ranked belief limit grounds = Ranking.cap limit (Ranking.sort
   (λ a b → not (Store.Ground.weight a <ᵇ Store.Ground.weight b))
   (filterᵇ (λ e → does (belief ≟ Store.Ground.belief e)) grounds))
+
+passageBefore : Store.Ground → Store.Ground → Bool
+passageBefore first second with Store.Ground.weight second <ᵇ Store.Ground.weight first
+... | true = true
+... | false with Store.Ground.weight first <ᵇ Store.Ground.weight second
+...   | true = false
+...   | false = does (Store.Ground.chunk first ≤? Store.Ground.chunk second)
+
+equalWeightsUseChunkIdentity : ∀ first second →
+  (Store.Ground.weight second <ᵇ Store.Ground.weight first) ≡ false →
+  (Store.Ground.weight first <ᵇ Store.Ground.weight second) ≡ false →
+  passageBefore first second ≡ does (Store.Ground.chunk first ≤? Store.Ground.chunk second)
+equalWeightsUseChunkIdentity first second reverse forward rewrite reverse | forward = refl
+
+rankedStable : ℕ → Ranking.Selection → List Store.Ground → List Store.Ground
+rankedStable belief limit grounds = Ranking.cap limit (Ranking.sort passageBefore
+  (filterᵇ (λ edge → does (belief ≟ Store.Ground.belief edge)) grounds))
 
 Cache = List (ℕ × Maybe Documents.Chunk)
 
@@ -76,7 +94,7 @@ refs (edge ∷ rest) cache with Lookup.lookup (Store.Ground.chunk edge) cache
 
 enrich : Ranking.Selection → List Store.Ground → List G.BeliefValues → Cache → Script (Text ⊎ List Grounded)
 enrich limit grounds [] cache = done (inj₂ [])
-enrich limit grounds (belief ∷ rest) cache = refs (ranked (G.BeliefValues.identity belief) limit grounds) cache >>= λ
+enrich limit grounds (belief ∷ rest) cache = refs (rankedStable (G.BeliefValues.identity belief) limit grounds) cache >>= λ
   { (inj₁ error) → done (inj₁ error)
   ; (inj₂ (evidence , after)) → enrich limit grounds rest after >>= λ
       { (inj₁ error) → done (inj₁ error)

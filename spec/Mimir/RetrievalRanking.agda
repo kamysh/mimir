@@ -108,9 +108,28 @@ sort before (x ∷ xs) = insert before x (sort before xs)
 hits : List Text → Text → ℕ
 hits terms content = length (filterᵇ (λ term → contains term content) terms)
 
+identityBefore : Graph.BeliefValues → Graph.BeliefValues → Bool
+identityBefore first second = does (Graph.BeliefValues.identity first ≤? Graph.BeliefValues.identity second)
+
+byIdentity : List Graph.BeliefValues → List Graph.BeliefValues
+byIdentity = sort identityBefore
+
+probabilityBefore : Graph.BeliefValues → Graph.BeliefValues → Bool
+probabilityBefore first second with Graph.BeliefValues.probability second <ᵇ Graph.BeliefValues.probability first
+... | true = true
+... | false with Graph.BeliefValues.probability first <ᵇ Graph.BeliefValues.probability second
+...   | true = false
+...   | false = identityBefore first second
+
+probabilityTiesUseIdentity : ∀ first second →
+  (Graph.BeliefValues.probability second <ᵇ Graph.BeliefValues.probability first) ≡ false →
+  (Graph.BeliefValues.probability first <ᵇ Graph.BeliefValues.probability second) ≡ false →
+  probabilityBefore first second ≡ identityBefore first second
+probabilityTiesUseIdentity first second reverse forward rewrite reverse | forward = refl
+
 tokenBefore : (ℕ × Graph.BeliefValues) → (ℕ × Graph.BeliefValues) → Bool
 tokenBefore (n , b) (m , c) with n ≟ m
-... | yes _ = not (Graph.BeliefValues.probability b <ᵇ Graph.BeliefValues.probability c)
+... | yes _ = probabilityBefore b c
 ... | no _ = does (m ≤? n)
 
 tokenRanking : Unicode → Text → List Graph.BeliefValues → List ℕ
@@ -120,8 +139,7 @@ tokenRanking unicode query all = map (λ { (_ , b) → Graph.BeliefValues.identi
   where terms = split isWhitespace (Unicode.lowercase unicode query)
 
 priorRanking : List Graph.BeliefValues → List ℕ
-priorRanking all = map Graph.BeliefValues.identity (sort
-  (λ b c → not (Graph.BeliefValues.probability b <ᵇ Graph.BeliefValues.probability c)) all)
+priorRanking all = map Graph.BeliefValues.identity (sort probabilityBefore all)
 
 typeRanking : Maybe Candidates.Memory → List Graph.BeliefValues → List ℕ
 typeRanking nothing all = []
@@ -167,11 +185,28 @@ module Fusion (ops : F32) where
       (leg (decimal 1 10) 0 prior
         (leg (decimal 3 10) 0 token (leg (fromNat 1) 0 vector [])))
 
+  before : Scores → Graph.BeliefValues → Graph.BeliefValues → Bool
+  before fused first second with less (get (Graph.BeliefValues.identity second) fused) (get (Graph.BeliefValues.identity first) fused)
+  ... | true = true
+  ... | false with less (get (Graph.BeliefValues.identity first) fused) (get (Graph.BeliefValues.identity second) fused)
+  ...   | true = false
+  ...   | false = identityBefore first second
+
+  tiedScoresUseIdentity : ∀ fused first second →
+    less (get (Graph.BeliefValues.identity second) fused) (get (Graph.BeliefValues.identity first) fused) ≡ false →
+    less (get (Graph.BeliefValues.identity first) fused) (get (Graph.BeliefValues.identity second) fused) ≡ false →
+    before fused first second ≡ identityBefore first second
+  tiedScoresUseIdentity fused first second reverse forward rewrite reverse | forward = refl
+
+  greaterScoreComesFirst : ∀ fused first second →
+    less (get (Graph.BeliefValues.identity second) fused) (get (Graph.BeliefValues.identity first) fused) ≡ true →
+    before fused first second ≡ true
+  greaterScoreComesFirst fused first second greater rewrite greater = refl
+
   rank : List ℕ → List ℕ → Maybe Candidates.Memory → Selection →
     List Graph.BeliefValues → List Graph.BeliefValues
   rank vector token preferred limit matched = cap limit
-    (sort (λ b c → not (less (get (Graph.BeliefValues.identity b) fused)
-      (get (Graph.BeliefValues.identity c) fused))) matched)
+    (sort (before fused) matched)
     where fused = scores vector token (priorRanking matched) (typeRanking preferred matched)
 
 unlimited : ∀ {A : Set} (xs : List A) → cap nothing xs ≡ xs

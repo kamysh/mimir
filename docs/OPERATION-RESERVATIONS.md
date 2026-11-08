@@ -388,3 +388,11 @@ the complete answer or read error has closed the transaction, and the read
 binding requires each learning-state projection to match the retrieval view.
 Ranking, project rules and assessment calculations remain unchanged.
 Concrete learning-context recovery remains #135 and mandatory assembly #74/#76.
+
+Belief retrieval uses ascending UUID after equal existing sort keys: token
+matches and probability, vector distance, prior probability and final fused
+score. Unranked graph expansion uses UUID order so the existing type-preference
+partition receives a stable input. Enriched supporting passages use chunk UUID
+after equal weights. Distinct scores keep their existing priority; formulas,
+weights and explicit selections are unchanged. The user approved this rule on
+2026-11-08. Direct evidence and document-search ordering are separate rules.
