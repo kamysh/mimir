@@ -60,6 +60,14 @@ uncertain write requires outcome readback first. Saved operation metadata and
 private diagnostics are distinct from publishing a belief or other business
 data.
 
+Malformed UUID arguments use this response before a handler executes. For
+example, `record_support` with `from_id: "not-a-uuid"` identifies `from_id`,
+explains the accepted identifier and directs the agent to look up the intended
+record or ask the user. Nested fields and list positions are identified in the
+same way. Accepted UUID forms are preserved; validation does not rewrite the
+request or invent a replacement ID. A correctly formed UUID whose record does
+not exist is a separate stored-reference check.
+
 This is the shared response from #75. Routing malformed, missing, incorrectly
 typed and unknown fields through it remains #80–#82, and continuing the judge's
 correction dialogue remains #100. Defining the response does not claim those

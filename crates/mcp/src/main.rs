@@ -127,7 +127,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string" }
+                    "id": { "type": "string", "format": "uuid" }
                 },
                 "required": ["id"]
             }
@@ -149,7 +149,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string" }
+                    "id": { "type": "string", "format": "uuid" }
                 },
                 "required": ["id"]
             }
@@ -174,8 +174,8 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "from_id": { "type": "string" },
-                    "to_id":   { "type": "string" },
+                    "from_id": { "type": "string", "format": "uuid" },
+                    "to_id":   { "type": "string", "format": "uuid" },
                     "weight":  { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                 },
                 "required": ["from_id", "to_id", "weight"]
@@ -187,8 +187,8 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "from_id": { "type": "string" },
-                    "to_id":   { "type": "string" },
+                    "from_id": { "type": "string", "format": "uuid" },
+                    "to_id":   { "type": "string", "format": "uuid" },
                     "weight":  { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                 },
                 "required": ["from_id", "to_id", "weight"]
@@ -200,8 +200,8 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "from_id": { "type": "string" },
-                    "to_id":   { "type": "string" },
+                    "from_id": { "type": "string", "format": "uuid" },
+                    "to_id":   { "type": "string", "format": "uuid" },
                     "weight":  { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                 },
                 "required": ["from_id", "to_id", "weight"]
@@ -213,8 +213,8 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id_a":   { "type": "string" },
-                    "id_b":   { "type": "string" },
+                    "id_a":   { "type": "string", "format": "uuid" },
+                    "id_b":   { "type": "string", "format": "uuid" },
                     "weight": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 1.0 }
                 },
                 "required": ["id_a", "id_b"]
@@ -226,7 +226,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string" }
+                    "id": { "type": "string", "format": "uuid" }
                 },
                 "required": ["id"]
             }
@@ -308,8 +308,8 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "belief_id": { "type": "string" },
-                    "chunk_id":  { "type": "string" },
+                    "belief_id": { "type": "string", "format": "uuid" },
+                    "chunk_id":  { "type": "string", "format": "uuid" },
                     "weight":    { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 1.0 }
                 },
                 "required": ["belief_id", "chunk_id"]
@@ -321,7 +321,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "belief_id": { "type": "string" }
+                    "belief_id": { "type": "string", "format": "uuid" }
                 },
                 "required": ["belief_id"]
             }
@@ -332,7 +332,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string" }
+                    "id": { "type": "string", "format": "uuid" }
                 },
                 "required": ["id"]
             }
@@ -343,7 +343,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id":    { "type": "string" },
+                    "id":    { "type": "string", "format": "uuid" },
                     "value": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                 },
                 "required": ["id", "value"]

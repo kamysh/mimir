@@ -98,6 +98,20 @@ fn walk(schema: &Value, value: &Value, path: &mut Vec<Segment>, issues: &mut Vec
             ));
         }
     }
+    if schema.get("format").and_then(Value::as_str) == Some("uuid") {
+        if value
+            .as_str()
+            .is_some_and(|text| uuid::Uuid::parse_str(text).is_err())
+        {
+            issues.push(CorrectionItem::new(
+                Location::Arguments,
+                Fault { path: path.clone(), code: Code::MalformedInput,
+                    message: "The supplied identifier is not a valid UUID.".into() },
+                "A UUID returned by Mimir for the intended record, in a form accepted by the tool's UUID parser.".into(),
+                "Copy the stored UUID from the relevant Mimir lookup result. For a new record, omit the ID only if this tool explicitly assigns it. If the intended record is unknown, ask the user. Do not invent an identifier.".into(),
+            ).expect("UUID corrections identify the field and explain the repair"));
+        }
+    }
     if let Some(number) = value.as_f64() {
         for (keyword, below) in [("minimum", true), ("maximum", false)] {
             if let Some(bound) = schema.get(keyword).and_then(Value::as_f64) {
@@ -368,6 +382,56 @@ pub fn tool_parameters(params: &Value) -> Result<(&str, Value), NeedsInput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_uuid_fields_report_every_nested_location_without_rewriting_input() {
+        let schema = json!({"type":"object","properties":{
+            "id":{"type":"string","format":"uuid"},
+            "pattern_id":{"type":["string","null"],"format":"uuid"},
+            "items":{"type":"array","items":{"type":"object","properties":{
+                "belief_id":{"type":"string","format":"uuid"}
+            }}}
+        }});
+        let original = json!({"id":"not-a-uuid","pattern_id":"wrong-pattern",
+            "items":[{"belief_id":"wrong-first"},{"belief_id":"wrong-second"}]});
+        let input = original.clone();
+        let correction =
+            arguments(&schema, &input).expect("UUID syntax must be checked before execution");
+        assert_eq!(input, original);
+        assert_eq!(correction.issues().len(), 4);
+        for path in [
+            vec![Segment::Key("id".into())],
+            vec![Segment::Key("pattern_id".into())],
+            vec![
+                Segment::Key("items".into()),
+                Segment::Index(0),
+                Segment::Key("belief_id".into()),
+            ],
+            vec![
+                Segment::Key("items".into()),
+                Segment::Index(1),
+                Segment::Key("belief_id".into()),
+            ],
+        ] {
+            let problem = correction
+                .issues()
+                .iter()
+                .find(|issue| issue.fault().path == path)
+                .unwrap();
+            assert_eq!(problem.fault().code, Code::MalformedInput);
+            assert!(problem.expected().contains("UUID"));
+            assert!(problem.suggested_correction().contains("ask the user"));
+            assert!(problem.suggested_correction().contains("Do not invent"));
+        }
+        for id in [
+            "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+            "6ba7b8109dad11d180b400c04fd430c8",
+            "{6ba7b810-9dad-11d1-80b4-00c04fd430c8}",
+            "urn:uuid:6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+        ] {
+            assert!(arguments(&schema, &json!({"id":id,"pattern_id":null})).is_none());
+        }
+    }
 
     #[test]
     fn numeric_domains_cover_nested_values_without_capping_selections() {

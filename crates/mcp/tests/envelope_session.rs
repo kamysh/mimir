@@ -221,6 +221,67 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             "correction omitted {field}: {encoded}"
         );
     }
+    // Malformed UUIDs are ordinary argument corrections, including nested
+    // arrays. No handler may run first and turn them into generic tool errors.
+    for (name, arguments, paths) in [
+        (
+            "record_support",
+            json!({"from_id":"wrong-from","to_id":"wrong-to","weight":0.5}),
+            vec![json!(["from_id"]), json!(["to_id"])],
+        ),
+        (
+            "delete_belief",
+            json!({"id":"wrong-id"}),
+            vec![json!(["id"])],
+        ),
+        (
+            "record_experience",
+            json!({"expected_revision":1,"experience":{
+            "id":experience_id,"project":project,"context":"must not replace",
+            "action":"must not apply","outcome":"unknown","source":"agent_report",
+            "evidence":[],"belief_ids":["wrong-belief"],"pattern_id":"wrong-pattern"}}),
+            vec![
+                json!(["experience", "belief_ids", 0]),
+                json!(["experience", "pattern_id"]),
+            ],
+        ),
+    ] {
+        let message = json!({"jsonrpc":"2.0","id":"uuid-fields","method":"tools/call","params":{"name":name,"arguments":arguments}});
+        input.write_all(format!("{message}\n").as_bytes()).await?;
+        input.flush().await?;
+        let mut line = String::new();
+        ensure!(
+            output.read_line(&mut line).await? != 0,
+            "server stopped on malformed UUIDs"
+        );
+        let response: Value = serde_json::from_str(&line)?;
+        ensure!(
+            response.get("error").is_none(),
+            "UUID correction became a tool error: {response}"
+        );
+        let correction: NeedsInput =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+        let encoded = serde_json::to_value(&correction)?;
+        ensure!(
+            encoded["business_changes"] == "none",
+            "UUID refusal did not certify no business writes"
+        );
+        for path in paths {
+            ensure!(
+                encoded["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|issue| issue["fault"]["path"] == path
+                        && issue["fault"]["code"] == "malformed_input"
+                        && issue["suggested_correction"]
+                            .as_str()
+                            .unwrap()
+                            .contains("Do not invent")),
+                "missing UUID correction at {path}: {encoded}"
+            );
+        }
+    }
     // Retention is configuration owned by the user, not an agent argument.
     for arguments in [
         json!({"project":project}),
