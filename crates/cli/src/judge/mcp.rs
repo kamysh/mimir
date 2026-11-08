@@ -699,33 +699,43 @@ mod tests {
         .await;
         assert!(malformed.is_err());
 
-        let pid_file =
-            std::env::temp_dir().join(format!("mimir-descendant-{}.pid", uuid::Uuid::new_v4()));
+        use tokio::io::AsyncBufReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let script = format!(
-            "sleep 30 & child=$!; printf '%s' \"$child\" > '{}'; wait",
-            pid_file.display()
+            "exec 3<>/dev/tcp/127.0.0.1/{}; bash -c 'printf \"%s %s\\n\" \"$PPID\" \"$BASHPID\" >&3; read -r -u 3 stop'; wait",
+            listener.local_addr().unwrap().port()
         );
-        let cancelled = tokio::time::timeout(
-            Duration::from_secs(1),
+        // Both the MCP parent and its waiting descendant retain this socket.
+        // The descendant announces readiness only after inheriting its handle.
+        let startup = tokio::spawn(async move {
             Client::start(
                 "bash",
                 &["-c".into(), script],
                 Path::new("/var/tmp/mimir/step5/unused-config"),
-            ),
-        )
-        .await;
-        assert!(cancelled.is_err());
-        let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
-        let mut alive = true;
-        for _ in 0..20 {
-            let proc_state = std::fs::read_to_string(format!("/proc/{pid}/stat"));
-            alive = proc_state.is_ok_and(|state| state.split_whitespace().nth(2) != Some("Z"));
-            if !alive {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(!alive, "cancellation left a live descendant");
-        std::fs::remove_file(pid_file).unwrap();
+            )
+            .await
+        });
+        let (transport, _) = listener.accept().await.unwrap();
+        let mut transport = BufReader::new(transport);
+        let mut ready = String::new();
+        assert!(transport.read_line(&mut ready).await.unwrap() > 0);
+        let pids: Vec<u32> = ready
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 2);
+        assert_ne!(
+            pids[0], pids[1],
+            "the fixture must include a real descendant"
+        );
+        assert!(
+            !startup.is_finished(),
+            "startup unexpectedly completed without an MCP reply"
+        );
+        startup.abort();
+        assert!(matches!(startup.await, Err(error) if error.is_cancelled()));
+        let mut remaining = Vec::new();
+        transport.read_to_end(&mut remaining).await.unwrap();
+        assert!(remaining.is_empty());
     }
 }
