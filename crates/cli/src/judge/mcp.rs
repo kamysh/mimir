@@ -3,13 +3,36 @@ use mimir_core::validation::{Fault, Refusal, RefusalKind};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::Arc;
+#[cfg(test)]
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
-const MAX_STDERR: usize = 4096;
+struct StderrCapture {
+    bytes: Vec<u8>,
+    error: Option<std::io::Error>,
+}
+
+#[derive(Debug)]
+pub struct McpStreamEnded {
+    pub stderr: Vec<u8>,
+    pub issues: Vec<String>,
+}
+
+impl std::fmt::Display for McpStreamEnded {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(output, "MCP stream ended")?;
+        if !self.stderr.is_empty() {
+            write!(output, ": {}", String::from_utf8_lossy(&self.stderr))?;
+        }
+        for issue in &self.issues {
+            write!(output, "; {issue}")?;
+        }
+        Ok(())
+    }
+}
+impl std::error::Error for McpStreamEnded {}
 
 #[derive(Debug)]
 pub struct CandidateConflict(pub Fault);
@@ -155,7 +178,7 @@ pub struct Client {
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
-    stderr: Arc<Mutex<Vec<u8>>>,
+    stderr: Option<JoinHandle<StderrCapture>>,
     next_id: u64,
     allowed_tools: Vec<Value>,
 }
@@ -196,27 +219,16 @@ impl Client {
             .stderr
             .take()
             .ok_or_else(|| anyhow!("MCP stderr unavailable"))?;
-        let stderr = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&stderr);
-        tokio::spawn(async move {
-            let mut chunk = [0u8; 1024];
-            while let Ok(size) = error_pipe.read(&mut chunk).await {
-                if size == 0 {
-                    break;
-                }
-                let mut bytes = captured.lock().await;
-                bytes.extend_from_slice(&chunk[..size]);
-                if bytes.len() > MAX_STDERR {
-                    let excess = bytes.len() - MAX_STDERR;
-                    bytes.drain(..excess);
-                }
-            }
+        let stderr = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            let error = error_pipe.read_to_end(&mut bytes).await.err();
+            StderrCapture { bytes, error }
         });
         let mut client = Self {
             child,
             input,
             output,
-            stderr,
+            stderr: Some(stderr),
             next_id: 1,
             allowed_tools: Vec::new(),
         };
@@ -263,15 +275,7 @@ impl Client {
             let byte = self.output.read_u8().await;
             let byte = match byte {
                 Ok(byte) => byte,
-                Err(_) => {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                    let stderr = self.stderr.lock().await;
-                    let detail = super::state::bounded(&String::from_utf8_lossy(&stderr), 512);
-                    if detail.is_empty() {
-                        bail!("MCP stream ended");
-                    }
-                    bail!("MCP stream ended: {detail}");
-                }
+                Err(error) => return Err(self.ended(error).await.into()),
             };
             if byte == b'\n' {
                 break;
@@ -281,6 +285,46 @@ impl Client {
         serde_json::from_slice(&bytes).map_err(|error| {
             super::state::SourceFailure::json("malformed MCP response", &bytes, error).into()
         })
+    }
+
+    async fn ended(&mut self, cause: std::io::Error) -> McpStreamEnded {
+        let mut issues = vec![format!("response read: {cause}")];
+        // EOF means no further protocol reply can arrive. Stop the exact owned
+        // group before reaping its leader, so descendants cannot retain pipes
+        // or embedding work and the group ID cannot have been reused.
+        if let Some(pid) = self.child.id() {
+            if unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } == -1 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    issues.push(format!("child-group cleanup: {error}"));
+                }
+            }
+        }
+        if let Err(error) = self.child.start_kill() {
+            issues.push(format!("child cleanup: {error}"));
+        }
+        if let Err(error) = self.child.wait().await {
+            issues.push(format!("child wait: {error}"));
+        }
+        // Keep the handle in self while awaiting it: cancelling this future
+        // must still let Drop abort the reader rather than detach it.
+        let joined = match self.stderr.as_mut() {
+            Some(reader) => Some(reader.await),
+            None => None,
+        };
+        self.stderr.take();
+        let mut stderr = Vec::new();
+        match joined {
+            Some(Ok(capture)) => {
+                stderr = capture.bytes;
+                if let Some(error) = capture.error {
+                    issues.push(format!("stderr read: {error}"));
+                }
+            }
+            Some(Err(error)) => issues.push(format!("stderr task: {error}")),
+            None => issues.push("stderr was already collected".into()),
+        }
+        McpStreamEnded { stderr, issues }
     }
 
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
@@ -547,6 +591,9 @@ impl Drop for Client {
             let _ = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
         }
         let _ = self.child.start_kill();
+        if let Some(reader) = self.stderr.take() {
+            reader.abort();
+        }
     }
 }
 
@@ -557,6 +604,47 @@ mod startup_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn ended_stream_keeps_complete_stderr_before_returning() {
+        let work = crate::judge::harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
+        let mut bytes = format!(
+            "first diagnostic\n{}\nactual final explanation\n",
+            "λ".repeat(64 * 1024 + 1)
+        )
+        .into_bytes();
+        bytes.push(0xff);
+        let path = work.write("stderr.bin", &bytes).unwrap();
+        let error = Client::start(
+            "bash",
+            &[
+                "-c".into(),
+                "read -r request; cat -- \"$1\" >&2; exit 7".into(),
+                "fixture".into(),
+                path.display().to_string(),
+            ],
+            &work.path().join("unused-config"),
+        )
+        .await
+        .err()
+        .expect("the fixture exits without a protocol reply");
+        let ended = error
+            .downcast_ref::<McpStreamEnded>()
+            .expect("terminal evidence must remain available");
+        assert_eq!(
+            ended.stderr, bytes,
+            "neither a prefix nor a tail may replace the evidence"
+        );
+        assert!(error.to_string().contains("actual final explanation"));
+        assert!(
+            !ended
+                .issues
+                .iter()
+                .any(|issue| issue.starts_with("stderr ")),
+            "stderr collection did not complete: {:?}",
+            ended.issues
+        );
+    }
 
     #[test]
     fn only_known_candidate_conflicts_are_deferred() {
