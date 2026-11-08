@@ -24,12 +24,18 @@ import Mimir.StructuredValue as Wire
 import Mimir.LearningStore as Learning
 import Mimir.ExperienceRead as Experiences
 import Mimir.RetrievalRanking as Ranking
+import Mimir.AssessmentRead as Assessment
+import Mimir.LearningAssessmentQueries as AssessmentView
 
 module Bind (typed : Committed.Contract Physical.World) where
   module T = Committed.Contract typed
 
   Reply : (effect : Query.Effect) → Query.Reply effect → Set
-  Reply Query.beginRead value = ⊤
+  Reply (Query.openScoreTarget q) (inj₁ error) = ⊤
+  Reply (Query.openScoreTarget q) (inj₂ (tx , first)) = Σ T.Read (λ event → first ≡ T.snapshot event)
+  Reply (Query.scoreSnapshotRows tx first q) (inj₁ error) = ⊤
+  Reply (Query.scoreSnapshotRows tx first q) (inj₂ second) = Σ T.Read (λ event →
+    T.snapshot event ≡ first × second ≡ T.snapshot event)
   Reply (Query.dropTransaction tx) value = ⊤
   Reply (Query.select tx statement) (inj₁ error) = ⊤
   Reply (Query.select tx statement) (inj₂ value) = Σ T.Read (λ event → value ≡ Physical.learningView (T.snapshot event))
@@ -48,6 +54,14 @@ module Bind (typed : Committed.Contract Physical.World) where
     reviews ≡ Raw.readHistory Raw.reviews id (Physical.World.history first)
   historyReviewsUseSourceSnapshot tx first id reviews (event , stable , selected) =
     trans selected (cong (λ state → Raw.readHistory Raw.reviews id (Physical.World.history state)) stable)
+
+  scoresUseValidatedTargetSnapshot : ∀ tx first q second →
+    Reply (Query.scoreSnapshotRows tx first q) (inj₂ second) →
+    Assessment.scores q (AssessmentView.view (Physical.learningView second)) ≡
+    Assessment.scores q (AssessmentView.view (Physical.learningView first))
+  scoresUseValidatedTargetSnapshot tx first q second (event , stable , selected) =
+    cong (λ state → Assessment.scores q (AssessmentView.view (Physical.learningView state)))
+      (trans selected stable)
 
 module ExperienceReads (format : Encoding.Formatting) where
   module Encode = Encoding.Encode format

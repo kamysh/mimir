@@ -117,16 +117,33 @@ impl AgeStore {
         scope: &str,
         rubric: &str,
     ) -> Result<serde_json::Value> {
+        self.lesson_assessment_after_target(project, belief_id, scope, rubric, || async { Ok(()) })
+            .await
+    }
+
+    pub(super) async fn lesson_assessment_after_target<F, W>(
+        &self,
+        project: &str,
+        belief_id: Uuid,
+        scope: &str,
+        rubric: &str,
+        after_target: F,
+    ) -> Result<serde_json::Value>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
         ensure!(
             !project.trim().is_empty() && !scope.trim().is_empty() && !rubric.trim().is_empty(),
             "assessment scope must be explicit"
         );
         let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
+        let tx = snapshot_transaction(&mut client).await?;
         let beliefs = self
             .learning_beliefs_for_ids(&tx, &HashSet::from([belief_id]))
             .await?;
         validate_targets(&beliefs, project, [belief_id].into_iter())?;
+        after_target().await?;
         let row = tx.query_one("SELECT COALESCE(sum(a.positive),0), COALESCE(sum(a.negative),0), COALESCE(sum(a.benefit),0), COALESCE(sum(a.benefit_weight),0), count(*), count(*) FILTER (WHERE a.positive+a.negative=0), count(*) FILTER (WHERE a.benefit_weight=0) FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 AND e.review_revision=r.revision AND e.revision=r.experience_revision", &[&project,&belief_id,&scope,&rubric]).await?;
         let scores = crate::assessment::Scores::from_totals(
             row.get(0),
@@ -137,9 +154,9 @@ impl AgeStore {
             row.get(5),
             row.get(6),
         )?;
-        Ok(
-            serde_json::json!({"project":project,"belief_id":belief_id,"scope":scope,"rubric":rubric,"scores":scores}),
-        )
+        let result = serde_json::json!({"project":project,"belief_id":belief_id,"scope":scope,"rubric":rubric,"scores":scores});
+        tx.commit().await?;
+        Ok(result)
     }
     pub async fn lesson_assessment_history(
         &self,

@@ -2241,6 +2241,58 @@ mod snapshot_read_tests {
     }
 
     #[tokio::test]
+    async fn assessment_snapshot_retains_scores_during_project_deletion() -> Result<()> {
+        use crate::assessment::{Assessment, Axis};
+        use crate::learning::{BeliefTarget, Experience, ObservationSource, Outcome, Review};
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let client = db::connect(&cfg.database).await?;
+        let id: Uuid = client
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-assessment-{id}");
+        let reader = AgeStore::new(client, cfg.database.dbname.clone())?;
+        let checked = async {
+            let belief = writer.add_belief_in_project("one assessment view", 0.5, 0.2, &project, MemoryType::Fact).await?;
+            let source = Experience { id, project: project.clone(), context: "assessment read".into(),
+                action: "observe supporting evidence".into(), outcome: Outcome::Success,
+                source: ObservationSource::ToolResult, evidence: vec!["observed supporting result".into()],
+                belief_ids: vec![], pattern_id: None, learning_items: vec![], source_records: vec![] };
+            writer.record_experience(&source, 0).await?;
+            let review = Review { experience_id: id, experience_revision: 1, reviewer: "snapshot-test".into(),
+                rationale: "observed evidence".into(), feedback: vec![], links: vec![], superseded_beliefs: vec![],
+                candidates: vec![], candidate_feedback: vec![], candidate_links: vec![], extracted_items: vec![],
+                source_coverage: vec![], assessments: vec![Assessment {
+                    target: BeliefTarget::Existing { belief_id: belief.id }, scope: "snapshot-scope".into(), rubric: "snapshot-rubric".into(),
+                    correctness: Axis { value: Some(1.0), weight: 1.0 }, usefulness: Axis { value: Some(0.8), weight: 1.0 },
+                    evidence_indices: vec![0], item_ids: vec![], item_keys: vec![], rationale: "observed support".into(),
+                }] };
+            writer.review_experience(&review, 0).await?;
+            let before = writer.lesson_assessment(&project, belief.id, "snapshot-scope", "snapshot-rubric").await?;
+            let interruption = reader.lesson_assessment_after_target(&project, belief.id, "snapshot-scope", "snapshot-rubric", || async {
+                anyhow::bail!("controlled interruption after assessment target")
+            }).await.unwrap_err();
+            anyhow::ensure!(interruption.to_string().contains("controlled interruption"));
+            anyhow::ensure!(reader.lesson_assessment(&project, belief.id, "snapshot-scope", "snapshot-rubric").await? == before,
+                "an interrupted assessment read must release its transaction and connection");
+            let during = reader.lesson_assessment_after_target(&project, belief.id, "snapshot-scope", "snapshot-rubric", || async {
+                anyhow::ensure!(writer.delete_project(&project).await? > 0, "the independent writer must commit project deletion");
+                Ok(())
+            }).await?;
+            anyhow::ensure!(during == before, "assessment scores must retain the validated target snapshot: before={before}; during={during}");
+            let missing = reader.lesson_assessment(&project, belief.id, "snapshot-scope", "snapshot-rubric").await.unwrap_err();
+            anyhow::ensure!(missing.to_string().contains("not found"), "the next request must observe target deletion");
+            anyhow::ensure!(reader.get_belief(belief.id).await?.is_none());
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn history_snapshot_keeps_both_ledgers_during_a_new_revision() -> Result<()> {
         use crate::learning::{Experience, ObservationSource, Outcome};
         let cfg = config();

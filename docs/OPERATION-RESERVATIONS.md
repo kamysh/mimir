@@ -317,3 +317,11 @@ transaction. A revision and review committed by another client between those
 queries become visible together on the next request. The formal binding pins
 the review query to the source query's snapshot. Completion or interruption
 releases the transaction. Mandatory dispatcher assembly remains #74/#76.
+
+Assessment lookup likewise validates its target and reads its contributions
+in one read-only stable transaction. A project deletion committed between
+those queries cannot replace the original scores with neutral defaults in
+the same response. The next request sees the missing target. Its Agda binding
+requires the score query to use the target-validation snapshot. Concrete
+assessment/explanation recovery remains #131, with explanation consistency
+tracked separately in #250.

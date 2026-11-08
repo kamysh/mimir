@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
--- Ordinary SELECTs observe their own committed state. History uses an explicit
--- read-only stable transaction so its source and review lists agree.
+-- Ordinary SELECTs observe their own committed state. History and assessment
+-- lookup use explicit read-only stable transactions for their coupled reads.
 module Mimir.LearningQueryProtocol where
 
 open import Data.Bool using (Bool; true; false; _∧_)
@@ -38,11 +38,11 @@ data Request : Set where
 data Statement : Set where
   currentOf reviewOf sourceVersions reviewVersions : ℕ → Statement
   pendingRows : Maybe Text → Maybe ℕ → List ℕ → Statement
-  scoreTarget scoreRows : Selection.Query → Statement
   historicalScores : Selection.Query → ℕ → ℕ → Statement
 
 data Effect : Set where
-  beginRead : Effect
+  openScoreTarget : Selection.Query → Effect
+  scoreSnapshotRows : ℕ → Physical.World → Selection.Query → Effect
   readReviewHeader : ℕ → Effect
   openHistory : ℕ → Effect
   historySnapshotReviews : ℕ → Physical.World → ℕ → Effect
@@ -50,7 +50,8 @@ data Effect : Set where
   dropTransaction : ℕ → Effect
 
 Reply : Effect → Set
-Reply beginRead = Text ⊎ ℕ
+Reply (openScoreTarget _) = Text ⊎ (ℕ × Physical.World)
+Reply (scoreSnapshotRows _ _ _) = Text ⊎ Physical.World
 Reply (readReviewHeader _) = Text ⊎ Maybe RawHistory.Current
 Reply (openHistory _) = Text ⊎ (ℕ × Physical.World × List RawHistory.Entry)
 Reply (historySnapshotReviews _ _ _) = Text ⊎ List RawHistory.Entry
@@ -83,17 +84,19 @@ read handle statement next = ask (select handle statement) receive
   receive (inj₁ failure) = close handle (failed failure)
   receive (inj₂ observed) = next observed
 
-scoreAfterTarget : ℕ → Selection.Query → Store.World → Script Result
+scoreAfterTarget : ℕ → Selection.Query → Physical.World → Script Result
 scoreAfterTarget tx q first with Targets.validate (Selection.Query.project q)
-  (map Recompute.target (Recompute.beliefs (Publication.World.nodes (Store.World.publication first))))
+  (map Recompute.target (Recompute.beliefs (Publication.World.nodes (Store.World.publication (Physical.learningView first)))))
   (Selection.Query.belief q ∷ [])
 ... | Validation.rejected failure refutation = close (just tx) (invalidTarget failure)
-... | Validation.accepted valid = read (just tx) (scoreRows q) (λ second →
-  close (just tx) (scoreResult (Assessment.assessed q (Assessment.scores q (AssessmentView.view second)))))
+... | Validation.accepted valid = ask (scoreSnapshotRows tx first q) λ where
+  (inj₁ error) → close (just tx) (failed error)
+  (inj₂ second) → close (just tx) (scoreResult
+    (Assessment.assessed q (Assessment.scores q (AssessmentView.view (Physical.learningView second)))))
 
-scoreAfterBegin : Selection.Query → Text ⊎ ℕ → Script Result
+scoreAfterBegin : Selection.Query → Text ⊎ (ℕ × Physical.World) → Script Result
 scoreAfterBegin q (inj₁ failure) = done (failed failure)
-scoreAfterBegin q (inj₂ tx) = read (just tx) (scoreTarget q) (scoreAfterTarget tx q)
+scoreAfterBegin q (inj₂ (tx , first)) = scoreAfterTarget tx q first
 
 historyAfterSources : ℕ → Store.World → Store.World → Script Result
 historyAfterSources id first second with History.reviewHistory id (Store.World.reviewTimes second)
@@ -122,7 +125,7 @@ start (pending project (just limit) excluded) with does (1 ≤? limit)
 start (score q) with nonblank (Selection.Query.project q) ∧
   nonblank (Selection.Query.scope q) ∧ nonblank (Selection.Query.rubric q)
 ... | false = done (scoreResult Assessment.missingScope)
-... | true = ask beginRead (scoreAfterBegin q)
+... | true = ask (openScoreTarget q) (scoreAfterBegin q)
 start (assessmentHistory q offset limit) with does (1 ≤? limit) ∧ does (offset ≤? Bounds.i64Maximum)
 ... | false = done (assessmentHistoryResult Assessment.invalidPage)
 ... | true with nonblank (Selection.Query.project q)
