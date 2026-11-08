@@ -319,16 +319,15 @@ async fn sql_pages_cover_large_filtered_corpus_without_a_total_cutoff() {
     let project = format!("paging-{}", Uuid::new_v4());
     let mut expected = std::collections::HashSet::new();
     for n in 0..207 {
-        let b = svc
-            .add_belief_in_project(
-                &format!("{n}: {}", "long evidence ".repeat(300)),
-                0.5,
-                0.1,
-                &project,
-                MemoryType::Fact,
-            )
-            .await
-            .unwrap();
+        let b = isolation::seed_belief_in_project(
+            &format!("{n}: {}", "long evidence ".repeat(300)),
+            0.5,
+            0.1,
+            &project,
+            MemoryType::Fact,
+        )
+        .await
+        .unwrap();
         expected.insert(b.id.to_string());
     }
     let mut seen = std::collections::HashSet::new();
@@ -375,22 +374,31 @@ async fn sql_pager_handles_single_last_and_global_project_visibility() {
     let svc = service().await;
     let project = format!("paging-{}", Uuid::new_v4());
     let foreign = format!("paging-{}", Uuid::new_v4());
-    let global = svc
-        .add_belief("pager global marker", 0.5, 0.0, MemoryType::Fact)
+    let global = isolation::seed_belief("pager global marker", 0.5, 0.0, MemoryType::Fact)
         .await
         .unwrap();
-    let a = svc
-        .add_belief_in_project("pager local first", 0.5, 0.0, &project, MemoryType::Fact)
-        .await
-        .unwrap();
-    let b = svc
-        .add_belief_in_project("pager local second", 0.5, 0.0, &project, MemoryType::Fact)
-        .await
-        .unwrap();
-    let outside = svc
-        .add_belief_in_project("pager foreign", 0.5, 0.0, &foreign, MemoryType::Fact)
-        .await
-        .unwrap();
+    let a = isolation::seed_belief_in_project(
+        "pager local first",
+        0.5,
+        0.0,
+        &project,
+        MemoryType::Fact,
+    )
+    .await
+    .unwrap();
+    let b = isolation::seed_belief_in_project(
+        "pager local second",
+        0.5,
+        0.0,
+        &project,
+        MemoryType::Fact,
+    )
+    .await
+    .unwrap();
+    let outside =
+        isolation::seed_belief_in_project("pager foreign", 0.5, 0.0, &foreign, MemoryType::Fact)
+            .await
+            .unwrap();
 
     let mut offset = 0;
     let mut seen = Vec::new();
@@ -685,16 +693,15 @@ async fn offline_learning_scenario_matrix() {
     let svc = service().await;
     let project = format!("learning-scenarios-{}", Uuid::new_v4());
     let foreign = format!("learning-scenarios-{}", Uuid::new_v4());
-    let foreign_belief = svc
-        .add_belief_in_project(
-            "foreign keyboard claim",
-            0.5,
-            0.0,
-            &foreign,
-            MemoryType::Fact,
-        )
-        .await
-        .unwrap();
+    let foreign_belief = isolation::seed_belief_in_project(
+        "foreign keyboard claim",
+        0.5,
+        0.0,
+        &foreign,
+        MemoryType::Fact,
+    )
+    .await
+    .unwrap();
     let lesson = "For a stale keyboard indicator, restart the layout process after checking its loaded configuration";
     let capture =
         |tag: &str, outcome: Outcome, source: ObservationSource, evidence: &str| Experience {
@@ -936,16 +943,15 @@ async fn offline_learning_scenario_matrix() {
 async fn standalone_foreground_belief_can_still_double_count_one_incident() {
     let svc = service().await;
     let project = format!("learning-overlap-{}", Uuid::new_v4());
-    let belief = svc
-        .add_belief_in_project(
-            "Restarting the stale keyboard process fixes the indicator",
-            0.7,
-            0.2,
-            &project,
-            MemoryType::Experiential,
-        )
-        .await
-        .unwrap();
+    let belief = isolation::seed_belief_in_project(
+        "Restarting the stale keyboard process fixes the indicator",
+        0.7,
+        0.2,
+        &project,
+        MemoryType::Experiential,
+    )
+    .await
+    .unwrap();
     let mut e = experience(&project);
     e.belief_ids.push(belief.id);
     svc.record_experience(&e, 0).await.unwrap();
@@ -976,26 +982,24 @@ async fn standalone_foreground_belief_can_still_double_count_one_incident() {
 async fn learning_cycle_retry_revision_causal_projection_and_retraction() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let a = svc
-        .add_belief_in_project(
-            "restart stale process",
-            0.8,
-            0.0,
-            &project,
-            MemoryType::Experiential,
-        )
-        .await
-        .unwrap();
-    let b = svc
-        .add_belief_in_project(
-            "keyboard layout updates",
-            0.3,
-            0.0,
-            &project,
-            MemoryType::Experiential,
-        )
-        .await
-        .unwrap();
+    let a = isolation::seed_belief_in_project(
+        "restart stale process",
+        0.8,
+        0.0,
+        &project,
+        MemoryType::Experiential,
+    )
+    .await
+    .unwrap();
+    let b = isolation::seed_belief_in_project(
+        "keyboard layout updates",
+        0.3,
+        0.0,
+        &project,
+        MemoryType::Experiential,
+    )
+    .await
+    .unwrap();
     let mut e = experience(&project);
     e.belief_ids = vec![a.id, b.id];
     let first = svc.record_experience(&e, 0).await.unwrap();
@@ -1323,10 +1327,10 @@ async fn rejected_candidate_review_rolls_back_node_and_acknowledgement() {
 async fn deleting_candidate_recomputes_linked_belief_and_keeps_tombstone() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let target = svc
-        .add_belief_in_project("downstream claim", 0.5, 0.0, &project, MemoryType::Fact)
-        .await
-        .unwrap();
+    let target =
+        isolation::seed_belief_in_project("downstream claim", 0.5, 0.0, &project, MemoryType::Fact)
+            .await
+            .unwrap();
     let e = experience(&project);
     svc.record_experience(&e, 0).await.unwrap();
     let mut r = review(&e);
@@ -1388,16 +1392,14 @@ async fn review_recompute_stays_in_project_and_keeps_external_incoming_support()
     let svc = service().await;
     let own = format!("learning-{}", Uuid::new_v4());
     let foreign = format!("learning-{}", Uuid::new_v4());
-    let seed = svc
-        .add_belief_in_project("local seed", 0.5, 0.0, &own, MemoryType::Fact)
+    let seed = isolation::seed_belief_in_project("local seed", 0.5, 0.0, &own, MemoryType::Fact)
         .await
         .unwrap();
-    let foreign_node = svc
-        .add_belief_in_project("foreign bridge", 0.5, 0.0, &foreign, MemoryType::Fact)
-        .await
-        .unwrap();
-    let own_tail = svc
-        .add_belief_in_project("own tail", 0.5, 0.0, &own, MemoryType::Fact)
+    let foreign_node =
+        isolation::seed_belief_in_project("foreign bridge", 0.5, 0.0, &foreign, MemoryType::Fact)
+            .await
+            .unwrap();
+    let own_tail = isolation::seed_belief_in_project("own tail", 0.5, 0.0, &own, MemoryType::Fact)
         .await
         .unwrap();
     svc.add_edge(seed.id, foreign_node.id, EdgeType::Supports, 1.0)
@@ -1438,26 +1440,24 @@ async fn review_recompute_stays_in_project_and_keeps_external_incoming_support()
 async fn grounding_removal_recomputes_without_erasing_independent_support() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let parent = svc
-        .add_belief_in_project(
-            "parent grounding source",
-            0.5,
-            0.0,
-            &project,
-            MemoryType::Fact,
-        )
-        .await
-        .unwrap();
-    let target = svc
-        .add_belief_in_project(
-            "target grounding claim",
-            0.5,
-            0.0,
-            &project,
-            MemoryType::Fact,
-        )
-        .await
-        .unwrap();
+    let parent = isolation::seed_belief_in_project(
+        "parent grounding source",
+        0.5,
+        0.0,
+        &project,
+        MemoryType::Fact,
+    )
+    .await
+    .unwrap();
+    let target = isolation::seed_belief_in_project(
+        "target grounding claim",
+        0.5,
+        0.0,
+        &project,
+        MemoryType::Fact,
+    )
+    .await
+    .unwrap();
     svc.add_edge(parent.id, target.id, EdgeType::Supports, 0.5)
         .await
         .unwrap();
@@ -1499,26 +1499,24 @@ async fn grounding_removal_recomputes_without_erasing_independent_support() {
 async fn supersession_is_reversible_and_feedback_survives_propagation() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let a = svc
-        .add_belief_in_project(
-            "keyboard stale advice",
-            0.99,
-            0.99,
-            &project,
-            MemoryType::Experiential,
-        )
-        .await
-        .unwrap();
-    let b = svc
-        .add_belief_in_project(
-            "keyboard corrected advice",
-            0.8,
-            0.0,
-            &project,
-            MemoryType::Experiential,
-        )
-        .await
-        .unwrap();
+    let a = isolation::seed_belief_in_project(
+        "keyboard stale advice",
+        0.99,
+        0.99,
+        &project,
+        MemoryType::Experiential,
+    )
+    .await
+    .unwrap();
+    let b = isolation::seed_belief_in_project(
+        "keyboard corrected advice",
+        0.8,
+        0.0,
+        &project,
+        MemoryType::Experiential,
+    )
+    .await
+    .unwrap();
     svc.add_edge(b.id, a.id, EdgeType::Supports, 0.2)
         .await
         .unwrap();
@@ -1612,16 +1610,15 @@ async fn scoped_pattern_outcomes_replace_instead_of_accumulate() {
     let mut foreign = experience("another-project");
     foreign.pattern_id = Some(p.id);
     assert!(svc.record_experience(&foreign, 0).await.is_err());
-    let foreign_belief = svc
-        .add_belief_in_project(
-            "other",
-            0.5,
-            0.5,
-            "another-project",
-            MemoryType::Experiential,
-        )
-        .await
-        .unwrap();
+    let foreign_belief = isolation::seed_belief_in_project(
+        "other",
+        0.5,
+        0.5,
+        "another-project",
+        MemoryType::Experiential,
+    )
+    .await
+    .unwrap();
     let mut r = review(&e);
     r.experience_revision = 2;
     r.feedback.push(Feedback {
@@ -1648,14 +1645,14 @@ async fn concurrent_review_conflict_is_atomic_and_keeps_manual_edges() {
     let svc = service().await;
     let other = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let a = svc
-        .add_belief_in_project("cause", 0.8, 0.0, &project, MemoryType::Experiential)
-        .await
-        .unwrap();
-    let b = svc
-        .add_belief_in_project("effect", 0.2, 0.0, &project, MemoryType::Experiential)
-        .await
-        .unwrap();
+    let a =
+        isolation::seed_belief_in_project("cause", 0.8, 0.0, &project, MemoryType::Experiential)
+            .await
+            .unwrap();
+    let b =
+        isolation::seed_belief_in_project("effect", 0.2, 0.0, &project, MemoryType::Experiential)
+            .await
+            .unwrap();
     svc.add_edge(a.id, b.id, EdgeType::Supports, 0.3)
         .await
         .unwrap();
@@ -1725,14 +1722,14 @@ async fn incremental_queue_handles_more_than_two_hundred_experiences() {
 async fn contradiction_review_changes_detection_without_triggering_evidence_propagation() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let a = svc
-        .add_belief_in_project("claim A", 0.8, 0.1, &project, MemoryType::Experiential)
-        .await
-        .unwrap();
-    let b = svc
-        .add_belief_in_project("claim B", 0.7, 0.1, &project, MemoryType::Experiential)
-        .await
-        .unwrap();
+    let a =
+        isolation::seed_belief_in_project("claim A", 0.8, 0.1, &project, MemoryType::Experiential)
+            .await
+            .unwrap();
+    let b =
+        isolation::seed_belief_in_project("claim B", 0.7, 0.1, &project, MemoryType::Experiential)
+            .await
+            .unwrap();
     // Legacy support insertion deliberately does not trigger propagation.
     svc.add_edge(a.id, b.id, EdgeType::Supports, 1.0)
         .await

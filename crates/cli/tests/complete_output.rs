@@ -45,9 +45,9 @@ async fn cli_keeps_complete_beliefs_patterns_and_supporting_passages() -> Result
             "{}\nfinal supporting condition",
             "complete supporting text λ ".repeat(300)
         );
-        let belief = svc
-            .add_belief_in_project(&content, 0.8, 0.4, &project, MemoryType::Fact)
-            .await?;
+        let belief =
+            isolation::seed_belief_in_project(&content, 0.8, 0.4, &project, MemoryType::Fact)
+                .await?;
         let mut pattern = Pattern::new(situation.clone(), approach.clone(), 0.7)?;
         pattern.id = pattern_id;
         pattern.project = Some(project.clone());

@@ -2565,9 +2565,14 @@ mod snapshot_read_tests {
         let project = format!("retrieval-passage-ties-{}", ids[0]);
         let term = format!("tiedpassage{}", ids[0].simple());
         let checked = async {
-            let belief = writer
-                .add_belief_in_project(&term, 0.5, 0.2, &project, MemoryType::Fact)
-                .await?;
+            let belief = snapshot_test_isolation::seed_belief_in_project(
+                &term,
+                0.5,
+                0.2,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
             for index in [1, 0] {
                 let chunk = DocumentChunk::with_id(
                     ids[index],
@@ -2651,9 +2656,14 @@ mod snapshot_read_tests {
         let project = format!("consistent-learning-context-{id}");
         let term = format!("contextsnapshot{}", id.simple());
         let checked = async {
-            let belief = writer
-                .add_belief_in_project(&term, 0.5, 0.2, &project, MemoryType::Fact)
-                .await?;
+            let belief = snapshot_test_isolation::seed_belief_in_project(
+                &term,
+                0.5,
+                0.2,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
             let source = Experience {
                 id,
                 project: project.clone(),
@@ -2788,9 +2798,9 @@ mod snapshot_read_tests {
             .get(0);
         let project = format!("consistent-intervention-{id}");
         let checked = async {
-            let seed = writer.add_belief_in_project("intervention target", 0.4, 0.2, &project, MemoryType::Fact).await?;
-            let child = writer.add_belief_in_project("causal descendant", 0.3, 0.2, &project, MemoryType::Fact).await?;
-            let outside = writer.add_belief_in_project("outside co-cause", 0.7, 0.2, &project, MemoryType::Fact).await?;
+            let seed = snapshot_test_isolation::seed_belief_in_project("intervention target", 0.4, 0.2, &project, MemoryType::Fact).await?;
+            let child = snapshot_test_isolation::seed_belief_in_project("causal descendant", 0.3, 0.2, &project, MemoryType::Fact).await?;
+            let outside = snapshot_test_isolation::seed_belief_in_project("outside co-cause", 0.7, 0.2, &project, MemoryType::Fact).await?;
             writer.store.insert_edge(&crate::graph::Edge::new(seed.id, child.id, EdgeType::Causes, 0.5)?).await?;
             writer.store.insert_edge(&crate::graph::Edge::new(outside.id, child.id, EdgeType::Causes, 0.3)?).await?;
             let chunk_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
@@ -2905,8 +2915,8 @@ mod snapshot_read_tests {
                 let term = format!("retrievalseed{}", id.simple());
                 let scope = scoped.then_some(project.as_str());
                 let checked = async {
-                    let seed = writer.add_belief_in_project(&term, 0.8, 0.2, &project, MemoryType::Fact).await?;
-                    let descendant = writer.add_belief_in_project("downstream without the query term", 0.6, 0.2, &project, MemoryType::Fact).await?;
+                    let seed = snapshot_test_isolation::seed_belief_in_project(&term, 0.8, 0.2, &project, MemoryType::Fact).await?;
+                    let descendant = snapshot_test_isolation::seed_belief_in_project("downstream without the query term", 0.6, 0.2, &project, MemoryType::Fact).await?;
                     writer.store.insert_edge(&crate::graph::Edge::new(seed.id, descendant.id, EdgeType::Supports, 0.7)?).await?;
                     let chunk_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
                     let chunk = DocumentChunk::with_id(chunk_id, format!("/mimir-test/{project}.md"), vec!["full section".into()],
@@ -2962,9 +2972,14 @@ mod snapshot_read_tests {
             .get(0);
         let project = format!("consistent-retrieval-vectors-{id}");
         let checked = async {
-            let seed = writer
-                .add_belief_in_project("vector snapshot", 0.8, 0.2, &project, MemoryType::Fact)
-                .await?;
+            let seed = snapshot_test_isolation::seed_belief_in_project(
+                "vector snapshot",
+                0.8,
+                0.2,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
             writer
                 .store
                 .insert_belief_embedding(seed.id, &[1.0, 0.0, 0.0])
@@ -3029,23 +3044,27 @@ mod snapshot_read_tests {
         let project = format!("consistent-explanation-{id}");
         let reader = AgeStore::new(client, cfg.database.dbname.clone())?;
         let checked = async {
-            let parent = writer
-                .add_belief_in_project("supporting parent", 0.8, 0.2, &project, MemoryType::Fact)
-                .await?;
+            let parent = snapshot_test_isolation::seed_belief_in_project(
+                "supporting parent",
+                0.8,
+                0.2,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
             let reference = format!("fixture: {project} independently supplied source");
-            let belief = writer
-                .add_independent_belief(
-                    "retain the complete explanation",
-                    0.5,
-                    0.2,
-                    Some(&project),
-                    MemoryType::Fact,
-                    &IndependentProvenance {
-                        basis: IndependentBasis::UserInstruction,
-                        reference: reference.clone(),
-                    },
-                )
-                .await?;
+            let belief = snapshot_test_isolation::seed_independent_belief(
+                "retain the complete explanation",
+                0.5,
+                0.2,
+                Some(&project),
+                MemoryType::Fact,
+                &IndependentProvenance {
+                    basis: IndependentBasis::UserInstruction,
+                    reference: reference.clone(),
+                },
+            )
+            .await?;
             writer
                 .add_edge(parent.id, belief.id, EdgeType::Supports, 0.7)
                 .await?;
@@ -3147,7 +3166,7 @@ mod snapshot_read_tests {
         let project = format!("consistent-assessment-{id}");
         let reader = AgeStore::new(client, cfg.database.dbname.clone())?;
         let checked = async {
-            let belief = writer.add_belief_in_project("one assessment view", 0.5, 0.2, &project, MemoryType::Fact).await?;
+            let belief = snapshot_test_isolation::seed_belief_in_project("one assessment view", 0.5, 0.2, &project, MemoryType::Fact).await?;
             let source = Experience { id, project: project.clone(), context: "assessment read".into(),
                 action: "observe supporting evidence".into(), outcome: Outcome::Success,
                 source: ObservationSource::ToolResult, evidence: vec!["observed supporting result".into()],
@@ -3274,12 +3293,22 @@ mod snapshot_read_tests {
         let project = format!("consistent-contradictions-{suffix}");
         let reader = AgeStore::new(client, cfg.database.dbname.clone())?;
         let checked = async {
-            let a = writer
-                .add_belief_in_project("first endpoint", 0.8, 0.1, &project, MemoryType::Fact)
-                .await?;
-            let b = writer
-                .add_belief_in_project("second endpoint", 0.7, 0.1, &project, MemoryType::Fact)
-                .await?;
+            let a = snapshot_test_isolation::seed_belief_in_project(
+                "first endpoint",
+                0.8,
+                0.1,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
+            let b = snapshot_test_isolation::seed_belief_in_project(
+                "second endpoint",
+                0.7,
+                0.1,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
             writer
                 .add_edge(a.id, b.id, EdgeType::Contradicts, 1.0)
                 .await?;
@@ -3360,15 +3389,14 @@ mod snapshot_read_tests {
             db::connect(&cfg.database).await?,
             cfg.database.dbname.clone(),
         )?;
-        let belief = writer
-            .add_belief_in_project(
-                "retain the selected supporting passages",
-                0.5,
-                0.1,
-                &project,
-                MemoryType::Fact,
-            )
-            .await?;
+        let belief = snapshot_test_isolation::seed_belief_in_project(
+            "retain the selected supporting passages",
+            0.5,
+            0.1,
+            &project,
+            MemoryType::Fact,
+        )
+        .await?;
         let checked = async {
             let ids = db::connect(&cfg.database).await?;
             for (section, weight) in [("first", 0.9), ("second", 0.5)] {
@@ -3420,15 +3448,14 @@ mod snapshot_read_tests {
             .get(0);
         let project = format!("consistent-page-{suffix}");
         let reader = AgeStore::new(client, cfg.database.dbname.clone())?;
-        let belief = writer
-            .add_belief_in_project(
-                "a page must keep its counted row",
-                0.5,
-                0.1,
-                &project,
-                MemoryType::Fact,
-            )
-            .await?;
+        let belief = snapshot_test_isolation::seed_belief_in_project(
+            "a page must keep its counted row",
+            0.5,
+            0.1,
+            &project,
+            MemoryType::Fact,
+        )
+        .await?;
         let checked = async {
             let (before, before_total) = reader.list_beliefs_page(Some(&project), None, usize::MAX, 0).await?;
             let ids = |rows: &[Belief]| rows.iter().map(|row| row.id).collect::<Vec<_>>();

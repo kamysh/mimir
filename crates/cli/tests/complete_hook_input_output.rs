@@ -38,13 +38,13 @@ async fn hooks_keep_late_query_terms_all_results_and_full_belief_text() -> Resul
         let mut texts = Vec::new();
         for index in 0..6 {
             let content = format!("{needle} {} final retained condition {index}", "λ complete knowledge ".repeat(250));
-            svc.add_belief_in_project(&content, 0.8, 0.4, &project, MemoryType::Fact).await?;
+            isolation::seed_belief_in_project(&content, 0.8, 0.4, &project, MemoryType::Fact).await?;
             texts.push(content);
         }
         let working = format!("{}final working decision", "全文 unresolved working content ".repeat(250));
-        svc.add_belief_in_project(&working, 0.7, 0.4, &project, MemoryType::Working).await?;
+        isolation::seed_belief_in_project(&working, 0.7, 0.4, &project, MemoryType::Working).await?;
         let foreign = format!("{needle} foreign project must stay hidden");
-        svc.add_belief_in_project(&foreign, 0.9, 0.4, &foreign_project, MemoryType::Fact).await?;
+        isolation::seed_belief_in_project(&foreign, 0.9, 0.4, &foreign_project, MemoryType::Fact).await?;
         let execute = |args: &[&str], input: serde_json::Value| -> Result<std::process::Output> {
             let mut child = Command::new(env!("CARGO_BIN_EXE_mimir"))
                 .args(args).env("TMPDIR", &scratch).env("CLAUDE_CODE_SESSION_ID", id.to_string())
