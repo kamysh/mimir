@@ -27,6 +27,7 @@ import Mimir.EvidenceRead as Evidence
 import Mimir.StorageSemantics as Semantics
 import Mimir.GraphReadProtocol as Graph
 import Mimir.GraphRecords as Records
+import Mimir.GraphNumerics as Numeric
 import Mimir.InferenceProtocol as Inference
 import Mimir.DatabaseReadCommitted as Committed
 
@@ -145,3 +146,12 @@ module Observed (reads : Committed.Contract Store.World) where
 
   SuccessfulInferenceReply : (databaseSum : List Float → Float) → (effect : Inference.Effect) → Inference.Reply effect → Set
   SuccessfulInferenceReply databaseSum effect reply = Σ Read (λ read → Semantics.InferenceRead databaseSum (snapshot read) effect reply)
+
+  contradictionsUseSelectedSnapshot : ∀ sum tx first scope beliefs candidates →
+    SuccessfulInferenceReply sum (Inference.snapshotBeliefs tx first scope) (inj₂ beliefs) →
+    Numeric.activeContradictions beliefs candidates ≡ Numeric.activeContradictions
+      (Records.listBeliefs scope nothing (Store.beliefs first)) candidates
+  contradictionsUseSelectedSnapshot sum tx first scope beliefs candidates
+    (read , Semantics.readSnapshotBeliefs .tx .first .scope stable) =
+    cong (λ world → Numeric.activeContradictions
+      (Records.listBeliefs scope nothing (Store.beliefs world)) candidates) stable

@@ -494,18 +494,7 @@ impl MimirService {
     /// `list_beliefs`: a pair is included only if both endpoints are visible
     /// in scope (tagged with `project` or untagged).
     pub async fn get_contradictions(&self, project: Option<&str>) -> Result<Vec<(Uuid, Uuid)>> {
-        let pairs = match project {
-            Some(p) => self.store.get_contradiction_pairs_by_project(p).await?,
-            None => self.store.get_contradiction_pairs().await?,
-        };
-        if pairs.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let beliefs = match project {
-            Some(p) => self.store.list_beliefs_by_project(p).await?,
-            None => self.store.list_beliefs().await?,
-        };
+        let (pairs, beliefs) = self.store.contradictions_snapshot(project).await?;
         let belief_map: std::collections::HashMap<Uuid, &Belief> =
             beliefs.iter().map(|b| (b.id, b)).collect();
 

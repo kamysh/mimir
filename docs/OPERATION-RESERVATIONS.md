@@ -273,6 +273,13 @@ its removal. Strongest-first ordering and explicit positive passage selection
 are preserved. The formal read binding requires each passage to come from the
 original link snapshot, and transaction cleanup applies to unfinished reads.
 
-Contradiction response consistency remains #237, and the concrete basic-read
+Contradiction reads likewise keep the selected pairs and their endpoint beliefs
+in one read-only repeatable-read transaction. Removing an endpoint through
+another connection does not remove it halfway through that response; the next
+request observes the deletion. The Agda relation requires the endpoint read to
+use the pair selection's snapshot, and its general law preserves the resulting
+active contradictions. Completed and interrupted reads release their transaction.
+
+The concrete basic-read
 recovery instances remain #129. Evidence-enriched retrieval has its separate
 operation proof in #132; this does not claim to certify that larger query.

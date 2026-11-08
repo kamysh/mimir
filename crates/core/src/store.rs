@@ -1179,6 +1179,11 @@ $$) AS (weight ag_catalog.agtype)"#
 
     /// Returns all (from_id, to_id) pairs connected by a CONTRADICTS edge.
     pub async fn get_contradiction_pairs(&self) -> Result<Vec<(Uuid, Uuid)>> {
+        let client = self.client.lock().await;
+        self.get_contradiction_pairs_on(&client).await
+    }
+
+    async fn get_contradiction_pairs_on(&self, client: &Client) -> Result<Vec<(Uuid, Uuid)>> {
         let g = &self.graph_name;
         let sql = format!(
             r#"SELECT from_id::text, to_id::text
@@ -1188,7 +1193,6 @@ FROM ag_catalog.cypher('{g}', $$
 $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
         );
 
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut pairs = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -1206,6 +1210,16 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
         &self,
         project: &str,
     ) -> Result<Vec<(Uuid, Uuid)>> {
+        let client = self.client.lock().await;
+        self.get_contradiction_pairs_by_project_on(&client, project)
+            .await
+    }
+
+    async fn get_contradiction_pairs_by_project_on(
+        &self,
+        client: &Client,
+        project: &str,
+    ) -> Result<Vec<(Uuid, Uuid)>> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
         let stmt = format!("age_contra_pairs_proj_{}", Uuid::new_v4().simple());
@@ -1219,8 +1233,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
              $$, $1) AS (from_id agtype, to_id agtype)"
         );
 
-        let client = self.client.lock().await;
-        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let rows = age_query_rows(client, &stmt, &prepare, &agtype_json).await?;
         let mut pairs = Vec::with_capacity(rows.len());
         for row in &rows {
             let from_raw = row
@@ -1232,6 +1245,48 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
             pairs.push((Uuid::parse_str(from_raw)?, Uuid::parse_str(to_raw)?));
         }
         Ok(pairs)
+    }
+
+    pub(crate) async fn contradictions_snapshot(
+        &self,
+        project: Option<&str>,
+    ) -> Result<(Vec<(Uuid, Uuid)>, Vec<Belief>)> {
+        self.contradictions_after_pairs(project, || async { Ok(()) })
+            .await
+    }
+
+    async fn contradictions_after_pairs<F, W>(
+        &self,
+        project: Option<&str>,
+        after_pairs: F,
+    ) -> Result<(Vec<(Uuid, Uuid)>, Vec<Belief>)>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let pairs = match project {
+            Some(project) => {
+                self.get_contradiction_pairs_by_project_on(tx.client(), project)
+                    .await?
+            }
+            None => self.get_contradiction_pairs_on(tx.client()).await?,
+        };
+        after_pairs().await?;
+        let beliefs = if pairs.is_empty() {
+            Vec::new()
+        } else {
+            match project {
+                Some(project) => {
+                    self.list_beliefs_by_project_on(tx.client(), project)
+                        .await?
+                }
+                None => self.list_beliefs_on(tx.client()).await?,
+            }
+        };
+        tx.commit().await?;
+        Ok((pairs, beliefs))
     }
 
     /// Returns all edges (from_id, to_id, label, weight) between any two beliefs
@@ -2183,6 +2238,88 @@ mod snapshot_read_tests {
             email: None,
             retirement: None,
         }
+    }
+
+    #[tokio::test]
+    async fn contradictions_snapshot_keeps_endpoints_during_committed_delete() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let client = db::connect(&cfg.database).await?;
+        let suffix: String = client
+            .query_one("SELECT gen_random_uuid()::text", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-contradictions-{suffix}");
+        let reader = AgeStore::new(client, cfg.database.dbname.clone())?;
+        let checked = async {
+            let a = writer
+                .add_belief_in_project("first endpoint", 0.8, 0.1, &project, MemoryType::Fact)
+                .await?;
+            let b = writer
+                .add_belief_in_project("second endpoint", 0.7, 0.1, &project, MemoryType::Fact)
+                .await?;
+            writer
+                .add_edge(a.id, b.id, EdgeType::Contradicts, 1.0)
+                .await?;
+            let mut before = writer.get_contradictions(Some(&project)).await?;
+            before.sort();
+            anyhow::ensure!(
+                before.contains(&(a.id, b.id)) && before.contains(&(b.id, a.id)),
+                "both directions must be visible before deletion"
+            );
+            let (pairs, beliefs) = reader
+                .contradictions_after_pairs(Some(&project), || async {
+                    anyhow::ensure!(
+                        writer.delete_belief(a.id).await?,
+                        "the independent writer must commit endpoint removal"
+                    );
+                    Ok(())
+                })
+                .await?;
+            let belief_map = beliefs.iter().map(|belief| (belief.id, belief)).collect();
+            let mut during = writer
+                .inference
+                .detect_active_contradictions(&belief_map, &pairs);
+            during.sort();
+            anyhow::ensure!(
+                during == before,
+                "pairs and endpoint probabilities must come from the same original snapshot"
+            );
+            let after = writer.get_contradictions(Some(&project)).await?;
+            anyhow::ensure!(
+                !after.iter().any(|(from, to)| *from == a.id || *to == a.id),
+                "the next request must observe the committed endpoint removal"
+            );
+            let failure = reader
+                .contradictions_after_pairs(Some(&project), || async {
+                    anyhow::bail!("controlled interruption after contradiction pairs")
+                })
+                .await
+                .unwrap_err();
+            anyhow::ensure!(failure.to_string().contains("controlled interruption"));
+            let (reused_pairs, reused_beliefs) =
+                reader.contradictions_snapshot(Some(&project)).await?;
+            let reused_map = reused_beliefs
+                .iter()
+                .map(|belief| (belief.id, belief))
+                .collect();
+            let mut reused = writer
+                .inference
+                .detect_active_contradictions(&reused_map, &reused_pairs);
+            let mut after = after;
+            reused.sort();
+            after.sort();
+            anyhow::ensure!(
+                reused == after,
+                "an interrupted read must release its transaction and connection"
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
     }
 
     #[tokio::test]

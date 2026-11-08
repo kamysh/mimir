@@ -129,8 +129,11 @@ data InferenceRead (databaseSum : List Float → Float) (snapshot : Store.World)
     InferenceRead databaseSum snapshot (Inference.incomingEdges ids) (inj₂ rows)
   readBeliefs : ∀ scope → InferenceRead databaseSum snapshot (Inference.listBeliefs scope)
     (inj₂ (Records.listBeliefs scope nothing (Store.beliefs snapshot)))
-  readContradictions : ∀ scope → InferenceRead databaseSum snapshot (Inference.contradictionPairs scope)
-    (inj₂ (contradictions scope snapshot))
+  readContradictions : ∀ scope tx → InferenceRead databaseSum snapshot (Inference.openContradictions scope)
+    (inj₂ (tx , snapshot , contradictions scope snapshot))
+  readSnapshotBeliefs : ∀ tx first scope → snapshot ≡ first →
+    InferenceRead databaseSum snapshot (Inference.snapshotBeliefs tx first scope)
+      (inj₂ (Records.listBeliefs scope nothing (Store.beliefs snapshot)))
   readDefeats : ∀ scope → InferenceRead databaseSum snapshot (Inference.defeatTimes scope)
     (inj₂ (defeats scope snapshot))
 

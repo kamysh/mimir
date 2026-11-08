@@ -1,7 +1,8 @@
 {-# OPTIONS --safe #-}
 -- Service orchestration for propagation, intervention, decay, contradictions
--- and defeated-belief sweep. Every read is a separate observation. The
--- dependency owns I/O; all application numerical decisions are concrete.
+-- and defeated-belief sweep. Ordinary reads are separate observations;
+-- contradiction pairs and beliefs explicitly share a read-only snapshot.
+-- The dependency owns I/O; application numerical decisions are concrete.
 module Mimir.InferenceProtocol where
 
 open import Data.Bool using (Bool; true; false; _∧_; not)
@@ -26,6 +27,7 @@ import Mimir.LearningRecompute as L
 import Mimir.ReviewSchema as Reviews
 import Mimir.DatabaseTransaction as DB
 import Mimir.EvidenceValidity as Evidence
+import Mimir.ApplicationStore as Store
 
 record Incoming : Set where
   constructor incoming
@@ -44,7 +46,10 @@ data Effect : Set where
   activeReviews groundingMasses : Effect
   incomingEdges : List ℕ → Effect
   listBeliefs : Maybe Text → Effect
-  contradictionPairs defeatTimes : Maybe Text → Effect
+  defeatTimes : Maybe Text → Effect
+  openContradictions : Maybe Text → Effect
+  snapshotBeliefs : ℕ → Store.World → Maybe Text → Effect
+  closeContradictions : ℕ → Effect
   clock : Effect
   hashIteration : List ℕ → Effect
   persistBeta : P.State → Effect
@@ -57,7 +62,9 @@ Reply activeReviews = Text ⊎ List Reviews.Review
 Reply groundingMasses = Text ⊎ List (ℕ × Float)
 Reply (incomingEdges ids) = Text ⊎ List Incoming
 Reply (listBeliefs project) = Text ⊎ List G.BeliefValues
-Reply (contradictionPairs project) = Text ⊎ List (ℕ × ℕ)
+Reply (openContradictions project) = Text ⊎ (ℕ × Store.World × List (ℕ × ℕ))
+Reply (snapshotBeliefs tx first project) = Text ⊎ List G.BeliefValues
+Reply (closeContradictions tx) = ⊤
 Reply (defeatTimes project) = Text ⊎ List N.Defeat
 Reply clock = ℤ
 Reply (hashIteration ids) = Σ (List ℕ) (λ order → order ↭ ids)
@@ -74,6 +81,9 @@ data Result : Set where
   projected propagated : List (ℕ × Float) → Bool → Result
   changed deleted : ℕ → Result
   pairs : List (ℕ × ℕ) → Result
+
+closeRead : ℕ → Result → Script Result
+closeRead tx result = ask (closeContradictions tx) (λ _ → done result)
 
 read : (effect : Effect) → ∀ {A} → Reply effect ≡ (Text ⊎ A) → (A → Script Result) → Script Result
 read effect {A} same next = ask effect (λ response → receive (subst (λ X → X) same response))
@@ -159,13 +169,14 @@ start (decay project factor) = read (listBeliefs project) refl (λ beliefs →
   decide : Maybe P.State → Script Result
   decide nothing = done invalidDecay
   decide (just writes) = persist writes (changed (length writes))
-start (contradictions project) = read (contradictionPairs project) refl decide
+start (contradictions project) = read (openContradictions project) refl decide
   where
   open import Relation.Binary.PropositionalEquality using (refl)
-  decide : List (ℕ × ℕ) → Script Result
-  decide [] = done (pairs [])
-  decide candidates@(_ ∷ _) = read (listBeliefs project) refl
-    (λ beliefs → done (pairs (N.activeContradictions beliefs candidates)))
+  decide : ℕ × Store.World × List (ℕ × ℕ) → Script Result
+  decide (tx , first , []) = closeRead tx (pairs [])
+  decide (tx , first , candidates@(_ ∷ _)) = ask (snapshotBeliefs tx first project) (λ
+    { (inj₁ error) → closeRead tx (failed error)
+    ; (inj₂ beliefs) → closeRead tx (pairs (N.activeContradictions beliefs candidates)) })
 start (sweep project threshold grace) with N.probability threshold
 ... | false = done invalidProbability
 ... | true = read (defeatTimes project) refl decide
