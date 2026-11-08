@@ -77,6 +77,8 @@ module For (before : Input) (requested : Review) (clock : Candidate → ℤ) whe
   record Prepared : Set where
     constructor prepared
     field
+      existingReferences : Targets.ReferencesValid (Experience.project current)
+        (beliefs (Input.nodes before)) (Admission.existingReferences requested)
       reservation : Reservation
       admitted : Admission.For.Admitted (environment reservation) requested
       materializedAgrees : Admission.For.materialized (environment reservation) requested
@@ -88,6 +90,8 @@ module For (before : Input) (requested : Review) (clock : Candidate → ℤ) whe
   prepare : (Candidate → ℕ) → Fault ⊎ Prepared
   prepare fresh = result (validateReview requested) >>= λ structure →
     result (Admission.checkPin originalEnvironment requested) >>= λ pinned →
+    result (Targets.checkReferences (Experience.project current) (beliefs (Input.nodes before))
+      (Admission.existingReferences requested)) >>= λ existingReferences →
     result (validateReviewSources current requested) >>= λ sources →
     result (Admission.checkPrior (Input.prior before) requested) >>= λ retained →
     Ownership.prepare (Review.experienceID requested) (Input.owners before) (Review.extracted requested)
@@ -97,7 +101,7 @@ module For (before : Input) (requested : Review) (clock : Candidate → ℤ) whe
     result (Targets.validate (Experience.project current) (beliefs (proposedNodes reservation))
       (Admission.targetIDs (Candidates.materialized reservation))) >>= λ targets →
     result (Admission.checkRecordedEvidence current (Candidates.materialized reservation)) >>= λ evidence →
-    inj₂ (prepared reservation record
+    inj₂ (prepared existingReferences reservation record
       { pinned = pinned
       ; retained = retained
       ; sourcesValid = sources
