@@ -11,7 +11,6 @@ const MAX_DIAGNOSTICS: u64 = 3 * 1024 * 1024;
 const MAX_TRACE: usize = 256 * 1024;
 const MAX_TRACE_EVENTS: usize = 48;
 const MAX_TRACE_ATTEMPTS: usize = 8;
-const MAX_EVENT_DETAIL: usize = 3072;
 const MAX_FAILURE_SOURCE: usize = 32 * 1024;
 const STATUS_FILE: &str = "judge-status.json";
 const FAILURE_FILE: &str = "judge-last-failure.json";
@@ -104,8 +103,8 @@ impl FailureDiagnostic {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |time| time.as_secs()),
             experience_id,
-            tool: bounded(tool, 64),
-            detail: bounded(detail, 512),
+            tool: tool.to_owned(),
+            detail: detail.to_owned(),
         }
     }
 }
@@ -218,11 +217,11 @@ impl DiagnosticEvent {
         Self {
             at: now(),
             experience_id,
-            kind: bounded(kind, 48),
+            kind: kind.to_owned(),
             model_requests: Some(model_requests),
             tool_attempts: Some(tool_attempts),
-            tool: tool.map(|value| bounded(value, 64)),
-            detail: detail.map(|value| bounded(value, MAX_EVENT_DETAIL)),
+            tool: tool.map(str::to_owned),
+            detail: detail.map(str::to_owned),
             detail_bytes: detail.map(str::len),
         }
     }
@@ -693,6 +692,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn diagnostic_fields_survive_construction_and_json_without_cuts() {
+        let identity = Uuid::new_v4();
+        let tool = "tool".repeat(80);
+        let kind = "event".repeat(80);
+        let detail = format!(
+            "first line\n{}\0last line: repair instructions",
+            "λ".repeat(5000)
+        );
+        let failure = FailureDiagnostic::new(identity, &tool, &detail);
+        let encoded = serde_json::to_string(&failure).unwrap();
+        let decoded: FailureDiagnostic = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.tool, tool);
+        assert_eq!(decoded.detail, detail);
+        assert!(
+            encoded.contains("\\u0000"),
+            "JSON must escape rather than remove control characters"
+        );
+        let event = DiagnosticEvent::new(identity, &kind, 2, 3, Some(&tool), Some(&detail));
+        let decoded: DiagnosticEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        assert_eq!(decoded.kind, kind);
+        assert_eq!(decoded.tool.as_deref(), Some(tool.as_str()));
+        assert_eq!(decoded.detail.as_deref(), Some(detail.as_str()));
+        assert_eq!(decoded.detail_bytes, Some(detail.len()));
+    }
+
+    #[test]
     fn recovery_evidence_requires_a_completed_batch_for_the_affected_review() {
         let dir = std::env::temp_dir().join(format!("mimir-judge-recovery-{}", Uuid::new_v4()));
         let state = State::lock(dir.clone()).unwrap().unwrap();
@@ -752,8 +778,7 @@ mod tests {
         state.write(&failed).unwrap();
         let diagnostic = read(&dir).unwrap().unwrap().diagnostic.unwrap();
         assert_eq!(diagnostic.tool, "review_experience");
-        assert!(!diagnostic.detail.contains('\n'));
-        assert_eq!(diagnostic.detail.chars().count(), 512);
+        assert_eq!(diagnostic.detail, format!("rejected\n{}", "x".repeat(1000)));
         failed.block_reason = Some("tool_error".into());
         failed.selected_ids = vec![Uuid::new_v4()];
         let malformed = b"{\"review\": }";
@@ -899,14 +924,11 @@ mod tests {
         assert_eq!(diagnostics.attempts.len(), 1);
         let trace = &diagnostics.attempts[0];
         assert_eq!(trace.id, id);
-        assert_eq!(trace.events.len(), MAX_TRACE_EVENTS);
-        assert_eq!(trace.events_omitted, 80 - MAX_TRACE_EVENTS);
+        assert!(!trace.events.is_empty() && trace.events.len() <= MAX_TRACE_EVENTS);
+        assert_eq!(trace.events_omitted, 80 - trace.events.len());
         assert!(serde_json::to_vec(trace).unwrap().len() <= MAX_TRACE);
         assert_eq!(trace.events[0].detail_bytes, Some(100_000));
-        assert_eq!(
-            trace.events[0].detail.as_ref().unwrap().len(),
-            MAX_EVENT_DETAIL
-        );
+        assert_eq!(trace.events[0].detail.as_ref().unwrap().len(), 100_000);
         assert_eq!(
             trace.block_reason.as_deref(),
             Some("model_budget_exhausted")

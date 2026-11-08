@@ -3,16 +3,15 @@
 -- that UUID generation is injective. Clock/downcast results are explicit input.
 module Mimir.JudgeStateRecords where
 
-open import Data.List using (List; []; length)
-open import Data.List.Relation.Unary.All using (All)
+open import Data.List using (List; [])
 open import Data.Maybe using (Maybe; just; nothing; map)
-open import Data.Nat using (ℕ; _≤_)
+open import Data.Nat using (ℕ)
+open import Data.Product using (_×_; _,_)
 open import Data.Integer using (ℤ)
 open import Data.String using (toList)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text; byteLength)
 import Mimir.SourceFailure as Source
-import Mimir.DiagnosticText as Bounded
 
 clock : Maybe ℕ → ℕ
 clock nothing = 0
@@ -29,7 +28,12 @@ module Over (Id : Set) where
 
   newDiagnostic : Maybe ℕ → Id → Text → Text → FailureDiagnostic
   newDiagnostic observed identity tool detail = diagnosticValue (clock observed) identity
-    (Bounded.bounded 64 tool) (Bounded.bounded 512 detail)
+    tool detail
+
+  diagnosticFieldsPreserved : ∀ observed identity tool detail →
+    FailureDiagnostic.tool (newDiagnostic observed identity tool detail) ≡ tool ×
+    FailureDiagnostic.detail (newDiagnostic observed identity tool detail) ≡ detail
+  diagnosticFieldsPreserved observed identity tool detail = refl , refl
 
   record Report : Set where
     constructor reportValue
@@ -95,20 +99,17 @@ module Over (Id : Set) where
 
   newEvent : Maybe ℕ → Id → Text → ℕ → ℕ → Maybe Text → Maybe Text → Event
   newEvent observed identity kind model toolBudget tool detail = eventValue (clock observed) identity
-    (Bounded.bounded 48 kind) (just model) (just toolBudget) (map (Bounded.bounded 64) tool)
-    (map (Bounded.bounded 3072) detail) (map byteLength detail)
+    kind (just model) (just toolBudget) tool detail (map byteLength detail)
 
   eventOriginalDetailSize : ∀ observed identity kind model toolBudget tool detail →
     Event.detailBytes (newEvent observed identity kind model toolBudget tool (just detail)) ≡ just (byteLength detail)
   eventOriginalDetailSize observed identity kind model toolBudget tool detail = refl
 
-  eventKindBound : ∀ observed identity kind model toolBudget tool detail →
-    length (Event.kind (newEvent observed identity kind model toolBudget tool detail)) ≤ 48
-  eventKindBound observed identity kind model toolBudget tool detail = Bounded.scalarBound 48 kind
-
-  eventKindNonControl : ∀ observed identity kind model toolBudget tool detail →
-    All Bounded.NonControl (Event.kind (newEvent observed identity kind model toolBudget tool detail))
-  eventKindNonControl observed identity kind model toolBudget tool detail = Bounded.boundedNonControl 48 kind
+  eventFieldsPreserved : ∀ observed identity kind model toolBudget tool detail →
+    Event.kind (newEvent observed identity kind model toolBudget tool detail) ≡ kind ×
+    Event.tool (newEvent observed identity kind model toolBudget tool detail) ≡ tool ×
+    Event.detail (newEvent observed identity kind model toolBudget tool detail) ≡ detail
+  eventFieldsPreserved observed identity kind model toolBudget tool detail = refl , refl , refl
 
   record Trace : Set where
     constructor traceValue
