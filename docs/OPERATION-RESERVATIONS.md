@@ -252,3 +252,19 @@ including the operation journal, and that a completed retry returns that same
 state and the complete original answer. No readiness condition or narrower
 state projection is introduced. Individual query definitions and the mandatory
 dispatcher still need to use this constructor in their own issues.
+
+Belief paging now keeps its total and selected rows inside one explicit
+read-only, repeatable-read transaction. If another client deletes a belief
+after the count query, that response still returns the rows from the count's
+snapshot; a new request sees the committed deletion. The transaction closes
+after the response is assembled, or rolls back on an unfinished read. It adds
+no timeout or result ceiling. The separate read-committed policy for learning
+writes remains unchanged.
+
+The formal page protocol retains both database observations and requires the
+second to match the first snapshot. Its general result law then states that
+the page total and rows are projections of that same stored state. PostgreSQL's
+[repeatable-read guarantee](https://www.postgresql.org/docs/current/transaction-iso.html#XACT-REPEATABLE-READ)
+is an external dependency, rather than a database algorithm to re-prove.
+Evidence and contradiction response consistency remain #236–#237; the
+concrete read recovery instances remain #129.

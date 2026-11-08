@@ -26,6 +26,7 @@ import Mimir.DocumentQuery as Query
 import Mimir.EvidenceRead as Evidence
 import Mimir.StorageSemantics as Semantics
 import Mimir.GraphReadProtocol as Graph
+import Mimir.GraphRecords as Records
 import Mimir.InferenceProtocol as Inference
 import Mimir.DatabaseReadCommitted as Committed
 
@@ -96,8 +97,10 @@ module Read (ops : VectorOperations) where
     where import Data.Empty
   RetrievalMeaning state snapshot reply = RetrievalReads.ReadMeaning state snapshot reply
 
--- A distinct statement event is retained for each observed database effect.
--- No session-wide snapshot is inferred from a sequence of independent reads.
+-- A distinct event is retained for each observed database effect. Ordinary
+-- reads do not imply one session-wide snapshot. Page reads explicitly start a
+-- read-only REPEATABLE READ transaction: the second SELECT sees the first
+-- SELECT's snapshot, under PostgreSQL's external isolation contract.
 module Observed (reads : Committed.Contract Store.World) where
   open Committed.Contract reads
 
@@ -105,7 +108,19 @@ module Observed (reads : Committed.Contract Store.World) where
   GraphReply (Graph.select handle statement) (inj₁ error) = ⊤
   GraphReply (Graph.select handle statement) (inj₂ observedWorld) = Σ Read (λ read → observedWorld ≡ snapshot read)
   GraphReply Graph.beginRead reply = ⊤
+  GraphReply (Graph.openPage project memory) (inj₁ error) = ⊤
+  GraphReply (Graph.openPage project memory) (inj₂ (tx , first)) = Σ Read (λ read → first ≡ snapshot read)
+  GraphReply (Graph.pageSnapshotRows tx first project memory limit offset) (inj₁ error) = ⊤
+  GraphReply (Graph.pageSnapshotRows tx first project memory limit offset) (inj₂ second) = second ≡ first
   GraphReply (Graph.dropTransaction tx) reply = ⊤
+
+  pageReplyUsesItsOriginalSnapshot : ∀ tx first second project memory limit offset →
+    GraphReply (Graph.pageSnapshotRows tx first project memory limit offset) (inj₂ second) →
+    Records.pageResult project memory limit offset
+      (Data.List.length (Records.listBeliefs project memory (Store.beliefs first))) (Store.beliefs second) ≡
+    Graph.pageAnswer project memory limit offset first
+  pageReplyUsesItsOriginalSnapshot tx first second project memory limit offset stable =
+    Graph.pageUsesCountSnapshot project memory limit offset first second stable
 
   EvidenceReply : (effect : Evidence.Effect) → Evidence.Reply effect → Set
   EvidenceReply (Evidence.readGrounds ids) (inj₁ error) = ⊤

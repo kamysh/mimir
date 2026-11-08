@@ -355,10 +355,11 @@ async fn sql_pages_cover_large_filtered_corpus_without_a_total_cutoff() {
         }
     }
     assert!(expected.is_subset(&seen)); // Global beliefs may also be visible.
-    assert!(svc
+    let larger = svc
         .list_beliefs_page(Some(&project), None, 11, 0)
         .await
-        .is_err());
+        .unwrap();
+    assert_eq!(larger["beliefs"].as_array().unwrap().len(), 11);
     let empty = svc
         .list_beliefs_page(Some(&project), None, 10, 100_000)
         .await
@@ -432,14 +433,20 @@ async fn sql_pager_handles_single_last_and_global_project_visibility() {
         .list_beliefs_page(Some(&project), None, 0, 0)
         .await
         .is_err());
-    assert!(svc
+    let larger = svc
         .list_beliefs_page(Some(&project), None, 11, 0)
         .await
-        .is_err());
-    assert!(svc
+        .unwrap();
+    assert_eq!(
+        larger["beliefs"].as_array().unwrap().len(),
+        (larger["total"].as_u64().unwrap() as usize).min(11)
+    );
+    let beyond = svc
         .list_beliefs_page(Some(&project), None, 1, usize::MAX)
         .await
-        .is_err());
+        .unwrap();
+    assert!(beyond["beliefs"].as_array().unwrap().is_empty());
+    assert!(beyond["next_offset"].is_null());
     svc.delete_project(&project).await.unwrap();
     svc.delete_project(&foreign).await.unwrap();
     svc.delete_belief(global.id).await.unwrap();

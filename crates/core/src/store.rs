@@ -4,6 +4,10 @@ mod operation_plans;
 mod operation_steps;
 mod project_deletion;
 mod reservations;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../tests/support/isolation.rs"]
+mod snapshot_test_isolation;
 use anyhow::{bail, Result};
 use chrono::DateTime;
 pub use operation_plans::{
@@ -31,6 +35,18 @@ async fn learning_transaction(client: &mut Client) -> Result<tokio_postgres::Tra
     Ok(client
         .build_transaction()
         .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+        .start()
+        .await?)
+}
+
+// Composite read answers must describe one stored state, even while another
+// connection commits changes between their SELECTs. Learning writes retain
+// their separate READ COMMITTED policy above.
+async fn snapshot_transaction(client: &mut Client) -> Result<tokio_postgres::Transaction<'_>> {
+    Ok(client
+        .build_transaction()
+        .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+        .read_only(true)
         .start()
         .await?)
 }
@@ -2031,6 +2047,22 @@ impl AgeStore {
         limit: usize,
         offset: usize,
     ) -> Result<(Vec<Belief>, usize)> {
+        self.list_beliefs_page_after_count(project, memory_type, limit, offset, || async { Ok(()) })
+            .await
+    }
+
+    async fn list_beliefs_page_after_count<F, W>(
+        &self,
+        project: Option<&str>,
+        memory_type: Option<MemoryType>,
+        limit: usize,
+        offset: usize,
+        after_count: F,
+    ) -> Result<(Vec<Belief>, usize)>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
         anyhow::ensure!(
             limit > 0,
             "limit must be positive; omit selection to return all matching beliefs"
@@ -2052,24 +2084,111 @@ impl AgeStore {
         };
         let params = serde_json::json!({"project":project}).to_string();
         let g = &self.graph_name;
-        let client = self.client.lock().await;
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
         let count_stmt = format!("age_page_count_{}", Uuid::new_v4().simple());
         let count_sql = format!("PREPARE {count_stmt}(agtype) AS SELECT total::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN count(n) $$, $1) AS (total ag_catalog.agtype)");
-        let counts = age_query_rows(&client, &count_stmt, &count_sql, &params).await?;
+        let counts = age_query_rows(tx.client(), &count_stmt, &count_sql, &params).await?;
         let total = counts[0]
             .get("total")
             .ok_or_else(|| anyhow::anyhow!("missing count"))?
             .parse()?;
+        after_count().await?;
         let stmt = format!("age_page_{}", Uuid::new_v4().simple());
         // Numeric comparisons express the requested slice without forcing a
         // positive usize selection through PostgreSQL's bigint LIMIT/OFFSET.
         let sql = format!("PREPARE {stmt}(agtype) AS SELECT * FROM (SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text,row_number() OVER (ORDER BY trim(both '\"' from created_at::text)::timestamptz,id::text) AS page_position FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project $$,$1) {BELIEF_RETURN_COLUMNS}) selected WHERE page_position::numeric > {offset}::numeric AND page_position::numeric <= {offset}::numeric + {limit}::numeric ORDER BY page_position");
-        let rows = age_query_rows(&client, &stmt, &sql, &params).await?;
-        Ok((
-            rows.iter()
-                .map(belief_from_simple_row)
-                .collect::<Result<_>>()?,
-            total,
-        ))
+        let rows = age_query_rows(tx.client(), &stmt, &sql, &params).await?;
+        let beliefs = rows
+            .iter()
+            .map(belief_from_simple_row)
+            .collect::<Result<_>>()?;
+        tx.commit().await?;
+        Ok((beliefs, total))
+    }
+}
+
+#[cfg(test)]
+mod snapshot_read_tests {
+    use super::*;
+    use crate::{config::Config, db, MimirService};
+
+    fn config() -> Config {
+        Config {
+            database: snapshot_test_isolation::fixture().database_config(),
+            embeddings: None,
+            llm: None,
+            judge: None,
+            email: None,
+            retirement: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn page_retains_count_snapshot_during_a_committed_delete() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let client = db::connect(&cfg.database).await?;
+        let suffix: String = client
+            .query_one("SELECT gen_random_uuid()::text", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-page-{suffix}");
+        let reader = AgeStore::new(client, cfg.database.dbname.clone())?;
+        let belief = writer
+            .add_belief_in_project(
+                "a page must keep its counted row",
+                0.5,
+                0.1,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
+        let checked = async {
+            let (before, before_total) = reader.list_beliefs_page(Some(&project), None, usize::MAX, 0).await?;
+            let ids = |rows: &[Belief]| rows.iter().map(|row| row.id).collect::<Vec<_>>();
+            let original_ids = ids(&before);
+            anyhow::ensure!(original_ids.contains(&belief.id), "fixture belief must be visible before deletion");
+            let (during, total) = reader.list_beliefs_page_after_count(Some(&project), None, usize::MAX, 0, || async {
+                anyhow::ensure!(writer.delete_belief(belief.id).await?, "the independent writer must commit the deletion");
+                Ok(())
+            }).await?;
+            anyhow::ensure!(total == before_total && ids(&during) == original_ids,
+                "the count and rows must retain the same original view after the other connection commits");
+            let (after, after_total) = reader.list_beliefs_page(Some(&project), None, usize::MAX, 0).await?;
+            anyhow::ensure!(after_total + 1 == total, "the next request must see the committed deletion");
+            anyhow::ensure!(ids(&after) == original_ids.into_iter().filter(|id| *id != belief.id).collect::<Vec<_>>(),
+                "only the independently deleted belief may disappear");
+            let failure = reader.list_beliefs_page_after_count(Some(&project), None, 1, 0, || async {
+                anyhow::bail!("controlled interruption after the page count")
+            }).await.unwrap_err();
+            anyhow::ensure!(failure.to_string().contains("controlled interruption"));
+            let (reused, reused_total) = reader.list_beliefs_page(Some(&project), None, usize::MAX, 0).await?;
+            anyhow::ensure!(reused_total == after_total && ids(&reused) == ids(&after),
+                "dropping an unfinished read must close its transaction and leave the connection reusable");
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn snapshot_read_forbids_business_writes_and_releases_its_connection() -> Result<()> {
+        let mut client = db::connect(&config().database).await?;
+        let tx = snapshot_transaction(&mut client).await?;
+        let error = tx
+            .execute("DELETE FROM public.belief_embeddings WHERE false", &[])
+            .await
+            .unwrap_err();
+        anyhow::ensure!(
+            error.code() == Some(&tokio_postgres::error::SqlState::READ_ONLY_SQL_TRANSACTION),
+            "the snapshot must reject even an empty permanent-table write"
+        );
+        tx.rollback().await?;
+        let value: i32 = client.query_one("SELECT 1::integer", &[]).await?.get(0);
+        anyhow::ensure!(value == 1, "rollback must leave the connection usable");
+        Ok(())
     }
 }

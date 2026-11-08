@@ -1,6 +1,7 @@
 {-# OPTIONS --safe #-}
--- Concrete projections of independently observed SELECT snapshots. This is
--- deliberately not a single-snapshot fiction for multi-query read operations.
+-- Ordinary reads retain independently observed SELECT snapshots. Paging uses
+-- an explicit read-only stable transaction: its row query is tied to the
+-- original count snapshot by StorageReadBinding, not an unrelated observation.
 module Mimir.GraphReadProtocol where
 
 open import Data.Bool using (Bool; true; false; _∧_)
@@ -8,8 +9,10 @@ open import Data.List using (List; []; _∷_; length; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤?_; _≟_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.Product using (_×_; _,_)
 open import Data.Unit using (⊤)
 open import Relation.Nullary using (does)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
 import Mimir.LearningStore as Learning
@@ -36,23 +39,38 @@ data Request : Set where
 data Statement : Set where
   belief patternNode incoming reviews candidate independent : ℕ → Statement
   beliefs countBeliefs : Maybe Text → Maybe C.Memory → Statement
-  pageRows : Maybe Text → Maybe C.Memory → ℕ → ℕ → Statement
   patterns : Maybe Text → Statement
   countPatterns : Statement
   countEdges : R.Relation → Statement
 
 data Effect : Set where
   beginRead : Effect
+  openPage : Maybe Text → Maybe C.Memory → Effect
+  pageSnapshotRows : ℕ → Store.World → Maybe Text → Maybe C.Memory → ℕ → ℕ → Effect
   select : Maybe ℕ → Statement → Effect
   dropTransaction : ℕ → Effect
 
 Reply : Effect → Set
 Reply beginRead = Text ⊎ ℕ
+Reply (openPage project memory) = Text ⊎ (ℕ × Store.World)
+Reply (pageSnapshotRows tx initial project memory limit offset) = Text ⊎ Store.World
 Reply (select handle statement) = Text ⊎ Store.World
 Reply (dropTransaction tx) = ⊤
 
 module E = Effects.Protocol Effect Reply
 open E
+
+pageAnswer : Maybe Text → Maybe C.Memory → ℕ → ℕ → Store.World → Records.Page
+pageAnswer project memory limit offset snapshot = Records.pageResult project memory limit offset
+  (length (Records.listBeliefs project memory (Store.beliefs snapshot))) (Store.beliefs snapshot)
+
+-- The same count/row semantics, with the database's stable-read guarantee
+-- supplied at its boundary. No caller-supplied answer or readiness predicate.
+pageUsesCountSnapshot : ∀ project memory limit offset first second → second ≡ first →
+  Records.pageResult project memory limit offset
+    (length (Records.listBeliefs project memory (Store.beliefs first))) (Store.beliefs second) ≡
+  pageAnswer project memory limit offset first
+pageUsesCountSnapshot project memory limit offset first .first refl = refl
 
 record Statistics : Set where
   constructor statistics
@@ -121,10 +139,12 @@ start (listPatterns project) = read nothing (patterns project) (λ w → done
   (patternList (Records.listPatterns project (Store.patterns (Store.nodes w)))))
 start (beliefPage project memory limit offset) with Records.pageAdmitted limit offset
 ... | false = done invalidPage
-... | true = read nothing (countBeliefs project memory) (λ first →
-  read nothing (pageRows project memory limit offset) (λ second → done (paged
-    (Records.pageResult project memory limit offset
-      (length (Records.listBeliefs project memory (Store.beliefs first))) (Store.beliefs second)))))
+... | true = ask (openPage project memory) (λ
+  { (inj₁ error) → done (failed error)
+  ; (inj₂ (tx , first)) → ask (pageSnapshotRows tx first project memory limit offset) (λ
+      { (inj₁ error) → close (just tx) (failed error)
+      ; (inj₂ second) → close (just tx) (paged (Records.pageResult project memory limit offset
+          (length (Records.listBeliefs project memory (Store.beliefs first))) (Store.beliefs second))) }) })
 start (explain id offset limit) = read nothing (belief id) (afterBelief id offset limit)
 start stats = read nothing (countBeliefs nothing nothing) (λ b → read nothing countPatterns (λ p →
   read nothing (countEdges R.supports) (λ s → read nothing (countEdges R.defeats) (λ d →
