@@ -186,6 +186,16 @@ then observing no IDs cannot make leftover vectors satisfy these laws.
 
 ## Recovery of a saved sequence
 
+The shared application world now includes the existing reservation, request-key,
+binding, plan and saved-answer tables. It retains every business component in the
+same world. Operation identities and times remain PostgreSQL observations.
+
+The shared save-or-read rule preserves the first answer for a token and step.
+Its general laws cover retries with a different proposed answer, preservation of
+other steps, every business component, and the reservation/binding/plan inputs.
+This is the common-state prerequisite from #228; it does not yet supply #127's
+concrete deletion proof or #74/#76's mandatory dispatcher.
+
 The shared sequence constructor reads a checked saved prefix and executes only
 the remaining work. Each step changes business data and saves its answer in one
 publication; the last step also saves completion. An empty plan publishes its
