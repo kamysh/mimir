@@ -4,14 +4,15 @@
 -- count; patterns are removed but do not contribute to that count.
 module Mimir.ProjectDeletion where
 
-open import Data.Bool using (Bool; true; false; not; _∨_)
+open import Data.Bool using (Bool; true; false; not; _∨_; _∧_)
 open import Data.List using (List; []; _∷_; filterᵇ; map; length; _++_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _+_; z≤n)
-open import Data.Product using (_×_; _,_; proj₁)
+open import Data.Nat using (ℕ; _+_; z≤n) renaming (_≟_ to _≟ℕ_)
+open import Data.Product using (_×_; _,_; proj₁; proj₂)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; sym; trans; subst)
+open import Relation.Nullary using (yes; no; does)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
 import Mimir.GraphWrites as Writes
@@ -30,13 +31,19 @@ import Mimir.LearningTransaction as Transaction
 import Mimir.DatabaseTransaction as DB
 import Mimir.Effects as Effects
 
-open import Data.String using (toList)
+open import Data.String using (toList; fromList)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.List.Relation.Unary.Any using (Any; here; there)
 import Mimir.CandidateGraph as Graph
 import Mimir.ReviewEdges as Edges
 import Mimir.Recovery as Recovery
 import Mimir.StructuredValue as Wire
+import Mimir.McpErrors as Errors
+import Mimir.Validation as Validation
+open import Mimir.SourceReview using (_≟Text_)
+import Mimir.RecordDecoding as Decode
+import Mimir.JsonObjects as Objects
+open import Data.Empty using (⊥; ⊥-elim)
 
 -- These list laws state both halves of deletion: every owned row is removed,
 -- and every retained row survives. They quantify over all predicates and rows.
@@ -219,6 +226,246 @@ intent : Recovery.Business.Intent Text
 intent = record
   { intended = eraseProject
   ; expectedReply = λ project before → Wire.object ((toList "deleted" , Wire.unsigned (deletedCount project before)) ∷ []) }
+
+-- The registered request has no caller-selected deletion policy. Its only
+-- business argument is the project; the token identifies the original work.
+module Registered where
+  record Input : Set where
+    constructor input
+    field token : ℕ; project : Text
+
+  operationName = toList "delete_project"
+  boundaryName = toList "store.delete_project"
+  stepKey = toList "[\"store.delete_project\",null]"
+  resultKey = toList "@operation-result"
+
+  fieldText : Text → Maybe Wire.Value → Bool
+  fieldText expected (just (Wire.string actual)) = does (actual ≟Text expected)
+  fieldText expected _ = false
+
+  fieldNull : Maybe Wire.Value → Bool
+  fieldNull (just Wire.null) = true
+  fieldNull _ = false
+
+  fieldFalse : Maybe Wire.Value → Bool
+  fieldFalse (just (Wire.boolean false)) = true
+  fieldFalse _ = false
+
+  singleton : (Wire.Value → Bool) → Maybe Wire.Value → Bool
+  singleton check (just (Wire.array (value ∷ []))) = check value
+  singleton check _ = false
+
+  fields : List Text → (Wire.Object.View → Bool) → Wire.Value → Bool
+  fields names check raw with Decode.readRecord Objects.forbid Objects.rejectKnownRepeated names
+    (λ view → inj₂ (check view)) raw
+  ... | inj₁ _ = false
+  ... | inj₂ result = result
+
+  shapeMatches : Wire.Value → Bool
+  shapeMatches = fields (toList "site" ∷ toList "may_repeat" ∷ []) λ view →
+    fieldText boundaryName (view (toList "site")) ∧ fieldFalse (view (toList "may_repeat"))
+
+  stepMatches : Wire.Value → Bool
+  stepMatches = fields (toList "site" ∷ toList "key" ∷ toList "id" ∷ []) λ view →
+    fieldText boundaryName (view (toList "site")) ∧ fieldNull (view (toList "key")) ∧
+      fieldText stepKey (view (toList "id"))
+
+  planMatches : Wire.Value → Bool
+  planMatches = fields (toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ []) λ view →
+    fieldText operationName (view (toList "operation")) ∧
+      singleton shapeMatches (view (toList "shape")) ∧ singleton stepMatches (view (toList "steps"))
+
+  argumentsMatch : Text → Wire.Value → Bool
+  argumentsMatch project = fields (toList "project" ∷ []) λ view → fieldText project (view (toList "project"))
+
+  settingsMatch : Wire.Value → Bool
+  settingsMatch (Wire.object []) = true
+  settingsMatch _ = false
+
+  binding : ℕ → List Store.BindingRow → Maybe Store.BindingRow
+  binding token [] = nothing
+  binding token (row ∷ rest) with token ≟ℕ Store.BindingRow.token row
+  ... | yes _ = just row
+  ... | no _ = binding token rest
+
+  plan : ℕ → List Store.PlanRow → Maybe Wire.Value
+  plan token [] = nothing
+  plan token (row ∷ rest) with token ≟ℕ Store.PlanRow.token row
+  ... | yes _ = just (Store.PlanRow.plan row)
+  ... | no _ = plan token rest
+
+  -- These checks read immutable request and plan metadata, never business rows
+  -- or saved replies. Publication cannot turn a valid request into a new one.
+  blockedBy : Input → List Store.BindingRow → List Store.PlanRow → Maybe Text
+  blockedBy request bindings plans with binding (Input.token request) bindings
+  ... | nothing = just (toList "Unknown operation binding. Reserve and bind the original delete_project request before publishing; read the token outcome if a reply was lost.")
+  ... | just original with does (Store.BindingRow.operation original ≟Text operationName) ∧
+    argumentsMatch (Input.project request) (Store.BindingRow.arguments original) ∧ settingsMatch (Store.BindingRow.settings original)
+  ...   | false = just (toList "This token belongs to a different request. Read its original binding and outcome; retain that request or ask the user before starting distinct work.")
+  ...   | true with plan (Input.token request) plans
+  ...     | nothing = just (toList "The original operation has no saved plan. Prepare its registered deletion plan before publishing; do not invent a replacement token.")
+  ...     | just saved with planMatches saved
+  ...       | false = just (toList "The saved plan disagrees with the registered deletion boundary. Read its plan and outcome and ask the user how to resolve it; do not repeat data changes.")
+  ...       | true = nothing
+
+  blocked : Input → Store.World → Maybe Text
+  blocked request before = blockedBy request
+    (Store.OperationTables.bindings (Store.World.operations before))
+    (Store.OperationTables.plans (Store.World.operations before))
+
+  correction : Store.World → Text → Wire.Value
+  correction before explanation = Errors.AgentCorrection.emitCorrection
+    {World = Store.World} {before = before} {after = before}
+    (Errors.AgentCorrection.certified
+      (Errors.AgentCorrection.claim
+        (Errors.AgentCorrection.item Errors.AgentCorrection.arguments
+          (Validation.fault [] Validation.malformedInput (fromList explanation))
+          (toList "The original bound request and its registered saved plan") explanation) []) refl)
+
+  data Mode : Set where
+    needsInput : Text → Mode
+    replay : Wire.Value → Mode
+    publish : Mode
+
+  mode : Input → Store.World → Mode
+  mode request before with blocked request before
+  ... | just explanation = needsInput explanation
+  ... | nothing with Store.lookupSaved before (Input.token request) stepKey |
+    Store.lookupSaved before (Input.token request) resultKey
+  ...   | just saved | just final = replay saved
+  ...   | nothing | nothing = publish
+  ...   | _ | _ = needsInput (toList "Only one final answer was saved. Read the step answer and operation outcome and ask the user to resolve this older operation; do not repeat its data changes or invent an answer.")
+
+  answer : Input → Store.World → Wire.Value
+  answer request before = Recovery.Business.Intent.expectedReply intent (Input.project request) before
+
+  -- Independent desired state: remove the complete original ownership closure
+  -- and retain both original answers. No discovery or commit sequence occurs.
+  finalWorld : Input → Store.World → Store.World
+  finalWorld request before = record erased
+    { operations = record tables { savedReplies =
+        Store.savedReplyRow token resultKey reply ∷ Store.savedReplyRow token stepKey reply ∷
+          Store.OperationTables.savedReplies tables } }
+    where
+    token = Input.token request
+    reply = answer request before
+    erased = eraseProject (Input.project request) before
+    tables = Store.World.operations before
+
+  intended : Input → Store.World → Store.World
+  intended request before with mode request before
+  ... | publish = finalWorld request before
+  ... | _ = before
+
+  expectedReply : Input → Store.World → Wire.Value
+  expectedReply request before with mode request before
+  ... | needsInput explanation = correction before explanation
+  ... | replay saved = saved
+  ... | publish = answer request before
+
+  registeredIntent : Recovery.Business.Intent Input
+  registeredIntent = record { intended = intended; expectedReply = expectedReply }
+
+  execute : Input → Store.World → Store.World × Wire.Value
+  execute request before with mode request before
+  ... | needsInput explanation = before , correction before explanation
+  ... | replay saved = before , saved
+  ... | publish = finalWorld request before , answer request before
+
+  correct : ∀ request before → execute request before ≡
+    Recovery.Business.expected registeredIntent (Recovery.Business.invocation request before)
+  correct request before with mode request before
+  ... | needsInput explanation = refl
+  ... | replay saved = refl
+  ... | publish = refl
+
+  publicationPreservesAdmission : ∀ request before →
+    blocked request (finalWorld request before) ≡ blocked request before
+  publicationPreservesAdmission request before = refl
+
+  publishedResultReadable : ∀ request before →
+    Store.lookupSaved (finalWorld request before) (Input.token request) resultKey ≡ just (answer request before)
+  publishedResultReadable request before = Store.headReplyReadable (Input.token request) resultKey (answer request before)
+    (Store.savedReplyRow (Input.token request) stepKey (answer request before) ∷
+      Store.OperationTables.savedReplies (Store.World.operations before))
+
+  publishedStepReadable : ∀ request before →
+    Store.lookupSaved (finalWorld request before) (Input.token request) stepKey ≡ just (answer request before)
+  publishedStepReadable request before with Store.replyKey? (Input.token request) stepKey
+    (Store.savedReplyRow (Input.token request) resultKey (answer request before))
+  ... | no _ = Store.headReplyReadable (Input.token request) stepKey (answer request before)
+    (Store.OperationTables.savedReplies (Store.World.operations before))
+  ... | yes (_ , impossible) with cong length impossible
+  ...   | ()
+
+  publishedMode : ∀ request before → blocked request before ≡ nothing →
+    mode request (finalWorld request before) ≡ replay (answer request before)
+  publishedMode request before unblocked
+    rewrite publicationPreservesAdmission request before | unblocked |
+      publishedStepReadable request before | publishedResultReadable request before = refl
+
+  newRequestWasAdmitted : ∀ request before → mode request before ≡ publish → blocked request before ≡ nothing
+  newRequestWasAdmitted request before fresh with blocked request before
+  ... | nothing = refl
+  ... | just explanation with fresh
+  ...   | ()
+
+  stable : ∀ request before →
+    execute request (proj₁ (execute request before)) ≡ execute request before
+  stable request before with mode request before in selected
+  ... | needsInput explanation rewrite selected = refl
+  ... | replay saved rewrite selected = refl
+  ... | publish rewrite publishedMode request before (newRequestWasAdmitted request before selected) = refl
+
+  statement : Recovery.Single.Statement Store.World Input
+  statement = record { execute = execute; intent = registeredIntent; correct = correct }
+
+  recoverable : Recovery.Recoverable Store.World Input
+  recoverable = Recovery.Single.single statement (record { stable = stable })
+
+  -- The extra journal fields do not weaken the independent ownership result.
+  newPublicationRemovesOriginalVectors : ∀ request before →
+    All (λ row → Ranking.member (proj₁ row) (Closure.beliefs (ownership (Input.project request) before)) ≡ false)
+      (Store.World.beliefVectors (finalWorld request before))
+  newPublicationRemovesOriginalVectors request before = noOriginalBeliefVectors (Input.project request) before
+
+  newPublicationRemovesProjectNodes : ∀ request before →
+    All (λ node → ownedNode (Input.project request) node ≡ false) (Store.nodes (finalWorld request before))
+  newPublicationRemovesProjectNodes request before = noProjectNodes (Input.project request) before
+
+  publicationHasExactlyTheErasedBusinessState : ∀ request before →
+    Store.businessSnapshot (finalWorld request before) ≡ Store.businessSnapshot (eraseProject (Input.project request) before)
+  publicationHasExactlyTheErasedBusinessState request before = refl
+
+  newStateIsTheDeletionGoal : ∀ request before → mode request before ≡ publish →
+    intended request before ≡ finalWorld request before
+  newStateIsTheDeletionGoal request before fresh rewrite fresh = refl
+
+  newReplyIsTheOriginalCount : ∀ request before → mode request before ≡ publish →
+    expectedReply request before ≡ answer request before
+  newReplyIsTheOriginalCount request before fresh rewrite fresh = refl
+
+  module Checked = Recovery.Recoverable recoverable
+
+  completedRetryKeepsOriginalCount : ∀ request initial interrupted final reply → mode request initial ≡ publish →
+    Checked.X.Interrupted (Checked.script request) initial interrupted →
+    Checked.X.Completed (Checked.script request) interrupted final reply →
+    reply ≡ answer request initial
+  completedRetryKeepsOriginalCount request initial interrupted final reply fresh interruption completion = trans
+    (cong proj₂ (Checked.converges request initial interrupted final reply interruption completion))
+    (newReplyIsTheOriginalCount request initial fresh)
+
+  completedRetryLeavesNoOriginalVectors : ∀ request initial interrupted final reply → mode request initial ≡ publish →
+    Checked.X.Interrupted (Checked.script request) initial interrupted →
+    Checked.X.Completed (Checked.script request) interrupted final reply →
+    All (λ row → Ranking.member (proj₁ row) (Closure.beliefs (ownership (Input.project request) initial)) ≡ false)
+      (Store.World.beliefVectors final)
+  completedRetryLeavesNoOriginalVectors request initial interrupted final reply fresh interruption completion =
+    subst (λ state → All (λ row → Ranking.member (proj₁ row)
+      (Closure.beliefs (ownership (Input.project request) initial)) ≡ false) (Store.World.beliefVectors state))
+      (sym (trans (cong proj₁ (Checked.converges request initial interrupted final reply interruption completion))
+        (newStateIsTheDeletionGoal request initial fresh)))
+      (newPublicationRemovesOriginalVectors request initial)
 
 module Operation (database : ℕ) where
   module T = Transaction.Over Store.World ℕ Text database 671942183

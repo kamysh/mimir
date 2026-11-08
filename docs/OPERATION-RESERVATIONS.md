@@ -168,9 +168,9 @@ saving the result rolls the entire deletion back.
 
 The existing public interfaces still need their token binding from #85–#86.
 Their current calls use the same atomic closure, but do not yet acquire a
-saved operation result automatically. The intended-outcome and convergence
-proofs remain #126–#127. This change removes the separate deletion commits; it
-does not claim that the dispatcher already requires every operation's proof.
+saved operation result automatically. The independent ownership intent and
+concrete recovery proof are described below. Mandatory dispatcher assembly is
+still #74/#76; this change does not claim that every public request is protected.
 
 The deletion intent now defines the resulting world directly: retain records
 outside the selected project's ownership, remove edges attached to its roots,
@@ -184,6 +184,30 @@ also establish preservation of each unowned node, chunk, edge and vector row.
 Checking ownership against the original world matters: deleting the roots and
 then observing no IDs cannot make leftover vectors satisfy these laws.
 
+`ProjectDeletion.Registered.recoverable` now supplies the required recovery
+value over the complete shared application world. For a new accepted deletion,
+the intended result is the independently defined ownership removal with both
+original answers saved. After any interruption covered by the shared execution
+model, a completed retry reaches that same world and returns the original
+deletion count. Separate general laws state that no original belief vector
+remains and that saving the answers changes no part of the deletion's business
+result. These are laws for every request and starting world, not chosen examples.
+
+The registered deletion's only business argument is `project`; it has no tuning
+policy to capture. Its model checks that the token's original binding has that
+argument, no captured policy fields, and the registered single deletion step.
+Missing or changed metadata opens request correction. A completed deletion
+returns its saved answer without deleting again. A legacy record with only one
+of the two final answers asks for outcome inspection and a user decision,
+without inventing an answer or repeating the deletion. All correction paths
+retain the complete original world.
+
+The generic single-statement constructor requires the deletion's complete
+state-and-reply idempotence proof. Its existing database contract covers
+rollback and both possible publications after a lost acknowledgement. The
+public MCP/CLI adapters and their tests remain #85–#86; dispatcher enforcement
+remains #74/#76. The formal value alone does not install those adapters.
+
 ## Recovery of a saved sequence
 
 The shared application world now includes the existing reservation, request-key,
@@ -193,8 +217,8 @@ same world. Operation identities and times remain PostgreSQL observations.
 The shared save-or-read rule preserves the first answer for a token and step.
 Its general laws cover retries with a different proposed answer, preservation of
 other steps, every business component, and the reservation/binding/plan inputs.
-This is the common-state prerequisite from #228; it does not yet supply #127's
-concrete deletion proof or #74/#76's mandatory dispatcher.
+This is the common-state prerequisite from #228. The concrete deletion proof
+now uses it; #74/#76's mandatory dispatcher remains separate.
 
 The shared sequence constructor reads a checked saved prefix and executes only
 the remaining work. Each step changes business data and saves its answer in one
