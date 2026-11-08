@@ -40,7 +40,9 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
       value : ∀ schema → Materialized (H.completed schema) (inj₂ schema)
       correction : ∀ {before after} (proof : Correction.Certified Store.World before after) →
         Materialized (H.inputCorrection (Correction.Certified.report proof)) (inj₂ (Correction.emitCorrection proof))
-      preparation : ∀ {before after} (proof : Correction.Certified Store.World before after) →
+      preparation : ∀ {before after : Store.World}
+        (proof : Correction.Certified Store.BusinessSnapshot
+          (Store.businessSnapshot before) (Store.businessSnapshot after)) →
         Materialized (H.preparationDecision (Correction.Certified.report proof)) (inj₂ (Correction.emitCorrection proof))
 
     data Event : Set where

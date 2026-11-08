@@ -150,6 +150,10 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project original@(A.documentQueryResult _) = failure original
   project (A.learned q (A.Learn.transacted (A.Learn.T.applied s))) = success (snapshot s)
   project (A.learned q (A.Learn.transacted (A.Learn.T.replayed s cleanup))) = success (snapshot s)
+  project (A.learned q (A.Learn.reviewTransacted (A.Learn.Full.applied s))) = success (snapshot s)
+  project (A.learned q (A.Learn.reviewTransacted (A.Learn.Full.replayed s cleanup))) = success (snapshot s)
+  project (A.learned q (A.Learn.preparationDecision report)) = decision report
+  project (A.learned q (A.Learn.reviewTransacted (A.Learn.Full.refused (Operations.preparationFailure report) cleanup))) = decision report
   project original@(A.learned q _) = failure original
   project original@(A.learningQueryResult result) = projectQuery original result
   project original@(A.contextResult result) with contextAssessments (Context.Assessments.values (ContextProtocol.Output.assessments result))

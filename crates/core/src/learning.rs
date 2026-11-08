@@ -428,8 +428,40 @@ impl crate::MimirService {
         review: &Review,
         expected_review_revision: i64,
     ) -> Result<ExperienceState> {
+        let Some((project, candidates)) = self
+            .store
+            .review_preparation_candidates(review, expected_review_revision)
+            .await?
+        else {
+            // The transaction reconstructs the original answer without
+            // contacting an embedding backend on an exact replay.
+            return self
+                .store
+                .review_experience(review, expected_review_revision)
+                .await;
+        };
+        let mut prepared = std::collections::HashMap::new();
+        for (index, candidate) in candidates {
+            if let Candidate::Belief {
+                key,
+                content,
+                memory_type,
+            } = candidate
+            {
+                let value = self
+                    .prepare_belief(&content, 0.5, 0.0, Some(&project), memory_type, None)
+                    .await
+                    .map_err(|error| {
+                        match error.downcast_ref::<crate::preparation::PreparationRequired>() {
+                            Some(decision) => decision.for_review_candidate(index, &key).into(),
+                            None => error,
+                        }
+                    })?;
+                prepared.insert(key, value);
+            }
+        }
         self.store
-            .review_experience(review, expected_review_revision)
+            .review_experience_prepared(review, expected_review_revision, &prepared)
             .await
     }
     pub async fn get_experience(&self, id: Uuid) -> Result<Option<ExperienceState>> {

@@ -40,6 +40,11 @@ publishing a belief. One publication transaction writes the belief, provenance,
 vector and grounding links and consumes that owner. These are two registered
 boundaries; vector and grounding writes are not separate publication steps.
 
+A review may reserve an owner for each new belief candidate during preparation.
+Its one review-publication boundary commits all candidates, their embeddings
+and indexed support, the review and its acknowledgement together. The repeated
+reservation site describes actual metadata writes without limiting their count.
+
 A boundary can be skipped when execution stops earlier or its branch is not
 taken. Grounding and sweeping can revisit the same site for multiple selected
 records. `may_repeat` records that control flow; it does not restrict the number

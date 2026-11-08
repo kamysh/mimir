@@ -71,6 +71,24 @@ requires its own atomic step and saved result.
 
 ## Publishing one step and its answer together
 
+Review-created beliefs follow the same required preparation as independent
+beliefs. One read-only view selects genuinely new declarations; exact retries
+skip preparation. Before publication, the write transaction repeats revision
+and declaration checks and validates each prepared owner and indexed passage.
+It writes every new belief, vector, grounding link, candidate identity, review
+row and acknowledgement together. A failed candidate or final review write
+rolls the whole publication back. PostgreSQL supplies new candidate identities
+and times, including pattern identities. Existing declarations keep their
+original identities. A lost commit reply requires reading the original review
+and history with the same candidate keys before retrying.
+
+The existing Agda review protocol now takes the prepared values before its
+transaction. Its concrete plan validates coverage of all new belief candidates
+against the same complete world and includes their vectors and grounding in
+that publication. Missing preparation cannot produce a new publication.
+Whole-operation recovery registration and raw history/receipt correspondence
+still require #146 and #85–#86; this is not mandatory dispatcher enforcement.
+
 `commit_operation_step` checks the token's original request under a database row
 lock before invoking any business change, even when that step already has a
 saved answer. Unknown bindings and changed requests never invoke the callback.

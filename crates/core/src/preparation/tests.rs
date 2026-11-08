@@ -133,6 +133,322 @@ fn vector(axis: usize) -> Vec<f32> {
     vector
 }
 
+async fn review_request(service: &MimirService, project: &str) -> Result<crate::learning::Review> {
+    use crate::learning::{Experience, ObservationSource, Outcome};
+    let id: Uuid = db::connect(&isolation::fixture().database_config())
+        .await?
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let source = Experience {
+        id,
+        project: project.into(),
+        context: "review preparation".into(),
+        action: "compare the observed outcome".into(),
+        outcome: Outcome::Success,
+        source: ObservationSource::ToolResult,
+        evidence: vec!["complete test receipt".into()],
+        belief_ids: vec![],
+        pattern_id: None,
+        learning_items: vec![],
+        source_records: vec![],
+    };
+    service.record_experience(&source, 0).await?;
+    Ok(serde_json::from_value(
+        json!({"experience_id":id,"experience_revision":1,
+        "reviewer":"preparation test","rationale":"checked independent fixture support",
+        "candidates":[{"kind":"pattern","key":"procedure","situation":"review work","approach":"prepare first"},
+            {"kind":"belief","key":"lesson","content":"the complete supported lesson","memory_type":"Fact"}]}),
+    )?)
+}
+
+#[tokio::test]
+async fn experience_evidence_cannot_replace_indexed_document_support_in_review() -> Result<()> {
+    let (service, project) = service(Some(Ok(vec![vector(13)]))).await?;
+    let review = review_request(&service, &project).await?;
+    let error = service.review_experience(&review, 0).await.unwrap_err();
+    let report = error.downcast_ref::<PreparationRequired>().unwrap();
+    let issue = &report.correction().issues()[0];
+    assert_eq!(
+        issue.fault().path,
+        vec![
+            Segment::Key("review".into()),
+            Segment::Key("candidates".into()),
+            Segment::Index(1),
+            Segment::Key("content".into())
+        ]
+    );
+    assert!(issue.fault().message.contains("indexed document"));
+    assert_eq!(
+        service
+            .get_experience(review.experience_id)
+            .await?
+            .unwrap()
+            .reviewed_revision,
+        0
+    );
+    assert!(service.list_beliefs(Some(&project)).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn service_review_publishes_complete_candidates_and_acknowledgement_together() -> Result<()> {
+    let (service, project) = service(Some(Ok(vec![vector(14)]))).await?;
+    let chunk = passage(&service, Some(&project), 14, "service-review-support").await?;
+    let review = review_request(&service, &project).await?;
+    let state = service.review_experience(&review, 0).await?;
+    let id = state.candidate_ids["lesson"];
+    assert_eq!(state.reviewed_revision, 1);
+    assert!(service
+        .get_pattern(state.candidate_ids["procedure"])
+        .await?
+        .is_some());
+    assert_eq!(
+        service.evidence_for_belief(id, None).await?[0].chunk_id,
+        chunk.id
+    );
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM belief_embeddings WHERE belief_id=$1",
+                &[&id]
+            )
+            .await?
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        service.review_experience(&review, 0).await?.candidate_ids,
+        state.candidate_ids
+    );
+    Ok(())
+}
+
+struct SequenceProvider(Mutex<std::collections::VecDeque<Result<Vec<Vec<f32>>>>>);
+impl EmbeddingProvider for SequenceProvider {
+    fn embed<'a>(
+        &'a self,
+        _: &'a [String],
+        cancellation: EmbeddingCancellation,
+    ) -> EmbedFuture<'a> {
+        Box::pin(async move {
+            cancellation.check()?;
+            self.0
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("one response per declared candidate")
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_later_candidate_preparation_failure_leaves_the_whole_review_pending() -> Result<()> {
+    let (mut service, project) = service(Some(Ok(vec![vector(15)]))).await?;
+    passage(&service, Some(&project), 15, "first-candidate-support").await?;
+    service.embeddings = Some(OwnedEmbeddingBackend::for_test(Box::new(SequenceProvider(
+        Mutex::new(
+            [
+                Ok(vec![vector(15)]),
+                Err(anyhow::anyhow!("second candidate preparation rejected")),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    ))));
+    let mut review = review_request(&service, &project).await?;
+    review.candidates.push(crate::learning::Candidate::Belief {
+        key: "second".into(),
+        content: "another complete lesson".into(),
+        memory_type: MemoryType::Fact,
+    });
+    let error = service.review_experience(&review, 0).await.unwrap_err();
+    assert!(error
+        .downcast_ref::<PreparationRequired>()
+        .unwrap()
+        .to_string()
+        .contains("candidate second at index 2"));
+    assert!(service.list_beliefs(Some(&project)).await?.is_empty());
+    assert_eq!(
+        service
+            .get_experience(review.experience_id)
+            .await?
+            .unwrap()
+            .reviewed_revision,
+        0
+    );
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM mimir_review_candidates WHERE experience_id=$1",
+                &[&review.experience_id]
+            )
+            .await?
+            .get::<_, i64>(0),
+        0
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn review_without_required_backend_publishes_neither_candidates_nor_acknowledgement(
+) -> Result<()> {
+    let (service, project) = service(None).await?;
+    let review = review_request(&service, &project).await?;
+    let error = service.review_experience(&review, 0).await.unwrap_err();
+    let report = error
+        .downcast_ref::<PreparationRequired>()
+        .expect("review must open the user dialog");
+    assert!(report.to_string().contains("candidate lesson at index 1"));
+    assert_eq!(
+        service
+            .get_experience(review.experience_id)
+            .await?
+            .unwrap()
+            .reviewed_revision,
+        0
+    );
+    assert!(service.list_beliefs(Some(&project)).await?.is_empty());
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM mimir_review_candidates WHERE experience_id=$1",
+                &[&review.experience_id]
+            )
+            .await?
+            .get::<_, i64>(0),
+        0
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn prepared_review_rolls_back_all_publications_and_replays_without_embedding() -> Result<()> {
+    let (service, project) = service(Some(Ok(vec![vector(10)]))).await?;
+    let chunk = passage(&service, Some(&project), 10, "review-atomic-support").await?;
+    let review = review_request(&service, &project).await?;
+    let prepared = service
+        .prepare_belief(
+            "the complete supported lesson",
+            0.5,
+            0.0,
+            Some(&project),
+            MemoryType::Fact,
+            None,
+        )
+        .await?;
+    let id = prepared.belief.id;
+    let mut values = std::collections::HashMap::new();
+    values.insert("lesson".into(), prepared);
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    let suffix = id.simple();
+    let name = format!("reject_review_{suffix}");
+    client.batch_execute(&format!("CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.experience_id='{experience}'::uuid THEN RAISE EXCEPTION 'controlled review receipt refusal'; END IF; RETURN NEW; END $$; CREATE TRIGGER {name} BEFORE INSERT ON mimir_review_versions FOR EACH ROW EXECUTE FUNCTION {name}();", experience=review.experience_id)).await?;
+    let failed = service
+        .store
+        .review_experience_prepared(&review, 0, &values)
+        .await;
+    client
+        .batch_execute(&format!(
+            "DROP TRIGGER {name} ON mimir_review_versions; DROP FUNCTION {name}();"
+        ))
+        .await?;
+    assert!(failed.is_err());
+    no_publication(&service, id).await?;
+    assert_eq!(
+        service
+            .get_experience(review.experience_id)
+            .await?
+            .unwrap()
+            .reviewed_revision,
+        0
+    );
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM mimir_review_candidates WHERE experience_id=$1",
+                &[&review.experience_id]
+            )
+            .await?
+            .get::<_, i64>(0),
+        0
+    );
+    let first = service
+        .store
+        .review_experience_prepared(&review, 0, &values)
+        .await?;
+    assert_eq!(first.candidate_ids["lesson"], id);
+    assert_eq!(first.reviewed_revision, 1);
+    assert!(service.get_belief(id).await?.is_some());
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM belief_embeddings WHERE belief_id=$1",
+                &[&id]
+            )
+            .await?
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        service.evidence_for_belief(id, None).await?[0].chunk_id,
+        chunk.id
+    );
+    // The injected provider has already consumed its only answer: any second
+    // embedding attempt would panic instead of passing this replay check.
+    let replay = service.review_experience(&review, 0).await?;
+    assert_eq!(replay.candidate_ids, first.candidate_ids);
+    assert_eq!(replay.review_revision, first.review_revision);
+    Ok(())
+}
+
+#[tokio::test]
+async fn source_change_during_preparation_prevents_complete_review_publication() -> Result<()> {
+    let (service, project) = service(Some(Ok(vec![vector(12)]))).await?;
+    passage(&service, Some(&project), 12, "stale-review-support").await?;
+    let review = review_request(&service, &project).await?;
+    let prepared = service
+        .prepare_belief(
+            "the complete supported lesson",
+            0.5,
+            0.0,
+            Some(&project),
+            MemoryType::Fact,
+            None,
+        )
+        .await?;
+    let id = prepared.belief.id;
+    let mut changed = service
+        .get_experience(review.experience_id)
+        .await?
+        .unwrap()
+        .experience;
+    changed
+        .evidence
+        .push("source corrected during preparation".into());
+    service.record_experience(&changed, 1).await?;
+    let mut values = std::collections::HashMap::new();
+    values.insert("lesson".into(), prepared);
+    assert!(service
+        .store
+        .review_experience_prepared(&review, 0, &values)
+        .await
+        .is_err());
+    no_publication(&service, id).await?;
+    assert_eq!(
+        service
+            .get_experience(review.experience_id)
+            .await?
+            .unwrap()
+            .reviewed_revision,
+        0
+    );
+    Ok(())
+}
+
 async fn service(response: Option<Result<Vec<Vec<f32>>>>) -> Result<(MimirService, String)> {
     let cfg = Config {
         database: isolation::fixture().database_config(),

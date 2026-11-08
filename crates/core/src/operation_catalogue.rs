@@ -41,7 +41,7 @@ impl CommitSite {
             Self::DocumentReplacement => "store.replace_document",
             Self::DocumentDeletion => "store.clear_document",
             Self::ExperiencePublication => "store.record_experience",
-            Self::ReviewPublication => "store.review_experience",
+            Self::ReviewPublication => "store.review_experience_prepared",
         }
     }
 }
@@ -125,7 +125,7 @@ operations! {
         GetLearningReview => "get_learning_review" [],
         RecordExperience => "record_experience" [once(ExperiencePublication)],
         PendingExperiences => "pending_experiences" [],
-        ReviewExperience => "review_experience" [once(ReviewPublication)],
+        ReviewExperience => "review_experience" [repeated(EmbeddingOwnerReservation), once(ReviewPublication)],
         GetExperience => "get_experience" [],
         ExperienceHistory => "experience_history" [],
         QueryLearningContext => "query_learning_context" []

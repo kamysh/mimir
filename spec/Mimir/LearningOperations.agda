@@ -11,6 +11,8 @@ open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Integer using (ℤ; +_)
 open import Data.Product using (Σ; _×_; _,_)
+open import Data.Empty using (⊥; ⊥-elim)
+import Data.String
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 import Data.Integer.Properties as Integer
@@ -32,6 +34,9 @@ import Mimir.Validation as Validation
 import Mimir.LearningInput as Input
 import Mimir.LearningNormalization as Normalization
 import Mimir.Effects as Effects
+import Mimir.ApplicationStore as Application
+import Mimir.BeliefEmbedding as Embedding
+import Mimir.McpErrors as Errors
 open import Mimir.Bits using (Byte)
 
 data Request : Set where
@@ -51,6 +56,7 @@ data Failure : Set where
   reviewFailure : Reviewing.Failure → Failure
   externalFailure : Text → Failure
   allocationFailure : Validation.Fault → Failure
+  preparationFailure : Errors.AgentCorrection.Claim → Failure
 
 expectedValid : ℤ → Data.Bool.Bool
 expectedValid expected = does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))
@@ -69,6 +75,40 @@ module Protocol (database : ℕ) (request : Request)
   module T = Transaction.Over Store.World Observation.Snapshot Failure database 671942183
   module Receipts = Receipt.Over Store.World Observation.Snapshot Failure database 671942183
   module Normalize = Normalization.For Failure allocationFailure database
+  module Full = Transaction.Over Application.World Observation.Snapshot Failure database 671942183
+
+  missingPreparation : Errors.AgentCorrection.Claim
+  missingPreparation = Embedding.preparationDecision Errors.AgentCorrection.arguments
+    (Validation.key "review" ∷ Validation.key "candidates" ∷ [])
+    (Data.String.toList "Every new belief candidate requires complete embedding and current indexed document support before this review is committed.")
+
+  module CompleteReview (input : Input.Review) (expected : ℤ)
+    (prepared : List Reviewing.PreparedCandidate) where
+
+    module Meaning (canonical : Review) = Reviewing.PreparedReview canonical expected clock now identities prepared
+
+    convert : (canonical : Review) → Meaning.Result canonical → Full.Decision
+    convert canonical (Meaning.refused failure) = Full.reject (reviewFailure failure)
+    convert canonical Meaning.needsPreparation = Full.reject (preparationFailure missingPreparation)
+    convert canonical (Meaning.replayed value) = Full.replay value
+    convert canonical (Meaning.published after value limit) = Full.replace after value
+
+    normalized : Application.World → Failure ⊎ (Store.World × Review) → Full.Allocation Full.Decision
+    normalized before (inj₁ failure) = Full.resolved (Full.reject failure)
+    normalized before (inj₂ (staged , canonical)) = Full.resolved
+      (convert canonical (Meaning.intended canonical (record before { learning = staged })))
+
+    liftAllocation : ∀ {A : Set} → Normalize.T.Allocation A → Full.Allocation A
+    liftAllocation (Normalize.T.resolved value) = Full.resolved value
+    liftAllocation (Normalize.T.reserve experience name source actor next) =
+      Full.reserve experience name source actor (λ reply → liftAllocation (next reply))
+
+    decideFull : Application.World → Full.Allocation Full.Decision
+    decideFull before = Full.bindAllocation (liftAllocation (Normalize.review input (Application.learningView before))) (normalized before)
+
+    module Plan = Full.PreparedPlan decideFull
+    module CommitEvidence = Receipt.Over Application.World Observation.Snapshot Failure database 671942183
+    module Confirmation = CommitEvidence.WithPreparedPlan decideFull
 
   recorded : Recording.Decision → T.Decision
   recorded (Recording.rejected failure) = T.reject (recordFailure failure)
@@ -154,6 +194,8 @@ module Protocol (database : ℕ) (request : Request)
   data Outcome : Set where
     invalidRequest : Failure → Outcome
     transacted : T.Outcome → Outcome
+    reviewTransacted : Full.Outcome → Outcome
+    preparationDecision : Errors.AgentCorrection.Claim → Outcome
 
   -- Standard serialization is external. Its failure is reported before any
   -- transaction. Successful encoding imposes no payload-size limit;
@@ -165,10 +207,14 @@ module Protocol (database : ℕ) (request : Request)
   data Effect : Set where
     serializePayload : Payload → Effect
     transaction : T.Effect → Effect
+    prepareReview : Input.Review → ℤ → Effect
+    reviewTransaction : Full.Effect → Effect
 
   Reply : Effect → Set
   Reply (serializePayload _) = Serialization
   Reply (transaction operation) = T.Reply operation
+  Reply (prepareReview input expected) = Errors.AgentCorrection.Claim ⊎ List Reviewing.PreparedCandidate
+  Reply (reviewTransaction operation) = Full.Reply operation
 
   module E = Effects.Protocol Effect Reply
 
@@ -176,10 +222,22 @@ module Protocol (database : ℕ) (request : Request)
   transact (T.E.done value) = E.done (transacted value)
   transact (T.E.ask operation next) = E.ask (transaction operation) (λ reply → transact (next reply))
 
+  transactReview : Full.E.Script Full.Outcome → E.Script Outcome
+  transactReview (Full.E.done value) = E.done (reviewTransacted value)
+  transactReview (Full.E.ask operation next) = E.ask (reviewTransaction operation) (λ reply → transactReview (next reply))
+
+  afterPreparation : (input : Input.Review) (expected : ℤ) → Reply (prepareReview input expected) → E.Script Outcome
+  afterPreparation input expected (inj₁ report) = E.done (preparationDecision report)
+  afterPreparation input expected (inj₂ values) = transactReview (CompleteReview.Plan.start input expected values)
+
+  admittedStart : Request → E.Script Outcome
+  admittedStart submitted@(recordExperience input expected) = transact (T.PreparedPlan.start (decide submitted))
+  admittedStart (reviewExperience input expected) = E.ask (prepareReview input expected) (afterPreparation input expected)
+
   afterAdmission : E.Script Outcome
   afterAdmission with admit request
   ... | just failure = E.done (invalidRequest failure)
-  ... | nothing = transact Plan.start
+  ... | nothing = admittedStart request
 
   afterSerialization : Serialization → E.Script Outcome
   afterSerialization (serializationFailed message) = E.done (invalidRequest (externalFailure message))
@@ -207,14 +265,45 @@ module Protocol (database : ℕ) (request : Request)
   liftCommitMember tx (here refl) = here refl
   liftCommitMember tx (there remaining) = there (liftCommitMember tx remaining)
 
+  reviewCannotReturnRecorded : ∀ program events value →
+    E.Runs (transactReview program) events (transacted value) → ⊥
+  reviewCannotReturnRecorded (Full.E.done result) events value ()
+  reviewCannotReturnRecorded (Full.E.ask operation next) events value (E.replied _ _ reply remaining) =
+    reviewCannotReturnRecorded (next reply) _ value remaining
+
+  preparationCannotReturnRecorded : ∀ input expected reply events value →
+    E.Runs (afterPreparation input expected reply) events (transacted value) → ⊥
+  preparationCannotReturnRecorded input expected (inj₁ report) events value ()
+  preparationCannotReturnRecorded input expected (inj₂ prepared) events value execution =
+    reviewCannotReturnRecorded (CompleteReview.Plan.start input expected prepared) events value execution
+
+  admittedRecordRequiresCommit : ∀ submitted events value →
+    E.Runs (admittedStart submitted) events (transacted (T.applied value)) → PublicCommitReceipt events
+  admittedRecordRequiresCommit submitted@(recordExperience input expected) events value execution
+    with transactRun (T.PreparedPlan.start (decide submitted)) events (T.applied value) execution
+  ... | original , run , refl with Checks.successRequiresCommit original value run
+    where module Checks = Receipts.WithPreparedPlan (decide submitted)
+  ... | tx , observed = tx , liftCommitMember tx observed
+  admittedRecordRequiresCommit (reviewExperience input expected) events value (E.replied _ _ reply execution) =
+    ⊥-elim (preparationCannotReturnRecorded input expected reply _ (T.applied value) execution)
+
   admissionRequiresCommit : ∀ events value →
     E.Runs afterAdmission events (transacted (T.applied value)) → PublicCommitReceipt events
   admissionRequiresCommit events value execution with admit request
   ... | just failure with execution
   ...   | ()
-  admissionRequiresCommit events value execution | nothing with transactRun Plan.start events (T.applied value) execution
-  ... | original , run , refl with operationSuccessRequiresCommit original value run
-  ... | tx , observed = tx , liftCommitMember tx observed
+  admissionRequiresCommit events value execution | nothing = admittedRecordRequiresCommit request events value execution
+
+  completeReviewRequiresCommit : ∀ input expected prepared events value →
+    Full.E.Runs (CompleteReview.Plan.start input expected prepared) events (Full.applied value) →
+    CompleteReview.CommitEvidence.Receipt input expected prepared events
+  completeReviewRequiresCommit input expected prepared =
+    CompleteReview.Confirmation.successRequiresCommit input expected prepared
+
+  preparationFailureStartsNoTransaction : ∀ input expected report events outcome →
+    E.Runs (afterPreparation input expected (inj₁ report)) events outcome →
+    events ≡ [] × outcome ≡ preparationDecision report
+  preparationFailureStartsNoTransaction input expected report events outcome = E.completedCannotProduceEffects
 
   serializationRequiresCommit : ∀ reply events value →
     E.Runs (afterSerialization reply) events (transacted (T.applied value)) → PublicCommitReceipt events

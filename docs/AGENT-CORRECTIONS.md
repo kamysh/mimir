@@ -69,6 +69,21 @@ support, shorten the content, change the model or store an ungrounded belief
 to bypass the decision. A successful publication stores all components in one
 transaction.
 
+The same requirement applies to new belief candidates in `review_experience`.
+Every new candidate is prepared before any review is published. The response
+names the candidate key and array position; argument issues retain their full
+path under `review.candidates`. Experience citations alone do not satisfy the
+indexed-document requirement. If any preparation fails, the whole review
+remains pending. Existing completed reviews replay their original identities
+without requiring another embedding call.
+
+Preparation can reserve ownership metadata before asking for a decision. Its
+formal response requires equality of the entire business snapshot, including
+learning rows, documents, vectors, grounding and raw history. It may differ in
+reserved operation/ownership metadata as explicitly allowed by the user. This
+response condition does not narrow the recovery goal: recovery still compares
+the complete application world and original reply.
+
 A database failure around publication can leave its outcome unknown. That
 failure is not converted into `business_changes: "none"`. Read back the original
 identity and saved operation outcome before deciding what to repeat.

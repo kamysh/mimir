@@ -29,7 +29,9 @@ the agent must open a user dialog before belief publication. Reserved operation
 metadata and private diagnostics may remain. Embedding and grounding must both
 succeed before any belief is published, as required by #95–#98. Independent
 publication enforces that preparation first; review-created belief publication
-still requires the corresponding #98–#99 integration before #113 is complete.
+uses the same preparation before its atomic #98–#99 publication. The complete
+re-embedding path and its explicit decision behavior remain #147; #113 is not
+complete until that path also follows the same complete-input rule.
 
 The user can choose an appropriate embedding backend or approve a text-processing
 policy. Automatically shortening the source, splitting it and combining vectors,

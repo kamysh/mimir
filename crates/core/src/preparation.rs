@@ -29,6 +29,34 @@ impl PreparationRequired {
     pub fn correction(&self) -> &NeedsInput {
         &self.correction
     }
+
+    pub(crate) fn for_review_candidate(&self, index: usize, key: &str) -> Self {
+        let mut items = self.correction.issues().iter().map(|item| {
+            let mut fault = item.fault().clone();
+            if item.location() == Location::Arguments {
+                let mut path = vec![
+                    Segment::Key("review".into()),
+                    Segment::Key("candidates".into()),
+                    Segment::Index(index),
+                ];
+                path.extend(fault.path);
+                fault.path = path;
+            }
+            fault.message = format!("Review candidate {key} at index {index}: {}", fault.message);
+            CorrectionItem::new(
+                item.location(),
+                fault,
+                item.expected().into(),
+                item.suggested_correction().into(),
+            )
+            .expect("an existing checked issue retains all explanations")
+        });
+        let first = items.next().expect("checked response has an issue");
+        Self {
+            correction: NeedsInput::new(first, items.collect())
+                .expect("checked candidate guidance"),
+        }
+    }
 }
 
 impl std::fmt::Display for PreparationRequired {

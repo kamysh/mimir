@@ -45,6 +45,81 @@ fn experience(project: &str) -> Experience {
     }
 }
 
+/// Candidate-publication checks exercise required preparation through the real
+/// owned worker protocol. The indexed passage and vector are explicit fixture
+/// data, not a production flag that bypasses grounding.
+struct GroundedReviewService {
+    service: Option<MimirService>,
+    directory: std::path::PathBuf,
+}
+impl std::ops::Deref for GroundedReviewService {
+    type Target = MimirService;
+    fn deref(&self) -> &Self::Target {
+        self.service.as_ref().unwrap()
+    }
+}
+impl Drop for GroundedReviewService {
+    fn drop(&mut self) {
+        drop(self.service.take());
+        std::fs::remove_dir_all(&self.directory).expect("remove this test's worker fixture");
+    }
+}
+
+async fn grounded_service(project: &str) -> GroundedReviewService {
+    use mimir_core::config::{EmbeddingBackend, EmbeddingsConfig};
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = isolation::fixture();
+    let database = fixture.database_config();
+    let client = db::connect(&database).await.unwrap();
+    let id: Uuid = client
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let directory = fixture.root.join(format!("review-worker-{id}"));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let program = directory.join("worker.py");
+    std::fs::write(&program, "#!/usr/bin/env python3\nimport json,sys\nfor line in sys.stdin:\n request=json.loads(line)\n print(json.dumps({'status':'started','version':1}),flush=True)\n vector=[0.0]*768\n vector[100]=1.0\n print(json.dumps({'status':'complete','vectors':[vector for text in request['texts']]}),flush=True)\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let service = MimirService::connect_with_worker(
+        &Config {
+            database: database.clone(),
+            embeddings: Some(EmbeddingsConfig {
+                backend: EmbeddingBackend::Local,
+                model: String::new(),
+                api_key: None,
+                batch_size: 0,
+                cache_dir: Some(directory.join("cache").display().to_string()),
+            }),
+            llm: None,
+            judge: None,
+            email: None,
+            retirement: None,
+        },
+        program,
+    )
+    .await
+    .unwrap();
+    let store = AgeStore::new(client, database.dbname).unwrap();
+    let chunk = mimir_core::documents::DocumentChunk::with_id(
+        id,
+        format!("/review-fixture/{id}.md"),
+        vec![],
+        "Indexed supporting passage for this candidate-publication fixture".into(),
+        None,
+        Some(project.into()),
+    );
+    store.insert_document_chunk(&chunk).await.unwrap();
+    let mut vector = vec![0.0; 768];
+    vector[100] = 1.0;
+    store.insert_chunk_embedding(id, &vector).await.unwrap();
+    GroundedReviewService {
+        service: Some(service),
+        directory,
+    }
+}
+
 #[tokio::test]
 async fn subscribed_queue_keeps_work_arriving_before_initial_scan() {
     let svc = service().await;
@@ -480,8 +555,8 @@ fn review(e: &Experience) -> Review {
 #[tokio::test]
 async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
     use mimir_core::assessment::{Assessment, Axis, ItemKind, LearningItem, Prediction};
-    let svc = service().await;
     let project = format!("assessment-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let mut e = experience(&project);
     e.learning_items.push(LearningItem {
         id: None,
@@ -576,7 +651,7 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
             .unwrap()
             .probability
             .value(),
-        0.5
+        2.0 / 3.0 // the indexed document remains independent of the assessment
     );
     assert!(svc
         .lesson_assessment("foreign", id, "fixed-scope-v1", "benefit-v1")
@@ -690,8 +765,8 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
 /// applies; it is not a claim about an LLM's later behavior.
 #[tokio::test]
 async fn offline_learning_scenario_matrix() {
-    let svc = service().await;
     let project = format!("learning-scenarios-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let foreign = format!("learning-scenarios-{}", Uuid::new_v4());
     let foreign_belief = isolation::seed_belief_in_project(
         "foreign keyboard claim",
@@ -849,7 +924,7 @@ async fn offline_learning_scenario_matrix() {
         let belief = svc.get_belief(id).await.unwrap().unwrap();
         match verdict {
             Some(Verdict::Defeat) => assert!(belief.beta > belief.alpha),
-            None => assert_eq!((belief.alpha, belief.beta), (1.0, 1.0)),
+            None => assert_eq!((belief.alpha, belief.beta), (2.0, 1.0)),
             _ => unreachable!(),
         }
         assert_eq!(
@@ -885,7 +960,7 @@ async fn offline_learning_scenario_matrix() {
         svc.record_experience(&corrected, 1).await.unwrap().revision,
         2
     );
-    assert_eq!(svc.get_belief(id).await.unwrap().unwrap().alpha, 1.0);
+    assert_eq!(svc.get_belief(id).await.unwrap().unwrap().alpha, 2.0);
     assert!(svc.review_experience(&old, 1).await.is_err());
     let mut replacement = review(&corrected);
     replacement.experience_revision = 2;
@@ -1066,8 +1141,8 @@ async fn learning_cycle_retry_revision_causal_projection_and_retraction() {
 
 #[tokio::test]
 async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
-    let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let e = experience(&project);
     svc.record_experience(&e, 0).await.unwrap();
     let mut r = review(&e);
@@ -1093,7 +1168,7 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
     let first = svc.review_experience(&r, 0).await.unwrap();
     let belief_id = first.candidate_ids["lesson"];
     let pattern_id = first.candidate_ids["procedure"];
-    assert!((svc.get_belief(belief_id).await.unwrap().unwrap().alpha - 4.0).abs() < 1e-9);
+    assert!((svc.get_belief(belief_id).await.unwrap().unwrap().alpha - 5.0).abs() < 1e-9);
     assert_eq!(
         svc.review_experience(&r, 0).await.unwrap().candidate_ids,
         first.candidate_ids
@@ -1155,7 +1230,8 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
     retract.rationale = "retract interpretation, retain original observation".into();
     svc.review_experience(&retract, 1).await.unwrap();
     let after = svc.get_belief(belief_id).await.unwrap().unwrap();
-    assert!((after.alpha - 1.0).abs() < 1e-9);
+    // Retracting the incident leaves its independently indexed support intact.
+    assert!((after.alpha - 2.0).abs() < 1e-9);
     assert_eq!(
         svc.explain_belief(belief_id, 0, 10).await.unwrap()["candidate_provenance"]["active"],
         false
@@ -1218,8 +1294,8 @@ async fn complete_candidate_keys_survive_publication_and_exact_retry() {
 
 #[tokio::test]
 async fn source_correction_deactivates_candidate_support_without_deleting_identity() {
-    let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let mut e = experience(&project);
     svc.record_experience(&e, 0).await.unwrap();
     let mut r = review(&e);
@@ -1237,7 +1313,7 @@ async fn source_correction_deactivates_candidate_support_without_deleting_identi
     });
     let reviewed = svc.review_experience(&r, 0).await.unwrap();
     let id = reviewed.candidate_ids["hypothesis"];
-    assert!((svc.get_belief(id).await.unwrap().unwrap().alpha - 5.0).abs() < 1e-9);
+    assert!((svc.get_belief(id).await.unwrap().unwrap().alpha - 6.0).abs() < 1e-9);
     e.outcome = Outcome::Failure;
     e.evidence = vec!["corrected external result".into()];
     svc.record_experience(&e, 1).await.unwrap();
@@ -1249,7 +1325,7 @@ async fn source_correction_deactivates_candidate_support_without_deleting_identi
             .reviewed_revision,
         1
     );
-    assert!((svc.get_belief(id).await.unwrap().unwrap().alpha - 1.0).abs() < 1e-9);
+    assert!((svc.get_belief(id).await.unwrap().unwrap().alpha - 2.0).abs() < 1e-9);
     assert_eq!(
         svc.explain_belief(id, 0, 10).await.unwrap()["candidate_provenance"]["active"],
         false
@@ -1264,8 +1340,8 @@ async fn source_correction_deactivates_candidate_support_without_deleting_identi
 
 #[tokio::test]
 async fn rejected_candidate_review_rolls_back_node_and_acknowledgement() {
-    let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let e = experience(&project);
     svc.record_experience(&e, 0).await.unwrap();
     let mut r = review(&e);
@@ -1325,8 +1401,8 @@ async fn rejected_candidate_review_rolls_back_node_and_acknowledgement() {
 
 #[tokio::test]
 async fn deleting_candidate_recomputes_linked_belief_and_keeps_tombstone() {
-    let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let target =
         isolation::seed_belief_in_project("downstream claim", 0.5, 0.0, &project, MemoryType::Fact)
             .await
@@ -1981,9 +2057,9 @@ fn postgres_item_fixture(project: &str) -> (Experience, Review) {
 
 #[tokio::test]
 async fn postgres_item_ids_isolate_keys_and_keep_concurrent_retries_stable() {
-    let svc = service().await;
-    let other = service().await;
     let project = format!("postgres-items-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
+    let other = grounded_service(&project).await;
     let (e, r) = postgres_item_fixture(&project);
     svc.record_experience(&e, 0).await.unwrap();
     let (a, b) = tokio::join!(svc.review_experience(&r, 0), other.review_experience(&r, 0));
@@ -2034,9 +2110,9 @@ async fn postgres_item_ids_isolate_keys_and_keep_concurrent_retries_stable() {
 
 #[tokio::test]
 async fn postgres_item_ids_roll_back_allocations_and_reject_invented_uuids() {
-    let svc = service().await;
     let client = item_database_client().await;
     let project = format!("postgres-items-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let (e, mut r) = postgres_item_fixture(&project);
     svc.record_experience(&e, 0).await.unwrap();
     r.extracted_items[0].statement = "An invented quotation".into();

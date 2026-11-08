@@ -42,7 +42,11 @@ impl RegisteredOperation {
             }
         }
         let result = call(self.handler, service, input).await;
-        if self.handler == Operation::Graph(GraphOperation::InsertBelief) {
+        if matches!(
+            self.handler,
+            Operation::Graph(GraphOperation::InsertBelief)
+                | Operation::Learning(LearningOperation::ReviewExperience)
+        ) {
             if let Err(error) = &result {
                 if let Some(decision) =
                     error.downcast_ref::<mimir_core::preparation::PreparationRequired>()

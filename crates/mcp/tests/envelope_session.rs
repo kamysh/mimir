@@ -307,6 +307,53 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
     }
     // Required preparation is an ordinary user decision, with no belief
     // written and no loss of the existing connection.
+    let review_request = json!({"jsonrpc":"2.0","id":"required-review-preparation","method":"tools/call","params":{
+        "name":"review_experience","arguments":{"expected_review_revision":0,"review":{
+            "experience_id":experience_id,"experience_revision":1,"reviewer":"fixture",
+            "rationale":"stored experience evidence alone cannot publish an ungrounded belief",
+            "candidates":[{"kind":"belief","key":"lesson","content":"must prepare indexed document support"}]}}}});
+    input
+        .write_all(format!("{review_request}\n").as_bytes())
+        .await?;
+    input.flush().await?;
+    let mut line = String::new();
+    ensure!(
+        output.read_line(&mut line).await? != 0,
+        "server exited on unavailable review preparation"
+    );
+    let response: Value = serde_json::from_str(&line)?;
+    ensure!(
+        response.get("error").is_none(),
+        "review decision became a protocol failure: {response}"
+    );
+    let decision: NeedsInput =
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+    ensure!(
+        decision.issues()[0]
+            .fault()
+            .message
+            .contains("candidate lesson at index 0"),
+        "missing review candidate context"
+    );
+    ensure!(
+        decision.issues()[0]
+            .suggested_correction()
+            .contains("Open a dialog"),
+        "missing user dialog instruction"
+    );
+    ensure!(
+        service
+            .get_experience(experience_id)
+            .await?
+            .unwrap()
+            .reviewed_revision
+            == 0,
+        "unprepared review was acknowledged"
+    );
+    ensure!(
+        service.list_beliefs(Some(&project)).await?.is_empty(),
+        "unprepared candidate was published"
+    );
     let request = json!({"jsonrpc":"2.0","id":"required-preparation","method":"tools/call","params":{
         "name":"insert_belief","arguments":{"content":"must not store without preparation","probability":0.7,"confidence":0.5,
         "project":project,"memory_type":"fact","provenance":{"basis":"user_instruction","reference":"explicit isolated test instruction"}}}});

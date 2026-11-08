@@ -1,6 +1,6 @@
 use super::*;
 use crate::learning::*;
-use anyhow::ensure;
+use anyhow::{ensure, Context};
 use std::collections::HashSet;
 use tokio_postgres::Transaction;
 
@@ -332,12 +332,75 @@ impl AgeStore {
         }
         Ok(ids)
     }
+
+    /// One read-only view determines which declarations still need preparation.
+    /// The publication transaction repeats every revision and identity check.
+    pub(crate) async fn review_preparation_candidates(
+        &self,
+        review: &Review,
+        expected: i64,
+    ) -> Result<Option<(String, Vec<(usize, Candidate)>)>> {
+        review
+            .validate()
+            .map_err(crate::validation::Refusal::validation)?;
+        ensure!(
+            (0..i64::MAX).contains(&expected),
+            "expected_review_revision must be nonnegative"
+        );
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let current = state(
+            &tx.query_opt(
+                &format!("{CURRENT} WHERE e.id=$1"),
+                &[&review.experience_id],
+            )
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("experience not found"))?,
+        )?;
+        ensure!(
+            review.experience_revision == current.revision,
+            "stale review: experience has changed"
+        );
+        if Self::active_request(&tx, review.experience_id)
+            .await?
+            .as_ref()
+            == Some(review)
+            && (expected == current.review_revision || expected == current.review_revision - 1)
+        {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        ensure!(
+            expected == current.review_revision,
+            "stale review revision: current is {}",
+            current.review_revision
+        );
+        let mut new = Vec::new();
+        for (index, candidate) in review.candidates.iter().enumerate() {
+            let row = tx.query_opt("SELECT kind,declaration::text,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2",
+                &[&review.experience_id, &candidate.key()]).await?;
+            if let Some(row) = row {
+                let declaration: serde_json::Value = serde_json::from_str(row.get(1))?;
+                if row.get::<_, &str>(0) != candidate.kind()
+                    || declaration != serde_json::to_value(candidate)?
+                {
+                    return Err(crate::validation::Refusal::candidate_conflict().into());
+                }
+                ensure!(!row.get::<_, bool>(2), "candidate identity was deleted");
+            } else {
+                new.push((index, candidate.clone()));
+            }
+        }
+        tx.commit().await?;
+        Ok(Some((current.experience.project, new)))
+    }
     async fn reserve_candidates(
         &self,
         tx: &Transaction<'_>,
         experience_id: Uuid,
         project: &str,
         candidates: &[Candidate],
+        prepared: &HashMap<String, crate::preparation::PreparedBelief>,
     ) -> Result<HashMap<String, Uuid>> {
         let mut ids = HashMap::new();
         for candidate in candidates {
@@ -352,10 +415,40 @@ impl AgeStore {
                 ids.insert(candidate.key().to_owned(), row.get(1));
                 continue;
             }
-            let id = Uuid::new_v4();
+            let (id, created_at) = match candidate {
+                Candidate::Belief {
+                    key,
+                    content,
+                    memory_type,
+                } => {
+                    let value = prepared.get(key).ok_or_else(|| crate::preparation::PreparationRequired::new(
+                        crate::interaction::Location::Arguments,
+                        vec![crate::validation::Segment::Key("review".into()), crate::validation::Segment::Key("candidates".into())],
+                        crate::validation::Code::MissingEvidence,
+                        format!("Belief candidate {key} has no complete embedding and indexed grounding preparation. No review was committed. Use the service review preparation and open the user dialog if a prerequisite is unavailable.")))?;
+                    ensure!(
+                        value.belief.content == *content
+                            && value.belief.memory_type == *memory_type
+                            && value.belief.project.as_deref() == Some(project),
+                        "prepared candidate declaration or project changed"
+                    );
+                    (value.belief.id, value.belief.created_at)
+                }
+                Candidate::Pattern { .. } => {
+                    let row = tx.query_one("SELECT gen_random_uuid(),now()", &[]).await?;
+                    (row.get(0), row.get(1))
+                }
+            };
             self.ensure_candidate_identity_free(tx, id).await?;
-            self.create_candidate_node(tx, candidate, id, project)
-                .await?;
+            self.create_candidate_node(
+                tx,
+                candidate,
+                id,
+                created_at,
+                project,
+                prepared.get(candidate.key()),
+            )
+            .await?;
             let declaration = serde_json::to_string(candidate)?;
             tx.execute("INSERT INTO mimir_review_candidates(experience_id,candidate_key,kind,node_id,declaration) VALUES($1,$2,$3,$4,$5::text::jsonb)", &[&experience_id,&candidate.key(),&candidate.kind(),&id,&declaration]).await?;
             ids.insert(candidate.key().to_owned(), id);
@@ -367,30 +460,19 @@ impl AgeStore {
         tx: &Transaction<'_>,
         candidate: &Candidate,
         id: Uuid,
+        created_at: chrono::DateTime<chrono::Utc>,
         project: &str,
+        prepared: Option<&crate::preparation::PreparedBelief>,
     ) -> Result<()> {
         let g = &self.graph_name;
         let project_json = json_esc(project);
         match candidate {
-            Candidate::Belief {
-                content,
-                memory_type,
-                ..
-            } => {
-                let mut belief =
-                    Belief::new_in_project(content.clone(), 0.5, 0.0, project.to_owned())?
-                        .with_memory_type(*memory_type);
-                belief.id = id;
-                let args = format!(
-                    r#"{{"id":"{id}","content":"{}","project":"{project_json}","created_at":"{}","last_activated_at":"{}","memory_type":"{}"}}"#,
-                    json_esc(&belief.content),
-                    belief.created_at.to_rfc3339(),
-                    belief.last_activated_at.to_rfc3339(),
-                    belief.memory_type.as_str()
-                );
-                let stmt = format!("candidate_b_{}", id.simple());
-                let sql = format!("PREPARE {stmt}(agtype) AS SELECT * FROM ag_catalog.cypher('{g}', $$ CREATE (n:Belief {{id:$id,content:$content,project:$project,created_at:$created_at,last_activated_at:$last_activated_at,memory_type:$memory_type,probability:0.5,confidence:0.0,alpha:1.0,beta:1.0,alpha0:1.0,beta0:1.0}}) RETURN n.id $$,$1) AS (id ag_catalog.agtype)");
-                age_execute(tx.client(), &stmt, &sql, &args).await?;
+            Candidate::Belief { .. } => {
+                self.insert_prepared_belief_on(
+                    tx,
+                    prepared.ok_or_else(|| anyhow::anyhow!("candidate preparation is required"))?,
+                )
+                .await?
             }
             Candidate::Pattern {
                 situation,
@@ -401,7 +483,7 @@ impl AgeStore {
                     r#"{{"id":"{id}","situation":"{}","approach":"{}","project":"{project_json}","created_at":"{}"}}"#,
                     json_esc(situation),
                     json_esc(approach),
-                    chrono::Utc::now().to_rfc3339()
+                    created_at.to_rfc3339()
                 );
                 let stmt = format!("candidate_p_{}", id.simple());
                 let sql = format!("PREPARE {stmt}(agtype) AS SELECT * FROM ag_catalog.cypher('{g}', $$ CREATE (p:Pattern {{id:$id,situation:$situation,approach:$approach,project:$project,created_at:$created_at,activation_count:0,success_rate:0.5}}) RETURN p.id $$,$1) AS (id ag_catalog.agtype)");
@@ -525,6 +607,16 @@ impl AgeStore {
         review: &Review,
         expected: i64,
     ) -> Result<ExperienceState> {
+        self.review_experience_prepared(review, expected, &HashMap::new())
+            .await
+    }
+
+    pub(crate) async fn review_experience_prepared(
+        &self,
+        review: &Review,
+        expected: i64,
+        prepared: &HashMap<String, crate::preparation::PreparedBelief>,
+    ) -> Result<ExperienceState> {
         review
             .validate()
             .map_err(crate::validation::Refusal::validation)?;
@@ -590,6 +682,7 @@ impl AgeStore {
                 review.experience_id,
                 &current.experience.project,
                 &review.candidates,
+                prepared,
             )
             .await?;
         let applied = materialize_review(review, &candidate_ids)?;
@@ -628,6 +721,7 @@ impl AgeStore {
         );
         let mut affected = review_targets(old_review.iter());
         affected.extend(review_targets(std::iter::once(&applied)));
+        affected.extend(prepared.values().map(|value| value.belief.id));
         let revision = expected + 1;
         let payload = serde_json::to_string(&applied)?;
         tx.execute("INSERT INTO mimir_review_versions(experience_id,revision,experience_revision,payload,request) VALUES($1,$2,$3,$4::text::jsonb,$5::text::jsonb)", &[&review.experience_id,&revision,&review.experience_revision,&payload,&request]).await?;
@@ -658,7 +752,7 @@ impl AgeStore {
         result
             .item_ids
             .extend(local_item_ids(&applied.extracted_items));
-        tx.commit().await?;
+        tx.commit().await.with_context(|| format!("The outcome of review {} at source revision {} must be read back with get_learning_review and experience_history before retrying. Keep the same request and candidate keys; do not invent a replacement review or assume nothing was committed.", review.experience_id, review.experience_revision))?;
         Ok(result)
     }
     async fn replace_review_edges(

@@ -112,7 +112,9 @@ module Bind (conversion : Conversion.Contract) (format : Encoding.Formatting)
       H.Handled (Envelope.literal (Catalog.wireName tool)) args []
         (H.inputCorrection (Correction.Certified.report proof)) →
       Dialogue tool args (inj₂ (Correction.emitCorrection proof))
-    preparation : ∀ {before after} events (proof : Correction.Certified Store.World before after) →
+    preparation : ∀ {before after : Store.World} events
+      (proof : Correction.Certified Store.BusinessSnapshot
+        (Store.businessSnapshot before) (Store.businessSnapshot after)) →
       H.Handled (Envelope.literal (Catalog.wireName tool)) args events
         (H.preparationDecision (Correction.Certified.report proof)) →
       Dialogue tool args (inj₂ (Correction.emitCorrection proof))

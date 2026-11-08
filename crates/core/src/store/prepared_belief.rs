@@ -77,8 +77,25 @@ impl AgeStore {
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        // Every refusal below precedes all business writes. A transport error
-        // once publication begins must never be converted into this outcome.
+        self.insert_prepared_belief_on(&tx, prepared).await?;
+        self.recompute_learning(&tx, None, [belief.id].into())
+            .await?;
+        let published = self.get_belief_on(tx.client(), belief.id).await?.context(
+            "Prepared publication did not retain its belief; the transaction was not committed",
+        )?;
+        tx.commit().await.with_context(|| format!("The publication outcome for belief {} must be read back before retrying. Read that belief and its indexed grounding; do not allocate a replacement identity.", belief.id))?;
+        Ok(published)
+    }
+
+    pub(super) async fn insert_prepared_belief_on(
+        &self,
+        tx: &tokio_postgres::Transaction<'_>,
+        prepared: &PreparedBelief,
+    ) -> Result<()> {
+        let belief = &prepared.belief;
+        // Every refusal below precedes this candidate's writes. The caller
+        // owns the transaction; returning an error rolls back any earlier
+        // uncommitted candidates too. Never relabel transport/write errors.
         let owner_exists: bool = tx.query_one(
             "SELECT EXISTS(SELECT 1 FROM mimir_embedding_owners WHERE owner_token=$1 AND project IS NOT DISTINCT FROM $2)",
             &[&belief.id, &belief.project],
@@ -128,17 +145,11 @@ impl AgeStore {
             self.insert_grounding_on(tx.client(), passage.chunk.id, belief.id, passage.weight)
                 .await?;
         }
-        self.recompute_learning(&tx, None, [belief.id].into())
-            .await?;
-        let published = self.get_belief_on(tx.client(), belief.id).await?.context(
-            "Prepared publication did not retain its belief; the transaction was not committed",
-        )?;
         tx.execute(
             "DELETE FROM mimir_embedding_owners WHERE owner_token=$1",
             &[&belief.id],
         )
         .await?;
-        tx.commit().await.with_context(|| format!("The publication outcome for belief {} must be read back before retrying. Read that belief and its indexed grounding; do not allocate a replacement identity.", belief.id))?;
-        Ok(published)
+        Ok(())
     }
 }
