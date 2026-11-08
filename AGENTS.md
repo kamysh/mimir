@@ -342,10 +342,14 @@ beliefs left unresolved by earlier sessions. The standard skill now selects
 `fact` or `experiential` explicitly for durable knowledge, and installs no Stop
 consolidation gate. Existing working beliefs are not modified by changing hooks.
 
-The historical judge template assumes the earlier working-first/Stop-gate
-workflow. Review that assumption, its age criteria and its mutations before
-choosing to schedule it. It is separate from a per-turn Claude critic, and is not
-required for ordinary retrieval or the new agent integration.
+The historical maintenance template requires an explicit user policy for
+eligible projects/beliefs, completed ownership and permitted actions. It has
+no default cleanup age or processing quota. Missing or unclear policy must
+request a user decision and leave all beliefs untouched. Do not let an agent
+invent a policy or borrow the separate defeated-belief retirement setting.
+See the [workflow guide](docs/claude-code-setup/mimir-judge-working/README.md).
+This is separate from a per-turn Claude critic and is not required for ordinary
+retrieval or the new agent integration.
 
 Source files: [`docs/claude-code-setup/mimir-judge-working/`](docs/claude-code-setup/mimir-judge-working/)
 (`prompt.md`, `run.sh`, `mcp-config.json`). `mcp-config.json` is for this
@@ -365,25 +369,21 @@ chmod +x "$HOME/.claude/mimir-judge-working.sh"
 Unlike Step 7's prompt, this one contains a `CURRENT_TIME_UTC` placeholder —
 `run.sh` substitutes it with the real current time at invocation, since the
 judge has no clock or shell access of its own and needs a fixed reference
-point to compare each belief's `created_at` against. Do not strip this
+point when interpreting the user's policy. The time is context, not permission
+to delete or a reason to assume a session has ended. Do not strip this
 substitution when adapting the script.
 
-**Scheduling** — same options as Step 7, but hourly instead of weekly:
-
-- **systemd (Linux)**: a `systemd --user` timer running
-  `bash "$HOME/.claude/mimir-judge-working.sh"` hourly, output appended to a
-  log file. (On NixOS, prefer a declarative `systemd.services`/
-  `systemd.timers` module.)
-- **launchd (macOS)**: an equivalent hourly `LaunchAgent`.
-- **cron**: `0 * * * * $HOME/.claude/mimir-judge-working.sh >> $HOME/.claude/mimir-judge-working.log 2>&1`
-  as a fallback.
+**Scheduling:** require the user's cleanup policy and chosen schedule before
+enabling anything. Do not select a default cadence or change a system service
+as part of ordinary agent installation.
 
 **Verify:**
 ```sh
-bash "$HOME/.claude/mimir-judge-working.sh"
+bash -n "$HOME/.claude/mimir-judge-working.sh"
 ```
-Should complete without error. If it found and processed any orphans, a
-summary `working` belief appears under project `mimir-meta`.
+This checks shell syntax without executing the model or maintenance. An actual
+run needs the user's policy and approval; it reports completed work and pending
+decisions in its output, without automatically creating a summary belief.
 
 ## Final verification
 
