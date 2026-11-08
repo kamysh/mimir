@@ -379,3 +379,12 @@ The formal binding pins every subsequent input to the target's view and
 closes the owned transaction on completion or a reported read error. A
 cancelled request drops the transaction before releasing its connection.
 Concrete intervention recovery remains #134 and mandatory assembly #74/#76.
+
+Learning-context retrieval owns one read-only stable transaction from belief
+retrieval through procedure selection, observed outcome counts, provenance
+and assessment groups. Its retrieval reads use that same transaction instead
+of opening an independent view. The formal protocol retains ownership until
+the complete answer or read error has closed the transaction, and the read
+binding requires each learning-state projection to match the retrieval view.
+Ranking, project rules and assessment calculations remain unchanged.
+Concrete learning-context recovery remains #135 and mandatory assembly #74/#76.

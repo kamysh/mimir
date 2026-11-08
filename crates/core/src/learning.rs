@@ -481,17 +481,41 @@ impl crate::MimirService {
         project: &str,
         limit: crate::Selection,
     ) -> Result<LearningContext> {
+        self.learning_context_after_beliefs(context, project, limit, || async { Ok(()) })
+            .await
+    }
+
+    pub(crate) async fn learning_context_after_beliefs<F, W>(
+        &self,
+        context: &str,
+        project: &str,
+        limit: crate::Selection,
+        after_beliefs: F,
+    ) -> Result<LearningContext>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
         ensure!(!project.trim().is_empty(), "project must be explicit");
+        let mut client = self.store.snapshot_connection().await;
+        let tx = crate::store::snapshot_transaction(&mut client).await?;
         let beliefs = self
-            .query_relevant(context, limit, Some(project), None)
+            .relevant_on(tx.client(), context, limit, Some(project), None, || async {
+                Ok(())
+            })
             .await?;
+        after_beliefs().await?;
         let terms: std::collections::HashSet<_> = context
             .split(|c: char| !c.is_alphanumeric())
             .filter(|t| !t.is_empty())
             .map(str::to_lowercase)
             .collect();
         let mut ranked = Vec::new();
-        for pattern in self.list_patterns(Some(project)).await? {
+        for pattern in self
+            .store
+            .patterns_by_project_on(tx.client(), project)
+            .await?
+        {
             let tokens: std::collections::HashSet<_> = pattern
                 .situation
                 .split(|c: char| !c.is_alphanumeric())
@@ -500,7 +524,10 @@ impl crate::MimirService {
                 .collect();
             let hits = terms.intersection(&tokens).count();
             if hits > 0 {
-                let result = self.store.pattern_outcomes(pattern, project).await?;
+                let result = self
+                    .store
+                    .pattern_outcomes_on(tx.client(), pattern, project)
+                    .await?;
                 ranked.push((hits, result));
             }
         }
@@ -514,17 +541,23 @@ impl crate::MimirService {
         });
         let (assessments, assessments_truncated) = self
             .store
-            .assessments_for_beliefs(project, &beliefs.iter().map(|b| b.id).collect::<Vec<_>>())
+            .assessments_for_beliefs_on(
+                tx.client(),
+                project,
+                &beliefs.iter().map(|b| b.id).collect::<Vec<_>>(),
+            )
             .await?;
         if let Some(count) = limit {
             ranked.truncate(count.get());
         }
-        Ok(LearningContext {
+        let result = LearningContext {
             beliefs,
             patterns: ranked.into_iter().map(|(_, p)| p).collect(),
             assessments,
             assessments_truncated,
-        })
+        };
+        tx.commit().await?;
+        Ok(result)
     }
 }
 

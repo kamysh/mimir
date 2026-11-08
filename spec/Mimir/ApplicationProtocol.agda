@@ -192,6 +192,9 @@ module Run (environment : Environment) where
   next (contextState (Context.failed error)) = complete (failed error)
   next (contextState Context.invalidInput) = complete invalidContext
   next (contextState Context.invalidAssessment) = complete invalidAssessment
+  next (contextState s@(Context.opening _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
+  next (contextState s@(Context.owned _ _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
+  next (contextState s@(Context.closing _ _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
   next (contextState s@(Context.retrieving _ _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
   next (contextState s@(Context.listPatterns _ _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
   next (contextState s@(Context.countPattern _ _ _ _ _ _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))

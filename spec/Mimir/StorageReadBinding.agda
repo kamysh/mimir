@@ -18,6 +18,8 @@ open import Relation.Binary.PropositionalEquality using (_≡_; cong; trans; sym
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.ApplicationStore as Store
+import Mimir.LearningStore as Learning
+import Mimir.LearningContextProtocol as ContextProtocol
 import Mimir.DocumentStore as Documents
 import Mimir.RetrievalRanking as Ranking
 import Mimir.RetrievalProtocol as Retrieval
@@ -244,6 +246,39 @@ module DocumentSnapshot (ops : VectorOperations) (reads : Committed.Contract Sto
     D.snapshot (QueryRead.event one) ≡ D.snapshot (QueryRead.event two)
   responseReadsAgree firstEffect firstReply secondEffect secondReply one two =
     trans (QueryRead.sameView one) (sym (QueryRead.sameView two))
+
+-- Procedure and assessment reads retain the full retrieval response view.
+module LearningContextSnapshot (ops : VectorOperations) (reads : Committed.Contract Store.World)
+  (first : Committed.Contract.Read reads) where
+  module D = Committed.Contract reads
+  module Beliefs = RetrievalSnapshot ops reads first
+
+  LearningReply : Learning.World → Set
+  LearningReply observed = Σ D.Read (λ event →
+    D.snapshot event ≡ Beliefs.world × observed ≡ Store.learningView (D.snapshot event))
+
+  ReplyMeaning : (phase : ContextProtocol.State) → ContextProtocol.Reply phase → Set
+  ReplyMeaning (ContextProtocol.opening request) reply = ⊤
+  ReplyMeaning (ContextProtocol.owned tx phase) reply = ReplyMeaning phase reply
+  ReplyMeaning (ContextProtocol.closing tx terminal) reply = ⊤
+  ReplyMeaning (ContextProtocol.retrieving request phase) reply = Beliefs.QueryRead phase reply
+  ReplyMeaning (ContextProtocol.listPatterns request beliefs) (inj₁ error) = ⊤
+  ReplyMeaning (ContextProtocol.listPatterns request beliefs) (inj₂ observed) = LearningReply observed
+  ReplyMeaning (ContextProtocol.countPattern request beliefs remaining ranked hits procedure) (inj₁ error) = ⊤
+  ReplyMeaning (ContextProtocol.countPattern request beliefs remaining ranked hits procedure) (inj₂ observed) = LearningReply observed
+  ReplyMeaning (ContextProtocol.patternOrigin request beliefs remaining ranked hits procedure) (inj₁ error) = ⊤
+  ReplyMeaning (ContextProtocol.patternOrigin request beliefs remaining ranked hits procedure) (inj₂ observed) = LearningReply observed
+  ReplyMeaning (ContextProtocol.assessmentGroups request beliefs patterns) (inj₁ error) = ⊤
+  ReplyMeaning (ContextProtocol.assessmentGroups request beliefs patterns) (inj₂ observed) = LearningReply observed
+  ReplyMeaning ContextProtocol.invalidInput reply = ⊤
+  ReplyMeaning ContextProtocol.invalidAssessment reply = ⊤
+  ReplyMeaning (ContextProtocol.failed error) reply = ⊤
+  ReplyMeaning (ContextProtocol.finished result) reply = ⊤
+
+  contextRowsUseRetrievalView : ∀ observed → LearningReply observed →
+    observed ≡ Store.learningView Beliefs.world
+  contextRowsUseRetrievalView observed (event , stable , selected) =
+    trans selected (cong Store.learningView stable)
 
 -- Concrete read requests carry filters and identities only. In particular,
 -- neither a desired answer nor a correctness certificate is an input. Wire

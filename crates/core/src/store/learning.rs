@@ -103,6 +103,15 @@ impl AgeStore {
         ids: &[Uuid],
     ) -> Result<(Vec<serde_json::Value>, bool)> {
         let client = self.client.lock().await;
+        self.assessments_for_beliefs_on(&client, project, ids).await
+    }
+
+    pub(crate) async fn assessments_for_beliefs_on(
+        &self,
+        client: &Client,
+        project: &str,
+        ids: &[Uuid],
+    ) -> Result<(Vec<serde_json::Value>, bool)> {
         let rows = client.query("SELECT a.belief_id,a.scope,a.rubric,sum(a.positive),sum(a.negative),sum(a.benefit),sum(a.benefit_weight),count(*),count(*) FILTER (WHERE a.positive+a.negative=0),count(*) FILTER (WHERE a.benefit_weight=0) FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=ANY($2) AND e.review_revision=r.revision AND e.revision=r.experience_revision GROUP BY a.belief_id,a.scope,a.rubric ORDER BY a.belief_id,a.scope,a.rubric", &[&project,&ids]).await?;
         let values=rows.iter().map(|r| {
             let scores=crate::assessment::Scores::from_totals(r.get(3),r.get(4),r.get(5),r.get(6),r.get(7),r.get(8),r.get(9))?;
@@ -922,6 +931,15 @@ impl AgeStore {
     }
     pub async fn pattern_outcomes(&self, pattern: Pattern, project: &str) -> Result<PatternResult> {
         let client = self.client.lock().await;
+        self.pattern_outcomes_on(&client, pattern, project).await
+    }
+
+    pub(crate) async fn pattern_outcomes_on(
+        &self,
+        client: &Client,
+        pattern: Pattern,
+        project: &str,
+    ) -> Result<PatternResult> {
         let rows = client.query("SELECT v.payload->>'outcome' AS outcome, v.payload->>'source' AS source, count(*)::bigint AS n FROM mimir_experiences e JOIN mimir_experience_versions v ON v.experience_id=e.id AND v.revision=e.revision WHERE e.project=$1 AND v.payload->>'pattern_id'=$2 GROUP BY outcome,source", &[&project,&pattern.id.to_string()]).await?;
         let (mut successes, mut failures, mut unknown) = (0, 0, 0);
         for r in rows {
@@ -933,8 +951,7 @@ impl AgeStore {
                 _ => anyhow::bail!("invalid stored outcome"),
             }
         }
-        drop(client);
-        let candidate_provenance = self.candidate_provenance(pattern.id).await?;
+        let candidate_provenance = self.candidate_provenance_on(client, pattern.id).await?;
         Ok(PatternResult {
             pattern,
             successes,

@@ -1069,6 +1069,15 @@ $$) {PATTERN_RETURN_COLUMNS}"#
     /// Like `list_patterns`, but scoped to a project (same `project =
     /// $project OR project IS NULL` semantics as `list_beliefs_by_project`).
     pub async fn list_patterns_by_project(&self, project: &str) -> Result<Vec<Pattern>> {
+        let client = self.client.lock().await;
+        self.patterns_by_project_on(&client, project).await
+    }
+
+    pub(crate) async fn patterns_by_project_on(
+        &self,
+        client: &Client,
+        project: &str,
+    ) -> Result<Vec<Pattern>> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
         let stmt = format!("age_list_patterns_proj_{}", Uuid::new_v4().simple());
@@ -1082,8 +1091,7 @@ $$) {PATTERN_RETURN_COLUMNS}"#
              $$, $1) {PATTERN_RETURN_COLUMNS}"
         );
 
-        let client = self.client.lock().await;
-        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let rows = age_query_rows(client, &stmt, &prepare, &agtype_json).await?;
         let mut patterns = Vec::with_capacity(rows.len());
         for row in &rows {
             patterns.push(pattern_from_simple_row(row)?);
@@ -2360,6 +2368,147 @@ mod snapshot_read_tests {
             email: None,
             retirement: None,
         }
+    }
+
+    #[tokio::test]
+    async fn learning_context_snapshot_retains_procedures_outcomes_and_assessments() -> Result<()> {
+        use crate::assessment::{Assessment, Axis};
+        use crate::learning::{
+            BeliefTarget, Candidate, Experience, ObservationSource, Outcome, Review,
+        };
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let id: Uuid = setup
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-learning-context-{id}");
+        let term = format!("contextsnapshot{}", id.simple());
+        let checked = async {
+            let belief = writer
+                .add_belief_in_project(&term, 0.5, 0.2, &project, MemoryType::Fact)
+                .await?;
+            let source = Experience {
+                id,
+                project: project.clone(),
+                context: "source for a procedure".into(),
+                action: "observe support".into(),
+                outcome: Outcome::Success,
+                source: ObservationSource::ToolResult,
+                evidence: vec!["supporting observation".into()],
+                belief_ids: vec![belief.id],
+                pattern_id: None,
+                source_records: vec![],
+                learning_items: vec![],
+            };
+            writer.record_experience(&source, 0).await?;
+            let applied = writer
+                .review_experience(
+                    &Review {
+                        experience_id: id,
+                        experience_revision: 1,
+                        reviewer: "snapshot-test".into(),
+                        rationale: "observed support for this procedure".into(),
+                        feedback: vec![],
+                        links: vec![],
+                        superseded_beliefs: vec![],
+                        candidates: vec![Candidate::Pattern {
+                            key: "procedure".into(),
+                            situation: term.clone(),
+                            approach: "use the observed procedure".into(),
+                        }],
+                        candidate_feedback: vec![],
+                        candidate_links: vec![],
+                        extracted_items: vec![],
+                        source_coverage: vec![],
+                        assessments: vec![Assessment {
+                            target: BeliefTarget::Existing {
+                                belief_id: belief.id,
+                            },
+                            scope: "context-scope".into(),
+                            rubric: "context-rubric".into(),
+                            correctness: Axis {
+                                value: Some(1.0),
+                                weight: 1.0,
+                            },
+                            usefulness: Axis {
+                                value: Some(0.8),
+                                weight: 1.0,
+                            },
+                            evidence_indices: vec![0],
+                            item_ids: vec![],
+                            item_keys: vec![],
+                            rationale: "observed supporting evidence".into(),
+                        }],
+                    },
+                    0,
+                )
+                .await?;
+            let pattern = applied.candidate_ids["procedure"];
+            let usage_id: Uuid = setup
+                .query_one("SELECT gen_random_uuid()", &[])
+                .await?
+                .get(0);
+            let mut usage = source.clone();
+            usage.id = usage_id;
+            usage.pattern_id = Some(pattern);
+            usage.action = "use the procedure".into();
+            writer.record_experience(&usage, 0).await?;
+            let stored = serde_json::to_value(writer.get_belief(belief.id).await?)?;
+            let before = reader.query_learning_context(&term, &project, None).await?;
+            anyhow::ensure!(before.beliefs.len() == 1 && before.beliefs[0].id == belief.id);
+            anyhow::ensure!(before.patterns.len() == 1 && before.patterns[0].pattern.id == pattern);
+            anyhow::ensure!(
+                before.patterns[0].successes == 1
+                    && before.patterns[0]
+                        .candidate_provenance
+                        .as_ref()
+                        .is_some_and(|origin| origin.active)
+            );
+            anyhow::ensure!(before.assessments.len() == 1 && !before.assessments_truncated);
+            anyhow::ensure!(
+                serde_json::to_value(writer.get_belief(belief.id).await?)? == stored,
+                "context retrieval must not write back"
+            );
+            let interrupted = reader
+                .learning_context_after_beliefs(&term, &project, None, || async {
+                    anyhow::bail!("controlled learning-context interruption")
+                })
+                .await;
+            anyhow::ensure!(interrupted
+                .unwrap_err()
+                .to_string()
+                .contains("controlled learning-context interruption"));
+            anyhow::ensure!(
+                serde_json::to_value(reader.query_learning_context(&term, &project, None).await?)?
+                    == serde_json::to_value(&before)?,
+                "interruption must release its transaction"
+            );
+            let during = reader
+                .learning_context_after_beliefs(&term, &project, None, || async {
+                    writer.delete_project(&project).await?;
+                    Ok(())
+                })
+                .await?;
+            anyhow::ensure!(
+                serde_json::to_value(during)? == serde_json::to_value(before)?,
+                "beliefs, procedures, counts, provenance and assessments must share the first view"
+            );
+            let after = reader.query_learning_context(&term, &project, None).await?;
+            anyhow::ensure!(
+                after.beliefs.is_empty()
+                    && after.patterns.is_empty()
+                    && after.assessments.is_empty()
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
     }
 
     #[tokio::test]

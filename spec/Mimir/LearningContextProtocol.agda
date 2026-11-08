@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
--- Concrete composition with the retrieval machine. Pattern statistics and
--- candidate provenance are separate SELECT snapshots, just as in the service.
+-- Concrete composition with the retrieval machine. One owned read-only
+-- snapshot covers retrieval, procedure outcomes/provenance and assessments.
 module Mimir.LearningContextProtocol where
 
 open import Data.Bool using (Bool; true; false)
@@ -33,6 +33,8 @@ record Output : Set where
   field beliefs : List G.BeliefValues; patterns : List Patterns.Result; assessments : Context.Assessments
 
 data State : Set where
+  opening : Request → State
+  owned closing : ℕ → State → State
   retrieving : Request → Retrieval.State → State
   listPatterns : Request → List G.BeliefValues → State
   countPattern : Request → List G.BeliefValues → List G.PatternValues →
@@ -45,6 +47,9 @@ data State : Set where
   finished : Output → State
 
 Reply : State → Set
+Reply (opening request) = Text ⊎ ℕ
+Reply (owned tx phase) = Reply phase
+Reply (closing tx terminal) = ⊤
 Reply (retrieving request phase) = Retrieval.Reply phase
 Reply (listPatterns request beliefs) = Text ⊎ Store.World
 Reply (countPattern request beliefs remaining ranked hits p) = Text ⊎ Store.World
@@ -67,9 +72,14 @@ module Run (ops : R.F32) (unicode : R.Unicode) (textBefore : Text → Text → B
   begin : Request → State
   begin request with Context.admitted (Request.project request) (Request.limit request)
   ... | false = invalidInput
-  ... | true = retrieving request (Retrieval.overlay (Retrieval.request
-    (Request.context request) (Request.limit request) (just (Request.project request)) nothing
-    (Request.embeddingsEnabled request)))
+  ... | true = opening request
+
+  settle : ℕ → State → State
+  settle tx phase@(finished _) = closing tx phase
+  settle tx phase@(failed _) = closing tx phase
+  settle tx invalidInput = closing tx invalidInput
+  settle tx invalidAssessment = closing tx invalidAssessment
+  settle tx phase = owned tx phase
 
   afterRetrieval : Request → Retrieval.State → State
   afterRetrieval request (Retrieval.finished beliefs) = listPatterns request beliefs
@@ -88,6 +98,12 @@ module Run (ops : R.F32) (unicode : R.Unicode) (textBefore : Text → Text → B
   ... | true = finished (output beliefs patterns assessmentValues)
 
   advance : (state : State) → Reply state → State
+  advance (opening request) (inj₁ error) = failed error
+  advance (opening request) (inj₂ tx) = owned tx (retrieving request (Retrieval.overlay (Retrieval.request
+    (Request.context request) (Request.limit request) (just (Request.project request)) nothing
+    (Request.embeddingsEnabled request))))
+  advance (owned tx phase) reply = settle tx (advance phase reply)
+  advance (closing tx terminal) reply = terminal
   advance (retrieving request phase) reply = afterRetrieval request (Retrieve.advance phase reply)
   advance (listPatterns request beliefs) (inj₁ error) = failed error
   advance (listPatterns request beliefs) (inj₂ observed) = nextPattern request beliefs
