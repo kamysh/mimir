@@ -4,9 +4,10 @@
 module Mimir.JudgeNotification where
 
 open import Data.Bool using (Bool; true; false; _∨_)
-open import Data.List using (List; []; _∷_; _++_; map; take; length; filterᵇ)
+open import Data.List using (List; []; _∷_; _++_; map; length; filterᵇ)
+open import Data.List.Relation.Unary.All using (All)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_; _∸_; _≤?_)
+open import Data.Nat using (ℕ; _≟_; _∸_)
 import Data.Nat.Show as Nat
 open import Data.String using (toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
@@ -14,9 +15,10 @@ open import Data.Unit using (⊤; tt)
 import Mimir.JudgeFinalization as Finalization
 open import Data.Product using (_,_)
 open import Relation.Nullary using (yes; no; does)
+open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
-import Mimir.DiagnosticText as Bounded
+import Mimir.DiagnosticText as Labels
 import Mimir.OperationalDiagnostics as Diagnostics
 import Mimir.NotificationConfig as Config
 import Mimir.NotificationIncident as I
@@ -48,7 +50,7 @@ reason report with R.Report.blockReason report
   ...       | true = toList "model backend failed"
   ...       | false with does (value ≟Text toList "review_deferred")
   ...         | true = toList "review deferred after a rejected candidate"
-  ...         | false = toList "review incomplete (" ++ Bounded.bounded 64 value ++ toList ")"
+  ...         | false = toList "review incomplete (" ++ Labels.strip value ++ toList ")"
 
 join : Text → List Text → Text
 join separator [] = []
@@ -57,7 +59,12 @@ join separator (x ∷ y ∷ rest) = x ++ separator ++ join separator (y ∷ rest
 
 projectName : Maybe Text → Text
 projectName nothing = toList "all projects"
-projectName (just project) = Bounded.bounded 80 project
+projectName (just project) = Labels.strip project
+
+-- Every ordinary character in a project label survives, regardless of length.
+projectLabelPreserved : ∀ project → All Labels.NonControl project →
+  projectName (just project) ≡ project
+projectLabelPreserved = Labels.stripIdentity
 incidentKey : Maybe Text → Text
 incidentKey nothing = toList "all-projects"
 incidentKey (just project) = project
@@ -76,10 +83,7 @@ module Details (format : Encoding.Formatting) (localTime : ℕ → Text) where
   uuid = Encoding.Formatting.uuidText format
   ids : List ℕ → Text
   ids [] = toList "none"
-  ids values@(_ ∷ _) with length values ≤? 5
-  ... | yes _ = join (toList ", ") (map uuid values)
-  ... | no _ = join (toList ", ") (map uuid (take 5 values)) ++
-    toList " (+" ++ number (length values ∸ 5) ++ toList " more)"
+  ids values@(_ ∷ _) = join (toList ", ") (map uuid values)
 
   diagnostic : Maybe ℕ → Text
   diagnostic nothing = toList "\nDiagnostic ID: unavailable; inspect mimir judge status"
@@ -115,18 +119,13 @@ module Details (format : Encoding.Formatting) (localTime : ℕ → Text) where
   previousDiagnostic nothing = []
   previousDiagnostic (just id) = toList "\nPrevious diagnostic ID: " ++ uuid id
 
-  extra : List ℕ → Text
-  extra values with length values ≤? 5
-  ... | yes _ = []
-  ... | no _ = toList "\nAdditional affected reviews: " ++ number (length values ∸ 5)
-
   recovery : Maybe Text → R.Report → R.Incident → Text
   recovery project report savedIncident = toList "Project: " ++ projectName project ++
     toList "\nPrevious failure: " ++ localTime (R.Report.recordedAt first) ++
     toList "\nPrevious reason: " ++ reason first ++ toList "\nQueue: idle at " ++ localTime (R.Report.recordedAt report) ++
     toList "; no pending reviews were selected\nAffected reviews: " ++ number count ++
     toList " confirmed by completed batches; " ++ number (length selected ∸ count) ++ toList " unverified" ++
-    previousDiagnostic (R.Report.diagnosticsId first) ++ join [] (map (itemLine reviews) (take 5 selected)) ++ extra selected
+    previousDiagnostic (R.Report.diagnosticsId first) ++ join [] (map (itemLine reviews) selected)
     where
     first = R.Incident.first savedIncident
     selected = R.Report.selectedIds first

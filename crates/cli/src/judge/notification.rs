@@ -193,7 +193,7 @@ fn reason(report: &Report) -> String {
         Some("backend_timeout") => "model response timed out".into(),
         Some("backend_error") => "model backend failed".into(),
         Some("review_deferred") => "review deferred after a rejected candidate".into(),
-        Some(other) => format!("review incomplete ({})", state::bounded(other, 64)),
+        Some(other) => format!("review incomplete ({})", state::one_line_label(other)),
         None => "review incomplete".into(),
     }
 }
@@ -202,16 +202,10 @@ fn ids(ids: &[Uuid]) -> String {
     if ids.is_empty() {
         return "none".into();
     }
-    let mut rendered = ids
-        .iter()
-        .take(5)
+    ids.iter()
         .map(Uuid::to_string)
         .collect::<Vec<_>>()
-        .join(", ");
-    if ids.len() > 5 {
-        rendered.push_str(&format!(" (+{} more)", ids.len() - 5));
-    }
-    rendered
+        .join(", ")
 }
 
 fn project(settings: &RuntimeConfig) -> String {
@@ -219,7 +213,7 @@ fn project(settings: &RuntimeConfig) -> String {
         .judge
         .project
         .as_deref()
-        .map(|value| state::bounded(value, 80))
+        .map(state::one_line_label)
         .unwrap_or_else(|| "all projects".into())
 }
 
@@ -272,7 +266,7 @@ fn recovery_details(project: &str, report: &Report, incident: &FailureIncident) 
     if let Some(id) = first.diagnostics_id {
         details.push_str(&format!("\nPrevious diagnostic ID: {id}"));
     }
-    for id in first.selected_ids.iter().take(5) {
+    for id in &first.selected_ids {
         if let Some(review) = incident
             .confirmed_reviews
             .iter()
@@ -285,12 +279,6 @@ fn recovery_details(project: &str, report: &Report, incident: &FailureIncident) 
         } else {
             details.push_str(&format!("\n{id}: completion unverified"));
         }
-    }
-    if first.selected_ids.len() > 5 {
-        details.push_str(&format!(
-            "\nAdditional affected reviews: {}",
-            first.selected_ids.len() - 5
-        ));
     }
     details
 }
@@ -306,7 +294,7 @@ fn learning_status(report: &Report) -> EventStatus {
     }
 }
 
-/// Translate only safe, bounded judge status into the shared notification API.
+/// Translate selected report facts into the shared notification API.
 fn event(settings: &RuntimeConfig, path: &Path, report: &Report) -> Result<Event> {
     // A completed batch does not show that the queue is drained. Keep any
     // existing failure incident open until a later run observes an idle queue.
@@ -404,6 +392,65 @@ mod tests {
             .unwrap()
             .digest_state()
             .is_ok());
+    }
+
+    #[test]
+    fn failure_and_recovery_include_complete_labels_and_every_affected_review() {
+        let work = crate::judge::harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
+        let project_name = format!("{}-last-project-part", "資料".repeat(100));
+        let settings_text = format!(
+            "config_version=1\n[logging]\ndirectory={}\n[database]\nhost='127.0.0.1'\nport=15432\nuser='fixture-user'\ndbname='fixture'\n[judge]\nproject={}\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n",
+            toml::Value::String(work.path().join("logs").display().to_string()),
+            toml::Value::String(project_name.clone()),
+        );
+        let path = work.write("config.toml", settings_text.as_bytes()).unwrap();
+        let settings = crate::judge::config::load(Some(&path)).unwrap();
+        let reason_code = format!("{}-last-reason-part", "unexpected_".repeat(40));
+        let mut failed = Report::new("blocked", 12, 0, 0, 12, 0);
+        failed.block_reason = Some(reason_code.clone());
+        failed.selected_ids = (0..12).map(|_| Uuid::new_v4()).collect();
+        let notification = event(&settings, work.path(), &failed).unwrap();
+        let failure = notification.details.unwrap();
+        assert!(failure.contains(&format!("Project: {project_name}\n")));
+        assert!(failure.contains(&format!("Reason: review incomplete ({reason_code})\n")));
+        assert!(failure.contains(&format!(
+            "Affected experience IDs: {}",
+            ids(&failed.selected_ids)
+        )));
+        assert!(!failure.contains(" more)"));
+        let idle = Report::new("idle", 0, 0, 0, 0, 0);
+        let incident = FailureIncident {
+            confirmed_reviews: failed
+                .selected_ids
+                .iter()
+                .skip(6)
+                .map(|id| ConfirmedReview {
+                    id: *id,
+                    recorded_at: idle.recorded_at,
+                })
+                .collect(),
+            first: failed,
+            latest: None,
+            recovered_at: Some(idle.recorded_at),
+        };
+        let recovery = recovery_details(&project(&settings), &idle, &incident);
+        assert!(recovery.contains(&format!("Project: {project_name}\n")));
+        assert!(recovery.contains(&format!(
+            "Previous reason: review incomplete ({reason_code})\n"
+        )));
+        assert!(recovery.contains("6 confirmed by completed batches; 6 unverified"));
+        for (index, id) in incident.first.selected_ids.iter().enumerate() {
+            assert!(failure.contains(&id.to_string()));
+            let outcome = if index < 6 {
+                "completion unverified"
+            } else {
+                "confirmed at"
+            };
+            assert!(recovery.contains(&format!("\n{id}: {outcome}")));
+        }
+        assert!(!recovery.contains("Additional affected reviews:"));
+        assert_eq!(ids(&[]), "none");
+        assert_eq!(state::one_line_label("a\nb\r\tc\u{85}d"), "abcd");
     }
 
     #[test]

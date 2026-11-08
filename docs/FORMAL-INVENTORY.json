@@ -3311,8 +3311,8 @@
         },
         {
           "kind": "fn",
-          "name": "bounded",
-          "line": 20,
+          "name": "one_line_label",
+          "line": 14,
           "specification": [
             "Mimir.DiagnosticText"
           ],

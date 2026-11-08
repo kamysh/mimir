@@ -11,11 +11,10 @@ const STATUS_FILE: &str = "judge-status.json";
 const FAILURE_FILE: &str = "judge-last-failure.json";
 const DIAGNOSTICS_FILE: &str = "judge-diagnostics.json";
 
-pub fn bounded(value: &str, limit: usize) -> String {
+pub fn one_line_label(value: &str) -> String {
     value
         .chars()
         .filter(|character| !character.is_control())
-        .take(limit)
         .collect()
 }
 
