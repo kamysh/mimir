@@ -108,8 +108,8 @@ request conversion (docQuery text project limit) = inj₂ (Public.queryDocument 
 request conversion (docClear path) = inj₂ (Public.clearDocument path)
 request conversion (intervene id value) = mapResult (λ target → Public.inference (Inference.intervention target value)) (Input.readUUID conversion (V.string id))
 
--- Rust's trunc counts Unicode scalars, trims first, and replaces the last
--- permitted scalar with an ellipsis. Every native call has a positive bound.
+-- Legacy hook input shortening only. Ordinary CLI output preserves complete
+-- selected content; removing this hook policy is tracked separately.
 trunc : ℕ → Text → Text
 trunc maximum text with does (length clean ≤? maximum)
   where clean = trim text
@@ -169,8 +169,8 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
     operation : A.Result → Failure
     output : Text → Failure
 
-  -- Payloads are fully selected application data. A renderer applies only
-  -- the command's fixed layout/truncation policy, never another database read.
+  -- Payloads are fully selected application data. A renderer preserves their
+  -- complete text, applies terminal layout, and never performs a database read.
   data Line : Set where
     configurationDecision : Application.Correction.Claim → Line
     commandOutput : ServiceCommand → A.Result → Line

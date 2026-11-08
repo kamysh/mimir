@@ -579,7 +579,7 @@ async fn cmd_list(project: Option<String>, limit: mimir_core::Selection) -> Resu
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            trunc(&b.content, 70),
+            &b.content,
             mt,
             proj,
         );
@@ -618,8 +618,8 @@ async fn cmd_patterns(project: Option<String>, limit: mimir_core::Selection) -> 
             "{}  rate={:.3}  [{}] → [{}]",
             p.id,
             p.success_rate.value(),
-            trunc(&p.situation, 40),
-            trunc(&p.approach, 40),
+            &p.situation,
+            &p.approach,
         );
     }
 
@@ -659,7 +659,7 @@ async fn cmd_query(
                 b.id,
                 b.probability.value(),
                 b.confidence.value(),
-                trunc(&b.content, 70),
+                &b.content,
                 proj,
             );
             for e in &gb.evidence {
@@ -669,7 +669,7 @@ async fn cmd_query(
                     format!(" § {}", e.section_path.join(" > "))
                 };
                 println!("    ↳ w={:.2}  {}{}", e.weight, e.document_path, section,);
-                println!("        {}", trunc(&e.snippet, 100));
+                println!("        {}", &e.snippet);
             }
         }
         return Ok(());
@@ -694,7 +694,7 @@ async fn cmd_query(
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            trunc(&b.content, 70),
+            &b.content,
             proj,
         );
     }
@@ -742,7 +742,7 @@ async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
                     "{}  w={:.2}  {}{}",
                     e.chunk_id, e.weight, e.document_path, section
                 );
-                println!("    {}", trunc(&e.snippet, 100));
+                println!("    {}", &e.snippet);
             }
         }
     }
@@ -771,7 +771,7 @@ async fn cmd_intervene(id: &str, value: f64) -> Result<()> {
         let content = svc
             .get_belief(*uid)
             .await?
-            .map(|b| trunc(&b.content, 70))
+            .map(|b| b.content)
             .unwrap_or_default();
         println!("{}  p_proj={:.3}  {}", uid, prob.value(), content);
     }
@@ -880,6 +880,42 @@ async fn cmd_load(path: &str, project: Option<&str>) -> Result<()> {
 // mimir query-doc
 // ---------------------------------------------------------------------------
 
+fn document_result_display(result: &mimir_core::documents::QueryResult) -> String {
+    let section = if result.section_path.is_empty() {
+        String::new()
+    } else {
+        format!("  § {}", result.section_path.join(" > "))
+    };
+    format!(
+        "{}{}\n  {}\n",
+        result.document_path, section, result.content
+    )
+}
+
+#[cfg(test)]
+mod document_output_tests {
+    use super::*;
+
+    #[test]
+    fn full_document_passage_survives_display_with_unicode_and_whitespace() {
+        let content = format!(
+            "  {}\nlast supporting line\t ",
+            "λ全文 passage ".repeat(300)
+        );
+        let result = mimir_core::documents::QueryResult {
+            id: "display-only".into(),
+            document_path: "/document.md".into(),
+            section_path: vec!["complete section".into(), "detail".into()],
+            content: content.clone(),
+            parent_content: None,
+        };
+        let shown = document_result_display(&result);
+        assert!(shown.starts_with("/document.md  § complete section > detail\n"));
+        assert!(shown.contains(&content));
+        assert!(!shown.contains('…'));
+    }
+}
+
 async fn cmd_query_doc(
     context: &str,
     project: Option<&str>,
@@ -894,14 +930,7 @@ async fn cmd_query_doc(
     }
 
     for r in &results {
-        let section = if r.section_path.is_empty() {
-            String::new()
-        } else {
-            format!("  § {}", r.section_path.join(" > "))
-        };
-        println!("{}{}", r.document_path, section);
-        println!("  {}", trunc(&r.content, 120));
-        println!();
+        println!("{}", document_result_display(r));
     }
 
     Ok(())
@@ -950,11 +979,11 @@ async fn cmd_contradictions(project: Option<&str>) -> Result<()> {
         let bb = svc.get_belief(*b).await?;
         let ca = ba
             .as_ref()
-            .map(|b| trunc(&b.content, 50))
+            .map(|b| b.content.clone())
             .unwrap_or_else(|| a.to_string());
         let cb = bb
             .as_ref()
-            .map(|b| trunc(&b.content, 50))
+            .map(|b| b.content.clone())
             .unwrap_or_else(|| b.to_string());
         println!("  [{}]  ⟺  [{}]", ca, cb);
     }
@@ -999,7 +1028,7 @@ async fn cmd_reembed() -> Result<()> {
         }
         svc.embed_and_store_belief(belief).await?;
         embedded += 1;
-        println!("  embedded {}  {}", belief.id, trunc(&belief.content, 60));
+        println!("  embedded {}  {}", belief.id, &belief.content);
     }
 
     println!(

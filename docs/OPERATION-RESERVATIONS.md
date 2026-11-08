@@ -293,3 +293,8 @@ defined answer. The capability answer uses contract version 3, matching the
 current MCP handler. These values are prerequisites for mandatory dispatcher
 assembly in #74/#76; those issues are still unfinished. Evidence-enriched
 retrieval has its separate operation proof in #132.
+
+Ordinary CLI output prints selected belief and pattern text and supporting
+document passages in full, including their original whitespace. Record
+selection, ordering and numeric display do not impose a text-width ceiling.
+Legacy hook clipping remains separate work in #168/#171.
