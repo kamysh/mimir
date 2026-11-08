@@ -87,7 +87,7 @@ pub fn show(config_path: Option<&Path>, state_dir: Option<&Path>) -> anyhow::Res
         if let Some(reason) = report.block_reason {
             println!("Terminal reason code: {reason}");
         }
-        for id in report.selected_ids.iter().take(5) {
+        for id in &report.selected_ids {
             println!("Affected experience: {id}");
         }
         if let Some(id) = report.diagnostics_id {
