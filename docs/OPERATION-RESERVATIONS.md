@@ -361,3 +361,12 @@ the read transaction, and interruption drops it before releasing the
 connection. Other clients remain able to commit writes. The in-flight
 response sees its original view and the next request sees those commits.
 Concrete retrieval recovery and mandatory assembly remain #132 and #74/#76.
+
+Document search prepares its query embedding before opening the database
+view. Its exact-project filter, vector matches, selected chunk content and
+parent content then use one read-only stable transaction. A concurrent
+document removal cannot drop or mix those fields in the in-flight result.
+Completion and interruption release the transaction; the next request sees
+the removal. The formal read binding keeps project, vector ordering and
+chunk/parent meanings tied to the same first database view. Concrete
+document-search recovery remains #133 and mandatory assembly #74/#76.

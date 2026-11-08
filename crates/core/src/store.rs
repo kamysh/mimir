@@ -1586,6 +1586,11 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Return chunk IDs tagged with a project (used by delete_project extension).
     pub async fn get_chunk_ids_by_project(&self, project: &str) -> Result<Vec<Uuid>> {
+        let client = self.client.lock().await;
+        self.chunk_ids_by_project_on(&client, project).await
+    }
+
+    async fn chunk_ids_by_project_on(&self, client: &Client, project: &str) -> Result<Vec<Uuid>> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
         let stmt = format!("age_chunk_ids_by_proj_{}", Uuid::new_v4().simple());
@@ -1596,7 +1601,6 @@ $$) AS (ok ag_catalog.agtype)"#
              $$, $1) AS (id agtype)"
         );
         let exec = format!("EXECUTE {stmt}('{}')", sql_esc(&agtype_json));
-        let client = self.client.lock().await;
         client.simple_query(&prepare).await?;
         let msgs = client.simple_query(&exec).await;
         let _ = client.simple_query(&format!("DEALLOCATE {stmt}")).await;
@@ -1694,12 +1698,23 @@ $$) AS (ok ag_catalog.agtype)"#
         limit: crate::Selection,
         filter_ids: Option<&[Uuid]>,
     ) -> Result<Vec<Uuid>> {
+        let client = self.client.lock().await;
+        self.chunks_by_vector_on(&client, query_vec, limit, filter_ids)
+            .await
+    }
+
+    async fn chunks_by_vector_on(
+        &self,
+        client: &Client,
+        query_vec: &[f32],
+        limit: crate::Selection,
+        filter_ids: Option<&[Uuid]>,
+    ) -> Result<Vec<Uuid>> {
         if filter_ids.is_some_and(|ids| ids.is_empty()) {
             return Ok(Vec::new());
         }
         let vector = Vector::from(query_vec.to_vec());
         let sql = vector_query(VectorTable::Chunks, limit, filter_ids.is_some(), false);
-        let client = self.client.lock().await;
         let rows = match filter_ids {
             None => client.query(&sql, &[&vector]).await?,
             Some(ids) => client.query(&sql, &[&vector, &ids]).await?,
@@ -1712,6 +1727,67 @@ $$) AS (ok ag_catalog.agtype)"#
     // -----------------------------------------------------------------------
     // Belief embeddings (vector half of hybrid query_relevant)
     // -----------------------------------------------------------------------
+
+    pub(crate) async fn document_query_snapshot(
+        &self,
+        query: &[f32],
+        project: Option<&str>,
+        limit: crate::Selection,
+    ) -> Result<Vec<crate::documents::QueryResult>> {
+        self.document_query_after_first_read(query, project, limit, || async { Ok(()) })
+            .await
+    }
+
+    pub(super) async fn document_query_after_first_read<F, W>(
+        &self,
+        query: &[f32],
+        project: Option<&str>,
+        limit: crate::Selection,
+        after_first_read: F,
+    ) -> Result<Vec<crate::documents::QueryResult>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let (filter_ids, after_selection) = match project {
+            Some(project) => {
+                let ids = self.chunk_ids_by_project_on(tx.client(), project).await?;
+                after_first_read().await?;
+                (Some(ids), None)
+            }
+            None => (None, Some(after_first_read)),
+        };
+        let chunk_ids = self
+            .chunks_by_vector_on(tx.client(), query, limit, filter_ids.as_deref())
+            .await?;
+        if let Some(after_selection) = after_selection {
+            after_selection().await?;
+        }
+        let mut result = Vec::with_capacity(chunk_ids.len());
+        for id in chunk_ids {
+            let Some(chunk) = self.get_chunk_by_id_on(tx.client(), id).await? else {
+                continue;
+            };
+            let parent_content = match chunk.parent_id {
+                None => None,
+                Some(id) => self
+                    .get_chunk_by_id_on(tx.client(), id)
+                    .await?
+                    .map(|parent| parent.content),
+            };
+            result.push(crate::documents::QueryResult {
+                id: chunk.id.to_string(),
+                document_path: chunk.document_path,
+                section_path: chunk.section_path,
+                content: chunk.content,
+                parent_content,
+            });
+        }
+        tx.commit().await?;
+        Ok(result)
+    }
 
     /// Insert or replace the embedding for a belief.
     pub async fn insert_belief_embedding(&self, belief_id: Uuid, embedding: &[f32]) -> Result<()> {
@@ -2281,6 +2357,54 @@ mod snapshot_read_tests {
             email: None,
             retirement: None,
         }
+    }
+
+    #[tokio::test]
+    async fn document_query_snapshot_retains_selected_chunks_and_parents() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = AgeStore::new(
+            db::connect(&cfg.database).await?,
+            cfg.database.dbname.clone(),
+        )?;
+        let setup = db::connect(&cfg.database).await?;
+        for scoped in [false, true] {
+            let id: Uuid = setup
+                .query_one("SELECT gen_random_uuid()", &[])
+                .await?
+                .get(0);
+            let project = format!("consistent-document-query-{id}");
+            let scope = scoped.then_some(project.as_str());
+            let document = format!("/mimir-test/{project}.md");
+            let checked = async {
+                let parent_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+                let child_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+                let parent = DocumentChunk::with_id(parent_id, document.clone(), vec!["Parent".into()], "complete λ parent ".repeat(400), None, Some(project.clone()));
+                let child = DocumentChunk::with_id(child_id, document.clone(), vec!["Parent".into(), "Child".into()], "complete child passage ".repeat(400), Some(parent_id), Some(project.clone()));
+                writer.store.insert_document_chunk(&parent).await?;
+                writer.store.insert_document_chunk(&child).await?;
+                writer.store.insert_chunk_embedding(child_id, &[1.0, 0.0, 0.0]).await?;
+                let before = reader.document_query_snapshot(&[1.0, 0.0, 0.0], scope, None).await?;
+                let selected = before.iter().find(|value| value.id == child_id.to_string()).expect("selected child");
+                anyhow::ensure!(selected.content == child.content && selected.parent_content.as_ref() == Some(&parent.content), "must return complete child and parent content");
+                let interrupted = reader.document_query_after_first_read(&[1.0, 0.0, 0.0], scope, None, || async {
+                    anyhow::bail!("controlled document-query interruption")
+                }).await;
+                anyhow::ensure!(interrupted.unwrap_err().to_string().contains("controlled document-query interruption"));
+                let during = reader.document_query_after_first_read(&[1.0, 0.0, 0.0], scope, None, || async {
+                    writer.clear_document(&document).await?;
+                    Ok(())
+                }).await?;
+                anyhow::ensure!(serde_json::to_value(during)? == serde_json::to_value(before)?, "every selected field and parent must retain the initial database view: scoped={scoped}");
+                let after = reader.document_query_snapshot(&[1.0, 0.0, 0.0], scope, None).await?;
+                anyhow::ensure!(after.iter().all(|value| value.id != child_id.to_string()), "the next request must see the removal and reuse the connection");
+                Ok::<_, anyhow::Error>(())
+            }.await;
+            let cleanup = writer.delete_project(&project).await;
+            checked?;
+            cleanup?;
+        }
+        Ok(())
     }
 
     #[tokio::test]

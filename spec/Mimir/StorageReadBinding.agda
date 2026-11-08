@@ -92,6 +92,9 @@ module Read (ops : VectorOperations) where
   module V = Vectors ops
 
   data DocumentMeaning (snapshot : Store.World) : (effect : Query.Effect) → Query.Reply effect → Set where
+    opened : ∀ tx → DocumentMeaning snapshot Query.beginRead (inj₂ tx)
+    openFailed : ∀ error → DocumentMeaning snapshot Query.beginRead (inj₁ error)
+    closed : ∀ tx reply → DocumentMeaning snapshot (Query.closeRead tx) reply
     project : ∀ project rows → rows ↭ projectChunks project snapshot →
       DocumentMeaning snapshot (Query.projectChunkIDs project) (inj₂ rows)
     projectFailed : ∀ project error → DocumentMeaning snapshot (Query.projectChunkIDs project) (inj₁ error)
@@ -206,6 +209,34 @@ module RetrievalSnapshot (ops : VectorOperations) (reads : Committed.Contract St
     D.snapshot (QueryRead.event queryRead) ≡ D.snapshot (Passage.event passageRead)
   retrievalAndPassagesAgree phase value effect reply queryRead passageRead =
     trans (QueryRead.sameView queryRead) (sym (Passage.sameView passageRead))
+
+-- This view starts at the first database query, after embedding preparation.
+-- Selected vector rows, chunk text and parent text use the same stored state.
+module DocumentSnapshot (ops : VectorOperations) (reads : Committed.Contract Store.World)
+  (first : Committed.Contract.Read reads) where
+  module D = Committed.Contract reads
+  module Meaning = Read ops
+
+  world : Store.World
+  world = D.snapshot first
+
+  record QueryRead (effect : Query.Effect) (reply : Query.Reply effect) : Set where
+    constructor observedQuery
+    field
+      event : D.Read
+      sameView : D.snapshot event ≡ world
+      meaning : Meaning.DocumentMeaning (D.snapshot event) effect reply
+
+  selectedWorldMeaning : ∀ effect reply → QueryRead effect reply → Meaning.DocumentMeaning world effect reply
+  selectedWorldMeaning effect reply evidence =
+    subst (λ state → Meaning.DocumentMeaning state effect reply)
+      (QueryRead.sameView evidence) (QueryRead.meaning evidence)
+
+  responseReadsAgree : ∀ firstEffect firstReply secondEffect secondReply →
+    (one : QueryRead firstEffect firstReply) → (two : QueryRead secondEffect secondReply) →
+    D.snapshot (QueryRead.event one) ≡ D.snapshot (QueryRead.event two)
+  responseReadsAgree firstEffect firstReply secondEffect secondReply one two =
+    trans (QueryRead.sameView one) (sym (QueryRead.sameView two))
 
 -- Concrete read requests carry filters and identities only. In particular,
 -- neither a desired answer nor a correctness certificate is an input. Wire

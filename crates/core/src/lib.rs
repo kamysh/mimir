@@ -975,34 +975,9 @@ impl MimirService {
             vecs.swap_remove(0)
         };
 
-        let filter_ids: Option<Vec<Uuid>> = match project {
-            None => None,
-            Some(proj) => Some(self.store.get_chunk_ids_by_project(proj).await?),
-        };
-
-        let chunk_ids = self
-            .store
-            .query_chunks_by_vector(&query_vec, limit, filter_ids.as_deref())
-            .await?;
-
-        let mut results = Vec::with_capacity(chunk_ids.len());
-        for id in chunk_ids {
-            let Some(chunk) = self.store.get_chunk_by_id(id).await? else {
-                continue;
-            };
-            let parent_content = match chunk.parent_id {
-                None => None,
-                Some(pid) => self.store.get_chunk_by_id(pid).await?.map(|p| p.content),
-            };
-            results.push(QueryResult {
-                id: chunk.id.to_string(),
-                document_path: chunk.document_path,
-                section_path: chunk.section_path,
-                content: chunk.content,
-                parent_content,
-            });
-        }
-        Ok(results)
+        self.store
+            .document_query_snapshot(&query_vec, project, limit)
+            .await
     }
 
     // -----------------------------------------------------------------------
