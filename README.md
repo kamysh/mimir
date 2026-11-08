@@ -154,6 +154,15 @@ docker run -d \
   kamysh/postgres-ai:latest
 ```
 
+Check actual readiness before continuing; do not substitute a startup sleep:
+
+```bash
+docker exec postgres-ai psql -U postgres -c 'SELECT 1'
+```
+
+If initialization is still in progress, inspect `docker logs postgres-ai` and
+repeat that check after startup completes. Continue only after the query succeeds.
+
 This image includes pgvector, Apache AGE, uuid-ossp, and pgcrypto. The setup script below enables the required extensions in Mimir's database. Mimir sets `search_path = public,ag_catalog` on its own connections.
 
 <details>

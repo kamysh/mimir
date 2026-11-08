@@ -167,10 +167,14 @@ docker run -d \
   -p "127.0.0.1:${PORT}:5432" \
   -v "${VOLUME}:/var/lib/postgresql/data" \
   kamysh/postgres-ai:latest
-sleep 3
 ```
 
-**Verify:**
+**Verify actual database readiness:** run this immediately; elapsed time is not
+evidence that PostgreSQL is ready. If initialization is still in progress,
+inspect `docker logs "$CONTAINER"` and repeat this verification after startup
+completes. Do not continue to role/database setup until the query succeeds.
+No startup delay, retry count or deadline is selected by this procedure.
+
 ```sh
 docker exec "$CONTAINER" psql -U postgres -c 'SELECT 1' >/dev/null && echo OK
 ```

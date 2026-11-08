@@ -114,6 +114,13 @@ cp "$REMINDER_SOURCE" "$HOME/.claude/mimir-reminder.md"
 Run only the selected client's copy commands. The reminder lives independently
 of the source checkout. Adapt paths for a custom client configuration directory.
 
+The templates do not choose a command timeout. Omitting that field does not
+remove deadlines imposed by the client: both clients currently document a
+600-second default for ordinary synchronous command hooks. See the
+[external client constraints](../EXTERNAL-CLIENT-CONSTRAINTS.md) for sources
+and the reminder-only exception approved under #112. Do not silently replace it with
+a guessed large number or change reminder delivery to a background hook.
+
 ### Codex
 
 Merge the `SessionStart` entry from [codex-hooks.json](codex-hooks.json) into
