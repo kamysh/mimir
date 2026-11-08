@@ -174,6 +174,12 @@ module AgentCorrection where
     constructor claim
     field first : Item; rest : List Item
 
+  uuidItem : List Mimir.Validation.Segment → Item
+  uuidItem path = item arguments
+    (fault path malformedInput "The supplied identifier is not a valid UUID.")
+    (toList "A UUID returned by Mimir for the intended record, in a form accepted by the tool's UUID parser.")
+    (toList "Copy the stored UUID from the relevant Mimir lookup result. For a new record, omit the ID only if this tool explicitly assigns it. If the intended record is unknown, ask the user. Do not invent an identifier.")
+
   record Certified (World : Set) (before after : World) : Set where
     constructor certified
     field report : Claim; unchanged : after ≡ before

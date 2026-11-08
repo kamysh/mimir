@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 
 use mimir_core::{config::Config, MimirService};
 mod configuration;
+mod corrections;
 mod judge;
 
 // ---------------------------------------------------------------------------
@@ -415,14 +416,15 @@ async fn application_main() -> Result<()> {
             ) {
                 error.exit();
             }
-            if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("judge")) {
-                eprintln!("invalid judge arguments");
-                println!("{}", serde_json::json!({"status":"invalid_arguments"}));
-                std::process::exit(2);
-            }
-            error.exit();
+            println!("{}", serde_json::to_string(&corrections::parser(&error))?);
+            return Ok(());
         }
     };
+
+    if let Some(correction) = corrections::command(&cli.command) {
+        println!("{}", serde_json::to_string(&correction)?);
+        return Ok(());
+    }
 
     match cli.command {
         Command::Judge(command) => std::process::exit(judge::dispatch(command).await),

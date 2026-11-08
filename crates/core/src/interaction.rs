@@ -64,6 +64,16 @@ impl CorrectionItem {
     pub fn fault(&self) -> &Fault {
         &self.fault
     }
+
+    pub fn invalid_uuid(path: Vec<Segment>) -> Self {
+        Self::new(
+            Location::Arguments,
+            Fault { path, code: Code::MalformedInput,
+                message: "The supplied identifier is not a valid UUID.".into() },
+            "A UUID returned by Mimir for the intended record, in a form accepted by the tool's UUID parser.".into(),
+            "Copy the stored UUID from the relevant Mimir lookup result. For a new record, omit the ID only if this tool explicitly assigns it. If the intended record is unknown, ask the user. Do not invent an identifier.".into(),
+        ).expect("UUID corrections identify the field and explain the repair")
+    }
     pub fn location(&self) -> Location {
         self.location
     }

@@ -103,13 +103,7 @@ fn walk(schema: &Value, value: &Value, path: &mut Vec<Segment>, issues: &mut Vec
             .as_str()
             .is_some_and(|text| uuid::Uuid::parse_str(text).is_err())
         {
-            issues.push(CorrectionItem::new(
-                Location::Arguments,
-                Fault { path: path.clone(), code: Code::MalformedInput,
-                    message: "The supplied identifier is not a valid UUID.".into() },
-                "A UUID returned by Mimir for the intended record, in a form accepted by the tool's UUID parser.".into(),
-                "Copy the stored UUID from the relevant Mimir lookup result. For a new record, omit the ID only if this tool explicitly assigns it. If the intended record is unknown, ask the user. Do not invent an identifier.".into(),
-            ).expect("UUID corrections identify the field and explain the repair"));
+            issues.push(CorrectionItem::invalid_uuid(path.clone()));
         }
     }
     if let (Some(text), Some(minimum)) = (

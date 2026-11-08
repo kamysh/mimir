@@ -118,3 +118,17 @@ dialogue. Stored-reference and stale-revision corrections, complete schema
 parity and mandatory recovery dispatch retain their separate obligations in
 #93–#94, #102 and #74/#76. A response format alone does not establish those
 properties.
+
+The CLI also prints this JSON response and exits successfully when its request
+needs correction before execution. Check `status` to distinguish a request for
+input from completed work. Parser diagnostics retain their complete explanation
+and usage, identify missing or unknown arguments, and give repair instructions.
+Invalid identifiers and numeric values are checked before configuration is
+loaded or a database connection is opened. For example, `mimir delete belief
+bad-id` gives the same identifier diagnosis as MCP `delete_belief` with that ID;
+`mimir list --limt 2` identifies the misspelled flag. The response does not guess
+the intended value or silently replace an invalid value with a default.
+
+Help and version requests retain their ordinary output. Operational failures
+still return a failing exit status; they are not rewritten as a claim that
+business data is unchanged. Valid command output is unchanged.

@@ -6,10 +6,10 @@ module Mimir.CLI where
 
 open import Data.Bool using (Bool; true; false; not; _∧_)
 open import Data.Float.Base using (Float; _<ᵇ_)
-open import Data.List using (List; []; _∷_; map)
+open import Data.List using (List; []; _∷_; map; _++_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc; _≟_; _≤?_)
-open import Data.Product using (_×_; _,_)
+open import Data.Product using (Σ; _×_; _,_)
 open import Data.String using (String; toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
@@ -32,6 +32,9 @@ import Mimir.StructuredValue as V
 import Mimir.Effects as Effects
 import Mimir.Validation as Validation
 import Mimir.StandardLibrary as Library
+import Mimir.McpErrors as Errors
+import Mimir.GraphNumerics as Numeric
+module Correction = Errors.AgentCorrection
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
 
 data JudgeCommand : Set where
@@ -81,13 +84,31 @@ defaults : Defaults
 defaults = record { listLimit = nothing; queryLimit = nothing; documentLimit = nothing; watchInterval = 300; watchFailures = 3
   ; queryEvidence = false; decayFactor = 0.99; threshold = 0.3; evidenceWeight = 1.0 }
 
--- UUID arguments of these commands are parsed before configuration/database
--- access. Evidence UUIDs are parsed after connection, as in the native command.
-validateBeforeConnect : ServiceCommand → Bool
-validateBeforeConnect (deleteBelief _) = true
-validateBeforeConnect (deletePattern _) = true
-validateBeforeConnect (intervene _ _) = true
-validateBeforeConnect _ = false
+-- Pure admission precedes configuration and database access for every service
+-- command. Collect independent field problems instead of choosing replacements.
+uuidIssues : Library.Contract → String → Text → List Correction.Item
+uuidIssues conversion fieldName value with Input.readUUID conversion (V.string value)
+... | inj₁ _ = Correction.uuidItem (Validation.key fieldName ∷ []) ∷ []
+... | inj₂ _ = []
+
+probabilityIssues : String → Float → List Correction.Item
+probabilityIssues fieldName value with Numeric.probability value
+... | true = []
+... | false = Correction.item Correction.arguments
+  (Validation.fault (Validation.key fieldName ∷ []) Validation.invalidNumber
+    "The supplied value must be finite and between 0 and 1 inclusive.")
+  (toList "A finite number between 0 and 1 inclusive.")
+  (toList "Correct the value using the intended request. If it is unknown, ask the user; do not clamp it or invent a replacement.") ∷ []
+
+requestIssues : Library.Contract → ServiceCommand → List Correction.Item
+requestIssues conversion (deleteBelief id) = uuidIssues conversion "id" id
+requestIssues conversion (deletePattern id) = uuidIssues conversion "id" id
+requestIssues conversion (intervene id value) = uuidIssues conversion "id" id ++ probabilityIssues "value" value
+requestIssues conversion (evidenceAdd chunk belief weight) = uuidIssues conversion "chunk_id" chunk ++
+  uuidIssues conversion "belief_id" belief ++ probabilityIssues "weight" weight
+requestIssues conversion (evidenceList belief) = uuidIssues conversion "belief_id" belief
+requestIssues conversion (decay factor project) = probabilityIssues "factor" factor
+requestIssues conversion _ = []
 
 request : Library.Contract → ServiceCommand → Validation.Fault ⊎ Public.Request
 request conversion stats = inj₂ (Public.read Read.stats)
@@ -140,13 +161,13 @@ deduplicate = go []
 
 data Parsed : Set where
   help version : Parsed
-  invalid : Bool → Parsed -- first OS argument is exactly "judge"
+  invalid : Correction.Claim → Parsed
   parsedCommand : Command → Parsed
 
 parseExit : Parsed → Maybe ℕ
 parseExit help = just 0
 parseExit version = just 0
-parseExit (invalid _) = just 2
+parseExit (invalid _) = just 0
 parseExit (parsedCommand _) = nothing
 
 module Run (conversion : Library.Contract) (environment : Application.Environment) (format : Encoding.Formatting) where
@@ -155,13 +176,13 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
 
   data Failure : Set where
     connection : Text → Failure
-    arguments : Validation.Fault → Failure
     operation : A.Result → Failure
     output : Text → Failure
 
   -- Payloads are fully selected application data. A renderer preserves their
   -- complete text, applies terminal layout, and never performs a database read.
   data Line : Set where
+    inputDecision : Correction.Claim → Line
     configurationDecision : Application.Correction.Claim → Line
     commandOutput : ServiceCommand → A.Result → Line
     emptyIntervention emptyContradictions : Line
@@ -228,7 +249,10 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
 
   dispatch : ServiceCommand → Script (Failure ⊎ ⊤)
   dispatch command with request conversion command
-  ... | inj₁ error = done (inj₁ (arguments error))
+  ... | inj₁ error = emit (inputDecision (Correction.claim
+      (Correction.item Correction.arguments error
+        (toList "Arguments accepted by this Mimir command.")
+        (toList "Correct the reported fields and rerun the command. If a required value is unknown, ask the user instead of guessing.")) []))
   ... | inj₂ request with A.admission request
   ...   | inj₁ detail = emit (configurationDecision (Application.configurationCorrection detail))
   ...   | inj₂ tt = ask (execute request) (after command)
@@ -239,11 +263,23 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
     (inj₂ tt) → dispatch command
 
   start : ServiceCommand → Script (Failure ⊎ ⊤)
-  start command with validateBeforeConnect command
-  ... | false = connectThen command
-  ... | true with request conversion command
-  ...   | inj₁ error = done (inj₁ (arguments error))
-  ...   | inj₂ _ = connectThen command
+  start command with requestIssues conversion command
+  ... | [] = connectThen command
+  ... | first ∷ rest = emit (inputDecision (Correction.claim first rest))
+
+  invalidPreflightOnlyPrintsCorrection : ∀ command first rest →
+    requestIssues conversion command ≡ first ∷ rest →
+    start command ≡ emit (inputDecision (Correction.claim first rest))
+  invalidPreflightOnlyPrintsCorrection command first rest problems rewrite problems = refl
+
+  invalidPreflightCannotConnect : ∀ command first rest events outcome →
+    requestIssues conversion command ≡ first ∷ rest →
+    P.Runs (start command) events outcome →
+    Σ (Reply (print (inputDecision (Correction.claim first rest))))
+      (λ reply → events ≡ ((print (inputDecision (Correction.claim first rest)) , reply) ∷ []))
+  invalidPreflightCannotConnect command first rest events outcome problems execution rewrite problems with execution
+  ... | P.replied _ _ (inj₁ error) (P.returned _) = inj₁ error , refl
+  ... | P.replied _ _ (inj₂ tt) (P.returned _) = inj₂ tt , refl
 
   exit : Failure ⊎ ⊤ → ℕ
   exit (inj₁ _) = 1
