@@ -4230,36 +4230,6 @@
         },
         {
           "kind": "fn",
-          "name": "write_named_limited",
-          "line": 550,
-          "specification": [
-            "Mimir.JudgeWrite",
-            "Mimir.AtomicFile",
-            "Mimir.JudgePersistence",
-            "Mimir.JudgeNamedWrite",
-            "Mimir.JudgeRecordWrite",
-            "Mimir.UUIDV4"
-          ],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "open_obligations": [
-            "Native Rust implementation/refinement and complete adapter correspondence remain open.",
-            "Implement the proven exclusive-create cleanup ownership correction after specification completion.",
-            "Finish low-level read/write, allocation, interruption and descriptor-lifetime refinement.",
-            "Concrete persisted-record writing is composed; native UUID 128-bit mask, allocation/panic behavior and full Rust adapter correspondence remain open. Generic helper parameters outside the three persisted-record call families are not covered by this composition."
-          ],
-          "behavioral_area": [
-            "spec/Mimir/JudgeStateOperations.agda",
-            "spec/Mimir/JudgePersistenceComposition.agda",
-            "spec/Mimir/JudgeStateWire.agda",
-            "spec/Mimir/JudgeStateMap.agda",
-            "spec/Mimir/JudgeStatePath.agda",
-            "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeStateRoundTrip.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "fn",
           "name": "replace_state_file",
           "specification": [],
           "line": 563,
@@ -4385,32 +4355,6 @@
           "open_obligations": [
             "Native Rust implementation/refinement and complete adapter correspondence remain open.",
             "Prove native Rust path-iterator correspondence and connect filesystem receipts to the native adapters."
-          ],
-          "behavioral_area": [
-            "spec/Mimir/JudgeStateOperations.agda",
-            "spec/Mimir/JudgePersistenceComposition.agda",
-            "spec/Mimir/JudgeStateWire.agda",
-            "spec/Mimir/JudgeStateMap.agda",
-            "spec/Mimir/JudgeStatePath.agda",
-            "spec/Mimir/JudgeFilesystem.agda",
-            "spec/Mimir/JudgeStateRoundTrip.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "read_named_limited",
-          "line": 615,
-          "specification": [
-            "Mimir.JudgeRead",
-            "Mimir.JudgePersistence",
-            "Mimir.JudgeStateDecode"
-          ],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "open_obligations": [
-            "Native Rust implementation/refinement and complete adapter correspondence remain open.",
-            "Prove native Rust path-iterator correspondence and connect filesystem receipts to the native adapters.",
-            "Finish low-level read/write, allocation, interruption and descriptor-lifetime refinement."
           ],
           "behavioral_area": [
             "spec/Mimir/JudgeStateOperations.agda",

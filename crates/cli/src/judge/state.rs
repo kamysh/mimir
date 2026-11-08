@@ -7,7 +7,6 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
-const MAX_DIAGNOSTICS: u64 = 3 * 1024 * 1024;
 const MAX_TRACE: usize = 256 * 1024;
 const MAX_TRACE_EVENTS: usize = 48;
 const MAX_TRACE_ATTEMPTS: usize = 8;
@@ -436,7 +435,7 @@ impl State {
                 .unwrap_or(0);
             diagnostics.attempts.remove(oldest_unpinned);
         }
-        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, Some(MAX_DIAGNOSTICS))?;
+        self.write_named(DIAGNOSTICS_FILE, &diagnostics)?;
         Ok(id)
     }
 
@@ -458,7 +457,7 @@ impl State {
         } else {
             trace.events_omitted += 1;
         }
-        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, Some(MAX_DIAGNOSTICS))
+        self.write_named(DIAGNOSTICS_FILE, &diagnostics)
     }
 
     pub fn finish_trace(&self, id: Uuid, report: &Report) -> Result<()> {
@@ -484,7 +483,7 @@ impl State {
                 trace.events_omitted += 1;
             }
         }
-        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, Some(MAX_DIAGNOSTICS))
+        self.write_named(DIAGNOSTICS_FILE, &diagnostics)
     }
 
     pub fn record_incident(&self, report: &Report) -> Result<()> {
@@ -556,20 +555,7 @@ impl State {
     }
 
     fn write_named<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
-        self.write_named_limited(name, value, None)
-    }
-
-    fn write_named_limited<T: Serialize>(
-        &self,
-        name: &str,
-        value: &T,
-        limit: Option<u64>,
-    ) -> Result<()> {
         let bytes = serde_json::to_vec(value)?;
-        ensure!(
-            limit.is_none_or(|maximum| bytes.len() as u64 <= maximum),
-            "state file is too large"
-        );
         let temp = self
             .path
             .join(format!(".judge-{}-{}.tmp", name, Uuid::new_v4()));
@@ -629,25 +615,17 @@ pub fn read_failure(path: &Path) -> Result<Option<FailureIncident>> {
 }
 
 pub fn read_diagnostics(path: &Path) -> Result<Diagnostics> {
-    Ok(read_named_limited(path, DIAGNOSTICS_FILE, Some(MAX_DIAGNOSTICS))?.unwrap_or_default())
+    Ok(read_named(path, DIAGNOSTICS_FILE)?.unwrap_or_default())
 }
 
 fn read_named<T: for<'de> Deserialize<'de>>(path: &Path, name: &str) -> Result<Option<T>> {
-    read_named_limited(path, name, None)
-}
-
-fn read_named_limited<T: for<'de> Deserialize<'de>>(
-    path: &Path,
-    name: &str,
-    limit: Option<u64>,
-) -> Result<Option<T>> {
     if !path.exists() {
         return Ok(None);
     }
     verify_parents(path)?;
     verify_dir(path)?;
     let file_path = path.join(name);
-    let file = match OpenOptions::new()
+    let mut file = match OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(file_path)
@@ -660,24 +638,11 @@ fn read_named_limited<T: for<'de> Deserialize<'de>>(
     ensure!(
         metadata.is_file()
             && metadata.uid() == unsafe { libc::geteuid() }
-            && metadata.permissions().mode() & 0o077 == 0
-            && limit.is_none_or(|maximum| metadata.len() <= maximum),
-        "unsafe or oversized state report"
+            && metadata.permissions().mode() & 0o077 == 0,
+        "unsafe state report"
     );
     let mut bytes = Vec::new();
-    match limit {
-        Some(maximum) => {
-            file.take(maximum + 1).read_to_end(&mut bytes)?;
-        }
-        None => {
-            let mut file = file;
-            file.read_to_end(&mut bytes)?;
-        }
-    }
-    ensure!(
-        limit.is_none_or(|maximum| bytes.len() as u64 <= maximum),
-        "oversized state report"
-    );
+    file.read_to_end(&mut bytes)?;
     Ok(Some(
         serde_json::from_slice(&bytes).map_err(|_| anyhow!("invalid state report"))?,
     ))
@@ -950,7 +915,6 @@ mod tests {
         let path = dir.join(DIAGNOSTICS_FILE);
         let metadata = fs::metadata(&path).unwrap();
         assert_eq!(metadata.permissions().mode() & 0o077, 0);
-        assert!(metadata.len() <= MAX_DIAGNOSTICS);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(read_diagnostics(&dir).is_err());
         drop(state);
