@@ -213,6 +213,79 @@ mod lifecycle_tests {
     }
 }
 
+#[cfg(test)]
+mod grading_tests {
+    use super::*;
+
+    #[test]
+    fn fake_grader_receives_the_complete_stream_and_final_result_on_stdin() {
+        let directory =
+            std::env::temp_dir().join(format!("mimir-eval-grade-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let capture = directory.join("received-prompt");
+        let script = directory.join("grader");
+        let empty = directory.join("mcp.json");
+        fs::write(&empty, r#"{"mcpServers":{}}"#).unwrap();
+        fs::write(&script, "#!/bin/sh\nif [ \"$#\" -ne 7 ] || [ \"$1\" != -p ] || [ \"$2\" != --output-format ] || [ \"$4\" != --strict-mcp-config ] || [ \"$5\" != --mcp-config ] || [ \"$7\" != --dangerously-skip-permissions ]; then exit 9; fi\ncat > \"$(dirname \"$0\")/received-prompt\"\nprintf '%s\\n' '{\"result\":\"{\\\"avoided_trap\\\":\\\"yes\\\"}\"}'\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let long_input = format!("{} decisive full argument", "λ".repeat(2000));
+        let final_result = format!("{} final correction", "complete result ".repeat(20_000));
+        let mut records: Vec<_> = (0..80).map(|index| json!({"type":"assistant", "message":{"content":[{"type":"tool_use", "name":"Edit", "input":{"command":long_input,"new_string":format!("late argument {index}")}}]}})).collect();
+        records.push(json!({"type":"user", "message":{"content":[{"type":"tool_result", "content":"decisive late tool result"}]}}));
+        records.push(json!({"type":"result", "result":final_result}));
+        let raw = records
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = run_grader(
+            &raw,
+            &json!({"injected":true}),
+            &json!({"claude_bin":script}),
+            &empty,
+        )
+        .unwrap();
+        assert!(output.status.success());
+        let received = fs::read_to_string(capture).unwrap();
+        assert!(
+            received.contains(&raw),
+            "every saved event and every field must arrive intact"
+        );
+        assert!(received.contains("late argument 79"));
+        assert!(received.contains("decisive late tool result"));
+        assert!(received.contains(&final_result));
+        assert!(received.contains(&long_input));
+    }
+
+    #[test]
+    fn evidence_requires_the_complete_intended_text() {
+        let prefix = "same beginning ".repeat(10);
+        let actual = format!("{prefix}correct conclusion");
+        let other = format!("{prefix}different conclusion");
+        assert!(evidence_surfaced(&format!("context: {actual}\n"), &actual));
+        assert!(!evidence_surfaced(&other, &actual));
+        assert!(!evidence_surfaced(&prefix, &actual));
+        assert!(!evidence_surfaced(&actual, ""));
+    }
+
+    #[test]
+    fn isolation_report_retains_the_whole_matching_line() {
+        let line = format!(
+            "{} ISO_PROBE_abcd {} repair detail",
+            "x".repeat(500),
+            "λ".repeat(2000)
+        );
+        assert_eq!(tripwire_lines(&line), vec![line]);
+    }
+}
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -1116,9 +1189,6 @@ fn preflight(cfg: &Value, skip: bool) -> Result<Value> {
                 "psql-rc={}:{}",
                 o.status.code().unwrap_or(-1),
                 String::from_utf8_lossy(&o.stderr)
-                    .chars()
-                    .take(200)
-                    .collect::<String>()
             ),
         ),
         Err(e) => (None, format!("psql-error:{e}")),
@@ -1500,11 +1570,7 @@ fn tripwire(paths: &[PathBuf]) -> Result<()> {
                     && Regex::new(r"p=\d").unwrap().is_match(line));
             if data {
                 found += 1;
-                println!(
-                    "{}: {}",
-                    p.display(),
-                    line.chars().take(400).collect::<String>()
-                )
+                println!("{}: {}", p.display(), line)
             }
         }
     }
@@ -1577,9 +1643,40 @@ fn tripwire_lines(text: &str) -> Vec<String> {
                     && l.contains("c=")
                     && Regex::new(r"p=\d").unwrap().is_match(l))
         })
-        .map(|l| l.chars().take(400).collect())
+        .map(str::to_owned)
         .collect()
 }
+fn evidence_surfaced(rendered: &str, intended: &str) -> bool {
+    !intended.is_empty() && rendered.contains(intended)
+}
+
+fn grading_prompt(raw: &str, row: &Value) -> String {
+    let (_, meta) = parse_stream(raw);
+    let ctx = if row["injected"].as_bool().unwrap_or(false) {
+        "(a project-specific prior was provided to the agent)"
+    } else {
+        "(no extra context was provided to the agent)"
+    };
+    format!("You are grading an AI coding agent trajectory. Answer only as JSON with keys avoided_trap (yes/no/unclear), belief_use (consistent/overrode_with_reason/ignored/no_belief), wasted_exploration_steps (integer), notes (one sentence).\n\nCONTEXT: {ctx}\n\nCOMPLETE SAVED TRAJECTORY:\n{raw}\n\nFINAL RESULT: {}", meta["result"])
+}
+
+fn run_grader(raw: &str, row: &Value, cfg: &Value, empty: &Path) -> Result<std::process::Output> {
+    let prompt = grading_prompt(raw, row);
+    process::run(
+        Command::new(cfg["claude_bin"].as_str().unwrap_or("claude"))
+            .args([
+                "-p",
+                "--output-format",
+                "json",
+                "--strict-mcp-config",
+                "--mcp-config",
+            ])
+            .arg(empty)
+            .arg("--dangerously-skip-permissions"),
+        Some(prompt.as_bytes()),
+    )
+}
+
 fn judge(results: &Path, sample: Option<NonZeroUsize>, cfg: &Value) -> Result<()> {
     let text = fs::read_to_string(results)?;
     let mut rows: Vec<Value> = text
@@ -1602,41 +1699,7 @@ fn judge(results: &Path, sample: Option<NonZeroUsize>, cfg: &Value) -> Result<()
                 .as_str()
                 .ok_or_else(|| anyhow!("result row missing raw stream"))?,
         )?;
-        let (calls, meta) = parse_stream(&raw);
-        let mut lines = vec![];
-        for c in calls.iter().take(60) {
-            let inp = &c["input"];
-            let snippet = inp["command"]
-                .as_str()
-                .or_else(|| inp["file_path"].as_str())
-                .or_else(|| inp["path"].as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| serde_json::to_string(inp).unwrap_or_default());
-            lines.push(format!(
-                "TOOL {}: {}",
-                c["name"].as_str().unwrap_or(""),
-                snippet.chars().take(160).collect::<String>()
-            ))
-        }
-        let result = meta["result"].as_str().unwrap_or("");
-        let ctx = if row["injected"].as_bool().unwrap_or(false) {
-            "(a project-specific prior was provided to the agent)"
-        } else {
-            "(no extra context was provided to the agent)"
-        };
-        let prompt=format!("You are grading an AI coding agent trajectory. Answer only as JSON with keys avoided_trap (yes/no/unclear), belief_use (consistent/overrode_with_reason/ignored/no_belief), wasted_exploration_steps (integer), notes (one sentence).\n\nCONTEXT: {ctx}\n\nTRAJECTORY:\n{}\n\nFINAL RESULT: {}",lines.join("\n"),result.chars().take(500).collect::<String>());
-        let o = Command::new(cfg["claude_bin"].as_str().unwrap_or("claude"))
-            .args([
-                "-p",
-                &prompt,
-                "--output-format",
-                "json",
-                "--strict-mcp-config",
-                "--mcp-config",
-                empty.to_str().unwrap(),
-                "--dangerously-skip-permissions",
-            ])
-            .output()?;
+        let o = run_grader(&raw, row, cfg, &empty)?;
         let outer: Value = serde_json::from_slice(&o.stdout).unwrap_or(json!({}));
         let body = outer["result"]
             .as_str()
@@ -1725,8 +1788,7 @@ fn injection(task: &Task, arm: &str, cfg: &Value) -> Result<(Option<String>, Opt
                     .map(|body| format!("Project knowledge you should rely on:\n{body}"))
                     .unwrap_or_default();
             }
-            let seen =
-                !content.is_empty() && s.contains(&content.chars().take(60).collect::<String>());
+            let seen = evidence_surfaced(&s, content);
             Ok(((!s.is_empty()).then_some(s), Some(seen)))
         }
         "grounded" => {
@@ -1781,8 +1843,7 @@ fn injection(task: &Task, arm: &str, cfg: &Value) -> Result<(Option<String>, Opt
                     ));
                 }
             }
-            let seen =
-                !content.is_empty() && s.contains(&content.chars().take(60).collect::<String>());
+            let seen = evidence_surfaced(&s, content);
             Ok(((!s.is_empty()).then_some(s), Some(seen)))
         }
         _ => bail!("unknown arm {arm}"),

@@ -172,6 +172,12 @@ confirmation before the two API-spending steps (isolation gate + matrix).
 
 ### Selecting rows for the optional grader
 
+Each selected row supplies its complete saved stream and final result to the
+grader through standard input. Late tool calls, tool results and long argument
+fields remain intact. Evidence checks match the full intended belief text;
+sharing its first few characters does not count as surfacing that belief.
+Isolation reports and database failure notes retain their full matching text.
+
 `./eval judge runs/results.jsonl` grades all saved rows when that model work is
 authorized. A supplied `--sample` count must be a positive integer; omission
 means all rows. Zero is rejected with a correction explaining how to omit the
