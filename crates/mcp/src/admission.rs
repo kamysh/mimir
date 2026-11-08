@@ -112,6 +112,20 @@ fn walk(schema: &Value, value: &Value, path: &mut Vec<Segment>, issues: &mut Vec
             ).expect("UUID corrections identify the field and explain the repair"));
         }
     }
+    if let (Some(text), Some(minimum)) = (
+        value.as_str(),
+        schema.get("minLength").and_then(Value::as_u64),
+    ) {
+        if (text.chars().count() as u128) < u128::from(minimum) {
+            issues.push(issue(
+                Location::Arguments,
+                path,
+                if text.is_empty() { Code::EmptyText } else { Code::MalformedInput },
+                "The supplied text is shorter than this field's advertised minimum.",
+                format!("Text containing at least {minimum} characters, using the intended value from the task context."),
+            ));
+        }
+    }
     if let Some(number) = value.as_f64() {
         for (keyword, below) in [("minimum", true), ("maximum", false)] {
             if let Some(bound) = schema.get(keyword).and_then(Value::as_f64) {
@@ -382,6 +396,45 @@ pub fn tool_parameters(params: &Value) -> Result<(&str, Value), NeedsInput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_required_text_reports_nested_paths_and_preserves_nonempty_unicode() {
+        let schema = json!({"type":"object","properties":{
+            "candidates":{"type":"array","items":{"type":"object","properties":{
+                "key":{"type":"string","minLength":1},
+                "content":{"type":"string","minLength":1}
+            }}}
+        }});
+        let input = json!({"candidates":[{"key":"","content":"retained text"},
+            {"key":"retained key","content":""}]});
+        let original = input.clone();
+        let correction =
+            arguments(&schema, &input).expect("required text must not reach the handler empty");
+        assert_eq!(input, original);
+        assert_eq!(correction.issues().len(), 2);
+        for (index, field) in [(0, "key"), (1, "content")] {
+            let path = vec![
+                Segment::Key("candidates".into()),
+                Segment::Index(index),
+                Segment::Key(field.into()),
+            ];
+            let issue = correction
+                .issues()
+                .iter()
+                .find(|issue| issue.fault().path == path)
+                .unwrap();
+            assert_eq!(issue.fault().code, Code::EmptyText);
+            assert!(issue.suggested_correction().contains("ask the user"));
+            assert!(issue.suggested_correction().contains("do not guess"));
+        }
+        assert!(arguments(
+            &schema,
+            &json!({"candidates":[{"key":"資料","content":"✅"}]})
+        )
+        .is_none());
+        // No extra whitespace policy is introduced by a minimum-length check.
+        assert!(arguments(&schema, &json!({"candidates":[{"key":" ","content":" "}]})).is_none());
+    }
 
     #[test]
     fn malformed_uuid_fields_report_every_nested_location_without_rewriting_input() {

@@ -193,6 +193,15 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             "evidnce",
         ),
         ("delete_porject", json!({"project":project}), "name"),
+        (
+            "review_experience",
+            json!({"expected_review_revision":0,"review":{
+                "experience_id":experience_id,"experience_revision":1,
+                "reviewer":"fixture","rationale":"must not publish a candidate",
+                "candidates":[{"kind":"belief","key":"","content":"must not be published"}]
+            }}),
+            "key",
+        ),
     ] {
         let message = json!({"jsonrpc":"2.0","id":"argument-fields","method":"tools/call","params":{"name":name,"arguments":args}});
         input.write_all(format!("{message}\n").as_bytes()).await?;
@@ -214,6 +223,20 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             ensure!(
                 correction.issues()[0].fault().code == mimir_core::validation::Code::InvalidNumber,
                 "numeric admission must precede the configuration prerequisite: {encoded}"
+            );
+        }
+        if name == "review_experience" {
+            ensure!(
+                correction.issues().iter().any(|issue| issue.fault().code
+                    == mimir_core::validation::Code::EmptyText
+                    && issue.fault().path
+                        == vec![
+                            mimir_core::validation::Segment::Key("review".into()),
+                            mimir_core::validation::Segment::Key("candidates".into()),
+                            mimir_core::validation::Segment::Index(0),
+                            mimir_core::validation::Segment::Key("key".into())
+                        ]),
+                "empty candidate key did not receive its exact correction: {encoded}"
             );
         }
         ensure!(

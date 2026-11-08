@@ -68,6 +68,12 @@ same way. Accepted UUID forms are preserved; validation does not rewrite the
 request or invent a replacement ID. A correctly formed UUID whose record does
 not exist is a separate stored-reference check.
 
+When the tool schema requires nonempty text, an empty supplied value also
+receives a correction before execution. For example, an empty candidate key
+points to `review.candidates[0].key` and asks for the intended key or a user
+decision. The response does not create a placeholder. This check adds no
+maximum length and does not impose a new whitespace rule.
+
 This is the shared response from #75. Routing malformed, missing, incorrectly
 typed and unknown fields through it remains #80–#82, and continuing the judge's
 correction dialogue remains #100. Defining the response does not claim those
