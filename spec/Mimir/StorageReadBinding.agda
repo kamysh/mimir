@@ -158,6 +158,13 @@ module Observed (reads : Committed.Contract Store.World) where
   SuccessfulInferenceReply : (databaseSum : List Float → Float) → (effect : Inference.Effect) → Inference.Reply effect → Set
   SuccessfulInferenceReply databaseSum effect reply = Σ Read (λ read → Semantics.InferenceRead databaseSum (snapshot read) effect reply)
 
+  interventionUsesTargetSnapshot : ∀ sum tx first effect reply →
+    SuccessfulInferenceReply sum (Inference.inSnapshot tx first effect) reply →
+    Semantics.InferenceRead sum first effect reply
+  interventionUsesTargetSnapshot sum tx first effect reply
+    (read , Semantics.readInSnapshot .tx .first .effect .reply stable meaning) =
+    subst (λ world → Semantics.InferenceRead sum world effect reply) stable meaning
+
   contradictionsUseSelectedSnapshot : ∀ sum tx first scope beliefs candidates →
     SuccessfulInferenceReply sum (Inference.snapshotBeliefs tx first scope) (inj₂ beliefs) →
     Numeric.activeContradictions beliefs candidates ≡ Numeric.activeContradictions

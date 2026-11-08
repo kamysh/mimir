@@ -370,3 +370,12 @@ Completion and interruption release the transaction; the next request sees
 the removal. The formal read binding keeps project, vector ordering and
 chunk/parent meanings tied to the same first database view. Concrete
 document-search recovery remains #133 and mandatory assembly #74/#76.
+
+Hypothetical intervention validates the target and reads causal descendants,
+review contributions, document support and incoming causes from one
+read-only stable transaction. Outside co-causes use that same view. The
+calculation remains read-only and keeps its existing numerical policy.
+The formal binding pins every subsequent input to the target's view and
+closes the owned transaction on completion or a reported read error. A
+cancelled request drops the transaction before releasing its connection.
+Concrete intervention recovery remains #134 and mandatory assembly #74/#76.

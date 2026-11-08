@@ -632,7 +632,7 @@ $$) AS (ok ag_catalog.agtype)"#
         self.get_belief_on(&client, id).await
     }
 
-    async fn get_belief_on(&self, client: &Client, id: Uuid) -> Result<Option<Belief>> {
+    pub(crate) async fn get_belief_on(&self, client: &Client, id: Uuid) -> Result<Option<Belief>> {
         let g = &self.graph_name;
         let id_str = id.to_string();
         let sql = format!(
@@ -1368,7 +1368,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
         self.get_incoming_edges_on(&client, ids).await
     }
 
-    async fn get_incoming_edges_on(
+    pub(crate) async fn get_incoming_edges_on(
         &self,
         client: &Client,
         ids: &[Uuid],
@@ -2042,7 +2042,10 @@ $$) AS (weight ag_catalog.agtype)"#
         self.get_grounding_mass_all_on(&client).await
     }
 
-    async fn get_grounding_mass_all_on(&self, client: &Client) -> Result<HashMap<Uuid, f64>> {
+    pub(crate) async fn get_grounding_mass_all_on(
+        &self,
+        client: &Client,
+    ) -> Result<HashMap<Uuid, f64>> {
         let g = &self.graph_name;
         let sql = format!(
             r#"SELECT belief_id::text, total_weight::text
@@ -2357,6 +2360,63 @@ mod snapshot_read_tests {
             email: None,
             retirement: None,
         }
+    }
+
+    #[tokio::test]
+    async fn intervention_snapshot_retains_all_inputs_during_project_deletion() -> Result<()> {
+        use crate::learning::{Experience, Feedback, ObservationSource, Outcome, Review, Verdict};
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let id: Uuid = setup
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-intervention-{id}");
+        let checked = async {
+            let seed = writer.add_belief_in_project("intervention target", 0.4, 0.2, &project, MemoryType::Fact).await?;
+            let child = writer.add_belief_in_project("causal descendant", 0.3, 0.2, &project, MemoryType::Fact).await?;
+            let outside = writer.add_belief_in_project("outside co-cause", 0.7, 0.2, &project, MemoryType::Fact).await?;
+            writer.store.insert_edge(&crate::graph::Edge::new(seed.id, child.id, EdgeType::Causes, 0.5)?).await?;
+            writer.store.insert_edge(&crate::graph::Edge::new(outside.id, child.id, EdgeType::Causes, 0.3)?).await?;
+            let chunk_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+            let chunk = DocumentChunk::with_id(chunk_id, format!("/mimir-test/{project}.md"), vec!["support".into()],
+                "document support for the descendant".into(), None, Some(project.clone()));
+            writer.store.insert_document_chunk(&chunk).await?;
+            writer.add_evidence(child.id, chunk_id, 0.6).await?;
+            writer.record_experience(&Experience { id, project: project.clone(), context: "observed support".into(),
+                action: "check the descendant".into(), outcome: Outcome::Success, source: ObservationSource::ToolResult,
+                evidence: vec!["supporting observation".into()], belief_ids: vec![child.id], pattern_id: None,
+                source_records: vec![], learning_items: vec![] }, 0).await?;
+            writer.review_experience(&Review { experience_id: id, experience_revision: 1, reviewer: "snapshot-test".into(),
+                rationale: "observed support".into(),
+                feedback: vec![Feedback { belief_id: child.id, verdict: Verdict::Support, weight: 0.5 }],
+                superseded_beliefs: vec![], links: vec![], candidate_feedback: vec![], candidate_links: vec![],
+                extracted_items: vec![], source_coverage: vec![], assessments: vec![], candidates: vec![] }, 0).await?;
+            let stored = serde_json::to_value(writer.get_belief(child.id).await?)?;
+            let before = reader.query_intervention(seed.id, 1.0).await?;
+            anyhow::ensure!(before.len() == 1 && before[0].0 == child.id, "the descendant must be projected");
+            anyhow::ensure!(serde_json::to_value(writer.get_belief(child.id).await?)? == stored, "normal intervention must not write back");
+            let interrupted = reader.intervention_after_target(seed.id, 1.0, || async {
+                anyhow::bail!("controlled intervention interruption")
+            }).await;
+            anyhow::ensure!(interrupted.unwrap_err().to_string().contains("controlled intervention interruption"));
+            anyhow::ensure!(serde_json::to_value(reader.query_intervention(seed.id, 1.0).await?)? == serde_json::to_value(&before)?, "interruption must release its read transaction");
+            let during = reader.intervention_after_target(seed.id, 1.0, || async {
+                anyhow::ensure!(writer.delete_project(&project).await? >= 3);
+                Ok(())
+            }).await?;
+            anyhow::ensure!(serde_json::to_value(during)? == serde_json::to_value(before)?, "target, descendants, both causes, review mass and grounding must share the first view");
+            let after = reader.query_intervention(seed.id, 1.0).await.unwrap_err();
+            anyhow::ensure!(after.to_string().contains("not found"), "the next request must see deletion");
+            anyhow::ensure!(reader.get_belief(child.id).await?.is_none());
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
     }
 
     #[tokio::test]

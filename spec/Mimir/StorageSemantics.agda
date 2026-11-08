@@ -120,6 +120,11 @@ data InferenceRead (databaseSum : List Float → Float) (snapshot : Store.World)
   (effect : Inference.Effect) → Inference.Reply effect → Set where
   readBelief : ∀ id → InferenceRead databaseSum snapshot (Inference.getBelief id)
     (inj₂ (Ranking.lookup id (Store.beliefs snapshot)))
+  readIntervention : ∀ id tx → InferenceRead databaseSum snapshot (Inference.openIntervention id)
+    (inj₂ (tx , snapshot , Ranking.lookup id (Store.beliefs snapshot)))
+  readInSnapshot : ∀ tx first effect reply → snapshot ≡ first →
+    InferenceRead databaseSum snapshot effect reply →
+    InferenceRead databaseSum snapshot (Inference.inSnapshot tx first effect) reply
   readDescendants : ∀ id causal rows →
     Paths.Returned (pathQuery id causal) (Store.beliefs snapshot) (edges snapshot) rows →
     InferenceRead databaseSum snapshot (Inference.descendants id causal) (inj₂ rows)

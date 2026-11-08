@@ -462,13 +462,38 @@ impl MimirService {
         target_id: Uuid,
         value: f64,
     ) -> Result<Vec<(Uuid, Probability)>> {
+        self.intervention_after_target(target_id, value, || async { Ok(()) })
+            .await
+    }
+
+    pub(crate) async fn intervention_after_target<F, W>(
+        &self,
+        target_id: Uuid,
+        value: f64,
+        after_target: F,
+    ) -> Result<Vec<(Uuid, Probability)>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
         let value = Probability::new(value)?;
-        if self.store.get_belief(target_id).await?.is_none() {
+        let mut client = self.store.snapshot_connection().await;
+        let tx = store::snapshot_transaction(&mut client).await?;
+        if self
+            .store
+            .get_belief_on(tx.client(), target_id)
+            .await?
+            .is_none()
+        {
             anyhow::bail!("belief {} not found", target_id);
         }
-        let mut downstream = self.store.get_causal_downstream_beliefs(target_id).await?;
-        let (learning_mass, _) = self.store.learning_overlay().await?;
-        let grounding_mass = self.store.get_grounding_mass_all().await?;
+        after_target().await?;
+        let mut downstream = self
+            .store
+            .downstream_on(tx.client(), target_id, true)
+            .await?;
+        let (learning_mass, _) = self.store.learning_overlay_on(tx.client()).await?;
+        let grounding_mass = self.store.get_grounding_mass_all_on(tx.client()).await?;
         for belief in &mut downstream {
             belief.alpha0 += grounding_mass.get(&belief.id).copied().unwrap_or(0.0);
             if let Some((a, b)) = learning_mass.get(&belief.id) {
@@ -482,12 +507,15 @@ impl MimirService {
         // genuine CO-CAUSE outside the descendant set still counts (spec
         // Mimir.Inference keep-causes-into-nontarget). Surgery (in `intervene`)
         // then cuts only edges INTO the target.
-        let incoming = self.store.get_incoming_edges(&ids).await?;
+        let incoming = self.store.get_incoming_edges_on(tx.client(), &ids).await?;
         let edges = strip_source_means(&incoming);
         let external_means = external_means_from(&incoming, &ids);
         // No writeback — this is a hypothetical projection.
-        self.inference
-            .intervene(target_id, value, &downstream, &edges, &external_means)
+        let result =
+            self.inference
+                .intervene(target_id, value, &downstream, &edges, &external_means)?;
+        tx.commit().await?;
+        Ok(result)
     }
 
     /// Get active contradictions in the graph. Project-scoped the same way as

@@ -1,7 +1,7 @@
 {-# OPTIONS --safe #-}
 -- Service orchestration for propagation, intervention, decay, contradictions
 -- and defeated-belief sweep. Ordinary reads are separate observations;
--- contradiction pairs and beliefs explicitly share a read-only snapshot.
+-- contradictions and intervention inputs explicitly share read-only snapshots.
 -- The dependency owns I/O; application numerical decisions are concrete.
 module Mimir.InferenceProtocol where
 
@@ -50,6 +50,9 @@ data Effect : Set where
   openContradictions : Maybe Text → Effect
   snapshotBeliefs : ℕ → Store.World → Maybe Text → Effect
   closeContradictions : ℕ → Effect
+  openIntervention : ℕ → Effect
+  inSnapshot : ℕ → Store.World → Effect → Effect
+  closeIntervention : ℕ → Effect
   clock : Effect
   hashIteration : List ℕ → Effect
   persistBeta : P.State → Effect
@@ -65,6 +68,9 @@ Reply (listBeliefs project) = Text ⊎ List G.BeliefValues
 Reply (openContradictions project) = Text ⊎ (ℕ × Store.World × List (ℕ × ℕ))
 Reply (snapshotBeliefs tx first project) = Text ⊎ List G.BeliefValues
 Reply (closeContradictions tx) = ⊤
+Reply (openIntervention id) = Text ⊎ (ℕ × Store.World × Maybe G.BeliefValues)
+Reply (inSnapshot tx first effect) = Reply effect
+Reply (closeIntervention tx) = ⊤
 Reply (defeatTimes project) = Text ⊎ List N.Defeat
 Reply clock = ℤ
 Reply (hashIteration ids) = Σ (List ℕ) (λ order → order ↭ ids)
@@ -147,6 +153,24 @@ afterSeed causal id value = read (descendants id causal) refl (λ beliefs →
       (calculate causal id value beliefs reviews ground))))
   where open import Relation.Binary.PropositionalEquality using (refl)
 
+closeProjection : ℕ → Result → Script Result
+closeProjection tx result = ask (closeIntervention tx) (λ _ → done result)
+
+readAt : ℕ → Store.World → (effect : Effect) → ∀ {A} → Reply effect ≡ (Text ⊎ A) →
+  (A → Script Result) → Script Result
+readAt tx first effect {A} same next = ask (inSnapshot tx first effect)
+  (λ response → receive (subst (λ X → X) same response))
+  where
+  receive : Text ⊎ A → Script Result
+  receive (inj₁ error) = closeProjection tx (failed error)
+  receive (inj₂ value) = next value
+
+projectFrom : ℕ → Store.World → ℕ → Float → Script Result
+projectFrom tx first id value = readAt tx first (descendants id true) refl (λ beliefs →
+  readAt tx first activeReviews refl (λ reviews → readAt tx first groundingMasses refl (λ ground →
+    readAt tx first (incomingEdges (map G.BeliefValues.identity beliefs Data.List.++ (id ∷ []))) refl
+      (λ incomingRows → calculate true id value beliefs reviews ground incomingRows >>= closeProjection tx))))
+
 sweepDeletes : ℕ → List ℕ → Script Result
 sweepDeletes count [] = done (deleted count)
 sweepDeletes count (id ∷ ids) = read (deleteBelief id) refl (λ
@@ -159,8 +183,10 @@ start (propagate id) = read (getBelief id) refl (λ
   where open import Relation.Binary.PropositionalEquality using (refl)
 start (intervention id value) with N.probability value
 ... | false = done invalidProbability
-... | true = read (getBelief id) refl (λ
-  { nothing → done missingBelief ; (just b) → afterSeed true id value })
+... | true = ask (openIntervention id) (λ
+  { (inj₁ error) → done (failed error)
+  ; (inj₂ (tx , first , nothing)) → closeProjection tx missingBelief
+  ; (inj₂ (tx , first , just b)) → projectFrom tx first id value })
   where open import Relation.Binary.PropositionalEquality using (refl)
 start (decay project factor) = read (listBeliefs project) refl (λ beliefs →
   read groundingMasses refl (λ ground → ask clock (λ now → decide (N.decay now factor ground beliefs))))
