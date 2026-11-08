@@ -402,9 +402,20 @@ impl AgeStore {
         Ok(())
     }
     pub async fn learning_overlay(&self) -> Result<(HashMap<Uuid, (f64, f64)>, HashSet<Uuid>)> {
-        let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
-        let reviews = Self::active_reviews(&tx).await?;
+        let client = self.client.lock().await;
+        self.learning_overlay_on(&client).await
+    }
+
+    pub(crate) async fn learning_overlay_on(
+        &self,
+        client: &Client,
+    ) -> Result<(HashMap<Uuid, (f64, f64)>, HashSet<Uuid>)> {
+        let reviews = client
+            .query(ACTIVE_REVIEWS, &[])
+            .await?
+            .iter()
+            .map(|row| Ok(serde_json::from_str(row.get::<_, &str>(0))?))
+            .collect::<Result<Vec<Review>>>()?;
         Ok(overlay(&reviews))
     }
     /// All learning changes are serialized across MCP processes. Graph writes and

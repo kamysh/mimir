@@ -597,10 +597,56 @@ impl MimirService {
         project: Option<&str>,
         prefer_type: Option<MemoryType>,
     ) -> Result<Vec<Belief>> {
-        let (_, superseded) = self.store.learning_overlay().await?;
+        self.relevant_after_overlay(query, limit, project, prefer_type, || async { Ok(()) })
+            .await
+    }
+
+    pub(crate) async fn relevant_after_overlay<F, W>(
+        &self,
+        query: &str,
+        limit: Selection,
+        project: Option<&str>,
+        prefer_type: Option<MemoryType>,
+        after_overlay: F,
+    ) -> Result<Vec<Belief>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.store.snapshot_connection().await;
+        let tx = store::snapshot_transaction(&mut client).await?;
+        let result = self
+            .relevant_on(
+                tx.client(),
+                query,
+                limit,
+                project,
+                prefer_type,
+                after_overlay,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    async fn relevant_on<F, W>(
+        &self,
+        client: &tokio_postgres::Client,
+        query: &str,
+        limit: Selection,
+        project: Option<&str>,
+        prefer_type: Option<MemoryType>,
+        after_overlay: F,
+    ) -> Result<Vec<Belief>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let (_, superseded) = self.store.learning_overlay_on(client).await?;
+        after_overlay().await?;
         let all: Vec<Belief> = match project {
-            Some(p) => self.store.list_beliefs_by_project(p).await?,
-            None => self.store.list_beliefs().await?,
+            Some(p) => self.store.list_beliefs_by_project_on(client, p).await?,
+            None => self.store.list_beliefs_on(client).await?,
         }
         .into_iter()
         // Working memory is task-local scratch, excluded from cross-session
@@ -660,10 +706,14 @@ impl MimirService {
                         Some(_) => {
                             let ids: Vec<Uuid> = all.iter().map(|b| b.id).collect();
                             self.store
-                                .query_beliefs_by_vector_filtered(&qv, None, &ids)
+                                .query_beliefs_by_vector_filtered_on(client, &qv, None, &ids)
                                 .await?
                         }
-                        None => self.store.query_beliefs_by_vector(&qv, None).await?,
+                        None => {
+                            self.store
+                                .query_beliefs_by_vector_on(client, &qv, None)
+                                .await?
+                        }
                     },
                     None => Vec::new(),
                 },
@@ -722,8 +772,10 @@ impl MimirService {
                     while !frontier.is_empty() {
                         let mut next_frontier = Vec::new();
                         for fid in frontier {
-                            let neighbors =
-                                self.store.get_direct_downstream_by_project(fid, p).await?;
+                            let neighbors = self
+                                .store
+                                .direct_downstream_by_project_on(client, fid, p)
+                                .await?;
                             for b in neighbors {
                                 if b.memory_type == MemoryType::Working
                                     || superseded.contains(&b.id)
@@ -740,7 +792,7 @@ impl MimirService {
                     }
                 }
                 None => {
-                    let downstream = self.store.get_downstream_beliefs(id).await?;
+                    let downstream = self.store.downstream_on(client, id, false).await?;
                     for b in downstream {
                         if b.memory_type == MemoryType::Working || superseded.contains(&b.id) {
                             continue;
@@ -992,12 +1044,61 @@ impl MimirService {
         evidence_per_belief: Selection,
         project: Option<&str>,
     ) -> Result<Vec<GroundedBelief>> {
-        let beliefs = self.query_relevant(query, limit, project, None).await?;
+        self.grounded_after_overlay(query, limit, evidence_per_belief, project, || async {
+            Ok(())
+        })
+        .await
+    }
+
+    pub(crate) async fn grounded_after_overlay<F, W>(
+        &self,
+        query: &str,
+        limit: Selection,
+        evidence_per_belief: Selection,
+        project: Option<&str>,
+        after_overlay: F,
+    ) -> Result<Vec<GroundedBelief>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.store.snapshot_connection().await;
+        let tx = store::snapshot_transaction(&mut client).await?;
+        let result = self
+            .grounded_on(
+                tx.client(),
+                query,
+                limit,
+                evidence_per_belief,
+                project,
+                after_overlay,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    async fn grounded_on<F, W>(
+        &self,
+        client: &tokio_postgres::Client,
+        query: &str,
+        limit: Selection,
+        evidence_per_belief: Selection,
+        project: Option<&str>,
+        after_overlay: F,
+    ) -> Result<Vec<GroundedBelief>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let beliefs = self
+            .relevant_on(client, query, limit, project, None, after_overlay)
+            .await?;
         if beliefs.is_empty() {
             return Ok(vec![]);
         }
         let ids: Vec<Uuid> = beliefs.iter().map(|b| b.id).collect();
-        let ev = self.store.get_evidence_for_beliefs(&ids).await?;
+        let ev = self.store.get_evidence_for_beliefs_on(client, &ids).await?;
 
         // Group (chunk_id, weight) by belief_id.
         let mut by_belief: std::collections::HashMap<Uuid, Vec<(Uuid, f64)>> =
@@ -1029,7 +1130,7 @@ impl MimirService {
                     {
                         let r = self
                             .store
-                            .get_chunk_by_id(chunk_id)
+                            .get_chunk_by_id_on(client, chunk_id)
                             .await?
                             .map(|c| EvidenceRef {
                                 chunk_id,

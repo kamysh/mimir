@@ -43,7 +43,9 @@ async fn learning_transaction(client: &mut Client) -> Result<tokio_postgres::Tra
 // Composite read answers must describe one stored state, even while another
 // connection commits changes between their SELECTs. Learning writes retain
 // their separate READ COMMITTED policy above.
-async fn snapshot_transaction(client: &mut Client) -> Result<tokio_postgres::Transaction<'_>> {
+pub(crate) async fn snapshot_transaction(
+    client: &mut Client,
+) -> Result<tokio_postgres::Transaction<'_>> {
     Ok(client
         .build_transaction()
         .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
@@ -479,6 +481,12 @@ fn vector_query(
 }
 
 impl AgeStore {
+    // The response composer holds one read-only transaction under this guard.
+    // Its transaction is dropped on interruption before the guard is released.
+    pub(crate) async fn snapshot_connection(&self) -> tokio::sync::MutexGuard<'_, Client> {
+        self.client.lock().await
+    }
+
     /// Construct a new store. `graph_name` must consist solely of ASCII
     /// alphanumeric characters and underscores — it is interpolated directly
     /// into SQL strings (as the `cypher('{g}', …)` graph-name argument) and
@@ -731,7 +739,7 @@ $$) AS (id ag_catalog.agtype)"#
         self.list_beliefs_on(&client).await
     }
 
-    async fn list_beliefs_on(&self, client: &Client) -> Result<Vec<Belief>> {
+    pub(crate) async fn list_beliefs_on(&self, client: &Client) -> Result<Vec<Belief>> {
         let g = &self.graph_name;
         let sql = format!(
             r#"SELECT
@@ -769,7 +777,7 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         self.list_beliefs_by_project_on(&client, project).await
     }
 
-    async fn list_beliefs_by_project_on(
+    pub(crate) async fn list_beliefs_by_project_on(
         &self,
         client: &Client,
         project: &str,
@@ -1743,9 +1751,19 @@ $$) AS (ok ag_catalog.agtype)"#
         query_vec: &[f32],
         limit: crate::Selection,
     ) -> Result<Vec<Uuid>> {
+        let client = self.client.lock().await;
+        self.query_beliefs_by_vector_on(&client, query_vec, limit)
+            .await
+    }
+
+    pub(crate) async fn query_beliefs_by_vector_on(
+        &self,
+        client: &Client,
+        query_vec: &[f32],
+        limit: crate::Selection,
+    ) -> Result<Vec<Uuid>> {
         let vector = Vector::from(query_vec.to_vec());
         let sql = vector_query(VectorTable::Beliefs, limit, false, false);
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[&vector]).await?;
         rows.iter()
             .map(|row| Ok(Uuid::parse_str(row.try_get::<_, &str>(0)?)?))
@@ -1763,12 +1781,23 @@ $$) AS (ok ag_catalog.agtype)"#
         limit: crate::Selection,
         filter_ids: &[Uuid],
     ) -> Result<Vec<Uuid>> {
+        let client = self.client.lock().await;
+        self.query_beliefs_by_vector_filtered_on(&client, query_vec, limit, filter_ids)
+            .await
+    }
+
+    pub(crate) async fn query_beliefs_by_vector_filtered_on(
+        &self,
+        client: &Client,
+        query_vec: &[f32],
+        limit: crate::Selection,
+        filter_ids: &[Uuid],
+    ) -> Result<Vec<Uuid>> {
         if filter_ids.is_empty() {
             return Ok(Vec::new());
         }
         let vector = Vector::from(query_vec.to_vec());
         let sql = vector_query(VectorTable::Beliefs, limit, true, false);
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[&vector, &filter_ids]).await?;
         rows.iter()
             .map(|row| Ok(Uuid::parse_str(row.try_get::<_, &str>(0)?)?))
@@ -1843,7 +1872,11 @@ $$) AS (ok ag_catalog.agtype)"#
         self.get_chunk_by_id_on(&client, id).await
     }
 
-    async fn get_chunk_by_id_on(&self, client: &Client, id: Uuid) -> Result<Option<DocumentChunk>> {
+    pub(crate) async fn get_chunk_by_id_on(
+        &self,
+        client: &Client,
+        id: Uuid,
+    ) -> Result<Option<DocumentChunk>> {
         let g = &self.graph_name;
         let id_str = id.to_string();
         let sql = format!(
@@ -1964,7 +1997,7 @@ $$) AS (belief_id ag_catalog.agtype, total_weight ag_catalog.agtype)"#
         self.get_evidence_for_beliefs_on(&client, belief_ids).await
     }
 
-    async fn get_evidence_for_beliefs_on(
+    pub(crate) async fn get_evidence_for_beliefs_on(
         &self,
         client: &Client,
         belief_ids: &[Uuid],
@@ -2107,6 +2140,17 @@ $$) AS (v ag_catalog.agtype)"#
         start_id: Uuid,
         project: &str,
     ) -> Result<Vec<Belief>> {
+        let client = self.client.lock().await;
+        self.direct_downstream_by_project_on(&client, start_id, project)
+            .await
+    }
+
+    pub(crate) async fn direct_downstream_by_project_on(
+        &self,
+        client: &Client,
+        start_id: Uuid,
+        project: &str,
+    ) -> Result<Vec<Belief>> {
         let g = &self.graph_name;
         let id_str = start_id.to_string();
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
@@ -2131,8 +2175,7 @@ $$) AS (v ag_catalog.agtype)"#
              $$, $1) {BELIEF_RETURN_COLUMNS}"
         );
 
-        let client = self.client.lock().await;
-        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let rows = age_query_rows(client, &stmt, &prepare, &agtype_json).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
             beliefs.push(belief_from_simple_row(row)?);
@@ -2238,6 +2281,139 @@ mod snapshot_read_tests {
             email: None,
             retirement: None,
         }
+    }
+
+    #[tokio::test]
+    async fn retrieval_snapshot_retains_graph_and_passages_during_project_deletion() -> Result<()> {
+        fn grounded_value(values: Vec<crate::GroundedBelief>) -> serde_json::Value {
+            serde_json::Value::Array(values.into_iter().map(|value| serde_json::json!({
+                "belief": value.belief,
+                "evidence": value.evidence.into_iter().map(|entry| serde_json::json!({
+                    "chunk_id": entry.chunk_id, "document_path": entry.document_path,
+                    "section_path": entry.section_path, "snippet": entry.snippet, "weight": entry.weight,
+                })).collect::<Vec<_>>(),
+            })).collect())
+        }
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        for scoped in [false, true] {
+            for grounded in [false, true] {
+                let id: Uuid = setup
+                    .query_one("SELECT gen_random_uuid()", &[])
+                    .await?
+                    .get(0);
+                let project = format!("consistent-retrieval-{id}");
+                let term = format!("retrievalseed{}", id.simple());
+                let scope = scoped.then_some(project.as_str());
+                let checked = async {
+                    let seed = writer.add_belief_in_project(&term, 0.8, 0.2, &project, MemoryType::Fact).await?;
+                    let descendant = writer.add_belief_in_project("downstream without the query term", 0.6, 0.2, &project, MemoryType::Fact).await?;
+                    writer.store.insert_edge(&crate::graph::Edge::new(seed.id, descendant.id, EdgeType::Supports, 0.7)?).await?;
+                    let chunk_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+                    let chunk = DocumentChunk::with_id(chunk_id, format!("/mimir-test/{project}.md"), vec!["full section".into()],
+                        "supporting λ passage ".repeat(300), None, Some(project.clone()));
+                    writer.store.insert_document_chunk(&chunk).await?;
+                    writer.add_evidence(seed.id, chunk_id, 0.8).await?;
+                    let before = if grounded {
+                        let values = reader.query_relevant_grounded(&term, None, None, scope).await?;
+                        anyhow::ensure!(values.len() == 2 && values.iter().any(|v| v.belief.id == descendant.id), "must include graph expansion");
+                        anyhow::ensure!(values.iter().find(|v| v.belief.id == seed.id).unwrap().evidence.len() == 1, "must include the supporting passage");
+                        grounded_value(values)
+                    } else {
+                        let values = reader.query_relevant(&term, None, scope, Some(MemoryType::Fact)).await?;
+                        anyhow::ensure!(values.len() == 2 && values.iter().any(|v| v.id == descendant.id), "must include graph expansion");
+                        serde_json::to_value(values)?
+                    };
+                    let interrupted = reader.relevant_after_overlay(&term, None, scope, None, || async {
+                        anyhow::bail!("controlled retrieval interruption")
+                    }).await;
+                    anyhow::ensure!(interrupted.unwrap_err().to_string().contains("controlled retrieval interruption"));
+                    let during = if grounded {
+                        grounded_value(reader.grounded_after_overlay(&term, None, None, scope, || async {
+                            writer.delete_project(&project).await?;
+                            Ok(())
+                        }).await?)
+                    } else {
+                        serde_json::to_value(reader.relevant_after_overlay(&term, None, scope, Some(MemoryType::Fact), || async {
+                            writer.delete_project(&project).await?;
+                            Ok(())
+                        }).await?)?
+                    };
+                    anyhow::ensure!(during == before, "the complete retrieval must retain its original view: scoped={scoped}; grounded={grounded}; before={before}; during={during}");
+                    anyhow::ensure!(reader.query_relevant_grounded(&term, None, None, scope).await?.is_empty(), "the next request must see the deletion and reuse the released connection");
+                    Ok::<_, anyhow::Error>(())
+                }.await;
+                let cleanup = writer.delete_project(&project).await;
+                checked?;
+                cleanup?;
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retrieval_snapshot_vector_queries_retain_original_matches() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let id: Uuid = setup
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-retrieval-vectors-{id}");
+        let checked = async {
+            let seed = writer
+                .add_belief_in_project("vector snapshot", 0.8, 0.2, &project, MemoryType::Fact)
+                .await?;
+            writer
+                .store
+                .insert_belief_embedding(seed.id, &[1.0, 0.0, 0.0])
+                .await?;
+            let mut client = reader.store.snapshot_connection().await;
+            let tx = snapshot_transaction(&mut client).await?;
+            reader.store.learning_overlay_on(tx.client()).await?;
+            let all = reader
+                .store
+                .query_beliefs_by_vector_on(tx.client(), &[1.0, 0.0, 0.0], None)
+                .await?;
+            anyhow::ensure!(all.contains(&seed.id));
+            writer.delete_project(&project).await?;
+            anyhow::ensure!(
+                reader
+                    .store
+                    .query_beliefs_by_vector_on(tx.client(), &[1.0, 0.0, 0.0], None)
+                    .await?
+                    == all
+            );
+            anyhow::ensure!(
+                reader
+                    .store
+                    .query_beliefs_by_vector_filtered_on(
+                        tx.client(),
+                        &[1.0, 0.0, 0.0],
+                        None,
+                        &[seed.id]
+                    )
+                    .await?
+                    == vec![seed.id]
+            );
+            tx.commit().await?;
+            drop(client);
+            anyhow::ensure!(reader
+                .store
+                .query_beliefs_by_vector_filtered(&[1.0, 0.0, 0.0], None, &[seed.id])
+                .await?
+                .is_empty());
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
     }
 
     #[tokio::test]

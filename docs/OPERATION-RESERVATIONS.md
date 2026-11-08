@@ -348,3 +348,16 @@ encoders, preserving full revisions, references, values and provenance.
 Retry convergence proves equality of the entire state and typed reply, not
 just the presence of a successful JSON projection. This supplies #131's
 concrete values; mandatory dispatcher assembly remains #74/#76.
+
+Relevant-belief retrieval and its supporting-passage response use one
+read-only stable database transaction for review status, beliefs, vector
+matches, graph traversal, grounding links and chunk text. The grounding view
+is the retrieval view, not a later read after ranking. Existing ranking,
+project boundaries, type preference and explicit selections are preserved.
+
+The transaction stays owned by the request while any configured query
+embedding runs; it introduces no application deadline. Completion commits
+the read transaction, and interruption drops it before releasing the
+connection. Other clients remain able to commit writes. The in-flight
+response sees its original view and the next request sees those commits.
+Concrete retrieval recovery and mandatory assembly remain #132 and #74/#76.

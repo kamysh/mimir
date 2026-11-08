@@ -1,5 +1,6 @@
 {-# OPTIONS --safe #-}
--- A read-only retrieval machine. Each database reply is a fresh observation;
+-- A read-only retrieval machine. The response binding pins database replies
+-- to one stable view while retaining every individual read;
 -- graph traversal is an explicit transition loop, not an assumed closure
 -- callback. The unscoped SQL closure and scoped direct-neighbor query are
 -- intentionally distinct commands. Failures do not silently become no hits.

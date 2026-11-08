@@ -8,7 +8,7 @@ impl AgeStore {
     // GraphPaths.Returned: arbitrary mixtures of propagation relations, with
     // no depth bound and one result per identity. A nonempty cycle may reach
     // the seed; the inference engine separately clamps it.
-    pub(super) async fn downstream_on(
+    pub(crate) async fn downstream_on(
         &self,
         client: &Client,
         seed: Uuid,

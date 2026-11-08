@@ -14,7 +14,7 @@ open import Data.Product using (_×_; _,_; proj₁; proj₂; Σ)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.Unit using (⊤)
 open import Relation.Nullary using (does)
-open import Relation.Binary.PropositionalEquality using (_≡_; cong; trans)
+open import Relation.Binary.PropositionalEquality using (_≡_; cong; trans; sym; subst)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.ApplicationStore as Store
@@ -163,6 +163,49 @@ module Observed (reads : Committed.Contract Store.World) where
     (read , Semantics.readSnapshotBeliefs .tx .first .scope stable) =
     cong (λ world → Numeric.activeContradictions
       (Records.listBeliefs scope nothing (Store.beliefs world)) candidates) stable
+
+module RetrievalSnapshot (ops : VectorOperations) (reads : Committed.Contract Store.World)
+  (first : Committed.Contract.Read reads) where
+  module D = Committed.Contract reads
+  module Meaning = Read ops
+
+  world : Store.World
+  world = D.snapshot first
+
+  -- The first actual database read fixes the response view. Vector replies
+  -- retain their complete selected-table, filter and ordering obligations.
+  record QueryRead (phase : Retrieval.State) (reply : Retrieval.Reply phase) : Set where
+    constructor observedQuery
+    field
+      event : D.Read
+      sameView : D.snapshot event ≡ world
+      meaning : Meaning.RetrievalMeaning phase (D.snapshot event) reply
+
+  selectedWorldMeaning : ∀ phase reply → QueryRead phase reply → Meaning.RetrievalMeaning phase world reply
+  selectedWorldMeaning phase reply evidence =
+    subst (λ state → Meaning.RetrievalMeaning phase state reply)
+      (QueryRead.sameView evidence) (QueryRead.meaning evidence)
+
+  responseReadsAgree : ∀ firstPhase firstReply secondPhase secondReply →
+    (one : QueryRead firstPhase firstReply) → (two : QueryRead secondPhase secondReply) →
+    D.snapshot (QueryRead.event one) ≡ D.snapshot (QueryRead.event two)
+  responseReadsAgree firstPhase firstReply secondPhase secondReply one two =
+    trans (QueryRead.sameView one) (sym (QueryRead.sameView two))
+
+  -- Enrichment is part of the same response, not another independently
+  -- chosen snapshot after ranking. Its individual reads retain their meaning.
+  record Passage (effect : Evidence.Effect) (reply : Evidence.Reply effect) : Set where
+    constructor observedPassage
+    field
+      event : D.Read
+      sameView : D.snapshot event ≡ world
+      meaning : EvidenceMeaning (D.snapshot event) effect reply
+
+  retrievalAndPassagesAgree : ∀ phase value effect reply →
+    (queryRead : QueryRead phase value) → (passageRead : Passage effect reply) →
+    D.snapshot (QueryRead.event queryRead) ≡ D.snapshot (Passage.event passageRead)
+  retrievalAndPassagesAgree phase value effect reply queryRead passageRead =
+    trans (QueryRead.sameView queryRead) (sym (Passage.sameView passageRead))
 
 -- Concrete read requests carry filters and identities only. In particular,
 -- neither a desired answer nor a correctness certificate is an input. Wire
