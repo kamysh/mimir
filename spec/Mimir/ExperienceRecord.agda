@@ -124,7 +124,8 @@ existing before e expected now old with Observation.checkSnapshot old
 ... | Validation.rejected failure refutation = rejected (invalid failure)
 ... | Validation.accepted valid with coherent before old
 ...   | false = rejected incoherentSnapshot
-...   | true with Corrections.validateExperienceCorrection (Observation.Snapshot.experience old) e
+...   | true with Validation.at (Validation.key "experience")
+  (Corrections.validateExperienceCorrection (Observation.Snapshot.experience old) e)
 ...     | Validation.rejected failure refutation = rejected (invalid failure)
 ...     | Validation.accepted retained with
   does (Key.equal (Keys.experience (Observation.Snapshot.experience old)) (Keys.experience e)) ∧

@@ -182,6 +182,15 @@ candidateCorrection (reviewFailure (Reviewing.invalid detail)) | false with cand
 ... | _ | _ = nothing
 candidateCorrection _ = nothing
 
+retentionCorrection : Failure → Maybe Correction.Claim
+retentionCorrection (recordFailure (Recording.invalid detail@(Validation.problem
+  (Validation.fieldKey outer ∷ Validation.fieldKey leaf ∷ []) code reason)))
+  with fieldIs outer "experience" | fieldIs leaf "project" | fieldIs leaf "source_records" | code
+... | true | true | _ | Validation.wrongIdentity = just (Correction.claim (Correction.sourceRetentionItem detail) [])
+... | true | _ | true | Validation.missingReference = just (Correction.claim (Correction.sourceRetentionItem detail) [])
+... | _ | _ | _ | _ = nothing
+retentionCorrection _ = nothing
+
 requestCorrection : Failure → Maybe Correction.Claim
 requestCorrection failure with revisionCorrection failure
 ... | just report = just report
@@ -189,7 +198,9 @@ requestCorrection failure with revisionCorrection failure
 ...   | just report = just report
 ...   | nothing with allocationCorrection failure
 ...     | just report = just report
-...     | nothing = candidateCorrection failure
+...     | nothing with candidateCorrection failure
+...       | just report = just report
+...       | nothing = retentionCorrection failure
 
 expectedValid : ℤ → Data.Bool.Bool
 expectedValid expected = does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))

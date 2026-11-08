@@ -112,6 +112,15 @@ do not silently rename or recreate a candidate. Refusal leaves the review and
 candidate history unchanged. Retrying an already completed review still returns
 its original answer after a candidate is deleted, without recreating that node.
 
+An experience correction also keeps its original project and every original
+source record, including actor, provenance, text and optional recorded time.
+If a request drops or changes a source, `needs_input` identifies
+`experience.source_records` and names the original source that must be retained.
+Read `get_experience` and `experience_history`, keep that original record, and
+append a separate correction record. A project change identifies
+`experience.project`; it cannot move the existing experience to another project.
+These refusals roll back any item allocations made by the rejected request.
+
 ## Compatibility and formal contract
 
 ### PostgreSQL-owned item identities

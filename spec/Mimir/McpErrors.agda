@@ -218,6 +218,11 @@ module AgentCorrection where
     (toList "A key declared by a belief candidate in this review, or an existing belief_id target. A pattern candidate is not a belief target.")
     (toList "Declare the intended belief candidate once with its stable key, or use an existing belief_id returned by list_beliefs. If the intended target is uncertain, ask the user. Do not invent a key or UUID, or treat a pattern as a belief.")
 
+  sourceRetentionItem : Fault → Item
+  sourceRetentionItem detail = item arguments detail
+    (toList "An experience keeps its original project and every original source record unchanged. Corrections append a separate source record.")
+    (toList "Call get_experience and experience_history with the same experience ID. Copy the original project and source records, including actor, provenance, text and recorded_at; append a separate correction record when needed. Ask the user if the original evidence or intended project is uncertain. Do not rewrite, omit or invent original evidence, or move the existing experience to another project.")
+
   record Certified (World : Set) (before after : World) : Set where
     constructor certified
     field report : Claim; unchanged : after ≡ before

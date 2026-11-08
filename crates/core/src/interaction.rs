@@ -187,6 +187,17 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    pub(crate) fn source_retention(path: Vec<Segment>, code: Code, message: String) -> Self {
+        let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
+            "An experience keeps its original project and every original source record unchanged. Corrections append a separate source record.".into(),
+            "Call get_experience and experience_history with the same experience ID. Copy the original project and source records, including actor, provenance, text and recorded_at; append a separate correction record when needed. Ask the user if the original evidence or intended project is uncertain. Do not rewrite, omit or invent original evidence, or move the existing experience to another project.".into())
+            .expect("source retention correction retains complete guidance");
+        Self {
+            correction: NeedsInput::new(issue, vec![])
+                .expect("explained source retention correction"),
+        }
+    }
+
     pub(crate) fn candidate_declaration(path: Vec<Segment>, code: Code, message: String) -> Self {
         let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
             "Each candidate key names one unchanged belief or pattern declaration in this experience. Declare it once; a deleted key cannot be published again.".into(),

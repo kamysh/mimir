@@ -1,7 +1,7 @@
 {-# OPTIONS --safe #-}
 module Mimir.LearningCorrections where
 
-open import Data.List using (List; []; map)
+open import Data.List using (List; []; _∷_; map)
 open import Data.Maybe using (Maybe)
 open import Data.Nat using (ℕ; _≟_)
 open import Data.Product using (_×_; _,_)
@@ -64,12 +64,21 @@ ExperienceCorrection : Experience → Experience → Set
 ExperienceCorrection old new = Experience.project old ≡ Experience.project new ×
   SourceRetention.Retained (map sourceKey (Experience.sources old)) (map sourceKey (Experience.sources new))
 
+-- A missing old record has no index in the replacement array. Locate the
+-- affected array itself instead of presenting an old index as a new one.
+checkSourceRetention : ∀ old new → Checked
+  (SourceRetention.Retained (map sourceKey (Experience.sources old)) (map sourceKey (Experience.sources new)))
+checkSourceRetention old new with SourceRetention.validate
+  (map sourceKey (Experience.sources old)) (map sourceKey (Experience.sources new))
+... | accepted retained = accepted retained
+... | rejected detail refutation = rejected
+  (fault (key "source_records" ∷ []) missingReference "correction must retain original source records; append a separate correction source") refutation
+
 validateExperienceCorrection : ∀ old new → Checked (ExperienceCorrection old new)
 validateExperienceCorrection old new = combine
   (at (key "project") (check (fault [] wrongIdentity "experience project is immutable")
     (Experience.project old ≟Text Experience.project new)))
-  (at (key "source_records") (SourceRetention.validate
-    (map sourceKey (Experience.sources old)) (map sourceKey (Experience.sources new))))
+  (checkSourceRetention old new)
 
 ReviewCorrection : Review → Review → Set
 ReviewCorrection old new = ItemRetention.Retained

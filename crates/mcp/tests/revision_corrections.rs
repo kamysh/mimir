@@ -88,6 +88,53 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
 }
 
 #[tokio::test]
+async fn source_retention_corrections_preserve_original_evidence_and_allow_appended_corrections(
+) -> Result<()> {
+    let service = test_service().await?;
+    let id = fixture_identity().await?;
+    let project = format!("source-retention-{id}");
+    let db = db::connect(&isolation::fixture().database_config()).await?;
+    let mut client = Client::start(id)?;
+    let checked = async {
+        let original_source = json!({"source_ref":"original/0","actor":"agent","provenance":"agent_report","text":"Check first.","recorded_at":"2026-11-08T00:00:00Z"});
+        let source = json!({"id":id,"project":project,"context":"source retention","action":"retain the original observation","outcome":"unknown","source":"agent_report","evidence":["original/0"],"source_records":[original_source]});
+        let original = client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?;
+        ensure!(original["revision"] == 1);
+        ensure!(client.call("record_experience",json!({"experience":source,"expected_revision":0})).await? == original);
+        let history = service.experience_history(id).await?;
+        let mut changed_project = source.clone(); changed_project["project"] = json!(format!("other-{project}"));
+        let mut missing = source.clone(); missing["source_records"] = json!([]); missing["evidence"] = json!([]);
+        let mut cases = vec![(changed_project,json!(["experience","project"]),Code::WrongIdentity), (missing,json!(["experience","source_records"]),Code::MissingReference)];
+        for (field,value) in [("text",json!("Changed words.")),("actor",json!("another actor")),("provenance",json!("user_feedback")),("recorded_at",json!("2026-11-08T01:00:00Z"))] {
+            let mut invalid = source.clone(); invalid["source_records"][0][field] = value;
+            cases.push((invalid,json!(["experience","source_records"]),Code::MissingReference));
+        }
+        for (mut invalid,path,code) in cases {
+            invalid["learning_items"] = json!([{"kind":"suggestion","key":"tentative","source_ref":"original/0","actor":"agent","statement":"Check first.","conditions":"no observed outcome"}]);
+            reference_correction(client.call("record_experience",json!({"experience":invalid,"expected_revision":1})).await?,path,code)?;
+            ensure!(service.experience_history(id).await? == history);
+            ensure!(db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1",&[&id]).await?.get::<_,i64>(0)==0,"refusal retained a tentative item allocation");
+            let current = client.call("get_experience",json!({"id":id})).await?;
+            ensure!(current["revision"]==1 && current["experience"]["source_records"][0]==original_source);
+        }
+        let correction = json!({"source_ref":"correction/1","actor":"human","provenance":"user_feedback","text":"The original instruction was incomplete."});
+        let mut appended = source.clone(); appended["source_records"] = json!([original_source,correction]); appended["evidence"] = json!(["original/0","correction/1"]);
+        let revised = client.call("record_experience",json!({"experience":appended,"expected_revision":1})).await?;
+        ensure!(revised["revision"]==2 && revised["experience"]["source_records"][0]==original_source && revised["experience"]["source_records"][1]==correction);
+        ensure!(client.call("record_experience",json!({"experience":appended,"expected_revision":1})).await? == revised);
+        ensure!(service.experience_history(id).await? != history);
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    let cleanup = service.delete_project(&project).await;
+    checked?;
+    ensure!(stopped.success());
+    cleanup?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn candidate_name_corrections_preserve_declarations_history_and_completed_answers(
 ) -> Result<()> {
     use mimir_core::graph::MemoryType;

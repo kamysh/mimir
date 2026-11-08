@@ -711,15 +711,17 @@ impl AgeStore {
         let experience = &allocated;
         let payload = serde_json::to_string(experience)?;
         if let Some(ref p) = prior {
-            ensure!(
-                p.experience.project == experience.project,
-                "experience project is immutable"
-            );
+            if p.experience.project != experience.project {
+                return Err(RequestCorrection::source_retention(
+                    vec![Segment::Key("experience".into()),Segment::Key("project".into())],Code::WrongIdentity,
+                    format!("Experience {} belongs to project {:?}; a correction cannot move it to {:?}.",experience.id,p.experience.project,experience.project)).into());
+            }
             for source in &p.experience.source_records {
-                ensure!(
-                    experience.source_records.contains(source),
-                    "source corrections must retain original records; append a correction source"
-                );
+                if !experience.source_records.contains(source) {
+                    return Err(RequestCorrection::source_retention(
+                        vec![Segment::Key("experience".into()),Segment::Key("source_records".into())],Code::MissingReference,
+                        format!("Original source record {:?} is missing or changed. Retain its original actor, provenance, text and recorded_at; append a separate correction source.",source.source_ref)).into());
+                }
             }
             if p.experience == *experience && (expected == p.revision || expected == p.revision - 1)
             {
