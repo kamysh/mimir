@@ -120,7 +120,10 @@ module Observed (reads : Committed.Contract Store.World) where
   GraphReply : (effect : Graph.Effect) → Graph.Reply effect → Set
   GraphReply (Graph.select handle statement) (inj₁ error) = ⊤
   GraphReply (Graph.select handle statement) (inj₂ observedWorld) = Σ Read (λ read → observedWorld ≡ snapshot read)
-  GraphReply Graph.beginRead reply = ⊤
+  GraphReply (Graph.openExplanation id) (inj₁ error) = ⊤
+  GraphReply (Graph.openExplanation id) (inj₂ (tx , original)) = Σ Read (λ read → original ≡ snapshot read)
+  GraphReply (Graph.explanationSnapshot tx original statement) (inj₁ error) = ⊤
+  GraphReply (Graph.explanationSnapshot tx original statement) (inj₂ observed) = observed ≡ original
   GraphReply (Graph.openPage project memory) (inj₁ error) = ⊤
   GraphReply (Graph.openPage project memory) (inj₂ (tx , first)) = Σ Read (λ read → first ≡ snapshot read)
   GraphReply (Graph.pageSnapshotRows tx first project memory limit offset) (inj₁ error) = ⊤

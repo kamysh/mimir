@@ -323,5 +323,13 @@ in one read-only stable transaction. A project deletion committed between
 those queries cannot replace the original scores with neutral defaults in
 the same response. The next request sees the missing target. Its Agda binding
 requires the score query to use the target-validation snapshot. Concrete
-assessment/explanation recovery remains #131, with explanation consistency
-tracked separately in #250.
+assessment/explanation recovery remains #131.
+
+Belief explanations also read the belief, incoming parents, review history and
+both kinds of provenance in one read-only stable transaction. A concurrent
+project deletion cannot mix the original belief with missing parents or
+history. The next request observes the deletion. The formal binding requires
+every component to use the initial belief snapshot, and the shared-view law
+identifies the complete response with the explanation of that one world.
+Completion and interruption release the transaction. Mandatory dispatcher
+assembly remains #74/#76.

@@ -44,14 +44,16 @@ data Statement : Set where
   countEdges : R.Relation → Statement
 
 data Effect : Set where
-  beginRead : Effect
+  openExplanation : ℕ → Effect
+  explanationSnapshot : ℕ → Store.World → Statement → Effect
   openPage : Maybe Text → Maybe C.Memory → Effect
   pageSnapshotRows : ℕ → Store.World → Maybe Text → Maybe C.Memory → ℕ → ℕ → Effect
   select : Maybe ℕ → Statement → Effect
   dropTransaction : ℕ → Effect
 
 Reply : Effect → Set
-Reply beginRead = Text ⊎ ℕ
+Reply (openExplanation _) = Text ⊎ (ℕ × Store.World)
+Reply (explanationSnapshot _ _ _) = Text ⊎ Store.World
 Reply (openPage project memory) = Text ⊎ (ℕ × Store.World)
 Reply (pageSnapshotRows tx initial project memory limit offset) = Text ⊎ Store.World
 Reply (select handle statement) = Text ⊎ Store.World
@@ -100,34 +102,60 @@ countRelation : R.Relation → Store.World → ℕ
 countRelation relation w = length (filterᵇ (λ e → does (R.relationCode relation ≟ R.relationCode (Edges.Edge.relation e)))
   (Publication.World.edges (Learning.World.publication (Store.World.learning w))))
 
-finishExplanation : ℕ → G.BeliefValues → List Explanation.Incoming → Explanation.Page →
-  Maybe Candidate.Provenance → Store.World → Script Result
-finishExplanation id b parents selectedPage provenance w with Explanation.origin id (Store.World.learning w)
-... | Origin.malformed = done invalidProvenance
-... | source = done (explained (Explanation.explanation b parents selectedPage provenance source))
+fromExplanation : Explanation.Result → Result
+fromExplanation Explanation.beliefMissing = missingBelief
+fromExplanation Explanation.invalidLimit = invalidPage
+fromExplanation Explanation.invalidStoredProvenance = invalidProvenance
+fromExplanation (Explanation.explained value) = explained value
 
-afterReviews : ℕ → G.BeliefValues → List Explanation.Incoming → ℕ → ℕ → ℕ → Store.World → Script Result
-afterReviews id b parents offset limit tx w = ask (dropTransaction tx) (λ _ →
-  read nothing (candidate id) (λ c → read nothing (independent id)
-    (finishExplanation id b parents page (Candidate.get id (Store.World.learning c)))))
-  where
-  learn = Store.World.learning w
-  page = Explanation.paginate offset limit (Explanation.reviews id (Learning.identities learn)
-    (Publication.World.ledger (Learning.World.publication learn)))
+explanationAnswer : ℕ → ℕ → ℕ → Store.World → Result
+explanationAnswer id offset limit state = fromExplanation (Explanation.get id offset limit (Store.World.learning state))
 
-afterParents : ℕ → G.BeliefValues → ℕ → ℕ → Store.World → Script Result
-afterParents id b offset limit w with does (1 ≤? limit)
-... | false = done invalidPage
-... | true = ask beginRead (λ
-  { (inj₁ error) → done (failed error)
-  ; (inj₂ tx) → read (just tx) (reviews id) (afterReviews id b parents offset limit tx) })
-  where parents = Explanation.parents id (Store.nodes w)
-          (Publication.World.edges (Learning.World.publication (Store.World.learning w)))
+explanationFromViews : ℕ → ℕ → ℕ → Store.World → Store.World → Store.World → Store.World → Store.World → Result
+explanationFromViews id offset limit beliefView parentView reviewView candidateView originView
+  with Explanation.findBelief id (Store.nodes beliefView)
+... | nothing = missingBelief
+... | just b with does (1 ≤? limit)
+...   | false = invalidPage
+...   | true with Explanation.origin id (Store.World.learning originView)
+...     | Origin.malformed = invalidProvenance
+...     | source = explained (Explanation.explanation b
+  (Explanation.parents id (Store.nodes parentView)
+    (Publication.World.edges (Learning.World.publication (Store.World.learning parentView))))
+  (Explanation.paginate offset limit (Explanation.reviews id
+    (Learning.identities (Store.World.learning reviewView))
+    (Publication.World.ledger (Learning.World.publication (Store.World.learning reviewView)))))
+  (Candidate.get id (Store.World.learning candidateView)) source)
 
-afterBelief : ℕ → ℕ → ℕ → Store.World → Script Result
-afterBelief id offset limit w with Ranking.lookup id (Store.beliefs w)
-... | nothing = done missingBelief
-... | just b = read nothing (incoming id) (afterParents id b offset limit)
+explanationFromOneView : ∀ id offset limit original parentsView reviewsView candidateView originView →
+  parentsView ≡ original → reviewsView ≡ original → candidateView ≡ original → originView ≡ original →
+  explanationFromViews id offset limit original parentsView reviewsView candidateView originView ≡
+  explanationAnswer id offset limit original
+explanationFromOneView id offset limit original .original .original .original .original refl refl refl refl
+  with Explanation.findBelief id (Store.nodes original)
+... | nothing = refl
+... | just b with does (1 ≤? limit)
+...   | false = refl
+...   | true with Explanation.origin id (Store.World.learning original)
+...     | Origin.malformed = refl
+...     | Origin.noProvenance = refl
+...     | Origin.found origin = refl
+
+pinnedRead : ℕ → Store.World → Statement → (Store.World → Script Result) → Script Result
+pinnedRead tx original statement next = ask (explanationSnapshot tx original statement) λ where
+  (inj₁ error) → close (just tx) (failed error)
+  (inj₂ observed) → next observed
+
+explainFromBelief : ℕ → ℕ → ℕ → ℕ → Store.World → Script Result
+explainFromBelief id offset limit tx original with Explanation.findBelief id (Store.nodes original)
+... | nothing = close (just tx) missingBelief
+... | just b with does (1 ≤? limit)
+...   | false = close (just tx) invalidPage
+...   | true = pinnedRead tx original (incoming id) λ parentsView →
+  pinnedRead tx original (reviews id) λ reviewsView →
+  pinnedRead tx original (candidate id) λ candidateView →
+  pinnedRead tx original (independent id) λ originView →
+  close (just tx) (explanationFromViews id offset limit original parentsView reviewsView candidateView originView)
 
 start : Request → Script Result
 start (getBelief id) = read nothing (belief id) (λ w → done (beliefResult (Ranking.lookup id (Store.beliefs w))))
@@ -145,7 +173,9 @@ start (beliefPage project memory limit offset) with Records.pageAdmitted limit o
       { (inj₁ error) → close (just tx) (failed error)
       ; (inj₂ second) → close (just tx) (paged (Records.pageResult project memory limit offset
           (length (Records.listBeliefs project memory (Store.beliefs first))) (Store.beliefs second))) }) })
-start (explain id offset limit) = read nothing (belief id) (afterBelief id offset limit)
+start (explain id offset limit) = ask (openExplanation id) λ where
+  (inj₁ error) → done (failed error)
+  (inj₂ (tx , original)) → explainFromBelief id offset limit tx original
 start stats = read nothing (countBeliefs nothing nothing) (λ b → read nothing countPatterns (λ p →
   read nothing (countEdges R.supports) (λ s → read nothing (countEdges R.defeats) (λ d →
   read nothing (countEdges R.causes) (λ c → read nothing (countEdges R.contradicts) (λ k → done

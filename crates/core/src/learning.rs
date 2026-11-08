@@ -537,20 +537,7 @@ impl crate::MimirService {
         offset: usize,
         limit: usize,
     ) -> Result<serde_json::Value> {
-        let belief = self
-            .get_belief(id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("belief not found"))?;
-        let incoming = self.store.get_incoming_edges(&[id]).await?;
-        let parents: Vec<_> = incoming.iter().map(|(from,to,relation,weight,mean)|serde_json::json!({
-            "from_id":from,"to_id":to,"relation":relation,"weight":weight.value(),"source_probability":mean
-        })).collect();
-        let reviews = self.store.reviews_for_belief(id, offset, limit).await?;
-        let candidate_provenance = self.store.candidate_provenance(id).await?;
-        let independent_provenance = self.store.independent_provenance(id).await?;
-        Ok(
-            serde_json::json!({"belief":belief,"incoming_edges":parents,"learning":reviews,"candidate_provenance":candidate_provenance,"independent_provenance":independent_provenance}),
-        )
+        self.store.explain_belief_snapshot(id, offset, limit).await
     }
 }
 

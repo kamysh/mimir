@@ -2241,6 +2241,126 @@ mod snapshot_read_tests {
     }
 
     #[tokio::test]
+    async fn explanation_snapshot_retains_all_components_during_project_deletion() -> Result<()> {
+        use crate::learning::{
+            Experience, Feedback, IndependentBasis, IndependentProvenance, ObservationSource,
+            Outcome, Review, Verdict,
+        };
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let client = db::connect(&cfg.database).await?;
+        let id: Uuid = client
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-explanation-{id}");
+        let reader = AgeStore::new(client, cfg.database.dbname.clone())?;
+        let checked = async {
+            let parent = writer
+                .add_belief_in_project("supporting parent", 0.8, 0.2, &project, MemoryType::Fact)
+                .await?;
+            let reference = format!("fixture: {project} independently supplied source");
+            let belief = writer
+                .add_independent_belief(
+                    "retain the complete explanation",
+                    0.5,
+                    0.2,
+                    Some(&project),
+                    MemoryType::Fact,
+                    &IndependentProvenance {
+                        basis: IndependentBasis::UserInstruction,
+                        reference: reference.clone(),
+                    },
+                )
+                .await?;
+            writer
+                .add_edge(parent.id, belief.id, EdgeType::Supports, 0.7)
+                .await?;
+            let source = Experience {
+                id,
+                project: project.clone(),
+                context: "explanation read".into(),
+                action: "observe support".into(),
+                outcome: Outcome::Success,
+                source: ObservationSource::ToolResult,
+                evidence: vec!["observed result".into()],
+                belief_ids: vec![],
+                pattern_id: None,
+                learning_items: vec![],
+                source_records: vec![],
+            };
+            writer.record_experience(&source, 0).await?;
+            let review = Review {
+                experience_id: id,
+                experience_revision: 1,
+                reviewer: "snapshot-test".into(),
+                rationale: "observed support".into(),
+                feedback: vec![Feedback {
+                    belief_id: belief.id,
+                    verdict: Verdict::Support,
+                    weight: 0.5,
+                }],
+                links: vec![],
+                superseded_beliefs: vec![],
+                candidates: vec![],
+                candidate_feedback: vec![],
+                candidate_links: vec![],
+                extracted_items: vec![],
+                source_coverage: vec![],
+                assessments: vec![],
+            };
+            writer.review_experience(&review, 0).await?;
+            let before = writer.explain_belief(belief.id, 0, 1).await?;
+            anyhow::ensure!(before["incoming_edges"].as_array().unwrap().len() == 1);
+            anyhow::ensure!(
+                before["learning"]["total"] == 1
+                    && before["learning"]["reviews"].as_array().unwrap().len() == 1
+            );
+            anyhow::ensure!(before["independent_provenance"]["reference"] == reference);
+            let interruption = reader
+                .explanation_after_belief(belief.id, 0, 1, || async {
+                    anyhow::bail!("controlled interruption after explanation belief")
+                })
+                .await
+                .unwrap_err();
+            anyhow::ensure!(interruption.to_string().contains("controlled interruption"));
+            anyhow::ensure!(
+                reader.explain_belief_snapshot(belief.id, 0, 1).await? == before,
+                "an interrupted explanation must release its transaction and connection"
+            );
+            let during = reader
+                .explanation_after_belief(belief.id, 0, 1, || async {
+                    anyhow::ensure!(
+                        writer.delete_project(&project).await? >= 2,
+                        "the independent writer must commit project deletion"
+                    );
+                    Ok(())
+                })
+                .await?;
+            anyhow::ensure!(
+                during == before,
+                "all explanation fields must retain the first belief snapshot"
+            );
+            anyhow::ensure!(
+                writer
+                    .explain_belief(belief.id, 0, 1)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("belief not found"),
+                "the next response must observe the committed deletion"
+            );
+            anyhow::ensure!(reader.get_belief(belief.id).await?.is_none());
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn assessment_snapshot_retains_scores_during_project_deletion() -> Result<()> {
         use crate::assessment::{Assessment, Axis};
         use crate::learning::{BeliefTarget, Experience, ObservationSource, Outcome, Review};
