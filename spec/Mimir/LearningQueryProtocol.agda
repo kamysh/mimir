@@ -29,13 +29,13 @@ import Mimir.Validation as Validation
 
 data Request : Set where
   experience currentReview history : ℕ → Request
-  pending : Maybe Text → ℕ → List ℕ → Request
+  pending : Maybe Text → Maybe ℕ → List ℕ → Request
   score : Selection.Query → Request
   assessmentHistory : Selection.Query → ℕ → ℕ → Request
 
 data Statement : Set where
   currentOf reviewOf sourceVersions reviewVersions : ℕ → Statement
-  pendingRows : Maybe Text → ℕ → List ℕ → Statement
+  pendingRows : Maybe Text → Maybe ℕ → List ℕ → Statement
   scoreTarget scoreRows : Selection.Query → Statement
   historicalScores : Selection.Query → ℕ → ℕ → Statement
 
@@ -109,10 +109,12 @@ start (history id) = ask (readHistoryRows RawHistory.sources id) λ where
   (inj₂ sources) → ask (readHistoryRows RawHistory.reviews id) λ where
     (inj₁ error) → done (failed error)
     (inj₂ reviews) → done (rawHistoryResult sources reviews)
-start (pending project limit excluded) with does (1 ≤? limit)
+start (pending project nothing excluded) = read nothing (pendingRows project nothing excluded) (λ observed →
+  done (pendingResult (Experiences.pendingExperiences project nothing excluded (Store.World.current observed))))
+start (pending project (just limit) excluded) with does (1 ≤? limit)
 ... | false = done (pendingResult Experiences.invalidLimit)
-... | true = read nothing (pendingRows project limit excluded) (λ observed →
-  done (pendingResult (Experiences.pendingExperiences project limit excluded (Store.World.current observed))))
+... | true = read nothing (pendingRows project (just limit) excluded) (λ observed →
+  done (pendingResult (Experiences.pendingExperiences project (just limit) excluded (Store.World.current observed))))
 start (score q) with nonblank (Selection.Query.project q) ∧
   nonblank (Selection.Query.scope q) ∧ nonblank (Selection.Query.rubric q)
 ... | false = done (scoreResult Assessment.missingScope)

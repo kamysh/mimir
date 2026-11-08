@@ -50,7 +50,7 @@ pub fn tools() -> Vec<Value> {
                 "evidence":{"type":"array","items":{"type":"string"}},
                 "belief_ids":{"type":"array","items":uuid},"pattern_id":{"type":["string","null"]},"learning_items":{"type":"array","items":item},"source_records":{"type":"array","items":source}},
                 "required":["id","project","context","action","outcome","source","evidence"]}},"required":["experience","expected_revision"]}}),
-        json!({"name":"pending_experiences","description":"Get the oldest new or changed experiences awaiting LLM review. Incremental work: successful review removes that exact version; failed/stale submissions leave it pending. A judge may temporarily exclude deferred IDs; an empty filtered array does not prove the whole queue is empty. No claim or lease; concurrent reviewers use revision checks.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"limit":{"type":"integer","minimum":1,"default":10},"exclude_ids":{"type":"array","items":uuid}}}}),
+        json!({"name":"pending_experiences","description":"Get the oldest new or changed experiences awaiting LLM review. Incremental work: successful review removes that exact version; failed/stale submissions leave it pending. A judge may temporarily exclude deferred IDs; an empty filtered array does not prove the whole queue is empty. No claim or lease; concurrent reviewers use revision checks.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"limit":{"type":"integer","minimum":1,"description":"Optional positive result count; omit to return all matching pending experiences."},"exclude_ids":{"type":"array","items":uuid}}}}),
         json!({"name":"review_experience","description":"Apply one atomic, revision-checked review. Declare new belief/pattern candidates with stable keys; the response maps keys to server UUIDs. Candidate creation is not an observed successful use. Existing UUID-only reviews remain valid. Corrections retract owned evidence and links while retaining candidate identity and independent work.","inputSchema":{"type":"object","properties":{
             "expected_review_revision":{"type":"integer","minimum":0},
             "review":{"type":"object","additionalProperties":false,"properties":{
@@ -163,7 +163,10 @@ pub async fn call(svc: &MimirService, operation: LearningOperation, args: &Value
                 args.get("project")
                     .map(|_| text(args, "project"))
                     .transpose()?,
-                limit(args, 10)?,
+                match super::admission::selection(args, "limit") {
+                    Ok(selection) => selection,
+                    Err(correction) => return Ok(serde_json::to_value(correction)?),
+                },
                 &args
                     .get("exclude_ids")
                     .map(|ids| serde_json::from_value::<Vec<uuid::Uuid>>(ids.clone()))

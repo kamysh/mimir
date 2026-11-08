@@ -229,8 +229,8 @@ module Decode (conversion : Conversion.Contract) where
   decode Tools.reviewExperience fields = required "review" L.reviewInput fields >>= λ review →
     required "expected_review_revision" i64 fields >>= λ expected → inj₂ (learning (Learning.reviewExperience review expected))
   decode Tools.pendingExperiences fields = present "project" V.asString fields >>= λ project →
-    defaulted "limit" 10 integer fields >>= λ limit → defaulted "exclude_ids" [] (readArray uuid) fields >>= λ excluded →
-    inj₂ (learningQuery (Query.pending project limit excluded))
+    selection "limit" fields >>= λ limit → defaulted "exclude_ids" [] (readArray uuid) fields >>= λ excluded →
+    inj₂ (learningQuery (Query.pending project (Data.Maybe.map Ranking.PositiveCount.count limit) excluded))
   decode Tools.getExperience fields = mapResult (λ id → learningQuery (Query.experience id)) (required "id" uuid fields)
   decode Tools.experienceHistory fields = mapResult (λ id → learningQuery (Query.history id)) (required "id" uuid fields)
   decode Tools.queryLearningContext fields = required "context" V.asString fields >>= λ context →

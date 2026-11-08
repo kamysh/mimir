@@ -56,7 +56,10 @@ async fn subscribed_queue_keeps_work_arriving_before_initial_scan() {
     let project = format!("startup-queue-{}", Uuid::new_v4());
     let source = experience(&project);
     svc.record_experience(&source, 0).await.unwrap();
-    let selected = svc.pending_experiences(Some(&project), 1).await.unwrap();
+    let selected = svc
+        .pending_experiences(Some(&project), std::num::NonZeroUsize::new(1))
+        .await
+        .unwrap();
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].experience.id, source.id);
     // The wake must survive the scan as well, so the later idle-wait stage
@@ -74,7 +77,7 @@ async fn empty_review_queue_wakes_on_a_later_committed_experience() {
     let mut subscription = db::ReviewQueueSubscription::connect(&cfg).await.unwrap();
     let project = format!("idle-queue-{}", Uuid::new_v4());
     assert!(svc
-        .pending_experiences(Some(&project), 1)
+        .pending_experiences(Some(&project), std::num::NonZeroUsize::new(1))
         .await
         .unwrap()
         .is_empty());
@@ -86,7 +89,10 @@ async fn empty_review_queue_wakes_on_a_later_committed_experience() {
     let source = experience(&project);
     svc.record_experience(&source, 0).await.unwrap();
     wake.await.unwrap();
-    let selected = svc.pending_experiences(Some(&project), 1).await.unwrap();
+    let selected = svc
+        .pending_experiences(Some(&project), std::num::NonZeroUsize::new(1))
+        .await
+        .unwrap();
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].experience.id, source.id);
     svc.delete_project(&project).await.unwrap();
@@ -103,7 +109,7 @@ async fn reconnected_listener_finds_work_without_a_saved_notification() {
     svc.review_experience(&review(&reviewed), 0).await.unwrap();
     let subscription = db::ReviewQueueSubscription::connect(&cfg).await.unwrap();
     assert!(svc
-        .pending_experiences(Some(&project), 1)
+        .pending_experiences(Some(&project), std::num::NonZeroUsize::new(1))
         .await
         .unwrap()
         .is_empty());
@@ -114,7 +120,10 @@ async fn reconnected_listener_finds_work_without_a_saved_notification() {
     let source = experience(&project);
     svc.record_experience(&source, 0).await.unwrap();
     let mut reconnected = db::ReviewQueueSubscription::connect(&cfg).await.unwrap();
-    let selected = svc.pending_experiences(Some(&project), 1).await.unwrap();
+    let selected = svc
+        .pending_experiences(Some(&project), std::num::NonZeroUsize::new(1))
+        .await
+        .unwrap();
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].experience.id, source.id);
     let wake = reconnected.changed();
@@ -1002,7 +1011,7 @@ async fn learning_cycle_retry_revision_causal_projection_and_retraction() {
         after.alpha
     );
     assert!(svc
-        .pending_experiences(Some(&project), 10)
+        .pending_experiences(Some(&project), std::num::NonZeroUsize::new(10))
         .await
         .unwrap()
         .is_empty());
@@ -1031,7 +1040,7 @@ async fn learning_cycle_retry_revision_causal_projection_and_retraction() {
     assert!(svc.query_intervention(a.id, 1.0).await.unwrap().is_empty());
     assert!((svc.get_belief(b.id).await.unwrap().unwrap().alpha - b.alpha).abs() < 1e-9);
     assert_eq!(
-        svc.pending_experiences(Some(&project), 10)
+        svc.pending_experiences(Some(&project), std::num::NonZeroUsize::new(10))
             .await
             .unwrap()
             .len(),
@@ -1686,7 +1695,10 @@ async fn incremental_queue_handles_more_than_two_hundred_experiences() {
     }
     let mut reviewed = 0;
     loop {
-        let batch = svc.pending_experiences(Some(&project), 30).await.unwrap();
+        let batch = svc
+            .pending_experiences(Some(&project), std::num::NonZeroUsize::new(30))
+            .await
+            .unwrap();
         if batch.is_empty() {
             break;
         }
@@ -1821,7 +1833,7 @@ async fn source_coverage_is_atomic_revision_owned_and_preserves_unresolved_items
         "unresolved"
     );
     assert!(
-        !svc.pending_experiences(Some(&e.project), 10)
+        !svc.pending_experiences(Some(&e.project), std::num::NonZeroUsize::new(10))
             .await
             .unwrap()
             .iter()
@@ -1922,7 +1934,7 @@ async fn complete_large_source_review_is_stored_and_read_back_without_caps() {
     let receipt = svc.learning_review(e.id).await.unwrap();
     assert_eq!(receipt["review"], serde_json::to_value(&r).unwrap());
     assert!(!svc
-        .pending_experiences(Some(&e.project), 101)
+        .pending_experiences(Some(&e.project), std::num::NonZeroUsize::new(101))
         .await
         .unwrap()
         .iter()

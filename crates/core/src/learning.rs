@@ -444,14 +444,16 @@ impl crate::MimirService {
     pub async fn pending_experiences(
         &self,
         project: Option<&str>,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<Vec<ExperienceState>> {
-        self.store.list_experiences(project, true, limit).await
+        self.store
+            .list_experiences_excluding(project, true, limit, &[])
+            .await
     }
     pub async fn pending_experiences_excluding(
         &self,
         project: Option<&str>,
-        limit: usize,
+        limit: crate::Selection,
         excluded: &[Uuid],
     ) -> Result<Vec<ExperienceState>> {
         self.store

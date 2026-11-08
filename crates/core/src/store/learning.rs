@@ -177,19 +177,24 @@ impl AgeStore {
         pending: bool,
         limit: usize,
     ) -> Result<Vec<ExperienceState>> {
-        self.list_experiences_excluding(project, pending, limit, &[])
+        let count = std::num::NonZeroUsize::new(limit)
+            .ok_or_else(|| anyhow::anyhow!("limit must be positive"))?;
+        self.list_experiences_excluding(project, pending, Some(count), &[])
             .await
     }
     pub async fn list_experiences_excluding(
         &self,
         project: Option<&str>,
         pending: bool,
-        limit: usize,
+        limit: crate::Selection,
         excluded: &[Uuid],
     ) -> Result<Vec<ExperienceState>> {
-        ensure!(limit > 0, "limit must be positive");
         let client = self.client.lock().await;
-        client.query(&format!("{CURRENT} WHERE ($1::text IS NULL OR e.project=$1) AND (NOT $2 OR e.reviewed_revision<e.revision) AND NOT (e.id = ANY($4::uuid[])) ORDER BY e.updated_at,e.id LIMIT $3"), &[&project, &pending, &(i64::try_from(limit)?), &excluded]).await?.iter().map(state).collect()
+        let mut selected: Vec<_> = client.query(&format!("{CURRENT} WHERE ($1::text IS NULL OR e.project=$1) AND (NOT $2 OR e.reviewed_revision<e.revision) AND NOT (e.id = ANY($3::uuid[])) ORDER BY e.updated_at,e.id"), &[&project, &pending, &excluded]).await?.iter().map(state).collect::<Result<_>>()?;
+        if let Some(count) = limit {
+            selected.truncate(count.get());
+        }
+        Ok(selected)
     }
     /// One snapshot: stale review data is never presented as current coverage.
     pub async fn learning_review(&self, id: Uuid) -> Result<serde_json::Value> {
