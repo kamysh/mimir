@@ -61,61 +61,120 @@ fn uuid_list(ids: &HashSet<Uuid>) -> String {
         .join(",")
 }
 
+enum ItemIdentity {
+    Recorded(Uuid),
+    New(String),
+}
+
+fn item_path(prefix: &[&str], index: usize, field: &str) -> Vec<Segment> {
+    let mut path: Vec<_> = prefix
+        .iter()
+        .map(|name| Segment::Key((*name).into()))
+        .collect();
+    path.push(Segment::Index(index));
+    path.push(Segment::Key(field.into()));
+    path
+}
+
 impl AgeStore {
+    async fn item_id_by_key(
+        tx: &Transaction<'_>,
+        experience_id: Uuid,
+        key: &str,
+    ) -> Result<Option<Uuid>> {
+        Ok(tx.query_opt("SELECT item_id FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_key=$2",
+            &[&experience_id, &key]).await?.map(|row| row.get(0)))
+    }
+    /// A read-only preflight and the locked publication use the same ownership
+    /// checks. New names are accepted here; only resolve_item_ids allocates.
+    async fn lookup_item_identity(
+        tx: &Transaction<'_>,
+        experience_id: Uuid,
+        item: &crate::assessment::LearningItem,
+        prefix: &[&str],
+        index: usize,
+    ) -> Result<ItemIdentity> {
+        let row = if let Some(key) = &item.key {
+            tx.query_opt("SELECT item_id,source_ref,actor FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_key=$2",
+                &[&experience_id, key]).await?
+        } else if let Some(id) = item.id {
+            tx.query_opt("SELECT item_id,source_ref,actor FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_id=$2",
+                &[&experience_id, &id]).await?
+        } else {
+            return Err(RequestCorrection::learning_item(
+                item_path(prefix, index, "key"),
+                Code::MissingReference,
+                "learning item requires a key or an existing ID".into(),
+            )
+            .into());
+        };
+        let Some(row) = row else {
+            if let Some(id) = item.id {
+                return Err(RequestCorrection::learning_item(item_path(prefix, index, "id"), Code::MissingReference,
+                    format!("Learning item ID {id} is not stored for this experience and local key. New learning items must omit id; PostgreSQL allocates their UUIDs.")).into());
+            }
+            return Ok(ItemIdentity::New(
+                item.key
+                    .as_ref()
+                    .expect("a new item has a local key")
+                    .clone(),
+            ));
+        };
+        let assigned: Uuid = row.get("item_id");
+        if item.id.is_some_and(|id| id != assigned) {
+            return Err(RequestCorrection::learning_item(item_path(prefix, index, "id"), Code::WrongIdentity,
+                format!("Learning item key and UUID disagree: the stored ID is {assigned}, but the supplied ID is {}.", item.id.unwrap())).into());
+        }
+        for (field, supplied) in [
+            ("source_ref", item.source_ref.as_str()),
+            ("actor", item.actor.as_str()),
+        ] {
+            let original: &str = row.get(field);
+            if original != supplied {
+                return Err(RequestCorrection::learning_item(item_path(prefix, index, field), Code::WrongIdentity,
+                    format!("Learning item {assigned} has immutable {field} {original:?}; supplied {supplied:?} would change its recorded authorship or source.")).into());
+            }
+        }
+        Ok(ItemIdentity::Recorded(assigned))
+    }
     /// Only INSERT's PostgreSQL default may allocate a persistent item UUID.
     /// The enclosing learning transaction owns both allocation and publication.
     async fn resolve_item_ids(
         tx: &Transaction<'_>,
         experience_id: Uuid,
         items: &mut [crate::assessment::LearningItem],
+        prefix: &[&str],
     ) -> Result<()> {
-        for item in items {
-            let row = if let Some(key) = &item.key {
-                match tx.query_opt(
-                    "SELECT item_id,source_ref,actor FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_key=$2",
-                    &[&experience_id, key],
-                ).await? {
-                    Some(row) => row,
-                    None => {
-                        ensure!(item.id.is_none(), "new learning items must omit id; PostgreSQL allocates their UUIDs");
-                        tx.query_one(
-                            "INSERT INTO mimir_learning_item_owners(experience_id,item_key,source_ref,actor) VALUES($1,$2,$3,$4) RETURNING item_id,source_ref,actor",
-                            &[&experience_id, key, &item.source_ref, &item.actor],
-                        ).await?
-                    }
-                }
-            } else {
-                let id = item.id.ok_or_else(|| {
-                    anyhow::anyhow!("learning item requires a local key or existing ID")
-                })?;
-                tx.query_opt(
-                    "SELECT item_id,source_ref,actor FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_id=$2",
-                    &[&experience_id, &id],
-                ).await?.ok_or_else(|| anyhow::anyhow!("unreserved learning item UUID; new items require a local key and PostgreSQL allocates their UUIDs"))?
-            };
-            let assigned: Uuid = row.get("item_id");
-            ensure!(
-                item.id.is_none_or(|id| id == assigned),
-                "learning item key and UUID disagree"
-            );
-            ensure!(
-                row.get::<_, &str>("source_ref") == item.source_ref
-                    && row.get::<_, &str>("actor") == item.actor,
-                "learning item identity or provenance conflict"
-            );
-            item.id = Some(assigned);
+        for (index, item) in items.iter_mut().enumerate() {
+            item.id = Some(match Self::lookup_item_identity(tx, experience_id, item, prefix, index).await? {
+                ItemIdentity::Recorded(id) => id,
+                ItemIdentity::New(key) => tx.query_one(
+                    "INSERT INTO mimir_learning_item_owners(experience_id,item_key,source_ref,actor) VALUES($1,$2,$3,$4) RETURNING item_id",
+                    &[&experience_id, &key, &item.source_ref, &item.actor]).await?.get(0),
+            });
         }
         Ok(())
     }
 
     async fn resolve_item_references(tx: &Transaction<'_>, review: &mut Review) -> Result<()> {
-        for assessment in &mut review.assessments {
-            for key in &assessment.item_keys {
-                let row = tx.query_opt(
-                    "SELECT item_id FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_key=$2",
-                    &[&review.experience_id, key],
-                ).await?.ok_or_else(|| anyhow::anyhow!("unknown learning item key: {key}"))?;
-                assessment.item_ids.push(row.get(0));
+        for (index, assessment) in review.assessments.iter_mut().enumerate() {
+            for (key_index, key) in assessment.item_keys.iter().enumerate() {
+                let id = Self::item_id_by_key(tx, review.experience_id, key)
+                    .await?
+                    .ok_or_else(|| {
+                        RequestCorrection::learning_item(
+                            vec![
+                                Segment::Key("review".into()),
+                                Segment::Key("assessments".into()),
+                                Segment::Index(index),
+                                Segment::Key("item_keys".into()),
+                                Segment::Index(key_index),
+                            ],
+                            Code::MissingReference,
+                            format!("Unknown learning item key {key:?} in this experience."),
+                        )
+                    })?;
+                assessment.item_ids.push(id);
             }
             assessment.item_keys.clear();
         }
@@ -414,6 +473,41 @@ impl AgeStore {
             .learning_beliefs_for_ids(&tx, &references.iter().map(|(id, _)| *id).collect())
             .await?;
         validate_named_targets(&beliefs, &current.experience.project, references)?;
+        for (index, item) in review.extracted_items.iter().enumerate() {
+            Self::lookup_item_identity(
+                &tx,
+                review.experience_id,
+                item,
+                &["review", "extracted_items"],
+                index,
+            )
+            .await?;
+        }
+        for (index, assessment) in review.assessments.iter().enumerate() {
+            for (key_index, key) in assessment.item_keys.iter().enumerate() {
+                if !review
+                    .extracted_items
+                    .iter()
+                    .any(|item| item.key.as_ref() == Some(key))
+                    && Self::item_id_by_key(&tx, review.experience_id, key)
+                        .await?
+                        .is_none()
+                {
+                    return Err(RequestCorrection::learning_item(
+                        vec![
+                            Segment::Key("review".into()),
+                            Segment::Key("assessments".into()),
+                            Segment::Index(index),
+                            Segment::Key("item_keys".into()),
+                            Segment::Index(key_index),
+                        ],
+                        Code::MissingReference,
+                        format!("Unknown learning item key {key:?} in this experience."),
+                    )
+                    .into());
+                }
+            }
+        }
         let mut new = Vec::new();
         for (index, candidate) in review.candidates.iter().enumerate() {
             let row = tx.query_opt("SELECT kind,declaration::text,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2",
@@ -583,7 +677,13 @@ impl AgeStore {
             .await?;
         }
         let mut allocated = experience.clone();
-        Self::resolve_item_ids(&tx, experience.id, &mut allocated.learning_items).await?;
+        Self::resolve_item_ids(
+            &tx,
+            experience.id,
+            &mut allocated.learning_items,
+            &["experience", "learning_items"],
+        )
+        .await?;
         let experience = &allocated;
         let payload = serde_json::to_string(experience)?;
         if let Some(ref p) = prior {
@@ -735,7 +835,13 @@ impl AgeStore {
             .await?;
         validate_named_targets(&beliefs, &current.experience.project, references)?;
         let mut allocated = review.clone();
-        Self::resolve_item_ids(&tx, review.experience_id, &mut allocated.extracted_items).await?;
+        Self::resolve_item_ids(
+            &tx,
+            review.experience_id,
+            &mut allocated.extracted_items,
+            &["review", "extracted_items"],
+        )
+        .await?;
         Self::resolve_item_references(&tx, &mut allocated).await?;
         let review = &allocated;
         crate::learning_sources::validate_review(review, &current.experience)

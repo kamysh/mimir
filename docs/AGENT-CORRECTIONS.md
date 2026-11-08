@@ -80,6 +80,22 @@ wrong-project pattern references identify `experience.pattern_id` and suggest
 their existing behavior. Candidate declarations and item-identity conflicts
 remain separate parts of #93.
 
+Item-identity corrections also preserve their exact position, such as
+`experience.learning_items[1].id`, `review.extracted_items[0].actor` or
+`review.assessments[0].item_keys[0]`. A new item needs a stable local key and
+must omit its stored ID; PostgreSQL supplies that ID. A later key/ID pair must
+match the original mapping, and its recorded source and actor remain immutable.
+The response names the problem and tells the agent to read the original item
+mapping before retrying. It never silently replaces an ID or creates another
+observation to bypass a conflict.
+
+The review preflight checks existing ownership and assessment item names before
+embedding. The publication transaction repeats the checks and owns all new item
+allocations. A later refusal rolls back every tentative owner with the source
+or review; exact retries keep their assigned IDs. Locating an error does not
+alter a successful normalization or its store. Database allocation errors and
+unclassified failures remain errors, rather than claims of agent misuse.
+
 A response must name at least one issue and provide a nonblank explanation,
 expected input and suggested correction. These requirements make the response
 actionable; they do not bound request size, text length or the number of issues.

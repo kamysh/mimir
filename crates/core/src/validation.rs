@@ -90,7 +90,9 @@ impl Refusal {
 
     /// Call only around a pure validator, before attempting mutation.
     pub fn validation(error: anyhow::Error) -> anyhow::Error {
-        if error.downcast_ref::<Self>().is_some() {
+        if error.downcast_ref::<Self>().is_some()
+            || error.is::<crate::interaction::RequestCorrection>()
+        {
             return error;
         }
         Self::invalid(Code::MalformedInput, vec![], error.to_string()).into()

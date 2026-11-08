@@ -169,16 +169,12 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project (A.learned q (A.Learn.reviewTransacted (A.Learn.Full.replayed s cleanup))) = success (snapshot s)
   project (A.learned q (A.Learn.preparationDecision report)) = decision report
   project (A.learned q (A.Learn.reviewTransacted (A.Learn.Full.refused (Operations.preparationFailure report) cleanup))) = decision report
-  project original@(A.learned q (A.Learn.transacted (A.Learn.T.refused reason (inj₂ tt)))) with Operations.revisionCorrection reason
+  project original@(A.learned q (A.Learn.transacted (A.Learn.T.refused reason (inj₂ tt)))) with Operations.requestCorrection reason
   ... | just report = decision report
-  ... | nothing with Operations.referenceCorrection reason
-  ...   | just report = decision report
-  ...   | nothing = failure original
-  project original@(A.learned q (A.Learn.reviewTransacted (A.Learn.Full.refused reason (inj₂ tt)))) with Operations.revisionCorrection reason
+  ... | nothing = failure original
+  project original@(A.learned q (A.Learn.reviewTransacted (A.Learn.Full.refused reason (inj₂ tt)))) with Operations.requestCorrection reason
   ... | just report = decision report
-  ... | nothing with Operations.referenceCorrection reason
-  ...   | just report = decision report
-  ...   | nothing = failure original
+  ... | nothing = failure original
   project original@(A.learned q _) = failure original
   project original@(A.learningQueryResult result) = projectQuery original result
   project original@(A.contextResult result) with contextAssessments (Context.Assessments.values (ContextProtocol.Output.assessments result))

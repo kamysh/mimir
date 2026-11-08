@@ -61,11 +61,18 @@ fn range(x: f64, min: f64, max: f64) -> Result<()> {
 pub fn validate_items(items: &[LearningItem]) -> Result<()> {
     let mut ids = HashSet::new();
     let mut keys = HashSet::new();
-    for item in items {
-        ensure!(
-            item.id.is_some() || item.key.is_some(),
-            "learning item requires a key or an existing ID"
-        );
+    for (index, item) in items.iter().enumerate() {
+        if item.id.is_none() && item.key.is_none() {
+            return Err(crate::interaction::RequestCorrection::learning_item(
+                vec![
+                    crate::validation::Segment::Index(index),
+                    crate::validation::Segment::Key("key".into()),
+                ],
+                crate::validation::Code::MissingReference,
+                "learning item requires a key or an existing ID".into(),
+            )
+            .into());
+        }
         if let Some(id) = item.id {
             ensure!(ids.insert(id), "duplicate learning item ID");
         }

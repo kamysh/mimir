@@ -8,14 +8,14 @@ module Mimir.ItemAllocation where
 open import Data.Empty using (⊥-elim)
 open import Data.List using (List; []; _∷_; length)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Data.Nat using (ℕ; suc; _≟_)
 open import Data.Product using (_×_; _,_; Σ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
-open import Mimir.Validation using (Fault; fault; wrongIdentity; missingReference)
+open import Mimir.Validation using (Fault; fault; key; index; Segment; wrongIdentity; missingReference)
 import Mimir.ItemOwners as Owners
 import Mimir.LearningContracts as Contracts
 
@@ -49,14 +49,23 @@ data Outcome : Set where
   refused : Fault → Outcome
   ready : ℕ → Keys → Owners.Registry → Outcome
 
+ownerConflictField : Owners.Owner → Owners.Owner → Segment
+ownerConflictField (experience , source , actor) (oldExperience , oldSource , oldActor)
+  with source ≟Text oldSource
+... | no _ = key "source_ref"
+... | yes _ = key "actor"
+
 -- A supplied UUID is never used to create a row. Existing UUID-only clients
 -- can still correct a recorded item when its reserved provenance agrees.
 reuse : Keys → Owners.Registry → ℕ → Owners.Owner → Outcome
 reuse keys owners identity owner with owners identity
-... | nothing = refused (fault [] missingReference "new items require a local key; PostgreSQL allocates UUIDs")
-... | just old with Owners.ownerEqual owner old
-...   | no _ = refused (fault [] wrongIdentity "item provenance is immutable")
-...   | yes _ = ready identity keys owners
+... | nothing = refused (fault (key "id" ∷ []) missingReference "new items require a local key; PostgreSQL allocates UUIDs")
+... | just old@(oldExperience , oldSource , oldActor) with owner
+...   | experience , source , actor with experience ≟ oldExperience
+...     | no _ = refused (fault (key "id" ∷ []) missingReference "the item ID is not owned by this experience")
+...     | yes _ with Owners.ownerEqual (experience , source , actor) old
+...       | no _ = refused (fault (ownerConflictField (experience , source , actor) old ∷ []) wrongIdentity "item provenance is immutable")
+...       | yes _ = ready identity keys owners
 
 -- sqlIdentity is returned by INSERT ... DEFAULT ... RETURNING item_id. It is
 -- consulted only for an unreserved (experience, key); retries use the ledger.
@@ -72,9 +81,9 @@ allocate keys owners experience name source actor sqlIdentity with keys experien
 -- UUID together with a key cannot turn it into an allocation instruction.
 reuseKey : Keys → Owners.Registry → ℕ → Text → ℕ → Text → Text → Outcome
 reuseKey keys owners experience name identity source actor with keys experience name
-... | nothing = refused (fault [] missingReference "new items must omit id")
+... | nothing = refused (fault (key "id" ∷ []) missingReference "new items must omit id")
 ... | just assigned with identity ≟ assigned
-...   | no _ = refused (fault [] wrongIdentity "item key and UUID disagree")
+...   | no _ = refused (fault (key "id" ∷ []) wrongIdentity "item key and UUID disagree")
 ...   | yes _ = reuse keys owners identity (experience , source , actor)
 
 newIdentityComesFromPostgreSQL : ∀ keys owners experience name source actor sqlIdentity →
@@ -98,13 +107,15 @@ sameKeyRetryStable : ∀ keys owners experience name source actor identity →
   ∀ sqlIdentity → allocate keys owners experience name source actor sqlIdentity ≡
     ready identity keys owners
 sameKeyRetryStable keys owners experience name source actor identity found owned sqlIdentity
-  rewrite found | owned with Owners.ownerEqual (experience , source , actor) (experience , source , actor)
+  rewrite found | owned with experience ≟ experience
 ... | no impossible = ⊥-elim (impossible refl)
-... | yes _ = refl
+... | yes _ with Owners.ownerEqual (experience , source , actor) (experience , source , actor)
+...   | no impossible = ⊥-elim (impossible refl)
+...   | yes _ = refl
 
 unreservedUUIDCannotAllocate : ∀ keys owners identity owner → owners identity ≡ nothing →
   reuse keys owners identity owner ≡
-    refused (fault [] missingReference "new items require a local key; PostgreSQL allocates UUIDs")
+    refused (fault (key "id" ∷ []) missingReference "new items require a local key; PostgreSQL allocates UUIDs")
 unreservedUUIDCannotAllocate keys owners identity owner unused rewrite unused = refl
 
 -- Assessment-local references use precisely the enclosing experience's key
@@ -115,13 +126,16 @@ data References (keys : Keys) (experience : ℕ) : List Text → List ℕ → Se
     References keys experience names identities →
     References keys experience (name ∷ names) (identity ∷ identities)
 
-resolveReferences : ∀ keys experience names → Fault ⊎ Σ (List ℕ) (References keys experience names)
-resolveReferences keys experience [] = inj₂ ([] , none)
-resolveReferences keys experience (name ∷ names) with keys experience name in found
-... | nothing = inj₁ (fault [] missingReference "unknown learning item key")
-... | just identity with resolveReferences keys experience names
+resolveReferencesFrom : ∀ offset keys experience names → Fault ⊎ Σ (List ℕ) (References keys experience names)
+resolveReferencesFrom offset keys experience [] = inj₂ ([] , none)
+resolveReferencesFrom offset keys experience (name ∷ names) with keys experience name in found
+... | nothing = inj₁ (fault (index offset ∷ []) missingReference "unknown learning item key")
+... | just identity with resolveReferencesFrom (suc offset) keys experience names
 ...   | inj₁ failure = inj₁ failure
 ...   | inj₂ (identities , supported) = inj₂ (identity ∷ identities , more found supported)
+
+resolveReferences : ∀ keys experience names → Fault ⊎ Σ (List ℕ) (References keys experience names)
+resolveReferences = resolveReferencesFrom 0
 
 referenceCountExact : ∀ {keys experience names identities} → References keys experience names identities →
   length names ≡ length identities

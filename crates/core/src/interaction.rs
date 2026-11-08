@@ -187,6 +187,42 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    pub(crate) fn learning_item(path: Vec<Segment>, code: Code, message: String) -> Self {
+        let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
+            "A new learning item with a stable local key and no supplied ID, or an existing item owned by this experience with its original source and actor. Assessment item keys must resolve within that experience.".into(),
+            "Call get_experience and get_learning_review with the same experience ID; use experience_history to inspect prior item keys, assigned IDs and recorded authorship. For a new item, supply its stable local key and omit id so PostgreSQL assigns it. Reuse the returned mapping on retries. If the intended item is unknown, ask the user. Do not invent or silently replace an ID, change source_ref or actor, or create another observation to bypass the conflict.".into())
+            .expect("item identity correction retains exact field and readback");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained item identity correction"),
+        }
+    }
+
+    pub(crate) fn prefix(error: anyhow::Error, prefix: &[Segment]) -> anyhow::Error {
+        match error.downcast::<Self>() {
+            Err(error) => error,
+            Ok(refusal) => {
+                let mut issues = refusal.correction.issues().iter().map(|issue| {
+                    let mut fault = issue.fault().clone();
+                    let mut path = prefix.to_vec();
+                    path.extend(fault.path);
+                    fault.path = path;
+                    CorrectionItem::new(
+                        issue.location(),
+                        fault,
+                        issue.expected().into(),
+                        issue.suggested_correction().into(),
+                    )
+                    .expect("prefixing a checked issue preserves its guidance")
+                });
+                let first = issues.next().expect("checked correction has an issue");
+                Self {
+                    correction: NeedsInput::new(first, issues.collect())
+                        .expect("checked prefixed correction"),
+                }
+                .into()
+            }
+        }
+    }
     pub(crate) fn belief_reference(path: Vec<Segment>, code: Code, message: String) -> Self {
         let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
             "A currently stored fact or experiential belief owned by the experience's exact project; global and working beliefs are not learning targets.".into(),

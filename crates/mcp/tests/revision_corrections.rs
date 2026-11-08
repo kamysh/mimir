@@ -114,7 +114,10 @@ fn reference_correction(value: Value, path: Value, code: Code) -> Result<()> {
     );
     ensure!(
         issue.suggested_correction().contains("user")
-            && issue.suggested_correction().contains("Do not")
+            && issue
+                .suggested_correction()
+                .to_ascii_lowercase()
+                .contains("do not")
     );
     Ok(())
 }
@@ -225,6 +228,99 @@ async fn permitted_project_and_global_patterns_remain_valid_references() -> Resu
     ensure!(stopped.success());
     cleanup?;
     global_cleanup?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn item_identity_corrections_keep_authorship_and_roll_back_every_reservation() -> Result<()> {
+    use mimir_core::graph::MemoryType;
+    let service = test_service().await?;
+    let id = fixture_identity().await?;
+    let invented = fixture_identity().await?;
+    let project = format!("item-corrections-{id}");
+    let belief = isolation::seed_belief_in_project(
+        "item assessment fixture",
+        0.5,
+        0.1,
+        &project,
+        MemoryType::Fact,
+    )
+    .await?;
+    let db = db::connect(&isolation::fixture().database_config()).await?;
+    let mut client = Client::start(id)?;
+    let checked = async {
+        let item = json!({"kind":"suggestion","actor":"agent","source_ref":"source/0","statement":"Check first.","conditions":"untried"});
+        let mut source = json!({"id":id,"project":project,"context":"item identity fixture","action":"record the original suggestion","outcome":"unknown","source":"agent_report","evidence":["source/0"],"belief_ids":[belief.id],
+            "source_records":[{"source_ref":"source/0","actor":"agent","provenance":"agent_report","text":"Check first. Then verify."}]});
+        let mut id_only = item.clone(); id_only["id"] = json!(invented);
+        let mut id_and_key = id_only.clone(); id_and_key["key"] = json!("new-item");
+        let mut named = item.clone(); named["key"] = json!("check-first");
+        for (items, index, field, code) in [
+            (json!([id_only]), 0, "id", Code::MissingReference),
+            (json!([item]), 0, "key", Code::MissingField),
+            (json!([id_and_key]), 0, "id", Code::MissingReference),
+            (json!([named,id_only]), 1, "id", Code::MissingReference),
+        ] {
+            let mut invalid = source.clone(); invalid["learning_items"] = items;
+            reference_correction(client.call("record_experience", json!({"experience":invalid,"expected_revision":0})).await?,
+                json!(["experience","learning_items",index,field]), code)?;
+            ensure!(service.get_experience(id).await?.is_none());
+            let count: i64 = db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1", &[&id]).await?.get(0);
+            ensure!(count == 0, "refusal left a reserved item or partial source");
+        }
+        source["learning_items"] = json!([named]);
+        let recorded = client.call("record_experience", json!({"experience":source,"expected_revision":0})).await?;
+        let assigned = recorded["experience"]["learning_items"][0]["id"].clone();
+        ensure!(assigned.is_string());
+        ensure!(client.call("record_experience", json!({"experience":source,"expected_revision":0})).await? == recorded);
+        let history = service.experience_history(id).await?;
+        for (field, value) in [("id", json!(invented)), ("actor", json!("different speaker")), ("source_ref", json!("different/source"))] {
+            let mut invalid = source.clone(); invalid["learning_items"][0][field] = value;
+            reference_correction(client.call("record_experience", json!({"experience":invalid,"expected_revision":1})).await?,
+                json!(["experience","learning_items",0,field]), Code::WrongIdentity)?;
+            ensure!(service.experience_history(id).await? == history);
+        }
+        let extracted = json!({"kind":"suggestion","key":"verify-next","actor":"agent","source_ref":"source/0","statement":"Then verify.","conditions":"untried"});
+        let review = json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"original authorship retained",
+            "source_coverage":[{"source_ref":"source/0","status":"unresolved","reason":"No observed outcome"}],"extracted_items":[extracted]});
+        for (items, index, field, code) in [
+            (json!([item]), 0, "key", Code::MissingField),
+            (json!([id_and_key]), 0, "id", Code::MissingReference),
+            (json!([extracted,id_only]), 1, "id", Code::MissingReference),
+            (json!([{"kind":"suggestion","key":"check-first","actor":"different speaker","source_ref":"source/0","statement":"Check first.","conditions":"untried"}]), 0, "actor", Code::WrongIdentity),
+        ] {
+            let mut invalid = review.clone(); invalid["extracted_items"] = items;
+            invalid["candidates"] = json!([{"kind":"belief","key":"must-not-prepare","content":"complete candidate fixture","memory_type":"Fact"}]);
+            reference_correction(client.call("review_experience", json!({"review":invalid,"expected_review_revision":0})).await?,
+                json!(["review","extracted_items",index,field]), code)?;
+            ensure!(service.experience_history(id).await? == history);
+        }
+        let assessment = json!({"target":{"belief_id":belief.id},"scope":"fixture","rubric":"fixture","correctness":{"value":null,"weight":0},"usefulness":{"value":null,"weight":0},"evidence_indices":[],"item_keys":["verify-next"],"rationale":"unresolved"});
+        let mut invalid = review.clone(); invalid["assessments"] = json!([assessment]);
+        invalid["assessments"][0]["item_keys"] = json!(["unknown-item"]);
+        reference_correction(client.call("review_experience", json!({"review":invalid,"expected_review_revision":0})).await?,
+            json!(["review","assessments",0,"item_keys",0]), Code::MissingReference)?;
+        ensure!(service.experience_history(id).await? == history);
+        let count: i64 = db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1", &[&id]).await?.get(0);
+        ensure!(count == 1, "refused review left a tentative allocation");
+        let mut valid = review.clone(); valid["assessments"] = json!([assessment]);
+        let reviewed = client.call("review_experience", json!({"review":valid,"expected_review_revision":0})).await?;
+        ensure!(reviewed["review_revision"] == 1);
+        let stored_id = reviewed["item_ids"]["verify-next"].clone();
+        ensure!(stored_id.is_string() && stored_id != assigned);
+        ensure!(client.call("review_experience", json!({"review":valid,"expected_review_revision":0})).await? == reviewed);
+        let count: i64 = db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1", &[&id]).await?.get(0);
+        ensure!(count == 2, "retry allocated a duplicate item");
+        let readback = client.call("get_learning_review", json!({"id":id})).await?;
+        ensure!(readback["review_revision"] == 1);
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    let cleanup = service.delete_project(&project).await;
+    checked?;
+    ensure!(stopped.success());
+    cleanup?;
     Ok(())
 }
 

@@ -5,7 +5,7 @@
 module Mimir.LearningOperations where
 
 open import Data.Bool using (true; false; _∧_)
-open import Data.List using (List; []; _∷_; map; length)
+open import Data.List using (List; []; _∷_; _++_; map; length)
 open import Data.List.Relation.Unary.Any using (Any; here; there)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
@@ -58,6 +58,11 @@ data Failure : Set where
   externalFailure : Text → Failure
   allocationFailure : Validation.Fault → Failure
   preparationFailure : Errors.AgentCorrection.Claim → Failure
+
+locateFailure : List Validation.Segment → Failure → Failure
+locateFailure path (allocationFailure detail) = allocationFailure (Validation.problem
+  (path ++ Validation.Fault.path detail) (Validation.Fault.code detail) (Validation.Fault.explanation detail))
+locateFailure path failure = failure
 
 module Correction = Errors.AgentCorrection
 
@@ -115,6 +120,36 @@ referenceCorrection (reviewFailure (Reviewing.invalid detail@(Validation.problem
 ... | yes _ = beliefReferenceCorrection detail
 referenceCorrection _ = nothing
 
+-- A PostgreSQL allocation collision has no item-field suffix and stays an
+-- internal error. Only located public item/reference checks open this dialog.
+allocationCorrection : Failure → Maybe Correction.Claim
+allocationCorrection (allocationFailure detail@(Validation.problem
+  (Validation.fieldKey outer ∷ Validation.fieldKey inner ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ []) code reason))
+  with (outer ≟Text Data.String.toList "experience") | (inner ≟Text Data.String.toList "learning_items") |
+    (outer ≟Text Data.String.toList "review") | (inner ≟Text Data.String.toList "extracted_items")
+... | yes _ | yes _ | _ | _ = just (Correction.claim (Correction.itemReferenceItem detail) [])
+... | _ | _ | yes _ | yes _ = just (Correction.claim (Correction.itemReferenceItem detail) [])
+... | _ | _ | _ | _ = nothing
+allocationCorrection (allocationFailure detail@(Validation.problem
+  (Validation.fieldKey outer ∷ Validation.fieldKey inner ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ Validation.index itemPosition ∷ []) code reason))
+  with outer ≟Text Data.String.toList "review" | inner ≟Text Data.String.toList "assessments" | leaf ≟Text Data.String.toList "item_keys"
+... | yes _ | yes _ | yes _ = just (Correction.claim (Correction.itemReferenceItem detail) [])
+... | _ | _ | _ = nothing
+allocationCorrection _ = nothing
+
+allocationCollisionIsNotAgentMisuse : ∀ position explanation →
+  allocationCorrection (allocationFailure (Validation.problem
+    (Validation.key "review" ∷ Validation.key "extracted_items" ∷ Validation.index position ∷ [])
+    Validation.wrongIdentity explanation)) ≡ nothing
+allocationCollisionIsNotAgentMisuse position explanation = refl
+
+requestCorrection : Failure → Maybe Correction.Claim
+requestCorrection failure with revisionCorrection failure
+... | just report = just report
+... | nothing with referenceCorrection failure
+...   | just report = just report
+...   | nothing = allocationCorrection failure
+
 expectedValid : ℤ → Data.Bool.Bool
 expectedValid expected = does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))
 
@@ -131,7 +166,7 @@ module Protocol (database : ℕ) (request : Request)
 
   module T = Transaction.Over Store.World Observation.Snapshot Failure database 671942183
   module Receipts = Receipt.Over Store.World Observation.Snapshot Failure database 671942183
-  module Normalize = Normalization.For Failure allocationFailure database
+  module Normalize = Normalization.For Failure allocationFailure database locateFailure
   module Full = Transaction.Over Application.World Observation.Snapshot Failure database 671942183
 
   missingPreparation : Errors.AgentCorrection.Claim

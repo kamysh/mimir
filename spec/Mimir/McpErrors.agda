@@ -203,6 +203,11 @@ module AgentCorrection where
     (toList "A currently stored pattern belonging to the experience project, or an untagged global pattern.")
     (toList "Use list_patterns for the experience project and inspect the returned pattern. Select the intended permitted pattern, omit the optional pattern reference only if no pattern was used, or ask the user. Do not invent an ID or move a pattern between projects.")
 
+  itemReferenceItem : Fault → Item
+  itemReferenceItem detail = item arguments detail
+    (toList "A new learning item with a stable local key and no supplied ID, or an existing item owned by this experience with its original source and actor. Assessment item keys must resolve within that experience.")
+    (toList "Call get_experience and get_learning_review with the same experience ID; use experience_history to inspect prior item keys, assigned IDs and recorded authorship. For a new item, supply its stable local key and omit id so PostgreSQL assigns it. Reuse the returned mapping on retries. If the intended item is unknown, ask the user. Do not invent or silently replace an ID, change source_ref or actor, or create another observation to bypass the conflict.")
+
   record Certified (World : Set) (before after : World) : Set where
     constructor certified
     field report : Claim; unchanged : after ≡ before

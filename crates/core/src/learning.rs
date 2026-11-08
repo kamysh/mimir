@@ -75,7 +75,15 @@ pub struct Experience {
 }
 impl Experience {
     pub fn validate(&self) -> Result<()> {
-        crate::assessment::validate_items(&self.learning_items)?;
+        crate::assessment::validate_items(&self.learning_items).map_err(|error| {
+            crate::interaction::RequestCorrection::prefix(
+                error,
+                &[
+                    crate::validation::Segment::Key("experience".into()),
+                    crate::validation::Segment::Key("learning_items".into()),
+                ],
+            )
+        })?;
         crate::learning_sources::validate_sources(&self.source_records)?;
         ensure!(
             self.source_records.is_empty()
@@ -243,7 +251,15 @@ pub struct Review {
 }
 impl Review {
     pub fn validate(&self) -> Result<()> {
-        crate::assessment::validate_items(&self.extracted_items)?;
+        crate::assessment::validate_items(&self.extracted_items).map_err(|error| {
+            crate::interaction::RequestCorrection::prefix(
+                error,
+                &[
+                    crate::validation::Segment::Key("review".into()),
+                    crate::validation::Segment::Key("extracted_items".into()),
+                ],
+            )
+        })?;
         ensure!(
             self.experience_revision > 0,
             "experience_revision must be positive"
