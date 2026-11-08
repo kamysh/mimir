@@ -619,7 +619,7 @@ These laws model the lifecycle, not the SQL implementation itself.
 | `mimir stats` | Print belief, pattern, and edge counts |
 | `mimir list [--project NAME] [--limit N]` | List beliefs, sorted by probability |
 | `mimir patterns [--project NAME] [--limit N]` | List patterns, sorted by success rate |
-| `mimir query TEXT [--limit N] [--evidence] [--project NAME]` | Hybrid search; `--evidence` also prints each belief's grounding passages |
+| `mimir query TEXT [--limit N] [--evidence] [--project NAME]` | Hybrid search; `--evidence` prints every supporting passage for each selected belief |
 | `mimir intervene UUID VALUE` | Counterfactual `do(belief = VALUE)`: read-only projection of causal descendants |
 | `mimir evidence add CHUNK_ID BELIEF_ID [--weight W]` | Ground a belief in a document chunk (GROUNDS edge) |
 | `mimir evidence list BELIEF_ID` | List the passages grounding a belief |

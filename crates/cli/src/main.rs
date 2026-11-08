@@ -629,7 +629,7 @@ async fn cmd_query(
 
     if evidence {
         let grounded = svc
-            .query_relevant_grounded(text, limit, std::num::NonZeroUsize::new(3), project)
+            .query_relevant_grounded(text, limit, None, project)
             .await?;
         if grounded.is_empty() {
             println!("(no results)");
