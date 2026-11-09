@@ -14,7 +14,7 @@ import Mimir.Effects as Effects
 import Mimir.DatabaseTransaction as Database
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Empty using (⊥-elim)
+open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Bool using (Bool; true; false; not)
 open import Data.Integer using (ℤ)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
@@ -24,6 +24,8 @@ open import Relation.Nullary using (Dec; yes; no; ¬_)
 open import Data.Unit using (⊤; tt)
 open import Data.Nat using (ℕ; _≟_)
 open import Mimir.Text using (Text)
+import Mimir.EvidenceValidity as Evidence
+import Mimir.McpErrors as Errors
 
 -- Assembly fixes World once for the entire dispatcher. An operation over a
 -- smaller world cannot be supplied where this dispatcher expects the larger
@@ -246,10 +248,30 @@ module DeterministicContract {World Input : Set} (operation : Recoverable World 
     ; progress = O.progress
     }
 
+-- Fatal evidence names an actual stored node and the existing validity law it
+-- violates. Error text, provider responses and request faults are not evidence.
+data IntegrityViolation (state : Store.World) : Set where
+  invalidStoredNode : ∀ node → Any (node ≡_) (Store.nodes state) →
+    ¬ Evidence.ValidNode node → IntegrityViolation state
+
+private
+  storedNodeValid : ∀ node nodes → All Evidence.ValidNode nodes →
+    Any (node ≡_) nodes → Evidence.ValidNode node
+  storedNodeValid node (.node ∷ rest) (valid ∷ tail) (here refl) = valid
+  storedNodeValid node (head ∷ rest) (valid ∷ tail) (there present) =
+    storedNodeValid node rest tail present
+
+healthyStoreExcludesFatal : ∀ state → All Evidence.ValidNode (Store.nodes state) →
+  ¬ IntegrityViolation state
+healthyStoreExcludesFatal state valid (invalidStoredNode node present broken) =
+  broken (storedNodeValid node (Store.nodes state) valid present)
+
 -- A dispatcher continuation must retain both its control prefix and the
 -- physical meaning of every observed effect. No raw Script is a RunState.
-module CheckedFor {World Input Result : Set} {Goal : Input → World → World → Result → Set}
-  (operation : RecoverableFor World Input Result Goal) where
+module CheckedFor {Input Result : Set} {Goal : Input → Store.World → Store.World → Result → Set}
+  (operation : RecoverableFor Store.World Input Result Goal)
+  (Success : Result → Set) where
+  private World = Store.World
   module O = RecoverableFor operation
   module E = O.E
   module X = O.X
@@ -263,14 +285,14 @@ module CheckedFor {World Input Result : Set} {Goal : Input → World → World �
       reached : E.Prefix (O.script input) events remaining
       physical : X.Changes initial events current
 
-  record RunState (input : Input) (initial : World) : Set where
-    constructor runState
+  record Active (input : Input) (initial : World) : Set where
+    constructor activeState
     field
       remaining : E.Script Result
       evidence : History input initial remaining
 
-  begin : ∀ input initial → RunState input initial
-  begin input initial = runState (O.script input)
+  begin : ∀ input initial → Active input initial
+  begin input initial = activeState (O.script input)
     (history initial [] (E.stopped _) (X.unchanged initial))
 
   advanceHistory : ∀ {input initial} effect continuation →
@@ -286,13 +308,13 @@ module CheckedFor {World Input Result : Set} {Goal : Input → World → World �
 
   -- The equality selects the request actually exposed by this continuation;
   -- the physical witness selects the world actually reached by its reply.
-  advance : ∀ {input initial} (running : RunState input initial) effect continuation →
-    RunState.remaining running ≡ E.ask effect continuation →
+  advance : ∀ {input initial} (running : Active input initial) effect continuation →
+    Active.remaining running ≡ E.ask effect continuation →
     (reply : O.Reply effect) → (after : World) →
-    O.Atomic (History.current (RunState.evidence running)) effect reply after →
-    RunState input initial
-  advance (runState .(E.ask effect continuation) past) effect continuation refl reply after meaning =
-    runState (continuation reply) (advanceHistory effect continuation past reply after meaning)
+    O.Atomic (History.current (Active.evidence running)) effect reply after →
+    Active input initial
+  advance (activeState .(E.ask effect continuation) past) effect continuation refl reply after meaning =
+    activeState (continuation reply) (advanceHistory effect continuation past reply after meaning)
 
   prefixReturned : ∀ {script : E.Script Result} {events} {reply : Result} → E.Prefix script events (E.done reply) →
     E.Runs script events reply
@@ -337,8 +359,71 @@ module CheckedFor {World Input Result : Set} {Goal : Input → World → World �
     O.converges input initial after final reply
       (loseReply effect continuation past unobserved after meaning) retry
 
-module CheckedRun {World Input : Set} (operation : Recoverable World Input) =
-  CheckedFor (DeterministicContract.operationFor operation)
+  -- A lawful needsInput, pending or cancelled reply may satisfy Goal. Assembly
+  -- must separately classify success for the actual request. The terminal API
+  -- has no constructor accepting a raw Result or an error string.
+  data Disposition {input initial} (active : Active input initial) : Set where
+    done : ∀ reply → Active.remaining active ≡ E.done reply → Success reply →
+      Disposition active
+    correction : Errors.AgentCorrection.Certified Store.BusinessSnapshot
+      (Store.businessSnapshot initial)
+      (Store.businessSnapshot (History.current (Active.evidence active))) → Disposition active
+    retry : Disposition active
+    fatal : IntegrityViolation (History.current (Active.evidence active)) → Disposition active
+
+  record Terminal (input : Input) (initial : World) : Set where
+    constructor terminal
+    field
+      active : Active input initial
+      disposition : Disposition active
+
+  data RunState (input : Input) (initial : World) : Set where
+    running : Active input initial → RunState input initial
+    stopped : Terminal input initial → RunState input initial
+
+  start : ∀ input initial → RunState input initial
+  start input initial = running (begin input initial)
+
+  continue : ∀ {input initial} (active : Active input initial) effect continuation →
+    Active.remaining active ≡ E.ask effect continuation →
+    (reply : O.Reply effect) → (after : World) →
+    O.Atomic (History.current (Active.evidence active)) effect reply after →
+    RunState input initial
+  continue active effect continuation exposed reply after meaning =
+    running (advance active effect continuation exposed reply after meaning)
+
+  finish : ∀ {input initial} (active : Active input initial) →
+    Disposition active → RunState input initial
+  finish active disposition = stopped (terminal active disposition)
+
+  doneMeetsGoal : ∀ {input initial} (active : Active input initial) reply →
+    Active.remaining active ≡ E.done reply → Success reply →
+    Goal input initial (History.current (Active.evidence active)) reply
+  doneMeetsGoal (activeState .(E.done reply) past) reply refl success =
+    finishedMeetsOriginalIntent past
+
+  correctionPreservesBusiness : ∀ {input initial} (active : Active input initial) →
+    Errors.AgentCorrection.Certified Store.BusinessSnapshot
+      (Store.businessSnapshot initial)
+      (Store.businessSnapshot (History.current (Active.evidence active))) →
+    Store.businessSnapshot (History.current (Active.evidence active)) ≡ Store.businessSnapshot initial
+  correctionPreservesBusiness active refusal = Errors.AgentCorrection.Certified.unchanged refusal
+
+  retryMeetsOriginalGoal : ∀ {input initial} (active : Active input initial) final reply →
+    X.Completed (O.script input) (History.current (Active.evidence active)) final reply →
+    Goal input initial final reply
+  retryMeetsOriginalGoal {input} {initial} active final reply completedRetry =
+    O.converges input initial (History.current (Active.evidence active)) final reply
+      (interrupt (Active.evidence active)) completedRetry
+
+  healthyReachedStateExcludesFatal : ∀ {input initial} (active : Active input initial) →
+    All Evidence.ValidNode (Store.nodes (History.current (Active.evidence active))) →
+    ¬ IntegrityViolation (History.current (Active.evidence active))
+  healthyReachedStateExcludesFatal active = healthyStoreExcludesFatal _
+
+module CheckedRun {Input : Set} (operation : Recoverable Store.World Input)
+  (Success : Recoverable.Result operation → Set) =
+  CheckedFor (DeterministicContract.operationFor operation) Success
 
 -- One committed statement is not automatically repeatable. Its physical
 -- meaning and independently reviewed intent are separate, and the complete
@@ -954,7 +1039,14 @@ module Cancellation where
     { Effect = Checked.Effect; Reply = Checked.Reply; script = Checked.script
     ; Atomic = Checked.Atomic; converges = Checked.converges; progress = Checked.progress }
 
-  module Run = CheckedFor certified
+  -- This is the cancellation request's success, not evidence its target ran.
+  -- Its semantic reply retains cancelled versus target-already-completed.
+  Success : Result → Set
+  Success unknownToken = ⊥
+  Success (savedResult _) = ⊤
+  Success (cancelled _) = ⊤
+
+  module Run = CheckedFor certified Success
 
   completedResultUnchanged : ∀ request before saved →
     reserved (Input.token request) (Store.OperationTables.reservations (Store.World.operations before)) ≡ true →
