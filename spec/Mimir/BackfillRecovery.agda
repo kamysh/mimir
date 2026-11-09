@@ -490,20 +490,42 @@ module Admission (library : Library.Contract) where
     caseEmbedding (just raw) = identity raw
     caseEmbedding nothing = false
 
+  -- Keep observations explicit so assembly can transport successful actual
+  -- decoder receipts without assuming equality between arbitrary proof fields.
+  afterSources : ∀ token binding raw plan capture →
+    Plan.decode raw ≡ inj₂ plan → Plan.valid library plan ≡ true →
+    Plan.Saved.capture plan ≡ just capture →
+    (observed : Validation.Fault ⊎ List Plan.CapturedSource) →
+    Plan.readCapture library capture ≡ observed → Validation.Fault ⊎ Context
+  afterSources token binding raw plan capture decoded valid captured (inj₁ fault) observed = inj₁ fault
+  afterSources token binding raw plan capture decoded valid captured (inj₂ rows) observed =
+    inj₂ (context token binding raw plan capture rows decoded valid captured observed)
+
+  afterCapture : ∀ token binding raw plan →
+    Plan.decode raw ≡ inj₂ plan → Plan.valid library plan ≡ true →
+    (observed : Maybe Wire.Value) → Plan.Saved.capture plan ≡ observed → Validation.Fault ⊎ Context
+  afterCapture token binding raw plan decoded valid nothing captured = inj₁ mismatch
+  afterCapture token binding raw plan decoded valid (just capture) captured =
+    afterSources token binding raw plan capture decoded valid captured (Plan.readCapture library capture) refl
+
+  afterValid : ∀ token binding raw plan → Plan.decode raw ≡ inj₂ plan →
+    (observed : Bool) → Plan.valid library plan ≡ observed → Validation.Fault ⊎ Context
+  afterValid token binding raw plan decoded false valid = inj₁ mismatch
+  afterValid token binding raw plan decoded true valid =
+    afterCapture token binding raw plan decoded valid (Plan.Saved.capture plan) refl
+
+  afterDecode : ∀ token binding raw → (observed : Validation.Fault ⊎ Plan.Saved) →
+    Plan.decode raw ≡ observed → Validation.Fault ⊎ Context
+  afterDecode token binding raw (inj₁ fault) decoded = inj₁ fault
+  afterDecode token binding raw (inj₂ plan) decoded =
+    afterValid token binding raw plan decoded (Plan.valid library plan) refl
+
   original : ℕ → StoreStep.Registration → Validation.Fault ⊎ Context
   original token registration with Registered.originalPlan (toList "reembed") token registration
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ (reserved , binding , raw) with Store.BindingRow.arguments binding | provider (Store.BindingRow.settings binding)
-  ... | Wire.object [] | true with Plan.decode raw in decoded
-  ... | inj₁ fault = inj₁ fault
-  ... | inj₂ plan with Plan.valid library plan in valid
-  ... | false = inj₁ mismatch
-  ... | true with Plan.Saved.capture plan in captured
-  ... | nothing = inj₁ mismatch
-  ... | just capture with Plan.readCapture library capture in sourceRows
-  ... | inj₁ fault = inj₁ fault
-  ... | inj₂ rows = inj₂ (context token binding raw plan capture rows decoded valid captured sourceRows)
-  original token registration | inj₂ (reserved , binding , raw) | _ | _ = inj₁ mismatch
+  ... | Wire.object [] | true = afterDecode token binding raw (Plan.decode raw) refl
+  ... | _ | _ = inj₁ mismatch
 
   semanticSource : Plan.CapturedSource → Source
   semanticSource row = source (Plan.CapturedSource.identity row) (Plan.CapturedSource.content row)
