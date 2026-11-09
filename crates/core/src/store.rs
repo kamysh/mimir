@@ -9,7 +9,7 @@ mod reservations;
 #[allow(dead_code)]
 #[path = "../../../tests/support/isolation.rs"]
 mod snapshot_test_isolation;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::DateTime;
 pub use operation_plans::{
     CompletedOperation, CompletionDecision, OperationOutcome, OperationPlan, PlanDecision,
@@ -23,7 +23,7 @@ pub use reservations::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio_postgres::{Client, Row};
+use tokio_postgres::{Client, Row, Transaction};
 use uuid::Uuid;
 
 use crate::documents::DocumentChunk;
@@ -1050,10 +1050,16 @@ $$) {PATTERN_RETURN_COLUMNS}"#
 
     /// Delete a pattern and all its edges by ID. Returns true if found and deleted.
     pub async fn delete_pattern(&self, id: Uuid) -> Result<bool> {
-        let g = &self.graph_name;
-        let id_str = id.to_string();
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
+        let deleted = self.delete_pattern_in(&tx, id).await?;
+        tx.commit().await?;
+        Ok(deleted)
+    }
+
+    async fn delete_pattern_in(&self, tx: &Transaction<'_>, id: Uuid) -> Result<bool> {
+        let g = &self.graph_name;
+        let id_str = id.to_string();
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
         let exists = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (p:Pattern {{id:'{id_str}'}}) RETURN p.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
@@ -1073,8 +1079,28 @@ $$) {PATTERN_RETURN_COLUMNS}"#
 $$) AS (ok ag_catalog.agtype)"#
         );
         tx.query(&sql, &[]).await?;
-        tx.commit().await?;
         Ok(true)
+    }
+
+    /// The original bound identity, deletion and both answers share one commit.
+    pub async fn delete_pattern_operation(&self, step: &RegisteredStep) -> Result<StepDecision> {
+        anyhow::ensure!(
+            step.description().site
+                == crate::operation_catalogue::CommitSite::PatternDeletion.name(),
+            "Use the registered delete_pattern step; no pattern was changed"
+        );
+        let owner = AgeStore {
+            client: self.client.clone(),
+            graph_name: self.graph_name.clone(),
+        };
+        self.commit_final_operation_step(step, move |tx, request| Box::pin(async move {
+            let id = request.arguments().get("id").and_then(serde_json::Value::as_str)
+                .context("delete_pattern requires the admitted id string; correct the request before writing")?;
+            let id = Uuid::parse_str(id).context("delete_pattern id must be a UUID; correct it before writing")?;
+            let deleted = owner.delete_pattern_in(tx, id).await?;
+            let reply = serde_json::json!({"deleted":deleted});
+            Ok((reply.clone(), reply))
+        })).await
     }
 
     pub async fn list_patterns(&self) -> Result<Vec<Pattern>> {

@@ -462,6 +462,13 @@ impl MimirService {
         self.store.delete_pattern(id).await
     }
 
+    pub async fn delete_pattern_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.delete_pattern_operation(step).await
+    }
+
     /// Add a new pattern.
     pub async fn add_pattern(
         &self,
