@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import sys
 import socket
+import subprocess
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -478,7 +479,9 @@ class IsolationTests(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout="127.0.0.1:43217\n")
 
         context = {"APP": "mimir", "ROOT": child, "IMAGE": "fixture-image", "CONTAINERS": [],
-                   "secrets": runner.secrets, "time": runner.time, "run": command, "sql": lambda *args: None}
+                   "secrets": runner.secrets, "runner": runner,
+                   "FINAL_POSTGRES_START": "MIMIR_CONNECTION_POSTGRES_FINAL_START",
+                   "run": command, "sql": lambda *args: None}
         exec(compile(ast.Module(body=[definition], type_ignores=[]), str(path), "exec"), context)
         for tls in (False, True):
             context["start"](tls)
@@ -488,6 +491,50 @@ class IsolationTests(unittest.TestCase):
             self.assert_unrestricted_private_container(arguments)
             self.assertIn("connection-test=" + str(child), arguments)
             self.assertIn(f"type=bind,src={child},dst=/fixture,readonly", arguments)
+            self.assertIn("-c lc_messages=C", arguments[-1])
+            self.assertLess(arguments[-1].index(context["FINAL_POSTGRES_START"]), arguments[-1].index("exec postgres"))
+        probes = [args for args in calls if "pg_isready" in args]
+        self.assertEqual(len(probes), 2)
+        self.assertTrue(all("--timeout=0" in args for args in probes))
+        self.assertEqual(len([args for args in calls if args[:3] == ["docker", "logs", "--follow"]]), 2)
+
+    def connection_command(self, name):
+        path = REPO / "tests/database-connections.py"
+        definition = next(node for node in ast.parse(path.read_text()).body
+                          if isinstance(node, ast.FunctionDef) and node.name == "run")
+        owner = self.owned_run(name)
+        context = {"COMMANDS": owner, "ROOT": owner.root, "ENV": dict(os.environ),
+                   "COUNT": 0, "subprocess": subprocess}
+        exec(compile(ast.Module(body=[definition], type_ignores=[]), str(path), "exec"), context)
+        return owner, context["run"]
+
+    def test_connection_command_keeps_complete_output_and_failure_status(self):
+        owner, command = self.connection_command("connection-capture")
+        args = [sys.executable, "-c", 'import sys; print("o"*70000); print("e"*70000,file=sys.stderr); sys.exit(7)']
+        result = command(args, check=False)
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(result.stdout, "o"*70000+"\n")
+        self.assertEqual(result.stderr, "e"*70000+"\n")
+        self.assertEqual((owner.root/"001-connection.stdout").read_text(), result.stdout)
+        self.assertEqual((owner.root/"001-connection.stderr").read_text(), result.stderr)
+        self.assertEqual((owner.root/"001-connection.exit").read_text(), "7\n")
+        with self.assertRaisesRegex(AssertionError, "command 2 failed"):
+            command(args)
+        self.assertEqual((owner.root/"002-connection.exit").read_text(), "7\n")
+
+    def test_connection_readiness_joins_its_log_reader(self):
+        owner, command = self.connection_command("connection-readiness")
+        marker = "MIMIR_CONNECTION_POSTGRES_FINAL_START"
+        source = ('import signal,sys\n'
+                  f'print({marker!r},flush=True)\n'
+                  f'print({runner.POSTGRES_READY!r},file=sys.stderr,flush=True)\n'
+                  'signal.pause()\n')
+        result = command([sys.executable, "-c", source], until=(marker, runner.POSTGRES_READY))
+        self.assertEqual(result.returncode, -runner.signal.SIGKILL)
+        events = json.loads((owner.root/"001-connection.events.json").read_text())
+        self.assertTrue(events["completed"])
+        self.assertEqual(events["observed"], [marker, runner.POSTGRES_READY])
+        self.assertIn(runner.POSTGRES_READY, result.stdout)
 
 
 if __name__ == "__main__":

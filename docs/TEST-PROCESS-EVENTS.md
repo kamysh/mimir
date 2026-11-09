@@ -100,3 +100,12 @@ The later-propagation-error fixture keeps edge endpoints valid and corrupts
 a downstream belief instead. Corrupting an endpoint is rejected before an edge
 can be committed and does not exercise this case. The check requires the exact
 committed edge to survive and the target belief to remain unchanged.
+
+The authentication and TLS fixture uses the same maintained command owner.
+Commands have no sixty-second deadline, and complete output is written while
+they run. Interruption requests normal shutdown and waits for the owned process
+to finish. Each disposable database announces its final server start, uses the
+C message locale, and must report readiness before a successful probe with the
+external tool's deadline disabled. There is no repeated startup probe or
+half-second sleep. Generated test configuration includes the current version
+field and a logging directory inside its private artifact root under `/tmp`.
