@@ -27,3 +27,23 @@ five-second deadline.
 These checks introduce no test watchdog. A stuck operation remains visible as
 a running check until it is explicitly stopped. This is a test-fixture change,
 not a production waiting policy. Other fixture waits remain tracked by #116.
+
+The release runner also observes its disposable database's startup events.
+Its owned entrypoint announces the final server start; bootstrap readiness
+messages before that announcement do not count. The final server uses the C
+message locale only inside this fixture, so its readiness event is stable.
+The runner then requires a successful `pg_isready --timeout=0` probe. PostgreSQL
+documents this flag as disabling the tool's default connection deadline; this
+is an external command option, not a Mimir request convention. See the
+[PostgreSQL command reference](https://www.postgresql.org/docs/current/app-pg-isready.html).
+
+The runner stops and reaps only its log-reading process after readiness. Its
+actual exit status and observed events are recorded separately, and output
+from both streams is retained together. An intentionally stopped log reader
+is therefore distinguishable from missing readiness or a failed final server.
+Container cleanup still requires the original ownership label and identity.
+
+The connection-guard listener waits for socket events. Its owner sends an
+explicit stop event, the listener records any queued connection attempts, and
+the owner joins the completed thread. No accept timeout or join allowance
+decides whether the isolation check passed.

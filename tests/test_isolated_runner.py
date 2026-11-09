@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import sys
+import socket
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -161,6 +162,88 @@ class IsolationTests(unittest.TestCase):
                 run.cleanup()
         self.assertFalse(any("rm" in call.args[1] for call in command.call_args_list))
 
+    def owned_run(self, name):
+        child = self.root / name
+        child.mkdir(mode=0o700)
+        return runner.Run(child)
+
+    def test_readiness_ignores_bootstrap_and_preserves_both_output_streams(self):
+        run = self.owned_run("readiness")
+        script = (
+            'import signal,sys\n'
+            'print("bootstrap: database system is ready to accept connections", flush=True)\n'
+            'print("bootstrap stopped", file=sys.stderr, flush=True)\n'
+            'print("MIMIR_ISOLATED_POSTGRES_FINAL_START", flush=True)\n'
+            'print("final: database system is ready to accept connections", file=sys.stderr, flush=True)\n'
+            'signal.pause()\n'
+        )
+        code, output = run.command("ready", [sys.executable, "-c", script],
+                                   until=(runner.FINAL_POSTGRES_START, runner.POSTGRES_READY))
+        self.assertEqual(code, -runner.signal.SIGKILL)
+        self.assertIn("bootstrap stopped", output)
+        self.assertIn("final: database system is ready", output)
+        events = json.loads((run.root / "001-ready.events.json").read_text())
+        self.assertEqual(events["observed"], [runner.FINAL_POSTGRES_START, runner.POSTGRES_READY])
+        self.assertTrue(events["completed"])
+        self.assertIn(output, (run.root / "001-ready.log").read_text())
+
+    def test_bootstrap_readiness_without_final_server_is_not_success(self):
+        run = self.owned_run("bootstrap-only")
+        script = 'import sys; print("database system is ready to accept connections"); sys.exit(7)'
+        with self.assertRaisesRegex(RuntimeError, "expected readiness event"):
+            run.command("ready", [sys.executable, "-c", script],
+                        until=(runner.FINAL_POSTGRES_START, runner.POSTGRES_READY))
+        self.assertEqual((run.root / "001-ready.exit").read_text(), "7\n")
+        events = json.loads((run.root / "001-ready.events.json").read_text())
+        self.assertFalse(events["completed"])
+        self.assertEqual(events["observed"], [])
+        self.assertIn("database system is ready", (run.root / "001-ready.log").read_text())
+
+    def test_final_server_failure_retains_diagnostic_and_actual_exit(self):
+        run = self.owned_run("final-failure")
+        script = ('import sys\nprint("MIMIR_ISOLATED_POSTGRES_FINAL_START", flush=True)\n'
+                  'print("final server refused its owned data directory", file=sys.stderr, flush=True)\n'
+                  'sys.exit(9)\n')
+        with self.assertRaisesRegex(RuntimeError, "expected readiness event"):
+            run.command("ready", [sys.executable, "-c", script],
+                        until=(runner.FINAL_POSTGRES_START, runner.POSTGRES_READY))
+        self.assertEqual((run.root / "001-ready.exit").read_text(), "9\n")
+        events = json.loads((run.root / "001-ready.events.json").read_text())
+        self.assertEqual(events["observed"], [runner.FINAL_POSTGRES_START])
+        self.assertIn("refused its owned data directory", (run.root / "001-ready.log").read_text())
+
+    def test_listener_records_queued_connections_before_stop(self):
+        attempts = []
+        stop_reader, stop_writer = socket.socketpair()
+        with socket.socket() as listener, stop_reader, stop_writer:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            with socket.create_connection(listener.getsockname()), socket.create_connection(listener.getsockname()):
+                stop_writer.sendall(b"stop")
+                runner.observe_connections(listener, stop_reader, attempts)
+        self.assertEqual(attempts, [True, True])
+
+    def test_guard_listener_stops_on_event_and_refuses_any_connection(self):
+        for connects in (False, True):
+            with self.subTest(connects=connects):
+                run = self.owned_run("guard-" + str(connects))
+                binary = run.root / "target/debug/deps/store_integration-controlled"
+                binary.parent.mkdir(parents=True)
+                binary.write_text('#!' + sys.executable + '\n'
+                    'import os,socket,sys\n' +
+                    ('with socket.create_connection(("127.0.0.1", int(os.environ["MIMIR_PORT"]))) as client: client.recv(1)\n' if connects else '') +
+                    'print("MIMIR_PORT does not match this test fixture")\nsys.exit(101)\n')
+                binary.chmod(0o700)
+                if connects:
+                    with self.assertRaisesRegex(RuntimeError, "before networking"):
+                        run.guard_regression()
+                else:
+                    run.guard_regression()
+                receipt = json.loads((run.root / "connection-guard.json").read_text())
+                self.assertEqual(receipt["rejected_before_connect"], not connects)
+                self.assertEqual(receipt["connection_attempts"], int(connects))
+                self.assertEqual(receipt["listener_errors"], [])
+
     def assert_unrestricted_private_container(self, arguments):
         for option in ("--memory", "--memory-swap", "--cpus", "--cpu-quota", "--tmpfs", "--storage-opt"):
             self.assertNotIn(option, arguments)
@@ -174,9 +257,12 @@ class IsolationTests(unittest.TestCase):
         child.mkdir(mode=0o700)
         run = runner.Run(child)
         calls = []
+        events = []
 
         def command(name, arguments, **kwargs):
             calls.append(arguments)
+            if name == "database-start-events":
+                events.append(kwargs["until"])
             if name == "create-database-container":
                 return 0, "a" * 64
             if name == "database-port":
@@ -201,6 +287,12 @@ class IsolationTests(unittest.TestCase):
         self.assertIn("--volumes", removed)
         self.assertEqual(removed[-1], container)
         self.assertNotIn("CARGO_BUILD_JOBS", run.env)
+        self.assertEqual(events, [(runner.FINAL_POSTGRES_START, runner.POSTGRES_READY)])
+        ready = next(args for args in calls if "pg_isready" in args)
+        self.assertIn("--timeout=0", ready)
+        entrypoint = create[-1]
+        self.assertLess(entrypoint.index(runner.FINAL_POSTGRES_START), entrypoint.index("exec postgres"))
+        self.assertIn("-c lc_messages=C", entrypoint)
 
     def test_connection_fixture_has_no_resource_quota(self):
         # Load the actual argument-generating function without executing the
