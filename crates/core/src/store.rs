@@ -304,29 +304,24 @@ fn belief_from_text_row<R: TextRow>(row: &R) -> Result<Belief> {
     let project: Option<&str> = row.text("project");
 
     let id = Uuid::parse_str(id_str)?;
-    let probability: f64 = probability_str.parse()?;
-    let confidence: f64 = confidence_str.parse()?;
+    let probability = crate::graph::stored_probability(id, "probability", probability_str)?;
+    let confidence = crate::graph::stored_probability(id, "confidence", confidence_str)?;
     let created_at = DateTime::parse_from_rfc3339(created_at_str)?.with_timezone(&chrono::Utc);
     let last_activated_at =
         DateTime::parse_from_rfc3339(last_activated_str)?.with_timezone(&chrono::Utc);
 
-    // Beta state: read α/β/α₀/β₀ if present (post-migration 005), else derive
-    // them from the stored (probability, confidence) via the prior mapping.
+    // Only absent legacy counts use a fallback. A present malformed,
+    // negative or nonfinite value must not be hidden by cached probabilities.
     let alpha_str: Option<&str> = row.text("alpha");
     let beta_str: Option<&str> = row.text("beta");
     let alpha0_str: Option<&str> = row.text("alpha0");
     let beta0_str: Option<&str> = row.text("beta0");
 
-    let alpha: Option<f64> = alpha_str.and_then(|s| s.parse().ok());
-    let beta: Option<f64> = beta_str.and_then(|s| s.parse().ok());
-    let alpha0: Option<f64> = alpha0_str.and_then(|s| s.parse().ok());
-    let beta0: Option<f64> = beta0_str.and_then(|s| s.parse().ok());
-
     let (derived_a0, derived_b0) = crate::graph::prior_from(probability, confidence);
-    let alpha0 = alpha0.unwrap_or(derived_a0);
-    let beta0 = beta0.unwrap_or(derived_b0);
-    let alpha = alpha.unwrap_or(alpha0);
-    let beta = beta.unwrap_or(beta0);
+    let alpha0 = crate::graph::stored_counter(id, "alpha0", alpha0_str, derived_a0)?;
+    let beta0 = crate::graph::stored_counter(id, "beta0", beta0_str, derived_b0)?;
+    let alpha = crate::graph::stored_counter(id, "alpha", alpha_str, alpha0)?;
+    let beta = crate::graph::stored_counter(id, "beta", beta_str, beta0)?;
 
     // Absent or unparseable memory_type (pre-migration rows) decodes as Fact,
     // preserving today's decay behavior for every belief written before this
@@ -579,6 +574,10 @@ impl AgeStore {
         let beta = belief.beta;
         let alpha0 = belief.alpha0;
         let beta0 = belief.beta0;
+        crate::graph::admit_probability_write(belief.id, "probability", probability)?;
+        crate::graph::admit_probability_write(belief.id, "confidence", confidence)?;
+        crate::graph::admit_count_write(belief.id, "alpha", alpha, "beta", beta)?;
+        crate::graph::admit_count_write(belief.id, "alpha0", alpha0, "beta0", beta0)?;
         ensure_finite(
             "insert_belief",
             &[
@@ -784,7 +783,8 @@ $$) {BELIEF_RETURN_COLUMNS}"#
     /// posterior (store-load-round-trip). The pre-Phase-3 scalar setters
     /// `update_belief_probability` / `update_belief_confidence` are RETIRED
     /// (spec Mimir.Graph: "RETIRED SCALAR SETTERS"); this is their replacement.
-    /// Build the SET-Cypher for one Beta write, validating finiteness and
+    /// Build the SET-Cypher for one Beta write, validating finite nonnegative
+    /// counts and a finite total, then
     /// deriving the cached (mean, confidence) from (α, β).
     fn update_belief_beta_sql(
         &self,
@@ -795,7 +795,7 @@ $$) {BELIEF_RETURN_COLUMNS}"#
     ) -> Result<String> {
         let g = &self.graph_name;
         let id_str = id.to_string();
-        ensure_finite("update_belief_beta", &[("alpha", alpha), ("beta", beta)])?;
+        crate::graph::admit_count_write(id, "alpha", alpha, "beta", beta)?;
         // Derive the cached (mean, confidence) from (α, β) via the canonical
         // mapping (spec Mimir.Beta).
         let (mean, conf) = crate::graph::beta_to_pc(alpha, beta);
@@ -894,8 +894,8 @@ $$) AS (id ag_catalog.agtype)"#
         updates: &[(Uuid, f64, f64)],
         publication_time: chrono::DateTime<chrono::Utc>,
     ) -> Result<()> {
-        for &(_, alpha, beta) in updates {
-            ensure_finite("update_belief_beta", &[("alpha", alpha), ("beta", beta)])?;
+        for &(id, alpha, beta) in updates {
+            crate::graph::admit_count_write(id, "alpha", alpha, "beta", beta)?;
         }
         for &(id, alpha, beta) in updates {
             self.write_belief_beta_at_on(client, id, alpha, beta, publication_time)

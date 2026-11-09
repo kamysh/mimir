@@ -1949,8 +1949,11 @@
       "name": "legacy AGE row decoding and prepared-query lifecycle",
       "modules": [
         "spec/Mimir/StoreRows.agda",
-        "spec/Mimir/AgeQueryProtocol.agda"
-      ]
+        "spec/Mimir/AgeQueryProtocol.agda",
+        "spec/Mimir/EvidenceValidity.agda",
+        "spec/Mimir/PosteriorComputation.agda"
+      ],
+      "note": "Native reconstruction now rejects present malformed, negative, nonfinite and overflowing current/original evidence before cached display conversion; only absent legacy fields use fallback. Zero evidence remains valid. Read-only and confirmed atomic-sweep diagnostics identify the stored belief/field and request user repair without claiming unknown earlier commits were undone."
     },
     {
       "name": "physical vector writes, source references and reembedding",

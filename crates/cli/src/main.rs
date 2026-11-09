@@ -538,7 +538,11 @@ async fn cmd_stats() -> Result<()> {
 
 async fn cmd_list(project: Option<String>, limit: mimir_core::Selection) -> Result<()> {
     let svc = connect().await?;
-    let mut beliefs = svc.list_beliefs(project.as_deref()).await?;
+    let Some(mut beliefs) =
+        corrections::stored_evidence(svc.list_beliefs(project.as_deref()).await)?
+    else {
+        return Ok(());
+    };
 
     // Sort by probability descending (consistent with query_relevant).
     beliefs.sort_by(|a, b| {
@@ -865,7 +869,11 @@ async fn cmd_sweep_defeated(threshold: f64, project: Option<&str>) -> Result<()>
             return Ok(());
         }
     };
-    let count = svc.sweep_expired_defeated(threshold, project).await?;
+    let Some(count) =
+        corrections::stored_evidence(svc.sweep_expired_defeated(threshold, project).await)?
+    else {
+        return Ok(());
+    };
     println!(
         "deleted {}  [threshold: {:.2}, configured grace: {}h]",
         count,

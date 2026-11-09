@@ -7187,6 +7187,72 @@
           "line": 641,
           "specification": [],
           "status": "test-definition-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "admit_count_write",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/StoreRows.agda",
+            "spec/Mimir/EvidenceValidity.agda",
+            "spec/Mimir/PosteriorComputation.agda"
+          ],
+          "mapping_boundary": "Native stored/proposed count admission against the existing formal validity rules; focused database and real MCP/CLI tests, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "admit_probability_write",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/StoreRows.agda",
+            "spec/Mimir/EvidenceValidity.agda",
+            "spec/Mimir/PosteriorComputation.agda"
+          ],
+          "mapping_boundary": "Native stored/proposed count admission against the existing formal validity rules; focused database and real MCP/CLI tests, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "pair_problem",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/StoreRows.agda",
+            "spec/Mimir/EvidenceValidity.agda",
+            "spec/Mimir/PosteriorComputation.agda"
+          ],
+          "mapping_boundary": "Native stored/proposed count admission against the existing formal validity rules; focused database and real MCP/CLI tests, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "stored_counter",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/StoreRows.agda",
+            "spec/Mimir/EvidenceValidity.agda",
+            "spec/Mimir/PosteriorComputation.agda"
+          ],
+          "mapping_boundary": "Native stored/proposed count admission against the existing formal validity rules; focused database and real MCP/CLI tests, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "stored_pair",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/StoreRows.agda",
+            "spec/Mimir/EvidenceValidity.agda",
+            "spec/Mimir/PosteriorComputation.agda"
+          ],
+          "mapping_boundary": "Native stored/proposed count admission against the existing formal validity rules; focused database and real MCP/CLI tests, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "stored_probability",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/StoreRows.agda",
+            "spec/Mimir/EvidenceValidity.agda",
+            "spec/Mimir/PosteriorComputation.agda"
+          ],
+          "mapping_boundary": "Native stored/proposed count admission against the existing formal validity rules; focused database and real MCP/CLI tests, not a compiled Rust refinement theorem."
         }
       ],
       "status": "unmapped",
