@@ -73,7 +73,13 @@ class OperationControlCatalogueTests(unittest.TestCase):
             coverage.formal_control_operations(changed)
 
     def test_repeated_and_single_sites_cannot_be_interchanged(self):
-        changed = self.formal.replace('repeated "store.delete_belief"', 'once "store.delete_belief"')
+        current = self.formal.split('  registered =', 1)[1].split('  lookup :', 1)[0]
+        original = next(line for line in current.splitlines()
+                        if 'entry "sweep_expired_defeated"' in line)
+        replacement = original.replace('once "store.delete_belief"', 'repeated "store.delete_belief"')
+        if replacement == original:
+            replacement = original.replace('repeated "store.delete_belief"', 'once "store.delete_belief"')
+        changed = self.formal.replace(original, replacement, 1)
         self.assertNotEqual(changed, self.formal)
         self.assertNotEqual(coverage.native_registered_operations(self.native),
                             coverage.formal_control_operations(changed))

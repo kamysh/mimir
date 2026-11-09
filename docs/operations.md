@@ -229,3 +229,15 @@ A new missing or conflicting date is not treated as old data. Mimir requests
 a user decision, identifies the stored metadata and migration receipt to
 inspect, and leaves the beliefs unchanged. Do not invent a historical date,
 restart the clock or delete a belief to bypass that request.
+
+A sweep deletes its entire eligible set, cleans up its vectors and recomputes
+affected survivors in one transaction. A numerical refusal leaves the complete
+set unchanged. The registered token path saves its exact original selected IDs
+and count with that publication. A completed retry reads that answer before
+checking current retention settings and never selects later work.
+
+An unfinished registered sweep pauses if the user changes or removes its
+original retention policy. Open a dialog to restore that policy or explicitly
+cancel unfinished work before starting a different operation. Old completed
+per-belief results remain readable; unfinished old plans require a decision
+and cannot execute under the new layout. See [belief retention](BELIEF-RETENTION.md).

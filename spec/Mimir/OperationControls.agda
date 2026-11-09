@@ -387,7 +387,7 @@ module Plan where
     entry "list_patterns" [] ∷
     entry "get_contradictions" [] ∷
     entry "decay_all" (once "store.decay_locked" ∷ []) ∷
-    entry "sweep_expired_defeated" (repeated "store.delete_belief" ∷ []) ∷
+    entry "sweep_expired_defeated" (once "store.delete_belief" ∷ []) ∷
     entry "query_relevant" [] ∷
     entry "add_evidence" (once "store.insert_evidence" ∷ []) ∷
     entry "get_evidence" [] ∷
@@ -416,6 +416,13 @@ module Plan where
   lookup operation ((name , boundaries) ∷ rest) with operation ≟Text name
   ... | yes _ = just boundaries
   ... | no _ = lookup operation rest
+
+  -- Readback retains precisely these earlier committed-boundary layouts.
+  -- They do not enter the current operation catalogue or authorize a new run.
+  legacyRegistered : List (Text × List Boundary)
+  legacyRegistered =
+    entry "sweep_expired_defeated" (repeated "store.delete_belief" ∷ []) ∷
+    entry "load_document" (once "store.replace_document" ∷ repeated "store.insert_evidence" ∷ []) ∷ []
 
   boolEqual : Bool → Bool → Bool
   boolEqual true true = true
@@ -570,17 +577,44 @@ module Plan where
   ... | inj₁ _ = false
   ... | inj₂ rows = captureOrdered rows ∧ stepsEqual (pendingSteps library rows) (Saved.steps plan)
 
-  structurallyValid : Library.Contract → Saved → Bool
-  structurallyValid library plan with lookup (Saved.operation plan) registered
-  ... | nothing = false
-  ... | just boundaries with shapeEqual boundaries (Saved.shape plan)
+  matchesBoundaries : Library.Contract → Saved → List Boundary → Bool
+  matchesBoundaries library plan boundaries with shapeEqual boundaries (Saved.shape plan)
   ... | false = false
   ... | true with rebuild library boundaries (Saved.steps plan)
   ... | nothing = false
   ... | just expected = stepsEqual expected (Saved.steps plan)
 
+  currentlyRegistered : Library.Contract → Saved → Bool
+  currentlyRegistered library plan with lookup (Saved.operation plan) registered
+  ... | nothing = false
+  ... | just boundaries = matchesBoundaries library plan boundaries
+
+  historicallyRegistered : Library.Contract → Saved → Bool
+  historicallyRegistered library plan with lookup (Saved.operation plan) legacyRegistered
+  ... | nothing = false
+  ... | just boundaries = matchesBoundaries library plan boundaries
+
+  structurallyValid : Library.Contract → Saved → Bool
+  structurallyValid library plan = currentlyRegistered library plan ∨ historicallyRegistered library plan
+
+  -- Past journals can be read without reinterpreting their steps as a new
+  -- executable plan. Capture admission remains identical for both paths.
   valid : Library.Contract → Saved → Bool
   valid library plan = structurallyValid library plan ∧ captureMatches library plan
+
+  executable : Library.Contract → Saved → Bool
+  executable library plan = currentlyRegistered library plan ∧ captureMatches library plan
+
+  obsoletePlanCannotResume : ∀ library plan → currentlyRegistered library plan ≡ false → executable library plan ≡ false
+  obsoletePlanCannotResume library plan obsolete rewrite obsolete = refl
+
+  currentPlanRemainsReadable : ∀ library plan → executable library plan ≡ true → valid library plan ≡ true
+  currentPlanRemainsReadable library plan executablePlan with currentlyRegistered library plan | captureMatches library plan
+  ... | false | _ with executablePlan
+  ... | ()
+  currentPlanRemainsReadable library plan executablePlan | true | false with executablePlan
+  ... | ()
+  currentPlanRemainsReadable library plan executablePlan | true | true = refl
 
   legacyPlanCompatibility : ∀ library plan →
     textEqual (Saved.operation plan) (toList "reembed") ≡ false → Saved.capture plan ≡ nothing →

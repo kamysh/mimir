@@ -95,16 +95,24 @@ impl AgeStore {
         &self,
         project: Option<&str>,
     ) -> Result<Vec<(Uuid, Uuid, DefeatClock)>> {
+        let client = self.client.lock().await;
+        self.defeat_clocks_on(&client, project).await
+    }
+
+    pub(super) async fn defeat_clocks_on(
+        &self,
+        client: &Client,
+        project: Option<&str>,
+    ) -> Result<Vec<(Uuid, Uuid, DefeatClock)>> {
         let graph = &self.graph_name;
         let filter = if project.is_some() {
             " WHERE (a.project = $project OR a.project IS NULL) AND (b.project = $project OR b.project IS NULL)"
         } else {
             ""
         };
-        let client = self.client.lock().await;
         let prepare = format!("PREPARE age_retirement_clocks(agtype) AS SELECT source::text,target::text,ag_catalog.agtype_out(first)::text AS first,ag_catalog.agtype_out(legacy)::text AS legacy FROM ag_catalog.cypher('{graph}', $$ MATCH (a:Belief)-[:DEFEATS]->(b:Belief){filter} RETURN a.id,b.id,b.first_defeated_at,b.legacy_defeat_expired $$, $1) AS (source ag_catalog.agtype,target ag_catalog.agtype,first ag_catalog.agtype,legacy ag_catalog.agtype)");
         let parameters = serde_json::json!({"project": project}).to_string();
-        let rows = age_query_rows(&client, "age_retirement_clocks", &prepare, &parameters).await?;
+        let rows = age_query_rows(client, "age_retirement_clocks", &prepare, &parameters).await?;
         rows.iter().map(|row| {
             let source = row.get("source").context("missing defeat source")?;
             let target = row.get("target").context("missing defeat target")?;
