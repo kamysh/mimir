@@ -33,6 +33,7 @@ pub enum StepDecision {
         requires_final_result: bool,
     },
     NeedsRecovery(String),
+    Cancelled(super::CancellationReceipt),
 }
 
 fn step_name(name: &str) -> Result<()> {
@@ -43,7 +44,7 @@ fn step_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn receipt(row: &Row) -> Result<StepReceipt> {
+pub(super) fn receipt(row: &Row) -> Result<StepReceipt> {
     Ok(StepReceipt {
         operation_token: row.try_get("operation_token")?,
         step: row.try_get("step")?,
@@ -115,6 +116,10 @@ impl AgeStore {
         let settings = serde_json::to_string(expected.settings())?;
         let mut client = self.client.lock().await;
         let tx = super::learning_transaction(&mut client).await?;
+        if !super::cancellations::lock_token(&tx, token).await? {
+            tx.rollback().await?;
+            return Ok(StepDecision::UnknownBinding);
+        }
         // Check the original request BEFORE consulting a saved answer.
         let row = tx.query_opt(
             "SELECT operation_token,bound_at,operation,arguments::text AS arguments,settings::text AS settings,operation=$2 AND arguments=$3::text::jsonb AND settings=$4::text::jsonb AS matches FROM mimir_operation_bindings WHERE operation_token=$1 FOR UPDATE",
@@ -128,6 +133,10 @@ impl AgeStore {
         if !row.try_get::<_, bool>("matches")? {
             tx.rollback().await?;
             return Ok(StepDecision::ChangedRequest(binding));
+        }
+        if let Some(cancelled) = super::cancellations::lookup(&tx, token).await? {
+            tx.rollback().await?;
+            return Ok(StepDecision::Cancelled(cancelled));
         }
         // Inspect this impossible pair before progress() rejects an old
         // completed-but-incomplete journal. It must open recovery, not invoke

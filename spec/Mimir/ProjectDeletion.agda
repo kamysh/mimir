@@ -361,7 +361,9 @@ module Registered where
   ...       | true = nothing
 
   blocked : Input → Store.World → Maybe Text
-  blocked request before = blockedBy request
+  blocked request before with Store.lookupCancellation before (Input.token request)
+  ... | just _ = just (toList "This operation was explicitly cancelled. Read its original saved answers and cancellation record; ask the user before reserving different work. No further project data was changed.")
+  ... | nothing = blockedBy request
     (Store.OperationTables.bindings (Store.World.operations before))
     (Store.OperationTables.plans (Store.World.operations before))
 
@@ -433,7 +435,9 @@ module Registered where
 
   publicationPreservesAdmission : ∀ request before →
     blocked request (finalWorld request before) ≡ blocked request before
-  publicationPreservesAdmission request before = refl
+  publicationPreservesAdmission request before with Store.lookupCancellation before (Input.token request)
+  ... | just _ = refl
+  ... | nothing = refl
 
   publishedResultReadable : ∀ request before →
     Store.lookupSaved (finalWorld request before) (Input.token request) resultKey ≡ just (answer request before)

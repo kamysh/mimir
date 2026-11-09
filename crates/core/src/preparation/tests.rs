@@ -662,6 +662,86 @@ async fn no_publication(service: &MimirService, id: Uuid) -> Result<()> {
     Ok(())
 }
 
+// A private fixture allocation for the token-linked publication path. Public
+// callers cannot construct PreparedBelief or choose its owner identity.
+async fn linked_preparation() -> Result<(MimirService, String, Uuid, PreparedBelief)> {
+    let (service, project) = service(None).await?;
+    let document = passage(&service, Some(&project), 0, "operation cancellation").await?;
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    let request_key: String = client
+        .query_one("SELECT gen_random_uuid()::text", &[])
+        .await?
+        .get(0);
+    let token = service
+        .reserve_operation(&request_key)
+        .await?
+        .operation_token;
+    let owner = client.query_one(
+        "INSERT INTO mimir_embedding_owners(project,operation_token) VALUES($1,$2) RETURNING owner_token,reserved_at",
+        &[&project,&token],
+    ).await?;
+    let mut belief = crate::graph::Belief::new_in_project(
+        "complete token-owned belief".into(),
+        0.7,
+        0.5,
+        project.clone(),
+    )?;
+    belief.id = owner.get(0);
+    belief.created_at = owner.get(1);
+    belief.last_activated_at = belief.created_at;
+    let prepared = PreparedBelief {
+        belief,
+        provenance: Some(IndependentProvenance {
+            basis: IndependentBasis::UserInstruction,
+            reference: "explicit independent fixture instruction".into(),
+        }),
+        vector: vector(0),
+        support: vec![SupportingPassage {
+            chunk: document,
+            weight: crate::graph::Probability::new(1.0)?,
+        }],
+    };
+    Ok((service, project, token, prepared))
+}
+
+#[tokio::test]
+async fn cancelled_operation_cannot_publish_its_prepared_belief() -> Result<()> {
+    let (service, project, token, prepared) = linked_preparation().await?;
+    assert!(matches!(
+        service.record_operation_cancellation(token).await?,
+        crate::store::CancellationDecision::Recorded(_)
+    ));
+    let error = service
+        .publish_prepared_belief(&prepared)
+        .await
+        .unwrap_err();
+    assert!(error.downcast_ref::<PreparationRequired>().is_some());
+    no_publication(&service, prepared.belief.id).await?;
+    service.delete_project(&project).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancellation_preserves_a_previously_committed_prepared_belief() -> Result<()> {
+    let (service, project, token, prepared) = linked_preparation().await?;
+    let published = service.publish_prepared_belief(&prepared).await?;
+    let before = serde_json::to_value(service.get_belief(published.id).await?)?;
+    assert!(matches!(
+        service.record_operation_cancellation(token).await?,
+        crate::store::CancellationDecision::Recorded(_)
+    ));
+    assert_eq!(
+        serde_json::to_value(service.get_belief(published.id).await?)?,
+        before
+    );
+    assert!(!service
+        .evidence_for_belief(published.id, None)
+        .await?
+        .is_empty());
+    service.delete_project(&project).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn missing_backend_and_failed_embedding_publish_nothing() -> Result<()> {
     for response in [

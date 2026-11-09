@@ -4,7 +4,7 @@
 module Mimir.Recovery where
 
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
-open import Data.List using (List; []; _∷_; _++_; map)
+open import Data.List using (List; []; _∷_; _++_; map; filterᵇ)
 open import Data.List.Properties using (++-assoc; ++-identityʳ; map-++)
 open import Data.List.Relation.Unary.Any using (Any)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; sym; trans)
@@ -15,10 +15,14 @@ import Mimir.DatabaseTransaction as Database
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Empty using (⊥-elim)
-open import Data.Bool using (Bool; true; false)
+open import Data.Bool using (Bool; true; false; not)
+open import Data.Integer using (ℤ)
+open import Data.List.Relation.Unary.All using (All; []; _∷_)
+open import Data.List.Relation.Unary.Any using (here; there)
+open import Data.String using (toList)
 open import Relation.Nullary using (Dec; yes; no; ¬_)
 open import Data.Unit using (⊤; tt)
-open import Data.Nat using (ℕ)
+open import Data.Nat using (ℕ; _≟_)
 open import Mimir.Text using (Text)
 
 -- Assembly fixes World once for the entire dispatcher. An operation over a
@@ -657,6 +661,7 @@ module StoreFinalStep (Input : Set)
   data Result : Set where
     done : Wire.Value → Result
     needsRecovery : Result
+    cancelled : Store.CancellationRow → Result
 
   module G = Outcome Store.World Result
   module S = SingleResult Result
@@ -669,8 +674,8 @@ module StoreFinalStep (Input : Set)
   publication input before = Store.saveAnswer (firstPublication input before)
     (token input) resultKey (proj₂ (apply input before))
 
-  execute : Input → Store.World → Store.World × Result
-  execute input before with Store.lookupSaved before (token input) (key input)
+  executeActive : Input → Store.World → Store.World × Result
+  executeActive input before with Store.lookupSaved before (token input) (key input)
     | Store.lookupSaved before (token input) resultKey
   ... | just saved | just _ = before , done saved
   ... | nothing | nothing = publication input before , done (proj₂ (apply input before))
@@ -680,19 +685,19 @@ module StoreFinalStep (Input : Set)
   replay : ∀ input before saved result →
     Store.lookupSaved before (token input) (key input) ≡ just saved →
     Store.lookupSaved before (token input) resultKey ≡ just result →
-    execute input before ≡ (before , done saved)
+    executeActive input before ≡ (before , done saved)
   replay input before saved result observed completed rewrite observed | completed = refl
 
   missingResultPreservesWorld : ∀ input before saved →
     Store.lookupSaved before (token input) (key input) ≡ just saved →
     Store.lookupSaved before (token input) resultKey ≡ nothing →
-    execute input before ≡ (before , needsRecovery)
+    executeActive input before ≡ (before , needsRecovery)
   missingResultPreservesWorld input before saved observed missing rewrite observed | missing = refl
 
   missingStepPreservesWorld : ∀ input before result →
     Store.lookupSaved before (token input) (key input) ≡ nothing →
     Store.lookupSaved before (token input) resultKey ≡ just result →
-    execute input before ≡ (before , needsRecovery)
+    executeActive input before ≡ (before , needsRecovery)
   missingStepPreservesWorld input before result missing completed rewrite missing | completed = refl
 
   journalOfApplied : ∀ input before →
@@ -737,14 +742,45 @@ module StoreFinalStep (Input : Set)
     rewrite firstHasNoResult input before absent =
     Store.headReplyReadable (token input) resultKey (proj₂ (apply input before)) _
 
-  stable : ∀ input before → execute input (proj₁ (execute input before)) ≡ execute input before
-  stable input before with Store.lookupSaved before (token input) (key input) in observed
+  stableActive : ∀ input before → executeActive input (proj₁ (executeActive input before)) ≡ executeActive input before
+  stableActive input before with Store.lookupSaved before (token input) (key input) in observed
     | Store.lookupSaved before (token input) resultKey in completed
   ... | just saved | just result = replay input before saved result observed completed
   ... | just saved | nothing rewrite observed | completed = refl
   ... | nothing | just result rewrite observed | completed = refl
   ... | nothing | nothing = replay input _ _ _ (publishedStepReadable input before observed)
     (Store.savedAnswerReadable (firstPublication input before) (token input) resultKey (proj₂ (apply input before)))
+
+  publicationPreservesCancellation : ∀ input before →
+    Store.lookupCancellation (publication input before) (token input) ≡ Store.lookupCancellation before (token input)
+  publicationPreservesCancellation input before = trans
+    (Store.savingAnswerPreservesCancellation (firstPublication input before) (token input) resultKey (proj₂ (apply input before)) (token input))
+    (trans (Store.savingAnswerPreservesCancellation (proj₁ (apply input before)) (token input) (key input) (proj₂ (apply input before)) (token input))
+      (cong (λ tables → Store.lookupCancellationRows (token input) (Store.OperationTables.cancellations tables)) (keepsJournal input before)))
+
+  activePreservesCancellation : ∀ input before →
+    Store.lookupCancellation (proj₁ (executeActive input before)) (token input) ≡ Store.lookupCancellation before (token input)
+  activePreservesCancellation input before with Store.lookupSaved before (token input) (key input)
+    | Store.lookupSaved before (token input) resultKey
+  ... | just _ | just _ = refl
+  ... | just _ | nothing = refl
+  ... | nothing | just _ = refl
+  ... | nothing | nothing = publicationPreservesCancellation input before
+
+  execute : Input → Store.World → Store.World × Result
+  execute input before with Store.lookupCancellation before (token input)
+  ... | just original = before , cancelled original
+  ... | nothing = executeActive input before
+
+  cancellationBlocksEveryWrite : ∀ input before original →
+    Store.lookupCancellation before (token input) ≡ just original →
+    execute input before ≡ (before , cancelled original)
+  cancellationBlocksEveryWrite input before original recorded rewrite recorded = refl
+
+  stable : ∀ input before → execute input (proj₁ (execute input before)) ≡ execute input before
+  stable input before with Store.lookupCancellation before (token input) in recorded
+  ... | just original rewrite recorded = refl
+  ... | nothing rewrite activePreservesCancellation input before | recorded = stableActive input before
 
   statement : (intent : G.Intent Input) →
     (∀ input initial → execute input initial ≡ G.expected intent (G.invocation input initial)) →
@@ -755,6 +791,260 @@ module StoreFinalStep (Input : Set)
     (∀ input initial → execute input initial ≡ G.expected intent (G.invocation input initial)) →
     Recoverable Store.World Input
   recoverable intent correct = S.single (statement intent correct) (record { stable = stable })
+
+-- Explicit cancellation is an application operation over the actual durable
+-- rows. A saved result is returned unchanged; it is not inferred from business
+-- data. PostgreSQL supplies the proposed cancellation timestamp externally.
+module Cancellation where
+  record Input : Set where
+    constructor input
+    field token : ℕ; cancelledAt : ℤ
+
+  resultKey : Text
+  resultKey = toList "@operation-result"
+
+  reserved : ℕ → List Store.ReservationRow → Bool
+  reserved token [] = false
+  reserved token (row ∷ rest) with token ≟ Store.ReservationRow.token row
+  ... | yes _ = true
+  ... | no _ = reserved token rest
+
+  owned : ℕ → Store.EmbeddingOwnerRow → Bool
+  owned token owner with Store.EmbeddingOwnerRow.operationToken owner
+  ... | nothing = false
+  ... | just other with token ≟ other
+  ... | yes _ = true
+  ... | no _ = false
+
+  retained : ℕ → List Store.EmbeddingOwnerRow → List Store.EmbeddingOwnerRow
+  retained token = filterᵇ (λ owner → not (owned token owner))
+
+  retainedStable : ∀ token owners → retained token (retained token owners) ≡ retained token owners
+  retainedStable token [] = refl
+  retainedStable token (owner ∷ rest) with owned token owner in ownership
+  ... | true = retainedStable token rest
+  ... | false rewrite ownership = cong (owner ∷_) (retainedStable token rest)
+
+  retainedExcludes : ∀ token owners → All (λ owner → owned token owner ≡ false) (retained token owners)
+  retainedExcludes token [] = []
+  retainedExcludes token (owner ∷ rest) with owned token owner in ownership
+  ... | true = retainedExcludes token rest
+  ... | false = ownership ∷ retainedExcludes token rest
+
+  otherOwnerSurvives : ∀ token owner owners → owned token owner ≡ false →
+    Any (owner ≡_) owners → Any (owner ≡_) (retained token owners)
+  otherOwnerSurvives token owner (.owner ∷ rest) keep (here refl) rewrite keep = here refl
+  otherOwnerSurvives token owner (head ∷ rest) keep (there present) with owned token head
+  ... | true = otherOwnerSurvives token owner rest keep present
+  ... | false = there (otherOwnerSurvives token owner rest keep present)
+
+  revoke : ℕ → Store.World → Store.World
+  revoke token before = record before { embeddingOwners = retained token (Store.World.embeddingOwners before) }
+
+  revokeStable : ∀ token before → revoke token (revoke token before) ≡ revoke token before
+  revokeStable token before = cong (λ owners → record before { embeddingOwners = owners })
+    (retainedStable token (Store.World.embeddingOwners before))
+
+  publish : Input → Store.World → Store.World
+  publish request before = record (revoke (Input.token request) before)
+    { operations = record tables { cancellations =
+        Store.cancellationRow (Input.token request) (Input.cancelledAt request) ∷
+        Store.OperationTables.cancellations tables } }
+    where tables = Store.World.operations before
+
+  publicationKeepsRevocation : ∀ request before →
+    revoke (Input.token request) (publish request before) ≡ publish request before
+  publicationKeepsRevocation request before =
+    cong (λ owners → record (publish request before) { embeddingOwners = owners })
+      (retainedStable (Input.token request) (Store.World.embeddingOwners before))
+
+  data Result : Set where
+    unknownToken : Result
+    savedResult : Wire.Value → Result
+    cancelled : Store.CancellationRow → Result
+
+  execute : Input → Store.World → Store.World × Result
+  execute request before with reserved (Input.token request)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false = before , unknownToken
+  ... | true with Store.lookupSaved before (Input.token request) resultKey
+  ... | just saved = before , savedResult saved
+  ... | nothing with Store.lookupCancellation before (Input.token request)
+  ... | just original = revoke (Input.token request) before , cancelled original
+  ... | nothing = publish request before , cancelled
+    (Store.cancellationRow (Input.token request) (Input.cancelledAt request))
+
+  stable : ∀ request before → execute request (proj₁ (execute request before)) ≡ execute request before
+  stable request before with reserved (Input.token request)
+    (Store.OperationTables.reservations (Store.World.operations before)) in isReserved
+  ... | false rewrite isReserved = refl
+  ... | true with Store.lookupSaved before (Input.token request) resultKey in saved
+  ... | just answer rewrite isReserved | saved = refl
+  ... | nothing with Store.lookupCancellation before (Input.token request) in original
+  ... | just old rewrite isReserved | saved | original |
+      revokeStable (Input.token request) before = refl
+  ... | nothing rewrite isReserved | saved |
+      Store.headCancellationReadable (Input.token request) (Input.cancelledAt request)
+        (Store.OperationTables.cancellations (Store.World.operations before)) |
+      publicationKeepsRevocation request before = refl
+
+  retryCannotChooseANewTime : ∀ token firstTime laterTime before →
+    execute (input token laterTime) (proj₁ (execute (input token firstTime) before)) ≡
+    execute (input token firstTime) before
+  retryCannotChooseANewTime token firstTime laterTime before with reserved token
+    (Store.OperationTables.reservations (Store.World.operations before)) in isReserved
+  ... | false rewrite isReserved = refl
+  ... | true with Store.lookupSaved before token resultKey in saved
+  ... | just answer rewrite isReserved | saved = refl
+  ... | nothing with Store.lookupCancellation before token in original
+  ... | just old rewrite isReserved | saved | original | revokeStable token before = refl
+  ... | nothing rewrite isReserved | saved |
+      Store.headCancellationReadable token firstTime
+        (Store.OperationTables.cancellations (Store.World.operations before)) |
+      publicationKeepsRevocation (input token firstTime) before = refl
+
+  intended : Input → Store.World → Store.World
+  intended request before with reserved (Input.token request)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false = before
+  ... | true with Store.lookupSaved before (Input.token request) resultKey
+  ... | just _ = before
+  ... | nothing with Store.lookupCancellation before (Input.token request)
+  ... | just _ = revoke (Input.token request) before
+  ... | nothing = publish request before
+
+  expectedReply : Input → Store.World → Result
+  expectedReply request before with reserved (Input.token request)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false = unknownToken
+  ... | true with Store.lookupSaved before (Input.token request) resultKey
+  ... | just saved = savedResult saved
+  ... | nothing with Store.lookupCancellation before (Input.token request)
+  ... | just original = cancelled original
+  ... | nothing = cancelled (Store.cancellationRow (Input.token request) (Input.cancelledAt request))
+
+  module S = SingleResult Result
+  module G = Outcome Store.World Result
+
+  intent : G.Intent Input
+  intent = record { intended = intended; expectedReply = expectedReply }
+
+  statement : S.Statement Store.World Input
+  statement = record { execute = execute; intent = intent; correct = correct }
+    where
+    correct : ∀ request before → execute request before ≡ G.expected intent (G.invocation request before)
+    correct request before with reserved (Input.token request)
+      (Store.OperationTables.reservations (Store.World.operations before))
+    ... | false = refl
+    ... | true with Store.lookupSaved before (Input.token request) resultKey
+    ... | just _ = refl
+    ... | nothing with Store.lookupCancellation before (Input.token request)
+    ... | just _ = refl
+    ... | nothing = refl
+
+  operation : Recoverable Store.World Input
+  operation = S.single statement (record { stable = stable })
+
+  Goal : Input → Store.World → Store.World → Result → Set
+  Goal request initial final reply = (final , reply) ≡ (intended request initial , expectedReply request initial)
+
+  module Checked = Recoverable operation
+  certified : RecoverableFor Store.World Input Result Goal
+  certified = record
+    { Effect = Checked.Effect; Reply = Checked.Reply; script = Checked.script
+    ; Atomic = Checked.Atomic; converges = Checked.converges; progress = Checked.progress }
+
+  module Run = CheckedFor certified
+
+  completedResultUnchanged : ∀ request before saved →
+    reserved (Input.token request) (Store.OperationTables.reservations (Store.World.operations before)) ≡ true →
+    Store.lookupSaved before (Input.token request) resultKey ≡ just saved →
+    execute request before ≡ (before , savedResult saved)
+  completedResultUnchanged request before saved isReserved observed rewrite isReserved | observed = refl
+
+  businessUnchanged : ∀ request before → Store.businessSnapshot (proj₁ (execute request before)) ≡ Store.businessSnapshot before
+  businessUnchanged request before with reserved (Input.token request)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false = refl
+  ... | true with Store.lookupSaved before (Input.token request) resultKey
+  ... | just _ = refl
+  ... | nothing with Store.lookupCancellation before (Input.token request)
+  ... | just _ = refl
+  ... | nothing = refl
+
+  repliesUnchanged : ∀ request before →
+    Store.OperationTables.savedReplies (Store.World.operations (proj₁ (execute request before))) ≡
+    Store.OperationTables.savedReplies (Store.World.operations before)
+  repliesUnchanged request before with reserved (Input.token request)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false = refl
+  ... | true with Store.lookupSaved before (Input.token request) resultKey
+  ... | just _ = refl
+  ... | nothing with Store.lookupCancellation before (Input.token request)
+  ... | just _ = refl
+  ... | nothing = refl
+
+  originalInputsUnchanged : ∀ request before →
+    let prior = Store.World.operations before
+        after = Store.World.operations (proj₁ (execute request before))
+    in (Store.OperationTables.reservations after , Store.OperationTables.requestKeys after ,
+        Store.OperationTables.bindings after , Store.OperationTables.plans after) ≡
+       (Store.OperationTables.reservations prior , Store.OperationTables.requestKeys prior ,
+        Store.OperationTables.bindings prior , Store.OperationTables.plans prior)
+  originalInputsUnchanged request before with reserved (Input.token request)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false = refl
+  ... | true with Store.lookupSaved before (Input.token request) resultKey
+  ... | just _ = refl
+  ... | nothing with Store.lookupCancellation before (Input.token request)
+  ... | just _ = refl
+  ... | nothing = refl
+
+  previousCancellationsSurvive : ∀ request before old →
+    Any (old ≡_) (Store.OperationTables.cancellations (Store.World.operations before)) →
+    Any (old ≡_) (Store.OperationTables.cancellations (Store.World.operations (proj₁ (execute request before))))
+  previousCancellationsSurvive request before old present with reserved (Input.token request)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false = present
+  ... | true with Store.lookupSaved before (Input.token request) resultKey
+  ... | just _ = present
+  ... | nothing with Store.lookupCancellation before (Input.token request)
+  ... | just _ = present
+  ... | nothing = there present
+
+  everyReceiptPreservesBusiness : ∀ request before receipt actual →
+    Database.Atomic before (proj₁ (execute request before)) receipt actual →
+    Store.businessSnapshot actual ≡ Store.businessSnapshot before
+  everyReceiptPreservesBusiness request before receipt actual publication =
+    Database.invariantPreserved (λ world → Store.businessSnapshot world ≡ Store.businessSnapshot before)
+      publication refl (businessUnchanged request before)
+
+  cancelledIsReadable : ∀ request before after original →
+    execute request before ≡ (after , cancelled original) →
+    Store.lookupCancellation after (Input.token request) ≡ just original
+  cancelledIsReadable request before after original observed with reserved (Input.token request)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  cancelledIsReadable request before after original () | false
+  ... | true with Store.lookupSaved before (Input.token request) resultKey
+  cancelledIsReadable request before after original () | true | just _
+  ... | nothing with Store.lookupCancellation before (Input.token request) in recorded
+  cancelledIsReadable request before .(revoke (Input.token request) before) .old refl | true | nothing | just old = recorded
+  cancelledIsReadable request before .(publish request before) .(Store.cancellationRow (Input.token request) (Input.cancelledAt request)) refl | true | nothing | nothing =
+    Store.headCancellationReadable (Input.token request) (Input.cancelledAt request) _
+
+  cancelledOwnersAbsent : ∀ request before after original →
+    execute request before ≡ (after , cancelled original) →
+    All (λ owner → owned (Input.token request) owner ≡ false) (Store.World.embeddingOwners after)
+  cancelledOwnersAbsent request before after original observed with reserved (Input.token request)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  cancelledOwnersAbsent request before after original () | false
+  ... | true with Store.lookupSaved before (Input.token request) resultKey
+  cancelledOwnersAbsent request before after original () | true | just _
+  ... | nothing with Store.lookupCancellation before (Input.token request)
+  cancelledOwnersAbsent request before .(revoke (Input.token request) before) .old refl | true | nothing | just old =
+    retainedExcludes (Input.token request) (Store.World.embeddingOwners before)
+  cancelledOwnersAbsent request before .(publish request before) .(Store.cancellationRow (Input.token request) (Input.cancelledAt request)) refl | true | nothing | nothing =
+    retainedExcludes (Input.token request) (Store.World.embeddingOwners before)
 
 module SavedStep (Business Input : Set)
   (apply : Input → Business → Business × Wire.Value) where

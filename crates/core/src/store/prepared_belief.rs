@@ -13,6 +13,32 @@ use pgvector::Vector;
 use uuid::Uuid;
 
 impl AgeStore {
+    /// Linked operation identities never change after owner allocation. Read
+    /// them before taking learning/owner locks, then lock reservations in one
+    /// order so cancellation and publication cannot invert their locks.
+    pub(super) async fn lock_preparation_operations(
+        &self,
+        tx: &tokio_postgres::Transaction<'_>,
+        identities: &[Uuid],
+    ) -> Result<()> {
+        let rows = tx.query(
+            "SELECT DISTINCT operation_token FROM mimir_embedding_owners WHERE owner_token=ANY($1) AND operation_token IS NOT NULL ORDER BY operation_token",
+            &[&identities],
+        ).await?;
+        for row in rows {
+            let token: Uuid = row.get(0);
+            if !super::cancellations::lock_token(tx, token).await? {
+                return Err(PreparationRequired::new(Location::Request, vec![], Code::MissingReference,
+                    format!("Preparation refers to unknown operation {token}. Read its original reservation and ask the user before starting different work. No belief was stored.")).into());
+            }
+            if let Some(cancelled) = super::cancellations::lookup(tx, token).await? {
+                return Err(PreparationRequired::new(Location::Request, vec![], Code::MissingReference,
+                    format!("Operation {token} was explicitly cancelled at {}. Read its saved answers and cancellation record, then ask the user before starting different work. No belief was stored.", cancelled.cancelled_at)).into());
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn owns_belief_preparation(&self, belief: &Belief) -> Result<bool> {
         Ok(self.client.lock().await.query_one(
             "SELECT EXISTS(SELECT 1 FROM mimir_embedding_owners WHERE owner_token=$1 AND project IS NOT DISTINCT FROM $2)",
@@ -75,6 +101,7 @@ impl AgeStore {
         let belief = &prepared.belief;
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
+        self.lock_preparation_operations(&tx, &[belief.id]).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
         self.insert_prepared_belief_on(&tx, prepared).await?;
@@ -96,10 +123,10 @@ impl AgeStore {
         // Every refusal below precedes this candidate's writes. The caller
         // owns the transaction; returning an error rolls back any earlier
         // uncommitted candidates too. Never relabel transport/write errors.
-        let owner_exists: bool = tx.query_one(
-            "SELECT EXISTS(SELECT 1 FROM mimir_embedding_owners WHERE owner_token=$1 AND project IS NOT DISTINCT FROM $2)",
+        let owner_exists = tx.query_opt(
+            "SELECT owner_token FROM mimir_embedding_owners WHERE owner_token=$1 AND project IS NOT DISTINCT FROM $2 FOR KEY SHARE",
             &[&belief.id, &belief.project],
-        ).await?.get(0);
+        ).await?.is_some();
         if !owner_exists {
             return Err(PreparationRequired::new(Location::Request, vec![], Code::MissingReference,
                 format!("Preparation {} no longer owns publication: its work was cancelled, its project was deleted, or publication already completed. Read the original operation outcome and get_belief for this ID, then ask the user before starting new work. No new belief was stored.", belief.id)).into());

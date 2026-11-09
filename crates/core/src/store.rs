@@ -1,3 +1,4 @@
+mod cancellations;
 mod conformance;
 mod learning;
 mod operation_plans;
@@ -10,6 +11,7 @@ mod reservations;
 #[path = "../../../tests/support/isolation.rs"]
 mod snapshot_test_isolation;
 use anyhow::{bail, Context, Result};
+pub use cancellations::{CancellationDecision, CancellationReceipt};
 use chrono::DateTime;
 pub use operation_plans::{
     CompletedOperation, CompletionDecision, OperationOutcome, OperationPlan, PlanDecision,

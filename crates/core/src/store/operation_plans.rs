@@ -182,6 +182,7 @@ pub enum PlanDecision {
     UnknownBinding,
     ChangedRequest(OperationBinding),
     NeedsRecovery(String),
+    Cancelled(super::CancellationReceipt),
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct CompletedOperation {
@@ -203,6 +204,7 @@ pub enum CompletionDecision {
     UnknownBinding,
     ChangedRequest(OperationBinding),
     FinalStepRequired(PlannedStep),
+    Cancelled(super::CancellationReceipt),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -224,6 +226,11 @@ pub enum OperationOutcome {
     NeedsRecovery {
         binding: OperationBinding,
         reason: String,
+    },
+    Cancelled {
+        cancellation: super::CancellationReceipt,
+        binding: Option<OperationBinding>,
+        saved_replies: Vec<super::StepReceipt>,
     },
 }
 
@@ -325,7 +332,15 @@ impl AgeStore {
                 )
                 .await?
                 .is_some();
+            let cancellation = super::cancellations::lookup(&tx, token).await?;
             tx.rollback().await?;
+            if let Some(cancellation) = cancellation {
+                return Ok(OperationOutcome::Cancelled {
+                    cancellation,
+                    binding: None,
+                    saved_replies: vec![],
+                });
+            }
             return Ok(if reserved {
                 OperationOutcome::Reserved
             } else {
@@ -339,6 +354,15 @@ impl AgeStore {
                 tx.rollback().await?;
                 return Ok(OperationOutcome::ChangedRequest(original));
             }
+        }
+        if let Some(cancellation) = super::cancellations::lookup(&tx, token).await? {
+            let saved_replies = super::cancellations::saved_replies(&tx, token).await?;
+            tx.rollback().await?;
+            return Ok(OperationOutcome::Cancelled {
+                cancellation,
+                binding: Some(original),
+                saved_replies,
+            });
         }
         let Some(plan) = load(&tx, token).await? else {
             if tx
@@ -411,6 +435,9 @@ impl AgeStore {
         if !matches {
             return Ok(PlanDecision::ChangedRequest(original));
         }
+        if let Some(cancelled) = super::cancellations::lookup(&*client, token).await? {
+            return Ok(PlanDecision::Cancelled(cancelled));
+        }
         if let Some(stored) = load(&*client, token).await? {
             return Ok(PlanDecision::Ready(OperationPlan {
                 inner: Arc::new(Inner {
@@ -429,6 +456,10 @@ impl AgeStore {
         let captured = select(&read, &original).await;
         read.rollback().await?;
         let tx = super::learning_transaction(&mut client).await?;
+        if !super::cancellations::lock_token(&tx, token).await? {
+            tx.rollback().await?;
+            return Ok(PlanDecision::UnknownBinding);
+        }
         let Some((original, matches)) = binding(&tx, token, expected, true).await? else {
             tx.rollback().await?;
             return Ok(PlanDecision::UnknownBinding);
@@ -436,6 +467,10 @@ impl AgeStore {
         if !matches {
             tx.rollback().await?;
             return Ok(PlanDecision::ChangedRequest(original));
+        }
+        if let Some(cancelled) = super::cancellations::lookup(&tx, token).await? {
+            tx.rollback().await?;
+            return Ok(PlanDecision::Cancelled(cancelled));
         }
         // Another caller may have published the original plan during capture.
         if let Some(stored) = load(&tx, token).await? {
@@ -482,6 +517,10 @@ impl AgeStore {
         let mut client = self.client.lock().await;
         let tx = super::learning_transaction(&mut client).await?;
         let token = plan.operation_token();
+        if !super::cancellations::lock_token(&tx, token).await? {
+            tx.rollback().await?;
+            return Ok(CompletionDecision::UnknownBinding);
+        }
         let Some((original, matches)) =
             binding(&tx, token, &plan.inner.binding.request, true).await?
         else {
@@ -491,6 +530,10 @@ impl AgeStore {
         if !matches {
             tx.rollback().await?;
             return Ok(CompletionDecision::ChangedRequest(original));
+        }
+        if let Some(cancelled) = super::cancellations::lookup(&tx, token).await? {
+            tx.rollback().await?;
+            return Ok(CompletionDecision::Cancelled(cancelled));
         }
         validate(&plan.inner.stored)?;
         let (_, saved, next) = progress(&tx, token, &plan.inner.stored).await?;

@@ -74,7 +74,9 @@ module PatternRecovery where
   module Saved = Recovery.StoreFinalStep Input Input.token key resultKey distinct apply preservesJournal
 
   intended : Input → Store.World → Store.World
-  intended request before with Store.lookupSaved before (Input.token request) (key request)
+  intended request before with Store.lookupCancellation before (Input.token request)
+  ... | just _ = before
+  ... | nothing with Store.lookupSaved before (Input.token request) (key request)
     | Store.lookupSaved before (Input.token request) resultKey
   ... | nothing | nothing = Store.saveAnswer
     (Store.saveAnswer (desired request before) (Input.token request) (key request) (answer request before))
@@ -84,7 +86,9 @@ module PatternRecovery where
   ... | nothing | just _ = before
 
   expectedReply : Input → Store.World → Saved.Result
-  expectedReply request before with Store.lookupSaved before (Input.token request) (key request)
+  expectedReply request before with Store.lookupCancellation before (Input.token request)
+  ... | just original = Saved.cancelled original
+  ... | nothing with Store.lookupSaved before (Input.token request) (key request)
     | Store.lookupSaved before (Input.token request) resultKey
   ... | just saved | just _ = Saved.done saved
   ... | nothing | nothing = Saved.done (answer request before)
@@ -96,7 +100,9 @@ module PatternRecovery where
 
   correct : ∀ request before → Saved.execute request before ≡
     Saved.G.expected intent (Saved.G.invocation request before)
-  correct request before with Store.lookupSaved before (Input.token request) (key request)
+  correct request before with Store.lookupCancellation before (Input.token request)
+  ... | just _ = refl
+  ... | nothing with Store.lookupSaved before (Input.token request) (key request)
     | Store.lookupSaved before (Input.token request) resultKey
   ... | just _ | just _ = refl
   ... | nothing | nothing = refl

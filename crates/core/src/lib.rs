@@ -1387,6 +1387,22 @@ impl MimirService {
         self.store.read_operation_outcome(token, expected).await
     }
 
+    /// Record the explicit decision and revoke publication. Public callers
+    /// must separately stop and join owned work before reporting cleanup done.
+    pub async fn record_operation_cancellation(
+        &self,
+        token: Uuid,
+    ) -> Result<store::CancellationDecision> {
+        self.store.record_operation_cancellation(token).await
+    }
+
+    pub async fn read_operation_cancellation(
+        &self,
+        token: Uuid,
+    ) -> Result<Option<store::CancellationReceipt>> {
+        self.store.read_operation_cancellation(token).await
+    }
+
     /// Collect graph statistics.
     pub async fn stats(&self) -> Result<MimirStats> {
         let beliefs = self.store.count_beliefs().await?;

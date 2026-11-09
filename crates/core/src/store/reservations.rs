@@ -63,6 +63,7 @@ pub enum OperationBindingDecision {
     Bound(OperationBinding),
     ChangedRequest(OperationBinding),
     UnknownToken,
+    Cancelled(super::CancellationReceipt),
 }
 
 pub(super) fn decode_binding(row: &Row) -> Result<OperationBinding> {
@@ -100,24 +101,36 @@ impl AgeStore {
     ) -> Result<OperationBindingDecision> {
         let arguments = serde_json::to_string(&request.arguments)?;
         let settings = serde_json::to_string(&request.settings)?;
-        let client = self.client.lock().await;
-        client.execute(
+        let mut client = self.client.lock().await;
+        let tx = super::learning_transaction(&mut client).await?;
+        if !super::cancellations::lock_token(&tx, token).await? {
+            tx.rollback().await?;
+            return Ok(OperationBindingDecision::UnknownToken);
+        }
+        if let Some(cancelled) = super::cancellations::lookup(&tx, token).await? {
+            tx.rollback().await?;
+            return Ok(OperationBindingDecision::Cancelled(cancelled));
+        }
+        tx.execute(
             "INSERT INTO mimir_operation_bindings (operation_token,operation,arguments,settings) SELECT operation_token,$2,$3::text::jsonb,$4::text::jsonb FROM mimir_operation_reservations WHERE operation_token=$1 ON CONFLICT (operation_token) DO NOTHING",
             &[&token, &request.operation, &arguments, &settings],
         ).await?;
-        let row = client.query_opt(
+        let row = tx.query_opt(
             "SELECT operation_token,bound_at,operation,arguments::text AS arguments,settings::text AS settings,operation=$2 AND arguments=$3::text::jsonb AND settings=$4::text::jsonb AS matches FROM mimir_operation_bindings WHERE operation_token=$1",
             &[&token, &request.operation, &arguments, &settings],
         ).await?;
         let Some(row) = row else {
+            tx.rollback().await?;
             return Ok(OperationBindingDecision::UnknownToken);
         };
         let binding = decode_binding(&row)?;
-        Ok(if row.try_get("matches")? {
+        let decision = if row.try_get("matches")? {
             OperationBindingDecision::Bound(binding)
         } else {
             OperationBindingDecision::ChangedRequest(binding)
-        })
+        };
+        tx.commit().await?;
+        Ok(decision)
     }
 
     pub async fn read_operation_binding(&self, token: Uuid) -> Result<Option<OperationBinding>> {
