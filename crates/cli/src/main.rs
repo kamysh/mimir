@@ -492,8 +492,14 @@ fn cmd_init(pairs: Vec<(String, String)>) -> Result<()> {
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
         std::process::Command::new(&editor).arg(&path).status()?;
     } else {
-        let path = Config::create_from_kv(&pairs)?;
-        println!("Created: {}", path.display());
+        match Config::create_from_kv(&pairs)? {
+            mimir_core::config::ConfigCreation::Created(path) => {
+                println!("Created: {}", path.display())
+            }
+            mimir_core::config::ConfigCreation::AlreadyConfigured(path) => {
+                println!("Already configured: {}", path.display())
+            }
+        }
     }
     println!("Restart Claude Code to activate the mimir MCP server.");
     Ok(())

@@ -663,3 +663,5 @@ compatible PostgreSQL instance with separate roles and databases.
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
+
+Configuration creation and safe retries are described in [Creating configuration safely](docs/CONFIGURATION-CREATION.md).
