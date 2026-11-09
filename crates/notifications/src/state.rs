@@ -142,7 +142,7 @@ impl StateDir {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         Ok(Some(
-            serde_json::from_slice(&bytes).map_err(|_| anyhow!("invalid notification state"))?,
+            mimir_json::from_slice(&bytes).map_err(|_| anyhow!("invalid notification state"))?,
         ))
     }
 
@@ -163,7 +163,7 @@ impl StateDir {
     }
 
     fn write_named<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
-        let bytes = serde_json::to_vec(value)?;
+        let bytes = mimir_json::to_vec(value)?;
         let temp = self
             .path
             .join(format!(".notification-{}.tmp", uuid::Uuid::new_v4()));

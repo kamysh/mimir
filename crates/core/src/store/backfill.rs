@@ -28,7 +28,7 @@ struct Capture {
 }
 
 pub(super) fn pending_keys(value: &Value) -> Result<Vec<String>> {
-    let captured: Capture = serde_json::from_value(value.clone())?;
+    let captured: Capture = mimir_json::decode_ref(value)?;
     let mut previous = None;
     let mut pending = Vec::new();
     for source in &captured.beliefs {
@@ -48,7 +48,7 @@ pub(super) fn pending_keys(value: &Value) -> Result<Vec<String>> {
     // UUID parsing also accepts alternate spellings; persisted snapshots use
     // the one canonical representation produced by the server.
     ensure!(
-        serde_json::to_value(&captured)? == *value,
+        mimir_json::to_value(&captured)? == *value,
         "The captured source selection does not use its canonical stored representation"
     );
     Ok(pending)
@@ -85,13 +85,13 @@ impl AgeStore {
                         .map(|belief| BackfillSource {
                             id: belief.id,
                             content: belief.content,
-                            project: serde_json::to_value(belief.project)
+                            project: mimir_json::to_value(belief.project)
                                 .expect("optional string is JSON"),
                             already_embedded: embedded.contains(&belief.id),
                         })
                         .collect(),
                 };
-                let value = serde_json::to_value(capture)?;
+                let value = mimir_json::to_value(capture)?;
                 let pending = pending_keys(&value)?;
                 Ok(CapturedSelection {
                     selections: vec![(CommitSite::BeliefVectorPublication, pending)],
@@ -135,7 +135,7 @@ impl AgeStore {
             .captured()
             .ok_or_else(|| dialogue("This operation has no saved source capture.".into()))?;
         pending_keys(captured)?;
-        Ok(serde_json::from_value::<Capture>(captured.clone())?.beliefs)
+        Ok(mimir_json::decode_ref::<Capture>(captured)?.beliefs)
     }
 
     async fn backfill_state_on(
@@ -188,7 +188,7 @@ impl AgeStore {
             for source in &sources {
                 let step=plan.steps().into_iter().find(|step|step.description().key.as_deref()==Some(source.id.to_string().as_str()));
                 let saved=match step {Some(step)=>tx.query_opt("SELECT reply::text FROM mimir_operation_step_replies WHERE operation_token=$1 AND step=$2",&[&plan.operation_token(),&step.id()]).await?,None=>None};
-                if let Some(row)=&saved {let raw:String=row.get(0);let _:Answer=serde_json::from_str(&raw)?;}
+                if let Some(row)=&saved {let raw:String=row.get(0);let _:Answer=mimir_json::from_str(&raw)?;}
                 let current=self.backfill_state_on(tx.client(),source).await?;
                 if source.already_embedded || saved.is_some() {
                     if matches!(current,BackfillState::Pending) {
@@ -275,7 +275,7 @@ impl AgeStore {
                     if inserted==1 {Status::Embedded} else {Status::Skipped}
                 }
             };
-            let answer=serde_json::to_value(Answer{status})?;
+            let answer=mimir_json::to_value(Answer{status})?;
             let final_reply=if final_step {
                 for expected in &sources {
                     if matches!(owner.backfill_state_on(tx.client(),expected).await?,BackfillState::Pending) {
@@ -285,7 +285,7 @@ impl AgeStore {
                 let mut embedded=0usize;let mut skipped=initially_skipped;
                 for key in prior {
                     let raw:String=tx.query_one("SELECT reply::text FROM mimir_operation_step_replies WHERE operation_token=$1 AND step=$2",&[&token,&key]).await?.get(0);
-                    match serde_json::from_str::<Answer>(&raw)?.status {Status::Embedded=>embedded+=1,Status::Skipped=>skipped+=1}
+                    match mimir_json::from_str::<Answer>(&raw)?.status {Status::Embedded=>embedded+=1,Status::Skipped=>skipped+=1}
                 }
                 match status {Status::Embedded=>embedded+=1,Status::Skipped=>skipped+=1}
                 Some(serde_json::json!({"embedded":embedded,"skipped":skipped}))

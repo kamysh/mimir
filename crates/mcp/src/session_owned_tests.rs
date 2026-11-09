@@ -27,7 +27,7 @@ async fn disconnect_drops_and_reaps_active_embedding_before_returning_or_startin
     std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o700))?;
     let config = Config {
         database,
-        embeddings: Some(serde_json::from_value(
+        embeddings: Some(mimir_json::from_value(
             json!({"backend":"local","cache_dir":directory.join("model-cache")}),
         )?),
         llm: None,
@@ -141,20 +141,20 @@ async fn partial_input_survives_response_completion_and_queued_requests_keep_the
         let mut output = BufReader::new(client_reader);
         let mut line = String::new();
         output.read_line(&mut line).await?;
-        let response: Value = serde_json::from_str(&line)?;
+        let response: Value = mimir_json::from_str(&line)?;
         ensure!(response["id"] == 1 && response["result"]["tools"].is_array());
         input.write_all(&second.as_bytes()[split..]).await?;
         input.write_all(third.as_bytes()).await?;
         for id in [2, 3] {
             line.clear();
             output.read_line(&mut line).await?;
-            let response: Value = serde_json::from_str(&line)?;
+            let response: Value = mimir_json::from_str(&line)?;
             ensure!(
                 response["id"] == id && response.get("error").is_none(),
                 "partial or queued request changed: {response}"
             );
             let body: Value =
-                serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+                mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
             if id == 2 {
                 ensure!(body.is_null());
             } else {

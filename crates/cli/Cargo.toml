@@ -8,6 +8,7 @@ name = "mimir"
 path = "src/main.rs"
 
 [dependencies]
+mimir-json = { path = "../json" }
 mimir-core = { path = "../core" }
 mimir-notifications = { path = "../notifications" }
 anyhow = "1.0.104"

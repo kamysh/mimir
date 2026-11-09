@@ -85,7 +85,7 @@ async fn remains_pending(service: &MimirService, token: Uuid, step: &RegisteredS
 async fn acknowledged_refusal_keeps_the_original_diagnostic_and_stores_no_completion() -> Result<()>
 {
     let (store, service, id, token, step, sql) = prepared().await?;
-    let before = serde_json::to_value(store.get_pattern(id).await?)?;
+    let before = mimir_json::to_value(store.get_pattern(id).await?)?;
     let error = service
         .commit_final_operation_step(&step, move |tx, _| {
             Box::pin(async move {
@@ -101,7 +101,7 @@ async fn acknowledged_refusal_keeps_the_original_diagnostic_and_stores_no_comple
         .await
         .unwrap_err();
     assert!(error.downcast_ref::<RequiresDecision>().is_some());
-    assert_eq!(serde_json::to_value(store.get_pattern(id).await?)?, before);
+    assert_eq!(mimir_json::to_value(store.get_pattern(id).await?)?, before);
     let audit = db::connect(&config().database).await?;
     assert!(
         audit
@@ -118,7 +118,7 @@ async fn acknowledged_refusal_keeps_the_original_diagnostic_and_stores_no_comple
 #[tokio::test]
 async fn unconfirmed_rollback_preserves_both_causes_and_requires_readback() -> Result<()> {
     let (store, service, id, token, step, sql) = prepared().await?;
-    let before = serde_json::to_value(store.get_pattern(id).await?)?;
+    let before = mimir_json::to_value(store.get_pattern(id).await?)?;
     let audit = db::connect(&config().database).await?;
     let error = service
         .commit_final_operation_step(&step, move |tx, _| {
@@ -157,7 +157,7 @@ async fn unconfirmed_rollback_preserves_both_causes_and_requires_readback() -> R
     );
     let reopened = MimirService::connect(&config()).await?;
     remains_pending(&reopened, token, &step).await?;
-    assert_eq!(serde_json::to_value(store.get_pattern(id).await?)?, before);
+    assert_eq!(mimir_json::to_value(store.get_pattern(id).await?)?, before);
     store.delete_pattern(id).await?;
     Ok(())
 }

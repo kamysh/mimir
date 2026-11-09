@@ -101,7 +101,7 @@ impl Serialize for AgentJson<'_> {
 }
 
 fn agent_json_text(value: &Value) -> serde_json::Result<String> {
-    serde_json::to_string(&AgentJson(value))
+    mimir_json::to_string(&AgentJson(value))
 }
 
 fn tools_list() -> Value {
@@ -414,10 +414,9 @@ async fn handle_graph_call(
     use operation_catalogue::GraphOperation;
     match operation {
         GraphOperation::InsertBelief => {
-            let provenance: IndependentProvenance = serde_json::from_value(
+            let provenance: IndependentProvenance = mimir_json::decode_ref(
                 args.get("provenance")
-                    .ok_or_else(|| anyhow::anyhow!("missing 'provenance'"))?
-                    .clone(),
+                    .ok_or_else(|| anyhow::anyhow!("missing 'provenance'"))?,
             )?;
             provenance.validate()?;
             let content = args["content"]
@@ -445,7 +444,7 @@ async fn handle_graph_call(
                     &provenance,
                 )
                 .await?;
-            Ok(serde_json::to_value(&belief)?)
+            Ok(mimir_json::to_value(&belief)?)
         }
 
         GraphOperation::DeleteBelief => {
@@ -497,7 +496,7 @@ async fn handle_graph_call(
                         .transpose()?,
                 )
                 .await?;
-            Ok(serde_json::to_value(&pattern)?)
+            Ok(mimir_json::to_value(&pattern)?)
         }
 
         GraphOperation::RecordSupport => {
@@ -577,7 +576,7 @@ async fn handle_graph_call(
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
             let id = uuid::Uuid::parse_str(id_str)?;
             let belief = svc.get_belief(id).await?;
-            Ok(serde_json::to_value(&belief)?)
+            Ok(mimir_json::to_value(&belief)?)
         }
 
         GraphOperation::ListBeliefs => {
@@ -592,22 +591,22 @@ async fn handle_graph_call(
             match args.get("limit") {
                 None => {
                     if args.get("offset").is_some() {
-                        return Ok(serde_json::to_value(admission::offset_requires_selection())?);
+                        return Ok(mimir_json::to_value(admission::offset_requires_selection())?);
                     }
-                    Ok(serde_json::to_value(
+                    Ok(mimir_json::to_value(
                         svc.list_beliefs_filtered(project, memory_type).await?,
                     )?)
                 }
                 Some(raw_limit) => {
                     let limit = match admission::positive_selection("limit", raw_limit) {
                         Ok(count) => count.get(),
-                        Err(correction) => return Ok(serde_json::to_value(correction)?),
+                        Err(correction) => return Ok(mimir_json::to_value(correction)?),
                     };
                     let offset = match args.get("offset") {
                         None => 0,
                         Some(raw_offset) => match admission::page_offset(raw_offset) {
                             Ok(offset) => offset,
-                            Err(correction) => return Ok(serde_json::to_value(correction)?),
+                            Err(correction) => return Ok(mimir_json::to_value(correction)?),
                         },
                     };
                     svc.list_beliefs_page(project, memory_type, limit, offset)
@@ -619,7 +618,7 @@ async fn handle_graph_call(
         GraphOperation::ListPatterns => {
             let project = args["project"].as_str();
             let patterns = svc.list_patterns(project).await?;
-            Ok(serde_json::to_value(&patterns)?)
+            Ok(mimir_json::to_value(&patterns)?)
         }
 
         GraphOperation::GetContradictions => {
@@ -652,7 +651,7 @@ async fn handle_graph_call(
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
             let limit = match admission::selection(args, "limit") {
                 Ok(selection) => selection,
-                Err(correction) => return Ok(serde_json::to_value(correction)?),
+                Err(correction) => return Ok(mimir_json::to_value(correction)?),
             };
             let include_evidence = args["include_evidence"].as_bool().unwrap_or(false);
             let project = args["project"].as_str();
@@ -662,13 +661,13 @@ async fn handle_graph_call(
                 .transpose()?;
             let per = match admission::selection(args, "evidence_per_belief") {
                 Ok(selection) => selection,
-                Err(correction) => return Ok(serde_json::to_value(correction)?),
+                Err(correction) => return Ok(mimir_json::to_value(correction)?),
             };
             if !include_evidence {
                 let beliefs = svc
                     .query_relevant(query, limit, project, prefer_type)
                     .await?;
-                return Ok(serde_json::to_value(&beliefs)?);
+                return Ok(mimir_json::to_value(&beliefs)?);
             }
             let grounded = svc
                 .query_relevant_grounded_preferred(query, limit, per, project, prefer_type)
@@ -677,7 +676,7 @@ async fn handle_graph_call(
                 .beliefs
                 .into_iter()
                 .map(|gb| {
-                    let mut belief_json = serde_json::to_value(&gb.belief).unwrap_or(json!({}));
+                    let mut belief_json = mimir_json::to_value(&gb.belief).unwrap_or(json!({}));
                     let evidence: Vec<Value> = gb
                         .evidence
                         .into_iter()
@@ -787,10 +786,10 @@ async fn handle_graph_call(
             let project = args["project"].as_str();
             let limit = match admission::selection(args, "limit") {
                 Ok(selection) => selection,
-                Err(correction) => return Ok(serde_json::to_value(correction)?),
+                Err(correction) => return Ok(mimir_json::to_value(correction)?),
             };
             let results = svc.query_document(context, project, limit).await?;
-            Ok(serde_json::to_value(&results)?)
+            Ok(mimir_json::to_value(&results)?)
         }
 
         GraphOperation::ClearDocument => {
@@ -962,7 +961,7 @@ async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
         envelope::Incoming::Request(request) => request,
         envelope::Incoming::Notification { method, diagnostic } => {
             if let Some(diagnostic) = diagnostic {
-                error!(method, correction = %serde_json::to_string(&diagnostic)?, "notification was not executed");
+                error!(method, correction = %mimir_json::to_string(&diagnostic)?, "notification was not executed");
             }
             return Ok(());
         }
@@ -976,7 +975,7 @@ async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
     let method = request.method();
     let params = request.params();
 
-    let response = match method {
+    let response = mimir_json::Document::new(match method {
         "initialize" => ok_response(
             &id,
             json!({
@@ -991,14 +990,17 @@ async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
         "tools/call" => match admission::tool_parameters(params) {
             Err(correction) => envelope::invalid_params(id, correction),
             Ok((tool_name, arguments)) => match catalogue.call(svc, tool_name, &arguments).await {
-                Ok(result) => ok_response(
-                    &id,
-                    json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
-                ),
+                Ok(result) => {
+                    let result = mimir_json::Document::new(result);
+                    ok_response(
+                        &id,
+                        json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
+                    )
+                }
                 Err(e) => {
                     let mut response = err_response(&id, -32000, &e.to_string());
                     if let Some(refusal) = e.downcast_ref::<mimir_core::validation::Refusal>() {
-                        response["error"]["data"] = serde_json::to_value(refusal)?;
+                        response["error"]["data"] = mimir_json::to_value(refusal)?;
                     }
                     response
                 }
@@ -1009,7 +1011,7 @@ async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
             error!("unknown method: {}", other);
             err_response(&id, -32601, "Method not found")
         }
-    };
+    });
 
     let mut out = response.to_string();
     out.push('\n');
@@ -1048,14 +1050,14 @@ mod agent_json_tests {
         assert!(text.contains(
             "\"extra\":\"future field\",\"alpha\":2.0,\"beta\":3.0,\"alpha0\":1.0,\"beta0\":1.0}"
         ));
-        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), result);
+        assert_eq!(mimir_json::from_str::<Value>(&text).unwrap(), result);
     }
 
     #[test]
     fn non_belief_json_keeps_its_fields_and_values() {
         let result = json!({"z": [true, null], "a": {"beta": 2, "content": "not a belief"}});
         let text = agent_json_text(&result).unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), result);
+        assert_eq!(mimir_json::from_str::<Value>(&text).unwrap(), result);
     }
 }
 

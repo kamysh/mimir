@@ -23,7 +23,7 @@ pub(super) fn guidance(experience: &Experience) -> String {
 mod tests {
     use super::*;
     fn experience(source: &str) -> Experience {
-        serde_json::from_value(json!({"id":"11111111-1111-4111-8111-111111111111","project":"judge-evidence-fixture","context":"User rejected an action, not its technical execution","action":"Created unsolicited backups","outcome":"unknown","source":source,"evidence":["Copied files successfully","Remove all backups. Nobody asked you to make them."],"belief_ids":[],"pattern_id":null})).unwrap()
+        mimir_json::from_value(json!({"id":"11111111-1111-4111-8111-111111111111","project":"judge-evidence-fixture","context":"User rejected an action, not its technical execution","action":"Created unsolicited backups","outcome":"unknown","source":source,"evidence":["Copied files successfully","Remove all backups. Nobody asked you to make them."],"belief_ids":[],"pattern_id":null})).unwrap()
     }
     #[test]
     fn legacy_user_feedback_is_addressable_without_structured_sources() {
@@ -43,7 +43,7 @@ mod tests {
     #[test]
     fn structured_provenance_does_not_leak_between_neighbors() {
         let mut e = experience("tool_result");
-        e.source_records=serde_json::from_value(json!([
+        e.source_records=mimir_json::from_value(json!([
             {"source_ref":"agent","actor":"agent","provenance":"agent_report","text":"Copied successfully"},
             {"source_ref":"human","actor":"human","provenance":"user_feedback","text":"Not authorized"}
         ])).unwrap();
@@ -92,7 +92,7 @@ mod tests {
                             "correctness":{"value":0,"weight":1},"usefulness":{"value":-1,"weight":1},
                             "evidence_indices":if self.calls==1 {vec![]} else {vec![1]},
                             "rationale":"User explicitly rejected the decision; technical execution is separate"}]}
-                    }),
+                    }).into(),
                 })
             })
         }
@@ -132,7 +132,7 @@ mod tests {
             1,
             "invalid request must not reach MCP"
         );
-        let review: Value = serde_json::from_str(payload.trim()).unwrap();
+        let review: Value = mimir_json::from_str(payload.trim()).unwrap();
         assert_eq!(review["assessments"][0]["evidence_indices"], json!([1]));
         assert_eq!(
             review["assessments"][0]["correctness"]["value"].as_f64(),

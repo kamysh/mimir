@@ -164,7 +164,7 @@ async fn source_replay_keeps_original_incident_revision_and_postgres_item_id_aft
     let e = experience(true).await?;
     let first = plan(&service, &e, 0).await?;
     let original = done(&service, &first).await?;
-    let state: ExperienceState = serde_json::from_value(original.reply.clone())?;
+    let state: ExperienceState = mimir_json::from_value(original.reply.clone())?;
     ensure!(
         state.experience.id == e.id
             && state.revision == 1
@@ -179,7 +179,7 @@ async fn source_replay_keeps_original_incident_revision_and_postgres_item_id_aft
     correction.learning_items[0].conditions = "updated interpretation".into();
     let corrected = plan(&service, &correction, 1).await?;
     let answer = done(&service, &corrected).await?;
-    let new_state: ExperienceState = serde_json::from_value(answer.reply.clone())?;
+    let new_state: ExperienceState = mimir_json::from_value(answer.reply.clone())?;
     ensure!(new_state.revision == 2 && new_state.experience.id == e.id);
     ensure!(new_state.item_ids["proposal"] == allocated);
     let before = service.experience_history(e.id).await?;
@@ -224,7 +224,7 @@ async fn source_correction_retracts_active_review_once_and_preserves_history_and
     )?;
     foreign.id = identity().await?;
     store.insert_belief(&foreign).await?;
-    let foreign_before = serde_json::to_value(store.get_belief(foreign.id).await?)?;
+    let foreign_before = mimir_json::to_value(store.get_belief(foreign.id).await?)?;
     e.evidence.push("isolated fixture observed support".into());
     e.belief_ids.push(target.id);
     done(&service, &plan(&service, &e, 0).await?).await?;
@@ -254,7 +254,7 @@ async fn source_correction_retracts_active_review_once_and_preserves_history_and
     correction.action = "correct the observation".into();
     let p = plan(&service, &correction, 1).await?;
     let reply = done(&service, &p).await?;
-    let state: ExperienceState = serde_json::from_value(reply.reply.clone())?;
+    let state: ExperienceState = mimir_json::from_value(reply.reply.clone())?;
     ensure!(state.revision == 2 && state.review_revision == 1 && state.reviewed_revision == 1);
     let after = store.get_belief(target.id).await?.expect("target");
     ensure!(after.alpha == target.alpha0 && after.beta == target.beta0);
@@ -267,10 +267,10 @@ async fn source_correction_retracts_active_review_once_and_preserves_history_and
             .len()
             == 2
     );
-    let stable = serde_json::to_value(&after)?;
+    let stable = mimir_json::to_value(&after)?;
     ensure!(done(&service, &p).await? == reply);
-    ensure!(serde_json::to_value(store.get_belief(target.id).await?.expect("target"))? == stable);
-    ensure!(serde_json::to_value(store.get_belief(foreign.id).await?)? == foreign_before);
+    ensure!(mimir_json::to_value(store.get_belief(target.id).await?.expect("target"))? == stable);
+    ensure!(mimir_json::to_value(store.get_belief(foreign.id).await?)? == foreign_before);
     Ok(())
 }
 

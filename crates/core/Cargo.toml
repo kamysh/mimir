@@ -4,6 +4,7 @@ version = "2.3.0"
 edition = "2021"
 
 [dependencies]
+mimir-json = { path = "../json" }
 kryzhen = { git = "https://github.com/kamysh/kryzhen", tag = "v2.0.3" }
 include_dir = "0.7.4"
 tokio-postgres = { version = "0.7.18", features = ["with-uuid-1", "with-chrono-0_4"] }

@@ -83,14 +83,15 @@ fn read_answer(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn parse_reply(value: Value) -> Result<(Value, VecDeque<Action>)> {
-    let reply: Reply = serde_json::from_value(value.clone()).map_err(|error| {
+fn parse_reply(value: Value) -> Result<(mimir_json::Document, VecDeque<Action>)> {
+    let value = mimir_json::Document::new(value);
+    let reply: Reply = mimir_json::decode_ref(&value).map_err(|error| {
         SourceFailure::json("invalid harness reply", value.to_string().as_bytes(), error)
     })?;
     let actions = reply
         .calls
         .into_iter()
-        .map(|call| match serde_json::from_str(&call.arguments_json) {
+        .map(|call| match mimir_json::from_str(&call.arguments_json) {
             Ok(arguments) => Action::Tool {
                 name: call.name,
                 arguments,
@@ -111,7 +112,7 @@ fn parse_reply(value: Value) -> Result<(Value, VecDeque<Action>)> {
 pub struct Harness<'a> {
     config: &'a LlmConfig,
     program: String,
-    history: Vec<Value>,
+    history: Vec<mimir_json::Document>,
     selected_id: Option<Uuid>,
     checked: bool,
     pending: VecDeque<Action>,
@@ -297,7 +298,7 @@ impl<'a> Harness<'a> {
         }
         if let Some(result) = last {
             self.history
-                .push(json!({"tool_results":[{"result":result}]}));
+                .push(mimir_json::Document::new(json!({"tool_results":[{"result":mimir_json::Document::new(mimir_json::clone_value(result))}]})));
         }
         if let Some(action) = self.pending.pop_front() {
             return Ok(action);
@@ -310,25 +311,26 @@ impl<'a> Harness<'a> {
             "experience":selected,
             "tools":tools,
             "history":self.history,
-            "response_schema":serde_json::from_str::<Value>(SCHEMA)?,
+            "response_schema":mimir_json::from_str::<Value>(SCHEMA)?,
             "protocol":"Return one JSON object matching response_schema. Calls are executed in array order, and each receives a result. arguments_json is a JSON object encoded as a string. Never execute tools directly."
         });
-        let bytes = serde_json::to_vec(&payload)?;
+        let bytes = mimir_json::to_vec(&payload)?;
         let args = self.arguments(&work)?;
         let output = process::run(&self.program, &args, work.path(), &bytes).await?;
         let reply_value = match self.config.backend {
             Kind::ClaudeCode => {
-                let wrapper: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
-                    SourceFailure::json("invalid Claude result", &output.stdout, error)
-                })?;
+                let wrapper: mimir_json::Document = mimir_json::from_slice(&output.stdout)
+                    .map_err(|error| {
+                        SourceFailure::json("invalid Claude result", &output.stdout, error)
+                    })?;
                 ensure!(wrapper["is_error"] == false, "Claude reported failure");
                 if !wrapper["structured_output"].is_null() {
-                    wrapper["structured_output"].clone()
+                    mimir_json::clone_value(&wrapper["structured_output"])
                 } else {
                     let result = wrapper["result"]
                         .as_str()
                         .ok_or_else(|| anyhow!("Claude result missing"))?;
-                    serde_json::from_str(result).map_err(|error| {
+                    mimir_json::from_str(result).map_err(|error| {
                         SourceFailure::json(
                             "invalid Claude structured result",
                             result.as_bytes(),
@@ -339,17 +341,18 @@ impl<'a> Harness<'a> {
             }
             Kind::Codex => {
                 let answer = read_answer(&work.path().join("answer.json"))?;
-                serde_json::from_slice(&answer).map_err(|error| {
+                mimir_json::from_slice(&answer).map_err(|error| {
                     SourceFailure::json("invalid Codex structured result", &answer, error)
                 })?
             }
-            Kind::Command => serde_json::from_slice(&output.stdout).map_err(|error| {
+            Kind::Command => mimir_json::from_slice(&output.stdout).map_err(|error| {
                 SourceFailure::json("invalid command result", &output.stdout, error)
             })?,
             Kind::Api => bail!("API backend is not a harness"),
         };
         let (reply, calls) = parse_reply(reply_value)?;
-        self.history.push(json!({"assistant":reply}));
+        self.history
+            .push(mimir_json::Document::new(json!({"assistant":reply})));
         self.pending = calls;
         Ok(self.pending.pop_front().unwrap_or(Action::Done))
     }
@@ -373,6 +376,27 @@ impl Backend for Harness<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deep_json_arguments_survive_queueing_rejection_and_dropped_work() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let nested = format!("{}null{}", "[".repeat(10000), "]".repeat(10000));
+                let arguments = format!(r#"{{"review":{nested}}}"#);
+                let (_, actions) = parse_reply(
+                    json!({"calls":[{"name":"review_experience","arguments_json":arguments}]}),
+                )
+                .unwrap();
+                drop(actions);
+                let invalid =
+                    mimir_json::parse(&format!(r#"{{"calls":[],"unexpected":{nested}}}"#)).unwrap();
+                assert!(parse_reply(invalid.into_value()).is_err());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
     use crate::judge::state::Report;
     use std::os::unix::fs::PermissionsExt;
 
@@ -431,7 +455,7 @@ esac
     }
 
     fn selected() -> ExperienceState {
-        serde_json::from_value(json!({
+        mimir_json::from_value(json!({
             "experience": {
                 "id": Uuid::new_v4(), "project": "adapter-regression",
                 "context": "large history", "action": "review",
@@ -456,13 +480,13 @@ esac
             assert!(matches!(action, Action::Tool { name, .. } if name == "experience_history"));
 
             let history = json!({"history": "history entry; ".repeat(5_000)});
-            assert!(serde_json::to_vec(&history).unwrap().len() > 64 * 1024);
+            assert!(mimir_json::to_vec(&history).unwrap().len() > 64 * 1024);
             let action = harness
                 .step(&selected, Some(&history), &tools)
                 .await
                 .unwrap();
             assert!(matches!(action, Action::Done));
-            let delivered: Value = serde_json::from_slice(
+            let delivered: Value = mimir_json::from_slice(
                 &fs::read(work.path().join("harness-fixture.payload")).unwrap(),
             )
             .unwrap();
@@ -545,7 +569,7 @@ esac
         assert_eq!(source.excerpt, "{\"review\": }");
         let mut report = Report::new("blocked", 1, 0, 0, 1, 0);
         report.failure_source = Some(source);
-        let serialized = serde_json::to_value(&report).unwrap();
+        let serialized = mimir_json::to_value(&report).unwrap();
         assert_eq!(serialized["failure_source"]["excerpt"], "{\"review\": }");
     }
 }
