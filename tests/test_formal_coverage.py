@@ -78,6 +78,16 @@ class OperationControlCatalogueTests(unittest.TestCase):
         self.assertNotEqual(coverage.native_registered_operations(self.native),
                             coverage.formal_control_operations(changed))
 
+    def test_nested_snapshot_schema_names_do_not_leak_into_outer_plan_fields(self):
+        source = (REPO / 'crates/core/src/store/operation_plans.rs').read_text()
+        self.assertEqual(coverage.native_struct_fields(source, 'StoredPlan'),
+                         coverage.formal_field_names(self.formal, 'fieldNames'))
+        capture = (REPO / 'crates/core/src/store/backfill.rs').read_text()
+        self.assertEqual(coverage.native_struct_fields(capture, 'Source'),
+                         coverage.formal_field_names(self.formal, 'sourceFieldNames'))
+        self.assertEqual(coverage.native_struct_fields(capture, 'Capture'),
+                         coverage.formal_field_names(self.formal, 'captureFieldNames'))
+
 
 if __name__ == '__main__':
     unittest.main()

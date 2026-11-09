@@ -96,6 +96,18 @@ def formal_control_operations(source):
     return operations
 
 
+def native_struct_fields(source, name):
+    body = re.search(r'\bstruct ' + re.escape(name) + r'\s*\{([^}]+)\}', source, re.S)
+    assert body, ('missing native stored schema', name)
+    return set(re.findall(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(\w+)\s*:', body.group(1), re.M))
+
+
+def formal_field_names(source, name):
+    body = re.search(r'^  ' + re.escape(name) + r' =([^\n]*(?:\n    [^\n]+)*)', source, re.M)
+    assert body, ('missing formal stored schema', name)
+    return set(re.findall(r'toList "([a-z_]+)"', body.group(1)))
+
+
 def check():
     coverage = json.loads(read('docs/FORMAL-BEHAVIOR-COVERAGE.json'))
     inventory = json.loads(read('docs/FORMAL-INVENTORY.json'))
@@ -110,11 +122,10 @@ def check():
     controls = read('spec/Mimir/OperationControls.agda')
     native_catalogue = read('crates/core/src/operation_catalogue.rs')
     assert native_registered_operations(native_catalogue) == formal_control_operations(controls), 'operation-control plan catalogue disagrees with native registration'
-    native_plan = re.search(r'struct StoredPlan\s*\{([^}]+)\}', read('crates/core/src/store/operation_plans.rs'), re.S)
-    assert native_plan, 'missing native plan schema'
-    native_fields = set(re.findall(r'^\s*(\w+)\s*:', native_plan.group(1), re.M))
-    formal_fields = controls.split('  fieldNames =', 1)[1].split('  decode :', 1)[0]
-    assert native_fields == set(re.findall(r'toList "([a-z_]+)"', formal_fields)), 'operation-control plan fields disagree with native storage'
+    assert native_struct_fields(read('crates/core/src/store/operation_plans.rs'), 'StoredPlan') == formal_field_names(controls, 'fieldNames'), 'operation-control plan fields disagree with native storage'
+    capture_source = read('crates/core/src/store/backfill.rs')
+    assert native_struct_fields(capture_source, 'Capture') == formal_field_names(controls, 'captureFieldNames'), 'captured-selection fields disagree with native storage'
+    assert native_struct_fields(capture_source, 'Source') == formal_field_names(controls, 'sourceFieldNames'), 'captured-source fields disagree with native storage'
 
     main = 'crates/cli/src/main.rs'
     commands = [kebab(name) for name in enum_variants(main, 'Command')

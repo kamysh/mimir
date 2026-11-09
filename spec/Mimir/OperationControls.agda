@@ -9,7 +9,7 @@ open import Data.Integer using (ℤ)
 open import Data.List using (List; []; _∷_; _++_; map; filterᵇ; length)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_; suc)
+open import Data.Nat using (ℕ; _≟_; _<?_; suc)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.String using (String; toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
@@ -31,6 +31,7 @@ import Mimir.CharacterRules as Characters
 import Mimir.Text as Text
 import Mimir.ProjectDeletion as Project
 import Mimir.RecoverableStoreStep as StoreStep
+import Mimir.PublicInput as PublicInput
 
 record RequestKey : Set where
   constructor requestKey
@@ -354,6 +355,12 @@ module Plan where
   record Saved : Set where
     constructor saved
     field operation : Text; shape : List Boundary; steps : List Step
+          capture : Maybe Wire.Value -- missing differs from an explicitly present null
+
+  record CapturedSource : Set where
+    constructor capturedSource
+    field id : Text; identity : ℕ; content : Text
+          project : Maybe Text; alreadyEmbedded : Bool
 
   once repeated : String → Boundary
   once name = boundary (toList name) false
@@ -401,6 +408,7 @@ module Plan where
     entry "experience_history" [] ∷
     entry "query_learning_context" [] ∷
     entry "delete_evidence" (once "store.delete_evidence" ∷ []) ∷
+    entry "reembed" (repeated "store.insert_belief_embedding" ∷ []) ∷
     []
 
   lookup : Text → List (Text × List Boundary) → Maybe (List Boundary)
@@ -451,7 +459,13 @@ module Plan where
     inj₂ (step site key id)
 
   fieldNames : List Text
-  fieldNames = toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ []
+  fieldNames = toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ toList "capture" ∷ []
+
+  captureFieldNames : List Text
+  captureFieldNames = toList "beliefs" ∷ []
+
+  sourceFieldNames : List Text
+  sourceFieldNames = toList "id" ∷ toList "content" ∷ toList "project" ∷ toList "already_embedded" ∷ []
 
   decode : Wire.Value → Validation.Fault ⊎ Saved
   decode = Decode.readRecord Objects.forbid Objects.rejectKnownRepeated
@@ -459,7 +473,34 @@ module Plan where
     Decode._>>=_ (Wire.required (toList "operation") Wire.asString view) λ operation →
     Decode._>>=_ (Wire.required (toList "shape") (Decode.readArray readBoundary) view) λ shape →
     Decode._>>=_ (Wire.required (toList "steps") (Decode.readArray readStep) view) λ steps →
-    inj₂ (saved operation shape steps)
+    inj₂ (saved operation shape steps (view (toList "capture")))
+
+  readIdentity : Library.Contract → Wire.Value → Validation.Fault ⊎ (Text × ℕ)
+  readIdentity library raw = Decode._>>=_ (Wire.asString raw) λ text → inspect text
+    where
+    inspect : Text → Validation.Fault ⊎ (Text × ℕ)
+    inspect text with Library.Contract.parseUUID library text
+    ... | nothing = inj₁ (Validation.fault [] Validation.malformedInput "The captured ID must be its original stored UUID.")
+    ... | just id with textEqual text (Library.Contract.formatUUID library id)
+    ... | false = inj₁ (Validation.fault [] Validation.malformedInput "The captured ID must use its original canonical stored spelling.")
+    ... | true = inj₂ (text , PublicInput.uuidNumber id)
+
+  readProject : Wire.Value → Validation.Fault ⊎ Maybe Text
+  readProject Wire.null = inj₂ nothing
+  readProject (Wire.string project) = inj₂ (just project)
+  readProject _ = inj₁ (Validation.fault [] Validation.malformedInput "The captured project must be its original string or null.")
+
+  readCapturedSource : Library.Contract → Wire.Value → Validation.Fault ⊎ CapturedSource
+  readCapturedSource library = Decode.readRecord Objects.forbid Objects.rejectKnownRepeated sourceFieldNames λ view →
+    Decode._>>=_ (Wire.required (toList "id") (readIdentity library) view) λ id →
+    Decode._>>=_ (Wire.required (toList "content") Wire.asString view) λ content →
+    Decode._>>=_ (Wire.required (toList "project") readProject view) λ project →
+    Decode._>>=_ (Wire.required (toList "already_embedded") Wire.asBoolean view) λ embedded →
+    inj₂ (capturedSource (proj₁ id) (proj₂ id) content project embedded)
+
+  readCapture : Library.Contract → Wire.Value → Validation.Fault ⊎ List CapturedSource
+  readCapture library = Decode.readRecord Objects.forbid Objects.rejectKnownRepeated captureFieldNames λ view →
+    Wire.required (toList "beliefs") (Decode.readArray (readCapturedSource library)) view
 
   member : Text → List Text → Bool
   member key [] = false
@@ -498,14 +539,84 @@ module Plan where
   ... | nothing = nothing
   ... | just selectedKeys = just (map (λ key → canonicalStep library (Boundary.site item) (just key)) selectedKeys ++ tail)
 
-  valid : Library.Contract → Saved → Bool
-  valid library plan with lookup (Saved.operation plan) registered
+  orderedAfter : ℕ → List CapturedSource → Bool
+  orderedAfter previous [] = true
+  orderedAfter previous (first ∷ rest) = does (previous <? CapturedSource.identity first) ∧
+    orderedAfter (CapturedSource.identity first) rest
+
+  captureOrdered : List CapturedSource → Bool
+  captureOrdered [] = true
+  captureOrdered (first ∷ rest) = orderedAfter (CapturedSource.identity first) rest
+
+  pendingKeys : List CapturedSource → List Text
+  pendingKeys [] = []
+  pendingKeys (first ∷ rest) with CapturedSource.alreadyEmbedded first
+  ... | true = pendingKeys rest
+  ... | false = CapturedSource.id first ∷ pendingKeys rest
+
+  pendingSteps : Library.Contract → List CapturedSource → List Step
+  pendingSteps library rows = map
+    (λ key → canonicalStep library (toList "store.insert_belief_embedding") (just key))
+    (pendingKeys rows)
+
+  captureMatches : Library.Contract → Saved → Bool
+  captureMatches library plan with textEqual (Saved.operation plan) (toList "reembed")
+  ... | false with Saved.capture plan
+  ... | nothing = true
+  ... | just _ = false
+  captureMatches library plan | true with Saved.capture plan
+  ... | nothing = false
+  ... | just raw with readCapture library raw
+  ... | inj₁ _ = false
+  ... | inj₂ rows = captureOrdered rows ∧ stepsEqual (pendingSteps library rows) (Saved.steps plan)
+
+  structurallyValid : Library.Contract → Saved → Bool
+  structurallyValid library plan with lookup (Saved.operation plan) registered
   ... | nothing = false
   ... | just boundaries with shapeEqual boundaries (Saved.shape plan)
   ... | false = false
   ... | true with rebuild library boundaries (Saved.steps plan)
   ... | nothing = false
   ... | just expected = stepsEqual expected (Saved.steps plan)
+
+  valid : Library.Contract → Saved → Bool
+  valid library plan = structurallyValid library plan ∧ captureMatches library plan
+
+  legacyPlanCompatibility : ∀ library plan →
+    textEqual (Saved.operation plan) (toList "reembed") ≡ false → Saved.capture plan ≡ nothing →
+    valid library plan ≡ structurallyValid library plan
+  legacyPlanCompatibility library plan legacy absent rewrite legacy | absent
+    with structurallyValid library plan
+  ... | false = refl
+  ... | true = refl
+
+  legacyCaptureIsRejected : ∀ library plan raw →
+    textEqual (Saved.operation plan) (toList "reembed") ≡ false → Saved.capture plan ≡ just raw →
+    valid library plan ≡ false
+  legacyCaptureIsRejected library plan raw legacy present rewrite legacy | present
+    with structurallyValid library plan
+  ... | false = refl
+  ... | true = refl
+
+  private
+    andRight : ∀ first second → first ∧ second ≡ true → second ≡ true
+    andRight false second ()
+    andRight true second observed = observed
+
+  -- A valid backfill plan selects exactly the original unembedded rows. This
+  -- law is over every captured snapshot, not a chosen list or a work quota.
+  validBackfillKeepsPendingSelection : ∀ library plan raw rows →
+    textEqual (Saved.operation plan) (toList "reembed") ≡ true →
+    Saved.capture plan ≡ just raw → readCapture library raw ≡ inj₂ rows →
+    valid library plan ≡ true → stepsEqual (pendingSteps library rows) (Saved.steps plan) ≡ true
+  validBackfillKeepsPendingSelection library plan raw rows isBackfill captured decoded accepted =
+    selected acceptedCapture
+    where
+    acceptedCapture : captureMatches library plan ≡ true
+    acceptedCapture = andRight (structurallyValid library plan) (captureMatches library plan) accepted
+    selected : captureMatches library plan ≡ true → stepsEqual (pendingSteps library rows) (Saved.steps plan) ≡ true
+    selected observed rewrite isBackfill | captured | decoded =
+      andRight (captureOrdered rows) (stepsEqual (pendingSteps library rows) (Saved.steps plan)) observed
 
 module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   data Problem : Set where
