@@ -187,6 +187,22 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    pub(crate) fn bound_graph_request(
+        field: &str,
+        code: Code,
+        message: String,
+        expected: &str,
+    ) -> Self {
+        let issue = CorrectionItem::new(Location::Arguments,
+            Fault { path: if field.is_empty() { vec![] } else { vec![Segment::Key(field.into())] }, code, message },
+            expected.into(),
+            "Read the original operation binding, its saved outcome and the tool schema. If the stored arguments are wrong, ask the user whether to cancel this pending operation and reserve a corrected request. Do not rewrite a bound request, automatically cancel or reserve replacement work, or invent identifiers. Keep the original token for outcome readback after a lost reply. If intended values are unknown, ask the user rather than guessing.".into())
+            .expect("bound graph correction gives a request and repair");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained graph correction"),
+        }
+    }
+
     pub(crate) fn learning_context_project() -> Self {
         let issue = CorrectionItem::new(
             Location::Arguments,

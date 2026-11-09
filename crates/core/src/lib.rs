@@ -479,6 +479,22 @@ impl MimirService {
         self.store.delete_pattern_operation(step).await
     }
 
+    /// Publish the original registered pattern and save its complete answer.
+    pub async fn create_pattern_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.create_pattern_operation(step).await
+    }
+
+    /// Publish a registered support, cause or bidirectional contradiction.
+    pub async fn direct_relationship_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.direct_relationship_operation(step).await
+    }
+
     /// Add a new pattern.
     pub async fn add_pattern(
         &self,

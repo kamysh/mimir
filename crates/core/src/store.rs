@@ -1,5 +1,6 @@
 mod cancellations;
 mod conformance;
+mod direct_graph;
 mod learning;
 mod operation_plans;
 mod operation_steps;
@@ -1129,7 +1130,22 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        let metadata = tx.query_one(
+        let pattern = self
+            .create_pattern_on(tx.client(), situation, approach, success_rate, project)
+            .await?;
+        tx.commit().await?;
+        Ok(pattern)
+    }
+
+    async fn create_pattern_on(
+        &self,
+        client: &Client,
+        situation: &str,
+        approach: &str,
+        success_rate: Probability,
+        project: Option<&str>,
+    ) -> Result<Pattern> {
+        let metadata = client.query_one(
             "SELECT pg_catalog.gen_random_uuid() AS identity, pg_catalog.transaction_timestamp() AS created_at",
             &[],
         ).await?;
@@ -1142,8 +1158,7 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
             created_at: metadata.get("created_at"),
             project: project.map(str::to_owned),
         };
-        self.insert_pattern_on(tx.client(), &pattern).await?;
-        tx.commit().await?;
+        self.insert_pattern_on(client, &pattern).await?;
         Ok(pattern)
     }
 
