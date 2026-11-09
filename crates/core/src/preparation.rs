@@ -1,11 +1,30 @@
 //! Preparation precedes every business write. Governed by BeliefEmbedding.agda.
 use crate::{
+    config::{EmbeddingBackend, EmbeddingsConfig},
     documents::DocumentChunk,
     graph::{Belief, Probability},
     interaction::{CorrectionItem, Location, NeedsInput},
     learning::IndependentProvenance,
     validation::{Code, Fault, Segment},
 };
+
+/// Semantic provider choices for the immutable operation binding. Credentials,
+/// cache location and execution batching are deliberately absent.
+pub(crate) fn operation_settings(configured: Option<&EmbeddingsConfig>) -> serde_json::Value {
+    let identity = configured.map(|settings| match settings.backend {
+        EmbeddingBackend::Local => serde_json::json!({
+            "backend":"local", "model":crate::embed::HF_MODEL_ID
+        }),
+        EmbeddingBackend::Voyage => serde_json::json!({
+            "backend":"voyage", "model":settings.model,
+            "input_type":"document", "truncation":false
+        }),
+        EmbeddingBackend::OpenAi => serde_json::json!({
+            "backend":"openai", "model":settings.model
+        }),
+    });
+    serde_json::json!({"embeddings":identity})
+}
 
 /// Only preparation or a pre-write check may produce this outcome. A database
 /// error after publication was attempted must retain its uncertain outcome.

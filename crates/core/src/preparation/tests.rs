@@ -17,6 +17,30 @@ use std::sync::Mutex;
 use uuid::Uuid;
 
 struct FixedProvider(Mutex<Option<Result<Vec<Vec<f32>>>>>);
+
+#[test]
+fn operation_provider_identity_survives_credentials_and_execution_changes() {
+    let mut configured = EmbeddingsConfig {
+        backend: EmbeddingBackend::Voyage,
+        model: "same-model".into(),
+        api_key: Some("first-private-key".into()),
+        batch_size: 0,
+        cache_dir: None,
+    };
+    let original = operation_settings(Some(&configured));
+    configured.api_key = Some("rotated-private-key".into());
+    configured.cache_dir = Some("/different/execution-cache".into());
+    configured.batch_size = 17;
+    assert_eq!(original, operation_settings(Some(&configured)));
+    assert!(!original.to_string().contains("private-key"));
+    configured.model = "different-model".into();
+    assert_ne!(original, operation_settings(Some(&configured)));
+    configured.backend = EmbeddingBackend::Local;
+    let local = operation_settings(Some(&configured));
+    configured.model = "ignored-by-the-local-provider".into();
+    assert_eq!(local, operation_settings(Some(&configured)));
+}
+
 impl EmbeddingProvider for FixedProvider {
     fn embed<'a>(
         &'a self,

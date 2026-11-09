@@ -114,6 +114,7 @@ pub struct MimirService {
     database: config::DatabaseConfig,
     inference: InferenceEngine,
     embeddings: Option<OwnedEmbeddingBackend>,
+    embedding_operation_settings: serde_json::Value,
     retirement: Option<toml::Value>,
 }
 
@@ -144,8 +145,15 @@ impl MimirService {
             database: cfg.database.clone(),
             inference: InferenceEngine::new(),
             embeddings,
+            embedding_operation_settings: preparation::operation_settings(cfg.embeddings.as_ref()),
             retirement: cfg.retirement.clone(),
         })
+    }
+
+    /// Capture the actual provider identity for a new operation binding.
+    /// This does not expose credentials or select another provider.
+    pub fn embedding_operation_settings(&self) -> serde_json::Value {
+        self.embedding_operation_settings.clone()
     }
 
     /// Read the captured user policy without accessing business records.
@@ -598,6 +606,22 @@ impl MimirService {
     /// and writes updated probabilities back to the store.
     pub async fn propagate_from(&self, seed_id: Uuid) -> Result<Vec<(Uuid, Probability)>> {
         self.store.propagate_locked(seed_id).await
+    }
+
+    /// Resume the original propagation and save its complete answer atomically.
+    pub async fn propagate_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.propagate_operation(step).await
+    }
+
+    /// Resume a defeat plan without writing its committed edge again.
+    pub async fn record_defeat_operation(
+        &self,
+        plan: &store::OperationPlan,
+    ) -> Result<store::StepDecision> {
+        self.store.record_defeat_operation(plan).await
     }
 
     /// Counterfactual projection P(· | do(target = value)). Read-only: computes
