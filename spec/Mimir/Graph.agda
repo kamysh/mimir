@@ -501,7 +501,8 @@ seed-clamped seedMean _ = refl
 --      enters as a weighted prior signal — NOT as a multiplier on the rank score
 --      (the old `rrf_score × probability`, which let an irrelevant-but-confident
 --      belief bury a strong semantic match).
---   4. Limit: if limit > 0, truncate to `limit` results (unchanged).
+--   4. Selection: an explicit positive count selects at most that many results;
+--      omission returns all matches. Zero requires a request correction.
 --
 -- This legacy section proves structural list properties. Current floating
 -- RRF (including type preference), project/global selection and complete
@@ -518,7 +519,7 @@ seed-clamped seedMean _ = refl
 --   a. Current results use RetrievalRanking's weighted-RRF ordering. The
 --      `IsSortedByProb` / `sort-by-prob-sorted` infrastructure below remains a
 --      separate general utility, not the current retrieval implementation.
---   b. If limit > 0, |results| ≤ limit  (proved via take-length).
+--   b. A selected positive count bounds result length (proved via take-length).
 -- ---------------------------------------------------------------------------
 
 -- Limit bound: take n never produces more than n elements.
@@ -527,10 +528,11 @@ take-length Data.Nat.zero    xs       = z≤n
 take-length (Data.Nat.suc n) []       = z≤n
 take-length (Data.Nat.suc n) (x ∷ xs) = s≤s (take-length n xs)
 
--- query_relevant result length respects limit when limit > 0:
+-- query_relevant result length respects an explicitly selected positive count:
 -- |results| ≤ limit   (the `truncate(limit)` in Rust maps to `take limit`).
--- Consequence: if limit = 1, only the single highest-ranked belief is
--- returned; if limit = 0, all matching beliefs (no truncation).
+-- Consequence: a count of one returns at most the highest-ranked belief.
+-- Omitted selection returns all matches; zero is rejected before
+-- retrieval rather than interpreted as an unbounded request.
 
 -- Deduplication: query_relevant never returns the same belief ID twice.
 -- Text matches are collected first; each downstream belief is added only if
