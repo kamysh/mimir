@@ -1,0 +1,11 @@
+# Prepared default retrieval
+
+`PreparedRetrieval` defines the result of an internal search after the embedding-preparation outcome is known. The inputs contain the query, requested project, optional positive result count and actual preparation result. They do not contain belief rows, selected identities, ranks or a ready-made answer.
+
+The function reads the complete application world. It derives visible durable beliefs and current supersession exclusions, complete keyword and stored-vector rankings, allowed graph connections, probability ranking, final caller selection and the retrieval-coverage report. PostgreSQL's vector distance and ordering and Rust's existing arithmetic and text rules remain external dependencies. The model does not implement those dependencies.
+
+For a scoped query, paths can pass through readable global beliefs but cannot bridge through foreign, working or superseded beliefs. Unscoped traversal retains the existing live-graph behavior and filters returned endpoints. Both reuse the existing propagation relations and finite graph closure. That closure's traversal domain comes from the actual stored node set, not a chosen depth quota; a longer stored chain increases the domain instead of being cut at a fixed allowance.
+
+The recovery instance requires equality with that concrete response and preservation of the entire application world. General laws also require every returned belief to come from the stored world and satisfy the existing eligibility rule. A learning-context instance uses the resulting identities to derive its procedures, outcome counts, provenance and assessments from the same world.
+
+This slice fixes memory-type preference to its ordinary absent value. The existing preference case depends on stable discovery order and remains separate. This is an internal preparation boundary: it does not yet prove that a public execution obtained its prepared input from the correct request and receipts. It also does not add a new proof that the reused graph traversal has exhausted its frontier. Those obligations and mandatory dispatcher integration remain open under #132, #135 and #74.
