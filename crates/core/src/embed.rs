@@ -284,7 +284,7 @@ impl EmbeddingProvider for OpenAiBackend {
 // Local (tract ONNX + HuggingFace tokenizers)
 // ---------------------------------------------------------------------------
 
-const HF_MODEL_ID: &str = "BAAI/bge-base-en-v1.5";
+pub(crate) const HF_MODEL_ID: &str = "BAAI/bge-base-en-v1.5";
 // BGE's declared position-table capacity, including special tokens. This
 // external model requirement was explicitly approved; it never selects a
 // shorter source prefix. See docs/EXTERNAL-MODEL-CONSTRAINTS.md.

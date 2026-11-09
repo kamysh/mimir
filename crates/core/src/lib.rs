@@ -114,6 +114,7 @@ pub struct MimirService {
     database: config::DatabaseConfig,
     inference: InferenceEngine,
     embeddings: Option<OwnedEmbeddingBackend>,
+    embedding_operation_settings: serde_json::Value,
     retirement: Option<toml::Value>,
 }
 
@@ -144,8 +145,15 @@ impl MimirService {
             database: cfg.database.clone(),
             inference: InferenceEngine::new(),
             embeddings,
+            embedding_operation_settings: preparation::operation_settings(cfg.embeddings.as_ref()),
             retirement: cfg.retirement.clone(),
         })
+    }
+
+    /// Capture the actual provider identity for a new operation binding.
+    /// This does not expose credentials or select another provider.
+    pub fn embedding_operation_settings(&self) -> serde_json::Value {
+        self.embedding_operation_settings.clone()
     }
 
     /// Read the captured user policy without accessing business records.
