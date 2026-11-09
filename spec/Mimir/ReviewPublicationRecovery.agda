@@ -7,17 +7,19 @@
 module Mimir.ReviewPublicationRecovery where
 
 open import Data.Bool using (Bool; true; false)
-open import Data.Empty using (⊥)
+open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Float.Base using (Float)
-open import Data.Integer using (ℤ; ∣_∣)
+open import Data.Integer using (ℤ; ∣_∣; +_)
+import Data.Integer.Properties as Integer
 open import Data.List using (List; []; _∷_; map)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ)
+open import Data.Nat using (ℕ; suc)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.String using (toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; trans; subst)
 open import Relation.Binary.PropositionalEquality using (sym)
+open import Relation.Nullary using (yes; no)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
 import Mimir.CandidateGraph as Graph
@@ -30,6 +32,7 @@ import Mimir.IndependentBeliefRecovery as Independent
 import Mimir.LearningCandidates as Candidates
 import Mimir.LearningInput as Input
 import Mimir.LearningOperations as Operations
+import Mimir.LearningKeys as Keys
 import Mimir.LearningSchema as Items
 import Mimir.LearningStore as Learning
 import Mimir.PosteriorComputation as Posterior
@@ -37,6 +40,7 @@ import Mimir.OperationControls as Controls
 import Mimir.PublicEncoding as Encoding
 import Mimir.ReviewObservation as Observation
 import Mimir.ReviewPlanning as Planning
+import Mimir.ReviewLedger as Ledger
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.ReviewPublicationIntent as Intent
 import Mimir.ReviewRecord as Record
@@ -50,10 +54,90 @@ import Mimir.PublicRequest as Public
 import Mimir.ToolCatalog as Tools
 import Mimir.Recovery as Recovery
 import Mimir.DatabaseTransaction as DB
+import Mimir.EmbeddingLifecycle as Lifecycle
 
 record Request : Set where
   constructor request
   field original : Input.Review; expected : ℤ
+
+-- Shared state-dependent preparation checks. These allocate no item, owner or
+-- graph identity. Raw field/schema admission remains at the calling boundary.
+module PreparationStatus where
+  data Status : Set where
+    blocked : Validation.Fault → Status
+    alreadyApplied : Observation.Snapshot → Status
+    waiting : Observation.Snapshot → List (ℕ × Candidates.Candidate) → Status
+
+  currentCandidates : ℕ → Registry.Registry → ℕ → List Candidates.Candidate →
+    Validation.Fault ⊎ List (ℕ × Candidates.Candidate)
+  currentCandidates experience registry index [] = inj₂ []
+  currentCandidates experience registry index (candidate ∷ rest)
+    with Registry.lookup (experience , Candidates.candidateKey candidate) registry
+  ... | nothing with currentCandidates experience registry (suc index) rest
+  ... | inj₁ fault = inj₁ fault
+  ... | inj₂ remaining = inj₂ ((index , candidate) ∷ remaining)
+  currentCandidates experience registry index (candidate ∷ rest) | just stored
+    with Registry.checkExisting candidate stored
+  ... | Validation.rejected fault _ = inj₁ (Validation.prependPath (Validation.key "review")
+    (Validation.prependPath (Validation.key "candidates") (Validation.prependPath (Validation.index index) fault)))
+  ... | Validation.accepted _ = currentCandidates experience registry (suc index) rest
+
+  sourceFault reviewFault : Validation.Fault
+  sourceFault = Validation.fault (Validation.key "review" ∷ Validation.key "experience_revision" ∷ []) Validation.staleRevision
+    "The original experience source revision changed. Stop this preparation, read the current source and original review, and open the user dialog before choosing corrected work."
+  reviewFault = Validation.fault (Validation.key "expected_review_revision" ∷ []) Validation.staleRevision
+    "Another review changed the expected review revision. Stop this preparation, read the current review and original saved operation, and open the user dialog; do not overwrite it."
+
+  atSnapshot : Request → Store.World → Observation.Snapshot → Status
+  atSnapshot input before old with Input.Review.experienceRevision (Request.original input) Integer.≟ Observation.Snapshot.revision old
+  ... | Relation.Nullary.no _ = blocked sourceFault
+  ... | Relation.Nullary.yes _ with Ledger.R.replay
+    (Ledger.World.cells (Publication.World.ledger (Learning.World.publication (Store.World.learning before)))
+      (Input.Review.experienceID (Request.original input))) ∣ Request.expected input ∣ (Keys.reviewInput (Request.original input))
+  ... | true = alreadyApplied old
+  ... | false with Request.expected input Integer.≟ Observation.Snapshot.reviewRevision old
+  ... | Relation.Nullary.no _ = blocked reviewFault
+  ... | Relation.Nullary.yes _ with currentCandidates (Input.Review.experienceID (Request.original input))
+    (Publication.World.registry (Learning.World.publication (Store.World.learning before))) 0
+    (Input.Review.candidates (Request.original input))
+  ... | inj₁ fault = blocked fault
+  ... | inj₂ selected = waiting old selected
+
+  inspect : Request → Store.World → Status
+  inspect input before with Operations.expectedValid (Request.expected input)
+  ... | false = blocked (Validation.fault (Validation.key "expected_review_revision" ∷ []) Validation.invalidNumber
+    "Read the original current review revision; it must be nonnegative and leave one representable increment. Do not clamp or invent a revision.")
+  ... | true with Read.get (Input.Review.experienceID (Request.original input)) (Learning.World.current (Store.World.learning before))
+  ... | nothing = blocked (Validation.fault (Validation.key "review" ∷ Validation.key "experience_id" ∷ []) Validation.missingReference
+    "The original experience no longer exists. Stop this preparation and open the user dialog after reading the original operation; do not recreate a deleted incident.")
+  ... | just old with Observation.checkSnapshot old
+  ... | Validation.rejected fault _ = blocked fault
+  ... | Validation.accepted _ with Recording.coherent (Store.World.learning before) old
+  ... | false = blocked (Validation.fault [] Validation.malformedInput
+    "The current source and review header disagree. Stop preparation and read its source, history and diagnostics before continuing.")
+  ... | true = atSnapshot input before old
+
+  changedSourceRefuses : ∀ input before old →
+    Input.Review.experienceRevision (Request.original input) Relation.Binary.PropositionalEquality.≢ Observation.Snapshot.revision old →
+    atSnapshot input before old ≡ blocked sourceFault
+  changedSourceRefuses input before old different
+    with Input.Review.experienceRevision (Request.original input) Integer.≟ Observation.Snapshot.revision old
+  ... | no _ = refl
+  ... | yes same = ⊥-elim (different same)
+
+  checkedOwnership : Request → Store.World → Lifecycle.Ownership.State → Lifecycle.Ownership.State
+  checkedOwnership input before owned with inspect input before
+  ... | blocked _ = Lifecycle.Ownership.stop owned
+  ... | alreadyApplied _ = Lifecycle.Ownership.stop owned
+  ... | waiting _ _ = owned
+
+  refusedPreparationStopsItsJob : ∀ input before fault owned → inspect input before ≡ blocked fault →
+    checkedOwnership input before owned ≡ Lifecycle.Ownership.stop owned
+  refusedPreparationStopsItsJob input before fault owned observed rewrite observed = refl
+
+  completedReviewStopsRedundantJob : ∀ input before old owned → inspect input before ≡ alreadyApplied old →
+    checkedOwnership input before owned ≡ Lifecycle.Ownership.stop owned
+  completedReviewStopsRedundantJob input before old owned observed rewrite observed = refl
 
 -- Every field is a physical execution observation. It is not a tool argument
 -- or a desired result supplied by the caller. Saved owners determine belief
