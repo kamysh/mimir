@@ -19,7 +19,7 @@ import Mimir.ItemOwners as Owners
 import Mimir.LearningStore as Learning
 import Mimir.DatabaseTransaction as Database
 open import Mimir.Migrations public
-  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys; candidateKeyContent; embeddingOwners; operationCancellations; decayAccounting; firstDefeatClock; backfillChangeEvents; beliefSources)
+  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys; candidateKeyContent; embeddingOwners; operationCancellations; decayAccounting; firstDefeatClock; backfillChangeEvents; beliefSources; reviewPreparationEvents)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation;
@@ -183,7 +183,7 @@ data DDL : Set where
   addCheckConstraint : String → String → Expr → DDL
   dropCheckConstraint : String → String → DDL
   installReviewQueueNotifier installEmbeddingOwnerNotifier installImmutableOperationBindings installImmutableStepReplies installImmutableOperationPlans installImmutableRequestKeys : DDL
-  installOperationCancellationGuards installBeliefVectorNotifier : DDL
+  installOperationCancellationGuards installBeliefVectorNotifier installReviewPreparationNotifier : DDL
   -- Fill this absent graph property at one observed PostgreSQL time. Existing
   -- values and every count/probability/prior remain untouched.
   initializeMissingBeliefTimestamp : String → Default → DDL
@@ -231,6 +231,7 @@ body decayAccounting = initializeMissingBeliefTimestamp "decay_accounted_at" now
 body firstDefeatClock = markExistingUndatedDefeatsExpired ∷ []
 body backfillChangeEvents = installBeliefVectorNotifier ∷ []
 body beliefSources = create beliefSourceTable ∷ []
+body reviewPreparationEvents = installReviewPreparationNotifier ∷ []
 body candidateKeyContent =
   dropCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_check" ∷
   addCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_nonempty"
