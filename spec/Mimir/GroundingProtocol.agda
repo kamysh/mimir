@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
--- Automatic grounding uses the actual returned similarity, with a 20-result
--- search pool, threshold .80 and project compatibility. Each accepted pair
+-- Automatic grounding uses all returned similarities, threshold .80 and
+-- project compatibility. Each accepted pair
 -- invokes GroundingPublication; a later failure retains prior committed pairs.
 module Mimir.GroundingProtocol where
 
@@ -21,6 +21,7 @@ import Mimir.DocumentStore as Documents
 import Mimir.CandidateGraph as Graph
 import Mimir.GraphNumerics as N
 import Mimir.Effects as Effects
+import Mimir.RetrievalRanking as Ranking
 
 compatible : Maybe Text → Maybe Text → Bool
 compatible nothing actual = true
@@ -28,7 +29,7 @@ compatible (just wanted) nothing = true
 compatible (just wanted) (just actual) = does (wanted ≟Text actual)
 
 data Effect : Set where
-  searchChunks searchBeliefs : Store.Vector → ℕ → Effect
+  searchChunks searchBeliefs : Store.Vector → Ranking.Selection → Effect
   getChunk : ℕ → Effect
   getBelief : ℕ → Effect
   addGround : ℕ → ℕ → Float → Effect
@@ -71,7 +72,7 @@ mutual
   ... | true = add (Documents.Chunk.identity chunk) (Graph.BeliefValues.identity belief) similarity (beliefCandidates belief rest)
 
 groundBelief : Graph.BeliefValues → Store.Vector → Script Result
-groundBelief belief vector = read (searchChunks vector 20) refl (beliefCandidates belief)
+groundBelief belief vector = read (searchChunks vector nothing) refl (beliefCandidates belief)
 
 mutual
   chunkCandidates : Documents.Chunk → List (ℕ × Float) → Script Result → Script Result
@@ -88,7 +89,7 @@ mutual
 
 groundChunks : List (Documents.Chunk × Store.Vector) → Script Result
 groundChunks [] = done success
-groundChunks ((chunk , vector) ∷ rest) = read (searchBeliefs vector 20) refl
+groundChunks ((chunk , vector) ∷ rest) = read (searchBeliefs vector nothing) refl
   (λ candidates → chunkCandidates chunk candidates (groundChunks rest))
 
 globalCompatible : ∀ project → compatible project nothing ≡ true

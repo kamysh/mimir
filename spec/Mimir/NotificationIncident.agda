@@ -45,7 +45,7 @@ record Incident : Set where
 
 newAlert : Text → ℕ → Kind → Event → Text → Text → Alert
 newAlert identity now kind e code summary = alert identity kind (Event.source e) code summary
-  (Event.details e) 0 now pending nothing
+  (Event.details e) 0 0 pending nothing
 
 recoverAlert : Text → ℕ → Event → Maybe Text → Maybe Alert
 recoverAlert identity now e nothing = nothing
@@ -92,17 +92,15 @@ repeatedRecoveryPreservesRetry : ∀ identity now before source key details →
 repeatedRecoveryPreservesRetry identity now before source key details inactive rewrite inactive = refl
 
 data Outcome : Set where
-  disabled notNeeded sent retryPending exhausted authRequired unavailable : Outcome
+  disabled notNeeded sent retryPending authRequired unavailable : Outcome
 
 outcome : Incident → Outcome
 outcome before with Incident.outbox before
 ... | nothing = notNeeded
-... | just a with Alert.delivery a
-...   | exhausted = exhausted
-...   | pending with Alert.lastError a
-...     | nothing = retryPending
-...     | just authRequired = authRequired
-...     | just unavailable = unavailable
+... | just a with Alert.lastError a
+...   | nothing = retryPending
+...   | just authRequired = authRequired
+...   | just unavailable = unavailable
 
 -- SMTP success changes only delivered-code bookkeeping and the queued alert.
 -- The active failure episode is cleared by a recovery event, not by sending.

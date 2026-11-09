@@ -7,7 +7,7 @@ module Mimir.ReviewAdmission where
 open import Data.List using (List; []; _∷_; map; _++_; concatMap)
 open import Data.List.Relation.Unary.All using (All)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Data.Nat using (ℕ; suc; _≟_)
 open import Data.Integer using (+_)
 import Data.Integer.Properties as Integer
 open import Data.Product using (_×_; _,_)
@@ -17,7 +17,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Validation hiding (Feedback; feedback)
 open import Mimir.ExperienceSchema using (Experience; HasEvidence; checkHasEvidence;
   ReviewSourcesValid; validateReviewSources)
-open import Mimir.ReviewSchema using (Review; Feedback; Link; ReviewValid; validateReview)
+open import Mimir.ReviewSchema using (Review; Feedback; Link; CandidateFeedback; CandidateLink; ReviewValid; validateReview)
 open import Mimir.LearningSchema using (Target; existing; candidate; Assessment)
 open import Mimir.LearningCorrections using (ReviewCorrection; validateReviewCorrection)
 import Mimir.ReviewResolution as Resolution
@@ -33,6 +33,35 @@ targetIDs : Review → List ℕ
 targetIDs r = map Feedback.beliefID (Review.feedbacks r) ++ Review.superseded r ++
   concatMap (λ l → Link.from l ∷ Link.to l ∷ []) (Review.links r) ++
   concatMap assessmentIDs (Review.assessments r)
+
+located : ∀ {A : Set} → (List Segment → A → List Targets.Reference) →
+  List Segment → ℕ → List A → List Targets.Reference
+located make base offset [] = []
+located make base offset (value ∷ rest) = make (base ++ (index offset ∷ [])) value ++ located make base (suc offset) rest
+
+existingReference : List Segment → Target → List Targets.Reference
+existingReference path (existing id) = Targets.reference id (path ++ (key "belief_id" ∷ [])) ∷ []
+existingReference path (candidate name) = []
+
+-- Only references already supplied as UUIDs are checked before preparation.
+-- Candidate identities remain governed by declaration/reservation and by the
+-- complete materialized-target check below.
+existingReferences : Review → List Targets.Reference
+existingReferences r =
+  located (λ path f → Targets.reference (Feedback.beliefID f) (path ++ (key "belief_id" ∷ [])) ∷ [])
+    (key "review" ∷ key "feedback" ∷ []) 0 (Review.feedbacks r) ++
+  located (λ path id → Targets.reference id path ∷ [])
+    (key "review" ∷ key "superseded_beliefs" ∷ []) 0 (Review.superseded r) ++
+  located (λ path link → Targets.reference (Link.from link) (path ++ (key "from_id" ∷ [])) ∷
+    Targets.reference (Link.to link) (path ++ (key "to_id" ∷ [])) ∷ [])
+    (key "review" ∷ key "links" ∷ []) 0 (Review.links r) ++
+  located (λ path a → existingReference (path ++ (key "target" ∷ [])) (Assessment.target a))
+    (key "review" ∷ key "assessments" ∷ []) 0 (Review.assessments r) ++
+  located (λ path f → existingReference (path ++ (key "target" ∷ [])) (CandidateFeedback.target f))
+    (key "review" ∷ key "candidate_feedback" ∷ []) 0 (Review.candidateFeedbacks r) ++
+  located (λ path link → existingReference (path ++ (key "from" ∷ [])) (CandidateLink.from link) ++
+    existingReference (path ++ (key "to" ∷ [])) (CandidateLink.to link))
+    (key "review" ∷ key "candidate_links" ∷ []) 0 (Review.candidateLinks r)
 
 -- Empty contribution sets need no extra legacy evidence. Typed assessment
 -- evidence is checked independently, including unresolved zero-weight cases.
@@ -77,7 +106,7 @@ checkPin : ∀ env requested → Checked (Pinned env requested)
 checkPin env requested = combine
   (check (fault [] wrongIdentity "review belongs to another experience")
     (Review.experienceID requested ≟ Experience.identity (Environment.experience env)))
-  (check (fault [] staleRevision "experience has changed")
+  (check (fault (key "review" ∷ key "experience_revision" ∷ []) staleRevision "experience has changed")
     (Review.experienceRevision requested Integer.≟ (+ Environment.sourceRevision env)))
 
 module For (env : Environment) (requested : Review) where
@@ -101,10 +130,12 @@ module For (env : Environment) (requested : Review) where
   admit : Fault ⊎ Admitted
   admit = result (validateReview requested) >>= λ structurallyValid →
     result (checkPin env requested) >>= λ pinned →
-    result (validateReviewSources (Environment.experience env) requested) >>= λ sourcesValid →
-    result (checkPrior (Environment.prior env) requested) >>= λ retained →
+    result (Targets.checkReferences (Experience.project (Environment.experience env))
+      (Environment.beliefs env) (existingReferences requested)) >>= λ existingTargetsValid →
+    result (at (key "review") (validateReviewSources (Environment.experience env) requested)) >>= λ sourcesValid →
+    result (at (key "review") (checkPrior (Environment.prior env) requested)) >>= λ retained →
     Resolution.prepareReview requested (Environment.registry env) >>= λ prepared →
-    result (validateReviewSources (Environment.experience env) (materialized prepared)) >>= λ materializedSourcesValid →
+    result (at (key "review") (validateReviewSources (Environment.experience env) (materialized prepared))) >>= λ materializedSourcesValid →
     result (Targets.validate (Experience.project (Environment.experience env))
       (Environment.beliefs env) (targetIDs (materialized prepared))) >>= λ targetsValid →
     result (checkRecordedEvidence (Environment.experience env) (materialized prepared)) >>= λ evidence →

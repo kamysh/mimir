@@ -3,13 +3,34 @@ use mimir_core::validation::{Fault, Refusal, RefusalKind};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
-const MAX_STDERR: usize = 4096;
+struct StderrCapture {
+    bytes: Vec<u8>,
+    error: Option<std::io::Error>,
+}
+
+#[derive(Debug)]
+pub struct McpStreamEnded {
+    pub stderr: Vec<u8>,
+    pub issues: Vec<String>,
+}
+
+impl std::fmt::Display for McpStreamEnded {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(output, "MCP stream ended")?;
+        if !self.stderr.is_empty() {
+            write!(output, ": {}", String::from_utf8_lossy(&self.stderr))?;
+        }
+        for issue in &self.issues {
+            write!(output, "; {issue}")?;
+        }
+        Ok(())
+    }
+}
+impl std::error::Error for McpStreamEnded {}
 
 #[derive(Debug)]
 pub struct CandidateConflict(pub Fault);
@@ -54,11 +75,108 @@ fn undeclared_belief_candidate(error: &Value) -> bool {
     Refusal::from_mcp(error).is_some_and(|r| r.kind == RefusalKind::UndeclaredCandidate)
 }
 
+/// Own the exact effective configuration handed to one MCP child. The source
+/// file can change after admission without changing this child's database.
+pub struct PreparedConfig {
+    _directory: super::harness::RunDir,
+    path: std::path::PathBuf,
+}
+
+#[cfg(test)]
+mod prepared_config_tests {
+    use super::PreparedConfig;
+    use crate::judge::{config, harness::RunDir};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    #[test]
+    fn prepared_mcp_config_keeps_selected_settings_and_cleans_up() {
+        let work = RunDir::new_in(&std::env::temp_dir()).unwrap();
+        let source_text = format!(
+            "config_version=1\n[logging]\ndirectory={}\n[database]\nhost='127.0.0.1'\nport=15432\ndbname='snapshot-selected'\nuser='snapshot-user'\npassword='fixture-only-secret'\nssl_mode='verify-full'\nssl_root_cert='/fixture/root.pem'\n[judge]\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n",
+            toml::Value::String(work.path().join("logs").display().to_string())
+        );
+        let original = work.write("original.toml", source_text.as_bytes()).unwrap();
+        let selected = config::load(Some(&original)).unwrap();
+        assert_eq!(selected.core.database.dbname, "snapshot-selected");
+        let prepared = PreparedConfig::new(&selected, work.path()).unwrap();
+        let child_path = prepared.path().to_owned();
+        assert_ne!(child_path, original);
+        assert_ne!(
+            std::fs::metadata(&child_path).unwrap().ino(),
+            std::fs::metadata(&original).unwrap().ino()
+        );
+        std::fs::write(
+            &original,
+            source_text.replace("snapshot-selected", "snapshot-replaced"),
+        )
+        .unwrap();
+        let (child, operations) =
+            mimir_core::config::Config::load_with_operations(&child_path).unwrap();
+        assert_eq!(
+            toml::to_string(&child).unwrap(),
+            toml::to_string(&selected.core).unwrap()
+        );
+        assert_eq!(
+            operations.header().unwrap(),
+            selected.operations.header().unwrap()
+        );
+        assert_eq!(
+            config::load(Some(&original)).unwrap().core.database.dbname,
+            "snapshot-replaced"
+        );
+        assert_eq!(
+            std::fs::metadata(&child_path).unwrap().permissions().mode() & 0o077,
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(child_path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+        drop(prepared);
+        assert!(!child_path.exists());
+        assert!(original.exists());
+    }
+}
+
+impl PreparedConfig {
+    pub fn new(settings: &super::config::RuntimeConfig, directory: &Path) -> Result<Self> {
+        let work = super::harness::RunDir::new_in(directory)?;
+        let text = format!(
+            "{}\n{}",
+            settings.operations.header()?,
+            toml::to_string(&settings.core)?
+        );
+        let path = work.write("mcp-config.toml", text.as_bytes())?;
+        ensure!(
+            path != settings.path,
+            "private MCP configuration must differ from its source"
+        );
+        let observed = super::config::load(Some(&path))?;
+        ensure!(
+            toml::to_string(&observed.core)? == toml::to_string(&settings.core)?
+                && observed.operations.header()? == settings.operations.header()?,
+            "private MCP configuration differs from the selected settings; retry after correcting the configuration"
+        );
+        Ok(Self {
+            _directory: work,
+            path,
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 pub struct Client {
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
-    stderr: Arc<Mutex<Vec<u8>>>,
+    stderr: Option<JoinHandle<StderrCapture>>,
     next_id: u64,
     allowed_tools: Vec<Value>,
 }
@@ -99,27 +217,16 @@ impl Client {
             .stderr
             .take()
             .ok_or_else(|| anyhow!("MCP stderr unavailable"))?;
-        let stderr = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&stderr);
-        tokio::spawn(async move {
-            let mut chunk = [0u8; 1024];
-            while let Ok(size) = error_pipe.read(&mut chunk).await {
-                if size == 0 {
-                    break;
-                }
-                let mut bytes = captured.lock().await;
-                bytes.extend_from_slice(&chunk[..size]);
-                if bytes.len() > MAX_STDERR {
-                    let excess = bytes.len() - MAX_STDERR;
-                    bytes.drain(..excess);
-                }
-            }
+        let stderr = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            let error = error_pipe.read_to_end(&mut bytes).await.err();
+            StderrCapture { bytes, error }
         });
         let mut client = Self {
             child,
             input,
             output,
-            stderr,
+            stderr: Some(stderr),
             next_id: 1,
             allowed_tools: Vec::new(),
         };
@@ -166,15 +273,7 @@ impl Client {
             let byte = self.output.read_u8().await;
             let byte = match byte {
                 Ok(byte) => byte,
-                Err(_) => {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                    let stderr = self.stderr.lock().await;
-                    let detail = super::state::bounded(&String::from_utf8_lossy(&stderr), 512);
-                    if detail.is_empty() {
-                        bail!("MCP stream ended");
-                    }
-                    bail!("MCP stream ended: {detail}");
-                }
+                Err(error) => return Err(self.ended(error).await.into()),
             };
             if byte == b'\n' {
                 break;
@@ -184,6 +283,46 @@ impl Client {
         serde_json::from_slice(&bytes).map_err(|error| {
             super::state::SourceFailure::json("malformed MCP response", &bytes, error).into()
         })
+    }
+
+    async fn ended(&mut self, cause: std::io::Error) -> McpStreamEnded {
+        let mut issues = vec![format!("response read: {cause}")];
+        // EOF means no further protocol reply can arrive. Stop the exact owned
+        // group before reaping its leader, so descendants cannot retain pipes
+        // or embedding work and the group ID cannot have been reused.
+        if let Some(pid) = self.child.id() {
+            if unsafe { libc::kill(-(pid as i32), libc::SIGKILL) } == -1 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    issues.push(format!("child-group cleanup: {error}"));
+                }
+            }
+        }
+        if let Err(error) = self.child.start_kill() {
+            issues.push(format!("child cleanup: {error}"));
+        }
+        if let Err(error) = self.child.wait().await {
+            issues.push(format!("child wait: {error}"));
+        }
+        // Keep the handle in self while awaiting it: cancelling this future
+        // must still let Drop abort the reader rather than detach it.
+        let joined = match self.stderr.as_mut() {
+            Some(reader) => Some(reader.await),
+            None => None,
+        };
+        self.stderr.take();
+        let mut stderr = Vec::new();
+        match joined {
+            Some(Ok(capture)) => {
+                stderr = capture.bytes;
+                if let Some(error) = capture.error {
+                    issues.push(format!("stderr read: {error}"));
+                }
+            }
+            Some(Err(error)) => issues.push(format!("stderr task: {error}")),
+            None => issues.push("stderr was already collected".into()),
+        }
+        McpStreamEnded { stderr, issues }
     }
 
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
@@ -450,6 +589,9 @@ impl Drop for Client {
             let _ = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
         }
         let _ = self.child.start_kill();
+        if let Some(reader) = self.stderr.take() {
+            reader.abort();
+        }
     }
 }
 
@@ -460,6 +602,47 @@ mod startup_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn ended_stream_keeps_complete_stderr_before_returning() {
+        let work = crate::judge::harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
+        let mut bytes = format!(
+            "first diagnostic\n{}\nactual final explanation\n",
+            "λ".repeat(64 * 1024 + 1)
+        )
+        .into_bytes();
+        bytes.push(0xff);
+        let path = work.write("stderr.bin", &bytes).unwrap();
+        let error = Client::start(
+            "bash",
+            &[
+                "-c".into(),
+                "read -r request; cat -- \"$1\" >&2; exit 7".into(),
+                "fixture".into(),
+                path.display().to_string(),
+            ],
+            &work.path().join("unused-config"),
+        )
+        .await
+        .err()
+        .expect("the fixture exits without a protocol reply");
+        let ended = error
+            .downcast_ref::<McpStreamEnded>()
+            .expect("terminal evidence must remain available");
+        assert_eq!(
+            ended.stderr, bytes,
+            "neither a prefix nor a tail may replace the evidence"
+        );
+        assert!(error.to_string().contains("actual final explanation"));
+        assert!(
+            !ended
+                .issues
+                .iter()
+                .any(|issue| issue.starts_with("stderr ")),
+            "stderr collection did not complete: {:?}",
+            ended.issues
+        );
+    }
 
     #[test]
     fn only_known_candidate_conflicts_are_deferred() {
@@ -514,33 +697,50 @@ mod tests {
         .await;
         assert!(malformed.is_err());
 
-        let pid_file =
-            std::env::temp_dir().join(format!("mimir-descendant-{}.pid", uuid::Uuid::new_v4()));
+        use tokio::io::AsyncBufReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let script = format!(
-            "sleep 30 & child=$!; printf '%s' \"$child\" > '{}'; wait",
-            pid_file.display()
+            "exec 3<>/dev/tcp/127.0.0.1/{port}; bash -c 'exec 4<>/dev/tcp/127.0.0.1/{port}; printf \"%s %s\\n\" \"$PPID\" \"$$\" >&4; read -r -u 4 stop' & descendant=$!; printf '%s %s\\n' \"$$\" \"$descendant\" >&3; wait",
+            port = listener.local_addr().unwrap().port()
         );
-        let cancelled = tokio::time::timeout(
-            Duration::from_secs(1),
+        // Each process retains a connection until it stops. The descendant
+        // announces its own identity after opening its lifetime connection.
+        let startup = tokio::spawn(async move {
             Client::start(
                 "bash",
                 &["-c".into(), script],
                 Path::new("/var/tmp/mimir/step5/unused-config"),
-            ),
-        )
-        .await;
-        assert!(cancelled.is_err());
-        let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
-        let mut alive = true;
-        for _ in 0..20 {
-            let proc_state = std::fs::read_to_string(format!("/proc/{pid}/stat"));
-            alive = proc_state.is_ok_and(|state| state.split_whitespace().nth(2) != Some("Z"));
-            if !alive {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(!alive, "cancellation left a live descendant");
-        std::fs::remove_file(pid_file).unwrap();
+            )
+            .await
+        });
+        let (transport, _) = listener.accept().await.unwrap();
+        let mut transport = BufReader::new(transport);
+        let mut ready = String::new();
+        assert!(transport.read_line(&mut ready).await.unwrap() > 0);
+        let pids: Vec<u32> = ready
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 2);
+        assert_ne!(
+            pids[0], pids[1],
+            "the fixture must include a real descendant"
+        );
+        let (descendant, _) = listener.accept().await.unwrap();
+        let mut descendant = BufReader::new(descendant);
+        let mut descendant_ready = String::new();
+        assert!(descendant.read_line(&mut descendant_ready).await.unwrap() > 0);
+        assert_eq!(descendant_ready, ready);
+        assert!(
+            !startup.is_finished(),
+            "startup unexpectedly completed without an MCP reply"
+        );
+        startup.abort();
+        assert!(matches!(startup.await, Err(error) if error.is_cancelled()));
+        let mut remaining = Vec::new();
+        transport.read_to_end(&mut remaining).await.unwrap();
+        assert!(remaining.is_empty());
+        descendant.read_to_end(&mut remaining).await.unwrap();
+        assert!(remaining.is_empty());
     }
 }

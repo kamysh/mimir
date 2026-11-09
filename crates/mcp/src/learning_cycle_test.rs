@@ -11,6 +11,128 @@ use serde_json::json;
 use uuid::Uuid;
 
 #[tokio::test]
+async fn pending_selection_has_no_default_and_invalid_counts_request_correction() -> Result<()> {
+    use mimir_core::learning::{Experience, ObservationSource, Outcome};
+    let service = MimirService::connect(&Config {
+        database: isolation::fixture().database_config(),
+        embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: None,
+    })
+    .await?;
+    let project = format!("all-pending-{}", Uuid::new_v4());
+    let other = format!("other-pending-{}", Uuid::new_v4());
+    let result = async {
+        for scope in std::iter::repeat_n(&project, 32).chain(std::iter::once(&other)) {
+            let source = Experience {
+                id: Uuid::new_v4(),
+                project: scope.clone(),
+                context: "selection fixture".into(),
+                action: "verify complete pending selection".into(),
+                outcome: Outcome::Unknown,
+                source: ObservationSource::ToolResult,
+                evidence: vec!["owned database fixture".into()],
+                belief_ids: vec![],
+                pattern_id: None,
+                learning_items: vec![],
+                source_records: vec![],
+            };
+            service.record_experience(&source, 0).await?;
+        }
+        let all =
+            handle_tool_call(&service, "pending_experiences", &json!({"project":project})).await?;
+        let rows = all
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("pending rows missing"))?;
+        ensure!(
+            rows.len() == 32,
+            "omitted count hid pending work: {}",
+            rows.len()
+        );
+        ensure!(
+            rows.iter()
+                .all(|row| row["experience"]["project"] == project),
+            "project filter changed"
+        );
+        let one = handle_tool_call(
+            &service,
+            "pending_experiences",
+            &json!({"project":project,"limit":1}),
+        )
+        .await?;
+        ensure!(
+            one.as_array() == Some(&rows[..1].to_vec()),
+            "positive selection changed ordering"
+        );
+        let largest = handle_tool_call(
+            &service,
+            "pending_experiences",
+            &json!({"project":project,"limit":usize::MAX}),
+        )
+        .await?;
+        ensure!(largest == all, "large positive selection was narrowed");
+        let excluded = json!([rows[0]["experience"]["id"], rows[31]["experience"]["id"]]);
+        let filtered = handle_tool_call(
+            &service,
+            "pending_experiences",
+            &json!({"project":project,"exclude_ids":excluded}),
+        )
+        .await?;
+        ensure!(
+            filtered.as_array() == Some(&rows[1..31].to_vec()),
+            "exclusion or ordering changed"
+        );
+        for invalid in [json!(0), json!(-1), json!(1.5), json!("2"), json!(null)] {
+            let correction = handle_tool_call(
+                &service,
+                "pending_experiences",
+                &json!({"project":project,"limit":invalid}),
+            )
+            .await?;
+            ensure!(
+                correction["status"] == "needs_input",
+                "invalid count was not a correction: {correction}"
+            );
+            ensure!(
+                correction["business_changes"] == "none",
+                "read correction claimed a mutation"
+            );
+            ensure!(
+                correction["issues"]
+                    .as_array()
+                    .is_some_and(|issues| !issues.is_empty()),
+                "missing correction detail"
+            );
+        }
+        ensure!(
+            handle_tool_call(&service, "pending_experiences", &json!({"project":project})).await?
+                == all,
+            "selection changed pending records"
+        );
+        let tools = tools_list();
+        let count = &tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "pending_experiences")
+            .unwrap()["inputSchema"]["properties"]["limit"];
+        ensure!(
+            count["minimum"] == 1 && count.get("default").is_none(),
+            "schema still hides a default"
+        );
+        Ok(())
+    }
+    .await;
+    let cleanup = service.delete_project(&project).await;
+    let other_cleanup = service.delete_project(&other).await;
+    cleanup?;
+    other_cleanup?;
+    result
+}
+
+#[tokio::test]
 async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> {
     let service = MimirService::connect(&Config {
         database: isolation::fixture().database_config(),
@@ -18,6 +140,7 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     })
     .await?;
     let capabilities = handle_tool_call(&service, "learning_capabilities", &json!({})).await?;

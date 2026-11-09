@@ -18,7 +18,7 @@ open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; trans; subst; sym; cong)
 open import Mimir.Text using (Text)
 open import Mimir.LearningCandidates using (Candidate; candidateKey)
-open import Mimir.Validation using (Fault)
+open import Mimir.Validation using (Fault; index; prependPath)
 open import Mimir.OptionalTraversal using (nothingNotJust)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.CandidateRegistry as Registry
@@ -37,16 +37,20 @@ Prepared : List ℕ → ℕ → Registry.Registry → List Candidate → Set
 Prepared occupied experience before candidates = Σ Registry.Registry (λ after →
   Σ Resolution.Registry (λ bindings → Batch occupied experience before candidates after bindings))
 
-prepare : ∀ occupied experience before candidates → (Candidate → ℕ) →
+prepareFrom : ∀ offset occupied experience before candidates → (Candidate → ℕ) →
   Fault ⊎ Prepared occupied experience before candidates
-prepare occupied experience before [] fresh = inj₂ (before , [] , done before)
-prepare occupied experience before (candidate ∷ rest) fresh
+prepareFrom offset occupied experience before [] fresh = inj₂ (before , [] , done before)
+prepareFrom offset occupied experience before (candidate ∷ rest) fresh
   with Registry.reserve before occupied experience candidate (fresh candidate)
-... | inj₁ fault = inj₁ fault
-... | inj₂ planned with prepare occupied experience (Registry.publish planned) rest fresh
+... | inj₁ fault = inj₁ (prependPath (index offset) fault)
+... | inj₂ planned with prepareFrom (suc offset) occupied experience (Registry.publish planned) rest fresh
 ...   | inj₁ fault = inj₁ fault
 ...   | inj₂ (after , bindings , remainder) = inj₂
   (after , (candidateKey candidate , Registry.assigned planned) ∷ bindings , next planned remainder)
+
+prepare : ∀ occupied experience before candidates → (Candidate → ℕ) →
+  Fault ⊎ Prepared occupied experience before candidates
+prepare = prepareFrom 0
 
 -- Reusing or adding a fresh reservation cannot change an existing lookup.
 lookupPreserved : ∀ {before occupied experience candidate}

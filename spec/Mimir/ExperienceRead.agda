@@ -91,8 +91,14 @@ list project onlyPending limit excluded rows with does (1 ≤? limit)
 
 -- Existing public pending operation is a specialization of the same ordering
 -- and exclusion rules; no selected item is acknowledged by this read.
-pendingExperiences : Maybe Text → ℕ → List ℕ → List Row → Result
-pendingExperiences project limit excluded rows = list project true limit excluded rows
+pendingExperiences : Maybe Text → Maybe ℕ → List ℕ → List Row → Result
+pendingExperiences project nothing excluded rows = selected (map storedSnapshot (sort (select project true excluded rows)))
+pendingExperiences project (just limit) excluded rows = list project true limit excluded rows
+
+omissionReturnsAllPending : ∀ project excluded rows →
+  pendingExperiences project nothing excluded rows ≡
+    selected (map storedSnapshot (sort (select project true excluded rows)))
+omissionReturnsAllPending project excluded rows = refl
 
 lookupOwn : ∀ r rs → get (identity r) (r ∷ rs) ≡ just (storedSnapshot r)
 lookupOwn r rs with identity r ≟ identity r

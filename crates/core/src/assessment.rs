@@ -58,23 +58,55 @@ fn range(x: f64, min: f64, max: f64) -> Result<()> {
     );
     Ok(())
 }
+pub(crate) fn validate_local_key(key: &str, path: Vec<crate::validation::Segment>) -> Result<()> {
+    use crate::{interaction::RequestCorrection, validation::Code};
+    if key.trim().is_empty() {
+        return Err(RequestCorrection::local_key(
+            path,
+            Code::EmptyText,
+            "The local key is empty or contains only whitespace.".into(),
+        )
+        .into());
+    }
+    if key != key.trim() {
+        return Err(RequestCorrection::local_key(path, Code::MalformedInput,
+            "The local key has leading or trailing whitespace; its identity cannot be silently changed.".into()).into());
+    }
+    Ok(())
+}
+
 pub fn validate_items(items: &[LearningItem]) -> Result<()> {
     let mut ids = HashSet::new();
     let mut keys = HashSet::new();
-    for item in items {
-        ensure!(
-            item.id.is_some() || item.key.is_some(),
-            "learning item requires a key or an existing ID"
-        );
+    for (index, item) in items.iter().enumerate() {
+        if item.id.is_none() && item.key.is_none() {
+            return Err(crate::interaction::RequestCorrection::learning_item(
+                vec![
+                    crate::validation::Segment::Index(index),
+                    crate::validation::Segment::Key("key".into()),
+                ],
+                crate::validation::Code::MissingReference,
+                "learning item requires a key or an existing ID".into(),
+            )
+            .into());
+        }
         if let Some(id) = item.id {
             ensure!(ids.insert(id), "duplicate learning item ID");
         }
         if let Some(key) = &item.key {
-            ensure!(
-                !key.is_empty() && key == key.trim(),
-                "item key must be a nonempty trimmed string"
-            );
-            ensure!(keys.insert(key), "duplicate learning item key");
+            let path = vec![
+                crate::validation::Segment::Index(index),
+                crate::validation::Segment::Key("key".into()),
+            ];
+            validate_local_key(key, path.clone())?;
+            if !keys.insert(key) {
+                return Err(crate::interaction::RequestCorrection::local_key(
+                    path,
+                    crate::validation::Code::Duplicate,
+                    format!("Learning item at index {index} repeats key {key:?}."),
+                )
+                .into());
+            }
         }
         for text in [
             &item.source_ref,
@@ -161,16 +193,22 @@ impl Assessment {
             self.item_ids.iter().collect::<HashSet<_>>().len() == self.item_ids.len(),
             "duplicate item reference"
         );
-        ensure!(
-            self.item_keys
-                .iter()
-                .all(|key| !key.is_empty() && key == key.trim()),
-            "item references require nonempty trimmed keys"
-        );
-        ensure!(
-            self.item_keys.iter().collect::<HashSet<_>>().len() == self.item_keys.len(),
-            "duplicate item key reference"
-        );
+        let mut keys = HashSet::new();
+        for (index, key) in self.item_keys.iter().enumerate() {
+            let path = vec![
+                crate::validation::Segment::Key("item_keys".into()),
+                crate::validation::Segment::Index(index),
+            ];
+            validate_local_key(key, path.clone())?;
+            if !keys.insert(key) {
+                return Err(crate::interaction::RequestCorrection::local_key(
+                    path,
+                    crate::validation::Code::Duplicate,
+                    format!("Item reference at index {index} repeats key {key:?}."),
+                )
+                .into());
+            }
+        }
         if self.correctness.weight > 0. || self.usefulness.weight > 0. {
             ensure!(
                 !self.evidence_indices.is_empty(),

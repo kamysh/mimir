@@ -1,15 +1,32 @@
-//! Complete model I/O, bounded diagnostics, and owned subprocess cleanup.
+//! Complete model I/O and diagnostics, with owned subprocess cleanup.
 use anyhow::{anyhow, Result};
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
-
-const MAX_DIAGNOSTIC: usize = 64 * 1024;
 
 pub struct Output {
     pub stdout: Vec<u8>,
 }
+
+#[derive(Debug)]
+pub struct HarnessExitFailure {
+    pub status: ExitStatus,
+    pub stderr: Vec<u8>,
+}
+
+impl std::fmt::Display for HarnessExitFailure {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            output,
+            "harness exited with {}: {}",
+            self.status,
+            String::from_utf8_lossy(&self.stderr)
+        )
+    }
+}
+
+impl std::error::Error for HarnessExitFailure {}
 
 struct GroupChild {
     child: Child,
@@ -38,21 +55,6 @@ impl Drop for GroupChild {
 async fn read_complete<R: AsyncRead + Unpin>(mut reader: R) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes).await?;
-    Ok(bytes)
-}
-
-// Retention never stops draining the pipe or fails the model operation.
-async fn read_diagnostic<R: AsyncRead + Unpin>(mut reader: R) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        let n = reader.read(&mut chunk).await?;
-        if n == 0 {
-            break;
-        }
-        let retained = n.min(MAX_DIAGNOSTIC.saturating_sub(bytes.len()));
-        bytes.extend_from_slice(&chunk[..retained]);
-    }
     Ok(bytes)
 }
 
@@ -103,15 +105,18 @@ pub async fn run(program: &str, args: &[String], cwd: &Path, input: &[u8]) -> Re
         let ((), stdout, stderr) = tokio::try_join!(
             async { write.await.map_err(anyhow::Error::from) },
             read_complete(stdout),
-            read_diagnostic(stderr),
+            read_complete(stderr),
         )?;
         // Kill any descendants while the child PID is still reserved, then reap.
         child.kill_group();
         let exit = child.child.wait().await?;
         child.group = None;
         if !exit.success() {
-            let detail = super::state::bounded(&String::from_utf8_lossy(&stderr), 512);
-            return Err(anyhow!("harness exited with {exit}: {detail}"));
+            return Err(HarnessExitFailure {
+                status: exit,
+                stderr,
+            }
+            .into());
         }
         Ok::<_, anyhow::Error>(Output { stdout })
     }
@@ -132,18 +137,47 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn complete_output_and_drained_diagnostics_have_distinct_retention() {
+    async fn both_streams_are_read_completely() {
         let input = vec![b'x'; 8 * 1024 * 1024 + 1];
         assert_eq!(read_complete(input.as_slice()).await.unwrap(), input);
+        let expected = input.clone();
         let (mut writer, reader) = tokio::io::duplex(8192);
         let writer = tokio::spawn(async move {
             writer.write_all(&input).await.unwrap();
             writer.shutdown().await.unwrap();
         });
-        assert_eq!(
-            read_diagnostic(reader).await.unwrap(),
-            vec![b'x'; MAX_DIAGNOSTIC]
-        );
+        assert_eq!(read_complete(reader).await.unwrap(), expected);
         writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_harness_preserves_the_whole_multibyte_explanation() {
+        let explanation = format!(
+            "first line\n{}\nlast line: actual failure\n",
+            "λ".repeat(64 * 1024 + 1)
+        );
+        let mut bytes = explanation.as_bytes().to_vec();
+        bytes.push(0xff);
+        let work = std::env::current_dir().unwrap();
+        let error = run(
+            "sh",
+            &["-c".into(), "cat >&2; exit 7".into()],
+            &work,
+            &bytes,
+        )
+        .await
+        .err()
+        .expect("the harness must report its unsuccessful exit");
+        let detail = error.to_string();
+        assert!(detail.contains("7"));
+        assert!(
+            detail.ends_with(String::from_utf8_lossy(&bytes).as_ref()),
+            "the full stderr must survive the error boundary"
+        );
+        assert_eq!(
+            error.downcast_ref::<HarnessExitFailure>().unwrap().stderr,
+            bytes,
+            "the returned error must retain even bytes that cannot be displayed as UTF-8"
+        );
     }
 }

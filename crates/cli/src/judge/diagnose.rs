@@ -21,6 +21,7 @@ fn cause(code: Option<&str>) -> &'static str {
         Some("backend_timeout") => "The model did not finish within the configured batch deadline.",
         Some("model_budget_exhausted") => "The model used the configured request budget before completing the review.",
         Some("tool_error") => "A database or tool operation failed; its outcome must be read back.",
+        Some("needs_input") => "A request needs correction or a user decision. The affected review remains pending; its complete guidance is in the private diagnostic report.",
         Some("review_deferred") => "The review was deferred after incompatible candidate declarations.",
         _ => "The batch could not complete. Inspect the local diagnostic report for the exact failure.",
     }
@@ -33,6 +34,7 @@ pub fn summary(report: Option<&state::Report>) -> String {
     let code = classified(report);
     let action = match code {
         Some("invalid_config") => "Run mimir config check. If required settings are missing, run mimir config upgrade --log-directory /absolute/path/to/logs, then check again.",
+        Some("needs_input") => "Run mimir judge diagnose and open the user dialog using the stored explanation and suggested correction. Correct the request or resolve its prerequisite, then rerun mimir judge run or explicitly resume the running watcher with SIGHUP.",
         Some(_) => "Run mimir judge diagnose on this computer. It shows the cause, affected work and private diagnostic location. If failures persist, attach its public summary to a Mimir issue.",
         None => "No repair is indicated by this snapshot.",
     };
@@ -51,7 +53,7 @@ pub fn show(config_path: Option<&Path>, state_dir: Option<&Path>) -> anyhow::Res
         path.display()
     );
     match config::load(Some(&selected)) {
-        Ok(settings) => println!("Configuration: compatible (format {})\nOperational logs: {}\nLog limit: {} bytes across {} files\nReviews have no Mimir-imposed execution deadline or request limit",settings.operations.config_version,settings.operations.logging.directory.display(),settings.operations.logging.max_file_bytes * settings.operations.logging.retained_files as u64,settings.operations.logging.retained_files),
+        Ok(settings) => println!("Configuration: compatible (format {})\nOperational logs: {}\nLogs append complete entries without application rotation or retention limits\nReviews have no Mimir-imposed execution deadline or request limit",settings.operations.config_version,settings.operations.logging.directory.display()),
         Err(error) => println!("Configuration: INVALID\n{error}\nRun: mimir config check --config {}",selected.display()),
     }
     if let Some(runtime) = state::read_runtime(&path)? {
@@ -87,7 +89,7 @@ pub fn show(config_path: Option<&Path>, state_dir: Option<&Path>) -> anyhow::Res
         if let Some(reason) = report.block_reason {
             println!("Terminal reason code: {reason}");
         }
-        for id in report.selected_ids.iter().take(5) {
+        for id in &report.selected_ids {
             println!("Affected experience: {id}");
         }
         if let Some(id) = report.diagnostics_id {
@@ -97,7 +99,7 @@ pub fn show(config_path: Option<&Path>, state_dir: Option<&Path>) -> anyhow::Res
             );
         }
     }
-    println!("Public summary ends here. Private diagnostics may contain source text; review and redact them before sharing.\nHelp: https://github.com/kamysh/mimir/blob/v2.2.3/docs/operations.md\nReport a persistent problem: https://github.com/kamysh/mimir/issues");
+    println!("Public summary ends here. Private diagnostics may contain source text; review and redact them before sharing.\nHelp: https://github.com/kamysh/mimir/blob/main/docs/operations.md\nReport a persistent problem: https://github.com/kamysh/mimir/issues");
     Ok(())
 }
 
@@ -122,5 +124,10 @@ mod tests {
         report.failure_source = None;
         report.block_reason = Some("invalid_config".into());
         assert!(summary(Some(&report)).contains("config upgrade --log-directory"));
+        report.block_reason = Some("needs_input".into());
+        let pending = summary(Some(&report));
+        assert!(pending.contains("user decision") && pending.contains("SIGHUP"));
+        assert!(pending.contains("1 pending"));
+        assert!(!pending.contains("PRIVATE"));
     }
 }

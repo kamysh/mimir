@@ -6,16 +6,16 @@ module Mimir.CLI where
 
 open import Data.Bool using (Bool; true; false; not; _∧_)
 open import Data.Float.Base using (Float; _<ᵇ_)
-open import Data.List using (List; []; _∷_; _++_; map; take; length)
+open import Data.List using (List; []; _∷_; map; _++_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc; _≟_; _≤?_)
-open import Data.Product using (_×_; _,_)
+open import Data.Product using (Σ; _×_; _,_)
 open import Data.String using (String; toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
-open import Mimir.Text using (Text; trim)
+open import Mimir.Text using (Text)
 import Mimir.ConfigurationPath as Path
 import Mimir.PublicRequest as Public
 import Mimir.PublicEncoding as Encoding
@@ -32,13 +32,16 @@ import Mimir.StructuredValue as V
 import Mimir.Effects as Effects
 import Mimir.Validation as Validation
 import Mimir.StandardLibrary as Library
+import Mimir.McpErrors as Errors
+import Mimir.GraphNumerics as Numeric
+module Correction = Errors.AgentCorrection
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
 
 data JudgeCommand : Set where
   diagnose : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   checkConfig : Maybe Path.Path → JudgeCommand
   run : Maybe Path.Path → Maybe Path.Path → JudgeCommand
-  watch : Maybe Path.Path → Maybe Path.Path → ℕ → ℕ → JudgeCommand
+  watch : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   status : Maybe Path.Path → JudgeCommand
   diagnostics : Maybe Path.Path → Bool → Maybe ℕ → JudgeCommand
 
@@ -46,16 +49,16 @@ data HookCommand : Set where prompt pretooluse : HookCommand; stop : Maybe Text 
 
 data ServiceCommand : Set where
   stats : ServiceCommand
-  list patterns : Maybe Text → ℕ → ServiceCommand
-  query : Text → ℕ → Bool → Maybe Text → Maybe Candidates.Memory → ServiceCommand
+  list patterns : Maybe Text → Ranking.Selection → ServiceCommand
+  query : Text → Ranking.Selection → Bool → Maybe Text → Maybe Candidates.Memory → ServiceCommand
   evidenceAdd : Text → Text → Float → ServiceCommand -- chunk, belief, weight
   evidenceList deleteBelief deletePattern : Text → ServiceCommand
   forget : Text → ServiceCommand
   decay : Float → Maybe Text → ServiceCommand
   contradictions : Maybe Text → ServiceCommand
-  sweep : Float → Float → Maybe Text → ServiceCommand
+  sweep : Float → Maybe Text → ServiceCommand
   docLoad : Text → Maybe Text → ServiceCommand
-  docQuery : Text → Maybe Text → ℕ → ServiceCommand
+  docQuery : Text → Maybe Text → Ranking.Selection → ServiceCommand
   docClear : Text → ServiceCommand
   intervene : Text → Float → ServiceCommand
 
@@ -72,27 +75,45 @@ data Command : Set where
   judge : JudgeCommand → Command
 
 record Defaults : Set where
-  field listLimit queryLimit documentLimit watchInterval watchFailures : ℕ
+  field listLimit queryLimit documentLimit : Ranking.Selection
         queryEvidence : Bool
-        decayFactor threshold graceHours evidenceWeight : Float
+        decayFactor threshold evidenceWeight : Float
 
 defaults : Defaults
-defaults = record { listLimit = 0; queryLimit = 10; documentLimit = 5; watchInterval = 300; watchFailures = 3
-  ; queryEvidence = false; decayFactor = 0.99; threshold = 0.3; graceHours = 24.0; evidenceWeight = 1.0 }
+defaults = record { listLimit = nothing; queryLimit = nothing; documentLimit = nothing
+  ; queryEvidence = false; decayFactor = 0.99; threshold = 0.3; evidenceWeight = 1.0 }
 
--- UUID arguments of these commands are parsed before configuration/database
--- access. Evidence UUIDs are parsed after connection, as in the native command.
-validateBeforeConnect : ServiceCommand → Bool
-validateBeforeConnect (deleteBelief _) = true
-validateBeforeConnect (deletePattern _) = true
-validateBeforeConnect (intervene _ _) = true
-validateBeforeConnect _ = false
+-- Pure admission precedes configuration and database access for every service
+-- command. Collect independent field problems instead of choosing replacements.
+uuidIssues : Library.Contract → String → Text → List Correction.Item
+uuidIssues conversion fieldName value with Input.readUUID conversion (V.string value)
+... | inj₁ _ = Correction.uuidItem (Validation.key fieldName ∷ []) ∷ []
+... | inj₂ _ = []
+
+probabilityIssues : String → Float → List Correction.Item
+probabilityIssues fieldName value with Numeric.probability value
+... | true = []
+... | false = Correction.item Correction.arguments
+  (Validation.fault (Validation.key fieldName ∷ []) Validation.invalidNumber
+    "The supplied value must be finite and between 0 and 1 inclusive.")
+  (toList "A finite number between 0 and 1 inclusive.")
+  (toList "Correct the value using the intended request. If it is unknown, ask the user; do not clamp it or invent a replacement.") ∷ []
+
+requestIssues : Library.Contract → ServiceCommand → List Correction.Item
+requestIssues conversion (deleteBelief id) = uuidIssues conversion "id" id
+requestIssues conversion (deletePattern id) = uuidIssues conversion "id" id
+requestIssues conversion (intervene id value) = uuidIssues conversion "id" id ++ probabilityIssues "value" value
+requestIssues conversion (evidenceAdd chunk belief weight) = uuidIssues conversion "chunk_id" chunk ++
+  uuidIssues conversion "belief_id" belief ++ probabilityIssues "weight" weight
+requestIssues conversion (evidenceList belief) = uuidIssues conversion "belief_id" belief
+requestIssues conversion (decay factor project) = probabilityIssues "factor" factor
+requestIssues conversion _ = []
 
 request : Library.Contract → ServiceCommand → Validation.Fault ⊎ Public.Request
 request conversion stats = inj₂ (Public.read Read.stats)
 request conversion (list project limit) = inj₂ (Public.read (Read.listBeliefs project nothing))
 request conversion (patterns project limit) = inj₂ (Public.read (Read.listPatterns project))
-request conversion (query text limit evidence project prefer) = inj₂ (Public.relevant text limit project prefer evidence 3)
+request conversion (query text limit evidence project prefer) = inj₂ (Public.relevant text limit project prefer evidence nothing)
 request conversion (evidenceAdd chunk belief weight) = Input.readUUID conversion (V.string chunk) >>= λ chunkID →
   Input.readUUID conversion (V.string belief) >>= λ beliefID → inj₂ (Public.addEvidence beliefID chunkID weight)
 request conversion (evidenceList belief) = mapResult Public.evidence (Input.readUUID conversion (V.string belief))
@@ -101,27 +122,17 @@ request conversion (deletePattern id) = mapResult (Public.delete Delete.patternN
 request conversion (forget project) = inj₂ (Public.deleteProject project)
 request conversion (decay factor project) = inj₂ (Public.inference (Inference.decay project factor))
 request conversion (contradictions project) = inj₂ (Public.inference (Inference.contradictions project))
-request conversion (sweep threshold grace project) = inj₂ (Public.sweepHours project threshold grace)
+request conversion (sweep threshold project) = inj₂ (Public.sweepConfigured project threshold)
 request conversion (docLoad path project) = inj₂ (Public.loadDocument path project)
 request conversion (docQuery text project limit) = inj₂ (Public.queryDocument text project limit)
 request conversion (docClear path) = inj₂ (Public.clearDocument path)
 request conversion (intervene id value) = mapResult (λ target → Public.inference (Inference.intervention target value)) (Input.readUUID conversion (V.string id))
 
--- Rust's trunc counts Unicode scalars, trims first, and replaces the last
--- permitted scalar with an ellipsis. Every native call has a positive bound.
-trunc : ℕ → Text → Text
-trunc maximum text with does (length clean ≤? maximum)
-  where clean = trim text
-... | true = trim text
-... | false with maximum
-...   | zero = []
-...   | suc n = take n (trim text) ++ toList "…"
-
-listRows : ℕ → List Graph.BeliefValues → List Graph.BeliefValues
+listRows : Ranking.Selection → List Graph.BeliefValues → List Graph.BeliefValues
 listRows limit rows = Ranking.cap limit (Ranking.sort
   (λ a b → not (Graph.BeliefValues.probability a <ᵇ Graph.BeliefValues.probability b)) rows)
 
-patternRows : ℕ → List Graph.PatternValues → List Graph.PatternValues
+patternRows : Ranking.Selection → List Graph.PatternValues → List Graph.PatternValues
 patternRows limit rows = Ranking.cap limit (Ranking.sort
   (λ a b → not (Graph.PatternValues.successRate a <ᵇ Graph.PatternValues.successRate b)) rows)
 
@@ -149,13 +160,13 @@ deduplicate = go []
 
 data Parsed : Set where
   help version : Parsed
-  invalid : Bool → Parsed -- first OS argument is exactly "judge"
+  invalid : Correction.Claim → Parsed
   parsedCommand : Command → Parsed
 
 parseExit : Parsed → Maybe ℕ
 parseExit help = just 0
 parseExit version = just 0
-parseExit (invalid _) = just 2
+parseExit (invalid _) = just 0
 parseExit (parsedCommand _) = nothing
 
 module Run (conversion : Library.Contract) (environment : Application.Environment) (format : Encoding.Formatting) where
@@ -164,13 +175,14 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
 
   data Failure : Set where
     connection : Text → Failure
-    arguments : Validation.Fault → Failure
     operation : A.Result → Failure
     output : Text → Failure
 
-  -- Payloads are fully selected application data. A renderer applies only
-  -- the command's fixed layout/truncation policy, never another database read.
+  -- Payloads are fully selected application data. A renderer preserves their
+  -- complete text, applies terminal layout, and never performs a database read.
   data Line : Set where
+    inputDecision : Correction.Claim → Line
+    configurationDecision : Application.Correction.Claim → Line
     commandOutput : ServiceCommand → A.Result → Line
     emptyIntervention emptyContradictions : Line
     intervention : ℕ → Float → Maybe Graph.BeliefValues → Line
@@ -231,12 +243,18 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
   after : ServiceCommand → A.Result → Script (Failure ⊎ ⊤)
   after command value with O.project value
   ... | O.failure cause = done (inj₁ (operation cause))
+  ... | O.decision report = emit (configurationDecision report)
   ... | O.success _ = success command value
 
   dispatch : ServiceCommand → Script (Failure ⊎ ⊤)
   dispatch command with request conversion command
-  ... | inj₁ error = done (inj₁ (arguments error))
-  ... | inj₂ request = ask (execute request) (after command)
+  ... | inj₁ error = emit (inputDecision (Correction.claim
+      (Correction.item Correction.arguments error
+        (toList "Arguments accepted by this Mimir command.")
+        (toList "Correct the reported fields and rerun the command. If a required value is unknown, ask the user instead of guessing.")) []))
+  ... | inj₂ request with A.admission request
+  ...   | inj₁ detail = emit (configurationDecision (Application.configurationCorrection detail))
+  ...   | inj₂ tt = ask (execute request) (after command)
 
   connectThen : ServiceCommand → Script (Failure ⊎ ⊤)
   connectThen command = ask connect λ where
@@ -244,11 +262,23 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
     (inj₂ tt) → dispatch command
 
   start : ServiceCommand → Script (Failure ⊎ ⊤)
-  start command with validateBeforeConnect command
-  ... | false = connectThen command
-  ... | true with request conversion command
-  ...   | inj₁ error = done (inj₁ (arguments error))
-  ...   | inj₂ _ = connectThen command
+  start command with requestIssues conversion command
+  ... | [] = connectThen command
+  ... | first ∷ rest = emit (inputDecision (Correction.claim first rest))
+
+  invalidPreflightOnlyPrintsCorrection : ∀ command first rest →
+    requestIssues conversion command ≡ first ∷ rest →
+    start command ≡ emit (inputDecision (Correction.claim first rest))
+  invalidPreflightOnlyPrintsCorrection command first rest problems rewrite problems = refl
+
+  invalidPreflightCannotConnect : ∀ command first rest events outcome →
+    requestIssues conversion command ≡ first ∷ rest →
+    P.Runs (start command) events outcome →
+    Σ (Reply (print (inputDecision (Correction.claim first rest))))
+      (λ reply → events ≡ ((print (inputDecision (Correction.claim first rest)) , reply) ∷ []))
+  invalidPreflightCannotConnect command first rest events outcome problems execution rewrite problems with execution
+  ... | P.replied _ _ (inj₁ error) (P.returned _) = inj₁ error , refl
+  ... | P.replied _ _ (inj₂ tt) (P.returned _) = inj₂ tt , refl
 
   exit : Failure ⊎ ⊤ → ℕ
   exit (inj₁ _) = 1

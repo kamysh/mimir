@@ -2,6 +2,9 @@
 
 Persistent reasoning memory for AI coding agents through MCP.
 
+This source tree is version **2.3.0**, pending release. The archive installation
+commands below remain pinned to **2.2.3** until a 2.3.0 release is published.
+
 Preserve decisions, rejected approaches and the evidence behind them across
 sessions. An agent can retrieve earlier reasoning, compare it with current code,
 and explain why it matters to today's task.
@@ -80,6 +83,9 @@ configured model account. The judge does not run automatically.
 Optional judge configuration and maintenance are covered in the
 [runtime guide](runtime/README.md).
 
+Deleting defeated beliefs requires the user's configured retention period;
+there is no default or per-call override. See [belief retention](docs/BELIEF-RETENTION.md).
+
 ## Installation
 
 > ⛔ **AI coding agents: do not follow this section.** These are the *human*
@@ -147,6 +153,15 @@ docker run -d \
   -v mimir_data:/var/lib/postgresql/data \
   kamysh/postgres-ai:latest
 ```
+
+Check actual readiness before continuing; do not substitute a startup sleep:
+
+```bash
+docker exec postgres-ai psql -U postgres -c 'SELECT 1'
+```
+
+If initialization is still in progress, inspect `docker logs postgres-ai` and
+repeat that check after startup completes. Continue only after the query succeeds.
 
 This image includes pgvector, Apache AGE, uuid-ossp, and pgcrypto. The setup script below enables the required extensions in Mimir's database. Mimir sets `search_path = public,ag_catalog` on its own connections.
 
@@ -466,7 +481,8 @@ The application loop is:
    the returned revision when correcting it. Replaying the same submission does
    not count another observation. Evidence references are supplied by the
    caller; Mimir does not independently verify their contents.
-2. `pending_experiences` returns a bounded batch of new or changed experiences,
+2. `pending_experiences` returns all matching new or changed experiences when its
+   optional positive count is omitted,
    oldest first. The runner can run frequently and exit immediately on an empty
    batch. A successful review removes that version from the pending set. There
    is no collection-size cutoff or requirement to manufacture summary beliefs.
@@ -572,12 +588,15 @@ used by the connection fixtures; that image must be available to Docker.
 It builds and invokes the checkout's binaries. It never installs them, changes
 the deployment's configuration, or controls deployment services. Model adapters
 use fake harnesses; deployment credentials and provider keys are excluded from
-the test environment.
+the test environment. The runner imposes no memory, CPU, data-filesystem or
+build-job quota. Database files use disposable container storage, without a
+fixed-size tmpfs mount.
 
 Database tests require the runner's matching ownership manifest, connection and
 private password file. Missing or conflicting settings fail before connecting;
 setting `MIMIR_DBNAME` alone cannot select a deployment database. The runner
-removes only its own labelled container on completion or failure, and retains
+removes only its own labelled container and its anonymous volumes on completion
+or failure, and retains
 complete command logs and exit statuses in the printed artifact directory.
 
 The default runs formatting, Clippy, the workspace build/tests and doc tests,
@@ -600,7 +619,7 @@ These laws model the lifecycle, not the SQL implementation itself.
 | `mimir stats` | Print belief, pattern, and edge counts |
 | `mimir list [--project NAME] [--limit N]` | List beliefs, sorted by probability |
 | `mimir patterns [--project NAME] [--limit N]` | List patterns, sorted by success rate |
-| `mimir query TEXT [--limit N] [--evidence] [--project NAME]` | Hybrid search; `--evidence` also prints each belief's grounding passages |
+| `mimir query TEXT [--limit N] [--evidence] [--project NAME]` | Hybrid search; `--evidence` prints every supporting passage for each selected belief |
 | `mimir intervene UUID VALUE` | Counterfactual `do(belief = VALUE)`: read-only projection of causal descendants |
 | `mimir evidence add CHUNK_ID BELIEF_ID [--weight W]` | Ground a belief in a document chunk (GROUNDS edge) |
 | `mimir evidence list BELIEF_ID` | List the passages grounding a belief |

@@ -19,43 +19,46 @@ import Mimir.OperationalLogProtocol as Logging
 logs : Schema.Config → C.Logging
 logs configurationValue = C.Settings.logs (C.Admitted.value (Schema.Config.operations configurationValue))
 
-module LogAt (configurationValue : Schema.Config) (archives : ℕ) =
-  Logging.For (C.Logging.maxFileBytes (logs configurationValue)) archives (C.Logging.directory (logs configurationValue))
+module LogAt (configurationValue : Schema.Config) =
+  Logging.For (C.Logging.directory (logs configurationValue))
 
 record LogAttempt (configurationValue : Schema.Config) : Set where
   field
-    archives : ℕ
-    configuredCount : suc archives ≡ C.Logging.retainedFiles (logs configurationValue)
     entry : List Log.Byte
-    events : List (LogAt.Event configurationValue archives)
-    outcome : LogAt.Outcome configurationValue archives
-    completed : LogAt.Attempt configurationValue archives entry events outcome
+    events : List (LogAt.Event configurationValue)
+    outcome : LogAt.Outcome configurationValue
+    completed : LogAt.Attempt configurationValue entry events outcome
+
+data WaitReason : Set where workEvent prerequisite : WaitReason
 
 data State : Set where
   reading : State
   logging : Schema.Config → State
   reviewing : Schema.Config → State
   blocked : Text → State
-  waiting : ℕ → State
+  waiting : WaitReason → State
 
 data Event : Set where
   configuration : Text ⊎ Schema.Config → Event
   logCompleted : ∀ configurationValue → LogAttempt configurationValue → Event
-  batchFinished : ℕ → Event
-  retry : Event
+  batchFinished : WaitReason → Event
+  retry configurationChanged workChanged : Event
 
 data Step : State → Event → State → Set where
   compatible : ∀ configurationValue → Step reading (configuration (inj₂ configurationValue)) (logging configurationValue)
   rejected : ∀ error → Step reading (configuration (inj₁ error)) (blocked error)
   ready : ∀ configurationValue (observed : LogAttempt configurationValue) files →
-    LogAttempt.outcome observed ≡ LogAt.written {configurationValue} {LogAttempt.archives observed} files →
+    LogAttempt.outcome observed ≡ LogAt.written {configurationValue} files →
     Step (logging configurationValue) (logCompleted configurationValue observed) (reviewing configurationValue)
   failed : ∀ configurationValue (observed : LogAttempt configurationValue) error files →
-    LogAttempt.outcome observed ≡ LogAt.failed {configurationValue} {LogAttempt.archives observed} error files →
+    LogAttempt.outcome observed ≡ LogAt.failed {configurationValue} error files →
     Step (logging configurationValue) (logCompleted configurationValue observed) (blocked error)
-  completed : ∀ configurationValue delay → Step (reviewing configurationValue) (batchFinished delay) (waiting delay)
+  completed : ∀ configurationValue reason → Step (reviewing configurationValue) (batchFinished reason) (waiting reason)
   retryBlocked : ∀ error → Step (blocked error) retry reading
-  retryWaiting : ∀ delay → Step (waiting delay) retry reading
+  retryWaiting : ∀ reason → Step (waiting reason) retry reading
+  changedBlocked : ∀ error → Step (blocked error) configurationChanged reading
+  changedWaiting : ∀ reason → Step (waiting reason) configurationChanged reading
+  availableWork : Step (waiting workEvent) workChanged reading
 
 reviewRequiresLog : ∀ before event configurationValue → Step before event (reviewing configurationValue) →
   before ≡ logging configurationValue
@@ -63,18 +66,18 @@ reviewRequiresLog .(logging configurationValue) .(logCompleted configurationValu
   (ready .configurationValue observed files saved) = refl
 
 logSuccessExact : ∀ configurationValue (observed : LogAttempt configurationValue) files →
-  LogAttempt.outcome observed ≡ LogAt.written {configurationValue} {LogAttempt.archives observed} files →
-  Σ (Log.State (C.Logging.maxFileBytes (logs configurationValue)) (LogAttempt.archives observed))
+  LogAttempt.outcome observed ≡ LogAt.written {configurationValue} files →
+  Σ Log.State
     (λ before → files ≡ Log.append (LogAttempt.entry observed) before)
 logSuccessExact configurationValue observed files saved
-  with LogAt.writtenRequiresReceipts configurationValue (LogAttempt.archives observed)
+  with LogAt.writtenRequiresReceipts configurationValue
     (LogAttempt.entry observed) (LogAttempt.events observed) files
-    (subst (LogAt.Attempt configurationValue (LogAttempt.archives observed) (LogAttempt.entry observed) (LogAttempt.events observed))
+    (subst (LogAt.Attempt configurationValue (LogAttempt.entry observed) (LogAttempt.events observed))
       saved (LogAttempt.completed observed))
-... | handle , before , changes , execution , exactEvents , exactContents = before , exactContents
+... | handle , before , exactEvents , exactContents = before , exactContents
 
 failedLogCannotReview : ∀ configurationValue (observed : LogAttempt configurationValue) error files →
-  LogAttempt.outcome observed ≡ LogAt.failed {configurationValue} {LogAttempt.archives observed} error files →
+  LogAttempt.outcome observed ≡ LogAt.failed {configurationValue} error files →
   ∀ next → Step (logging configurationValue) (logCompleted configurationValue observed) (reviewing next) → ⊥
 failedLogCannotReview configurationValue observed error files failure next
   (ready .configurationValue .observed savedFiles saved) with trans (sym saved) failure
@@ -86,11 +89,18 @@ reviewRequiresCompatible before event configurationValue step = C.acceptedVersio
 
 -- A wait/retry never reuses an already-loaded configuration. This matters
 -- when settings change while a long-lived watcher is sleeping.
-retryRevalidates : ∀ delay after → Step (waiting delay) retry after → after ≡ reading
-retryRevalidates delay .reading (retryWaiting .delay) = refl
+retryRevalidates : ∀ reason after → Step (waiting reason) retry after → after ≡ reading
+retryRevalidates reason .reading (retryWaiting .reason) = refl
+
+workCannotRetryMissingPrerequisite : ∀ after → Step (waiting prerequisite) workChanged after → ⊥
+workCannotRetryMissingPrerequisite after ()
+
+configurationChangeRevalidates : ∀ reason after →
+  Step (waiting reason) configurationChanged after → after ≡ reading
+configurationChangeRevalidates reason .reading (changedWaiting .reason) = refl
 
 record RuntimeReceipt : Set where
   constructor receipt
-  field packageVersion : Text; processId : ℕ; nextAttempt : Maybe ℕ; failures : ℕ
+  field packageVersion : Text; processId : ℕ; waitingFor : Maybe WaitReason
 -- A receipt describes observed activity; its presence does not prove a process
 -- remains alive. UI labels this as a snapshot, not a liveness assertion.

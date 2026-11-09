@@ -13,6 +13,9 @@ open import Data.List.Relation.Unary.Any using (Any)
 open import Data.Empty using (⊥)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc; _≤_; z≤n; s≤s)
+open import Data.Integer using (ℤ)
+import Data.Integer as Integer
+import Mimir.LocalCalendar as Local
 open import Data.Nat.Properties using (≤-trans; ≤-refl; m≤n+m)
 open import Data.Product using (Σ; _,_; _×_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
@@ -22,6 +25,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.JudgeHost as Host
 import Mimir.JudgeHostProtocol as HostProtocol
+import Mimir.JudgeFinalization as Finalization
 import Mimir.JudgeDigest as Digest
 import Mimir.JudgeDigestSnapshot as Snapshot
 import Mimir.JudgeConfiguration as Config
@@ -42,6 +46,7 @@ import Mimir.SMTPProtocol as SMTP
 import Mimir.ServiceStartup as Startup
 import Mimir.ConnectionProtocol as Connection
 import Mimir.ConfigurationSchema as Core
+import Mimir.ConfigurationValues as Values
 import Mimir.MigrationRuntime as Migration
 import Mimir.UnixPath as Path
 import Mimir.UnixMetadata as Metadata
@@ -78,9 +83,6 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     module M = Migration.Runtime Text Text
     module Notify service = Notification.Bound conversion json buildMessage sizeMaximum clockMaximum endian service
 
-  configResult : C.Result → Text ⊎ Config.Runtime
-  configResult (inj₁ detail) = inj₁ detail
-  configResult (inj₂ loadedConfiguration) = inj₂ (Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration))
   pathResult : H.SP.Result → Text ⊎ Path.Path
   pathResult (inj₁ error) = inj₁ (toList "invalid notification state path")
   pathResult (inj₂ path) = inj₂ (StatePath.Resolved.path path)
@@ -95,7 +97,6 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
     -- or absent state yields no report and an explicit diagnostic action.
     reportRead : ∀ state path report → Receipt migrations state (Digest.readReport path) report state
     clock : ∀ state now → Receipt migrations state Digest.localNow now state
-    configured : ∀ state reply → H.Receipt H.loadConfig reply → Receipt migrations state Digest.loadConfig (configResult reply) state
     path : ∀ state reply → H.Receipt H.resolveState reply → Receipt migrations state Digest.resolveState (pathResult reply) state
     cursorConstructorFailed : ∀ state cfg path detail → Notification.new cfg path ≡ inj₁ detail →
       Receipt migrations state (Digest.readCursor cfg path) (inj₁ detail) state
@@ -127,70 +128,199 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
       Runs migrations middle (next reply) events after value →
       Runs migrations before (Digest.ask effect next) ((effect , reply) ∷ events) after value
 
-  -- Standard stderr writes and Tokio's timer/signal selection are external.
-  -- Completion of ctrl_c(), including its registration error, takes the signal
-  -- branch in the native select. SIGINT is polled at this waiting phase.
-  data Waited (seconds : ℕ) (messages : List Host.Transition) : Bool → Set where
-    timer : Waited seconds messages false
-    signal : Waited seconds messages true
+  -- File correction, explicit retry and stop are native event receipts.
+  -- No timer receipt can resume an unresolved prerequisite.
+  data PrerequisiteWait : Host.PrerequisiteWake → Set where
+    corrected : PrerequisiteWait Host.configurationCorrected
+    retry : PrerequisiteWait Host.retryRequested
+    stopped : PrerequisiteWait Host.stopped
 
-  data Step (migrations : M.Inputs) (interval threshold : ℕ) : Host.Phase → Host.Phase → Set where
-    batch : ∀ state events result → H.Runs (H.once true) events result →
-      Step migrations interval threshold (Host.running state) (Host.digest state result)
-    digest : ∀ state outcome events result → Runs migrations idle (Digest.Run.tick calendar outcome) events idle result →
-      Step migrations interval threshold (Host.digest state outcome)
-        (Host.step sizeMaximum interval threshold (Host.digest state outcome) result)
-    waited : ∀ state seconds messages result → Waited seconds messages result →
-      Step migrations interval threshold (Host.waiting state seconds messages)
-        (Host.step sizeMaximum interval threshold (Host.waiting state seconds messages) result)
+  -- Native completions. A queue hint causes a durable rescan; it is not
+  -- evidence that a review completed or that a particular row exists.
+  data WorkWait : Host.QueueWake → Set where
+    notification : WorkWait Host.workAvailable
+    configurationChanged : WorkWait Host.configurationChanged
+    listenerFailed : WorkWait Host.disconnected
+    explicitRetry : WorkWait Host.explicitRetry
+    interrupted : WorkWait Host.interrupted
 
-  data Trace (migrations : M.Inputs) (interval threshold : ℕ) : Host.Phase → Host.Phase → Set where
-    empty : ∀ phase → Trace migrations interval threshold phase phase
-    more : ∀ before middle after → Step migrations interval threshold before middle →
-      Trace migrations interval threshold middle after → Trace migrations interval threshold before after
+  selectedDatabase : C.Loaded → Values.Database
+  selectedDatabase loadedConfiguration = Values.Config.db (Core.Config.core
+    (Config.Runtime.core (Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration))))
 
-  -- A complete continued round uses the actual batch and digest programs.
-  -- The timer receipt is the external scheduling/fairness condition. Neither
-  -- a failed batch nor an unavailable digest creates an exit transition.
+  -- The same loaded value determines LISTEN's database and the first batch.
+  -- Calling H.once here would reread a mutable source and break this link.
+  record FirstBatch (result : Host.Outcome) : Set where
+    field loaded : C.Loaded
+          admitted : H.Receipt H.loadConfig (inj₂ loaded)
+          subscriptionEvents : List Host.Subscription.Event
+          connection : ℕ
+          subscribed : Host.Subscription.Runs (Host.Subscription.start (selectedDatabase loaded))
+            subscriptionEvents (inj₂ connection)
+          batchEvents : List H.P.Event
+          completed : H.Runs (H.afterConfig true (inj₂ loaded)) batchEvents result
+
+  -- The core loop admits a captured daily-summary job. SMTP execution belongs
+  -- to the owned consumer and is not a premise of the next review round.
+  data DigestQueued (settings : Config.Runtime) (outcome : Host.Outcome) : Text ⊎ Bool → Set where
+    disabled : Email.Config.enabled (Config.Runtime.email settings) ≡ false → DigestQueued settings outcome (inj₂ false)
+    accepted : ∀ resolved time before after → H.Receipt H.resolveState (inj₂ resolved) →
+      Config.Judge.dailyReportTime (Config.Runtime.judge settings) ≡ just time →
+      Finalization.CalendarRegistration.Registered
+        (Finalization.dailySchedule (Config.Runtime.email settings)
+          (Values.Config.db (Core.Config.core (Config.Runtime.core settings)))
+          (StatePath.Resolved.path resolved) outcome time) before after →
+      DigestQueued settings outcome (inj₂ false)
+    unavailable : DigestQueued settings outcome (inj₂ true)
+
+  -- Calendar delivery runs beside the review machine. Only a due, previously
+  -- unadmitted local day can enter the delivery queue. Stalled delivery is
+  -- allowed, and neither idle nor prerequisite-paused reviews are resumed.
+  data CalendarStep (phase : Host.Phase) (schedule : Finalization.CalendarSchedule) :
+    Maybe ℤ → Finalization.WorkerQueue.State → Maybe ℤ → Finalization.WorkerQueue.State → Set where
+    due : ∀ now previous day boundary before after →
+      day ≡ Digest.localDay calendar now →
+      Local.Calendar.deliveryBoundary calendar day
+        (Digest.reportSecond (Finalization.CalendarSchedule.time schedule)) ≡ just boundary →
+      boundary Integer.≤ Local.instant now →
+      Digest.CalendarAdmission.offer day previous ≡ just day →
+      Finalization.WorkerQueue.Accepted
+        (Finalization.digestJob (Finalization.CalendarSchedule.email schedule)
+          (Finalization.CalendarSchedule.database schedule) (Finalization.CalendarSchedule.path schedule)
+          (Finalization.CalendarSchedule.outcome schedule)) before after →
+      CalendarStep phase schedule previous before (just day) after
+
+  calendarAdmissionPreventsRepeat : ∀ phase schedule previous before day after →
+    CalendarStep phase schedule previous before (just day) after →
+    Digest.CalendarAdmission.offer day (just day) ≡ nothing
+  calendarAdmissionPreventsRepeat phase schedule previous before day after receipt =
+    Digest.CalendarAdmission.admittedDayIsNotOfferedAgain day
+
+  data Step (migrations : M.Inputs) : Host.Phase → Host.Phase → Set where
+    initialConfigurationFailed : ∀ state detail → H.Receipt H.loadConfig (inj₁ detail) →
+      Step migrations (Host.subscribing state) (Host.waitingConfiguration state)
+    correctedConfiguration : ∀ state → WorkWait Host.configurationChanged →
+      Step migrations (Host.waitingConfiguration state) (Host.subscribing state)
+    retryConfiguration : ∀ state → PrerequisiteWait Host.retryRequested →
+      Step migrations (Host.waitingConfiguration state) (Host.subscribing state)
+    stoppedAtConfiguration : ∀ state → WorkWait Host.interrupted →
+      Step migrations (Host.waitingConfiguration state) (Host.exited Host.success)
+    initialSubscriptionFailed : ∀ state loaded detail events → H.Receipt H.loadConfig (inj₂ loaded) →
+      Host.Subscription.Runs (Host.Subscription.start (selectedDatabase loaded)) events (inj₁ detail) →
+      Step migrations (Host.subscribing state) (Host.waitingPrerequisite state (Host.stateUnavailable ∷ []))
+    firstBatch : ∀ state result → FirstBatch result →
+      Step migrations (Host.subscribing state) (Host.digest state result)
+    batch : ∀ state loadedConfiguration events result → H.Receipt H.loadConfig (inj₂ loadedConfiguration) →
+      H.Runs (H.afterConfig true (inj₂ loadedConfiguration)) events result →
+      Step migrations (Host.running state) (Host.digest state result)
+    digest : ∀ state settings outcome result → DigestQueued settings outcome result →
+      Step migrations (Host.digest state outcome)
+        (Host.step (Host.digest state outcome) result)
+    continued : ∀ state messages →
+      Step migrations (Host.continuing state messages) (Host.running state)
+    configurationAtBoundary : ∀ state messages → WorkWait Host.configurationChanged →
+      Step migrations (Host.continuing state messages) (Host.subscribing state)
+    retryAtBoundary : ∀ state messages → PrerequisiteWait Host.retryRequested →
+      Step migrations (Host.continuing state messages) (Host.subscribing state)
+    configurationAtPrerequisite : ∀ state messages → WorkWait Host.configurationChanged →
+      Step migrations (Host.waitingPrerequisite state messages) (Host.subscribing state)
+    workWoke : ∀ state messages reply → WorkWait reply →
+      Step migrations (Host.awaitingWork state messages)
+        (Host.step (Host.awaitingWork state messages) reply)
+    waited : ∀ state messages result → PrerequisiteWait result →
+      Step migrations (Host.waitingPrerequisite state messages)
+        (Host.step (Host.waitingPrerequisite state messages) result)
+
+  data Trace (migrations : M.Inputs) : Host.Phase → Host.Phase → Set where
+    empty : ∀ phase → Trace migrations phase phase
+    more : ∀ before middle after → Step migrations before middle →
+      Trace migrations middle after → Trace migrations before after
+
+  firstBatchRequiresSubscription : ∀ migrations state result →
+    Step migrations (Host.subscribing state) (Host.digest state result) →
+    FirstBatch result
+  firstBatchRequiresSubscription migrations state result (firstBatch .state .result receipt) = receipt
+
+  invalidConfigurationCannotStartBatch : ∀ migrations state result →
+    Step migrations (Host.waitingConfiguration state) (Host.digest state result) → ⊥
+  invalidConfigurationCannotStartBatch migrations state result ()
+
+  prerequisiteResumptionRequiresSubscription : ∀ migrations state messages after →
+    Step migrations (Host.waitingPrerequisite state messages) after →
+    after ≡ Host.subscribing state ⊎ after ≡ Host.exited Host.success
+  prerequisiteResumptionRequiresSubscription migrations state messages after
+    (configurationAtPrerequisite .state .messages observed) = inj₁ refl
+  prerequisiteResumptionRequiresSubscription migrations state messages after
+    (waited .state .messages Host.configurationCorrected observed) = inj₁ refl
+  prerequisiteResumptionRequiresSubscription migrations state messages after
+    (waited .state .messages Host.retryRequested observed) = inj₁ refl
+  prerequisiteResumptionRequiresSubscription migrations state messages after
+    (waited .state .messages Host.stopped observed) = inj₂ refl
+
+  firstBatchAcknowledgedListen : ∀ result (receipt : FirstBatch result) →
+    FirstBatch.subscriptionEvents receipt ≡
+      ((Host.Subscription.connect (selectedDatabase (FirstBatch.loaded receipt)) , inj₂ (FirstBatch.connection receipt)) ∷
+       (Host.Subscription.listen (FirstBatch.connection receipt) , inj₂ tt) ∷ [])
+  firstBatchAcknowledgedListen result receipt = Host.Subscription.successRequiresAcknowledgedListen
+    (selectedDatabase (FirstBatch.loaded receipt)) (FirstBatch.subscriptionEvents receipt)
+    (FirstBatch.connection receipt) (FirstBatch.subscribed receipt)
+
+  -- A complete round uses the actual batch and digest programs. Productive
+  -- completion continues immediately. Failed prerequisites require an
+  -- external correction and subscription before a new batch can start.
   problem : Text ⊎ Bool → Bool
   problem (inj₁ error) = true
   problem (inj₂ digestProblem) = digestProblem
 
   nextWatch : Host.Watch → Host.Outcome → Text ⊎ Bool → Host.Watch
-  nextWatch before batchResult reply = record (Host.advance sizeMaximum before batchResult)
+  nextWatch before batchResult reply = record (Host.advance before batchResult)
     { digestProblem = problem reply }
 
-  WaitingTimer : Host.Phase → Set
-  WaitingTimer (Host.waiting state seconds messages) = Waited seconds messages false
-  WaitingTimer phase = ⊥
+  data Continues (state : Host.Watch) : Host.Phase → Set where
+    immediately : ∀ messages → Continues state (Host.continuing state messages)
+    afterWork : ∀ messages → WorkWait Host.workAvailable → Continues state (Host.awaitingWork state messages)
 
-  record Round (migrations : M.Inputs) (interval threshold : ℕ) (before : Host.Watch) : Set where
+
+  continuationTrace : ∀ migrations state phase → Continues state phase →
+    Trace migrations phase (Host.running state)
+  continuationTrace migrations state .(Host.continuing state messages)
+    (immediately messages) = more _ _ _ (continued state messages) (empty _)
+  continuationTrace migrations state .(Host.awaitingWork state messages)
+    (afterWork messages observed) = more _ _ _ (workWoke state messages Host.workAvailable observed) (empty _)
+
+
+  successfulRoundNeedsNoTimer : ∀ before reply →
+    Continues (nextWatch before (Host.outcome Host.success false false) reply)
+      (Host.step
+        (Host.digest before (Host.outcome Host.success false false)) reply)
+  successfulRoundNeedsNoTimer before (inj₁ error) = immediately _
+  successfulRoundNeedsNoTimer before (inj₂ problem) = immediately _
+
+  record Round (migrations : M.Inputs) (before : Host.Watch) : Set where
     constructor continuedRound
     field outcome : Host.Outcome
+          loadedConfiguration : C.Loaded
+          admitted : H.Receipt H.loadConfig (inj₂ loadedConfiguration)
           batchEvents : List H.P.Event
-          batchDone : H.Runs (H.once true) batchEvents outcome
-          digestEvents : List Digest.Event
+          batchDone : H.Runs (H.afterConfig true (inj₂ loadedConfiguration)) batchEvents outcome
           digestReply : Text ⊎ Bool
-          digestDone : Runs migrations idle (Digest.Run.tick calendar outcome) digestEvents idle digestReply
-          timerReady : WaitingTimer (Host.step sizeMaximum interval threshold (Host.digest before outcome) digestReply)
+          digestDone : DigestQueued
+            (Config.Validate.Admitted.settings (C.Loaded.configuration loadedConfiguration)) outcome digestReply
+          continuationReady : Continues (nextWatch before outcome digestReply)
+            (Host.step (Host.digest before outcome) digestReply)
 
-  roundTrace : ∀ migrations interval threshold before → (round : Round migrations interval threshold before) →
-    Trace migrations interval threshold (Host.running before)
+  roundTrace : ∀ migrations before → (round : Round migrations before) →
+    Trace migrations (Host.running before)
       (Host.running (nextWatch before (Round.outcome round) (Round.digestReply round)))
-  roundTrace migrations interval threshold before
-    (continuedRound batchResult batchEvents batchDone digestEvents (inj₁ error) digestDone timerReady) =
-    more _ _ _ (batch before _ _ batchDone)
+  roundTrace migrations before
+    (continuedRound batchResult loadedConfiguration admitted batchEvents batchDone reply digestDone continuationReady) =
+    more _ _ _ (batch before loadedConfiguration _ _ admitted batchDone)
       (more _ _ _ (digest before _ _ _ digestDone)
-        (more _ _ _ (waited _ _ _ false timerReady) (empty _)))
-  roundTrace migrations interval threshold before
-    (continuedRound batchResult batchEvents batchDone digestEvents (inj₂ digestProblem) digestDone timerReady) =
-    more _ _ _ (batch before _ _ batchDone)
-      (more _ _ _ (digest before _ _ _ digestDone)
-        (more _ _ _ (waited _ _ _ false timerReady) (empty _)))
+        (continuationTrace migrations _ _ continuationReady))
 
-  appendTrace : ∀ {migrations interval threshold before middle after} →
-    Trace migrations interval threshold before middle → Trace migrations interval threshold middle after →
-    Trace migrations interval threshold before after
+  appendTrace : ∀ {migrations before middle after} →
+    Trace migrations before middle → Trace migrations middle after →
+    Trace migrations before after
   appendTrace (empty _) second = second
   appendTrace (more _ _ _ step rest) second = more _ _ _ step (appendTrace rest second)
 
@@ -200,7 +330,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   -- Selection and confirmations must occur inside the actual host batch,
   -- not in an unrelated successful call or in a model's account of its work.
   module ProgressOf (settings : Config.Runtime) (program : Text) (path configPath : Path.Path) where
-    private module W = H.W settings program path configPath
+    private module W = H.W true settings program path configPath
     private module P = W.W
 
     record ConfirmedRead (events : List P.P.Event) (selected : Observation.Snapshot) : Set where
@@ -213,8 +343,8 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
       field excluded : List ℕ
             queried : Any (_≡ (P.selection (Selection.pending
               (Config.Judge.project (Config.Runtime.judge settings))
-              (Config.Judge.batchSize (Config.Runtime.judge settings)) excluded) , inj₂ selected)) events
-            ordered : selected ≡ take (Config.Judge.batchSize (Config.Runtime.judge settings)) remaining
+              excluded) , inj₂ selected)) events
+            ordered : selected ≡ remaining
             confirmed : All (ConfirmedRead events) selected
 
     evidence : ∀ {events remaining selected} → BatchEvidence events remaining selected → All Confirmed selected
@@ -222,15 +352,16 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
       (ConfirmedRead.valid read) (ConfirmedRead.acknowledged read)) (BatchEvidence.confirmed observedBatch)
 
   data ObservedRun : ∀ {effect reply} → H.Receipt effect reply → List Observation.Snapshot → List Observation.Snapshot → Set where
-    completedBatch : ∀ {settings held configPath report program before after events client built execution dropped remaining selected} →
-      ProgressOf.BatchEvidence settings program (H.L.Locked.path held) configPath events remaining selected →
-      ObservedRun (H.ran settings held configPath report
-        (H.completed program before after events client report built execution dropped)) remaining selected
+    completedBatch : ∀ {settings held configPath report program before after events client snapshot preparationEvents prepared built execution dropped remaining selected} →
+      ProgressOf.BatchEvidence settings program (H.L.Locked.path held)
+        (H.PreparedMcpConfig.path snapshot) events remaining selected →
+      ObservedRun (H.ran true settings held configPath report
+        (H.completed program before after events client report snapshot preparationEvents prepared built execution dropped)) remaining selected
 
   observedEvidence : ∀ {effect reply} (receipt : H.Receipt effect reply) {remaining selected} →
     ObservedRun receipt remaining selected → All Confirmed selected
   observedEvidence receipt (completedBatch {settings = settings} {held = held} {configPath = configPath} {program = program} seen) =
-    ProgressOf.evidence settings program (H.L.Locked.path held) configPath seen
+    ProgressOf.evidence settings program (H.L.Locked.path held) _ seen
 
   ContainsBatch : ∀ {A script events result} → H.Runs {A} script events result →
     List Observation.Snapshot → List Observation.Snapshot → Set
@@ -247,10 +378,10 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   -- Recovery is stronger than a reachable endpoint: every nonempty attempt
   -- selects a positive prefix of this stable, ordered queue and actual final
   -- reads confirm that prefix. It does not assume completion of the suffix.
-  record RecoveredRound (migrations : M.Inputs) (interval threshold : ℕ)
+  record RecoveredRound (migrations : M.Inputs)
     (before : Host.Watch) (remaining : List Observation.Snapshot) : Set where
     constructor recoveredRound
-    field round : Round migrations interval threshold before
+    field round : Round migrations before
           first : Observation.Snapshot
           additional rest : List Observation.Snapshot
           split : remaining ≡ (first ∷ additional) ++ rest
@@ -263,38 +394,38 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   predecessorBound (s≤s bound) = bound
 
   -- Arbitrary observed recovered histories, not a chosen successful path.
-  data RecoveredTrace (migrations : M.Inputs) (interval threshold : ℕ) :
+  data RecoveredTrace (migrations : M.Inputs) :
     ℕ → Host.Watch → List Observation.Snapshot → Host.Watch → List Observation.Snapshot → Set where
-    stopped : ∀ before remaining → RecoveredTrace migrations interval threshold 0 before remaining before remaining
-    idleRound : ∀ count before after remaining (round : Round migrations interval threshold before) →
-      RecoveredTrace migrations interval threshold count
+    stopped : ∀ before remaining → RecoveredTrace migrations 0 before remaining before remaining
+    idleRound : ∀ count before after remaining (round : Round migrations before) →
+      RecoveredTrace migrations count
         (nextWatch before (Round.outcome round) (Round.digestReply round)) [] after remaining →
-      RecoveredTrace migrations interval threshold (suc count) before [] after remaining
+      RecoveredTrace migrations (suc count) before [] after remaining
     productiveRound : ∀ count before remaining after final
-      (recovered : RecoveredRound migrations interval threshold before remaining) →
-      RecoveredTrace migrations interval threshold count
+      (recovered : RecoveredRound migrations before remaining) →
+      RecoveredTrace migrations count
         (nextWatch before (Round.outcome (RecoveredRound.round recovered)) (Round.digestReply (RecoveredRound.round recovered)))
         (RecoveredRound.rest recovered) after final →
-      RecoveredTrace migrations interval threshold (suc count) before remaining after final
+      RecoveredTrace migrations (suc count) before remaining after final
 
-  recoveredExecution : ∀ {migrations interval threshold count before remaining after final} →
-    RecoveredTrace migrations interval threshold count before remaining after final →
-    Trace migrations interval threshold (Host.running before) (Host.running after)
+  recoveredExecution : ∀ {migrations count before remaining after final} →
+    RecoveredTrace migrations count before remaining after final →
+    Trace migrations (Host.running before) (Host.running after)
   recoveredExecution (stopped before remaining) = empty _
-  recoveredExecution (idleRound _ _ _ _ round rest) = appendTrace (roundTrace _ _ _ _ round) (recoveredExecution rest)
+  recoveredExecution (idleRound _ _ _ _ round rest) = appendTrace (roundTrace _ _ round) (recoveredExecution rest)
   recoveredExecution (productiveRound _ _ _ _ _ recovered rest) =
-    appendTrace (roundTrace _ _ _ _ (RecoveredRound.round recovered)) (recoveredExecution rest)
+    appendTrace (roundTrace _ _ (RecoveredRound.round recovered)) (recoveredExecution rest)
 
-  emptyQueueStaysEmpty : ∀ {migrations interval threshold count before after final} →
-    RecoveredTrace migrations interval threshold count before [] after final → final ≡ []
+  emptyQueueStaysEmpty : ∀ {migrations count before after final} →
+    RecoveredTrace migrations count before [] after final → final ≡ []
   emptyQueueStaysEmpty (stopped _ _) = refl
   emptyQueueStaysEmpty (idleRound _ _ _ _ round rest) = emptyQueueStaysEmpty rest
   emptyQueueStaysEmpty (productiveRound _ _ _ _ _ (recoveredRound _ _ _ _ () _) rest)
 
   -- Every history meeting the conditions has finished by this bound. A retry
   -- or deferred result alone cannot inhabit productiveRound.
-  allRecoveredHistoriesFinish : ∀ {migrations interval threshold count before remaining after final} →
-    length remaining ≤ count → RecoveredTrace migrations interval threshold count before remaining after final →
+  allRecoveredHistoriesFinish : ∀ {migrations count before remaining after final} →
+    length remaining ≤ count → RecoveredTrace migrations count before remaining after final →
     All Confirmed remaining × final ≡ []
   allRecoveredHistoriesFinish {remaining = []} bound history = [] , emptyQueueStaysEmpty history
   allRecoveredHistoriesFinish {count = zero} {remaining = first ∷ rest} () history
@@ -304,19 +435,19 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   ... | confirmations , emptyQueue =
     AllProperties.++⁺ (containedEvidence (Round.batchDone round) selected) confirmations , emptyQueue
 
-  record Drained (migrations : M.Inputs) (interval threshold : ℕ)
+  record Drained (migrations : M.Inputs)
     (before : Host.Watch) (remaining : List Observation.Snapshot) : Set where
     field after : Host.Watch
           attempts : ℕ
           bounded : attempts ≤ length remaining
-          executed : Trace migrations interval threshold (Host.running before) (Host.running after)
+          executed : Trace migrations (Host.running before) (Host.running after)
           confirmed : All Confirmed remaining
 
-  everyStableRevisionEventuallyConfirmed : ∀ migrations interval threshold before original →
+  everyStableRevisionEventuallyConfirmed : ∀ migrations before original →
     (∀ count → Σ Host.Watch (λ after → Σ (List Observation.Snapshot) (λ remaining →
-      RecoveredTrace migrations interval threshold count before original after remaining))) →
-    Drained migrations interval threshold before original
-  everyStableRevisionEventuallyConfirmed migrations interval threshold before original continues
+      RecoveredTrace migrations count before original after remaining))) →
+    Drained migrations before original
+  everyStableRevisionEventuallyConfirmed migrations before original continues
     with continues (length original)
   ... | after , remaining , history with allRecoveredHistoriesFinish ≤-refl history
   ... | confirmations , emptyQueue = record

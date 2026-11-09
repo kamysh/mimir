@@ -23,8 +23,8 @@ module Bound (database : ℕ) (sum : List Float → Float) (reads : Committed.Co
 
   data External : I.Effect → Set where
     clock : External I.clock
-    chrono : ∀ hours → External (I.convertGraceHours hours)
     iteration : ∀ ids → External (I.hashIteration ids)
+    snapshotClosed : ∀ tx → External (I.closeContradictions tx)
 
   data Receipt : (effect : I.Effect) → I.Reply effect → Set where
     selected : ∀ effect reply → R.SuccessfulInferenceReply sum effect reply → Receipt effect reply
@@ -38,7 +38,8 @@ module Bound (database : ℕ) (sum : List Float → Float) (reads : Committed.Co
     groundsFailed : ∀ error → Receipt I.groundingMasses (inj₁ error)
     incomingFailed : ∀ ids error → Receipt (I.incomingEdges ids) (inj₁ error)
     listFailed : ∀ scope error → Receipt (I.listBeliefs scope) (inj₁ error)
-    contradictionsFailed : ∀ scope error → Receipt (I.contradictionPairs scope) (inj₁ error)
+    contradictionsFailed : ∀ scope error → Receipt (I.openContradictions scope) (inj₁ error)
+    snapshotBeliefsFailed : ∀ tx first scope error → Receipt (I.snapshotBeliefs tx first scope) (inj₁ error)
     defeatsFailed : ∀ scope error → Receipt (I.defeatTimes scope) (inj₁ error)
     persistenceFailed : ∀ writes error → Receipt (I.persistBeta writes) (inj₁ error)
     deletionFailed : ∀ id error → Receipt (I.deleteBelief id) (inj₁ error)

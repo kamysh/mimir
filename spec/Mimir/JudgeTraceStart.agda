@@ -3,7 +3,7 @@
 -- running trace. UUID generation is input and carries no freshness axiom.
 module Mimir.JudgeTraceStart where
 
-open import Data.List using (List; []; _∷_; _++_; length; map; take)
+open import Data.List using (List; []; _∷_; _++_; length; map)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤?_; suc)
@@ -17,11 +17,9 @@ open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.Effects as Effects
 import Mimir.JudgeStateRecords as Records
-import Mimir.JudgeTraceRetention as Retention
 
-module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) (attemptLimit : ℕ) where
+module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) where
   module R = Records.Over Id
-  module Keep = Retention.Over Id equal
 
   interruptTrace : Maybe ℕ → R.Trace → R.Trace
   interruptTrace observed before = record before
@@ -44,6 +42,17 @@ module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) (attemptLimit : �
   sameIdentities (unchanged before rest after skipped later) = cong (R.Trace.identity before ∷_) (sameIdentities later)
   sameIdentities (marked observed before rest after running later) = cong (R.Trace.identity before ∷_) (sameIdentities later)
 
+  -- Only lifecycle status and finish time may change when an abandoned run
+  -- is marked interrupted. Every other field of every old attempt survives.
+  evidence : R.Trace → R.Trace
+  evidence before = record before { status = [] ; finishedAt = nothing }
+
+  sameEvidence : ∀ {before after} → Interrupted before after →
+    map evidence after ≡ map evidence before
+  sameEvidence empty = refl
+  sameEvidence (unchanged before rest after skipped later) = cong (evidence before ∷_) (sameEvidence later)
+  sameEvidence (marked observed before rest after running later) = cong (evidence before ∷_) (sameEvidence later)
+
   interruptedNotRunning : toList "interrupted" ≢ toList "running"
   interruptedNotRunning ()
 
@@ -53,12 +62,11 @@ module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) (attemptLimit : �
   noStaleRunningTrace (marked observed before rest after running later) = interruptedNotRunning ∷ noStaleRunningTrace later
 
   data Operation : Set where
-    readDiagnostics readFailure clock newId : Operation
+    readDiagnostics clock newId : Operation
     writeDiagnostics : List R.Trace → Operation
 
   Reply : Operation → Set
   Reply readDiagnostics = Text ⊎ List R.Trace
-  Reply readFailure = Text ⊎ Maybe R.Incident
   Reply clock = Maybe ℕ
   Reply newId = Id
   Reply (writeDiagnostics values) = Text ⊎ ⊤
@@ -76,37 +84,20 @@ module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) (attemptLimit : �
 
   newTrace : Id → Maybe ℕ → R.Report → ℕ → R.Trace
   newTrace identity observed report budget = R.traceValue identity (Records.clock observed) nothing
-    (toList "running") nothing (take 48 (R.Report.selectedIds report)) (just budget) (just budget) [] 0
+    (toList "running") nothing (R.Report.selectedIds report) (just budget) (just budget) [] 0
 
-  -- The full batch remains in Report; diagnostic metadata has the same
-  -- retention count as events, so arbitrary batch size cannot fill a trace.
-  traceIdsArePrefix : ∀ identity observed report initial →
-    R.Trace.selectedIds (newTrace identity observed report initial) ≡ take 48 (R.Report.selectedIds report)
-  traceIdsArePrefix identity observed report initial = refl
+  traceIdsAreComplete : ∀ identity observed report initial →
+    R.Trace.selectedIds (newTrace identity observed report initial) ≡ R.Report.selectedIds report
+  traceIdsAreComplete identity observed report initial = refl
 
   commit : Id → List R.Trace → Script Result
   commit identity values = ask (writeDiagnostics values) λ where
     (inj₁ problem) → done (failed problem)
     (inj₂ tt) → done (started identity)
 
-  pin : Maybe R.Incident → Maybe Id
-  pin nothing = nothing
-  pin (just storedIncident) = R.Report.diagnosticsId (R.Incident.first storedIncident)
-
-  retain : Id → List R.Trace → Maybe R.Incident → Script Result
-  retain identity values incident = commit identity (S.Result.after (S.retain attemptLimit values))
-    where module S = Keep.Selection identity (pin incident)
-
-  afterAppend : Id → List R.Trace → Script Result
-  afterAppend identity values with length values ≤? attemptLimit
-  ... | yes bounded = commit identity values
-  ... | no tooMany = ask readFailure λ where
-    (inj₁ problem) → done (failed problem)
-    (inj₂ incident) → retain identity values incident
-
   create : R.Report → ℕ → List R.Trace → Script Result
   create report budget previous = ask newId λ identity → ask clock λ observed →
-    afterAppend identity (previous ++ (newTrace identity observed report budget ∷ []))
+    commit identity (previous ++ (newTrace identity observed report budget ∷ []))
 
   begin : R.Report → ℕ → Script Result
   begin report budget = ask readDiagnostics λ where
@@ -126,16 +117,9 @@ module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) (attemptLimit : �
   commitSafe identity values events result (replied _ _ (inj₁ problem) ())
   commitSafe identity values events .identity (replied _ _ (inj₂ tt) (returned .(started identity))) = last values
 
-  afterAppendSafe : ∀ identity values → Safe (afterAppend identity values)
-  afterAppendSafe identity values events result run with length values ≤? attemptLimit
-  ... | yes bounded = commitSafe identity values events result run
-  ... | no tooMany with run
-  ...   | replied _ _ (inj₁ problem) ()
-  ...   | replied _ _ (inj₂ incident) later = earlier (readFailure , inj₂ incident) (commitSafe identity _ _ result later)
-
   createSafe : ∀ report budget previous → Safe (create report budget previous)
   createSafe report budget previous events result (replied _ _ identity (replied _ _ observed later)) =
-    earlier (newId , identity) (earlier (clock , observed) (afterAppendSafe identity _ _ result later))
+    earlier (newId , identity) (earlier (clock , observed) (commitSafe identity _ _ result later))
 
   interruptSafe : ∀ before next → (∀ after proof → Safe (next after proof)) → Safe (interrupt before next)
   interruptSafe [] next safe = safe [] empty

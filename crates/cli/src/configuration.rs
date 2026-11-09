@@ -33,9 +33,13 @@ pub fn dispatch(command: Command) -> Result<()> {
         operations::upgrade(&path, directory.as_deref())?;
     }
     let (core, operations) = Config::load_with_operations(&path)?;
+    operations::check_retired_limits(&core)?;
+    if core.retirement.is_some() {
+        core.retirement_policy()?;
+    }
     if core.judge.is_some() || core.llm.is_some() {
         super::judge::config::load(Some(&path))?;
     }
-    println!("Configuration compatible with Mimir {} (format {}).\nConfig: {}\nLogs: {}\nRetention: {} files × {} bytes ({} bytes maximum).\nNo database or model request was made.",env!("CARGO_PKG_VERSION"),operations.config_version,path.display(),operations.logging.directory.display(),operations.logging.retained_files,operations.logging.max_file_bytes,operations.logging.retained_files as u64*operations.logging.max_file_bytes);
+    println!("Configuration compatible with Mimir {} (format {}).\nConfig: {}\nLogs: {}\nLogs append complete entries; Mimir applies no rotation or retention limit.\nNo database or model request was made.",env!("CARGO_PKG_VERSION"),operations.config_version,path.display(),operations.logging.directory.display());
     Ok(())
 }

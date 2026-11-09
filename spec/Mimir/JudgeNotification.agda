@@ -4,17 +4,21 @@
 module Mimir.JudgeNotification where
 
 open import Data.Bool using (Bool; true; false; _∨_)
-open import Data.List using (List; []; _∷_; _++_; map; take; length; filterᵇ)
+open import Data.List using (List; []; _∷_; _++_; map; length; filterᵇ)
+open import Data.List.Relation.Unary.All using (All)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_; _∸_; _≤?_)
+open import Data.Nat using (ℕ; _≟_; _∸_)
 import Data.Nat.Show as Nat
 open import Data.String using (toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.Unit using (⊤; tt)
+import Mimir.JudgeFinalization as Finalization
 open import Data.Product using (_,_)
 open import Relation.Nullary using (yes; no; does)
+open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
-import Mimir.DiagnosticText as Bounded
+import Mimir.DiagnosticText as Labels
 import Mimir.OperationalDiagnostics as Diagnostics
 import Mimir.NotificationConfig as Config
 import Mimir.NotificationIncident as I
@@ -46,7 +50,7 @@ reason report with R.Report.blockReason report
   ...       | true = toList "model backend failed"
   ...       | false with does (value ≟Text toList "review_deferred")
   ...         | true = toList "review deferred after a rejected candidate"
-  ...         | false = toList "review incomplete (" ++ Bounded.bounded 64 value ++ toList ")"
+  ...         | false = toList "review incomplete (" ++ Labels.strip value ++ toList ")"
 
 join : Text → List Text → Text
 join separator [] = []
@@ -55,7 +59,12 @@ join separator (x ∷ y ∷ rest) = x ++ separator ++ join separator (y ∷ rest
 
 projectName : Maybe Text → Text
 projectName nothing = toList "all projects"
-projectName (just project) = Bounded.bounded 80 project
+projectName (just project) = Labels.strip project
+
+-- Every ordinary character in a project label survives, regardless of length.
+projectLabelPreserved : ∀ project → All Labels.NonControl project →
+  projectName (just project) ≡ project
+projectLabelPreserved = Labels.stripIdentity
 incidentKey : Maybe Text → Text
 incidentKey nothing = toList "all-projects"
 incidentKey (just project) = project
@@ -74,10 +83,7 @@ module Details (format : Encoding.Formatting) (localTime : ℕ → Text) where
   uuid = Encoding.Formatting.uuidText format
   ids : List ℕ → Text
   ids [] = toList "none"
-  ids values@(_ ∷ _) with length values ≤? 5
-  ... | yes _ = join (toList ", ") (map uuid values)
-  ... | no _ = join (toList ", ") (map uuid (take 5 values)) ++
-    toList " (+" ++ number (length values ∸ 5) ++ toList " more)"
+  ids values@(_ ∷ _) = join (toList ", ") (map uuid values)
 
   diagnostic : Maybe ℕ → Text
   diagnostic nothing = toList "\nDiagnostic ID: unavailable; inspect mimir judge status"
@@ -113,18 +119,13 @@ module Details (format : Encoding.Formatting) (localTime : ℕ → Text) where
   previousDiagnostic nothing = []
   previousDiagnostic (just id) = toList "\nPrevious diagnostic ID: " ++ uuid id
 
-  extra : List ℕ → Text
-  extra values with length values ≤? 5
-  ... | yes _ = []
-  ... | no _ = toList "\nAdditional affected reviews: " ++ number (length values ∸ 5)
-
   recovery : Maybe Text → R.Report → R.Incident → Text
   recovery project report savedIncident = toList "Project: " ++ projectName project ++
     toList "\nPrevious failure: " ++ localTime (R.Report.recordedAt first) ++
     toList "\nPrevious reason: " ++ reason first ++ toList "\nQueue: idle at " ++ localTime (R.Report.recordedAt report) ++
     toList "; no pending reviews were selected\nAffected reviews: " ++ number count ++
     toList " confirmed by completed batches; " ++ number (length selected ∸ count) ++ toList " unverified" ++
-    previousDiagnostic (R.Report.diagnosticsId first) ++ join [] (map (itemLine reviews) (take 5 selected)) ++ extra selected
+    previousDiagnostic (R.Report.diagnosticsId first) ++ join [] (map (itemLine reviews) selected)
     where
     first = R.Incident.first savedIncident
     selected = R.Report.selectedIds first
@@ -136,33 +137,43 @@ outcomeText I.disabled = toList "disabled"
 outcomeText I.notNeeded = toList "not_needed"
 outcomeText I.sent = toList "sent"
 outcomeText I.retryPending = toList "retry_pending"
-outcomeText I.exhausted = toList "exhausted"
 outcomeText I.authRequired = toList "auth_required"
 outcomeText I.unavailable = toList "unavailable"
 
-data Effect : Set where readFailure : Effect; submit : I.Event → Effect
+data Effect : Set where readFailure : Effect; enqueue : I.Event → Effect
 Reply : Effect → Set
 Reply readFailure = Text ⊎ Maybe R.Incident
-Reply (submit _) = N.Result
+Reply (enqueue _) = Text ⊎ ⊤
 open Effects.Protocol Effect Reply public
 
 module Run (format : Encoding.Formatting) (localTime : ℕ → Text)
   (cfg : Config.Config) (path : Path.Path) (project : Maybe Text) where
   module D = Details format localTime
 
-  submitDetails : R.Report → Maybe Text → Script (Text ⊎ Text)
-  submitDetails report details = ask (submit (I.event (toList "judge") (incidentKey project) (status report) details)) λ where
-    (inj₁ _) → done (inj₁ (toList "notification unavailable"))
-    (inj₂ value) → done (inj₂ (outcomeText value))
+  submitDetails : Finalization.NotificationMode → R.Report → Maybe Text → Script (Text ⊎ Text)
+  submitDetails mode report details =
+    ask (enqueue (I.event (toList "judge") (incidentKey project) (status report) details)) λ where
+      (inj₁ error) → done (inj₁ error)
+      (inj₂ tt) → done (inj₂ (toList "queued"))
 
-  notify : R.Report → Script (Text ⊎ Text)
-  notify report with V.result (Config.validate cfg) | Path.absolute path
+  notifyWith : Finalization.NotificationMode → R.Report → Script (Text ⊎ Text)
+  notifyWith mode report with V.result (Config.validate cfg) | Path.absolute path
   ... | inj₁ _ | _ = done (inj₁ (toList "invalid notification configuration"))
   ... | _ | false = done (inj₁ (toList "notification state path must be absolute"))
   ... | inj₂ _ | true with status report
-  ...   | I.failure _ _ = submitDetails report (just (D.failure project report))
-  ...   | I.progress = submitDetails report nothing
+  ...   | I.failure _ _ = submitDetails mode report (just (D.failure project report))
+  ...   | I.progress = submitDetails mode report nothing
   ...   | I.recovery = ask readFailure λ where
     (inj₁ error) → done (inj₁ error)
-    (inj₂ nothing) → submitDetails report nothing
-    (inj₂ (just savedIncident)) → submitDetails report (just (D.recovery project report savedIncident))
+    (inj₂ nothing) → submitDetails mode report nothing
+    (inj₂ (just savedIncident)) → submitDetails mode report (just (D.recovery project report savedIncident))
+
+  notify : R.Report → Script (Text ⊎ Text)
+  notify report with Config.Config.enabled cfg
+  ... | false = done (inj₂ (toList "disabled"))
+  ... | true = notifyWith Finalization.standaloneDelivery report
+
+  queue : R.Report → Script (Text ⊎ Text)
+  queue report with Config.Config.enabled cfg
+  ... | false = done (inj₂ (toList "disabled"))
+  ... | true = notifyWith Finalization.queuedDelivery report

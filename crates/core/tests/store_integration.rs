@@ -58,29 +58,27 @@ impl TestCtx {
     }
 
     async fn cleanup(&self) {
-        // BUG FIX (2026-08-13): this previously called only self.store.delete_project,
-        // the store-layer method that deletes Belief/Pattern vertices ONLY — it has no
-        // knowledge of DocumentChunk. MimirService::delete_project (lib.rs) is the
-        // service-layer wrapper that additionally clears DocumentChunk vertices and
-        // their pgvector rows; tests must mirror that, or every chunk a test creates
-        // leaks into the live graph permanently, on every successful run (not just
-        // crashes — confirmed live: 296 DocumentChunk vertices in production, the
-        // overwhelming majority from `_test-*` projects never cleaned up).
+        // The store removes graph, vector and learning ownership together.
         let _ = self.store.delete_project(&self.project).await;
-        if let Ok(chunk_ids) = self.store.get_chunk_ids_by_project(&self.project).await {
-            let _ = self.store.delete_document_chunks(&chunk_ids).await;
-            let _ = self.store.delete_chunk_embeddings(&chunk_ids).await;
-        }
     }
 }
 
 async fn service() -> MimirService {
+    service_with_retirement(None).await
+}
+
+async fn service_with_retirement(hours: Option<f64>) -> MimirService {
     let cfg = Config {
         database: test_db_config(),
         embeddings: None,
         llm: None,
         judge: None,
         email: None,
+        retirement: hours.map(|hours| {
+            let mut table = toml::Table::new();
+            table.insert("grace_hours".into(), toml::Value::Float(hours));
+            toml::Value::Table(table)
+        }),
     };
     MimirService::connect(&cfg).await.expect("connect service")
 }
@@ -738,7 +736,7 @@ async fn test_query_relevant_excludes_working_from_candidate_pool() {
     ctx.store.insert_belief(&working).await.unwrap();
 
     let results = svc
-        .query_relevant(&format!("factterm {term}"), 0, Some(&ctx.project), None)
+        .query_relevant(&format!("factterm {term}"), None, Some(&ctx.project), None)
         .await
         .unwrap();
     assert!(
@@ -777,7 +775,7 @@ async fn test_query_relevant_excludes_working_from_graph_expansion() {
     let results = svc
         .query_relevant(
             &format!("seedterm {seed_term}"),
-            0,
+            None,
             Some(&ctx.project),
             None,
         )
@@ -816,7 +814,7 @@ async fn test_query_relevant_prefer_type_reorders_tied_matches() {
     ctx.store.insert_belief(&experiential).await.unwrap();
 
     let neutral = svc
-        .query_relevant(&format!("tiedterm {term}"), 0, Some(&ctx.project), None)
+        .query_relevant(&format!("tiedterm {term}"), None, Some(&ctx.project), None)
         .await
         .unwrap();
     assert_eq!(neutral.len(), 2, "both tied beliefs should be returned");
@@ -824,7 +822,7 @@ async fn test_query_relevant_prefer_type_reorders_tied_matches() {
     let preferred = svc
         .query_relevant(
             &format!("tiedterm {term}"),
-            0,
+            None,
             Some(&ctx.project),
             Some(mimir_core::graph::MemoryType::Experiential),
         )
@@ -883,7 +881,7 @@ async fn test_query_relevant_excludes_beliefs_reachable_only_via_out_of_scope_br
     let results = svc
         .query_relevant(
             &format!("seedterm {seed_term}"),
-            0,
+            None,
             Some(&ctx.project),
             None,
         )
@@ -1075,7 +1073,12 @@ async fn test_add_and_query_grounded() {
     svc.add_evidence(b.id, chunk.id, 0.8).await.unwrap();
 
     let grounded = svc
-        .query_relevant_grounded(&token, 10, 3, None)
+        .query_relevant_grounded(
+            &token,
+            std::num::NonZeroUsize::new(10),
+            std::num::NonZeroUsize::new(3),
+            None,
+        )
         .await
         .unwrap();
     let gb = grounded
@@ -1274,9 +1277,32 @@ async fn test_intervene_counts_out_of_set_cocause() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn test_sweep_expired_defeated_rejects_invalid_threshold() {
+    let ctx = TestCtx::new().await;
+    let svc = service_with_retirement(Some(0.0)).await;
+    let defeater = ctx.belief("invalid-threshold-defeater".into(), 0.9, 0.9);
+    let defeated = ctx.belief("invalid-threshold-target".into(), 0.9, 0.9);
+    ctx.store.insert_belief(&defeater).await.unwrap();
+    ctx.store.insert_belief(&defeated).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(defeater.id, defeated.id, EdgeType::Defeats, 1.0).unwrap())
+        .await
+        .unwrap();
+    let result = svc.sweep_expired_defeated(2.0, Some(&ctx.project)).await;
+    let retained = ctx.store.get_belief(defeated.id).await.unwrap().is_some();
+    // Clean the owned fixture even when demonstrating the old destructive bug.
+    ctx.cleanup().await;
+    assert!(
+        result.is_err(),
+        "an out-of-range probability must be rejected: {result:?}"
+    );
+    assert!(retained, "an invalid threshold must never delete a belief");
+}
+
+#[tokio::test]
 async fn test_sweep_expired_defeated_deletes_low_prob_past_grace() {
     let ctx = TestCtx::new().await;
-    let svc = service().await;
+    let svc = service_with_retirement(Some(0.0)).await;
 
     let defeater = ctx.belief(format!("sweepA-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated = ctx.belief(format!("sweepB-{}", Uuid::new_v4()), 0.9, 0.9);
@@ -1296,7 +1322,7 @@ async fn test_sweep_expired_defeated_deletes_low_prob_past_grace() {
     // grace_hours=0.0: the defeat "just happened" (defeater's created_at is
     // ~now), so even a zero-length grace period has elapsed.
     let deleted = svc
-        .sweep_expired_defeated(0.3, 0.0, Some(&ctx.project))
+        .sweep_expired_defeated(0.3, Some(&ctx.project))
         .await
         .unwrap();
     assert_eq!(deleted, 1);
@@ -1308,9 +1334,54 @@ async fn test_sweep_expired_defeated_deletes_low_prob_past_grace() {
 }
 
 #[tokio::test]
-async fn test_sweep_expired_defeated_keeps_within_grace_period() {
+async fn test_sweep_expired_defeated_needs_config_before_deleting() {
     let ctx = TestCtx::new().await;
     let svc = service().await;
+    let defeater = ctx.belief("retention-policy-defeater".into(), 0.9, 0.9);
+    let defeated = ctx.belief("retention-policy-target".into(), 0.01, 0.9);
+    ctx.store.insert_belief(&defeater).await.unwrap();
+    ctx.store.insert_belief(&defeated).await.unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(defeater.id, defeated.id, EdgeType::Defeats, 1.0).unwrap())
+        .await
+        .unwrap();
+    let error = svc
+        .sweep_expired_defeated(0.3, Some(&ctx.project))
+        .await
+        .unwrap_err();
+    let issue = error
+        .downcast_ref::<mimir_core::config::RetirementIssue>()
+        .unwrap();
+    assert_eq!(
+        issue.correction().issues()[0].fault().code,
+        mimir_core::validation::Code::MissingField
+    );
+    assert!(svc.get_belief(defeated.id).await.unwrap().is_some());
+    let malformed = MimirService::connect(&Config {
+        database: test_db_config(),
+        embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: Some(toml::Value::String("not a table".into())),
+    })
+    .await
+    .unwrap();
+    assert!(
+        malformed.get_belief(defeated.id).await.unwrap().is_some(),
+        "optional policy must not disable other tools"
+    );
+    assert!(malformed
+        .sweep_expired_defeated(0.3, Some(&ctx.project))
+        .await
+        .is_err());
+    ctx.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_sweep_expired_defeated_keeps_within_grace_period() {
+    let ctx = TestCtx::new().await;
+    let svc = service_with_retirement(Some(24.0)).await;
 
     let defeater = ctx.belief(format!("sweepC-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated = ctx.belief(format!("sweepD-{}", Uuid::new_v4()), 0.9, 0.9);
@@ -1328,7 +1399,7 @@ async fn test_sweep_expired_defeated_keeps_within_grace_period() {
     // grace_hours=24.0: the defeat just happened, well within a 24h window —
     // must NOT be deleted yet, even though probability is already low.
     let deleted = svc
-        .sweep_expired_defeated(0.3, 24.0, Some(&ctx.project))
+        .sweep_expired_defeated(0.3, Some(&ctx.project))
         .await
         .unwrap();
     assert_eq!(deleted, 0);
@@ -1342,7 +1413,7 @@ async fn test_sweep_expired_defeated_keeps_within_grace_period() {
 #[tokio::test]
 async fn test_sweep_expired_defeated_keeps_above_threshold() {
     let ctx = TestCtx::new().await;
-    let svc = service().await;
+    let svc = service_with_retirement(Some(0.0)).await;
 
     let defeater = ctx.belief(format!("sweepE-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated = ctx.belief(format!("sweepF-{}", Uuid::new_v4()), 0.9, 0.9);
@@ -1360,7 +1431,7 @@ async fn test_sweep_expired_defeated_keeps_above_threshold() {
         .unwrap();
 
     let deleted = svc
-        .sweep_expired_defeated(0.3, 0.0, Some(&ctx.project))
+        .sweep_expired_defeated(0.3, Some(&ctx.project))
         .await
         .unwrap();
     assert_eq!(deleted, 0);
@@ -1379,7 +1450,7 @@ async fn test_sweep_expired_defeated_is_project_scoped() {
     // takes a project filter instead of always operating on the entire graph.
     let ctx_a = TestCtx::new().await;
     let ctx_b = TestCtx::new().await;
-    let svc = service().await;
+    let svc = service_with_retirement(Some(0.0)).await;
 
     let defeater_a = ctx_a.belief(format!("sweepG-{}", Uuid::new_v4()), 0.9, 0.9);
     let defeated_a = ctx_a.belief(format!("sweepH-{}", Uuid::new_v4()), 0.9, 0.9);
@@ -1412,7 +1483,7 @@ async fn test_sweep_expired_defeated_is_project_scoped() {
         .unwrap();
 
     let deleted = svc
-        .sweep_expired_defeated(0.3, 0.0, Some(&ctx_a.project))
+        .sweep_expired_defeated(0.3, Some(&ctx_a.project))
         .await
         .unwrap();
     assert_eq!(

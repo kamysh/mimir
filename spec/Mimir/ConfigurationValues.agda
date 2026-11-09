@@ -32,7 +32,6 @@ record Embeddings : Set where
     backend : Backend
     model : Text
     apiKey : Maybe Text
-    batchSize : ℕ
     cacheDirectory : Maybe Text
 
 record Config : Set where
@@ -44,7 +43,7 @@ defaultDatabase = database (toList "localhost") (toList "mimir") (toList "mimir"
   5432 nothing nothing prefer nothing nothing nothing
 
 defaultEmbeddings : Embeddings
-defaultEmbeddings = embeddings local [] nothing 0 nothing
+defaultEmbeddings = embeddings local [] nothing nothing
 
 defaultConfig : Config
 defaultConfig = config defaultDatabase nothing
@@ -56,8 +55,8 @@ getEmbeddings : Maybe Embeddings → Embeddings
 getEmbeddings nothing = defaultEmbeddings
 getEmbeddings (just e) = e
 
--- Size maximum is the chosen target's usize bound. Port retains its u16 bound.
-module Overrides (sizeMaximum : ℕ) where
+-- Port keeps its protocol-defined u16 range. There is no embedding work bound.
+module Overrides where
   data Setting : Set where
     host dbname user : Text → Setting
     port : UInt 65535 → Setting
@@ -65,7 +64,6 @@ module Overrides (sizeMaximum : ℕ) where
     mode : Mode → Setting
     backend : Backend → Setting
     model apiKey cacheDirectory : Text → Setting
-    batchSize : UInt sizeMaximum → Setting
 
   changeDatabase : (Database → Database) → Config → Config
   changeDatabase f c = config (f (Config.db c)) (Config.embed c)
@@ -87,7 +85,6 @@ module Overrides (sizeMaximum : ℕ) where
   apply (backend value) = changeEmbedding (λ e → record e { backend = value })
   apply (model value) = changeEmbedding (λ e → record e { model = value })
   apply (apiKey value) = changeEmbedding (λ e → record e { apiKey = just value })
-  apply (batchSize value) = changeEmbedding (λ e → record e { batchSize = UInt.number value })
   apply (cacheDirectory value) = changeEmbedding (λ e → record e { cacheDirectory = just value })
 
   applyAll : List Setting → Config → Config
@@ -127,7 +124,6 @@ module Overrides (sizeMaximum : ℕ) where
   portBoundPreserved (model value) c proof = proof
   portBoundPreserved (apiKey value) c proof = proof
   portBoundPreserved (cacheDirectory value) c proof = proof
-  portBoundPreserved (batchSize value) c proof = proof
 
   allPortsBounded : ∀ settings c → Database.port (Config.db c) ≤ 65535 →
     Database.port (Config.db (applyAll settings c)) ≤ 65535

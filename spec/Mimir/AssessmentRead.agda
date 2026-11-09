@@ -19,7 +19,7 @@ import Mimir.AssessmentSelection as Selection
 import Mimir.AssessmentEvaluation as Evaluation
 import Mimir.ReviewLedger as Ledger
 import Mimir.LearningSchema as Schema
-import Mimir.RevisionBounds as Bounds
+import Mimir.RetrievalRanking as Ranking
 import Mimir.LearningTargets as Targets
 import Mimir.Validation as Validation
 
@@ -86,7 +86,8 @@ getAssessment : Selection.Query → List Targets.Belief → World → ScoreResul
 getAssessment q beliefs w with nonblank (Selection.Query.project q) ∧
   nonblank (Selection.Query.scope q) ∧ nonblank (Selection.Query.rubric q)
 ... | false = missingScope
-... | true with Targets.validate (Selection.Query.project q) beliefs (Selection.Query.belief q ∷ [])
+... | true with Targets.checkReference (Selection.Query.project q) beliefs
+  (Targets.reference (Selection.Query.belief q) (Validation.key "belief_id" ∷ []))
 ...   | Validation.rejected failure invalid = invalidTarget failure
 ...   | Validation.accepted valid = assessed q (scores q w)
 
@@ -128,23 +129,27 @@ record Page : Set where
   constructor mkPage
   field entries : List Entry; nextOffset : Maybe ℕ
 
-page : ℕ → ℕ → List Entry → Page
-page offset limit entries with limit <? length (drop offset entries)
+page : ℕ → Ranking.Selection → List Entry → Page
+page offset nothing entries = mkPage (drop offset entries) nothing
+page offset (just count) entries with Ranking.PositiveCount.count count <? length (drop offset entries)
 ... | yes more = mkPage (take limit (drop offset entries)) (just (offset + limit))
+  where limit = Ranking.PositiveCount.count count
 ... | no finished = mkPage (take limit (drop offset entries)) nothing
+  where limit = Ranking.PositiveCount.count count
+
+allSelectionKeepsRemainder : ∀ offset entries → Page.entries (page offset nothing entries) ≡ drop offset entries
+allSelectionKeepsRemainder offset entries = refl
 
 data HistoryResult : Set where
-  invalidPage missingProject invalidStoredHistory : HistoryResult
+  missingProject invalidStoredHistory : HistoryResult
   found : Page → HistoryResult
 
-history : Selection.Query → World → ℕ → ℕ → HistoryResult
-history q w offset limit with does (1 ≤? limit) ∧ does (offset ≤? Bounds.i64Maximum)
-... | false = invalidPage
-... | true with nonblank (Selection.Query.project q)
-...   | false = missingProject
-...   | true with timestampsPresent (select q w (World.contributions w))
-...     | false = invalidStoredHistory
-...     | true = found (page offset limit (sort (select q w (World.contributions w))))
+history : Selection.Query → World → ℕ → Ranking.Selection → HistoryResult
+history q w offset limit with nonblank (Selection.Query.project q)
+... | false = missingProject
+... | true with timestampsPresent (select q w (World.contributions w))
+...   | false = invalidStoredHistory
+...   | true = found (page offset limit (sort (select q w (World.contributions w))))
 
 -- History returns the original immutable payload, not a re-evaluated review.
 payload : Entry → Schema.Assessment

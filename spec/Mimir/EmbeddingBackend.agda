@@ -1,20 +1,21 @@
 {-# OPTIONS --safe #-}
 -- Backend-specific application policy. HTTP, tokenization and ONNX execution
--- are dependency operations; caching, batch boundaries, padding, pooling and
+-- are dependency operations; caching, complete input, padding, pooling and
 -- response alignment are Mimir decisions. No model/network operation is run by
 -- checking this specification.
 module Mimir.EmbeddingBackend where
 
-open import Data.Bool using (Bool; true; false)
-open import Data.List using (List; []; _∷_; _++_; length; take; drop; foldl)
+open import Data.Bool using (Bool; true; false; _∧_)
+open import Data.List using (List; []; _∷_; _++_; length; foldl; replicate)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; zero; suc; _⊓_; _⊔_)
+open import Data.Nat using (ℕ; zero; suc; _⊔_; _∸_; _≤?_)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Data.String using (toList)
 import Data.Vec as V
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Nullary using (does)
 open import Mimir.Text using (Text; trim)
 import Mimir.RetrievalRanking as Ranking
 import Mimir.ConfigurationValues as Config
@@ -38,34 +39,25 @@ cacheOverride (just path) with trim path
 ... | [] = nothing
 ... | clean@(_ ∷ _) = just clean
 
-chunkSize : ℕ → ℕ → ℕ
-chunkSize zero count = count ⊔ 1
-chunkSize (suc n) count = suc n
-
--- Fuel is exactly the initial input length; every nonempty step consumes at
--- least one input. No provider budget or arbitrary batch cutoff is introduced.
-batchesFuel : ℕ → ℕ → List Text → List (List Text)
-batchesFuel zero size texts = []
-batchesFuel (suc fuel) size [] = []
-batchesFuel (suc fuel) size texts@(_ ∷ _) =
-  take (suc size) texts ∷ batchesFuel fuel size (drop (suc size) texts)
-
-batches : ℕ → List Text → List (List Text)
-batches zero [] = []
-batches zero texts@(_ ∷ _) = texts ∷ []
-batches (suc size) texts = batchesFuel (length texts) size texts
-
 record Tokens : Set where
   constructor tokens
   field ids masks types : List ℕ
 
 sequenceLength : List Tokens → ℕ
-sequenceLength inputs = 512 ⊓ foldl (λ n t → n ⊔ length (Tokens.ids t)) 0 inputs
+sequenceLength inputs = foldl (λ n t → n ⊔ length (Tokens.ids t)) 0 inputs
+
+-- This is the configured BGE model's declared position table, explicitly
+-- approved by the user. It is checked against complete encodings, including
+-- special tokens, before model execution; it never selects a source prefix.
+withinModelCapacity : List Tokens → Bool
+withinModelCapacity [] = true
+withinModelCapacity (first ∷ rest) = does (length (Tokens.ids first) ≤? 512) ∧ withinModelCapacity rest
 
 pad : ℕ → List ℕ → List ℕ
-pad zero values = []
-pad (suc n) [] = 0 ∷ pad n []
-pad (suc n) (x ∷ xs) = x ∷ pad n xs
+pad size values = values ++ replicate (size ∸ length values) 0
+
+paddingRetainsCompleteInput : ∀ size values → pad size values ≡ values ++ replicate (size ∸ length values) 0
+paddingRetainsCompleteInput size values = refl
 
 padTokens : ℕ → Tokens → Tokens
 padTokens size t = tokens (pad size (Tokens.ids t)) (pad size (Tokens.masks t)) (pad size (Tokens.types t))
@@ -100,7 +92,7 @@ module Arithmetic (float : Ranking.F32) where
   data Effect : Set where
     cached : Path.Path → Effect
     mkdirParents : Path.Path → Effect
-    downloadToPart : Text → Path.Path → ℕ → ℕ → Effect -- URL, path, timeout seconds, redirect bound
+    downloadToPart : Text → Path.Path → Effect -- URL and owned partial path; no deadline or redirect quota
     rename : Path.Path → Path.Path → Effect
     loadTokenizer loadModel optimizeModel makeRunnable : Path.Path → Effect
     tokenize : List Text → Bool → Effect
@@ -109,7 +101,7 @@ module Arithmetic (float : Ranking.F32) where
   Reply : Effect → Set
   Reply (cached path) = Bool
   Reply (mkdirParents path) = Text ⊎ ⊤
-  Reply (downloadToPart url path timeout redirects) = Text ⊎ ⊤
+  Reply (downloadToPart url path) = Text ⊎ ⊤
   Reply (rename source destination) = Text ⊎ ⊤
   Reply (loadTokenizer path) = Text ⊎ ⊤
   Reply (loadModel path) = Text ⊎ ⊤
@@ -130,7 +122,7 @@ module Arithmetic (float : Ranking.F32) where
     { true → done (inj₂ tt)
     ; false → ask (mkdirParents destination) (λ
       { (inj₁ error) → done (inj₁ error)
-      ; (inj₂ tt) → ask (downloadToPart url part 600 10) (λ
+      ; (inj₂ tt) → ask (downloadToPart url part) (λ
         { (inj₁ error) → done (inj₁ error)
         ; (inj₂ tt) → ask (rename part destination) done }) }) })
 
@@ -148,25 +140,29 @@ module Arithmetic (float : Ranking.F32) where
   pool (encoded V.∷ rest) (hidden V.∷ later) = meanPool (masked (Tokens.masks encoded) hidden) ∷ pool rest later
 
   encodedBatch : ∀ {count} → V.Vec Tokens count → Script (Text ⊎ List Vector)
-  encodedBatch encoded = ask (runModel inputs size) (λ
+  encodedBatch encoded with withinModelCapacity (V.toList encoded)
+  ... | false = done (inj₁ (toList "Complete input exceeds BAAI/bge-base-en-v1.5's declared 512 positions, including special tokens. Open a user dialog; do not truncate, split, or change models automatically."))
+  ... | true = ask (runModel inputs size) (λ
     { (inj₁ error) → done (inj₁ error)
     ; (inj₂ hidden) → done (inj₂ (pool (V.fromList inputs) hidden)) })
     where
     size = sequenceLength (V.toList encoded)
     inputs = Data.List.map (padTokens size) (V.toList encoded)
 
-  batch : List Text → Script (Text ⊎ List Vector)
-  batch texts = ask (tokenize texts true) (λ
-    { (inj₁ error) → done (inj₁ error)
-    ; (inj₂ encoded) → encodedBatch encoded })
+  afterTokenization : ∀ {count} → Text ⊎ V.Vec Tokens count → Script (Text ⊎ List Vector)
+  afterTokenization (inj₁ error) = done (inj₁ error)
+  afterTokenization (inj₂ encoded) = encodedBatch encoded
 
-  runBatches : List (List Text) → Script (Text ⊎ List Vector)
-  runBatches [] = done (inj₂ [])
-  runBatches (texts ∷ rest) = batch texts >>= λ
-    { (inj₁ error) → done (inj₁ error)
-    ; (inj₂ vectors) → runBatches rest >>= λ
-      { (inj₁ error) → done (inj₁ error)
-      ; (inj₂ later) → done (inj₂ (vectors ++ later)) } }
+  batch : List Text → Script (Text ⊎ List Vector)
+  batch texts = ask (tokenize texts true) afterTokenization
+
+  complete : List Text → Script (Text ⊎ List Vector)
+  complete [] = done (inj₂ [])
+  complete texts@(_ ∷ _) = batch texts
+
+  completeRequestTokenizedTogether : ∀ first rest →
+    complete (first ∷ rest) ≡ ask (tokenize (first ∷ rest) true) afterTokenization
+  completeRequestTokenizedTogether first rest = refl
 
 data CacheState : Set where unloaded loading ready poisoned : CacheState
 data CacheEvent : Set where acquire loaded failed releasePoison : CacheEvent

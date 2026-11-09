@@ -7,11 +7,13 @@ module Mimir.ApplicationStore where
 
 open import Data.Bool using (Bool; true; false; not; _∧_; _∨_)
 open import Data.Float.Base using (Float; _+_)
+open import Data.Empty using (⊥-elim)
+open import Data.Integer using (ℤ)
 open import Data.List using (List; []; _∷_; map; filterᵇ; _++_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≟_)
 open import Data.Product using (_×_; _,_; proj₁)
-open import Relation.Nullary using (does; yes; no)
+open import Relation.Nullary using (Dec; does; yes; no; ¬_; _×-dec_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
@@ -24,6 +26,8 @@ import Mimir.DocumentStore as Documents
 import Mimir.RetrievalRanking as Ranking
 import Mimir.LearningRecompute as Recompute
 import Mimir.IndependentProvenance as Independent
+import Mimir.StructuredValue as Wire
+import Mimir.LearningHistoryWire as RawHistory
 
 -- At an external embedding boundary each binary32 component may be widened
 -- exactly to Float for transport/storage description. No binary64 dot product
@@ -34,6 +38,44 @@ record Ground : Set where
   constructor ground
   field chunk belief : ℕ; weight : Float
 
+-- These are the five existing PostgreSQL operation tables, not an operation's
+-- private execution world. UUIDs/times arrive from PostgreSQL; no allocator or
+-- uniqueness axiom is introduced here. JSONB admission remains at its boundary.
+record ReservationRow : Set where
+  constructor reservationRow
+  field token : ℕ; reservedAt : ℤ
+
+record RequestKeyRow : Set where
+  constructor requestKeyRow
+  field requestKey : Text; token : ℕ
+
+record BindingRow : Set where
+  constructor bindingRow
+  field token : ℕ; operation : Text; arguments settings : Wire.Value; boundAt : ℤ
+
+record PlanRow : Set where
+  constructor planRow
+  field token : ℕ; plan : Wire.Value
+
+record SavedReplyRow : Set where
+  constructor savedReplyRow
+  field token : ℕ; step : Text; reply : Wire.Value
+
+-- PostgreSQL-issued ownership for work prepared before business publication.
+-- Deletion/cancellation revoke it; there is deliberately no expiry timer.
+record EmbeddingOwnerRow : Set where
+  constructor embeddingOwnerRow
+  field token : ℕ; project : Maybe Text; reservedAt : ℤ; operationToken : Maybe ℕ
+
+record OperationTables : Set where
+  constructor operationTables
+  field
+    reservations : List ReservationRow
+    requestKeys : List RequestKeyRow
+    bindings : List BindingRow
+    plans : List PlanRow
+    savedReplies : List SavedReplyRow
+
 record World : Set where
   constructor world
   field
@@ -41,6 +83,92 @@ record World : Set where
     chunks : List Documents.Chunk
     beliefVectors chunkVectors : List (ℕ × Vector)
     grounds : List Ground
+    history : RawHistory.Database -- original JSONB, including older payload shapes
+    operations : OperationTables
+    embeddingOwners : List EmbeddingOwnerRow
+
+replyKey? : ∀ token step row → Dec (token ≡ SavedReplyRow.token row × step ≡ SavedReplyRow.step row)
+replyKey? token step row = (token ≟ SavedReplyRow.token row) ×-dec (step ≟Text SavedReplyRow.step row)
+
+lookupReply : ℕ → Text → List SavedReplyRow → Maybe Wire.Value
+lookupReply token step [] = nothing
+lookupReply token step (row ∷ rest) with replyKey? token step row
+... | yes _ = just (SavedReplyRow.reply row)
+... | no _ = lookupReply token step rest
+
+lookupSaved : World → ℕ → Text → Maybe Wire.Value
+lookupSaved before token step = lookupReply token step (OperationTables.savedReplies (World.operations before))
+
+-- The executor returns an already saved answer rather than replacing it.
+saveAnswer : World → ℕ → Text → Wire.Value → World
+saveAnswer before token step answer with lookupSaved before token step
+... | just _ = before
+... | nothing = record before { operations = record tables
+  { savedReplies = savedReplyRow token step answer ∷ OperationTables.savedReplies tables } }
+  where tables = World.operations before
+
+originalAnswer : World → ℕ → Text → Wire.Value → Wire.Value
+originalAnswer before token step proposed with lookupSaved before token step
+... | just saved = saved
+... | nothing = proposed
+
+headReplyReadable : ∀ token step answer rest →
+  lookupReply token step (savedReplyRow token step answer ∷ rest) ≡ just answer
+headReplyReadable token step answer rest with replyKey? token step (savedReplyRow token step answer)
+... | yes _ = refl
+... | no impossible = ⊥-elim (impossible (refl , refl))
+
+savedAnswerReadable : ∀ before token step proposed →
+  lookupSaved (saveAnswer before token step proposed) token step ≡
+    just (originalAnswer before token step proposed)
+savedAnswerReadable before token step proposed with lookupSaved before token step in observed
+... | just answer = observed
+... | nothing = headReplyReadable token step proposed _
+
+savedAnswerUnchanged : ∀ before token step original proposed →
+  lookupSaved before token step ≡ just original → saveAnswer before token step proposed ≡ before
+savedAnswerUnchanged before token step original proposed observed rewrite observed = refl
+
+retryKeepsSavedAnswer : ∀ before token step first second →
+  saveAnswer (saveAnswer before token step first) token step second ≡ saveAnswer before token step first
+retryKeepsSavedAnswer before token step first second =
+  savedAnswerUnchanged (saveAnswer before token step first) token step
+    (originalAnswer before token step first) second (savedAnswerReadable before token step first)
+
+otherSavedAnswerPreserved : ∀ before token step proposed otherToken otherStep →
+  ¬ (otherToken ≡ token × otherStep ≡ step) →
+  lookupSaved (saveAnswer before token step proposed) otherToken otherStep ≡ lookupSaved before otherToken otherStep
+otherSavedAnswerPreserved before token step proposed otherToken otherStep different with lookupSaved before token step
+... | just _ = refl
+... | nothing with replyKey? otherToken otherStep (savedReplyRow token step proposed)
+... | yes same = ⊥-elim (different same)
+... | no _ = refl
+
+-- This projection is only a frame assertion. Recovery still observes the
+-- complete World, including all operation tables, without a smaller-world API.
+BusinessSnapshot = Learning.World × List Documents.Chunk ×
+  List (ℕ × Vector) × List (ℕ × Vector) × List Ground × RawHistory.Database
+
+businessSnapshot : World → BusinessSnapshot
+businessSnapshot before = World.learning before , World.chunks before ,
+  World.beliefVectors before , World.chunkVectors before , World.grounds before , World.history before
+
+savingAnswerPreservesBusiness : ∀ before token step proposed →
+  businessSnapshot (saveAnswer before token step proposed) ≡ businessSnapshot before
+savingAnswerPreservesBusiness before token step proposed with lookupSaved before token step
+... | just _ = refl
+... | nothing = refl
+
+savingAnswerPreservesOperationInputs : ∀ before token step proposed →
+  let prior = World.operations before
+      after = World.operations (saveAnswer before token step proposed)
+  in (OperationTables.reservations after , OperationTables.requestKeys after ,
+      OperationTables.bindings after , OperationTables.plans after) ≡
+     (OperationTables.reservations prior , OperationTables.requestKeys prior ,
+      OperationTables.bindings prior , OperationTables.plans prior)
+savingAnswerPreservesOperationInputs before token step proposed with lookupSaved before token step
+... | just _ = refl
+... | nothing = refl
 
 nodes : World → List Graph.Node
 nodes w = Publication.World.nodes (Learning.World.publication (World.learning w))
@@ -60,8 +188,11 @@ setNodes ns w = record w { learning = record learn { publication = record pub { 
 insertNode : Graph.Node → World → World
 insertNode node w = setNodes (nodes w ++ (node ∷ [])) w
 
+retireEntry : List ℕ → Registry.Entry → Registry.Entry
+retireEntry ids r = record r { retired = Registry.Entry.retired r ∨ Ranking.member (Registry.Entry.nodeID r) ids }
+
 retire : List ℕ → Registry.Registry → Registry.Registry
-retire ids = map (λ r → record r { retired = Registry.Entry.retired r ∨ Ranking.member (Registry.Entry.nodeID r) ids })
+retire ids = map (retireEntry ids)
 
 detach : List ℕ → List Edges.Edge → List Edges.Edge
 detach ids = filterᵇ (λ e → not (Ranking.member (Edges.Edge.from e) ids ∨ Ranking.member (Edges.Edge.to e) ids))

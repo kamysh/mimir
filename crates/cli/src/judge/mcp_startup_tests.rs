@@ -1,6 +1,9 @@
 use super::*;
 use std::fs;
 use std::path::PathBuf;
+use tokio::io::AsyncBufReadExt;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 
 fn fixture_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/judge/retry_fixture.sh")
@@ -190,33 +193,52 @@ fn capabilities_require_exact_versions_and_all_boolean_support_flags() {
     validate_learning_capabilities(&extended).unwrap();
 }
 
-struct Fixture(PathBuf);
+struct Fixture {
+    path: PathBuf,
+    listener: TcpListener,
+    ownership: Mutex<Option<tokio::io::BufReader<TcpStream>>>,
+}
 
 impl Fixture {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!("mimir-startup-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&path).unwrap();
-        Self(path)
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        Self {
+            path,
+            listener: TcpListener::from_std(listener).unwrap(),
+            ownership: Mutex::new(None),
+        }
     }
 
     async fn start(&self, mode: &str) -> Result<Client> {
-        Client::start(
+        let result = Client::start(
             "bash",
             &[
                 fixture_path().to_string_lossy().into_owned(),
                 "00000000-0000-4000-8000-000000000001".into(),
                 String::new(),
                 mode.into(),
-                self.0.join("requests").to_string_lossy().into_owned(),
-                self.0.join("pids").to_string_lossy().into_owned(),
+                self.path.join("requests").to_string_lossy().into_owned(),
+                self.path.join("pids").to_string_lossy().into_owned(),
+                self.listener.local_addr()?.to_string(),
             ],
-            &self.0.join("unused config.toml"),
+            &self.path.join("unused config.toml"),
         )
-        .await
+        .await;
+        let (stream, _) = self.listener.accept().await?;
+        let mut ownership = tokio::io::BufReader::new(stream);
+        let mut event = String::new();
+        ownership.read_line(&mut event).await?;
+        let pids = self.pids();
+        assert_eq!(event, format!("mcp {} {}\n", pids[0], pids[1]));
+        *self.ownership.lock().await = Some(ownership);
+        result
     }
 
     fn requests(&self) -> Vec<Value> {
-        fs::read_to_string(self.0.join("requests"))
+        fs::read_to_string(self.path.join("requests"))
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -224,7 +246,7 @@ impl Fixture {
     }
 
     fn pids(&self) -> Vec<u32> {
-        fs::read_to_string(self.0.join("pids"))
+        fs::read_to_string(self.path.join("pids"))
             .unwrap()
             .lines()
             .map(|line| line.parse().unwrap())
@@ -232,16 +254,21 @@ impl Fixture {
     }
 
     async fn stopped(&self) {
+        let mut ownership = self
+            .ownership
+            .lock()
+            .await
+            .take()
+            .expect("fixture announced ownership");
+        let mut remaining = Vec::new();
+        ownership.read_to_end(&mut remaining).await.unwrap();
+        assert!(
+            remaining.is_empty(),
+            "unexpected ownership event after readiness"
+        );
         for pid in self.pids() {
-            let mut alive = true;
-            for _ in 0..40 {
-                alive = fs::read_to_string(format!("/proc/{pid}/stat"))
-                    .is_ok_and(|state| state.split_whitespace().nth(2) != Some("Z"));
-                if !alive {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
+            let alive = fs::read_to_string(format!("/proc/{pid}/stat"))
+                .is_ok_and(|state| state.split_whitespace().nth(2) != Some("Z"));
             assert!(
                 !alive,
                 "owned fixture process {pid} survived client cleanup"
@@ -252,7 +279,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -262,8 +289,8 @@ async fn startup_and_calls_share_ids_and_owned_process_group() {
     let mut client = fixture.start("").await.unwrap();
     assert_eq!(client.next_id, 4);
     assert_eq!(
-        fs::read_to_string(fixture.0.join("pids.config")).unwrap(),
-        fixture.0.join("unused config.toml").to_string_lossy()
+        fs::read_to_string(fixture.path.join("pids.config")).unwrap(),
+        fixture.path.join("unused config.toml").to_string_lossy()
     );
     let pids = fixture.pids();
     assert_eq!(client.child.id(), Some(pids[0]));

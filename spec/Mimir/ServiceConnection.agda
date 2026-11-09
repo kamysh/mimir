@@ -21,20 +21,24 @@ import Mimir.ConnectionProtocol as Connection
 import Mimir.ServiceStartup as Startup
 import Mimir.MigrationRuntime as Migration
 import Mimir.ApplicationProtocol as Application
+import Mimir.StandardLibrary as Library
 
 enabled : Values.Config → Bool
 enabled configurationValue with Values.Config.embed configurationValue
 ... | nothing = false
 ... | just _ = true
 
-Compatible : Values.Config → Application.Environment → Set
-Compatible configurationValue environment = Application.Environment.embeddingsEnabled environment ≡ enabled configurationValue ×
-  Application.Environment.dimension environment ≡ 768
+Compatible : Library.Contract → Config.Config → Application.Environment → Set
+Compatible conversion configurationValue environment =
+  Application.Environment.embeddingsEnabled environment ≡ enabled (Config.Config.core configurationValue) ×
+  Application.Environment.dimension environment ≡ 768 ×
+  Application.Environment.retirementPolicy environment ≡
+    Config.Retirement.resolve conversion (Config.Config.retirement configurationValue)
 
 module Bound (sizeMaximum : ℕ) (path : Path.Path) (environment : Connection.Environment)
   (decimalPort : ℕ → Text) (certificateBlocks : Text → List Text) (unix : Bool) where
   private
-    module C = Configuration.Run sizeMaximum
+    module C = Configuration.Run
     module M = Migration.Runtime Text Text
     module S configurationValue = Startup.Run (Config.Config.core configurationValue) environment decimalPort certificateBlocks unix
 

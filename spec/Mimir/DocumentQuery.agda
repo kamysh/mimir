@@ -1,17 +1,20 @@
 {-# OPTIONS --safe #-}
 -- Semantic document query. Project filtering here is exact (no automatic
--- global-document inclusion). Missing chunk/parent rows are handled separately.
+-- global-document inclusion). After embedding, project selection, vectors and
+-- chunk/parent reads share one owned read-only stable transaction.
 module Mimir.DocumentQuery where
 
 open import Data.Bool using (Bool; true; false)
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
+open import Data.Unit using (⊤)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
 import Mimir.DocumentStore as Documents
 import Mimir.Effects as Effects
+import Mimir.RetrievalRanking as Ranking
 
 record Hit : Set where
   constructor hit
@@ -25,12 +28,16 @@ project c (just parent) = hit (Documents.Chunk.identity c) (Documents.Chunk.docu
 
 data Effect : Set where
   embed : Text → Effect
+  beginRead : Effect
+  closeRead : ℕ → Effect
   projectChunkIDs : Text → Effect
-  queryVectors : Store.Vector → ℕ → Maybe (List ℕ) → Effect
+  queryVectors : Store.Vector → Ranking.Selection → Maybe (List ℕ) → Effect
   getChunk : ℕ → Effect
 
 Reply : Effect → Set
 Reply (embed query) = Text ⊎ List Store.Vector
+Reply beginRead = Text ⊎ ℕ
+Reply (closeRead tx) = ⊤
 Reply (projectChunkIDs project) = Text ⊎ List ℕ
 Reply (queryVectors vector limit filter) = Text ⊎ List ℕ
 Reply (getChunk id) = Text ⊎ Maybe Documents.Chunk
@@ -67,17 +74,20 @@ afterSearch : Text ⊎ List ℕ → Script Result
 afterSearch (inj₁ error) = done (failed error)
 afterSearch (inj₂ ids) = materialize ids
 
-search : Store.Vector → ℕ → Maybe Text → Script Result
+search : Store.Vector → Ranking.Selection → Maybe Text → Script Result
 search vector limit nothing = ask (queryVectors vector limit nothing) afterSearch
 search vector limit (just project) = ask (projectChunkIDs project) (λ
   { (inj₁ error) → done (failed error)
   ; (inj₂ ids) → ask (queryVectors vector limit (just ids)) afterSearch })
 
-afterEmbedding : ℕ → Maybe Text → Text ⊎ List Store.Vector → Script Result
+afterEmbedding : Ranking.Selection → Maybe Text → Text ⊎ List Store.Vector → Script Result
 afterEmbedding limit project (inj₁ error) = done (failed error)
 afterEmbedding limit project (inj₂ []) = done emptyEmbedding
-afterEmbedding limit project (inj₂ (vector ∷ extra)) = search vector limit project
+afterEmbedding limit project (inj₂ (vector ∷ extra)) = ask beginRead (λ
+  { (inj₁ error) → done (failed error)
+  ; (inj₂ tx) → search vector limit project >>= λ result →
+      ask (closeRead tx) (λ _ → done result) })
 
-start : Bool → Text → ℕ → Maybe Text → Script Result
+start : Bool → Text → Ranking.Selection → Maybe Text → Script Result
 start false query limit project = done embeddingsDisabled
 start true query limit project = ask (embed query) (afterEmbedding limit project)

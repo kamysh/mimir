@@ -15,7 +15,7 @@ updating its binary. An old running process continues to use its old code.
 
 When an email reports a failure, run `mimir judge diagnose` on that computer.
 See [operations and troubleshooting](../docs/operations.md) for exact recovery
-steps, bounded log retention and private diagnostic handling.
+steps, append-only operational logs and private diagnostic handling.
 
 ## Configure a scheduled judge
 
@@ -30,7 +30,6 @@ Choose a model actually available to the authenticated Claude account:
 
 ```toml
 [judge]
-batch_size = 5
 mcp_command = "/ABSOLUTE/HOME/.local/bin/mimir-mcp"
 mcp_args = []
 
@@ -130,7 +129,8 @@ must precede bootstrap. A calendar job normally has no PID between runs.
 ### Verify the actual scheduled job
 
 A registered job or valid config is not a completed model review. When a live
-bounded batch is authorized, start the actual service and inspect its report:
+review run covering all currently eligible work is authorized, start the actual
+service and inspect its report:
 
 ```sh
 launchctl kickstart "gui/$(id -u)/org.mimir.judge"
@@ -150,25 +150,57 @@ when a required account or permission step remains unresolved.
 
 ## Runtime behavior
 
+When enabling email, obtain the desired local delivery time from the user and set
+`judge.daily_report_time = { hour = H, minute = M }` in the configuration. Hours
+run from 0 through 23 and minutes from 0 through 59. Both fields are required;
+there is no default and no request-level override. A missing or invalid time
+produces a configuration diagnostic with the correction to make.
+
+An owned calendar task admits the report at that time even when reviews are idle
+or paused for correction. It does not start a review batch. A skipped clock time
+uses the first valid time afterward; a repeated time uses its first occurrence,
+once. Missed days are included by the existing reporting cursor. Queue admission
+is remembered while delivery is pending, so status updates cannot repeatedly
+enqueue the same day's report. Disabling email through an admitted configuration
+stops future calendar admissions. Restart cancels and joins the calendar owner.
+
+Watch mode owns a background task for alert and daily-summary delivery. A stalled
+SMTP or authentication exchange does not block another review. `notification:
+"queued"` means accepted for an attempt, not delivered. Shutdown cancels and
+awaits that task; queued jobs not yet submitted are cancelled, and saved notifier
+outbox entries remain. Standalone `judge run` delivery remains synchronous.
+
 `mimir judge check-config` validates settings locally. `mimir judge run` reviews
-one selected batch through `mimir-mcp`; `mimir judge watch` repeats batches
-every five minutes by default (`--interval-seconds`, positive values) until interrupted.
-After three consecutive incomplete or unavailable runs by default
-(`--max-consecutive-failures`), it backs off to hourly runs. An empty queue
+one selected batch through `mimir-mcp`; `mimir judge watch` immediately checks
+for further eligible work after each successful non-idle batch. An empty queue
+waits for PostgreSQL work events and scans again when one arrives; it has no idle
+polling interval. After a listener disconnects, it subscribes again and scans
+saved work before waiting, so missed notifications do not lose pending reviews.
+If restoring the connection fails, it waits for a configuration correction or
+an explicit SIGHUP retry. OS file events detect configuration edits and replacements without
+polling. Valid changes are subscribed before the next queue scan. Invalid
+settings pause for a correction event, leave the file intact, and do not replace
+the admitted settings. After incomplete work or an unresolved prerequisite, the
+watcher explains the problem and prints `kill -HUP PID` with its current process
+ID. Correct the cause before requesting that retry. New work notifications do
+not retry an unchanged missing prerequisite. The retry revalidates configuration
+and acknowledges its database subscription before scanning pending work.
+There is no failure-count threshold or retry timer. The former
+`--interval-seconds` and `--max-consecutive-failures` arguments are removed.
+An empty queue
 makes no model call. `mimir judge status` reads the last local report and gives
 the ID of a retained failure trace. `mimir judge diagnostics` reads the first
 failure trace of the current incident; `--list` shows retained attempt IDs and
 `--id UUID` selects a specific attempt. The private trace records ordered model
 requests, tool requests and outcomes, cumulative model-request and tool-attempt counts, and the final
-failure reason. It retains at
-most eight attempts, 48 events, the first 48 selected IDs, and 256 KiB per attempt, and truncates event
-details to 3,072 characters. Later successful runs do not erase an earlier
+failure reason. It retains every attempt, selected ID and event with complete
+details. Later successful runs do not erase an earlier
 failure trace. The database review receipt is authoritative; a local status
 snapshot or model claim does not establish completion. The runner restricts
 tool calls to the selected experience and project.
 After a committed review, it checks the pinned database revision and finishes
 that item without requiring a separate model "done" turn. A failed or interrupted run leaves the revision pending for the next run and reports a
-bounded `block_reason` without exposing provider or experience text.
+`block_reason` without exposing provider or experience text.
 
 The `claude-code`, `codex`, and `command` LLM backends are implemented. Claude
 Code and Codex use explicit CLI flags for structured output and isolation, and
@@ -187,8 +219,7 @@ Codex runs with `--json` and reads its structured answer from
 structured reply from that wrapper. Codex's human-readable mode echoes the prompt
 to stderr, so it is unsuitable for the judge's potentially large history payloads.
 Subprocess stdin, stdout and structured answer files are read completely. Stderr
-is continuously drained, with only 64 KiB retained for diagnostics; a noisy
-stderr stream does not fail useful work. MCP frames and notification sequences
+is continuously drained and retained completely for diagnostics. MCP frames and notification sequences
 have no Mimir-imposed byte/count ceiling. Model call arrays are executed in order,
 with one result per call. Successful process output alone never acknowledges a
 review; the database-receipt rule remains in force.
@@ -196,17 +227,24 @@ review; the database-receipt rule remains in force.
 After updating, run `mimir config check`. Retired `[llm]` settings
 `timeout_seconds`, `max_calls`, `max_output_tokens`, and `max_budget_usd` are
 rejected with migration instructions. `mimir config upgrade` removes those four
-settings, preserves the other settings and comments, and creates no backup.
+settings along with retired judge, email and logging limits listed in
+[operations](../docs/operations.md#review-limit-migration), preserves other
+settings and comments, and creates no backup.
 Run `mimir config check` again, then restart your existing application process.
-No service definitions need changing. Batch/page sizes remain caller-selected
-positive work granularity, with no arbitrary upper bound in the learning APIs.
+No service definitions need changing. The judge selects all currently eligible
+work in its project scope. `judge.batch_size` is retired: run
+`mimir config upgrade`, then `mimir config check`, for a configuration that still
+contains it. A separately configured embedding batch setting is preserved.
+An explicit pending-query result count must be positive; omission returns all
+matches. See [judge selection](../docs/JUDGE-SELECTION.md).
 
 Review and experience content, source records, extracted items, predictions,
 assessment references, candidate declarations and text fields have no application
 size/count ceilings. Required fields, exact quotations, numeric domains,
 provenance, unique identities, transactions and revision checks remain enforced.
 Native integer/storage limits can still produce explicit errors. Complete batch
-state is retained; private diagnostic history and operational logs remain bounded.
+state and private diagnostic history are retained. Operational logs append complete
+entries without application rotation or automatic deletion.
 Legacy diagnostic files load, but their remaining-budget values are not presented
 as cumulative work counts: new count fields are absent for old records.
 
@@ -217,7 +255,7 @@ function results. Anthropic calls replay signed thinking/content blocks unchange
 and pair each `tool_result` with its `tool_use` ID. Multiple calls in one provider
 response are executed one at a time through the same scoped host gate. Provider
 redirects, incomplete responses and provider errors block the run. Malformed tool
-arguments return correction feedback. Transport bodies are read completely. `watch` supplies recurring local polling; no service or timer is installed
+arguments return correction feedback. Transport bodies are read completely. `watch` runs locally and waits for database work events when idle; no service or timer is installed
 by the source change. The Step 11 Codex comparison exercised live judge calls,
 but the new watch mode and API-provider accounts have not been exercised live.
 
@@ -264,11 +302,15 @@ confirmed by a later completed batch from reviews whose completion is
 unverified. An idle queue closes the alert episode but does not prove that a
 specific review completed. Email excludes belief contents, model output, tool
 arguments and responses, and credentials. Each incident has independent
-failure suppression, recovery, retry, and exhaustion state. The crate owns
+failure suppression, recovery, and pending-delivery state. The crate owns
 `notification.lock` and a private atomic `notification-outbox.json` in the Mimir
 state directory; other components can use the same crate and directory without
-depending on the judge. `Notifier::retry_due` lets a future caller retry due
-alerts independently of a new judge run. It does not schedule itself.
+depending on the judge. `Notifier::retry_due()` retries all saved alerts independently of a new review,
+without a result quota, delay, or attempt ceiling. It does not schedule itself.
+The watcher owns delivery. Standalone review commands save pending events and
+print the exact `mimir judge watch` command; they never wait for mail. The
+private incoming-event queue is separate from the sender lock, so stalled SMTP
+or OAuth cannot stop a review from saving its result and notification.
 
 With `[email].enabled=true`, password, OAuth2, or unauthenticated SMTP uses the
 configured relay with required STARTTLS or implicit TLS and certificate
@@ -279,7 +321,7 @@ the same notification lock. A changed account, client, tenant, scope, client
 secret, SMTP host, or bootstrap refresh token is refused rather than silently
 reusing the previous cache. Notification status is separate from the judge's
 database-confirmed learning status: `disabled`, `not_needed`, `sent`,
-`retry_pending`, `auth_required`, `exhausted`, or `unavailable` for a local
+`retry_pending`, `auth_required`, or `unavailable` for a local
 state failure. A failed email cannot undo a committed review.
 
 OAuth setup is a separate account action: register a client, grant the SMTP
@@ -344,8 +386,7 @@ refresh is not an atomic transaction with the provider: if the provider rotates
 its token and the local state write fails, Mimir blocks SMTP, but recovery may
 require a new authorization if the provider invalidated the previous token.
 Token revocation, expired consent, malformed responses, and changed account
-identity surface as `auth_required` while attempts remain; the final failed attempt is
-reported as `exhausted`. Network/server failures remain retryable. A rejected
+identity surface as `auth_required`. Network/server failures remain retryable. A rejected
 cached access token is cleared without losing the refresh token, then refreshed
 and tried once more. No live Google or Microsoft account has been verified.
 
@@ -354,11 +395,25 @@ Provider references: [Google SMTP XOAUTH2](https://developers.google.com/workspa
 [Microsoft SMTP OAuth](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth/),
 and [Microsoft refresh-token rotation](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow).
 
-Each attempt is persisted before SMTP; a later invocation retries when due,
-up to `max_attempts`, reusing the same Message-ID. SMTP acceptance means the
-relay accepted the message, not that it reached an inbox. A crash after relay
-acceptance and before the final outbox write may cause a duplicate; a crash
-before sending can consume an attempt and eventually exhaust the retry budget.
+Pending delivery is persisted before SMTP, reusing the same Message-ID across
+retries. There is no SMTP/OAuth deadline, retry delay, attempt ceiling, or
+notification batch quota. Remove obsolete `email.timeout_seconds`,
+`email.retry_seconds` and `email.max_attempts` from configuration and run
+`mimir judge check-config`; they are refused rather than ignored. Historical
+saved deadlines and exhaustion flags do not block a retry. OAuth tokens remain
+usable until the provider's reported expiry, without an invented early cutoff.
+
+The watcher retries saved work on startup, incoming events and SIGHUP. After
+correcting an unresolved prerequisite, send `kill -HUP <watcher-pid>` or restart
+`mimir judge watch` with the same configuration and state directory. Delivery
+errors leave mail pending and print recovery instructions. A sender's own queue
+acknowledgements do not cause a retry loop. Stopping the watcher cancels and
+joins delivery; no detached sender remains. Configuration, accounts and services
+are never changed by this retry mechanism.
+
+SMTP acceptance means the relay accepted the message, not that it reached an
+inbox. A crash after relay acceptance and before the final outbox write may
+cause a duplicate. This uncertainty is not treated as confirmed delivery.
 The Tokio SMTP transport reports success after the server accepts DATA; a subsequent QUIT
 failure does not turn that accepted message into a failed send. All SMTP tests
 use loopback fixtures and generated test certificates; no external mail was

@@ -1,20 +1,22 @@
 # Required global operational settings; put config_version before any table.
 # For an existing file use: mimir config upgrade --log-directory /absolute/path/to/logs
 config_version = 1
+# Sweeping also needs the user's explicit [retirement].grace_hours choice.
+# It is intentionally unset here; see docs/BELIEF-RETENTION.md. Do not guess it.
 [logging]
 directory = "/ABSOLUTE/HOME/.local/state/mimir/logs"
-max_file_bytes = 1048576
-retained_files = 4
 
 # Merge these optional sections into ~/.config/mimir/config.toml.
 # Keep [database] and optional [embeddings]. Directory 0700; file 0600.
 # Select a model available to your account; no provider/model fallback occurs.
 
 [judge]
-batch_size = 5
 # project = "my-project" # omit to process pending experiences across projects
 mcp_command = "mimir-mcp"
 mcp_args = []
+# Required when email is enabled. Obtain the local delivery time from the user;
+# there is no default and no per-call override. Replace H and M before enabling:
+# daily_report_time = { hour = H, minute = M }
 # Run once with `mimir judge run`; `mimir judge watch` repeats batches.
 # No service or timer is installed by this configuration.
 
@@ -44,9 +46,6 @@ to = ["you@gmail.com"]
 username = "you@gmail.com"
 auth = "password" # password | oauth2 | none (authenticated relay configured separately)
 password = "YOUR_APP_PASSWORD"
-timeout_seconds = 15
-retry_seconds = 300
-max_attempts = 5
 
 # For OAuth2 use auth = "oauth2", remove password, and add the matching
 # provider settings. See runtime/README.md for complete Google/Microsoft examples

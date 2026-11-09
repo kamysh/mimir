@@ -1,8 +1,33 @@
 use super::*;
+use crate::interaction::{RequestCorrection, RECORD_REVISION_READBACK, REVIEW_REVISION_READBACK};
 use crate::learning::*;
-use anyhow::ensure;
+use crate::validation::{Code, Segment};
+use anyhow::{ensure, Context};
 use std::collections::HashSet;
 use tokio_postgres::Transaction;
+
+fn record_revision_refusal(supplied: i64, current: i64) -> anyhow::Error {
+    RequestCorrection::stale_revision(vec![Segment::Key("expected_revision".into())],
+        format!("stale experience revision: supplied {supplied}; current is {current}. New experiences require expected_revision=0."), RECORD_REVISION_READBACK).into()
+}
+
+fn review_revision_refusal(source: bool, supplied: i64, current: i64) -> anyhow::Error {
+    let path = if source {
+        vec![
+            Segment::Key("review".into()),
+            Segment::Key("experience_revision".into()),
+        ]
+    } else {
+        vec![Segment::Key("expected_review_revision".into())]
+    };
+    let kind = if source { "experience" } else { "review" };
+    RequestCorrection::stale_revision(
+        path,
+        format!("stale {kind} revision: supplied {supplied}; current is {current}."),
+        REVIEW_REVISION_READBACK,
+    )
+    .into()
+}
 
 fn state(row: &Row) -> Result<ExperienceState> {
     let experience: Experience = serde_json::from_str(row.get::<_, &str>("payload"))?;
@@ -36,61 +61,129 @@ fn uuid_list(ids: &HashSet<Uuid>) -> String {
         .join(",")
 }
 
+enum ItemIdentity {
+    Recorded(Uuid),
+    New(String),
+}
+
+fn item_path(prefix: &[&str], index: usize, field: &str) -> Vec<Segment> {
+    let mut path: Vec<_> = prefix
+        .iter()
+        .map(|name| Segment::Key((*name).into()))
+        .collect();
+    path.push(Segment::Index(index));
+    path.push(Segment::Key(field.into()));
+    path
+}
+
+fn candidate_path(index: usize) -> Vec<Segment> {
+    vec![
+        Segment::Key("review".into()),
+        Segment::Key("candidates".into()),
+        Segment::Index(index),
+        Segment::Key("key".into()),
+    ]
+}
+
 impl AgeStore {
+    async fn item_id_by_key(
+        tx: &Transaction<'_>,
+        experience_id: Uuid,
+        key: &str,
+    ) -> Result<Option<Uuid>> {
+        Ok(tx.query_opt("SELECT item_id FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_key=$2",
+            &[&experience_id, &key]).await?.map(|row| row.get(0)))
+    }
+    /// A read-only preflight and the locked publication use the same ownership
+    /// checks. New names are accepted here; only resolve_item_ids allocates.
+    async fn lookup_item_identity(
+        tx: &Transaction<'_>,
+        experience_id: Uuid,
+        item: &crate::assessment::LearningItem,
+        prefix: &[&str],
+        index: usize,
+    ) -> Result<ItemIdentity> {
+        let row = if let Some(key) = &item.key {
+            tx.query_opt("SELECT item_id,source_ref,actor FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_key=$2",
+                &[&experience_id, key]).await?
+        } else if let Some(id) = item.id {
+            tx.query_opt("SELECT item_id,source_ref,actor FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_id=$2",
+                &[&experience_id, &id]).await?
+        } else {
+            return Err(RequestCorrection::learning_item(
+                item_path(prefix, index, "key"),
+                Code::MissingReference,
+                "learning item requires a key or an existing ID".into(),
+            )
+            .into());
+        };
+        let Some(row) = row else {
+            if let Some(id) = item.id {
+                return Err(RequestCorrection::learning_item(item_path(prefix, index, "id"), Code::MissingReference,
+                    format!("Learning item ID {id} is not stored for this experience and local key. New learning items must omit id; PostgreSQL allocates their UUIDs.")).into());
+            }
+            return Ok(ItemIdentity::New(
+                item.key
+                    .as_ref()
+                    .expect("a new item has a local key")
+                    .clone(),
+            ));
+        };
+        let assigned: Uuid = row.get("item_id");
+        if item.id.is_some_and(|id| id != assigned) {
+            return Err(RequestCorrection::learning_item(item_path(prefix, index, "id"), Code::WrongIdentity,
+                format!("Learning item key and UUID disagree: the stored ID is {assigned}, but the supplied ID is {}.", item.id.unwrap())).into());
+        }
+        for (field, supplied) in [
+            ("source_ref", item.source_ref.as_str()),
+            ("actor", item.actor.as_str()),
+        ] {
+            let original: &str = row.get(field);
+            if original != supplied {
+                return Err(RequestCorrection::learning_item(item_path(prefix, index, field), Code::WrongIdentity,
+                    format!("Learning item {assigned} has immutable {field} {original:?}; supplied {supplied:?} would change its recorded authorship or source.")).into());
+            }
+        }
+        Ok(ItemIdentity::Recorded(assigned))
+    }
     /// Only INSERT's PostgreSQL default may allocate a persistent item UUID.
     /// The enclosing learning transaction owns both allocation and publication.
     async fn resolve_item_ids(
         tx: &Transaction<'_>,
         experience_id: Uuid,
         items: &mut [crate::assessment::LearningItem],
+        prefix: &[&str],
     ) -> Result<()> {
-        for item in items {
-            let row = if let Some(key) = &item.key {
-                match tx.query_opt(
-                    "SELECT item_id,source_ref,actor FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_key=$2",
-                    &[&experience_id, key],
-                ).await? {
-                    Some(row) => row,
-                    None => {
-                        ensure!(item.id.is_none(), "new learning items must omit id; PostgreSQL allocates their UUIDs");
-                        tx.query_one(
-                            "INSERT INTO mimir_learning_item_owners(experience_id,item_key,source_ref,actor) VALUES($1,$2,$3,$4) RETURNING item_id,source_ref,actor",
-                            &[&experience_id, key, &item.source_ref, &item.actor],
-                        ).await?
-                    }
-                }
-            } else {
-                let id = item.id.ok_or_else(|| {
-                    anyhow::anyhow!("learning item requires a local key or existing ID")
-                })?;
-                tx.query_opt(
-                    "SELECT item_id,source_ref,actor FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_id=$2",
-                    &[&experience_id, &id],
-                ).await?.ok_or_else(|| anyhow::anyhow!("unreserved learning item UUID; new items require a local key and PostgreSQL allocates their UUIDs"))?
-            };
-            let assigned: Uuid = row.get("item_id");
-            ensure!(
-                item.id.is_none_or(|id| id == assigned),
-                "learning item key and UUID disagree"
-            );
-            ensure!(
-                row.get::<_, &str>("source_ref") == item.source_ref
-                    && row.get::<_, &str>("actor") == item.actor,
-                "learning item identity or provenance conflict"
-            );
-            item.id = Some(assigned);
+        for (index, item) in items.iter_mut().enumerate() {
+            item.id = Some(match Self::lookup_item_identity(tx, experience_id, item, prefix, index).await? {
+                ItemIdentity::Recorded(id) => id,
+                ItemIdentity::New(key) => tx.query_one(
+                    "INSERT INTO mimir_learning_item_owners(experience_id,item_key,source_ref,actor) VALUES($1,$2,$3,$4) RETURNING item_id",
+                    &[&experience_id, &key, &item.source_ref, &item.actor]).await?.get(0),
+            });
         }
         Ok(())
     }
 
     async fn resolve_item_references(tx: &Transaction<'_>, review: &mut Review) -> Result<()> {
-        for assessment in &mut review.assessments {
-            for key in &assessment.item_keys {
-                let row = tx.query_opt(
-                    "SELECT item_id FROM mimir_learning_item_owners WHERE experience_id=$1 AND item_key=$2",
-                    &[&review.experience_id, key],
-                ).await?.ok_or_else(|| anyhow::anyhow!("unknown learning item key: {key}"))?;
-                assessment.item_ids.push(row.get(0));
+        for (index, assessment) in review.assessments.iter_mut().enumerate() {
+            for (key_index, key) in assessment.item_keys.iter().enumerate() {
+                let id = Self::item_id_by_key(tx, review.experience_id, key)
+                    .await?
+                    .ok_or_else(|| {
+                        RequestCorrection::learning_item(
+                            vec![
+                                Segment::Key("review".into()),
+                                Segment::Key("assessments".into()),
+                                Segment::Index(index),
+                                Segment::Key("item_keys".into()),
+                                Segment::Index(key_index),
+                            ],
+                            Code::MissingReference,
+                            format!("Unknown learning item key {key:?} in this experience."),
+                        )
+                    })?;
+                assessment.item_ids.push(id);
             }
             assessment.item_keys.clear();
         }
@@ -103,6 +196,15 @@ impl AgeStore {
         ids: &[Uuid],
     ) -> Result<(Vec<serde_json::Value>, bool)> {
         let client = self.client.lock().await;
+        self.assessments_for_beliefs_on(&client, project, ids).await
+    }
+
+    pub(crate) async fn assessments_for_beliefs_on(
+        &self,
+        client: &Client,
+        project: &str,
+        ids: &[Uuid],
+    ) -> Result<(Vec<serde_json::Value>, bool)> {
         let rows = client.query("SELECT a.belief_id,a.scope,a.rubric,sum(a.positive),sum(a.negative),sum(a.benefit),sum(a.benefit_weight),count(*),count(*) FILTER (WHERE a.positive+a.negative=0),count(*) FILTER (WHERE a.benefit_weight=0) FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=ANY($2) AND e.review_revision=r.revision AND e.revision=r.experience_revision GROUP BY a.belief_id,a.scope,a.rubric ORDER BY a.belief_id,a.scope,a.rubric", &[&project,&ids]).await?;
         let values=rows.iter().map(|r| {
             let scores=crate::assessment::Scores::from_totals(r.get(3),r.get(4),r.get(5),r.get(6),r.get(7),r.get(8),r.get(9))?;
@@ -117,16 +219,37 @@ impl AgeStore {
         scope: &str,
         rubric: &str,
     ) -> Result<serde_json::Value> {
+        self.lesson_assessment_after_target(project, belief_id, scope, rubric, || async { Ok(()) })
+            .await
+    }
+
+    pub(super) async fn lesson_assessment_after_target<F, W>(
+        &self,
+        project: &str,
+        belief_id: Uuid,
+        scope: &str,
+        rubric: &str,
+        after_target: F,
+    ) -> Result<serde_json::Value>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
         ensure!(
             !project.trim().is_empty() && !scope.trim().is_empty() && !rubric.trim().is_empty(),
             "assessment scope must be explicit"
         );
         let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
+        let tx = snapshot_transaction(&mut client).await?;
         let beliefs = self
             .learning_beliefs_for_ids(&tx, &HashSet::from([belief_id]))
             .await?;
-        validate_targets(&beliefs, project, [belief_id].into_iter())?;
+        validate_named_targets(
+            &beliefs,
+            project,
+            [(belief_id, vec![Segment::Key("belief_id".into())])],
+        )?;
+        after_target().await?;
         let row = tx.query_one("SELECT COALESCE(sum(a.positive),0), COALESCE(sum(a.negative),0), COALESCE(sum(a.benefit),0), COALESCE(sum(a.benefit_weight),0), count(*), count(*) FILTER (WHERE a.positive+a.negative=0), count(*) FILTER (WHERE a.benefit_weight=0) FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 AND e.review_revision=r.revision AND e.revision=r.experience_revision", &[&project,&belief_id,&scope,&rubric]).await?;
         let scores = crate::assessment::Scores::from_totals(
             row.get(0),
@@ -137,9 +260,9 @@ impl AgeStore {
             row.get(5),
             row.get(6),
         )?;
-        Ok(
-            serde_json::json!({"project":project,"belief_id":belief_id,"scope":scope,"rubric":rubric,"scores":scores}),
-        )
+        let result = serde_json::json!({"project":project,"belief_id":belief_id,"scope":scope,"rubric":rubric,"scores":scores});
+        tx.commit().await?;
+        Ok(result)
     }
     pub async fn lesson_assessment_history(
         &self,
@@ -148,18 +271,16 @@ impl AgeStore {
         scope: &str,
         rubric: &str,
         offset: usize,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<serde_json::Value> {
-        ensure!(
-            limit > 0 && offset <= i64::MAX as usize,
-            "invalid history page"
-        );
         ensure!(!project.trim().is_empty(), "project must be explicit");
         let client = self.client.lock().await;
-        let rows = client.query("SELECT a.experience_id,a.review_revision,r.experience_revision,a.payload::text,r.created_at,(e.review_revision=r.revision AND e.revision=r.experience_revision) AS active FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 ORDER BY r.created_at,a.experience_id,a.review_revision LIMIT $5 OFFSET $6", &[&project,&belief_id,&scope,&rubric,&(i64::try_from(limit)?.checked_add(1).ok_or_else(|| anyhow::anyhow!("page size exceeds PostgreSQL integer range"))?),&(offset as i64)]).await?;
-        let entries = rows.iter().take(limit).map(|r| Ok(serde_json::json!({"experience_id":r.get::<_,Uuid>(0),"review_revision":r.get::<_,i64>(1),"experience_revision":r.get::<_,i64>(2),"assessment":serde_json::from_str::<serde_json::Value>(r.get::<_,&str>(3))?,"created_at":r.get::<_,chrono::DateTime<chrono::Utc>>(4),"active":r.get::<_,bool>(5)}))).collect::<Result<Vec<_>>>()?;
+        let rows = client.query("SELECT a.experience_id,a.review_revision,r.experience_revision,a.payload::text,r.created_at,(e.review_revision=r.revision AND e.revision=r.experience_revision) AS active FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 ORDER BY r.created_at,a.experience_id,a.review_revision", &[&project,&belief_id,&scope,&rubric]).await?;
+        let count = limit.map(|count| count.get()).unwrap_or(rows.len());
+        let entries = rows.iter().skip(offset).take(count).map(|r| Ok(serde_json::json!({"experience_id":r.get::<_,Uuid>(0),"review_revision":r.get::<_,i64>(1),"experience_revision":r.get::<_,i64>(2),"assessment":serde_json::from_str::<serde_json::Value>(r.get::<_,&str>(3))?,"created_at":r.get::<_,chrono::DateTime<chrono::Utc>>(4),"active":r.get::<_,bool>(5)}))).collect::<Result<Vec<_>>>()?;
+        let next = offset + entries.len();
         Ok(
-            serde_json::json!({"entries":entries,"next_offset":if rows.len()>limit {Some(offset.checked_add(limit).ok_or_else(|| anyhow::anyhow!("page offset exceeds platform range"))?)}else{None}}),
+            serde_json::json!({"entries":entries,"next_offset":if next<rows.len() {Some(next)}else{None}}),
         )
     }
     pub async fn get_experience(&self, id: Uuid) -> Result<Option<ExperienceState>> {
@@ -177,19 +298,24 @@ impl AgeStore {
         pending: bool,
         limit: usize,
     ) -> Result<Vec<ExperienceState>> {
-        self.list_experiences_excluding(project, pending, limit, &[])
+        let count = std::num::NonZeroUsize::new(limit)
+            .ok_or_else(|| anyhow::anyhow!("limit must be positive"))?;
+        self.list_experiences_excluding(project, pending, Some(count), &[])
             .await
     }
     pub async fn list_experiences_excluding(
         &self,
         project: Option<&str>,
         pending: bool,
-        limit: usize,
+        limit: crate::Selection,
         excluded: &[Uuid],
     ) -> Result<Vec<ExperienceState>> {
-        ensure!(limit > 0, "limit must be positive");
         let client = self.client.lock().await;
-        client.query(&format!("{CURRENT} WHERE ($1::text IS NULL OR e.project=$1) AND (NOT $2 OR e.reviewed_revision<e.revision) AND NOT (e.id = ANY($4::uuid[])) ORDER BY e.updated_at,e.id LIMIT $3"), &[&project, &pending, &(i64::try_from(limit)?), &excluded]).await?.iter().map(state).collect()
+        let mut selected: Vec<_> = client.query(&format!("{CURRENT} WHERE ($1::text IS NULL OR e.project=$1) AND (NOT $2 OR e.reviewed_revision<e.revision) AND NOT (e.id = ANY($3::uuid[])) ORDER BY e.updated_at,e.id"), &[&project, &pending, &excluded]).await?.iter().map(state).collect::<Result<_>>()?;
+        if let Some(count) = limit {
+            selected.truncate(count.get());
+        }
+        Ok(selected)
     }
     /// One snapshot: stale review data is never presented as current coverage.
     pub async fn learning_review(&self, id: Uuid) -> Result<serde_json::Value> {
@@ -198,18 +324,34 @@ impl AgeStore {
         row.map(|r| Ok(serde_json::json!({"experience_id":id,"revision":r.get::<_,i64>(0),"review_revision":r.get::<_,i64>(1),"reviewed_revision":r.get::<_,i64>(2),"review":r.get::<_,Option<&str>>(3).map(serde_json::from_str::<serde_json::Value>).transpose()?}))).transpose().map(|v|v.unwrap_or(serde_json::Value::Null))
     }
     pub async fn experience_history(&self, id: Uuid) -> Result<serde_json::Value> {
-        let client = self.client.lock().await;
-        let mut result = serde_json::json!({"experiences": [], "reviews": []});
-        for (table, key) in [
-            ("mimir_experience_versions", "experiences"),
-            ("mimir_review_versions", "reviews"),
-        ] {
-            let rows = client.query(&format!("SELECT revision,payload::text,created_at FROM {table} WHERE experience_id=$1 ORDER BY revision"), &[&id]).await?;
-            result[key] = serde_json::Value::Array(rows.iter().map(|row| {
-                Ok(serde_json::json!({"revision":row.get::<_,i64>(0), "payload":serde_json::from_str::<serde_json::Value>(row.get::<_,&str>(1))?, "created_at":row.get::<_,chrono::DateTime<chrono::Utc>>(2)}))
-            }).collect::<Result<_>>()?);
-        }
-        Ok(result)
+        self.experience_history_after_sources(id, || async { Ok(()) })
+            .await
+    }
+
+    pub(super) async fn experience_history_after_sources<F, W>(
+        &self,
+        id: Uuid,
+        after_sources: F,
+    ) -> Result<serde_json::Value>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let sources = Self::history_rows_on(tx.client(), id, "mimir_experience_versions").await?;
+        after_sources().await?;
+        let reviews = Self::history_rows_on(tx.client(), id, "mimir_review_versions").await?;
+        tx.commit().await?;
+        Ok(serde_json::json!({"experiences": sources, "reviews": reviews}))
+    }
+
+    async fn history_rows_on(client: &Client, id: Uuid, table: &str) -> Result<serde_json::Value> {
+        // The two callers supply fixed table names, never request content.
+        let rows = client.query(&format!("SELECT revision,payload::text,created_at FROM {table} WHERE experience_id=$1 ORDER BY revision"), &[&id]).await?;
+        Ok(serde_json::Value::Array(rows.iter().map(|row| {
+            Ok(serde_json::json!({"revision":row.get::<_,i64>(0), "payload":serde_json::from_str::<serde_json::Value>(row.get::<_,&str>(1))?, "created_at":row.get::<_,chrono::DateTime<chrono::Utc>>(2)}))
+        }).collect::<Result<_>>()?))
     }
     async fn learning_beliefs_for_ids(
         &self,
@@ -263,6 +405,27 @@ impl AgeStore {
             .map(|row| Ok(serde_json::from_str(row.get::<_, &str>(0))?))
             .transpose()
     }
+
+    async fn check_review_retention(
+        tx: &Transaction<'_>,
+        review: &Review,
+        revision: i64,
+    ) -> Result<()> {
+        let Some(row) = tx.query_opt("SELECT payload::text FROM mimir_review_versions WHERE experience_id=$1 AND revision=$2", &[&review.experience_id,&revision]).await? else { return Ok(()); };
+        let prior: Review = serde_json::from_str(row.get(0))?;
+        for item in prior.extracted_items {
+            if !review.extracted_items.iter().any(|i| {
+                i.id == item.id
+                    && i.source_ref == item.source_ref
+                    && i.actor == item.actor
+                    && i.statement == item.statement
+                    && i.kind == item.kind
+            }) {
+                return Err(RequestCorrection::review_retention(format!("Original extracted item {:?} (ID {:?}, source {:?}) is missing or changed. Retain its original identity, actor, exact statement and kind; put revised interpretation in conditions, predictions or rationale.",item.key,item.id,item.source_ref)).into());
+            }
+        }
+        Ok(())
+    }
     async fn candidate_ids(
         tx: &Transaction<'_>,
         experience_id: Uuid,
@@ -270,20 +433,145 @@ impl AgeStore {
     ) -> Result<HashMap<String, Uuid>> {
         let mut ids = HashMap::new();
         for candidate in candidates {
-            let row = tx.query_opt("SELECT kind,node_id,declaration::text,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2", &[&experience_id, &candidate.key()]).await?;
+            // This reconstructs an already completed answer. A later deletion
+            // blocks new publication, but does not change its saved identity.
+            let row = tx.query_opt("SELECT kind,node_id,declaration::text FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2", &[&experience_id, &candidate.key()]).await?;
             let Some(row) = row else {
                 anyhow::bail!("candidate key is not reserved");
             };
             let kind: &str = row.get(0);
             let declaration: serde_json::Value = serde_json::from_str(row.get(2))?;
-            let retired: bool = row.get(3);
             if kind != candidate.kind() || declaration != serde_json::to_value(candidate)? {
                 return Err(crate::validation::Refusal::candidate_conflict().into());
             }
-            ensure!(!retired, "candidate identity was deleted");
             ids.insert(candidate.key().to_owned(), row.get(1));
         }
         Ok(ids)
+    }
+
+    /// One read-only view determines which declarations still need preparation.
+    /// The publication transaction repeats every revision and identity check.
+    pub(crate) async fn review_preparation_candidates(
+        &self,
+        review: &Review,
+        expected: i64,
+    ) -> Result<Option<(String, Vec<(usize, Candidate)>)>> {
+        review
+            .validate()
+            .map_err(crate::validation::Refusal::validation)?;
+        ensure!(
+            (0..i64::MAX).contains(&expected),
+            "expected_review_revision must be nonnegative"
+        );
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let current = state(
+            &tx.query_opt(
+                &format!("{CURRENT} WHERE e.id=$1"),
+                &[&review.experience_id],
+            )
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("experience not found"))?,
+        )?;
+        if review.experience_revision != current.revision {
+            return Err(review_revision_refusal(
+                true,
+                review.experience_revision,
+                current.revision,
+            ));
+        }
+        if Self::active_request(&tx, review.experience_id)
+            .await?
+            .as_ref()
+            == Some(review)
+            && (expected == current.review_revision || expected == current.review_revision - 1)
+        {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        if expected != current.review_revision {
+            return Err(review_revision_refusal(
+                false,
+                expected,
+                current.review_revision,
+            ));
+        }
+        let references = review_references(review);
+        let beliefs = self
+            .learning_beliefs_for_ids(&tx, &references.iter().map(|(id, _)| *id).collect())
+            .await?;
+        validate_named_targets(&beliefs, &current.experience.project, references)?;
+        let mut identity_view = review.clone();
+        for (index, item) in identity_view.extracted_items.iter_mut().enumerate() {
+            if let ItemIdentity::Recorded(id) = Self::lookup_item_identity(
+                &tx,
+                review.experience_id,
+                item,
+                &["review", "extracted_items"],
+                index,
+            )
+            .await?
+            {
+                item.id = Some(id);
+            }
+        }
+        Self::check_review_retention(&tx, &identity_view, current.review_revision).await?;
+        crate::learning_sources::validate_review_sources(review, &current.experience)
+            .map_err(RequestCorrection::review_source)?;
+        for (index, assessment) in review.assessments.iter().enumerate() {
+            for (key_index, key) in assessment.item_keys.iter().enumerate() {
+                if !review
+                    .extracted_items
+                    .iter()
+                    .any(|item| item.key.as_ref() == Some(key))
+                    && Self::item_id_by_key(&tx, review.experience_id, key)
+                        .await?
+                        .is_none()
+                {
+                    return Err(RequestCorrection::learning_item(
+                        vec![
+                            Segment::Key("review".into()),
+                            Segment::Key("assessments".into()),
+                            Segment::Index(index),
+                            Segment::Key("item_keys".into()),
+                            Segment::Index(key_index),
+                        ],
+                        Code::MissingReference,
+                        format!("Unknown learning item key {key:?} in this experience."),
+                    )
+                    .into());
+                }
+            }
+        }
+        let mut new = Vec::new();
+        for (index, candidate) in review.candidates.iter().enumerate() {
+            let row = tx.query_opt("SELECT kind,declaration::text,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2",
+                &[&review.experience_id, &candidate.key()]).await?;
+            if let Some(row) = row {
+                let declaration: serde_json::Value = serde_json::from_str(row.get(1))?;
+                if row.get::<_, &str>(0) != candidate.kind()
+                    || declaration != serde_json::to_value(candidate)?
+                {
+                    return Err(RequestCorrection::candidate_declaration(
+                        candidate_path(index),
+                        Code::WrongIdentity,
+                        format!(
+                            "Candidate key {:?} has a different stored declaration.",
+                            candidate.key()
+                        ),
+                    )
+                    .into());
+                }
+                if row.get::<_, bool>(2) {
+                    return Err(RequestCorrection::candidate_declaration(candidate_path(index), Code::MissingReference,
+                        format!("Candidate identity {:?} was deleted; its key cannot be published again.", candidate.key())).into());
+                }
+            } else {
+                new.push((index, candidate.clone()));
+            }
+        }
+        tx.commit().await?;
+        Ok(Some((current.experience.project, new)))
     }
     async fn reserve_candidates(
         &self,
@@ -291,24 +579,59 @@ impl AgeStore {
         experience_id: Uuid,
         project: &str,
         candidates: &[Candidate],
+        prepared: &HashMap<String, crate::preparation::PreparedBelief>,
     ) -> Result<HashMap<String, Uuid>> {
         let mut ids = HashMap::new();
-        for candidate in candidates {
+        for (index, candidate) in candidates.iter().enumerate() {
             if let Some(row) = tx.query_opt("SELECT kind,node_id,declaration::text,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2", &[&experience_id, &candidate.key()]).await? {
                 let kind: &str = row.get(0);
                 let declaration: serde_json::Value = serde_json::from_str(row.get(2))?;
                 let retired: bool = row.get(3);
                 if kind != candidate.kind() || declaration != serde_json::to_value(candidate)? {
-                    return Err(crate::validation::Refusal::candidate_conflict().into());
+                    return Err(RequestCorrection::candidate_declaration(candidate_path(index), Code::WrongIdentity,
+                        format!("Candidate key {:?} has a different stored declaration.", candidate.key())).into());
                 }
-                ensure!(!retired, "candidate identity was deleted");
+                if retired {
+                    return Err(RequestCorrection::candidate_declaration(candidate_path(index), Code::MissingReference,
+                        format!("Candidate identity {:?} was deleted; its key cannot be published again.", candidate.key())).into());
+                }
                 ids.insert(candidate.key().to_owned(), row.get(1));
                 continue;
             }
-            let id = Uuid::new_v4();
+            let (id, created_at) = match candidate {
+                Candidate::Belief {
+                    key,
+                    content,
+                    memory_type,
+                } => {
+                    let value = prepared.get(key).ok_or_else(|| crate::preparation::PreparationRequired::new(
+                        crate::interaction::Location::Arguments,
+                        vec![crate::validation::Segment::Key("review".into()), crate::validation::Segment::Key("candidates".into())],
+                        crate::validation::Code::MissingEvidence,
+                        format!("Belief candidate {key} has no complete embedding and indexed grounding preparation. No review was committed. Use the service review preparation and open the user dialog if a prerequisite is unavailable.")))?;
+                    ensure!(
+                        value.belief.content == *content
+                            && value.belief.memory_type == *memory_type
+                            && value.belief.project.as_deref() == Some(project),
+                        "prepared candidate declaration or project changed"
+                    );
+                    (value.belief.id, value.belief.created_at)
+                }
+                Candidate::Pattern { .. } => {
+                    let row = tx.query_one("SELECT gen_random_uuid(),now()", &[]).await?;
+                    (row.get(0), row.get(1))
+                }
+            };
             self.ensure_candidate_identity_free(tx, id).await?;
-            self.create_candidate_node(tx, candidate, id, project)
-                .await?;
+            self.create_candidate_node(
+                tx,
+                candidate,
+                id,
+                created_at,
+                project,
+                prepared.get(candidate.key()),
+            )
+            .await?;
             let declaration = serde_json::to_string(candidate)?;
             tx.execute("INSERT INTO mimir_review_candidates(experience_id,candidate_key,kind,node_id,declaration) VALUES($1,$2,$3,$4,$5::text::jsonb)", &[&experience_id,&candidate.key(),&candidate.kind(),&id,&declaration]).await?;
             ids.insert(candidate.key().to_owned(), id);
@@ -320,30 +643,19 @@ impl AgeStore {
         tx: &Transaction<'_>,
         candidate: &Candidate,
         id: Uuid,
+        created_at: chrono::DateTime<chrono::Utc>,
         project: &str,
+        prepared: Option<&crate::preparation::PreparedBelief>,
     ) -> Result<()> {
         let g = &self.graph_name;
         let project_json = json_esc(project);
         match candidate {
-            Candidate::Belief {
-                content,
-                memory_type,
-                ..
-            } => {
-                let mut belief =
-                    Belief::new_in_project(content.clone(), 0.5, 0.0, project.to_owned())?
-                        .with_memory_type(*memory_type);
-                belief.id = id;
-                let args = format!(
-                    r#"{{"id":"{id}","content":"{}","project":"{project_json}","created_at":"{}","last_activated_at":"{}","memory_type":"{}"}}"#,
-                    json_esc(&belief.content),
-                    belief.created_at.to_rfc3339(),
-                    belief.last_activated_at.to_rfc3339(),
-                    belief.memory_type.as_str()
-                );
-                let stmt = format!("candidate_b_{}", id.simple());
-                let sql = format!("PREPARE {stmt}(agtype) AS SELECT * FROM ag_catalog.cypher('{g}', $$ CREATE (n:Belief {{id:$id,content:$content,project:$project,created_at:$created_at,last_activated_at:$last_activated_at,memory_type:$memory_type,probability:0.5,confidence:0.0,alpha:1.0,beta:1.0,alpha0:1.0,beta0:1.0}}) RETURN n.id $$,$1) AS (id ag_catalog.agtype)");
-                age_execute(tx.client(), &stmt, &sql, &args).await?;
+            Candidate::Belief { .. } => {
+                self.insert_prepared_belief_on(
+                    tx,
+                    prepared.ok_or_else(|| anyhow::anyhow!("candidate preparation is required"))?,
+                )
+                .await?
             }
             Candidate::Pattern {
                 situation,
@@ -354,7 +666,7 @@ impl AgeStore {
                     r#"{{"id":"{id}","situation":"{}","approach":"{}","project":"{project_json}","created_at":"{}"}}"#,
                     json_esc(situation),
                     json_esc(approach),
-                    chrono::Utc::now().to_rfc3339()
+                    created_at.to_rfc3339()
                 );
                 let stmt = format!("candidate_p_{}", id.simple());
                 let sql = format!("PREPARE {stmt}(agtype) AS SELECT * FROM ag_catalog.cypher('{g}', $$ CREATE (p:Pattern {{id:$id,situation:$situation,approach:$approach,project:$project,created_at:$created_at,activation_count:0,success_rate:0.5}}) RETURN p.id $$,$1) AS (id ag_catalog.agtype)");
@@ -364,9 +676,20 @@ impl AgeStore {
         Ok(())
     }
     pub async fn learning_overlay(&self) -> Result<(HashMap<Uuid, (f64, f64)>, HashSet<Uuid>)> {
-        let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
-        let reviews = Self::active_reviews(&tx).await?;
+        let client = self.client.lock().await;
+        self.learning_overlay_on(&client).await
+    }
+
+    pub(crate) async fn learning_overlay_on(
+        &self,
+        client: &Client,
+    ) -> Result<(HashMap<Uuid, (f64, f64)>, HashSet<Uuid>)> {
+        let reviews = client
+            .query(ACTIVE_REVIEWS, &[])
+            .await?
+            .iter()
+            .map(|row| Ok(serde_json::from_str(row.get::<_, &str>(0))?))
+            .collect::<Result<Vec<Review>>>()?;
         Ok(overlay(&reviews))
     }
     /// All learning changes are serialized across MCP processes. Graph writes and
@@ -392,7 +715,9 @@ impl AgeStore {
             .map(state)
             .transpose()?;
         if prior.is_none() {
-            ensure!(expected == 0, "new experience requires expected_revision=0");
+            if expected != 0 {
+                return Err(record_revision_refusal(expected, 0));
+            }
             // The ownership FK needs its experience row. All validation and
             // allocation below still roll back together on any refusal.
             tx.execute(
@@ -402,50 +727,79 @@ impl AgeStore {
             .await?;
         }
         let mut allocated = experience.clone();
-        Self::resolve_item_ids(&tx, experience.id, &mut allocated.learning_items).await?;
+        Self::resolve_item_ids(
+            &tx,
+            experience.id,
+            &mut allocated.learning_items,
+            &["experience", "learning_items"],
+        )
+        .await?;
         let experience = &allocated;
         let payload = serde_json::to_string(experience)?;
         if let Some(ref p) = prior {
-            ensure!(
-                p.experience.project == experience.project,
-                "experience project is immutable"
-            );
+            if p.experience.project != experience.project {
+                return Err(RequestCorrection::source_retention(
+                    vec![Segment::Key("experience".into()),Segment::Key("project".into())],Code::WrongIdentity,
+                    format!("Experience {} belongs to project {:?}; a correction cannot move it to {:?}.",experience.id,p.experience.project,experience.project)).into());
+            }
             for source in &p.experience.source_records {
-                ensure!(
-                    experience.source_records.contains(source),
-                    "source corrections must retain original records; append a correction source"
-                );
+                if !experience.source_records.contains(source) {
+                    return Err(RequestCorrection::source_retention(
+                        vec![Segment::Key("experience".into()),Segment::Key("source_records".into())],Code::MissingReference,
+                        format!("Original source record {:?} is missing or changed. Retain its original actor, provenance, text and recorded_at; append a separate correction source.",source.source_ref)).into());
+                }
             }
             if p.experience == *experience && (expected == p.revision || expected == p.revision - 1)
             {
                 return Ok(p.clone());
             }
-            ensure!(
-                expected == p.revision,
-                "stale experience revision: current is {}",
-                p.revision
-            );
+            if expected != p.revision {
+                return Err(record_revision_refusal(expected, p.revision));
+            }
         } else {
-            ensure!(expected == 0, "new experience requires expected_revision=0");
+            if expected != 0 {
+                return Err(record_revision_refusal(expected, 0));
+            }
         }
         let target_ids: HashSet<_> = experience.belief_ids.iter().copied().collect();
         let beliefs = self.learning_beliefs_for_ids(&tx, &target_ids).await?;
-        validate_targets(
+        validate_named_targets(
             &beliefs,
             &experience.project,
-            experience.belief_ids.iter().copied(),
+            experience.belief_ids.iter().enumerate().map(|(index, id)| {
+                (
+                    *id,
+                    vec![
+                        Segment::Key("experience".into()),
+                        Segment::Key("belief_ids".into()),
+                        Segment::Index(index),
+                    ],
+                )
+            }),
         )?;
         if let Some(id) = experience.pattern_id {
             let g = &self.graph_name;
             let rows = tx.query(&format!("SELECT project::text FROM ag_catalog.cypher('{g}', $$ MATCH (p:Pattern {{id:'{id}'}}) RETURN p.project $$) AS (project ag_catalog.agtype)"), &[]).await?;
-            ensure!(!rows.is_empty(), "pattern not found");
+            if rows.is_empty() {
+                return Err(RequestCorrection::pattern_reference(
+                    vec![
+                        Segment::Key("experience".into()),
+                        Segment::Key("pattern_id".into()),
+                    ],
+                    Code::MissingReference,
+                    format!("The requested pattern {id} was not found in Mimir."),
+                )
+                .into());
+            }
             let project: Option<&str> = rows[0].get(0);
-            ensure!(
-                project.is_none()
-                    || project == Some("null")
-                    || project == Some(experience.project.as_str()),
-                "pattern belongs to another project"
-            );
+            if !(project.is_none()
+                || project == Some("null")
+                || project == Some(experience.project.as_str()))
+            {
+                return Err(RequestCorrection::pattern_reference(
+                    vec![Segment::Key("experience".into()), Segment::Key("pattern_id".into())], Code::WrongIdentity,
+                    format!("The requested pattern {id} belongs to project {project:?}, not the experience project {:?}.", experience.project)).into());
+            }
         }
         let old_review = Self::active_review(&tx, experience.id).await?;
         let affected = review_targets(old_review.iter());
@@ -467,6 +821,16 @@ impl AgeStore {
         review: &Review,
         expected: i64,
     ) -> Result<ExperienceState> {
+        self.review_experience_prepared(review, expected, &HashMap::new())
+            .await
+    }
+
+    pub(crate) async fn review_experience_prepared(
+        &self,
+        review: &Review,
+        expected: i64,
+        prepared: &HashMap<String, crate::preparation::PreparedBelief>,
+    ) -> Result<ExperienceState> {
         review
             .validate()
             .map_err(crate::validation::Refusal::validation)?;
@@ -486,10 +850,13 @@ impl AgeStore {
             .await?
             .ok_or_else(|| anyhow::anyhow!("experience not found"))?,
         )?;
-        ensure!(
-            review.experience_revision == current.revision,
-            "stale review: experience has changed"
-        );
+        if review.experience_revision != current.revision {
+            return Err(review_revision_refusal(
+                true,
+                review.experience_revision,
+                current.revision,
+            ));
+        }
         let old_request = Self::active_request(&tx, review.experience_id).await?;
         if let Some(old) = old_request.as_ref() {
             if old == review
@@ -506,24 +873,33 @@ impl AgeStore {
                 return Ok(result);
             }
         }
-        ensure!(
-            expected == current.review_revision,
-            "stale review revision: current is {}",
-            current.review_revision
-        );
+        if expected != current.review_revision {
+            return Err(review_revision_refusal(
+                false,
+                expected,
+                current.review_revision,
+            ));
+        }
         let request = serde_json::to_string(review)?;
+        let references = review_references(review);
+        let beliefs = self
+            .learning_beliefs_for_ids(&tx, &references.iter().map(|(id, _)| *id).collect())
+            .await?;
+        validate_named_targets(&beliefs, &current.experience.project, references)?;
         let mut allocated = review.clone();
-        Self::resolve_item_ids(&tx, review.experience_id, &mut allocated.extracted_items).await?;
+        Self::resolve_item_ids(
+            &tx,
+            review.experience_id,
+            &mut allocated.extracted_items,
+            &["review", "extracted_items"],
+        )
+        .await?;
         Self::resolve_item_references(&tx, &mut allocated).await?;
         let review = &allocated;
         crate::learning_sources::validate_review(review, &current.experience)
+            .map_err(RequestCorrection::review_source)
             .map_err(crate::validation::Refusal::validation)?;
-        if let Some(prior)=tx.query_opt("SELECT payload::text FROM mimir_review_versions WHERE experience_id=$1 AND revision=$2", &[&review.experience_id,&current.review_revision]).await? {
-            let prior:Review=serde_json::from_str(prior.get(0))?;
-            for item in prior.extracted_items {
-                ensure!(review.extracted_items.iter().any(|i|i.id==item.id && i.source_ref==item.source_ref && i.actor==item.actor && i.statement==item.statement && i.kind==item.kind),"review corrections must retain extracted identities and original quotations");
-            }
-        }
+        Self::check_review_retention(&tx, review, current.review_revision).await?;
 
         let old_review = Self::active_review(&tx, review.experience_id).await?;
         let candidate_ids = self
@@ -532,6 +908,7 @@ impl AgeStore {
                 review.experience_id,
                 &current.experience.project,
                 &review.candidates,
+                prepared,
             )
             .await?;
         let applied = materialize_review(review, &candidate_ids)?;
@@ -570,6 +947,7 @@ impl AgeStore {
         );
         let mut affected = review_targets(old_review.iter());
         affected.extend(review_targets(std::iter::once(&applied)));
+        affected.extend(prepared.values().map(|value| value.belief.id));
         let revision = expected + 1;
         let payload = serde_json::to_string(&applied)?;
         tx.execute("INSERT INTO mimir_review_versions(experience_id,revision,experience_revision,payload,request) VALUES($1,$2,$3,$4::text::jsonb,$5::text::jsonb)", &[&review.experience_id,&revision,&review.experience_revision,&payload,&request]).await?;
@@ -600,7 +978,7 @@ impl AgeStore {
         result
             .item_ids
             .extend(local_item_ids(&applied.extracted_items));
-        tx.commit().await?;
+        tx.commit().await.with_context(|| format!("The outcome of review {} at source revision {} must be read back with get_learning_review and experience_history before retrying. Keep the same request and candidate keys; do not invent a replacement review or assume nothing was committed.", review.experience_id, review.experience_revision))?;
         Ok(result)
     }
     async fn replace_review_edges(
@@ -720,6 +1098,87 @@ impl AgeStore {
         Ok(())
     }
 }
+fn review_references(review: &Review) -> Vec<(Uuid, Vec<Segment>)> {
+    fn path(field: &str, index: usize, suffix: &[&str]) -> Vec<Segment> {
+        let mut path = vec![
+            Segment::Key("review".into()),
+            Segment::Key(field.into()),
+            Segment::Index(index),
+        ];
+        path.extend(suffix.iter().map(|name| Segment::Key((*name).into())));
+        path
+    }
+    fn target(
+        references: &mut Vec<(Uuid, Vec<Segment>)>,
+        target: &BeliefTarget,
+        path: Vec<Segment>,
+    ) {
+        if let BeliefTarget::Existing { belief_id } = target {
+            references.push((*belief_id, path));
+        }
+    }
+    let mut references = Vec::new();
+    for (i, value) in review.feedback.iter().enumerate() {
+        references.push((value.belief_id, path("feedback", i, &["belief_id"])));
+    }
+    for (i, id) in review.superseded_beliefs.iter().enumerate() {
+        references.push((*id, path("superseded_beliefs", i, &[])));
+    }
+    for (i, value) in review.links.iter().enumerate() {
+        references.push((value.from_id, path("links", i, &["from_id"])));
+        references.push((value.to_id, path("links", i, &["to_id"])));
+    }
+    for (i, value) in review.assessments.iter().enumerate() {
+        target(
+            &mut references,
+            &value.target,
+            path("assessments", i, &["target", "belief_id"]),
+        );
+    }
+    for (i, value) in review.candidate_feedback.iter().enumerate() {
+        target(
+            &mut references,
+            &value.target,
+            path("candidate_feedback", i, &["target", "belief_id"]),
+        );
+    }
+    for (i, value) in review.candidate_links.iter().enumerate() {
+        target(
+            &mut references,
+            &value.from,
+            path("candidate_links", i, &["from", "belief_id"]),
+        );
+        target(
+            &mut references,
+            &value.to,
+            path("candidate_links", i, &["to", "belief_id"]),
+        );
+    }
+    references
+}
+
+fn validate_named_targets(
+    beliefs: &[Belief],
+    project: &str,
+    references: impl IntoIterator<Item = (Uuid, Vec<Segment>)>,
+) -> Result<()> {
+    for (id, path) in references {
+        let Some(belief) = beliefs.iter().find(|belief| belief.id == id) else {
+            return Err(RequestCorrection::belief_reference(path, Code::MissingReference,
+                format!("Belief {id} was not found; the request requires a belief owned by project {project:?}.")).into());
+        };
+        if belief.project.as_deref() != Some(project) {
+            return Err(RequestCorrection::belief_reference(path, Code::WrongIdentity,
+                format!("Belief {id} belongs to project {:?}, not the requested learning project {project:?}.", belief.project)).into());
+        }
+        if belief.memory_type == MemoryType::Working {
+            return Err(RequestCorrection::belief_reference(path, Code::UnsupportedCombination,
+                format!("Belief {id} is working memory; a learning target must be fact or experiential memory.")).into());
+        }
+    }
+    Ok(())
+}
+
 fn validate_targets(
     beliefs: &[Belief],
     project: &str,
@@ -822,6 +1281,14 @@ pub(super) fn overlay(reviews: &[Review]) -> (HashMap<Uuid, (f64, f64)>, HashSet
 impl AgeStore {
     pub async fn independent_provenance(&self, id: Uuid) -> Result<Option<IndependentProvenance>> {
         let client = self.client.lock().await;
+        self.independent_provenance_on(&client, id).await
+    }
+
+    async fn independent_provenance_on(
+        &self,
+        client: &Client,
+        id: Uuid,
+    ) -> Result<Option<IndependentProvenance>> {
         let g = &self.graph_name;
         let rows = client.query(&format!("SELECT basis::text,reference::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief {{id:'{id}'}}) RETURN n.origin_basis,n.origin_reference $$) AS (basis ag_catalog.agtype,reference ag_catalog.agtype)"), &[]).await?;
         let Some(row) = rows.first() else {
@@ -846,6 +1313,14 @@ impl AgeStore {
 
     pub async fn candidate_provenance(&self, id: Uuid) -> Result<Option<CandidateProvenance>> {
         let client = self.client.lock().await;
+        self.candidate_provenance_on(&client, id).await
+    }
+
+    async fn candidate_provenance_on(
+        &self,
+        client: &Client,
+        id: Uuid,
+    ) -> Result<Option<CandidateProvenance>> {
         let row = client.query_opt("SELECT c.experience_id,c.candidate_key,c.kind,c.retired, (NOT c.retired AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.payload->'candidates','[]'::jsonb)) AS item WHERE item->>'key'=c.candidate_key)) AS active FROM mimir_review_candidates c JOIN mimir_experiences e ON e.id=c.experience_id LEFT JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=e.review_revision AND r.experience_revision=e.revision WHERE c.node_id=$1", &[&id]).await?;
         Ok(row.map(|r| CandidateProvenance {
             experience_id: r.get(0),
@@ -857,6 +1332,15 @@ impl AgeStore {
     }
     pub async fn pattern_outcomes(&self, pattern: Pattern, project: &str) -> Result<PatternResult> {
         let client = self.client.lock().await;
+        self.pattern_outcomes_on(&client, pattern, project).await
+    }
+
+    pub(crate) async fn pattern_outcomes_on(
+        &self,
+        client: &Client,
+        pattern: Pattern,
+        project: &str,
+    ) -> Result<PatternResult> {
         let rows = client.query("SELECT v.payload->>'outcome' AS outcome, v.payload->>'source' AS source, count(*)::bigint AS n FROM mimir_experiences e JOIN mimir_experience_versions v ON v.experience_id=e.id AND v.revision=e.revision WHERE e.project=$1 AND v.payload->>'pattern_id'=$2 GROUP BY outcome,source", &[&project,&pattern.id.to_string()]).await?;
         let (mut successes, mut failures, mut unknown) = (0, 0, 0);
         for r in rows {
@@ -868,8 +1352,7 @@ impl AgeStore {
                 _ => anyhow::bail!("invalid stored outcome"),
             }
         }
-        drop(client);
-        let candidate_provenance = self.candidate_provenance(pattern.id).await?;
+        let candidate_provenance = self.candidate_provenance_on(client, pattern.id).await?;
         Ok(PatternResult {
             pattern,
             successes,
@@ -900,14 +1383,22 @@ impl AgeStore {
         &self,
         id: Uuid,
         offset: usize,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<serde_json::Value> {
-        ensure!(limit > 0, "limit must be positive");
-        let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
+        let client = self.client.lock().await;
+        self.reviews_for_belief_on(&client, id, offset, limit).await
+    }
+
+    async fn reviews_for_belief_on(
+        &self,
+        client: &Client,
+        id: Uuid,
+        offset: usize,
+        limit: crate::Selection,
+    ) -> Result<serde_json::Value> {
         let id_text = id.to_string();
         let sql = format!("{ACTIVE_REVIEWS} WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.payload->'feedback','[]'::jsonb)) f WHERE f->>'belief_id'=$1) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(r.payload->'superseded_beliefs','[]'::jsonb)) s WHERE s=$1) OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(r.payload->'links','[]'::jsonb)) l WHERE l->>'from_id'=$1 OR l->>'to_id'=$1)");
-        let mut reviews: Vec<Review> = tx
+        let mut reviews: Vec<Review> = client
             .query(&sql, &[&id_text])
             .await?
             .iter()
@@ -915,10 +1406,54 @@ impl AgeStore {
             .collect::<std::result::Result<_, _>>()?;
         reviews.sort_by_key(|r| r.experience_id);
         let total = reviews.len();
-        let page: Vec<_> = reviews.into_iter().skip(offset).take(limit).collect();
-        let next = offset.saturating_add(page.len());
+        let count = limit.map(|count| count.get()).unwrap_or(total);
+        let page: Vec<_> = reviews.into_iter().skip(offset).take(count).collect();
+        let next = offset + page.len();
         Ok(
             serde_json::json!({"reviews":page,"total":total,"next_offset":if next<total {Some(next)} else {None}}),
         )
+    }
+
+    pub(crate) async fn explain_belief_snapshot(
+        &self,
+        id: Uuid,
+        offset: usize,
+        limit: crate::Selection,
+    ) -> Result<serde_json::Value> {
+        self.explanation_after_belief(id, offset, limit, || async { Ok(()) })
+            .await
+    }
+
+    pub(super) async fn explanation_after_belief<F, W>(
+        &self,
+        id: Uuid,
+        offset: usize,
+        limit: crate::Selection,
+        after_belief: F,
+    ) -> Result<serde_json::Value>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let belief = self
+            .get_belief_on(tx.client(), id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("belief not found"))?;
+        after_belief().await?;
+        let incoming = self.get_incoming_edges_on(tx.client(), &[id]).await?;
+        let parents: Vec<_> = incoming.iter().map(|(from,to,relation,weight,mean)|serde_json::json!({
+            "from_id":from,"to_id":to,"relation":relation,"weight":weight.value(),"source_probability":mean
+        })).collect();
+        let reviews = self
+            .reviews_for_belief_on(tx.client(), id, offset, limit)
+            .await?;
+        let candidate_provenance = self.candidate_provenance_on(tx.client(), id).await?;
+        let independent_provenance = self.independent_provenance_on(tx.client(), id).await?;
+        let result = serde_json::json!({"belief":belief,"incoming_edges":parents,"learning":reviews,
+            "candidate_provenance":candidate_provenance,"independent_provenance":independent_provenance});
+        tx.commit().await?;
+        Ok(result)
     }
 }

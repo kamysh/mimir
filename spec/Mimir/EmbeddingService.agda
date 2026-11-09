@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
 -- The configured backend owns its cache across calls. Success exposes only
--- vectors produced by that backend's loading/batching/alignment protocol.
+-- vectors produced by that backend's loading/complete-input/alignment protocol.
 -- Binary32-to-Float widening and provider numeric conversion are standard
 -- numeric dependencies; they are not Mimir policy or fresh axioms.
 module Mimir.EmbeddingService where
@@ -32,7 +32,7 @@ module Run (float : Ranking.F32) (dimension maximumIndex : ℕ)
     module R = Lifecycle.Remote float dimension maximumIndex numeric
 
   data Failure : Set where
-    disabled missingHome : Failure
+    disabled missingHome cancelled : Failure
     localFailure : Text → Failure
     remoteFailure : R.Failure → Failure
 
@@ -53,10 +53,10 @@ module Run (float : Ranking.F32) (dimension maximumIndex : ℕ)
   key nothing = []
   key (just value) = value
 
-  data LocalTrace (base : Path.Path) (batchSize : ℕ) (texts : List Text) : L.State → L.State → Set where
-    done : ∀ state → LocalTrace base batchSize texts state state
-    step : ∀ before middle after → L.Step withExtension pid base batchSize texts before middle →
-      LocalTrace base batchSize texts middle after → LocalTrace base batchSize texts before after
+  data LocalTrace (base : Path.Path) (texts : List Text) : L.State → L.State → Set where
+    done : ∀ state → LocalTrace base texts state state
+    step : ∀ before middle after → L.Step withExtension pid base texts before middle →
+      LocalTrace base texts middle after → LocalTrace base texts before after
 
   data Call : Maybe Config.Embeddings → Backend.CacheState → List Text → Backend.CacheState → Result → Set where
     noBackend : ∀ cache texts → Call nothing cache texts cache (inj₁ disabled)
@@ -66,15 +66,18 @@ module Run (float : Ranking.F32) (dimension maximumIndex : ℕ)
       Lifecycle.root (Config.Embeddings.cacheDirectory cfg) home ≡ nothing →
       Call (just cfg) Backend.unloaded (Data.List._∷_ first rest) Backend.unloaded (inj₁ missingHome)
     reuseLocal : ∀ cfg texts base after result → Config.Embeddings.backend cfg ≡ Config.local →
-      LocalTrace base (Config.Embeddings.batchSize cfg) texts (L.start Backend.ready texts) (L.returned after result) →
+      LocalTrace base texts (L.start Backend.ready texts) (L.returned after result) →
       Call (just cfg) Backend.ready texts after (localResult result)
     poisonedLocal : ∀ cfg texts base after result → Config.Embeddings.backend cfg ≡ Config.local →
-      LocalTrace base (Config.Embeddings.batchSize cfg) texts (L.start Backend.poisoned texts) (L.returned after result) →
+      LocalTrace base texts (L.start Backend.poisoned texts) (L.returned after result) →
       Call (just cfg) Backend.poisoned texts after (localResult result)
     localCall : ∀ cfg cache texts base after result → Config.Embeddings.backend cfg ≡ Config.local →
       Lifecycle.root (Config.Embeddings.cacheDirectory cfg) home ≡ just base →
-      LocalTrace base (Config.Embeddings.batchSize cfg) texts (L.start cache texts) (L.returned after result) →
+      LocalTrace base texts (L.start cache texts) (L.returned after result) →
       Call (just cfg) cache texts after (localResult result)
+    localStopped : ∀ cfg cache texts base receipt → Config.Embeddings.backend cfg ≡ Config.local →
+      LocalTrace base texts (L.start cache texts) (L.stopped receipt) →
+      Call (just cfg) cache texts Backend.unloaded (inj₁ cancelled)
     remoteCall : ∀ cfg cache texts url events result →
       Backend.endpoint (Config.Embeddings.backend cfg) ≡ just url →
       R.P.Runs (R.run (Config.Embeddings.backend cfg) (key (Config.Embeddings.apiKey cfg))

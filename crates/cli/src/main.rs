@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 
 use mimir_core::{config::Config, MimirService};
 mod configuration;
+mod corrections;
 mod judge;
 
 // ---------------------------------------------------------------------------
@@ -15,6 +16,83 @@ mod judge;
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+#[cfg(test)]
+mod sweep_policy_tests {
+    use super::*;
+    #[test]
+    fn retention_has_no_per_call_flag() {
+        assert!(Cli::try_parse_from(["mimir", "sweep-defeated"]).is_ok());
+        assert!(Cli::try_parse_from(["mimir", "sweep-defeated", "--grace-hours", "0"]).is_err());
+    }
+    #[test]
+    fn threshold_is_a_finite_probability_before_connecting() {
+        for value in ["0", "0.3", "1"] {
+            assert!(Cli::try_parse_from(["mimir", "sweep-defeated", "--threshold", value]).is_ok());
+        }
+        for value in ["NaN", "inf", "2", "-0.1"] {
+            assert!(Cli::try_parse_from([
+                "mimir",
+                "sweep-defeated",
+                &format!("--threshold={value}")
+            ])
+            .is_err());
+        }
+    }
+}
+
+fn probability_argument(raw: &str) -> std::result::Result<f64, String> {
+    let value = raw
+        .parse::<f64>()
+        .map_err(|_| "Supply a finite probability between 0 and 1 inclusive.".to_owned())?;
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err("Supply a finite probability between 0 and 1 inclusive; do not clamp or guess a replacement.".into())
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn result_selection_is_optional_positive_and_has_no_default() {
+        let command = Cli::command();
+        for name in ["list", "patterns", "query"] {
+            let option = command
+                .find_subcommand(name)
+                .unwrap()
+                .get_arguments()
+                .find(|arg| arg.get_id() == "limit")
+                .unwrap();
+            assert!(!option.is_required_set());
+            assert!(option.get_default_values().is_empty());
+        }
+        let option = command
+            .find_subcommand("doc")
+            .unwrap()
+            .find_subcommand("query")
+            .unwrap()
+            .get_arguments()
+            .find(|arg| arg.get_id() == "limit")
+            .unwrap();
+        assert!(!option.is_required_set());
+        assert!(option.get_default_values().is_empty());
+        for arguments in [
+            vec!["mimir", "list"],
+            vec!["mimir", "patterns"],
+            vec!["mimir", "query", "needle"],
+            vec!["mimir", "doc", "query", "needle"],
+        ] {
+            assert!(Cli::try_parse_from(arguments.clone()).is_ok());
+            let mut invalid = arguments;
+            invalid.extend(["--limit", "0"]);
+            assert!(Cli::try_parse_from(invalid).is_err());
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -33,7 +111,7 @@ enum Command {
     /// opens it in $EDITOR. With KEY=VALUE arguments: writes a config built
     /// from those overrides non-interactively (no $EDITOR). Recognised keys:
     /// host, port, dbname, user, password, pgpassfile, ssl_mode, ssl_root_cert, ssl_client_cert,
-    /// ssl_client_key, backend, model, api_key, batch_size, cache_dir.
+    /// ssl_client_key, backend, model, api_key, cache_dir.
     /// Exits non-zero if the config already exists.
     Init {
         /// KEY=VALUE pairs (e.g. `host=localhost port=5450 backend=local`).
@@ -51,9 +129,9 @@ enum Command {
         #[arg(long, short)]
         project: Option<String>,
 
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 0)]
-        limit: usize,
+        /// Positive result count; omit for all matching records.
+        #[arg(long, short)]
+        limit: Option<std::num::NonZeroUsize>,
     },
 
     /// List patterns.
@@ -62,9 +140,9 @@ enum Command {
         #[arg(long, short)]
         project: Option<String>,
 
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 0)]
-        limit: usize,
+        /// Positive result count; omit for all matching records.
+        #[arg(long, short)]
+        limit: Option<std::num::NonZeroUsize>,
     },
 
     /// Hybrid search: text match plus graph expansion via SUPPORTS/CAUSES edges.
@@ -72,9 +150,9 @@ enum Command {
         /// Search text (case-insensitive substring match).
         text: String,
 
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 10)]
-        limit: usize,
+        /// Positive result count; omit for all matching records.
+        #[arg(long, short)]
+        limit: Option<std::num::NonZeroUsize>,
 
         /// Also show the document passages that ground each belief.
         #[arg(long)]
@@ -126,14 +204,12 @@ enum Command {
     /// Delete defeated beliefs whose grace period has elapsed (attenuated
     /// deletion — soft-retirement via record_defeat, not immediate hard
     /// deletion, so a wrong defeat can still be caught before it's gone).
+    /// Requires the user's [retirement].grace_hours configuration; no default
+    /// or per-call retention override is selected.
     SweepDefeated {
         /// Probability below which a defeated belief becomes eligible for deletion.
-        #[arg(long, short, default_value_t = 0.3)]
+        #[arg(long, short, default_value_t = 0.3, value_parser = probability_argument)]
         threshold: f64,
-
-        /// Hours since the belief was last defeated before it can be deleted.
-        #[arg(long, short, default_value_t = 24.0)]
-        grace_hours: f64,
 
         /// Restrict the sweep to this project plus untagged beliefs.
         #[arg(long, short)]
@@ -299,9 +375,9 @@ enum DocCmd {
         #[arg(long, short)]
         project: Option<String>,
 
-        /// Maximum number of results (0 = no limit).
-        #[arg(long, short, default_value_t = 5)]
-        limit: usize,
+        /// Positive result count; omit for all matching records.
+        #[arg(long, short)]
+        limit: Option<std::num::NonZeroUsize>,
     },
     /// Remove all chunks and embeddings for a document path.
     Clear {
@@ -322,8 +398,15 @@ fn parse_kv(s: &str) -> Result<(String, String), String> {
 // Entry point
 // ---------------------------------------------------------------------------
 
+fn main() -> Result<()> {
+    if let Some(result) = mimir_core::embed::worker_entrypoint() {
+        return result;
+    }
+    application_main()
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn application_main() -> Result<()> {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -333,14 +416,15 @@ async fn main() -> Result<()> {
             ) {
                 error.exit();
             }
-            if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("judge")) {
-                eprintln!("invalid judge arguments");
-                println!("{}", serde_json::json!({"status":"invalid_arguments"}));
-                std::process::exit(2);
-            }
-            error.exit();
+            println!("{}", serde_json::to_string(&corrections::parser(&error))?);
+            return Ok(());
         }
     };
+
+    if let Some(correction) = corrections::command(&cli.command) {
+        println!("{}", serde_json::to_string(&correction)?);
+        return Ok(());
+    }
 
     match cli.command {
         Command::Judge(command) => std::process::exit(judge::dispatch(command).await),
@@ -362,11 +446,9 @@ async fn main() -> Result<()> {
         Command::Forget { project } => cmd_forget(&project).await?,
         Command::Decay { factor, project } => cmd_decay(factor, project.as_deref()).await?,
         Command::Contradictions { project } => cmd_contradictions(project.as_deref()).await?,
-        Command::SweepDefeated {
-            threshold,
-            grace_hours,
-            project,
-        } => cmd_sweep_defeated(threshold, grace_hours, project.as_deref()).await?,
+        Command::SweepDefeated { threshold, project } => {
+            cmd_sweep_defeated(threshold, project.as_deref()).await?
+        }
         Command::Doc(DocCmd::Load { path, project }) => cmd_load(&path, project.as_deref()).await?,
         Command::Doc(DocCmd::Query {
             context,
@@ -396,20 +478,6 @@ async fn connect() -> Result<MimirService> {
     let (cfg, operations) = Config::load_with_operations(&Config::config_path())?;
     operations.logging.prepare()?;
     MimirService::connect(&cfg).await
-}
-
-fn trunc(s: &str, max: usize) -> String {
-    let s = s.trim();
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let end: usize = s
-            .char_indices()
-            .nth(max - 1)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
-        format!("{}…", &s[..end])
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -460,7 +528,7 @@ async fn cmd_stats() -> Result<()> {
 // mimir list
 // ---------------------------------------------------------------------------
 
-async fn cmd_list(project: Option<String>, limit: usize) -> Result<()> {
+async fn cmd_list(project: Option<String>, limit: mimir_core::Selection) -> Result<()> {
     let svc = connect().await?;
     let mut beliefs = svc.list_beliefs(project.as_deref()).await?;
 
@@ -472,8 +540,8 @@ async fn cmd_list(project: Option<String>, limit: usize) -> Result<()> {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    if limit > 0 {
-        beliefs.truncate(limit);
+    if let Some(count) = limit {
+        beliefs.truncate(count.get());
     }
 
     if beliefs.is_empty() {
@@ -499,7 +567,7 @@ async fn cmd_list(project: Option<String>, limit: usize) -> Result<()> {
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            trunc(&b.content, 70),
+            &b.content,
             mt,
             proj,
         );
@@ -512,7 +580,7 @@ async fn cmd_list(project: Option<String>, limit: usize) -> Result<()> {
 // mimir patterns
 // ---------------------------------------------------------------------------
 
-async fn cmd_patterns(project: Option<String>, limit: usize) -> Result<()> {
+async fn cmd_patterns(project: Option<String>, limit: mimir_core::Selection) -> Result<()> {
     let svc = connect().await?;
     let mut patterns = svc.list_patterns(project.as_deref()).await?;
 
@@ -524,8 +592,8 @@ async fn cmd_patterns(project: Option<String>, limit: usize) -> Result<()> {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    if limit > 0 {
-        patterns.truncate(limit);
+    if let Some(count) = limit {
+        patterns.truncate(count.get());
     }
 
     if patterns.is_empty() {
@@ -538,8 +606,8 @@ async fn cmd_patterns(project: Option<String>, limit: usize) -> Result<()> {
             "{}  rate={:.3}  [{}] → [{}]",
             p.id,
             p.success_rate.value(),
-            trunc(&p.situation, 40),
-            trunc(&p.approach, 40),
+            &p.situation,
+            &p.approach,
         );
     }
 
@@ -552,7 +620,7 @@ async fn cmd_patterns(project: Option<String>, limit: usize) -> Result<()> {
 
 async fn cmd_query(
     text: &str,
-    limit: usize,
+    limit: mimir_core::Selection,
     evidence: bool,
     project: Option<&str>,
     prefer_type: Option<mimir_core::graph::MemoryType>,
@@ -560,7 +628,9 @@ async fn cmd_query(
     let svc = connect().await?;
 
     if evidence {
-        let grounded = svc.query_relevant_grounded(text, limit, 3, project).await?;
+        let grounded = svc
+            .query_relevant_grounded(text, limit, None, project)
+            .await?;
         if grounded.is_empty() {
             println!("(no results)");
             return Ok(());
@@ -577,7 +647,7 @@ async fn cmd_query(
                 b.id,
                 b.probability.value(),
                 b.confidence.value(),
-                trunc(&b.content, 70),
+                &b.content,
                 proj,
             );
             for e in &gb.evidence {
@@ -587,7 +657,7 @@ async fn cmd_query(
                     format!(" § {}", e.section_path.join(" > "))
                 };
                 println!("    ↳ w={:.2}  {}{}", e.weight, e.document_path, section,);
-                println!("        {}", trunc(&e.snippet, 100));
+                println!("        {}", &e.snippet);
             }
         }
         return Ok(());
@@ -612,7 +682,7 @@ async fn cmd_query(
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            trunc(&b.content, 70),
+            &b.content,
             proj,
         );
     }
@@ -638,14 +708,16 @@ async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
             let belief = belief_id
                 .parse::<uuid::Uuid>()
                 .map_err(|_| anyhow::anyhow!("invalid belief UUID: {}", belief_id))?;
-            svc.add_evidence(belief, chunk, weight).await?;
+            if corrections::reference(svc.add_evidence(belief, chunk, weight).await)?.is_none() {
+                return Ok(());
+            }
             println!("grounded {} ← {}  (w={:.2})", belief, chunk, weight);
         }
         EvidenceCmd::List { belief_id } => {
             let belief = belief_id
                 .parse::<uuid::Uuid>()
                 .map_err(|_| anyhow::anyhow!("invalid belief UUID: {}", belief_id))?;
-            let refs = svc.evidence_for_belief(belief, 0).await?;
+            let refs = svc.evidence_for_belief(belief, None).await?;
             if refs.is_empty() {
                 println!("(no evidence)");
                 return Ok(());
@@ -660,7 +732,7 @@ async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
                     "{}  w={:.2}  {}{}",
                     e.chunk_id, e.weight, e.document_path, section
                 );
-                println!("    {}", trunc(&e.snippet, 100));
+                println!("    {}", &e.snippet);
             }
         }
     }
@@ -677,7 +749,9 @@ async fn cmd_intervene(id: &str, value: f64) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("invalid UUID: {}", id))?;
 
     let svc = connect().await?;
-    let updates = svc.query_intervention(target, value).await?;
+    let Some(updates) = corrections::reference(svc.query_intervention(target, value).await)? else {
+        return Ok(());
+    };
 
     if updates.is_empty() {
         println!("(no causal descendants affected)");
@@ -689,7 +763,7 @@ async fn cmd_intervene(id: &str, value: f64) -> Result<()> {
         let content = svc
             .get_belief(*uid)
             .await?
-            .map(|b| trunc(&b.content, 70))
+            .map(|b| b.content)
             .unwrap_or_default();
         println!("{}  p_proj={:.3}  {}", uid, prob.value(), content);
     }
@@ -761,14 +835,21 @@ async fn cmd_decay(factor: f64, project: Option<&str>) -> Result<()> {
 // mimir sweep-defeated
 // ---------------------------------------------------------------------------
 
-async fn cmd_sweep_defeated(threshold: f64, grace_hours: f64, project: Option<&str>) -> Result<()> {
+async fn cmd_sweep_defeated(threshold: f64, project: Option<&str>) -> Result<()> {
     let svc = connect().await?;
-    let count = svc
-        .sweep_expired_defeated(threshold, grace_hours, project)
-        .await?;
+    let policy = match svc.retirement_policy() {
+        Ok(policy) => policy,
+        Err(issue) => {
+            println!("{}", serde_json::to_string(issue.correction())?);
+            return Ok(());
+        }
+    };
+    let count = svc.sweep_expired_defeated(threshold, project).await?;
     println!(
-        "deleted {}  [threshold: {:.2}, grace: {:.1}h]",
-        count, threshold, grace_hours
+        "deleted {}  [threshold: {:.2}, configured grace: {}h]",
+        count,
+        threshold,
+        policy.grace_hours()
     );
     Ok(())
 }
@@ -791,7 +872,47 @@ async fn cmd_load(path: &str, project: Option<&str>) -> Result<()> {
 // mimir query-doc
 // ---------------------------------------------------------------------------
 
-async fn cmd_query_doc(context: &str, project: Option<&str>, limit: usize) -> Result<()> {
+fn document_result_display(result: &mimir_core::documents::QueryResult) -> String {
+    let section = if result.section_path.is_empty() {
+        String::new()
+    } else {
+        format!("  § {}", result.section_path.join(" > "))
+    };
+    format!(
+        "{}{}\n  {}\n",
+        result.document_path, section, result.content
+    )
+}
+
+#[cfg(test)]
+mod document_output_tests {
+    use super::*;
+
+    #[test]
+    fn full_document_passage_survives_display_with_unicode_and_whitespace() {
+        let content = format!(
+            "  {}\nlast supporting line\t ",
+            "λ全文 passage ".repeat(300)
+        );
+        let result = mimir_core::documents::QueryResult {
+            id: "display-only".into(),
+            document_path: "/document.md".into(),
+            section_path: vec!["complete section".into(), "detail".into()],
+            content: content.clone(),
+            parent_content: None,
+        };
+        let shown = document_result_display(&result);
+        assert!(shown.starts_with("/document.md  § complete section > detail\n"));
+        assert!(shown.contains(&content));
+        assert!(!shown.contains('…'));
+    }
+}
+
+async fn cmd_query_doc(
+    context: &str,
+    project: Option<&str>,
+    limit: mimir_core::Selection,
+) -> Result<()> {
     let svc = connect().await?;
     let results = svc.query_document(context, project, limit).await?;
 
@@ -801,14 +922,7 @@ async fn cmd_query_doc(context: &str, project: Option<&str>, limit: usize) -> Re
     }
 
     for r in &results {
-        let section = if r.section_path.is_empty() {
-            String::new()
-        } else {
-            format!("  § {}", r.section_path.join(" > "))
-        };
-        println!("{}{}", r.document_path, section);
-        println!("  {}", trunc(&r.content, 120));
-        println!();
+        println!("{}", document_result_display(r));
     }
 
     Ok(())
@@ -857,11 +971,11 @@ async fn cmd_contradictions(project: Option<&str>) -> Result<()> {
         let bb = svc.get_belief(*b).await?;
         let ca = ba
             .as_ref()
-            .map(|b| trunc(&b.content, 50))
+            .map(|b| b.content.clone())
             .unwrap_or_else(|| a.to_string());
         let cb = bb
             .as_ref()
-            .map(|b| trunc(&b.content, 50))
+            .map(|b| b.content.clone())
             .unwrap_or_else(|| b.to_string());
         println!("  [{}]  ⟺  [{}]", ca, cb);
     }
@@ -906,7 +1020,7 @@ async fn cmd_reembed() -> Result<()> {
         }
         svc.embed_and_store_belief(belief).await?;
         embedded += 1;
-        println!("  embedded {}  {}", belief.id, trunc(&belief.content, 60));
+        println!("  embedded {}  {}", belief.id, &belief.content);
     }
 
     println!(
@@ -974,7 +1088,7 @@ async fn cmd_hook_set_project(name: &str) -> Result<()> {
                     working.len()
                 );
                 for b in &working {
-                    println!("  {}  {}", b.id, trunc(&b.content, 160));
+                    println!("  {}  {}", b.id, &b.content);
                 }
             }
         }
@@ -1082,7 +1196,7 @@ async fn cmd_hook_stop(project: Option<&str>) -> Result<()> {
         working.len()
     );
     for b in &working {
-        msg.push_str(&format!("  {}  {}\n", b.id, trunc(&b.content, 160)));
+        msg.push_str(&format!("  {}  {}\n", b.id, &b.content));
     }
     eprintln!("{}", msg.trim_end());
     std::process::exit(2);
@@ -1102,7 +1216,7 @@ async fn cmd_hook_prompt() -> Result<()> {
     let project = session_project_from_hook_json(&v);
     let svc = connect().await?;
     let beliefs = svc
-        .query_relevant(&trunc(&prompt, 500), 5, project.as_deref(), None)
+        .query_relevant(&prompt, None, project.as_deref(), None)
         .await?;
     if beliefs.is_empty() {
         return Ok(());
@@ -1150,7 +1264,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
     let project = session_project_from_hook_json(&v);
     let svc = connect().await?;
     let beliefs = svc
-        .query_relevant(&trunc(query_raw, 200), 3, project.as_deref(), None)
+        .query_relevant(query_raw, None, project.as_deref(), None)
         .await?;
     if beliefs.is_empty() {
         return Ok(());
@@ -1168,7 +1282,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            trunc(&b.content, 200),
+            &b.content,
             proj,
         ));
     }

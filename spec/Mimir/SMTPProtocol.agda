@@ -71,11 +71,11 @@ credentials cfg token | just Config.oauth2 with Config.Config.username cfg | tok
 
 record Transport : Set where
   constructor transport
-  field host : Text; port : ℕ; tls : Config.TLS; timeoutSeconds : ℕ; auth : Credentials
+  field host : Text; port : ℕ; tls : Config.TLS; auth : Credentials
 
 prepare : Config.Config → Maybe Text → Maybe Transport
 prepare cfg token with Config.Config.host cfg | Config.Config.port cfg | Config.Config.tls cfg | credentials cfg token
-... | just host | just port | just tls | just auth = just (transport host port tls (Config.Config.timeoutSeconds cfg) auth)
+... | just host | just port | just tls | just auth = just (transport host port tls auth)
 ... | _ | _ | _ | _ = nothing
 
 failure : Maybe ℕ → Auth.SMTPReceipt

@@ -25,14 +25,13 @@ import Mimir.ReviewObservation as Observation
 import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
 import Mimir.SourceFailure as Source
-import Mimir.DiagnosticText as Bounded
 import Mimir.Validation as Validation
 
 module R = Records.Over ℕ
 
 module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
-  (display : Revision.Display) (contract model batchLimit : ℕ)
-  (project : Maybe Text) where
+  (display : Revision.Display) (contract model : ℕ)
+  (project : Maybe Text) (deliveryMode : Finalization.NotificationMode) where
 
   initial = Budget.counts 0 0
   module One selected = Revision.Run conversion format display initial selected
@@ -78,12 +77,12 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   liftFinalization (Finalization.E.ask effect next) = ask (finalize effect) (λ reply → liftFinalization (next reply))
 
   finish : R.Report → Script R.Report
-  finish report = liftFinalization (Finalization.finish report)
+  finish report = liftFinalization (Finalization.finishWith deliveryMode report)
 
   failed : R.Report → Text → Revision.Error → Script R.Report
   failed report reason failureValue = finish (record (R.captureSource (Revision.Error.source failureValue) report)
     { status = toList "blocked" ; blockReason = just reason
-    ; failureDetail = just (Bounded.bounded 512 (Revision.Error.detail failureValue)) })
+    ; failureDetail = just (Revision.Error.detail failureValue) })
 
   finalReads : List Observation.Pin → R.Report → Bool → Script R.Report
   finalReads original report failure = liftReadback (Readback.finish original report failure
@@ -110,14 +109,14 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       where result = RevisionReceipt.outcome receipt
 
   selectedBatch : (clientReady : Handshake.Contract.Ready contract model) → R.Report →
-    Selection.Select.Result contract model batchLimit project clientReady → Script R.Report
+    Selection.Select.Result contract model project clientReady → Script R.Report
   selectedBatch clientReady report (Selection.Select.failed failureValue) =
     failed report (toList "mcp_or_configuration_error") failureValue
   selectedBatch clientReady report (Selection.Select.malformed failureValue) =
     failed report (toList "mcp_or_configuration_error") (Revision.error (Validation.Fault.explanation failureValue) nothing)
   selectedBatch clientReady report (Selection.Select.selected preparedBatch) = dispatch (Select.disposition preparedBatch)
     where
-    module Select = Selection.Select contract model batchLimit project clientReady
+    module Select = Selection.Select contract model project clientReady
     batch = Select.Prepared.batch preparedBatch
     pins = Select.pins preparedBatch
     updated = record report
@@ -136,7 +135,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   afterClient : R.Report → Reply startClient → Script R.Report
   afterClient report (inj₁ failureValue) = failed report (toList "mcp_or_configuration_error") failureValue
   afterClient report (inj₂ clientReady) = liftSelection
-    (Selection.Select.start contract model batchLimit project clientReady) >>= selectedBatch clientReady report
+    (Selection.Select.start contract model project clientReady) >>= selectedBatch clientReady report
 
   start : Script R.Report
   start = ask clock (λ observed → ask startClient

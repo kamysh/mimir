@@ -104,8 +104,16 @@ impl<'a> ApiBackend<'a> {
             .map_err(|_| anyhow!("invalid model metadata URL"))?
             .pop_if_empty()
             .push(&config.model);
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
+        let builder = Client::builder()
+            .pool_idle_timeout(None)
+            .tcp_keepalive(None)
+            .tcp_keepalive_interval(None)
+            .tcp_keepalive_retries(None)
+            .retry(reqwest::retry::never())
+            .redirect(reqwest::redirect::Policy::none());
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        let builder = builder.tcp_user_timeout(None);
+        let client = builder
             .build()
             .map_err(|_| anyhow!("unable to initialize API transport"))?;
         Ok(Some(Self {
@@ -586,11 +594,7 @@ mod tests {
         let task = tokio::spawn(async move {
             let mut captured = Vec::new();
             for (status, body) in replies {
-                let (mut socket, _) =
-                    tokio::time::timeout(std::time::Duration::from_secs(30), listener.accept())
-                        .await
-                        .expect("API fixture did not receive its expected request")
-                        .unwrap();
+                let (mut socket, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0u8; 4096];
                 let boundary = loop {
@@ -649,6 +653,22 @@ mod tests {
             command: None,
             args: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn cancelling_mock_accept_joins_and_releases_its_listener() {
+        let (url, server) = fixture(vec![(200, json!({}))]).await;
+        let address = url::Url::parse(&url).unwrap();
+        server.abort();
+        assert!(server
+            .await
+            .err()
+            .expect("mock accept kept running")
+            .is_cancelled());
+        let listener = TcpListener::bind((address.host_str().unwrap(), address.port().unwrap()))
+            .await
+            .unwrap();
+        drop(listener);
     }
 
     fn selected() -> ExperienceState {
@@ -1126,7 +1146,6 @@ mod tests {
         let mut settings = super::super::config::load(Some(&path)).unwrap();
         settings.judge.project = Some(project.clone());
         settings.judge.mcp_command = mcp;
-        settings.judge.batch_size = 1;
         let core = mimir_core::config::Config::load_from_path(&settings.path).unwrap();
         database_fixture.assert_database(&core.database);
         let service = mimir_core::MimirService::connect(&core).await.unwrap();
@@ -1154,7 +1173,13 @@ mod tests {
         .await;
         settings.llm = config(Provider::Openai, url);
         let mut backend = ApiBackend::new(&settings.llm).unwrap().unwrap();
-        let report = super::super::runner::run(&settings, &state, &mut backend).await;
+        let report = super::super::runner::run(
+            &settings,
+            &state,
+            &mut backend,
+            crate::judge::notification::Mode::Standalone,
+        )
+        .await;
         assert_eq!(report.status, "blocked");
         assert_eq!(report.confirmed, 0);
         assert_eq!(
@@ -1186,7 +1211,13 @@ mod tests {
         // One provider response supplies both tools. The database receipt ends
         // the review without another model request or completion message.
         let mut backend = ApiBackend::new(&settings.llm).unwrap().unwrap();
-        let report = super::super::runner::run(&settings, &state, &mut backend).await;
+        let report = super::super::runner::run(
+            &settings,
+            &state,
+            &mut backend,
+            crate::judge::notification::Mode::Standalone,
+        )
+        .await;
         assert_eq!(report.status, "complete");
         assert_eq!(report.confirmed, 1);
         assert_eq!(

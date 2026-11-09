@@ -4,18 +4,21 @@
 -- assessments, edges and numerical graph writes in its one proposed world.
 module Mimir.LearningOperations where
 
-open import Data.Bool using (true; false; _∧_)
-open import Data.List using (List; []; _∷_; map; length)
+open import Data.Bool using (Bool; true; false; _∧_; _∨_)
+open import Data.List using (List; []; _∷_; _++_; map; length)
 open import Data.List.Relation.Unary.Any using (Any; here; there)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Integer using (ℤ; +_)
 open import Data.Product using (Σ; _×_; _,_)
+open import Data.Empty using (⊥; ⊥-elim)
+import Data.String
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 import Data.Integer.Properties as Integer
 open import Relation.Nullary using (does; yes; no)
 open import Mimir.Text using (Text)
+open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.ExperienceSchema using (Experience)
 open import Mimir.ReviewSchema using (Review)
 open import Mimir.LearningCandidates using (Candidate)
@@ -32,6 +35,9 @@ import Mimir.Validation as Validation
 import Mimir.LearningInput as Input
 import Mimir.LearningNormalization as Normalization
 import Mimir.Effects as Effects
+import Mimir.ApplicationStore as Application
+import Mimir.BeliefEmbedding as Embedding
+import Mimir.McpErrors as Errors
 open import Mimir.Bits using (Byte)
 
 data Request : Set where
@@ -51,6 +57,180 @@ data Failure : Set where
   reviewFailure : Reviewing.Failure → Failure
   externalFailure : Text → Failure
   allocationFailure : Validation.Fault → Failure
+  preparationFailure : Errors.AgentCorrection.Claim → Failure
+
+locateFailure : List Validation.Segment → Failure → Failure
+locateFailure path (allocationFailure detail) = allocationFailure (Validation.problem
+  (path ++ Validation.Fault.path detail) (Validation.Fault.code detail) (Validation.Fault.explanation detail))
+locateFailure path failure = failure
+
+module Correction = Errors.AgentCorrection
+
+recordReadback : Text
+recordReadback = Data.String.toList "Call get_experience with the same experience ID to read its current revision, and experience_history if the changes need inspection. Compare the stored content with the intended correction before resubmitting with the current expected_revision. Keep the same incident ID; do not blindly overwrite newer work or invent a revision."
+
+reviewReadback : Text
+reviewReadback = Data.String.toList "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values."
+
+-- Only the two identified public revision fields are correctable here. A
+-- similarly coded internal snapshot-integrity fault stays an ordinary error.
+reviewRevisionCorrection : Validation.Fault → Maybe Correction.Claim
+reviewRevisionCorrection detail@(Validation.problem (Validation.fieldKey name ∷ []) Validation.staleRevision reason)
+  with name ≟Text Data.String.toList "expected_review_revision"
+... | no _ = nothing
+... | yes _ = just (Correction.claim
+  (Correction.staleRevisionItem (Validation.Fault.path detail) (Validation.Fault.explanation detail) reviewReadback) [])
+reviewRevisionCorrection detail@(Validation.problem (Validation.fieldKey outer ∷ Validation.fieldKey inner ∷ []) Validation.staleRevision reason)
+  with outer ≟Text Data.String.toList "review" | inner ≟Text Data.String.toList "experience_revision"
+... | yes _ | yes _ = just (Correction.claim
+  (Correction.staleRevisionItem (Validation.Fault.path detail) (Validation.Fault.explanation detail) reviewReadback) [])
+... | _ | _ = nothing
+reviewRevisionCorrection _ = nothing
+
+revisionCorrection : Failure → Maybe Correction.Claim
+revisionCorrection (recordFailure Recording.staleRevision) = just (Correction.claim
+  (Correction.staleRevisionItem (Validation.key "expected_revision" ∷ [])
+    (Data.String.toList "The supplied experience revision is no longer current.") recordReadback) [])
+revisionCorrection (reviewFailure (Reviewing.invalid detail)) = reviewRevisionCorrection detail
+revisionCorrection _ = nothing
+
+beliefReferenceCorrection : Validation.Fault → Maybe Correction.Claim
+beliefReferenceCorrection detail with Validation.Fault.code detail
+... | Validation.missingReference = just (Correction.claim (Correction.beliefReferenceItem detail) [])
+... | Validation.wrongIdentity = just (Correction.claim (Correction.beliefReferenceItem detail) [])
+... | Validation.unsupportedCombination = just (Correction.claim (Correction.beliefReferenceItem detail) [])
+... | _ = nothing
+
+fieldIs : Text → Data.String.String → Bool
+fieldIs value name = does (value ≟Text Data.String.toList name)
+
+existingReferencePath : List Validation.Segment → Bool
+existingReferencePath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ []) =
+  fieldIs outer "review" ∧ fieldIs collection "superseded_beliefs"
+existingReferencePath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ []) =
+  fieldIs outer "review" ∧ ((fieldIs collection "feedback" ∧ fieldIs leaf "belief_id") ∨
+    (fieldIs collection "links" ∧ (fieldIs leaf "from_id" ∨ fieldIs leaf "to_id")))
+existingReferencePath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey target ∷ Validation.fieldKey leaf ∷ []) =
+  fieldIs outer "review" ∧ fieldIs leaf "belief_id" ∧
+    ((((fieldIs collection "assessments" ∨ fieldIs collection "candidate_feedback") ∧ fieldIs target "target")) ∨
+      (fieldIs collection "candidate_links" ∧ (fieldIs target "from" ∨ fieldIs target "to")))
+existingReferencePath _ = false
+
+referenceCorrection : Failure → Maybe Correction.Claim
+referenceCorrection (recordFailure Recording.missingPattern) = just (Correction.claim
+  (Correction.patternReferenceItem (Validation.fault (Validation.key "experience" ∷ Validation.key "pattern_id" ∷ [])
+    Validation.missingReference "The requested pattern was not found in Mimir.")) [])
+referenceCorrection (recordFailure Recording.foreignPattern) = just (Correction.claim
+  (Correction.patternReferenceItem (Validation.fault (Validation.key "experience" ∷ Validation.key "pattern_id" ∷ [])
+    Validation.wrongIdentity "The requested pattern belongs to another project.")) [])
+referenceCorrection (recordFailure (Recording.invalid detail@(Validation.problem
+  (Validation.fieldKey outer ∷ Validation.fieldKey inner ∷ rest) code reason)))
+  with outer ≟Text Data.String.toList "experience" | inner ≟Text Data.String.toList "belief_ids"
+... | yes _ | yes _ = beliefReferenceCorrection detail
+... | _ | _ = nothing
+referenceCorrection (reviewFailure (Reviewing.invalid detail)) with existingReferencePath (Validation.Fault.path detail)
+... | false = nothing
+... | true = beliefReferenceCorrection detail
+referenceCorrection _ = nothing
+
+-- A PostgreSQL allocation collision has no item-field suffix and stays an
+-- internal error. Only located public item/reference checks open this dialog.
+allocationCorrection : Failure → Maybe Correction.Claim
+allocationCorrection (allocationFailure detail@(Validation.problem
+  (Validation.fieldKey outer ∷ Validation.fieldKey inner ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ []) code reason))
+  with (outer ≟Text Data.String.toList "experience") | (inner ≟Text Data.String.toList "learning_items") |
+    (outer ≟Text Data.String.toList "review") | (inner ≟Text Data.String.toList "extracted_items")
+... | yes _ | yes _ | _ | _ = just (Correction.claim (Correction.itemReferenceItem detail) [])
+... | _ | _ | yes _ | yes _ = just (Correction.claim (Correction.itemReferenceItem detail) [])
+... | _ | _ | _ | _ = nothing
+allocationCorrection (allocationFailure detail@(Validation.problem
+  (Validation.fieldKey outer ∷ Validation.fieldKey inner ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ Validation.index itemPosition ∷ []) code reason))
+  with outer ≟Text Data.String.toList "review" | inner ≟Text Data.String.toList "assessments" | leaf ≟Text Data.String.toList "item_keys"
+... | yes _ | yes _ | yes _ = just (Correction.claim (Correction.itemReferenceItem detail) [])
+... | _ | _ | _ = nothing
+allocationCorrection _ = nothing
+
+allocationCollisionIsNotAgentMisuse : ∀ position explanation →
+  allocationCorrection (allocationFailure (Validation.problem
+    (Validation.key "review" ∷ Validation.key "extracted_items" ∷ Validation.index position ∷ [])
+    Validation.wrongIdentity explanation)) ≡ nothing
+allocationCollisionIsNotAgentMisuse position explanation = refl
+
+candidateDeclarationPath : List Validation.Segment → Bool
+candidateDeclarationPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ []) =
+  fieldIs outer "review" ∧ fieldIs collection "candidates"
+candidateDeclarationPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ []) =
+  fieldIs outer "review" ∧ fieldIs collection "candidates" ∧ fieldIs leaf "key"
+candidateDeclarationPath _ = false
+
+candidateTargetPath : List Validation.Segment → Bool
+candidateTargetPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey target ∷ Validation.fieldKey leaf ∷ []) =
+  fieldIs outer "review" ∧ fieldIs leaf "candidate_key" ∧
+    ((((fieldIs collection "assessments" ∨ fieldIs collection "candidate_feedback") ∧ fieldIs target "target")) ∨
+      (fieldIs collection "candidate_links" ∧ (fieldIs target "from" ∨ fieldIs target "to")))
+candidateTargetPath _ = false
+
+candidateCorrection : Failure → Maybe Correction.Claim
+candidateCorrection (reviewFailure (Reviewing.invalid detail)) with candidateDeclarationPath (Validation.Fault.path detail)
+... | true with Validation.Fault.code detail
+...   | Validation.duplicate = just (Correction.claim (Correction.candidateDeclarationItem detail) [])
+...   | Validation.wrongIdentity = just (Correction.claim (Correction.candidateDeclarationItem detail) [])
+...   | Validation.missingReference = just (Correction.claim (Correction.candidateDeclarationItem detail) [])
+...   | _ = nothing
+candidateCorrection (reviewFailure (Reviewing.invalid detail)) | false with candidateTargetPath (Validation.Fault.path detail) | Validation.Fault.code detail
+... | true | Validation.missingReference = just (Correction.claim (Correction.candidateTargetItem detail) [])
+... | _ | _ = nothing
+candidateCorrection _ = nothing
+
+retentionCorrection : Failure → Maybe Correction.Claim
+retentionCorrection (recordFailure (Recording.invalid detail@(Validation.problem
+  (Validation.fieldKey outer ∷ Validation.fieldKey leaf ∷ []) code reason)))
+  with fieldIs outer "experience" | fieldIs leaf "project" | fieldIs leaf "source_records" | code
+... | true | true | _ | Validation.wrongIdentity = just (Correction.claim (Correction.sourceRetentionItem detail) [])
+... | true | _ | true | Validation.missingReference = just (Correction.claim (Correction.sourceRetentionItem detail) [])
+... | _ | _ | _ | _ = nothing
+retentionCorrection (reviewFailure (Reviewing.invalid detail@(Validation.problem
+  (Validation.fieldKey outer ∷ Validation.fieldKey leaf ∷ []) Validation.missingReference reason)))
+  with fieldIs outer "review" | fieldIs leaf "extracted_items"
+... | true | true = just (Correction.claim (Correction.reviewRetentionItem detail) [])
+... | _ | _ = nothing
+retentionCorrection _ = nothing
+
+sourceReviewPath : List Validation.Segment → Validation.Code → Bool
+sourceReviewPath (Validation.fieldKey outer ∷ []) Validation.unsupportedCombination = fieldIs outer "review"
+sourceReviewPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ []) Validation.unsupportedCombination =
+  fieldIs outer "review" ∧ (fieldIs collection "source_coverage" ∨ fieldIs collection "extracted_items")
+sourceReviewPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ []) Validation.missingReference =
+  fieldIs outer "review" ∧ fieldIs collection "source_coverage"
+sourceReviewPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ []) Validation.duplicate =
+  fieldIs outer "review" ∧ fieldIs collection "source_coverage"
+sourceReviewPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ []) Validation.missingReference =
+  fieldIs outer "review" ∧ (fieldIs collection "source_coverage" ∨ fieldIs collection "extracted_items") ∧ fieldIs leaf "source_ref"
+sourceReviewPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ []) Validation.wrongActor =
+  fieldIs outer "review" ∧ fieldIs collection "extracted_items" ∧ fieldIs leaf "actor"
+sourceReviewPath (Validation.fieldKey outer ∷ Validation.fieldKey collection ∷ Validation.index position ∷ Validation.fieldKey leaf ∷ []) Validation.quotationMismatch =
+  fieldIs outer "review" ∧ fieldIs collection "extracted_items" ∧ fieldIs leaf "statement"
+sourceReviewPath _ _ = false
+
+sourceReviewCorrection : Failure → Maybe Correction.Claim
+sourceReviewCorrection (reviewFailure (Reviewing.invalid detail))
+  with sourceReviewPath (Validation.Fault.path detail) (Validation.Fault.code detail)
+... | true = just (Correction.claim (Correction.reviewSourceItem detail) [])
+... | false = nothing
+sourceReviewCorrection _ = nothing
+
+requestCorrection : Failure → Maybe Correction.Claim
+requestCorrection failure with revisionCorrection failure
+... | just report = just report
+... | nothing with referenceCorrection failure
+...   | just report = just report
+...   | nothing with allocationCorrection failure
+...     | just report = just report
+...     | nothing with candidateCorrection failure
+...       | just report = just report
+...       | nothing with retentionCorrection failure
+...         | just report = just report
+...         | nothing = sourceReviewCorrection failure
 
 expectedValid : ℤ → Data.Bool.Bool
 expectedValid expected = does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))
@@ -68,7 +248,41 @@ module Protocol (database : ℕ) (request : Request)
 
   module T = Transaction.Over Store.World Observation.Snapshot Failure database 671942183
   module Receipts = Receipt.Over Store.World Observation.Snapshot Failure database 671942183
-  module Normalize = Normalization.For Failure allocationFailure database
+  module Normalize = Normalization.For Failure allocationFailure database locateFailure
+  module Full = Transaction.Over Application.World Observation.Snapshot Failure database 671942183
+
+  missingPreparation : Errors.AgentCorrection.Claim
+  missingPreparation = Embedding.preparationDecision Errors.AgentCorrection.arguments
+    (Validation.key "review" ∷ Validation.key "candidates" ∷ [])
+    (Data.String.toList "Every new belief candidate requires complete embedding and current indexed document support before this review is committed.")
+
+  module CompleteReview (input : Input.Review) (expected : ℤ)
+    (prepared : List Reviewing.PreparedCandidate) where
+
+    module Meaning (canonical : Review) = Reviewing.PreparedReview canonical expected clock now identities prepared
+
+    convert : (canonical : Review) → Meaning.Result canonical → Full.Decision
+    convert canonical (Meaning.refused failure) = Full.reject (reviewFailure failure)
+    convert canonical Meaning.needsPreparation = Full.reject (preparationFailure missingPreparation)
+    convert canonical (Meaning.replayed value) = Full.replay value
+    convert canonical (Meaning.published after value limit) = Full.replace after value
+
+    normalized : Application.World → Failure ⊎ (Store.World × Review) → Full.Allocation Full.Decision
+    normalized before (inj₁ failure) = Full.resolved (Full.reject failure)
+    normalized before (inj₂ (staged , canonical)) = Full.resolved
+      (convert canonical (Meaning.intended canonical (record before { learning = staged })))
+
+    liftAllocation : ∀ {A : Set} → Normalize.T.Allocation A → Full.Allocation A
+    liftAllocation (Normalize.T.resolved value) = Full.resolved value
+    liftAllocation (Normalize.T.reserve experience name source actor next) =
+      Full.reserve experience name source actor (λ reply → liftAllocation (next reply))
+
+    decideFull : Application.World → Full.Allocation Full.Decision
+    decideFull before = Full.bindAllocation (liftAllocation (Normalize.review input (Application.learningView before))) (normalized before)
+
+    module Plan = Full.PreparedPlan decideFull
+    module CommitEvidence = Receipt.Over Application.World Observation.Snapshot Failure database 671942183
+    module Confirmation = CommitEvidence.WithPreparedPlan decideFull
 
   recorded : Recording.Decision → T.Decision
   recorded (Recording.rejected failure) = T.reject (recordFailure failure)
@@ -154,6 +368,8 @@ module Protocol (database : ℕ) (request : Request)
   data Outcome : Set where
     invalidRequest : Failure → Outcome
     transacted : T.Outcome → Outcome
+    reviewTransacted : Full.Outcome → Outcome
+    preparationDecision : Errors.AgentCorrection.Claim → Outcome
 
   -- Standard serialization is external. Its failure is reported before any
   -- transaction. Successful encoding imposes no payload-size limit;
@@ -165,10 +381,14 @@ module Protocol (database : ℕ) (request : Request)
   data Effect : Set where
     serializePayload : Payload → Effect
     transaction : T.Effect → Effect
+    prepareReview : Input.Review → ℤ → Effect
+    reviewTransaction : Full.Effect → Effect
 
   Reply : Effect → Set
   Reply (serializePayload _) = Serialization
   Reply (transaction operation) = T.Reply operation
+  Reply (prepareReview input expected) = Errors.AgentCorrection.Claim ⊎ List Reviewing.PreparedCandidate
+  Reply (reviewTransaction operation) = Full.Reply operation
 
   module E = Effects.Protocol Effect Reply
 
@@ -176,10 +396,22 @@ module Protocol (database : ℕ) (request : Request)
   transact (T.E.done value) = E.done (transacted value)
   transact (T.E.ask operation next) = E.ask (transaction operation) (λ reply → transact (next reply))
 
+  transactReview : Full.E.Script Full.Outcome → E.Script Outcome
+  transactReview (Full.E.done value) = E.done (reviewTransacted value)
+  transactReview (Full.E.ask operation next) = E.ask (reviewTransaction operation) (λ reply → transactReview (next reply))
+
+  afterPreparation : (input : Input.Review) (expected : ℤ) → Reply (prepareReview input expected) → E.Script Outcome
+  afterPreparation input expected (inj₁ report) = E.done (preparationDecision report)
+  afterPreparation input expected (inj₂ values) = transactReview (CompleteReview.Plan.start input expected values)
+
+  admittedStart : Request → E.Script Outcome
+  admittedStart submitted@(recordExperience input expected) = transact (T.PreparedPlan.start (decide submitted))
+  admittedStart (reviewExperience input expected) = E.ask (prepareReview input expected) (afterPreparation input expected)
+
   afterAdmission : E.Script Outcome
   afterAdmission with admit request
   ... | just failure = E.done (invalidRequest failure)
-  ... | nothing = transact Plan.start
+  ... | nothing = admittedStart request
 
   afterSerialization : Serialization → E.Script Outcome
   afterSerialization (serializationFailed message) = E.done (invalidRequest (externalFailure message))
@@ -207,14 +439,45 @@ module Protocol (database : ℕ) (request : Request)
   liftCommitMember tx (here refl) = here refl
   liftCommitMember tx (there remaining) = there (liftCommitMember tx remaining)
 
+  reviewCannotReturnRecorded : ∀ program events value →
+    E.Runs (transactReview program) events (transacted value) → ⊥
+  reviewCannotReturnRecorded (Full.E.done result) events value ()
+  reviewCannotReturnRecorded (Full.E.ask operation next) events value (E.replied _ _ reply remaining) =
+    reviewCannotReturnRecorded (next reply) _ value remaining
+
+  preparationCannotReturnRecorded : ∀ input expected reply events value →
+    E.Runs (afterPreparation input expected reply) events (transacted value) → ⊥
+  preparationCannotReturnRecorded input expected (inj₁ report) events value ()
+  preparationCannotReturnRecorded input expected (inj₂ prepared) events value execution =
+    reviewCannotReturnRecorded (CompleteReview.Plan.start input expected prepared) events value execution
+
+  admittedRecordRequiresCommit : ∀ submitted events value →
+    E.Runs (admittedStart submitted) events (transacted (T.applied value)) → PublicCommitReceipt events
+  admittedRecordRequiresCommit submitted@(recordExperience input expected) events value execution
+    with transactRun (T.PreparedPlan.start (decide submitted)) events (T.applied value) execution
+  ... | original , run , refl with Checks.successRequiresCommit original value run
+    where module Checks = Receipts.WithPreparedPlan (decide submitted)
+  ... | tx , observed = tx , liftCommitMember tx observed
+  admittedRecordRequiresCommit (reviewExperience input expected) events value (E.replied _ _ reply execution) =
+    ⊥-elim (preparationCannotReturnRecorded input expected reply _ (T.applied value) execution)
+
   admissionRequiresCommit : ∀ events value →
     E.Runs afterAdmission events (transacted (T.applied value)) → PublicCommitReceipt events
   admissionRequiresCommit events value execution with admit request
   ... | just failure with execution
   ...   | ()
-  admissionRequiresCommit events value execution | nothing with transactRun Plan.start events (T.applied value) execution
-  ... | original , run , refl with operationSuccessRequiresCommit original value run
-  ... | tx , observed = tx , liftCommitMember tx observed
+  admissionRequiresCommit events value execution | nothing = admittedRecordRequiresCommit request events value execution
+
+  completeReviewRequiresCommit : ∀ input expected prepared events value →
+    Full.E.Runs (CompleteReview.Plan.start input expected prepared) events (Full.applied value) →
+    CompleteReview.CommitEvidence.Receipt input expected prepared events
+  completeReviewRequiresCommit input expected prepared =
+    CompleteReview.Confirmation.successRequiresCommit input expected prepared
+
+  preparationFailureStartsNoTransaction : ∀ input expected report events outcome →
+    E.Runs (afterPreparation input expected (inj₁ report)) events outcome →
+    events ≡ [] × outcome ≡ preparationDecision report
+  preparationFailureStartsNoTransaction input expected report events outcome = E.completedCannotProduceEffects
 
   serializationRequiresCommit : ∀ reply events value →
     E.Runs (afterSerialization reply) events (transacted (T.applied value)) → PublicCommitReceipt events

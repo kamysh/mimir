@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- Provider replies are admitted only through the bounded HTTP state machine
+-- Provider replies are admitted only through the complete-response state machine
 -- and the concrete JSON/schema decoder. A decoded token cannot be invented by
 -- an unconstrained completion event.
 module Mimir.OAuthResponseBinding where
@@ -28,9 +28,9 @@ module Decode (conversion : Conversion.Contract) (clockMaximum : ℕ) where
   parse = RawReader.parse
 
   Allowed : H.State → H.Input → Set
-  Allowed (H.decoding pendingBytes) (H.decoded value) = parse (H.B.Buffer.bytes pendingBytes) ≡ inj₂ value
+  Allowed (H.decoding pendingBytes) (H.decoded value) = parse pendingBytes ≡ inj₂ value
   Allowed (H.decoding pendingBytes) H.malformed = Σ Cache.AuthError
-    (λ error → parse (H.B.Buffer.bytes pendingBytes) ≡ inj₁ error)
+    (λ error → parse pendingBytes ≡ inj₁ error)
   Allowed _ (H.decoded _) = ⊥
   Allowed _ H.malformed = ⊥
   Allowed _ _ = ⊤

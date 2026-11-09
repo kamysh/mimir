@@ -1,4 +1,4 @@
-//! File-based startup compatibility and bounded operational logging.
+//! File-based startup compatibility and append-only operational logging.
 //! Contracts: OperationalConfiguration, ConfigurationUpgrade, OperationalLogRetention.
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -11,19 +11,51 @@ use std::{
 };
 
 pub const CONFIG_VERSION: u32 = 1;
+
+pub const RETIRED_LIMIT_SETTINGS: &[(&str, &[&str])] = &[
+    ("logging", &["max_file_bytes", "retained_files"]),
+    ("judge", &["batch_size"]),
+    ("embeddings", &["batch_size"]),
+    (
+        "llm",
+        &[
+            "timeout_seconds",
+            "max_calls",
+            "max_output_tokens",
+            "max_budget_usd",
+        ],
+    ),
+    (
+        "email",
+        &["timeout_seconds", "retry_seconds", "max_attempts"],
+    ),
+];
+
+/// Offline validation of retired optional settings, independent of whether
+/// the judge is enabled. Ordinary graph startup need not load optional features.
+pub fn check_retired_limits(config: &crate::config::Config) -> Result<()> {
+    for (section, table) in [
+        ("judge", config.judge.as_ref()),
+        ("llm", config.llm.as_ref()),
+        ("email", config.email.as_ref()),
+    ] {
+        let Some(table) = table else {
+            continue;
+        };
+        let keys = RETIRED_LIMIT_SETTINGS
+            .iter()
+            .find(|(name, _)| *name == section)
+            .expect("known optional configuration section")
+            .1;
+        for key in keys {
+            ensure!(!table.contains_key(*key),"{section}.{key} is obsolete: run `mimir config upgrade` to remove retired application limits, then `mimir config check`. Other settings and comments are preserved");
+        }
+    }
+    Ok(())
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Logging {
     pub directory: PathBuf,
-    #[serde(default = "default_bytes")]
-    pub max_file_bytes: u64,
-    #[serde(default = "default_files")]
-    pub retained_files: usize,
-}
-fn default_bytes() -> u64 {
-    1_048_576
-}
-fn default_files() -> usize {
-    4
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Operations {
@@ -43,28 +75,18 @@ impl Operations {
             .context("logging.directory must be an absolute directory path")?;
         ensure!(
             !directory.trim().is_empty() && Path::new(directory).is_absolute(),
-            "logging.directory must be a nonempty absolute path of at most 4096 UTF-8 bytes"
+            "logging.directory must be a nonempty absolute path"
         );
-        let integer = |key: &str, default: i64, min: i64, max: i64| -> Result<i64> {
-            let n = match table.get(key) {
-                None => default,
-                Some(v) => v
-                    .as_integer()
-                    .with_context(|| format!("logging.{key} must be an integer"))?,
-            };
+        for key in ["max_file_bytes", "retained_files"] {
             ensure!(
-                (min..=max).contains(&n),
-                "logging.{key} must be between {min} and {max}"
+                table.get(key).is_none(),
+                "logging.{key} is retired: logs are append-only; run `mimir config upgrade` to remove retired logging settings"
             );
-            Ok(n)
-        };
+        }
         Ok(Self {
             config_version: CONFIG_VERSION,
             logging: Logging {
                 directory: directory.into(),
-                max_file_bytes: integer("max_file_bytes", default_bytes() as i64, 4096, 16_777_216)?
-                    as u64,
-                retained_files: integer("retained_files", default_files() as i64, 1, 16)? as usize,
             },
         })
     }
@@ -78,8 +100,6 @@ impl Operations {
             config_version: CONFIG_VERSION,
             logging: Logging {
                 directory: base.join("mimir/logs"),
-                max_file_bytes: default_bytes(),
-                retained_files: default_files(),
             },
         })
     }
@@ -101,18 +121,17 @@ pub fn upgrade(path: &Path, directory: Option<&Path>) -> Result<()> {
             "unsupported config_version; no changes made (automatic downgrades are forbidden)"
         );
     }
-    document["config_version"] = toml_edit::value(i64::from(CONFIG_VERSION));
-    if let Some(llm) = document
-        .get_mut("llm")
-        .and_then(toml_edit::Item::as_table_like_mut)
-    {
-        for retired in [
-            "timeout_seconds",
-            "max_calls",
-            "max_output_tokens",
-            "max_budget_usd",
-        ] {
-            llm.remove(retired);
+    if document.get("config_version").is_none() {
+        document["config_version"] = toml_edit::value(i64::from(CONFIG_VERSION));
+    }
+    for (section, keys) in RETIRED_LIMIT_SETTINGS {
+        if let Some(table) = document
+            .get_mut(section)
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            for key in *keys {
+                table.remove(key);
+            }
         }
     }
     if let Some(logging) = document.get("logging") {
@@ -129,9 +148,10 @@ pub fn upgrade(path: &Path, directory: Option<&Path>) -> Result<()> {
     let parsed: toml::Value =
         toml::from_str(&content).map_err(|_| anyhow::anyhow!("invalid upgraded config TOML"))?;
     Operations::decode(&parsed)?;
-    let _: crate::config::Config = parsed
+    let config: crate::config::Config = parsed
         .try_into()
         .map_err(|_| anyhow::anyhow!("invalid application configuration; no changes made"))?;
+    check_retired_limits(&config)?;
     if content == original {
         return Ok(());
     }
@@ -179,83 +199,25 @@ impl Logging {
         self.lock()?;
         Ok(())
     }
-    fn open(&self, path: &Path, append: bool) -> io::Result<File> {
+    fn open(&self, path: &Path) -> io::Result<File> {
         let mut options = OpenOptions::new();
-        options
-            .create(true)
-            .write(true)
-            .append(append)
-            .truncate(!append);
+        options.create(true).append(true);
         #[cfg(unix)]
         options.mode(0o600);
         options.open(path)
     }
     fn lock(&self) -> io::Result<File> {
-        let file = self.open(&self.directory.join("mimir-log.lock"), true)?;
+        let file = self.open(&self.directory.join("mimir-log.lock"))?;
         file.lock()?;
         Ok(file)
     }
     pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
         let _lock = self.lock()?;
-        let current = self.directory.join("mimir.log");
-        let limit = self.max_file_bytes;
-        let bytes = &bytes[..bytes.len().min(limit as usize)];
-        // Remove obsolete numbered slots when retention is reduced. These are
-        // the only names owned by this logger; unrelated files remain untouched.
-        for index in self.retained_files..16 {
-            let path = self.directory.join(format!("mimir.log.{index}"));
-            if path.exists() {
-                fs::remove_file(path)?;
-            }
-        }
-        for index in 0..self.retained_files {
-            let path = if index == 0 {
-                current.clone()
-            } else {
-                self.directory.join(format!("mimir.log.{index}"))
-            };
-            if let Ok(meta) = fs::metadata(&path) {
-                if meta.len() > limit {
-                    self.open(&path, true)?.set_len(limit)?;
-                }
-            }
-        }
-        let length = match fs::metadata(&current) {
-            Ok(m) => m.len(),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
-            Err(e) => return Err(e),
-        };
-        if length.saturating_add(bytes.len() as u64) > limit {
-            if self.retained_files == 1 {
-                self.open(&current, false)?;
-            } else {
-                let last = self
-                    .directory
-                    .join(format!("mimir.log.{}", self.retained_files - 1));
-                if last.exists() {
-                    fs::remove_file(last)?;
-                }
-                for index in (1..self.retained_files).rev() {
-                    let from = if index == 1 {
-                        current.clone()
-                    } else {
-                        self.directory.join(format!("mimir.log.{}", index - 1))
-                    };
-                    let to = self.directory.join(format!("mimir.log.{index}"));
-                    if from.exists() {
-                        fs::rename(from, to)?;
-                    }
-                }
-            }
-        }
-        self.open(&current, true)?.write_all(bytes)
+        self.open(&self.directory.join("mimir.log"))?
+            .write_all(bytes)
     }
     pub fn event(&self, component: &str, message: &str) -> Result<()> {
-        let message: String = message
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(8192)
-            .collect();
+        let message: String = message.chars().filter(|c| !c.is_control()).collect();
         self.write(
             format!(
                 "{} {component}: {message}\n",
@@ -267,7 +229,7 @@ impl Logging {
     }
 }
 
-/// Tracing builds one bounded event buffer; Drop publishes it under the same
+/// Tracing retains the complete event buffer; Drop publishes it under the same
 /// process-independent lock as judge events. Never duplicate errors to stderr.
 pub struct LogWriter {
     logging: Logging,
@@ -283,11 +245,7 @@ impl LogWriter {
 }
 impl Write for LogWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let remaining = (self.logging.max_file_bytes as usize)
-            .min(32768)
-            .saturating_sub(self.buffer.len());
-        self.buffer
-            .extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+        self.buffer.extend_from_slice(bytes);
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -342,6 +300,34 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn upgrade_removes_retired_batch_settings_and_preserves_other_settings() {
+        let dir = directory();
+        let path = dir.join("config.toml");
+        fs::write(&path, format!("config_version=1\n{DB}\n[logging]\ndirectory={}\n[embeddings]\nbackend='local'\nbatch_size=4 # retire this setting\ncache_dir='/fixture/cache' # preserve embedding setting\n[judge]\nbatch_size=5\nproject='user-project' # preserve scope\nmcp_args=['user-argument']\n[llm]\nbackend='command'\nmodel='chosen'\ncommand='/bin/true'\n",
+            toml::Value::String(dir.join("logs").display().to_string()))).unwrap();
+        upgrade(&path, None).unwrap();
+        let first = fs::read_to_string(&path).unwrap();
+        let value: toml::Value = toml::from_str(&first).unwrap();
+        assert!(value["judge"].get("batch_size").is_none());
+        assert_eq!(value["judge"]["project"].as_str(), Some("user-project"));
+        assert_eq!(
+            value["judge"]["mcp_args"][0].as_str(),
+            Some("user-argument")
+        );
+        assert!(value["embeddings"].get("batch_size").is_none());
+        assert_eq!(
+            value["embeddings"]["cache_dir"].as_str(),
+            Some("/fixture/cache")
+        );
+        assert!(first.contains("# preserve embedding setting"));
+        assert!(first.contains("# preserve scope"));
+        assert!(first.contains(DB));
+        upgrade(&path, None).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), first);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn upgrade_removes_only_retired_model_limits() {
         let dir = directory();
         let path = dir.join("config.toml");
@@ -367,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn required_directory_and_retention_bounds_are_enforced() {
+    fn required_directory_and_retired_settings_are_reported() {
         for metadata in [
             "config_version=1\n",
             "config_version=1\n[logging]\ndirectory='relative'\n",
@@ -378,42 +364,112 @@ mod tests {
         }
     }
     #[test]
-    fn concurrent_repeated_errors_and_retention_reduction_remain_bounded() {
+    fn log_entries_and_tracing_buffers_keep_complete_text() {
         let dir = directory();
         let logging = Logging {
             directory: dir.clone(),
-            max_file_bytes: 4096,
-            retained_files: 3,
         };
         logging.prepare().unwrap();
+        let message = format!("{}-repair-instruction", "資料".repeat(10_000));
+        logging.event("test", &message).unwrap();
+        let event = fs::read(dir.join("mimir.log")).unwrap();
+        assert!(event.ends_with(format!(" test: {message}\n").as_bytes()));
+        let first = format!("{}-first-end", "first".repeat(20_000));
+        let second = format!("{}-second-end", "second".repeat(15_000));
+        let third = b"after-flush";
+        {
+            let mut writer = LogWriter::new(logging.clone());
+            assert_eq!(writer.write(first.as_bytes()).unwrap(), first.len());
+            assert_eq!(writer.write(second.as_bytes()).unwrap(), second.len());
+            writer.flush().unwrap();
+            assert_eq!(writer.write(third).unwrap(), third.len());
+        }
+        let mut expected = event;
+        expected.extend_from_slice(first.as_bytes());
+        expected.extend_from_slice(second.as_bytes());
+        expected.extend_from_slice(third);
+        assert_eq!(fs::read(dir.join("mimir.log")).unwrap(), expected);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_appends_preserve_every_entry_and_existing_archives() {
+        let dir = directory();
+        let logging = Logging {
+            directory: dir.clone(),
+        };
+        logging.prepare().unwrap();
+        let prior = format!("{}-prior-end\n", "prior".repeat(250_000));
+        fs::write(dir.join("mimir.log"), &prior).unwrap();
+        let archives = [
+            ("mimir.log.1", b"first archive".as_slice()),
+            ("mimir.log.15", b"last archive".as_slice()),
+            ("unrelated", b"unrelated evidence".as_slice()),
+        ];
+        for (name, bytes) in archives {
+            fs::write(dir.join(name), bytes).unwrap();
+        }
+        let entries: Vec<_> = (0..4)
+            .map(|worker| format!("worker-{worker}:{}:end-{worker}\n", "資料".repeat(200_000)))
+            .collect();
         std::thread::scope(|scope| {
-            for worker in 0..4 {
-                let logging = logging.clone();
-                scope.spawn(move || {
-                    for n in 0..80 {
-                        logging
-                            .event(
-                                "test",
-                                &format!("worker {worker} error {n}: {}", "x".repeat(8000)),
-                            )
-                            .unwrap();
-                    }
-                });
+            for entry in &entries {
+                let logging = &logging;
+                scope.spawn(move || logging.write(entry.as_bytes()).unwrap());
             }
         });
-        let sizes: Vec<_> = fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().metadata().unwrap().len())
-            .collect();
-        assert_eq!(sizes.len(), 4);
-        assert!(sizes.iter().all(|n| *n <= 4096));
-        assert!(sizes.iter().sum::<u64>() <= 3 * 4096);
-        let reduced = Logging {
-            retained_files: 1,
-            ..logging
-        };
-        reduced.event("test", "last error").unwrap();
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        let actual = fs::read(dir.join("mimir.log")).unwrap();
+        assert!(actual.starts_with(prior.as_bytes()));
+        let mut remaining = &actual[prior.len()..];
+        let mut unseen = entries.clone();
+        while !unseen.is_empty() {
+            let index = unseen
+                .iter()
+                .position(|entry| remaining.starts_with(entry.as_bytes()))
+                .expect("interleaved or missing log entry");
+            let entry = unseen.remove(index);
+            remaining = &remaining[entry.len()..];
+        }
+        assert!(remaining.is_empty());
+        for (name, bytes) in archives {
+            assert_eq!(fs::read(dir.join(name)).unwrap(), bytes);
+        }
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 5);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retired_log_settings_require_upgrade_and_unrelated_settings_survive() {
+        let dir = directory();
+        let path = dir.join("config.toml");
+        for settings in [
+            "max_file_bytes=1048576",
+            "retained_files=4",
+            "max_file_bytes='wrong-type'\nretained_files=0",
+        ] {
+            fs::write(&path, format!("config_version=1\n{DB}\n[logging]\ndirectory={} # keep directory\n{settings}\ncustom='keep-value' # keep setting\n",
+                toml::Value::String(dir.join("logs").display().to_string()))).unwrap();
+            let error = crate::config::Config::load_with_operations(&path)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("is retired"), "{error}");
+            assert!(error.contains("mimir config upgrade"), "{error}");
+            upgrade(&path, None).unwrap();
+            let first = fs::read_to_string(&path).unwrap();
+            assert!(first.contains(DB));
+            assert!(first.contains("# keep directory"));
+            assert!(first.contains("custom='keep-value' # keep setting"));
+            let value: toml::Value = toml::from_str(&first).unwrap();
+            assert!(value["logging"].get("max_file_bytes").is_none());
+            assert!(value["logging"].get("retained_files").is_none());
+            assert_eq!(
+                value["logging"]["directory"].as_str(),
+                dir.join("logs").to_str()
+            );
+            crate::config::Config::load_with_operations(&path).unwrap();
+            upgrade(&path, None).unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), first);
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 }

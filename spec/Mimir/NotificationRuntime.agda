@@ -11,6 +11,7 @@ open import Data.Nat using (ℕ; _≟_; _≤?_)
 open import Data.Product using (_×_; _,_; proj₁; proj₂)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
+import Data.Empty
 open import Data.String using (toList)
 open import Relation.Nullary using (yes; no; does)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -75,7 +76,7 @@ changed before e | I.failure code summary with I.Incident.activeCode before
 ...   | yes _ = false
 ...   | no _ = true
 
-data Error : Set where invalidEvent invalidLimit unsupportedVersion storage missingIncident : Error
+data Error : Set where invalidEvent unsupportedVersion storage missingIncident : Error
 Result = Error ⊎ I.Outcome
 data Effect : Set where
   clock : Effect
@@ -111,10 +112,10 @@ result (D.completed value) = inj₂ value
 result (D.writeFailed _) = inj₁ storage
 result D.invalidMessage = inj₁ invalidEvent
 
-attempt : D.Config → ℕ → Text → Outbox → Script (Outbox × Result)
-attempt cfg now wanted before with lookup wanted (Outbox.entries before)
+attempt : ℕ → Text → Outbox → Script (Outbox × Result)
+attempt now wanted before with lookup wanted (Outbox.entries before)
 ... | nothing = done (before , inj₁ missingIncident)
-... | just savedIncident = deliver wanted before (D.attempt cfg now savedIncident) >>= λ pair →
+... | just savedIncident = deliver wanted before (D.attempt savedIncident) >>= λ pair →
   done (proj₁ pair , result (proj₂ pair))
 
 saveThen : Outbox → Script Result → Script Result
@@ -123,30 +124,30 @@ saveThen value next = ask (writeOutbox value) λ where
   D.refused → done (inj₁ storage)
   D.uncertain → done (inj₁ storage)
 
-saveReconciled : D.Config → ℕ → I.Event → Outbox → I.Incident → Text → Script Result
-saveReconciled cfg now e before savedIncident identity =
+saveReconciled : ℕ → I.Event → Outbox → I.Incident → Text → Script Result
+saveReconciled now e before savedIncident identity =
   let updated = put (key e) (just (I.reconcile identity now savedIncident e)) before
-  in saveThen updated (attempt cfg now (key e) updated >>= λ pair → done (proj₂ pair))
+  in saveThen updated (attempt now (key e) updated >>= λ pair → done (proj₂ pair))
 
 -- Clearing an undelivered incident produces no recovery alert and therefore
 -- does not allocate an alert identity. The unused argument is never stored.
-reconcileChanged : D.Config → ℕ → I.Event → Outbox → I.Incident → Script Result
-reconcileChanged cfg now e before savedIncident with I.Event.status e | I.Incident.deliveredCode savedIncident
-... | I.recovery | nothing = saveReconciled cfg now e before savedIncident []
-... | _ | _ = ask freshAlert (saveReconciled cfg now e before savedIncident)
+reconcileChanged : ℕ → I.Event → Outbox → I.Incident → Script Result
+reconcileChanged now e before savedIncident with I.Event.status e | I.Incident.deliveredCode savedIncident
+... | I.recovery | nothing = saveReconciled now e before savedIncident []
+... | _ | _ = ask freshAlert (saveReconciled now e before savedIncident)
 
-reconcileExisting : D.Config → ℕ → I.Event → Outbox → I.Incident → Script Result
-reconcileExisting cfg now e before savedIncident with changed savedIncident e
-... | false = attempt cfg now (key e) before >>= λ pair → done (proj₂ pair)
-... | true = reconcileChanged cfg now e before savedIncident
+reconcileExisting : ℕ → I.Event → Outbox → I.Incident → Script Result
+reconcileExisting now e before savedIncident with changed savedIncident e
+... | false = attempt now (key e) before >>= λ pair → done (proj₂ pair)
+... | true = reconcileChanged now e before savedIncident
 
-submitLoaded : D.Config → ℕ → I.Event → Outbox → Script Result
-submitLoaded cfg now e before with lookup (key e) (Outbox.entries before)
-... | just savedIncident = reconcileExisting cfg now e before savedIncident
+submitLoaded : ℕ → I.Event → Outbox → Script Result
+submitLoaded now e before with lookup (key e) (Outbox.entries before)
+... | just savedIncident = reconcileExisting now e before savedIncident
 ... | nothing with I.Event.status e
 ...   | I.progress = done (inj₂ I.notNeeded)
 ...   | I.recovery = done (inj₂ I.notNeeded)
-...   | I.failure code summary = reconcileExisting cfg now e before
+...   | I.failure code summary = reconcileExisting now e before
       (I.incident (I.Event.source e) (I.Event.incidentKey e) nothing nothing nothing)
 
 readLoaded : ∀ {A} → (Error → A) → (Outbox → Script A) → Error ⊎ Maybe Outbox → Script A
@@ -164,44 +165,110 @@ locked failed body = ask lock λ where
   false → done failed
   true → body >>= λ value → ask release (λ _ → done value)
 
-submitAt : Bool → D.Config → ℕ → I.Event → Script Result
-submitAt enabled cfg now e with Schema.checkEvent e
+submitAt : Bool → ℕ → I.Event → Script Result
+submitAt enabled now e with Schema.checkEvent e
 ... | V.rejected _ _ = done (inj₁ invalidEvent)
 ... | V.accepted valid with enabled
 ...   | false = done (inj₂ I.disabled)
-...   | true = locked (inj₁ storage) (read inj₁ (submitLoaded cfg now e))
+...   | true = locked (inj₁ storage) (read inj₁ (submitLoaded now e))
 
-submit : Bool → D.Config → I.Event → Script Result
-submit enabled cfg e = ask clock (λ now → submitAt enabled cfg now e)
+submit : Bool → I.Event → Script Result
+submit enabled e = ask clock (λ now → submitAt enabled now e)
 
-due : ℕ → Text × I.Incident → Bool
-due now pair with I.Incident.outbox (proj₂ pair)
+-- Reconciliation stores the complete incident before the worker acknowledges
+-- its incoming notificationEvent. Message building and transport belong to a later pass.
+alertOutcome : I.Alert → I.Outcome
+alertOutcome pendingAlert with I.Alert.lastError pendingAlert
+... | nothing = I.retryPending
+... | just I.authRequired = I.authRequired
+... | just I.unavailable = I.unavailable
+
+deferMail : Script Result → Script Result
+deferMail (done result) = done result
+deferMail (ask (build pendingAlert) next) = done (inj₂ (alertOutcome pendingAlert))
+deferMail (ask (send pendingAlert) next) = done (inj₂ (alertOutcome pendingAlert))
+deferMail (ask effect next) = ask effect (λ reply → deferMail (next reply))
+
+accept : Bool → I.Event → Script Result
+accept enabled notificationEvent = deferMail (submit enabled notificationEvent)
+
+NoMail : ∀ {A} → Script A → Set
+NoMail (done value) = ⊤
+NoMail (ask (build _) next) = Data.Empty.⊥
+NoMail (ask (send _) next) = Data.Empty.⊥
+NoMail (ask effect next) = ∀ reply → NoMail (next reply)
+
+deferredNeedsNoMail : ∀ script → NoMail (deferMail script)
+deferredNeedsNoMail (done value) = tt
+deferredNeedsNoMail (ask (build _) next) = tt
+deferredNeedsNoMail (ask (send _) next) = tt
+deferredNeedsNoMail (ask clock next) reply = deferredNeedsNoMail (next reply)
+deferredNeedsNoMail (ask lock next) reply = deferredNeedsNoMail (next reply)
+deferredNeedsNoMail (ask release next) reply = deferredNeedsNoMail (next reply)
+deferredNeedsNoMail (ask readOutbox next) reply = deferredNeedsNoMail (next reply)
+deferredNeedsNoMail (ask freshAlert next) reply = deferredNeedsNoMail (next reply)
+deferredNeedsNoMail (ask (writeOutbox _) next) reply = deferredNeedsNoMail (next reply)
+
+acceptNeedsNoMail : ∀ enabled notificationEvent → NoMail (accept enabled notificationEvent)
+acceptNeedsNoMail enabled notificationEvent = deferredNeedsNoMail (submit enabled notificationEvent)
+
+hasPendingAlert : Text × I.Incident → Bool
+hasPendingAlert pair with I.Incident.outbox (proj₂ pair)
 ... | nothing = false
-... | just pendingAlert with I.Alert.delivery pendingAlert
-...   | I.exhausted = false
-...   | I.pending = does (I.Alert.nextDue pendingAlert ≤? now)
+... | just _ = true
 
 RetryResult = Error ⊎ List (Text × (Text × I.Outcome))
-retryKeys : D.Config → ℕ → List Text → Outbox → Script RetryResult
-retryKeys cfg now [] before = done (inj₂ [])
-retryKeys cfg now (wanted ∷ rest) before with lookup wanted (Outbox.entries before)
+retryKeys : ℕ → List Text → Outbox → Script RetryResult
+retryKeys now [] before = done (inj₂ [])
+retryKeys now (wanted ∷ rest) before with lookup wanted (Outbox.entries before)
 ... | nothing = done (inj₁ missingIncident)
-... | just savedIncident = attempt cfg now wanted before >>= λ where
+... | just savedIncident = attempt now wanted before >>= λ where
   (after , inj₁ error) → done (inj₁ error)
-  (after , inj₂ outcome) → retryKeys cfg now rest after >>= λ where
+  (after , inj₂ outcome) → retryKeys now rest after >>= λ where
     (inj₁ error) → done (inj₁ error)
     (inj₂ outcomes) → done (inj₂ ((I.Incident.source savedIncident ,
       (I.Incident.incidentKey savedIncident , outcome)) ∷ outcomes))
 
-retryDue : Bool → D.Config → ℕ → Script RetryResult
-retryDue enabled cfg limit with does (1 ≤? limit) ∧ does (limit ≤? 20)
-... | false = done (inj₁ invalidLimit)
-... | true with enabled
-...   | false = done (inj₂ [])
-...   | true = locked (inj₁ storage) (read inj₁ (λ before → ask clock λ now →
-    retryKeys cfg now (take limit (map proj₁ (filterᵇ (due now) (Outbox.entries before)))) before))
+retryDue : Bool → Script RetryResult
+retryDue false = done (inj₂ [])
+retryDue true = locked (inj₁ storage) (read inj₁ (λ before → ask clock λ now →
+  retryKeys now (map proj₁ (filterᵇ hasPendingAlert (Outbox.entries before))) before))
 
 writeFailureStops : ∀ value next events outcome →
   Runs (saveThen value next) ((writeOutbox value , D.refused) ∷ events) outcome →
   events ≡ [] × outcome ≡ inj₁ storage
 writeFailureStops value next events outcome (replied _ _ _ (returned _)) = refl , refl
+
+-- Durable admission has a separate, short-lived file lock. Its consumer keeps
+-- the delivery ownership lock, but never the admission lock, during SMTP.
+-- Reopening observes this saved list; no process-local mailbox is its owner.
+module Admission where
+  record Pending : Set where
+    constructor pending
+    field identity : Text; event : I.Event
+
+  Queue = List Pending
+
+  append : Pending → Queue → Queue
+  append item before = before ++ (item ∷ [])
+
+  acknowledge : Text → Queue → Maybe Queue
+  acknowledge id [] = nothing
+  acknowledge id (item ∷ rest) with id ≟Text Pending.identity item
+  ... | yes _ = just rest
+  ... | no _ = nothing
+
+  -- An acknowledgement made after a concurrent append removes exactly the
+  -- event that was read. All intervening appends survive, in their original order.
+  acknowledgePreservesAppends : ∀ head (rest later : Queue) →
+    acknowledge (Pending.identity head) ((head ∷ rest) ++ later) ≡ just (rest ++ later)
+  acknowledgePreservesAppends head rest later with Pending.identity head ≟Text Pending.identity head
+  ... | yes _ = refl
+  ... | no different = Data.Empty.⊥-elim (different refl)
+
+  wrongAcknowledgementCannotRemove : ∀ id head rest →
+    (id ≡ Pending.identity head → Data.Empty.⊥) →
+    acknowledge id (head ∷ rest) ≡ nothing
+  wrongAcknowledgementCannotRemove id head rest different with id ≟Text Pending.identity head
+  ... | yes same = Data.Empty.⊥-elim (different same)
+  ... | no _ = refl

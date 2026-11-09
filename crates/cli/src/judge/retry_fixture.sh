@@ -32,9 +32,17 @@ if [[ "$mode" == "dump-catalogue" ]]; then
     exit 0
 fi
 if [[ -n "$pid_file" ]]; then
-    sleep 30 & descendant=$!
+    event_address="${6:-${MIMIR_JUDGE_FIXTURE_EVENTS:-}}"
+    if [[ -n "$event_address" ]]; then
+        exec 9<>"/dev/tcp/${event_address/://}"
+    fi
+    mkfifo "$pid_file.wait.$$"
+    cat "$pid_file.wait.$$" >/dev/null & descendant=$!
     printf '%s\n' "$$" "$descendant" > "$pid_file"
     printf '%s' "${MIMIR_CONFIG:-}" > "$pid_file.config"
+    if [[ -n "$event_address" ]]; then
+        printf 'mcp %s %s\n' "$$" "$descendant" >&9
+    fi
 fi
 state() {
     jq -nc --arg id "$experience_id" --argjson reviewed "$reviewed" --arg mode "$mode" '

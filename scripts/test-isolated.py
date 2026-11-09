@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import selectors
 import shlex
 import shutil
 import signal
@@ -18,6 +19,31 @@ import time
 REPO = Path(__file__).resolve().parents[1]
 IMAGE = "sha256:79fb863620098b1e443338075bb65f6775130cbcb381f115d4272719256e334d"
 LABEL = "mimir.isolated-test"
+FINAL_POSTGRES_START = "MIMIR_ISOLATED_POSTGRES_FINAL_START"
+POSTGRES_READY = "database system is ready to accept connections"
+
+
+def observe_connections(listener, wakeup, attempts):
+    """Record queued connections before honoring the explicit stop event."""
+    listener.setblocking(False)
+    with selectors.DefaultSelector() as selector:
+        selector.register(listener, selectors.EVENT_READ)
+        selector.register(wakeup, selectors.EVENT_READ)
+        while True:
+            events = selector.select()
+            stopping = any(key.fileobj is wakeup for key, _ in events)
+            # Drain the queue even when the stop event was selected first.
+            # A connection made before command completion must not disappear
+            # merely because the observation owner now wants to stop.
+            while True:
+                try:
+                    connection, _ = listener.accept()
+                except BlockingIOError:
+                    break
+                attempts.append(True)
+                connection.close()
+            if stopping:
+                return
 
 
 def isolated_environment(root, inherited):
@@ -33,7 +59,7 @@ def isolated_environment(root, inherited):
                 "XDG_STATE_HOME": str(root / "state"), "XDG_CACHE_HOME": str(root / "cache"),
                 "TMPDIR": str(root / "scratch"), "CARGO_TARGET_DIR": str(root / "target"),
                 "MIMIR_EVAL_TARGET_DIR": str(root / "eval-target"),
-                "CARGO_BUILD_JOBS": "4", "CI": "true", "PYTHONDONTWRITEBYTECODE": "1"})
+                "CI": "true", "PYTHONDONTWRITEBYTECODE": "1"})
     for key in ("HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TMPDIR"):
         Path(env[key]).mkdir(mode=0o700)
     return env
@@ -58,28 +84,54 @@ class Run:
             path.chmod(0o700)
         self.env["PATH"] = str(guards) + os.pathsep + self.env["PATH"]
 
-    def command(self, name, argv, *, env=None, input=None, cwd=REPO, check=True):
+    def command(self, name, argv, *, env=None, input=None, cwd=REPO, check=True, until=None):
         self.count += 1
         stem = self.root / f"{self.count:03}-{name}"
         print(f"Check: {name}; log: {stem}.log", flush=True)
         (stem.with_suffix(".command.json")).write_text(json.dumps(argv) + "\n")
         process = None
+        observed = []
+        drained = until is None
+        if until is not None and (not until or input is not None):
+            raise ValueError("event commands require a nonempty event sequence and no input")
         try:
             with stem.with_suffix(".stdout").open("w") as output, stem.with_suffix(".stderr").open("w") as error:
                 process = subprocess.Popen(argv, cwd=cwd, env=self.env if env is None else env,
                     stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
-                    text=True, stdout=output, stderr=error, start_new_session=True)
+                    text=True, stdout=subprocess.PIPE if until else output,
+                    stderr=subprocess.STDOUT if until else error, start_new_session=True)
                 try:
-                    process.communicate(input)
+                    if until is None:
+                        process.communicate(input)
+                    else:
+                        for line in process.stdout:
+                            output.write(line)
+                            output.flush()
+                            if until[len(observed)] in line:
+                                observed.append(until[len(observed)])
+                                if len(observed) == len(until):
+                                    # Only the owned log follower is stopped;
+                                    # the PostgreSQL container keeps running.
+                                    process.kill()
+                                    break
+                        remaining, _ = process.communicate()
+                        output.write(remaining)
+                        drained = True
+                        if len(observed) != len(until):
+                            raise RuntimeError(f"{name} exited before its expected readiness event; inspect {stem}.log")
                 except BaseException:
                     # Cancel only this check's owned process group, allowing the
                     # judge's stop handlers to reap their own MCP/model children.
-                    os.killpg(process.pid, signal.SIGTERM)
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        process.wait()
+                    if process.poll() is None:
+                        if until is not None:
+                            process.kill()
+                            process.wait()
+                        else:
+                            os.killpg(process.pid, signal.SIGTERM)
+                            process.wait()
+                    if not drained:
+                        remaining, _ = process.communicate()
+                        output.write(remaining)
                     raise
         finally:
             stem.with_suffix(".exit").write_text(str(process.returncode if process else 127) + "\n")
@@ -88,7 +140,11 @@ class Run:
                     combined.write(suffix + ":\n")
                     with stem.with_suffix(suffix).open() as stream:
                         shutil.copyfileobj(stream, combined)
-        if check and process.returncode:
+            if until is not None:
+                stem.with_suffix(".events.json").write_text(json.dumps({
+                    "expected": until, "observed": observed,
+                    "completed": len(observed) == len(until)}, indent=2) + "\n")
+        if check and process.returncode and until is None:
             raise RuntimeError(f"{name} failed ({process.returncode}); full log: {stem}.log")
         return process.returncode, stem.with_suffix(".stdout").read_text()
 
@@ -97,26 +153,24 @@ class Run:
         script = """set -eu
 initdb -D /var/lib/postgresql/data --username=postgres --auth-local=trust --auth-host=scram-sha-256
 printf 'local all all trust\\nhost all postgres all reject\\nhost all all all scram-sha-256\\n' > /var/lib/postgresql/data/pg_hba.conf
-exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_preload_libraries=age -c search_path=public,ag_catalog -c unix_socket_directories=/var/lib/postgresql/data
+printf '%s\\n' 'MIMIR_ISOLATED_POSTGRES_FINAL_START' >&2
+exec postgres -D /var/lib/postgresql/data -c lc_messages=C -c listen_addresses='*' -c shared_preload_libraries=age -c search_path=public,ag_catalog -c unix_socket_directories=/var/lib/postgresql/data
 """
         _, output = self.command("create-database-container", [
             "docker", "create", "--name", name, "--label", LABEL + "=" + self.token,
-            "--user", "999:999", "--memory", "1g", "--cpus", "2", "--tmpfs",
-            "/var/lib/postgresql/data:rw,size=512m,uid=999,gid=999,mode=0700",
+            "--user", "999:999",
             "--publish", "127.0.0.1::5432", "--env", "PGHOST=/var/lib/postgresql/data",
             "--entrypoint", "/bin/bash", IMAGE, "-c", script])
         self.container = output.strip()
         if len(self.container) != 64 or not all(c in "0123456789abcdef" for c in self.container):
             raise RuntimeError("Docker did not return a container identity")
         self.command("start-database-container", ["docker", "start", self.container])
-        for attempt in range(60):
-            code, _ = self.command("database-ready", ["docker", "exec", self.container,
-                                      "pg_isready", "-U", "postgres"], check=False)
-            if code == 0:
-                break
-            time.sleep(0.5)
-        else:
-            raise RuntimeError("isolated PostgreSQL did not become ready")
+        self.command("database-start-events", ["docker", "logs", "--follow", self.container],
+                     until=(FINAL_POSTGRES_START, POSTGRES_READY))
+        # PostgreSQL documents zero as disabling this external tool's default
+        # three-second connection deadline. This is not a Mimir request value.
+        self.command("database-ready", ["docker", "exec", self.container,
+                     "pg_isready", "--timeout=0", "-U", "postgres"])
         _, output = self.command("database-port", ["docker", "port", self.container, "5432/tcp"])
         address, port = output.strip().rsplit(":", 1)
         if address != "127.0.0.1":
@@ -148,7 +202,7 @@ exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_prel
                            "user": user, "pgpassfile": str(passfile), "ssl_mode": "disable"}.items():
             text += key + " = " + json.dumps(value) + "\n"
         (self.root / "database.toml").write_text(text)
-        text += '\n[judge]\nbatch_size = 1\nmcp_command = ' + json.dumps(str(mcp))
+        text += '\n[judge]\nmcp_command = ' + json.dumps(str(mcp))
         text += '\n[llm]\nbackend = "command"\nmodel = "fixture"\ncommand = "/bin/true"\n'
         text += '[email]\nenabled = false\n'
         (self.root / "config.toml").write_text(text)
@@ -162,7 +216,7 @@ exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_prel
         info = json.loads(raw)[0]
         if info["Id"] != self.container or info["Config"]["Labels"].get(LABEL) != self.token:
             raise RuntimeError("refusing cleanup of a container this run does not own")
-        self.command("remove-owned-database", ["docker", "rm", "--force", self.container])
+        self.command("remove-owned-database", ["docker", "rm", "--force", "--volumes", self.container])
         self.container = None
 
     def guard_regression(self):
@@ -173,32 +227,30 @@ exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_prel
         if len(binaries) != 1:
             raise RuntimeError("expected one compiled store integration test binary")
         attempts = []
-        stop = threading.Event()
-        with socket.socket() as decoy:
+        failures = []
+        stop_reader, stop_writer = socket.socketpair()
+        with socket.socket() as decoy, stop_reader, stop_writer:
             decoy.bind(("127.0.0.1", 0))
             decoy.listen()
-            decoy.settimeout(0.1)
             def listen():
-                while not stop.is_set():
-                    try:
-                        connection, _ = decoy.accept()
-                        attempts.append(True)
-                        connection.close()
-                    except socket.timeout:
-                        pass
-            thread = threading.Thread(target=listen, daemon=True)
+                try:
+                    observe_connections(decoy, stop_reader, attempts)
+                except BaseException as error:
+                    failures.append(str(error))
+            thread = threading.Thread(target=listen)
             thread.start()
             env = {**self.env, "MIMIR_PORT": str(decoy.getsockname()[1]), "MIMIR_DBNAME": "mimir"}
             try:
                 code, _ = self.command("refuse-conflicting-database", [str(binaries[0]),
                     "--exact", "test_insert_and_get_belief", "--nocapture"], env=env, check=False)
             finally:
-                stop.set()
-                thread.join(timeout=2)
+                stop_writer.sendall(b"stop")
+                thread.join()
         log = (self.root / f"{self.count:03}-refuse-conflicting-database.log").read_text()
-        passed = code == 101 and "MIMIR_PORT does not match this test fixture" in log and not attempts and not thread.is_alive()
+        passed = code == 101 and "MIMIR_PORT does not match this test fixture" in log and not attempts and not thread.is_alive() and not failures
         (self.root / "connection-guard.json").write_text(json.dumps({
-            "rejected_before_connect": passed, "connection_attempts": len(attempts)}, indent=2) + "\n")
+            "rejected_before_connect": passed, "connection_attempts": len(attempts),
+            "listener_errors": failures}, indent=2) + "\n")
         if not passed:
             raise RuntimeError("Rust connection guard did not reject conflicting settings before networking")
 

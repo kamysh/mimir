@@ -18,14 +18,18 @@ open import Data.Empty using (⊥; ⊥-elim)
 open import Relation.Nullary using (Dec; yes; no)
 open import Relation.Nullary.Decidable.Core using (_×-dec_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
-open import Mimir.Text using (Text)
-open import Mimir.CharacterRules using (TokenValid; tokenValid?; Bearer; bearer?)
+open import Mimir.Text using (Text; Nonempty; nonempty?)
+open import Mimir.CharacterRules using (NoControls; noControls?; Bearer; bearer?)
 import Mimir.Saturating as Sat
 open import Mimir.Effects
 open import Mimir.NotificationDelivery using (WriteReceipt; durable; refused; uncertain)
 
 Bytes = List (Fin 256)
-Token = TokenValid 8192
+Token : Text → Set
+Token text = Nonempty text × NoControls text
+
+token? : ∀ text → Dec (Token text)
+token? text = nonempty? text ×-dec noControls? text
 
 record Cache : Set where
   constructor cache
@@ -37,7 +41,7 @@ OptionalToken (just text) = Token text
 
 optionalToken? : ∀ value → Dec (OptionalToken value)
 optionalToken? nothing = yes tt
-optionalToken? (just text) = tokenValid? 8192 text
+optionalToken? (just text) = token? text
 
 IdentityValid : Bytes → Cache → Set
 IdentityValid identity c = Cache.schema c ≡ 1 × Cache.identity c ≡ identity
@@ -51,7 +55,7 @@ CacheValid identity c = IdentityValid identity c ×
 
 cacheValid? : ∀ identity c → Dec (CacheValid identity c)
 cacheValid? identity c = identityValid? identity c ×-dec
-  (tokenValid? 8192 (Cache.refresh c) ×-dec optionalToken? (Cache.access c))
+  (token? (Cache.refresh c) ×-dec optionalToken? (Cache.access c))
 
 record Refresh : Set where
   constructor refresh
@@ -62,7 +66,7 @@ RefreshValid reply = Bearer (Refresh.tokenType reply) × (Token (Refresh.access 
   (OptionalToken (Refresh.rotated reply) × 0 < Refresh.expiresIn reply))
 
 refreshValid? : ∀ reply → Dec (RefreshValid reply)
-refreshValid? reply = bearer? (Refresh.tokenType reply) ×-dec (tokenValid? 8192 (Refresh.access reply) ×-dec
+refreshValid? reply = bearer? (Refresh.tokenType reply) ×-dec (token? (Refresh.access reply) ×-dec
   (optionalToken? (Refresh.rotated reply) ×-dec (0 <? Refresh.expiresIn reply)))
 
 chooseRefresh : Text → Maybe Text → Text
@@ -120,7 +124,7 @@ renew maximum identity now previous = ask (refreshToken previous) (processRefres
 
 fromValidCache : ℕ → Bytes → ℕ → Bool → Cache → Script Result
 fromValidCache maximum identity now true c = renew maximum identity now (Cache.refresh c)
-fromValidCache maximum identity now false c with Sat.add maximum now 60 <? Cache.expires c
+fromValidCache maximum identity now false c with now <? Cache.expires c
 ... | no _ = renew maximum identity now (Cache.refresh c)
 ... | yes _ with Cache.access c
 ...   | nothing = renew maximum identity now (Cache.refresh c)

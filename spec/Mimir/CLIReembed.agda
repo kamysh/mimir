@@ -32,7 +32,7 @@ summary (B.counts embedded skipped) = counts embedded skipped
 module Run (sizeMaximum : ℕ) (path : Path.Path) (environment : Connection.Environment)
   (decimalPort : ℕ → Text) (certificateBlocks : Text → List Text) (unix : Bool) where
   private
-    module C = Configuration.Run sizeMaximum
+    module C = Configuration.Run
     module S configurationValue = Startup.Run (Config.Config.core configurationValue) environment decimalPort certificateBlocks unix
     module M = Migration.Runtime Text Text
 

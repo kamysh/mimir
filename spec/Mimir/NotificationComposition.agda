@@ -66,13 +66,15 @@ liftDigest (Digest.ask effect next) = ask (digest effect) (λ reply → liftDige
 
 module API (service : Notifier) (clockMaximum : ℕ) where
   cfg = Notifier.config service
-  delivery = D.config (Config.Config.maximumAttempts cfg) (Config.Config.retrySeconds cfg) clockMaximum
 
   submit : I.Event → Script N.Result
-  submit notificationEvent = lift (N.submit (Config.Config.enabled cfg) delivery notificationEvent)
+  submit notificationEvent = lift (N.submit (Config.Config.enabled cfg) notificationEvent)
 
-  retry : ℕ → Script N.RetryResult
-  retry limit = lift (N.retryDue (Config.Config.enabled cfg) delivery limit)
+  accept : I.Event → Script N.Result
+  accept notificationEvent = lift (N.accept (Config.Config.enabled cfg) notificationEvent)
+
+  retry : Script N.RetryResult
+  retry = lift (N.retryDue (Config.Config.enabled cfg))
 
   locked : ∀ {A} → A → Script A → Script A
   locked failure body = ask (notification N.lock) λ where

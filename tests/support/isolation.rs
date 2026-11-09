@@ -3,6 +3,94 @@ use mimir_core::config::{DatabaseConfig, SslMode};
 use serde::Deserialize;
 use std::path::PathBuf;
 
+/// Starting data for tests of reads, graph changes and display. This is not
+/// application insertion: it cannot disable production preparation checks.
+/// Resolve and verify the disposable fixture before opening any connection.
+#[allow(dead_code)]
+pub async fn seed_belief_in_project(
+    content: &str,
+    probability: f64,
+    confidence: f64,
+    project: &str,
+    memory_type: mimir_core::graph::MemoryType,
+) -> anyhow::Result<mimir_core::graph::Belief> {
+    seed_belief_record(
+        content,
+        probability,
+        confidence,
+        Some(project),
+        memory_type,
+        None,
+    )
+    .await
+}
+
+#[allow(dead_code)]
+pub async fn seed_belief(
+    content: &str,
+    probability: f64,
+    confidence: f64,
+    memory_type: mimir_core::graph::MemoryType,
+) -> anyhow::Result<mimir_core::graph::Belief> {
+    seed_belief_record(content, probability, confidence, None, memory_type, None).await
+}
+
+#[allow(dead_code)]
+pub async fn seed_independent_belief(
+    content: &str,
+    probability: f64,
+    confidence: f64,
+    project: Option<&str>,
+    memory_type: mimir_core::graph::MemoryType,
+    provenance: &mimir_core::learning::IndependentProvenance,
+) -> anyhow::Result<mimir_core::graph::Belief> {
+    provenance.validate()?;
+    seed_belief_record(
+        content,
+        probability,
+        confidence,
+        project,
+        memory_type,
+        Some(provenance),
+    )
+    .await
+}
+
+#[allow(dead_code)]
+async fn seed_belief_record(
+    content: &str,
+    probability: f64,
+    confidence: f64,
+    project: Option<&str>,
+    memory_type: mimir_core::graph::MemoryType,
+    provenance: Option<&mimir_core::learning::IndependentProvenance>,
+) -> anyhow::Result<mimir_core::graph::Belief> {
+    let database = fixture().database_config();
+    mimir_core::db::migrate(&database).await?;
+    let client = mimir_core::db::connect(&database).await?;
+    let identity = client
+        .query_one("SELECT gen_random_uuid(), now()", &[])
+        .await?;
+    let mut belief = match project {
+        Some(project) => mimir_core::graph::Belief::new_in_project(
+            content.into(),
+            probability,
+            confidence,
+            project.into(),
+        )?,
+        None => mimir_core::graph::Belief::new(content.into(), probability, confidence)?,
+    }
+    .with_memory_type(memory_type);
+    belief.id = identity.get(0);
+    belief.created_at = identity.get(1);
+    belief.last_activated_at = belief.created_at;
+    let store = mimir_core::store::AgeStore::new(client, database.dbname)?;
+    store
+        .insert_belief_with_provenance(&belief, provenance)
+        .await?;
+    Ok(belief)
+}
+
 #[derive(Deserialize)]
 pub struct Fixture {
     pub root: PathBuf,

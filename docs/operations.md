@@ -15,8 +15,6 @@ config_version = 1
 
 [logging]
 directory = "/absolute/path/to/mimir/logs"
-max_file_bytes = 1048576
-retained_files = 4
 ```
 
 For an existing configuration:
@@ -40,6 +38,23 @@ directory must be writable when starting application work; the offline check
 does not create directories. No database schema change is needed for these
 operational settings.
 
+## Closing an MCP session
+
+The server watches client input while a request is running. Closing the
+connection cancels the unfinished request and discards queued requests. An
+owned local embedding worker is terminated and reaped before the server returns;
+requests that remain connected still run in arrival order.
+
+Disconnect does not undo changes already committed to the database. Read back
+the affected work before retrying a write whose response was lost.
+
+`mimir reembed` also watches its current belief while embedding. Deleting that
+belief or its project stops the unfinished embedding call and reaps its local
+worker. The command identifies the missing belief and asks for a user decision
+before resuming; it does not recreate the belief. Other beliefs' workers keep
+running, and the final vector write still checks its target in the same
+transaction as the write.
+
 ## When a review fails
 
 Run this on the computer named in the email:
@@ -57,10 +72,45 @@ With a custom configuration or state directory, pass `--config PATH` and/or
 
 The daily email includes a cause, batch impact, next action and this diagnostic
 command. A backlog is work still awaiting review; a scheduled retry does not
-mean the failure has been repaired. The watcher retries at its configured
-interval and backs off to at least one hour after the configured number of
-consecutive failed batches. It announces failure/recovery transitions instead
-of repeating the same error on every polling cycle.
+mean the failure has been repaired. After a successful non-idle batch, the
+watcher immediately checks for the next eligible work. An empty queue waits for
+a PostgreSQL work event and then scans the durable queue again. There is no idle
+polling interval. After losing its listener, the watcher reconnects and scans
+saved pending work, including changes whose notifications were missed. After
+incomplete work or an unresolved prerequisite, it waits for a configuration
+correction or explicit SIGHUP retry and prints `kill -HUP PID` for its current
+process. Correct the cause before retrying. New work notifications cannot retry
+an unchanged missing prerequisite. There is no failure-count threshold or
+scheduled backoff. It announces failure/recovery transitions once per episode.
+
+While running, the watcher observes configuration file changes through OS
+events, including edits and atomic replacements. It applies a valid replacement
+at the next batch boundary, subscribes using the new settings, then scans before
+waiting. An invalid file produces a diagnostic and waits for a correction; the
+file and last admitted settings are left intact. Save the corrected file to
+resume, or press Ctrl-C to stop. No polling timer is used for configuration
+changes.
+
+Daily reports require the user's `judge.daily_report_time` configuration, with
+an explicit `hour` and `minute` and no default. The watcher has a separate
+calendar wake-up for that chosen local time, including when review work is idle
+or awaiting correction. That wake-up queues mail and does not retry reviews.
+Skipped local times use the first valid time afterward; repeated times produce
+one admission at the first occurrence. A stalled delivery cannot cause repeated
+admission of that day's report. Calendar and delivery tasks are cancelled and
+joined when the watcher stops.
+
+In watch mode, alert and daily-summary delivery run in one owned background
+task. A stalled SMTP or authentication exchange does not hold the judge's state
+lock or block another review. The report's `notification: "queued"` records
+queue admission, not confirmed email delivery. Delivery problems are logged by
+the worker. Stopping the watcher cancels and awaits the worker: existing notifier
+outbox entries remain on disk, while jobs not yet submitted are cancelled.
+Completed review reports remain stored. Standalone `judge run` saves mail to
+the private incoming queue for delivery by `judge watch`; the command
+returns without waiting for SMTP or OAuth. It prints the exact watcher command
+needed to resume delivery when a watcher is absent. Queue admission does not
+claim that the email was delivered.
 
 Common cases:
 
@@ -86,27 +136,29 @@ model replies and arbitrary failure details. Report persistent failures at
 <https://github.com/kamysh/mimir/issues>, including the summary, version, time
 and diagnostic ID. Never include credentials.
 
-## Log bounds and locations
+## Log locations and preservation
 
-CLI judge events and MCP tracing share `logging.directory/mimir.log`, with
-fixed numbered rotation files. Writers use one process-independent file lock.
-`retained_files` includes the current file: defaults retain at most **4 MiB**
-across four files. Values are limited to 1–16 files and 4 KiB–16 MiB per file.
-Oversized events are bounded; repeated errors cannot create new filenames or
-increase this budget. Reducing limits prunes/truncates owned log files on the
-next successful write. Unrelated files are never removed.
+CLI judge events and MCP tracing append complete entries to
+`logging.directory/mimir.log` under one process-independent file lock. Mimir
+applies no file-size limit, rotation or automatic deletion. Existing numbered
+archives and unrelated files are left untouched. The current log grows as new
+entries arrive.
+
+`logging.max_file_bytes` and `logging.retained_files` are retired. Configuration
+checking reports them and points to `mimir config upgrade`, which removes those
+settings while preserving the directory, unrelated settings and comments. Run
+the upgrade explicitly for the intended configuration, then check it again.
 
 Private judge diagnostics remain in the existing state directory, selected by
 `--state-dir` or the XDG state default. This preserves locks and restart history.
-The trace store is separately limited to **3 MiB**, eight attempts and 48 events
-per attempt; individual traces are capped at 256 KiB. Status, last-failure and
-runtime snapshots replace bounded files rather than append indefinitely.
-These are diagnostic retention files, not backups.
+Traces retain all attempts, events and selected IDs. Status, last-failure and
+runtime snapshots replace their previous files; private diagnostic records have
+no application byte ceiling. New source diagnostics keep the complete rendered
+input. Historical partial records retain their original omissions. These files
+are diagnostics, not backups.
 
-Application rotation does not control a supervisor's own journal or files to
-which a shell redirects stdout/stderr. Use the supervisor's bounded journal or
-an explicitly configured rotation policy; avoid indefinite append-only shell
-redirection. Configuration errors that prevent opening the log are also printed
+Mimir does not manage a supervisor's journal or shell redirections. Any external
+retention policy is a separate user choice. Configuration errors that prevent opening the log are also printed
 to stderr for one-shot commands and recorded in judge state when available.
 
 ## Confirm recovery
@@ -120,16 +172,28 @@ the optional judge and of any external agent harness.
 
 ### Review limit migration
 
-The judge no longer imposes deadlines, request or retry quotas, transport-size
-caps, or learning-content/count caps. `mimir config check` rejects retired
-`[llm]` keys: `timeout_seconds`, `max_calls`, `max_output_tokens`, and
-`max_budget_usd`. Run `mimir config upgrade` to remove them while preserving
-other settings, then check again and restart the existing application. No
-system service changes are required. Stop/cancel remains available through
-normal process control and releases owned child processes.
+`mimir config check` names retired settings and points to `mimir config upgrade`.
+Checking and upgrading use the same list:
 
-Diagnostic logs, excerpts and trace history retain their storage bounds. These
-bounds do not truncate model input or stop a review. New trace fields
+| Section | Retired fields |
+| --- | --- |
+| `logging` | `max_file_bytes`, `retained_files` |
+| `judge` | `batch_size` |
+| `embeddings` | `batch_size` |
+| `llm` | `timeout_seconds`, `max_calls`, `max_output_tokens`, `max_budget_usd` |
+| `email` | `timeout_seconds`, `retry_seconds`, `max_attempts` |
+
+Run `mimir config upgrade` against the chosen configuration, then check again.
+The upgrade removes only those fields from their named sections and preserves
+other settings and comments, including credentials, model choice and nested
+email authentication. It chooses no replacement limit, changes no service,
+creates no backup and makes no database or model request. Repeating it leaves
+the upgraded file unchanged. Restart the existing application when applying
+an upgrade to an installation. Stop/cancel remains available through normal
+process control and releases owned child processes.
+
+Diagnostic logs, excerpts and trace history retain complete content. Private
+file and ownership checks remain in force. New trace fields
 `model_requests` and `tool_attempts` count work performed; for legacy traces they
 are absent. Batch state can contain every selected/deferred revision without a
 fixed file-size ceiling. Provider/platform limits remain external constraints;

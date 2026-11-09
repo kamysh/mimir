@@ -24,6 +24,7 @@ async fn service() -> MimirService {
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     })
     .await
     .unwrap()
@@ -44,6 +45,347 @@ fn experience(project: &str) -> Experience {
     }
 }
 
+/// Candidate-publication checks exercise required preparation through the real
+/// owned worker protocol. The indexed passage and vector are explicit fixture
+/// data, not a production flag that bypasses grounding.
+struct GroundedReviewService {
+    service: Option<MimirService>,
+    directory: std::path::PathBuf,
+}
+impl std::ops::Deref for GroundedReviewService {
+    type Target = MimirService;
+    fn deref(&self) -> &Self::Target {
+        self.service.as_ref().unwrap()
+    }
+}
+impl Drop for GroundedReviewService {
+    fn drop(&mut self) {
+        drop(self.service.take());
+        std::fs::remove_dir_all(&self.directory).expect("remove this test's worker fixture");
+    }
+}
+
+async fn grounded_service(project: &str) -> GroundedReviewService {
+    use mimir_core::config::{EmbeddingBackend, EmbeddingsConfig};
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = isolation::fixture();
+    let database = fixture.database_config();
+    let client = db::connect(&database).await.unwrap();
+    let id: Uuid = client
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let directory = fixture.root.join(format!("review-worker-{id}"));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let program = directory.join("worker.py");
+    std::fs::write(&program, "#!/usr/bin/env python3\nimport json,sys\nfor line in sys.stdin:\n request=json.loads(line)\n print(json.dumps({'status':'started','version':1}),flush=True)\n vector=[0.0]*768\n vector[100]=1.0\n print(json.dumps({'status':'complete','vectors':[vector for text in request['texts']]}),flush=True)\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let service = MimirService::connect_with_worker(
+        &Config {
+            database: database.clone(),
+            embeddings: Some(EmbeddingsConfig {
+                backend: EmbeddingBackend::Local,
+                model: String::new(),
+                api_key: None,
+                cache_dir: Some(directory.join("cache").display().to_string()),
+            }),
+            llm: None,
+            judge: None,
+            email: None,
+            retirement: None,
+        },
+        program,
+    )
+    .await
+    .unwrap();
+    let store = AgeStore::new(client, database.dbname).unwrap();
+    let chunk = mimir_core::documents::DocumentChunk::with_id(
+        id,
+        format!("/review-fixture/{id}.md"),
+        vec![],
+        "Indexed supporting passage for this candidate-publication fixture".into(),
+        None,
+        Some(project.into()),
+    );
+    store.insert_document_chunk(&chunk).await.unwrap();
+    let mut vector = vec![0.0; 768];
+    vector[100] = 1.0;
+    store.insert_chunk_embedding(id, &vector).await.unwrap();
+    GroundedReviewService {
+        service: Some(service),
+        directory,
+    }
+}
+
+#[tokio::test]
+async fn subscribed_queue_keeps_work_arriving_before_initial_scan() {
+    let svc = service().await;
+    let cfg = isolation::fixture().database_config();
+    let mut subscription = db::ReviewQueueSubscription::connect(&cfg).await.unwrap();
+
+    // The constructor has observed LISTEN acknowledgement. Insert at the
+    // controlled boundary before the very first pending-queue scan.
+    let project = format!("startup-queue-{}", Uuid::new_v4());
+    let source = experience(&project);
+    svc.record_experience(&source, 0).await.unwrap();
+    let selected = svc
+        .pending_experiences(Some(&project), std::num::NonZeroUsize::new(1))
+        .await
+        .unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].experience.id, source.id);
+    // The wake must survive the scan as well, so the later idle-wait stage
+    // cannot miss the change by registering its waiter after that scan.
+    subscription.changed().await.unwrap();
+    drop(subscription);
+    svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
+async fn empty_review_queue_wakes_on_a_later_committed_experience() {
+    use std::future::{poll_fn, Future};
+    let svc = service().await;
+    let cfg = isolation::fixture().database_config();
+    let mut subscription = db::ReviewQueueSubscription::connect(&cfg).await.unwrap();
+    let project = format!("idle-queue-{}", Uuid::new_v4());
+    assert!(svc
+        .pending_experiences(Some(&project), std::num::NonZeroUsize::new(1))
+        .await
+        .unwrap()
+        .is_empty());
+    let wake = subscription.changed();
+    tokio::pin!(wake);
+    // Polling once establishes an actual waiting listener before insertion.
+    // No elapsed-time guess is needed to establish that an empty queue waits.
+    assert!(poll_fn(|cx| std::task::Poll::Ready(wake.as_mut().poll(cx).is_pending())).await);
+    let source = experience(&project);
+    svc.record_experience(&source, 0).await.unwrap();
+    wake.await.unwrap();
+    let selected = svc
+        .pending_experiences(Some(&project), std::num::NonZeroUsize::new(1))
+        .await
+        .unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].experience.id, source.id);
+    svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
+async fn reconnected_listener_finds_work_without_a_saved_notification() {
+    use std::future::{poll_fn, Future};
+    let svc = service().await;
+    let cfg = isolation::fixture().database_config();
+    let project = format!("reconnected-queue-{}", Uuid::new_v4());
+    let reviewed = experience(&project);
+    svc.record_experience(&reviewed, 0).await.unwrap();
+    svc.review_experience(&review(&reviewed), 0).await.unwrap();
+    let subscription = db::ReviewQueueSubscription::connect(&cfg).await.unwrap();
+    assert!(svc
+        .pending_experiences(Some(&project), std::num::NonZeroUsize::new(1))
+        .await
+        .unwrap()
+        .is_empty());
+    drop(subscription);
+
+    // No listener owns this commit's hint. A reconnect must scan rather than
+    // wait for an old notification that PostgreSQL does not retain.
+    let source = experience(&project);
+    svc.record_experience(&source, 0).await.unwrap();
+    let mut reconnected = db::ReviewQueueSubscription::connect(&cfg).await.unwrap();
+    let selected = svc
+        .pending_experiences(Some(&project), std::num::NonZeroUsize::new(1))
+        .await
+        .unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].experience.id, source.id);
+    let wake = reconnected.changed();
+    tokio::pin!(wake);
+    assert!(poll_fn(|cx| std::task::Poll::Ready(wake.as_mut().poll(cx).is_pending())).await);
+    svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
+async fn pending_queue_notifications_follow_commit_and_contain_no_source() {
+    use std::future::poll_fn;
+    use tokio_postgres::{AsyncMessage, Notification};
+
+    async fn signals_before_barrier(
+        listener: &tokio_postgres::Client,
+        received: &mut tokio::sync::mpsc::UnboundedReceiver<Notification>,
+    ) -> usize {
+        // A committed notification after the tested operation provides an
+        // observable boundary. No elapsed-time guess is needed to test absence.
+        listener
+            .query_one(
+                "SELECT pg_notify($1, 'test-barrier')",
+                &[&db::REVIEW_QUEUE_CHANNEL],
+            )
+            .await
+            .unwrap();
+        let mut signals = 0;
+        loop {
+            let notification = received.recv().await.expect("notification reader stopped");
+            assert_eq!(notification.channel(), db::REVIEW_QUEUE_CHANNEL);
+            if notification.payload() == "test-barrier" {
+                return signals;
+            }
+            assert!(
+                notification.payload().is_empty(),
+                "source data leaked in wake"
+            );
+            signals += 1;
+        }
+    }
+
+    let _service = service().await; // Apply the actual embedded migrations.
+    let fixture = isolation::fixture();
+    let cfg = fixture.database_config();
+    let mut writer = db::connect(&cfg).await.unwrap();
+    let password_file = std::fs::read_to_string(cfg.pgpassfile.as_ref().unwrap()).unwrap();
+    // The guarded fixture writes one generated hexadecimal password; no live
+    // credential resolution, installed configuration, or external account.
+    let password = password_file.trim_end().rsplit(':').next().unwrap();
+    let mut pg = tokio_postgres::Config::new();
+    pg.host(&cfg.host)
+        .port(cfg.port)
+        .user(&cfg.user)
+        .dbname(&cfg.dbname)
+        .password(password);
+    let (listener, mut connection) = pg.connect(tokio_postgres::NoTls).await.unwrap();
+    let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let reader = tokio::spawn(async move {
+        while let Some(message) = poll_fn(|cx| connection.poll_message(cx)).await {
+            if let AsyncMessage::Notification(notification) = message.unwrap() {
+                sent.send(notification).unwrap();
+            }
+        }
+    });
+    listener
+        .batch_execute(&format!("LISTEN {}", db::REVIEW_QUEUE_CHANNEL))
+        .await
+        .unwrap();
+    let project = format!("private-queue-source-{}", Uuid::new_v4());
+
+    let tx = writer.transaction().await.unwrap();
+    let discarded: Uuid = tx
+        .query_one(
+            "INSERT INTO mimir_experiences(id,project,revision) VALUES(gen_random_uuid(),$1,1) RETURNING id",
+            &[&project],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 0);
+    tx.rollback().await.unwrap();
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 0);
+    assert!(!writer
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM mimir_experiences WHERE id=$1)",
+            &[&discarded]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0));
+
+    let tx = writer.transaction().await.unwrap();
+    let id: Uuid = tx
+        .query_one(
+            "INSERT INTO mimir_experiences(id,project,revision) VALUES(gen_random_uuid(),$1,1) RETURNING id",
+            &[&project],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 0);
+    tx.commit().await.unwrap();
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 1);
+    assert!(writer
+        .query_one("SELECT EXISTS(SELECT 1 FROM mimir_experiences WHERE id=$1 AND reviewed_revision<revision)", &[&id])
+        .await.unwrap().get::<_, bool>(0));
+
+    for (statement, expected) in [
+        ("UPDATE mimir_experiences SET revision=2 WHERE id=$1", 1),
+        (
+            "UPDATE mimir_experiences SET revision=revision WHERE id=$1",
+            0,
+        ),
+        (
+            "UPDATE mimir_experiences SET updated_at=clock_timestamp() WHERE id=$1",
+            0,
+        ),
+        (
+            "UPDATE mimir_experiences SET review_revision=1 WHERE id=$1",
+            0,
+        ),
+        (
+            "UPDATE mimir_experiences SET reviewed_revision=2 WHERE id=$1",
+            0,
+        ),
+        (
+            "UPDATE mimir_experiences SET reviewed_revision=1 WHERE id=$1",
+            1,
+        ),
+    ] {
+        writer.execute(statement, &[&id]).await.unwrap();
+        assert_eq!(
+            signals_before_barrier(&listener, &mut received).await,
+            expected,
+            "{statement}"
+        );
+    }
+    writer
+        .execute(
+            "UPDATE mimir_experiences SET project=project || '-changed' WHERE id=$1",
+            &[&id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 1);
+
+    // Notifications are hints, not a count of net changes. A transaction can
+    // stage a real source change and restore it before committing.
+    let tx = writer.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE mimir_experiences SET revision=3 WHERE id=$1",
+        &[&id],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "UPDATE mimir_experiences SET revision=2 WHERE id=$1",
+        &[&id],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 1);
+
+    let tx = writer.transaction().await.unwrap();
+    tx.execute(
+        "UPDATE mimir_experiences SET revision=3 WHERE id=$1",
+        &[&id],
+    )
+    .await
+    .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 0);
+
+    writer
+        .execute("DELETE FROM mimir_experiences WHERE id=$1", &[&id])
+        .await
+        .unwrap();
+    let completed: Uuid = writer.query_one("INSERT INTO mimir_experiences(id,project,revision,reviewed_revision) VALUES(gen_random_uuid(),$1,1,1) RETURNING id", &[&project]).await.unwrap().get(0);
+    assert_eq!(signals_before_barrier(&listener, &mut received).await, 0);
+    writer
+        .execute("DELETE FROM mimir_experiences WHERE id=$1", &[&completed])
+        .await
+        .unwrap();
+    drop(listener);
+    reader.await.unwrap();
+}
+
 #[tokio::test]
 async fn sql_pages_cover_large_filtered_corpus_without_a_total_cutoff() {
     let _page_guard = PAGE_TEST_LOCK.lock().await;
@@ -51,16 +393,15 @@ async fn sql_pages_cover_large_filtered_corpus_without_a_total_cutoff() {
     let project = format!("paging-{}", Uuid::new_v4());
     let mut expected = std::collections::HashSet::new();
     for n in 0..207 {
-        let b = svc
-            .add_belief_in_project(
-                &format!("{n}: {}", "long evidence ".repeat(300)),
-                0.5,
-                0.1,
-                &project,
-                MemoryType::Fact,
-            )
-            .await
-            .unwrap();
+        let b = isolation::seed_belief_in_project(
+            &format!("{n}: {}", "long evidence ".repeat(300)),
+            0.5,
+            0.1,
+            &project,
+            MemoryType::Fact,
+        )
+        .await
+        .unwrap();
         expected.insert(b.id.to_string());
     }
     let mut seen = std::collections::HashSet::new();
@@ -87,10 +428,11 @@ async fn sql_pages_cover_large_filtered_corpus_without_a_total_cutoff() {
         }
     }
     assert!(expected.is_subset(&seen)); // Global beliefs may also be visible.
-    assert!(svc
+    let larger = svc
         .list_beliefs_page(Some(&project), None, 11, 0)
         .await
-        .is_err());
+        .unwrap();
+    assert_eq!(larger["beliefs"].as_array().unwrap().len(), 11);
     let empty = svc
         .list_beliefs_page(Some(&project), None, 10, 100_000)
         .await
@@ -106,22 +448,31 @@ async fn sql_pager_handles_single_last_and_global_project_visibility() {
     let svc = service().await;
     let project = format!("paging-{}", Uuid::new_v4());
     let foreign = format!("paging-{}", Uuid::new_v4());
-    let global = svc
-        .add_belief("pager global marker", 0.5, 0.0, MemoryType::Fact)
+    let global = isolation::seed_belief("pager global marker", 0.5, 0.0, MemoryType::Fact)
         .await
         .unwrap();
-    let a = svc
-        .add_belief_in_project("pager local first", 0.5, 0.0, &project, MemoryType::Fact)
-        .await
-        .unwrap();
-    let b = svc
-        .add_belief_in_project("pager local second", 0.5, 0.0, &project, MemoryType::Fact)
-        .await
-        .unwrap();
-    let outside = svc
-        .add_belief_in_project("pager foreign", 0.5, 0.0, &foreign, MemoryType::Fact)
-        .await
-        .unwrap();
+    let a = isolation::seed_belief_in_project(
+        "pager local first",
+        0.5,
+        0.0,
+        &project,
+        MemoryType::Fact,
+    )
+    .await
+    .unwrap();
+    let b = isolation::seed_belief_in_project(
+        "pager local second",
+        0.5,
+        0.0,
+        &project,
+        MemoryType::Fact,
+    )
+    .await
+    .unwrap();
+    let outside =
+        isolation::seed_belief_in_project("pager foreign", 0.5, 0.0, &foreign, MemoryType::Fact)
+            .await
+            .unwrap();
 
     let mut offset = 0;
     let mut seen = Vec::new();
@@ -164,14 +515,20 @@ async fn sql_pager_handles_single_last_and_global_project_visibility() {
         .list_beliefs_page(Some(&project), None, 0, 0)
         .await
         .is_err());
-    assert!(svc
+    let larger = svc
         .list_beliefs_page(Some(&project), None, 11, 0)
         .await
-        .is_err());
-    assert!(svc
+        .unwrap();
+    assert_eq!(
+        larger["beliefs"].as_array().unwrap().len(),
+        (larger["total"].as_u64().unwrap() as usize).min(11)
+    );
+    let beyond = svc
         .list_beliefs_page(Some(&project), None, 1, usize::MAX)
         .await
-        .is_err());
+        .unwrap();
+    assert!(beyond["beliefs"].as_array().unwrap().is_empty());
+    assert!(beyond["next_offset"].is_null());
     svc.delete_project(&project).await.unwrap();
     svc.delete_project(&foreign).await.unwrap();
     svc.delete_belief(global.id).await.unwrap();
@@ -197,8 +554,8 @@ fn review(e: &Experience) -> Review {
 #[tokio::test]
 async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
     use mimir_core::assessment::{Assessment, Axis, ItemKind, LearningItem, Prediction};
-    let svc = service().await;
     let project = format!("assessment-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let mut e = experience(&project);
     e.learning_items.push(LearningItem {
         id: None,
@@ -264,7 +621,11 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
     assert!((score["scores"]["correctness"].as_f64().unwrap() - 2. / 3.).abs() < 1e-12);
     assert_eq!(score["scores"]["usefulness"], 0.5);
     let retrieved = svc
-        .query_learning_context("30 minutes fixed scope", &project, 5)
+        .query_learning_context(
+            "30 minutes fixed scope",
+            &project,
+            std::num::NonZeroUsize::new(5),
+        )
         .await
         .unwrap();
     assert!(retrieved
@@ -289,7 +650,7 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
             .unwrap()
             .probability
             .value(),
-        0.5
+        2.0 / 3.0 // the indexed document remains independent of the assessment
     );
     assert!(svc
         .lesson_assessment("foreign", id, "fixed-scope-v1", "benefit-v1")
@@ -308,13 +669,27 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
     assert_eq!(corrected["scores"]["usefulness"], -0.25);
     assert_eq!(corrected["scores"]["incidents"], 1);
     let page = svc
-        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 0, 1)
+        .lesson_assessment_history(
+            &project,
+            id,
+            "fixed-scope-v1",
+            "benefit-v1",
+            0,
+            std::num::NonZeroUsize::new(1),
+        )
         .await
         .unwrap();
     assert_eq!(page["entries"][0]["active"], false);
     assert_eq!(page["next_offset"], 1);
     let page = svc
-        .lesson_assessment_history(&project, id, "fixed-scope-v1", "benefit-v1", 1, 1)
+        .lesson_assessment_history(
+            &project,
+            id,
+            "fixed-scope-v1",
+            "benefit-v1",
+            1,
+            std::num::NonZeroUsize::new(1),
+        )
         .await
         .unwrap();
     assert_eq!(page["entries"][0]["active"], true);
@@ -403,19 +778,18 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
 /// applies; it is not a claim about an LLM's later behavior.
 #[tokio::test]
 async fn offline_learning_scenario_matrix() {
-    let svc = service().await;
     let project = format!("learning-scenarios-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let foreign = format!("learning-scenarios-{}", Uuid::new_v4());
-    let foreign_belief = svc
-        .add_belief_in_project(
-            "foreign keyboard claim",
-            0.5,
-            0.0,
-            &foreign,
-            MemoryType::Fact,
-        )
-        .await
-        .unwrap();
+    let foreign_belief = isolation::seed_belief_in_project(
+        "foreign keyboard claim",
+        0.5,
+        0.0,
+        &foreign,
+        MemoryType::Fact,
+    )
+    .await
+    .unwrap();
     let lesson = "For a stale keyboard indicator, restart the layout process after checking its loaded configuration";
     let capture =
         |tag: &str, outcome: Outcome, source: ObservationSource, evidence: &str| Experience {
@@ -493,7 +867,11 @@ async fn offline_learning_scenario_matrix() {
     // review state is handed to the chooser.
     let later_session = service().await;
     let retrieved = later_session
-        .query_learning_context("stale keyboard indicator", &project, 20)
+        .query_learning_context(
+            "stale keyboard indicator",
+            &project,
+            std::num::NonZeroUsize::new(20),
+        )
         .await
         .unwrap();
     let retrieved_lesson = retrieved.beliefs.iter().any(|b| b.id == success_id);
@@ -513,7 +891,11 @@ async fn offline_learning_scenario_matrix() {
         "restart layout process"
     );
     let unrelated = later_session
-        .query_learning_context("disk quota exceeded", &project, 20)
+        .query_learning_context(
+            "disk quota exceeded",
+            &project,
+            std::num::NonZeroUsize::new(20),
+        )
         .await
         .unwrap();
     let unrelated_retrieved_lesson = unrelated.beliefs.iter().any(|b| b.id == success_id);
@@ -555,7 +937,7 @@ async fn offline_learning_scenario_matrix() {
         let belief = svc.get_belief(id).await.unwrap().unwrap();
         match verdict {
             Some(Verdict::Defeat) => assert!(belief.beta > belief.alpha),
-            None => assert_eq!((belief.alpha, belief.beta), (1.0, 1.0)),
+            None => assert_eq!((belief.alpha, belief.beta), (2.0, 1.0)),
             _ => unreachable!(),
         }
         assert_eq!(
@@ -591,7 +973,7 @@ async fn offline_learning_scenario_matrix() {
         svc.record_experience(&corrected, 1).await.unwrap().revision,
         2
     );
-    assert_eq!(svc.get_belief(id).await.unwrap().unwrap().alpha, 1.0);
+    assert_eq!(svc.get_belief(id).await.unwrap().unwrap().alpha, 2.0);
     assert!(svc.review_experience(&old, 1).await.is_err());
     let mut replacement = review(&corrected);
     replacement.experience_revision = 2;
@@ -649,16 +1031,15 @@ async fn offline_learning_scenario_matrix() {
 async fn standalone_foreground_belief_can_still_double_count_one_incident() {
     let svc = service().await;
     let project = format!("learning-overlap-{}", Uuid::new_v4());
-    let belief = svc
-        .add_belief_in_project(
-            "Restarting the stale keyboard process fixes the indicator",
-            0.7,
-            0.2,
-            &project,
-            MemoryType::Experiential,
-        )
-        .await
-        .unwrap();
+    let belief = isolation::seed_belief_in_project(
+        "Restarting the stale keyboard process fixes the indicator",
+        0.7,
+        0.2,
+        &project,
+        MemoryType::Experiential,
+    )
+    .await
+    .unwrap();
     let mut e = experience(&project);
     e.belief_ids.push(belief.id);
     svc.record_experience(&e, 0).await.unwrap();
@@ -680,7 +1061,10 @@ async fn standalone_foreground_belief_can_still_double_count_one_incident() {
         "review added the same report again"
     );
     assert!(
-        svc.explain_belief(belief.id, 0, 10).await.unwrap()["candidate_provenance"].is_null(),
+        svc.explain_belief(belief.id, 0, std::num::NonZeroUsize::new(10))
+            .await
+            .unwrap()["candidate_provenance"]
+            .is_null(),
         "standalone belief unexpectedly gained incident provenance"
     );
     svc.delete_project(&project).await.unwrap();
@@ -689,26 +1073,24 @@ async fn standalone_foreground_belief_can_still_double_count_one_incident() {
 async fn learning_cycle_retry_revision_causal_projection_and_retraction() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let a = svc
-        .add_belief_in_project(
-            "restart stale process",
-            0.8,
-            0.0,
-            &project,
-            MemoryType::Experiential,
-        )
-        .await
-        .unwrap();
-    let b = svc
-        .add_belief_in_project(
-            "keyboard layout updates",
-            0.3,
-            0.0,
-            &project,
-            MemoryType::Experiential,
-        )
-        .await
-        .unwrap();
+    let a = isolation::seed_belief_in_project(
+        "restart stale process",
+        0.8,
+        0.0,
+        &project,
+        MemoryType::Experiential,
+    )
+    .await
+    .unwrap();
+    let b = isolation::seed_belief_in_project(
+        "keyboard layout updates",
+        0.3,
+        0.0,
+        &project,
+        MemoryType::Experiential,
+    )
+    .await
+    .unwrap();
     let mut e = experience(&project);
     e.belief_ids = vec![a.id, b.id];
     let first = svc.record_experience(&e, 0).await.unwrap();
@@ -731,7 +1113,7 @@ async fn learning_cycle_retry_revision_causal_projection_and_retraction() {
         after.alpha
     );
     assert!(svc
-        .pending_experiences(Some(&project), 10)
+        .pending_experiences(Some(&project), std::num::NonZeroUsize::new(10))
         .await
         .unwrap()
         .is_empty());
@@ -760,7 +1142,7 @@ async fn learning_cycle_retry_revision_causal_projection_and_retraction() {
     assert!(svc.query_intervention(a.id, 1.0).await.unwrap().is_empty());
     assert!((svc.get_belief(b.id).await.unwrap().unwrap().alpha - b.alpha).abs() < 1e-9);
     assert_eq!(
-        svc.pending_experiences(Some(&project), 10)
+        svc.pending_experiences(Some(&project), std::num::NonZeroUsize::new(10))
             .await
             .unwrap()
             .len(),
@@ -775,8 +1157,8 @@ async fn learning_cycle_retry_revision_causal_projection_and_retraction() {
 
 #[tokio::test]
 async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
-    let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let e = experience(&project);
     svc.record_experience(&e, 0).await.unwrap();
     let mut r = review(&e);
@@ -802,7 +1184,7 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
     let first = svc.review_experience(&r, 0).await.unwrap();
     let belief_id = first.candidate_ids["lesson"];
     let pattern_id = first.candidate_ids["procedure"];
-    assert!((svc.get_belief(belief_id).await.unwrap().unwrap().alpha - 4.0).abs() < 1e-9);
+    assert!((svc.get_belief(belief_id).await.unwrap().unwrap().alpha - 5.0).abs() < 1e-9);
     assert_eq!(
         svc.review_experience(&r, 0).await.unwrap().candidate_ids,
         first.candidate_ids
@@ -811,10 +1193,17 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
         svc.review_experience(&r, 1).await.unwrap().review_revision,
         1
     );
-    let candidate = svc.explain_belief(belief_id, 0, 10).await.unwrap();
+    let candidate = svc
+        .explain_belief(belief_id, 0, std::num::NonZeroUsize::new(10))
+        .await
+        .unwrap();
     assert_eq!(candidate["candidate_provenance"]["active"], true);
     let before_use = svc
-        .query_learning_context("keyboard session lifecycle", &project, 10)
+        .query_learning_context(
+            "keyboard session lifecycle",
+            &project,
+            std::num::NonZeroUsize::new(10),
+        )
         .await
         .unwrap();
     let result = before_use
@@ -842,7 +1231,11 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
     use_record.pattern_id = Some(pattern_id);
     svc.record_experience(&use_record, 0).await.unwrap();
     let observed = svc
-        .query_learning_context("keyboard session lifecycle", &project, 10)
+        .query_learning_context(
+            "keyboard session lifecycle",
+            &project,
+            std::num::NonZeroUsize::new(10),
+        )
         .await
         .unwrap();
     let result = observed
@@ -856,13 +1249,20 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
     retract.rationale = "retract interpretation, retain original observation".into();
     svc.review_experience(&retract, 1).await.unwrap();
     let after = svc.get_belief(belief_id).await.unwrap().unwrap();
-    assert!((after.alpha - 1.0).abs() < 1e-9);
+    // Retracting the incident leaves its independently indexed support intact.
+    assert!((after.alpha - 2.0).abs() < 1e-9);
     assert_eq!(
-        svc.explain_belief(belief_id, 0, 10).await.unwrap()["candidate_provenance"]["active"],
+        svc.explain_belief(belief_id, 0, std::num::NonZeroUsize::new(10))
+            .await
+            .unwrap()["candidate_provenance"]["active"],
         false
     );
     let after = svc
-        .query_learning_context("keyboard session lifecycle", &project, 10)
+        .query_learning_context(
+            "keyboard session lifecycle",
+            &project,
+            std::num::NonZeroUsize::new(10),
+        )
         .await
         .unwrap();
     let result = after
@@ -881,9 +1281,42 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
 }
 
 #[tokio::test]
-async fn source_correction_deactivates_candidate_support_without_deleting_identity() {
+async fn complete_candidate_keys_survive_publication_and_exact_retry() {
     let svc = service().await;
+    let project = format!("complete-candidate-key-{}", Uuid::new_v4());
+    let e = experience(&project);
+    svc.record_experience(&e, 0).await.unwrap();
+    let key = "complete-procedure-".repeat(20);
+    let mut r = review(&e);
+    r.candidates = vec![Candidate::Pattern {
+        key: key.clone(),
+        situation: "preserve the full caller key".into(),
+        approach: "publish once and recover the original identity".into(),
+    }];
+    let original = svc.review_experience(&r, 0).await.unwrap();
+    assert!(original.candidate_ids.contains_key(&key));
+    assert_eq!(
+        svc.review_experience(&r, 0).await.unwrap().candidate_ids,
+        original.candidate_ids
+    );
+    r.candidates = vec![Candidate::Pattern {
+        key: String::new(),
+        situation: "missing identity".into(),
+        approach: "must still be refused".into(),
+    }];
+    assert!(r.validate().is_err());
+    let provenance = mimir_core::learning::IndependentProvenance {
+        basis: mimir_core::learning::IndependentBasis::Document,
+        reference: "document-reference/".repeat(200),
+    };
+    provenance.validate().unwrap();
+    svc.delete_project(&project).await.unwrap();
+}
+
+#[tokio::test]
+async fn source_correction_deactivates_candidate_support_without_deleting_identity() {
     let project = format!("learning-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let mut e = experience(&project);
     svc.record_experience(&e, 0).await.unwrap();
     let mut r = review(&e);
@@ -901,7 +1334,7 @@ async fn source_correction_deactivates_candidate_support_without_deleting_identi
     });
     let reviewed = svc.review_experience(&r, 0).await.unwrap();
     let id = reviewed.candidate_ids["hypothesis"];
-    assert!((svc.get_belief(id).await.unwrap().unwrap().alpha - 5.0).abs() < 1e-9);
+    assert!((svc.get_belief(id).await.unwrap().unwrap().alpha - 6.0).abs() < 1e-9);
     e.outcome = Outcome::Failure;
     e.evidence = vec!["corrected external result".into()];
     svc.record_experience(&e, 1).await.unwrap();
@@ -913,9 +1346,11 @@ async fn source_correction_deactivates_candidate_support_without_deleting_identi
             .reviewed_revision,
         1
     );
-    assert!((svc.get_belief(id).await.unwrap().unwrap().alpha - 1.0).abs() < 1e-9);
+    assert!((svc.get_belief(id).await.unwrap().unwrap().alpha - 2.0).abs() < 1e-9);
     assert_eq!(
-        svc.explain_belief(id, 0, 10).await.unwrap()["candidate_provenance"]["active"],
+        svc.explain_belief(id, 0, std::num::NonZeroUsize::new(10))
+            .await
+            .unwrap()["candidate_provenance"]["active"],
         false
     );
     assert!(
@@ -928,8 +1363,8 @@ async fn source_correction_deactivates_candidate_support_without_deleting_identi
 
 #[tokio::test]
 async fn rejected_candidate_review_rolls_back_node_and_acknowledgement() {
-    let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let e = experience(&project);
     svc.record_experience(&e, 0).await.unwrap();
     let mut r = review(&e);
@@ -989,12 +1424,12 @@ async fn rejected_candidate_review_rolls_back_node_and_acknowledgement() {
 
 #[tokio::test]
 async fn deleting_candidate_recomputes_linked_belief_and_keeps_tombstone() {
-    let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let target = svc
-        .add_belief_in_project("downstream claim", 0.5, 0.0, &project, MemoryType::Fact)
-        .await
-        .unwrap();
+    let svc = grounded_service(&project).await;
+    let target =
+        isolation::seed_belief_in_project("downstream claim", 0.5, 0.0, &project, MemoryType::Fact)
+            .await
+            .unwrap();
     let e = experience(&project);
     svc.record_experience(&e, 0).await.unwrap();
     let mut r = review(&e);
@@ -1025,6 +1460,15 @@ async fn deleting_candidate_recomputes_linked_belief_and_keeps_tombstone() {
     assert!(svc.get_belief(target.id).await.unwrap().unwrap().alpha > target.alpha0);
     assert!(svc.delete_belief(source).await.unwrap());
     assert!((svc.get_belief(target.id).await.unwrap().unwrap().alpha - target.alpha0).abs() < 1e-8);
+    let history = svc.experience_history(e.id).await.unwrap();
+    let replayed = svc.review_experience(&r, 0).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&replayed).unwrap(),
+        serde_json::to_value(&applied).unwrap()
+    );
+    assert!(svc.get_belief(source).await.unwrap().is_none());
+    assert!((svc.get_belief(target.id).await.unwrap().unwrap().alpha - target.alpha0).abs() < 1e-8);
+    assert_eq!(svc.experience_history(e.id).await.unwrap(), history);
     let mut later = r.clone();
     later.rationale = "try to reuse deleted candidate".into();
     assert!(svc.review_experience(&later, 1).await.is_err());
@@ -1056,16 +1500,14 @@ async fn review_recompute_stays_in_project_and_keeps_external_incoming_support()
     let svc = service().await;
     let own = format!("learning-{}", Uuid::new_v4());
     let foreign = format!("learning-{}", Uuid::new_v4());
-    let seed = svc
-        .add_belief_in_project("local seed", 0.5, 0.0, &own, MemoryType::Fact)
+    let seed = isolation::seed_belief_in_project("local seed", 0.5, 0.0, &own, MemoryType::Fact)
         .await
         .unwrap();
-    let foreign_node = svc
-        .add_belief_in_project("foreign bridge", 0.5, 0.0, &foreign, MemoryType::Fact)
-        .await
-        .unwrap();
-    let own_tail = svc
-        .add_belief_in_project("own tail", 0.5, 0.0, &own, MemoryType::Fact)
+    let foreign_node =
+        isolation::seed_belief_in_project("foreign bridge", 0.5, 0.0, &foreign, MemoryType::Fact)
+            .await
+            .unwrap();
+    let own_tail = isolation::seed_belief_in_project("own tail", 0.5, 0.0, &own, MemoryType::Fact)
         .await
         .unwrap();
     svc.add_edge(seed.id, foreign_node.id, EdgeType::Supports, 1.0)
@@ -1106,26 +1548,24 @@ async fn review_recompute_stays_in_project_and_keeps_external_incoming_support()
 async fn grounding_removal_recomputes_without_erasing_independent_support() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let parent = svc
-        .add_belief_in_project(
-            "parent grounding source",
-            0.5,
-            0.0,
-            &project,
-            MemoryType::Fact,
-        )
-        .await
-        .unwrap();
-    let target = svc
-        .add_belief_in_project(
-            "target grounding claim",
-            0.5,
-            0.0,
-            &project,
-            MemoryType::Fact,
-        )
-        .await
-        .unwrap();
+    let parent = isolation::seed_belief_in_project(
+        "parent grounding source",
+        0.5,
+        0.0,
+        &project,
+        MemoryType::Fact,
+    )
+    .await
+    .unwrap();
+    let target = isolation::seed_belief_in_project(
+        "target grounding claim",
+        0.5,
+        0.0,
+        &project,
+        MemoryType::Fact,
+    )
+    .await
+    .unwrap();
     svc.add_edge(parent.id, target.id, EdgeType::Supports, 0.5)
         .await
         .unwrap();
@@ -1142,6 +1582,7 @@ async fn grounding_removal_recomputes_without_erasing_independent_support() {
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     };
     let raw = AgeStore::new(
         db::connect(&config.database).await.unwrap(),
@@ -1166,26 +1607,24 @@ async fn grounding_removal_recomputes_without_erasing_independent_support() {
 async fn supersession_is_reversible_and_feedback_survives_propagation() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let a = svc
-        .add_belief_in_project(
-            "keyboard stale advice",
-            0.99,
-            0.99,
-            &project,
-            MemoryType::Experiential,
-        )
-        .await
-        .unwrap();
-    let b = svc
-        .add_belief_in_project(
-            "keyboard corrected advice",
-            0.8,
-            0.0,
-            &project,
-            MemoryType::Experiential,
-        )
-        .await
-        .unwrap();
+    let a = isolation::seed_belief_in_project(
+        "keyboard stale advice",
+        0.99,
+        0.99,
+        &project,
+        MemoryType::Experiential,
+    )
+    .await
+    .unwrap();
+    let b = isolation::seed_belief_in_project(
+        "keyboard corrected advice",
+        0.8,
+        0.0,
+        &project,
+        MemoryType::Experiential,
+    )
+    .await
+    .unwrap();
     svc.add_edge(b.id, a.id, EdgeType::Supports, 0.2)
         .await
         .unwrap();
@@ -1200,7 +1639,12 @@ async fn supersession_is_reversible_and_feedback_survives_propagation() {
     r.superseded_beliefs.push(a.id);
     svc.review_experience(&r, 0).await.unwrap();
     assert!(!svc
-        .query_relevant("keyboard", 10, Some(&project), None)
+        .query_relevant(
+            "keyboard",
+            std::num::NonZeroUsize::new(10),
+            Some(&project),
+            None
+        )
         .await
         .unwrap()
         .iter()
@@ -1214,7 +1658,12 @@ async fn supersession_is_reversible_and_feedback_survives_propagation() {
     r.rationale = "review was mistaken; retract it".into();
     svc.review_experience(&r, 1).await.unwrap();
     assert!(svc
-        .query_relevant("keyboard", 10, Some(&project), None)
+        .query_relevant(
+            "keyboard",
+            std::num::NonZeroUsize::new(10),
+            Some(&project),
+            None
+        )
         .await
         .unwrap()
         .iter()
@@ -1240,7 +1689,7 @@ async fn scoped_pattern_outcomes_replace_instead_of_accumulate() {
     svc.record_experience(&e, 0).await.unwrap();
     svc.record_experience(&e, 0).await.unwrap();
     let context = svc
-        .query_learning_context("keyboard", &project, 5)
+        .query_learning_context("keyboard", &project, std::num::NonZeroUsize::new(5))
         .await
         .unwrap();
     assert_eq!(context.patterns[0].successes, 1);
@@ -1248,7 +1697,7 @@ async fn scoped_pattern_outcomes_replace_instead_of_accumulate() {
     e.outcome = Outcome::Failure;
     svc.record_experience(&e, 1).await.unwrap();
     let context = svc
-        .query_learning_context("keyboard", &project, 5)
+        .query_learning_context("keyboard", &project, std::num::NonZeroUsize::new(5))
         .await
         .unwrap();
     assert_eq!(context.patterns[0].successes, 0);
@@ -1259,7 +1708,7 @@ async fn scoped_pattern_outcomes_replace_instead_of_accumulate() {
     report.source = ObservationSource::AgentReport;
     svc.record_experience(&report, 0).await.unwrap();
     assert_eq!(
-        svc.query_learning_context("keyboard", &project, 5)
+        svc.query_learning_context("keyboard", &project, std::num::NonZeroUsize::new(5))
             .await
             .unwrap()
             .patterns[0]
@@ -1269,16 +1718,15 @@ async fn scoped_pattern_outcomes_replace_instead_of_accumulate() {
     let mut foreign = experience("another-project");
     foreign.pattern_id = Some(p.id);
     assert!(svc.record_experience(&foreign, 0).await.is_err());
-    let foreign_belief = svc
-        .add_belief_in_project(
-            "other",
-            0.5,
-            0.5,
-            "another-project",
-            MemoryType::Experiential,
-        )
-        .await
-        .unwrap();
+    let foreign_belief = isolation::seed_belief_in_project(
+        "other",
+        0.5,
+        0.5,
+        "another-project",
+        MemoryType::Experiential,
+    )
+    .await
+    .unwrap();
     let mut r = review(&e);
     r.experience_revision = 2;
     r.feedback.push(Feedback {
@@ -1305,14 +1753,14 @@ async fn concurrent_review_conflict_is_atomic_and_keeps_manual_edges() {
     let svc = service().await;
     let other = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let a = svc
-        .add_belief_in_project("cause", 0.8, 0.0, &project, MemoryType::Experiential)
-        .await
-        .unwrap();
-    let b = svc
-        .add_belief_in_project("effect", 0.2, 0.0, &project, MemoryType::Experiential)
-        .await
-        .unwrap();
+    let a =
+        isolation::seed_belief_in_project("cause", 0.8, 0.0, &project, MemoryType::Experiential)
+            .await
+            .unwrap();
+    let b =
+        isolation::seed_belief_in_project("effect", 0.2, 0.0, &project, MemoryType::Experiential)
+            .await
+            .unwrap();
     svc.add_edge(a.id, b.id, EdgeType::Supports, 0.3)
         .await
         .unwrap();
@@ -1359,7 +1807,10 @@ async fn incremental_queue_handles_more_than_two_hundred_experiences() {
     }
     let mut reviewed = 0;
     loop {
-        let batch = svc.pending_experiences(Some(&project), 30).await.unwrap();
+        let batch = svc
+            .pending_experiences(Some(&project), std::num::NonZeroUsize::new(30))
+            .await
+            .unwrap();
         if batch.is_empty() {
             break;
         }
@@ -1379,14 +1830,14 @@ async fn incremental_queue_handles_more_than_two_hundred_experiences() {
 async fn contradiction_review_changes_detection_without_triggering_evidence_propagation() {
     let svc = service().await;
     let project = format!("learning-{}", Uuid::new_v4());
-    let a = svc
-        .add_belief_in_project("claim A", 0.8, 0.1, &project, MemoryType::Experiential)
-        .await
-        .unwrap();
-    let b = svc
-        .add_belief_in_project("claim B", 0.7, 0.1, &project, MemoryType::Experiential)
-        .await
-        .unwrap();
+    let a =
+        isolation::seed_belief_in_project("claim A", 0.8, 0.1, &project, MemoryType::Experiential)
+            .await
+            .unwrap();
+    let b =
+        isolation::seed_belief_in_project("claim B", 0.7, 0.1, &project, MemoryType::Experiential)
+            .await
+            .unwrap();
     // Legacy support insertion deliberately does not trigger propagation.
     svc.add_edge(a.id, b.id, EdgeType::Supports, 1.0)
         .await
@@ -1494,7 +1945,7 @@ async fn source_coverage_is_atomic_revision_owned_and_preserves_unresolved_items
         "unresolved"
     );
     assert!(
-        !svc.pending_experiences(Some(&e.project), 10)
+        !svc.pending_experiences(Some(&e.project), std::num::NonZeroUsize::new(10))
             .await
             .unwrap()
             .iter()
@@ -1595,7 +2046,7 @@ async fn complete_large_source_review_is_stored_and_read_back_without_caps() {
     let receipt = svc.learning_review(e.id).await.unwrap();
     assert_eq!(receipt["review"], serde_json::to_value(&r).unwrap());
     assert!(!svc
-        .pending_experiences(Some(&e.project), 101)
+        .pending_experiences(Some(&e.project), std::num::NonZeroUsize::new(101))
         .await
         .unwrap()
         .iter()
@@ -1638,9 +2089,9 @@ fn postgres_item_fixture(project: &str) -> (Experience, Review) {
 
 #[tokio::test]
 async fn postgres_item_ids_isolate_keys_and_keep_concurrent_retries_stable() {
-    let svc = service().await;
-    let other = service().await;
     let project = format!("postgres-items-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
+    let other = grounded_service(&project).await;
     let (e, r) = postgres_item_fixture(&project);
     svc.record_experience(&e, 0).await.unwrap();
     let (a, b) = tokio::join!(svc.review_experience(&r, 0), other.review_experience(&r, 0));
@@ -1691,9 +2142,9 @@ async fn postgres_item_ids_isolate_keys_and_keep_concurrent_retries_stable() {
 
 #[tokio::test]
 async fn postgres_item_ids_roll_back_allocations_and_reject_invented_uuids() {
-    let svc = service().await;
     let client = item_database_client().await;
     let project = format!("postgres-items-{}", Uuid::new_v4());
+    let svc = grounded_service(&project).await;
     let (e, mut r) = postgres_item_fixture(&project);
     svc.record_experience(&e, 0).await.unwrap();
     r.extracted_items[0].statement = "An invented quotation".into();

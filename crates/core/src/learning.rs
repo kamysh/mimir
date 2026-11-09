@@ -1,6 +1,8 @@
 //! Outcome evidence is distinct from an agent's asserted belief confidence.
 //! Reviews interpret observations; success alone never proves a belief true.
 use crate::graph::{Belief, EdgeType, Pattern};
+use crate::interaction::RequestCorrection;
+use crate::validation::{Code, Segment};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -75,7 +77,15 @@ pub struct Experience {
 }
 impl Experience {
     pub fn validate(&self) -> Result<()> {
-        crate::assessment::validate_items(&self.learning_items)?;
+        crate::assessment::validate_items(&self.learning_items).map_err(|error| {
+            crate::interaction::RequestCorrection::prefix(
+                error,
+                &[
+                    crate::validation::Segment::Key("experience".into()),
+                    crate::validation::Segment::Key("learning_items".into()),
+                ],
+            )
+        })?;
         crate::learning_sources::validate_sources(&self.source_records)?;
         ensure!(
             self.source_records.is_empty()
@@ -158,10 +168,7 @@ impl Candidate {
 
     fn validate(&self) -> Result<()> {
         let key = self.key();
-        ensure!(
-            !key.trim().is_empty() && key == key.trim(),
-            "candidate key must be a nonempty trimmed string"
-        );
+        crate::assessment::validate_local_key(key, vec![Segment::Key("key".into())])?;
         match self {
             Self::Belief {
                 content,
@@ -243,7 +250,15 @@ pub struct Review {
 }
 impl Review {
     pub fn validate(&self) -> Result<()> {
-        crate::assessment::validate_items(&self.extracted_items)?;
+        crate::assessment::validate_items(&self.extracted_items).map_err(|error| {
+            crate::interaction::RequestCorrection::prefix(
+                error,
+                &[
+                    crate::validation::Segment::Key("review".into()),
+                    crate::validation::Segment::Key("extracted_items".into()),
+                ],
+            )
+        })?;
         ensure!(
             self.experience_revision > 0,
             "experience_revision must be positive"
@@ -253,12 +268,22 @@ impl Review {
             "reviewer and rationale are required"
         );
         let mut candidate_keys = std::collections::HashSet::new();
-        for candidate in &self.candidates {
-            candidate.validate()?;
-            ensure!(
-                candidate_keys.insert(candidate.key()),
-                "duplicate candidate key"
-            );
+        for (index, candidate) in self.candidates.iter().enumerate() {
+            candidate.validate().map_err(|error| {
+                RequestCorrection::prefix(
+                    error,
+                    &[
+                        Segment::Key("review".into()),
+                        Segment::Key("candidates".into()),
+                        Segment::Index(index),
+                    ],
+                )
+            })?;
+            if !candidate_keys.insert(candidate.key()) {
+                return Err(RequestCorrection::candidate_declaration(
+                    vec![Segment::Key("review".into()), Segment::Key("candidates".into())], Code::Duplicate,
+                    format!("Duplicate candidate key {:?}: declare each candidate key only once in this review.", candidate.key())).into());
+            }
         }
         let belief_candidates: std::collections::HashSet<&str> = self
             .candidates
@@ -268,81 +293,123 @@ impl Review {
                 Candidate::Pattern { .. } => None,
             })
             .collect();
-        let validate_target = |target: &BeliefTarget| -> Result<()> {
+        let target_path = |collection: &str, index: usize, endpoint: &str| {
+            vec![
+                Segment::Key("review".into()),
+                Segment::Key(collection.into()),
+                Segment::Index(index),
+                Segment::Key(endpoint.into()),
+                Segment::Key("candidate_key".into()),
+            ]
+        };
+        let validate_target = |target: &BeliefTarget, path: Vec<Segment>| -> Result<()> {
             if let BeliefTarget::Candidate { candidate_key } = target {
                 if !belief_candidates.contains(candidate_key.as_str()) {
-                    return Err(crate::validation::Refusal::undeclared_candidate().into());
+                    return Err(RequestCorrection::candidate_target(path,
+                        format!("Candidate belief key {candidate_key:?} must be declared by a belief candidate in this review; a pattern key cannot be used as a belief target.")).into());
                 }
             }
             Ok(())
         };
-        for feedback in &self.candidate_feedback {
+        for (index, feedback) in self.candidate_feedback.iter().enumerate() {
             crate::graph::Probability::new(feedback.weight)?;
-            validate_target(&feedback.target)?;
+            validate_target(
+                &feedback.target,
+                target_path("candidate_feedback", index, "target"),
+            )?;
         }
         let mut assessment_keys = std::collections::HashSet::new();
-        for assessment in &self.assessments {
-            assessment.validate()?;
-            validate_target(&assessment.target)?;
-            ensure!(
-                assessment_keys.insert((
-                    serde_json::to_string(&assessment.target)?,
-                    &assessment.scope,
-                    &assessment.rubric
-                )),
-                "duplicate incident assessment"
-            );
-            ensure!(
-                !self
-                    .candidate_feedback
-                    .iter()
-                    .any(|f| f.target == assessment.target),
-                "typed and legacy feedback overlap"
-            );
-            if let BeliefTarget::Existing { belief_id } = assessment.target {
-                ensure!(
-                    !self.feedback.iter().any(|f| f.belief_id == belief_id)
-                        && !self
-                            .links
-                            .iter()
-                            .any(|l| l.to_id == belief_id || l.from_id == belief_id),
-                    "typed and legacy evidence overlap"
-                );
+        for (index, assessment) in self.assessments.iter().enumerate() {
+            assessment.validate().map_err(|error| {
+                RequestCorrection::prefix(
+                    error,
+                    &[
+                        Segment::Key("review".into()),
+                        Segment::Key("assessments".into()),
+                        Segment::Index(index),
+                    ],
+                )
+            })?;
+            validate_target(
+                &assessment.target,
+                target_path("assessments", index, "target"),
+            )?;
+            let path = vec![
+                Segment::Key("review".into()),
+                Segment::Key("assessments".into()),
+                Segment::Index(index),
+            ];
+            if !assessment_keys.insert((
+                serde_json::to_string(&assessment.target)?,
+                &assessment.scope,
+                &assessment.rubric,
+            )) {
+                return Err(RequestCorrection::review_conflict(path, Code::Duplicate,
+                    format!("Assessment at index {index} repeats the same target, scope and rubric."),
+                    "Submit one assessment for this target, scope and rubric; reconcile the repeated entries against the recorded evidence before resubmitting.").into());
             }
-            ensure!(
-                !self
+            let candidate_overlap = self
+                .candidate_feedback
+                .iter()
+                .any(|f| f.target == assessment.target)
+                || self
                     .candidate_links
                     .iter()
-                    .any(|l| l.from == assessment.target || l.to == assessment.target),
-                "typed and legacy evidence overlap"
-            );
+                    .any(|l| l.from == assessment.target || l.to == assessment.target);
+            let existing_overlap = match assessment.target {
+                BeliefTarget::Existing { belief_id } => {
+                    self.feedback.iter().any(|f| f.belief_id == belief_id)
+                        || self
+                            .links
+                            .iter()
+                            .any(|l| l.to_id == belief_id || l.from_id == belief_id)
+                }
+                _ => false,
+            };
+            if candidate_overlap || existing_overlap {
+                return Err(RequestCorrection::review_conflict(path, Code::UnsupportedCombination,
+                    format!("Assessment at index {index} targets a belief also named in feedback, candidate_feedback, links or candidate_links. This would count the same incident through both contribution formats."),
+                    "Choose one contribution format for this target: keep its typed assessments and remove the overlapping legacy entries, or revise the review to use only the intended legacy contributions for that target. Preserve the evidence and explain the chosen interpretation.").into());
+            }
         }
-        for link in &self.candidate_links {
+        for (index, link) in self.candidate_links.iter().enumerate() {
             crate::graph::Probability::new(link.weight)?;
-            validate_target(&link.from)?;
-            validate_target(&link.to)?;
+            validate_target(&link.from, target_path("candidate_links", index, "from"))?;
+            validate_target(&link.to, target_path("candidate_links", index, "to"))?;
         }
         let mut link_keys = std::collections::HashSet::new();
-        for link in &self.links {
+        for (index, link) in self.links.iter().enumerate() {
             crate::graph::Probability::new(link.weight)?;
-            ensure!(link.from_id != link.to_id, "self links are not permitted");
+            let path = vec![
+                Segment::Key("review".into()),
+                Segment::Key("links".into()),
+                Segment::Index(index),
+            ];
+            if link.from_id == link.to_id {
+                return Err(RequestCorrection::review_conflict(path, Code::UnsupportedCombination,
+                    format!("Relationship at index {index} points from belief {} back to itself.", link.from_id),
+                    "Use two distinct beliefs returned by list_beliefs, or omit the relationship if no relationship between different beliefs was intended.").into());
+            }
             let (a, b) = if link.relation == EdgeType::Contradicts && link.from_id > link.to_id {
                 (link.to_id, link.from_id)
             } else {
                 (link.from_id, link.to_id)
             };
-            ensure!(
-                link_keys.insert((a, b, link.relation.as_str())),
-                "duplicate relationship"
-            );
+            if !link_keys.insert((a, b, link.relation.as_str())) {
+                return Err(RequestCorrection::review_conflict(path, Code::Duplicate,
+                    format!("Relationship at index {index} repeats {} between beliefs {a} and {b}; reversing a contradiction does not make another relationship.", link.relation.as_str()),
+                    "Submit each relationship once. Reconcile its repeated weights against the evidence; do not count a reversed contradiction twice.").into());
+            }
         }
         let mut seen = std::collections::HashSet::new();
-        for f in &self.feedback {
+        for (index, f) in self.feedback.iter().enumerate() {
             crate::graph::Probability::new(f.weight)?;
-            ensure!(
-                seen.insert(f.belief_id),
-                "one assessment per belief per experience"
-            );
+            if !seen.insert(f.belief_id) {
+                return Err(RequestCorrection::review_conflict(
+                    vec![Segment::Key("review".into()), Segment::Key("feedback".into()), Segment::Index(index)], Code::Duplicate,
+                    format!("Feedback at index {index} repeats belief {}; one incident cannot supply multiple legacy feedback entries for that belief.", f.belief_id),
+                    "Submit one feedback entry for this belief. Reconcile its verdict and weight against the recorded evidence before resubmitting.").into());
+            }
         }
         Ok(())
     }
@@ -408,7 +475,7 @@ impl crate::MimirService {
         scope: &str,
         rubric: &str,
         offset: usize,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<serde_json::Value> {
         self.store
             .lesson_assessment_history(project, belief_id, scope, rubric, offset, limit)
@@ -428,8 +495,40 @@ impl crate::MimirService {
         review: &Review,
         expected_review_revision: i64,
     ) -> Result<ExperienceState> {
+        let Some((project, candidates)) = self
+            .store
+            .review_preparation_candidates(review, expected_review_revision)
+            .await?
+        else {
+            // The transaction reconstructs the original answer without
+            // contacting an embedding backend on an exact replay.
+            return self
+                .store
+                .review_experience(review, expected_review_revision)
+                .await;
+        };
+        let mut prepared = std::collections::HashMap::new();
+        for (index, candidate) in candidates {
+            if let Candidate::Belief {
+                key,
+                content,
+                memory_type,
+            } = candidate
+            {
+                let value = self
+                    .prepare_belief(&content, 0.5, 0.0, Some(&project), memory_type, None)
+                    .await
+                    .map_err(|error| {
+                        match error.downcast_ref::<crate::preparation::PreparationRequired>() {
+                            Some(decision) => decision.for_review_candidate(index, &key).into(),
+                            None => error,
+                        }
+                    })?;
+                prepared.insert(key, value);
+            }
+        }
         self.store
-            .review_experience(review, expected_review_revision)
+            .review_experience_prepared(review, expected_review_revision, &prepared)
             .await
     }
     pub async fn get_experience(&self, id: Uuid) -> Result<Option<ExperienceState>> {
@@ -444,14 +543,16 @@ impl crate::MimirService {
     pub async fn pending_experiences(
         &self,
         project: Option<&str>,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<Vec<ExperienceState>> {
-        self.store.list_experiences(project, true, limit).await
+        self.store
+            .list_experiences_excluding(project, true, limit, &[])
+            .await
     }
     pub async fn pending_experiences_excluding(
         &self,
         project: Option<&str>,
-        limit: usize,
+        limit: crate::Selection,
         excluded: &[Uuid],
     ) -> Result<Vec<ExperienceState>> {
         self.store
@@ -477,20 +578,43 @@ impl crate::MimirService {
         &self,
         context: &str,
         project: &str,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<LearningContext> {
-        ensure!(limit > 0, "limit must be positive");
+        self.learning_context_after_beliefs(context, project, limit, || async { Ok(()) })
+            .await
+    }
+
+    pub(crate) async fn learning_context_after_beliefs<F, W>(
+        &self,
+        context: &str,
+        project: &str,
+        limit: crate::Selection,
+        after_beliefs: F,
+    ) -> Result<LearningContext>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
         ensure!(!project.trim().is_empty(), "project must be explicit");
+        let mut client = self.store.snapshot_connection().await;
+        let tx = crate::store::snapshot_transaction(&mut client).await?;
         let beliefs = self
-            .query_relevant(context, limit, Some(project), None)
+            .relevant_on(tx.client(), context, limit, Some(project), None, || async {
+                Ok(())
+            })
             .await?;
+        after_beliefs().await?;
         let terms: std::collections::HashSet<_> = context
             .split(|c: char| !c.is_alphanumeric())
             .filter(|t| !t.is_empty())
             .map(str::to_lowercase)
             .collect();
         let mut ranked = Vec::new();
-        for pattern in self.list_patterns(Some(project)).await? {
+        for pattern in self
+            .store
+            .patterns_by_project_on(tx.client(), project)
+            .await?
+        {
             let tokens: std::collections::HashSet<_> = pattern
                 .situation
                 .split(|c: char| !c.is_alphanumeric())
@@ -499,7 +623,10 @@ impl crate::MimirService {
                 .collect();
             let hits = terms.intersection(&tokens).count();
             if hits > 0 {
-                let result = self.store.pattern_outcomes(pattern, project).await?;
+                let result = self
+                    .store
+                    .pattern_outcomes_on(tx.client(), pattern, project)
+                    .await?;
                 ranked.push((hits, result));
             }
         }
@@ -513,14 +640,23 @@ impl crate::MimirService {
         });
         let (assessments, assessments_truncated) = self
             .store
-            .assessments_for_beliefs(project, &beliefs.iter().map(|b| b.id).collect::<Vec<_>>())
+            .assessments_for_beliefs_on(
+                tx.client(),
+                project,
+                &beliefs.iter().map(|b| b.id).collect::<Vec<_>>(),
+            )
             .await?;
-        Ok(LearningContext {
+        if let Some(count) = limit {
+            ranked.truncate(count.get());
+        }
+        let result = LearningContext {
             beliefs,
-            patterns: ranked.into_iter().take(limit).map(|(_, p)| p).collect(),
+            patterns: ranked.into_iter().map(|(_, p)| p).collect(),
             assessments,
             assessments_truncated,
-        })
+        };
+        tx.commit().await?;
+        Ok(result)
     }
 }
 
@@ -531,22 +667,9 @@ impl crate::MimirService {
         &self,
         id: Uuid,
         offset: usize,
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<serde_json::Value> {
-        let belief = self
-            .get_belief(id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("belief not found"))?;
-        let incoming = self.store.get_incoming_edges(&[id]).await?;
-        let parents: Vec<_> = incoming.iter().map(|(from,to,relation,weight,mean)|serde_json::json!({
-            "from_id":from,"to_id":to,"relation":relation,"weight":weight.value(),"source_probability":mean
-        })).collect();
-        let reviews = self.store.reviews_for_belief(id, offset, limit).await?;
-        let candidate_provenance = self.store.candidate_provenance(id).await?;
-        let independent_provenance = self.store.independent_provenance(id).await?;
-        Ok(
-            serde_json::json!({"belief":belief,"incoming_edges":parents,"learning":reviews,"candidate_provenance":candidate_provenance,"independent_provenance":independent_provenance}),
-        )
+        self.store.explain_belief_snapshot(id, offset, limit).await
     }
 }
 
@@ -577,23 +700,34 @@ mod review_validation_tests {
             extracted_items: vec![],
             source_coverage: vec![],
         };
-        let undeclared = "candidate belief reference must be declared in this review";
-        assert!(review
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains(undeclared));
+        fn missing_target(review: &Review, collection: &str, endpoint: &str) {
+            let error = review.validate().unwrap_err();
+            let correction = error
+                .downcast_ref::<RequestCorrection>()
+                .expect("request correction");
+            let issue = &correction.correction().issues()[0];
+            assert_eq!(issue.fault().code, Code::MissingReference);
+            assert_eq!(
+                issue.fault().path,
+                vec![
+                    Segment::Key("review".into()),
+                    Segment::Key(collection.into()),
+                    Segment::Index(0),
+                    Segment::Key(endpoint.into()),
+                    Segment::Key("candidate_key".into())
+                ]
+            );
+            assert!(issue.expected().contains("belief candidate"));
+            assert!(issue.suggested_correction().contains("list_beliefs"));
+        }
+        missing_target(&review, "candidate_feedback", "target");
 
         review.candidates.push(Candidate::Pattern {
             key: "claim".into(),
             situation: "situation".into(),
             approach: "approach".into(),
         });
-        assert!(review
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains(undeclared));
+        missing_target(&review, "candidate_feedback", "target");
 
         review.candidates[0] = Candidate::Belief {
             key: "claim".into(),
@@ -613,11 +747,7 @@ mod review_validation_tests {
             relation: EdgeType::Supports,
             weight: 0.7,
         });
-        assert!(review
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains(undeclared));
+        missing_target(&review, "candidate_links", "to");
         review.candidate_links[0].to = BeliefTarget::Candidate {
             candidate_key: "claim".into(),
         };

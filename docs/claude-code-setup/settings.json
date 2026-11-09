@@ -5,8 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat \"$HOME/.claude/mimir-reminder.md\"",
-            "timeout": 5
+            "command": "cat \"$HOME/.claude/mimir-reminder.md\""
           }
         ]
       }

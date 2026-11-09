@@ -1,6 +1,7 @@
 {-# OPTIONS --safe #-}
 -- LF framing as an open state machine. Any number of bytes can precede LF;
--- EOF without LF is an error, and diagnostic capture remains bounded elsewhere.
+-- EOF without LF ends the protocol. Owned cleanup and joining the stderr
+-- reader, rather than elapsed time, establish when diagnostics are available.
 module Mimir.McpClientLine where
 
 open import Data.List using (List; []; _∷_; _++_)
@@ -8,8 +9,9 @@ open import Data.List.Relation.Unary.All using (All; []; _∷_)
 import Data.List.Relation.Unary.All.Properties as All
 open import Data.Fin using (toℕ)
 open import Data.Nat using (_≟_)
-open import Data.Product using (Σ; _,_)
+open import Data.Product using (Σ; _,_; _×_)
 open import Data.Unit using (⊤; tt)
+open import Mimir.Text using (Text)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Bits using (Byte)
@@ -20,16 +22,20 @@ data ByteReply : Set where
   byteRead : Byte → ByteReply
   ioEnded : ByteReply
 
+record Capture : Set where
+  constructor capture
+  field bytes : List Byte; issues : List Text
+
 data Effect : Set where
-  readByte settleStderr snapshotStderr : Effect
+  readByte stopAndReapChild joinStderr : Effect
 
 Reply : Effect → Set
 Reply readByte = ByteReply
-Reply settleStderr = ⊤
-Reply snapshotStderr = List Byte
+Reply stopAndReapChild = List Text
+Reply joinStderr = Capture
 module E = Effects.Protocol Effect Reply
 
-data Failure : Set where streamEnded : List Byte → Failure
+data Failure : Set where streamEnded : Capture → Failure
 
 module Framing where
   record Buffer : Set where
@@ -46,7 +52,8 @@ module Framing where
 
   data State : Set where
     reading : Buffer → State
-    settling diagnostic : State
+    settling : State
+    diagnostic : List Text → State
     finished : Outcome → State
 
   data Step : Set where
@@ -61,8 +68,9 @@ module Framing where
 
   next : State → Step
   next (reading accumulated) = external readByte (afterByte accumulated)
-  next settling = external settleStderr (λ _ → diagnostic)
-  next diagnostic = external snapshotStderr (λ bytes → finished (failed (streamEnded bytes)))
+  next settling = external stopAndReapChild diagnostic
+  next (diagnostic cleanup) = external joinStderr (λ captured →
+    finished (failed (streamEnded (capture (Capture.bytes captured) (cleanup ++ Capture.issues captured)))))
   next (finished outcome) = stopped outcome
 
   data Runs : State → List E.Event → Outcome → Set where
@@ -73,6 +81,12 @@ module Framing where
 
   start : State
   start = reading (buffer [] [])
+
+  joinedDiagnosticIsComplete : ∀ cleanup captured final →
+    Runs (diagnostic cleanup) ((joinStderr , captured) ∷ []) (failed (streamEnded final)) →
+    Capture.bytes final ≡ Capture.bytes captured ×
+    Capture.issues final ≡ cleanup ++ Capture.issues captured
+  joinedDiagnosticIsComplete cleanup captured final (replied refl .captured (returned ._)) = refl , refl
 
   ordinaryByteContinues : ∀ accumulated byte → Lines.NotLF byte →
     Σ Buffer (λ next → afterByte accumulated (byteRead byte) ≡ reading next)

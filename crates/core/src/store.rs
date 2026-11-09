@@ -1,8 +1,25 @@
 mod conformance;
 mod learning;
+mod operation_plans;
+mod operation_steps;
+mod prepared_belief;
+mod project_deletion;
+mod reservations;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../tests/support/isolation.rs"]
+mod snapshot_test_isolation;
 use anyhow::{bail, Result};
 use chrono::DateTime;
+pub use operation_plans::{
+    CompletedOperation, CompletionDecision, OperationOutcome, OperationPlan, PlanDecision,
+    PlannedStep, RegisteredStep, SelectionWork, Selections,
+};
+pub use operation_steps::{FinalStepWork, StepDecision, StepReceipt, StepWork};
 use pgvector::Vector;
+pub use reservations::{
+    OperationBinding, OperationBindingDecision, OperationBindingRequest, OperationReservation,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -11,6 +28,20 @@ use uuid::Uuid;
 
 use crate::documents::DocumentChunk;
 use crate::graph::{Belief, Edge, EdgeType, MemoryType, Pattern, Probability};
+use crate::EvidenceRef;
+
+#[derive(Debug)]
+pub struct BeliefEmbeddingTargetMissing {
+    pub belief_id: Uuid,
+}
+
+impl std::fmt::Display for BeliefEmbeddingTargetMissing {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Belief {} does not exist; no embedding vector was stored. Read the current beliefs and ask the user whether this work should resume. Do not automatically recreate a deleted belief.", self.belief_id)
+    }
+}
+
+impl std::error::Error for BeliefEmbeddingTargetMissing {}
 
 // The approved READ COMMITTED contract requires the application to select
 // isolation explicitly. Inheriting REPEATABLE READ could freeze a snapshot
@@ -19,6 +50,20 @@ async fn learning_transaction(client: &mut Client) -> Result<tokio_postgres::Tra
     Ok(client
         .build_transaction()
         .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+        .start()
+        .await?)
+}
+
+// Composite read answers must describe one stored state, even while another
+// connection commits changes between their SELECTs. Learning writes retain
+// their separate READ COMMITTED policy above.
+pub(crate) async fn snapshot_transaction(
+    client: &mut Client,
+) -> Result<tokio_postgres::Transaction<'_>> {
+    Ok(client
+        .build_transaction()
+        .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+        .read_only(true)
         .start()
         .await?)
 }
@@ -417,7 +462,50 @@ pub struct AgeStore {
     graph_name: String,
 }
 
+enum VectorTable {
+    Chunks,
+    Beliefs,
+}
+
+fn vector_query(
+    table: VectorTable,
+    selection: crate::Selection,
+    filtered: bool,
+    scored: bool,
+) -> String {
+    let (table, id, stable_ties) = match table {
+        VectorTable::Chunks => ("chunk_embeddings", "chunk_id", false),
+        VectorTable::Beliefs => ("belief_embeddings", "belief_id", true),
+    };
+    let filter = if filtered {
+        format!("WHERE {id} = ANY($2)")
+    } else {
+        String::new()
+    };
+    let score = if scored {
+        ", 1.0 - (embedding <=> $1) AS similarity"
+    } else {
+        ""
+    };
+    let base=format!("SELECT {id}::text{score}, embedding <=> $1 AS selection_distance FROM public.{table} {filter}");
+    let order = if stable_ties {
+        format!("selection_distance, {id}")
+    } else {
+        "selection_distance".into()
+    };
+    match selection {
+        None=>format!("{base} ORDER BY {order}"),
+        Some(count)=>format!("SELECT * FROM (SELECT source.*, row_number() OVER (ORDER BY {order}) AS selection_position FROM ({base}) source) selected WHERE selection_position::numeric <= {}::numeric ORDER BY selection_position",count.get()),
+    }
+}
+
 impl AgeStore {
+    // The response composer holds one read-only transaction under this guard.
+    // Its transaction is dropped on interruption before the guard is released.
+    pub(crate) async fn snapshot_connection(&self) -> tokio::sync::MutexGuard<'_, Client> {
+        self.client.lock().await
+    }
+
     /// Construct a new store. `graph_name` must consist solely of ASCII
     /// alphanumeric characters and underscores — it is interpolated directly
     /// into SQL strings (as the `cypher('{g}', …)` graph-name argument) and
@@ -448,6 +536,22 @@ impl AgeStore {
 
     pub async fn insert_belief_with_provenance(
         &self,
+        belief: &Belief,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+    ) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_belief_on(tx.client(), belief, provenance)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_belief_on(
+        &self,
+        client: &Client,
         belief: &Belief,
         provenance: Option<&crate::learning::IndependentProvenance>,
     ) -> Result<()> {
@@ -509,12 +613,7 @@ impl AgeStore {
             },
         );
 
-        let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
-        age_execute(tx.client(), &stmt, &prepare, &agtype_json).await?;
-        tx.commit().await?;
+        age_execute(client, &stmt, &prepare, &agtype_json).await?;
         Ok(())
     }
 
@@ -554,85 +653,15 @@ $$) AS (ok ag_catalog.agtype)"#
         )
         .await?;
         self.recompute_learning(&tx, None, affected).await?;
+        // Delivered only with the deletion commit. Backfill listeners recheck
+        // their own belief; this hint must not cancel unrelated requests.
+        tx.query(
+            "SELECT pg_notify('mimir_embedding_owners_changed', '')",
+            &[],
+        )
+        .await?;
         tx.commit().await?;
         Ok(true)
-    }
-
-    /// Delete all beliefs (and their edges) tagged with the given project.
-    /// Returns the number of beliefs deleted.
-    pub async fn delete_project(&self, project: &str) -> Result<usize> {
-        let g = &self.graph_name;
-        let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
-
-        // Count first so we can return a meaningful number.
-        // UUID-derived names avoid collision on connection reuse (PREPARE is session-scoped).
-        let stmt_count = format!("age_delproj_count_{}", Uuid::new_v4().simple());
-        let prepare_count = format!(
-            "PREPARE {stmt_count}(agtype) AS SELECT id::text \
-             FROM ag_catalog.cypher('{g}', $$ \
-             MATCH (n:Belief) WHERE n.project = $project RETURN n.id \
-             $$, $1) AS (id agtype)"
-        );
-        let exec_count = format!("EXECUTE {stmt_count}('{}')", sql_esc(&agtype_json));
-
-        let mut connection = self.client.lock().await;
-        let tx = learning_transaction(&mut connection).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
-        let client = tx.client();
-        client.simple_query(&prepare_count).await?;
-        let msgs = client.simple_query(&exec_count).await;
-        let _ = client
-            .simple_query(&format!("DEALLOCATE {stmt_count}"))
-            .await;
-        let msgs = msgs?;
-
-        let count = msgs
-            .iter()
-            .filter(|m| matches!(m, tokio_postgres::SimpleQueryMessage::Row(_)))
-            .count();
-        let ids: Vec<Uuid> = msgs
-            .iter()
-            .filter_map(|m| {
-                if let tokio_postgres::SimpleQueryMessage::Row(row) = m {
-                    row.get(0).and_then(|s| Uuid::parse_str(s).ok())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let stmt_del = format!("age_delproj_del_{}", Uuid::new_v4().simple());
-        let prepare_del = format!(
-            "PREPARE {stmt_del}(agtype) AS SELECT * \
-             FROM ag_catalog.cypher('{g}', $$ \
-             MATCH (n:Belief) WHERE n.project = $project DETACH DELETE n RETURN 1 \
-             $$, $1) AS (ok agtype)"
-        );
-        age_execute(client, &stmt_del, &prepare_del, &agtype_json).await?;
-
-        tx.commit().await?;
-
-        // Preserve separate publication of the pattern deletion while making
-        // both independent graph writers participate in the learning lock.
-        let tx = learning_transaction(&mut connection).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
-        let client = tx.client();
-        // Also purge Pattern nodes tagged with the same project.
-        let stmt_pat = format!("age_delproj_pat_{}", Uuid::new_v4().simple());
-        let prepare_pat = format!(
-            "PREPARE {stmt_pat}(agtype) AS SELECT * \
-             FROM ag_catalog.cypher('{g}', $$ \
-             MATCH (p:Pattern) WHERE p.project = $project DETACH DELETE p RETURN 1 \
-             $$, $1) AS (ok agtype)"
-        );
-        age_execute(client, &stmt_pat, &prepare_pat, &agtype_json).await?;
-
-        tx.commit().await?;
-        drop(connection);
-        self.delete_belief_embeddings(&ids).await?;
-        Ok(count)
     }
 
     pub async fn get_belief(&self, id: Uuid) -> Result<Option<Belief>> {
@@ -640,7 +669,7 @@ $$) AS (ok ag_catalog.agtype)"#
         self.get_belief_on(&client, id).await
     }
 
-    async fn get_belief_on(&self, client: &Client, id: Uuid) -> Result<Option<Belief>> {
+    pub(crate) async fn get_belief_on(&self, client: &Client, id: Uuid) -> Result<Option<Belief>> {
         let g = &self.graph_name;
         let id_str = id.to_string();
         let sql = format!(
@@ -747,7 +776,7 @@ $$) AS (id ag_catalog.agtype)"#
         self.list_beliefs_on(&client).await
     }
 
-    async fn list_beliefs_on(&self, client: &Client) -> Result<Vec<Belief>> {
+    pub(crate) async fn list_beliefs_on(&self, client: &Client) -> Result<Vec<Belief>> {
         let g = &self.graph_name;
         let sql = format!(
             r#"SELECT
@@ -785,7 +814,7 @@ $$) {BELIEF_RETURN_COLUMNS}"#
         self.list_beliefs_by_project_on(&client, project).await
     }
 
-    async fn list_beliefs_by_project_on(
+    pub(crate) async fn list_beliefs_by_project_on(
         &self,
         client: &Client,
         project: &str,
@@ -1077,6 +1106,15 @@ $$) {PATTERN_RETURN_COLUMNS}"#
     /// Like `list_patterns`, but scoped to a project (same `project =
     /// $project OR project IS NULL` semantics as `list_beliefs_by_project`).
     pub async fn list_patterns_by_project(&self, project: &str) -> Result<Vec<Pattern>> {
+        let client = self.client.lock().await;
+        self.patterns_by_project_on(&client, project).await
+    }
+
+    pub(crate) async fn patterns_by_project_on(
+        &self,
+        client: &Client,
+        project: &str,
+    ) -> Result<Vec<Pattern>> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
         let stmt = format!("age_list_patterns_proj_{}", Uuid::new_v4().simple());
@@ -1090,8 +1128,7 @@ $$) {PATTERN_RETURN_COLUMNS}"#
              $$, $1) {PATTERN_RETURN_COLUMNS}"
         );
 
-        let client = self.client.lock().await;
-        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let rows = age_query_rows(client, &stmt, &prepare, &agtype_json).await?;
         let mut patterns = Vec::with_capacity(rows.len());
         for row in &rows {
             patterns.push(pattern_from_simple_row(row)?);
@@ -1114,6 +1151,9 @@ $$) {PATTERN_RETURN_COLUMNS}"#
     }
 
     async fn insert_edge_on(&self, client: &Client, edge: &Edge) -> Result<()> {
+        self.require_belief_on(client, edge.from_id, "from_id")
+            .await?;
+        self.require_belief_on(client, edge.to_id, "to_id").await?;
         let g = &self.graph_name;
         let from_id = edge.from_id.to_string();
         let to_id = edge.to_id.to_string();
@@ -1164,6 +1204,8 @@ $$) AS (weight ag_catalog.agtype)"#
         to_id: Uuid,
         weight: Probability,
     ) -> Result<()> {
+        self.require_belief_on(client, from_id, "id_a").await?;
+        self.require_belief_on(client, to_id, "id_b").await?;
         let g = &self.graph_name;
         let a = from_id.to_string();
         let b = to_id.to_string();
@@ -1195,6 +1237,11 @@ $$) AS (weight ag_catalog.agtype)"#
 
     /// Returns all (from_id, to_id) pairs connected by a CONTRADICTS edge.
     pub async fn get_contradiction_pairs(&self) -> Result<Vec<(Uuid, Uuid)>> {
+        let client = self.client.lock().await;
+        self.get_contradiction_pairs_on(&client).await
+    }
+
+    async fn get_contradiction_pairs_on(&self, client: &Client) -> Result<Vec<(Uuid, Uuid)>> {
         let g = &self.graph_name;
         let sql = format!(
             r#"SELECT from_id::text, to_id::text
@@ -1204,7 +1251,6 @@ FROM ag_catalog.cypher('{g}', $$
 $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
         );
 
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut pairs = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -1222,6 +1268,16 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
         &self,
         project: &str,
     ) -> Result<Vec<(Uuid, Uuid)>> {
+        let client = self.client.lock().await;
+        self.get_contradiction_pairs_by_project_on(&client, project)
+            .await
+    }
+
+    async fn get_contradiction_pairs_by_project_on(
+        &self,
+        client: &Client,
+        project: &str,
+    ) -> Result<Vec<(Uuid, Uuid)>> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
         let stmt = format!("age_contra_pairs_proj_{}", Uuid::new_v4().simple());
@@ -1235,8 +1291,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
              $$, $1) AS (from_id agtype, to_id agtype)"
         );
 
-        let client = self.client.lock().await;
-        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let rows = age_query_rows(client, &stmt, &prepare, &agtype_json).await?;
         let mut pairs = Vec::with_capacity(rows.len());
         for row in &rows {
             let from_raw = row
@@ -1248,6 +1303,48 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
             pairs.push((Uuid::parse_str(from_raw)?, Uuid::parse_str(to_raw)?));
         }
         Ok(pairs)
+    }
+
+    pub(crate) async fn contradictions_snapshot(
+        &self,
+        project: Option<&str>,
+    ) -> Result<(Vec<(Uuid, Uuid)>, Vec<Belief>)> {
+        self.contradictions_after_pairs(project, || async { Ok(()) })
+            .await
+    }
+
+    async fn contradictions_after_pairs<F, W>(
+        &self,
+        project: Option<&str>,
+        after_pairs: F,
+    ) -> Result<(Vec<(Uuid, Uuid)>, Vec<Belief>)>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let pairs = match project {
+            Some(project) => {
+                self.get_contradiction_pairs_by_project_on(tx.client(), project)
+                    .await?
+            }
+            None => self.get_contradiction_pairs_on(tx.client()).await?,
+        };
+        after_pairs().await?;
+        let beliefs = if pairs.is_empty() {
+            Vec::new()
+        } else {
+            match project {
+                Some(project) => {
+                    self.list_beliefs_by_project_on(tx.client(), project)
+                        .await?
+                }
+                None => self.list_beliefs_on(tx.client()).await?,
+            }
+        };
+        tx.commit().await?;
+        Ok((pairs, beliefs))
     }
 
     /// Returns all edges (from_id, to_id, label, weight) between any two beliefs
@@ -1321,7 +1418,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype, label ag_catalog.agt
         self.get_incoming_edges_on(&client, ids).await
     }
 
-    async fn get_incoming_edges_on(
+    pub(crate) async fn get_incoming_edges_on(
         &self,
         client: &Client,
         ids: &[Uuid],
@@ -1539,6 +1636,11 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Return chunk IDs tagged with a project (used by delete_project extension).
     pub async fn get_chunk_ids_by_project(&self, project: &str) -> Result<Vec<Uuid>> {
+        let client = self.client.lock().await;
+        self.chunk_ids_by_project_on(&client, project).await
+    }
+
+    async fn chunk_ids_by_project_on(&self, client: &Client, project: &str) -> Result<Vec<Uuid>> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
         let stmt = format!("age_chunk_ids_by_proj_{}", Uuid::new_v4().simple());
@@ -1549,7 +1651,6 @@ $$) AS (ok ag_catalog.agtype)"#
              $$, $1) AS (id agtype)"
         );
         let exec = format!("EXECUTE {stmt}('{}')", sql_esc(&agtype_json));
-        let client = self.client.lock().await;
         client.simple_query(&prepare).await?;
         let msgs = client.simple_query(&exec).await;
         let _ = client.simple_query(&format!("DEALLOCATE {stmt}")).await;
@@ -1640,40 +1741,36 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Cosine nearest-neighbour search over chunk_embeddings.
     /// If filter_ids is Some, only those chunk IDs are considered.
-    /// limit=0 means no limit.
+    /// Omitted selection returns all matches.
     pub async fn query_chunks_by_vector(
         &self,
         query_vec: &[f32],
-        limit: usize,
+        limit: crate::Selection,
         filter_ids: Option<&[Uuid]>,
     ) -> Result<Vec<Uuid>> {
-        let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
-
         let client = self.client.lock().await;
+        self.chunks_by_vector_on(&client, query_vec, limit, filter_ids)
+            .await
+    }
+
+    async fn chunks_by_vector_on(
+        &self,
+        client: &Client,
+        query_vec: &[f32],
+        limit: crate::Selection,
+        filter_ids: Option<&[Uuid]>,
+    ) -> Result<Vec<Uuid>> {
+        if filter_ids.is_some_and(|ids| ids.is_empty()) {
+            return Ok(Vec::new());
+        }
+        let vector = Vector::from(query_vec.to_vec());
+        let sql = vector_query(VectorTable::Chunks, limit, filter_ids.is_some(), false);
         let rows = match filter_ids {
-            None => {
-                let sql = format!(
-                    "SELECT chunk_id::text FROM public.chunk_embeddings \
-                     ORDER BY embedding <=> $1 {limit_clause}"
-                );
-                client.query(&sql, &[&vec]).await?
-            }
-            Some(ids) => {
-                let sql = format!(
-                    "SELECT chunk_id::text FROM public.chunk_embeddings \
-                     WHERE chunk_id = ANY($2) \
-                     ORDER BY embedding <=> $1 {limit_clause}"
-                );
-                client.query(&sql, &[&vec, &ids]).await?
-            }
+            None => client.query(&sql, &[&vector]).await?,
+            Some(ids) => client.query(&sql, &[&vector, &ids]).await?,
         };
         rows.iter()
-            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("chunk_id"))?))
+            .map(|row| Ok(Uuid::parse_str(row.try_get::<_, &str>(0)?)?))
             .collect()
     }
 
@@ -1681,10 +1778,91 @@ $$) AS (ok ag_catalog.agtype)"#
     // Belief embeddings (vector half of hybrid query_relevant)
     // -----------------------------------------------------------------------
 
-    /// Insert or replace the embedding for a belief.
+    pub(crate) async fn document_query_snapshot(
+        &self,
+        query: &[f32],
+        project: Option<&str>,
+        limit: crate::Selection,
+    ) -> Result<Vec<crate::documents::QueryResult>> {
+        self.document_query_after_first_read(query, project, limit, || async { Ok(()) })
+            .await
+    }
+
+    pub(super) async fn document_query_after_first_read<F, W>(
+        &self,
+        query: &[f32],
+        project: Option<&str>,
+        limit: crate::Selection,
+        after_first_read: F,
+    ) -> Result<Vec<crate::documents::QueryResult>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let (filter_ids, after_selection) = match project {
+            Some(project) => {
+                let ids = self.chunk_ids_by_project_on(tx.client(), project).await?;
+                after_first_read().await?;
+                (Some(ids), None)
+            }
+            None => (None, Some(after_first_read)),
+        };
+        let chunk_ids = self
+            .chunks_by_vector_on(tx.client(), query, limit, filter_ids.as_deref())
+            .await?;
+        if let Some(after_selection) = after_selection {
+            after_selection().await?;
+        }
+        let mut result = Vec::with_capacity(chunk_ids.len());
+        for id in chunk_ids {
+            let Some(chunk) = self.get_chunk_by_id_on(tx.client(), id).await? else {
+                continue;
+            };
+            let parent_content = match chunk.parent_id {
+                None => None,
+                Some(id) => self
+                    .get_chunk_by_id_on(tx.client(), id)
+                    .await?
+                    .map(|parent| parent.content),
+            };
+            result.push(crate::documents::QueryResult {
+                id: chunk.id.to_string(),
+                document_path: chunk.document_path,
+                section_path: chunk.section_path,
+                content: chunk.content,
+                parent_content,
+            });
+        }
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Insert or replace a live belief's vector. The target check and write
+    /// share deletion's lock and transaction, so late results cannot recreate
+    /// vectors after deletion has committed.
     pub async fn insert_belief_embedding(&self, belief_id: Uuid, embedding: &[f32]) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        if self.get_belief_on(tx.client(), belief_id).await?.is_none() {
+            return Err(BeliefEmbeddingTargetMissing { belief_id }.into());
+        }
+        self.insert_belief_embedding_on(tx.client(), belief_id, embedding)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_belief_embedding_on(
+        &self,
+        client: &Client,
+        belief_id: Uuid,
+        embedding: &[f32],
+    ) -> Result<()> {
         let vec = Vector::from(embedding.to_vec());
-        let client = self.client.lock().await;
         client
             .execute(
                 "INSERT INTO public.belief_embeddings (belief_id, embedding) \
@@ -1713,26 +1891,28 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Cosine nearest-neighbour search over belief_embeddings.
     /// Returns belief IDs ordered by ascending cosine distance (most similar first).
-    /// limit=0 means no limit.
+    /// Omitted selection returns all matches.
     pub async fn query_beliefs_by_vector(
         &self,
         query_vec: &[f32],
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<Vec<Uuid>> {
-        let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
-        let sql = format!(
-            "SELECT belief_id::text FROM public.belief_embeddings \
-             ORDER BY embedding <=> $1 {limit_clause}"
-        );
         let client = self.client.lock().await;
-        let rows = client.query(&sql, &[&vec]).await?;
+        self.query_beliefs_by_vector_on(&client, query_vec, limit)
+            .await
+    }
+
+    pub(crate) async fn query_beliefs_by_vector_on(
+        &self,
+        client: &Client,
+        query_vec: &[f32],
+        limit: crate::Selection,
+    ) -> Result<Vec<Uuid>> {
+        let vector = Vector::from(query_vec.to_vec());
+        let sql = vector_query(VectorTable::Beliefs, limit, false, false);
+        let rows = client.query(&sql, &[&vector]).await?;
         rows.iter()
-            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("belief_id"))?))
+            .map(|row| Ok(Uuid::parse_str(row.try_get::<_, &str>(0)?)?))
             .collect()
     }
 
@@ -1744,100 +1924,79 @@ $$) AS (ok ag_catalog.agtype)"#
     pub async fn query_beliefs_by_vector_filtered(
         &self,
         query_vec: &[f32],
-        limit: usize,
+        limit: crate::Selection,
+        filter_ids: &[Uuid],
+    ) -> Result<Vec<Uuid>> {
+        let client = self.client.lock().await;
+        self.query_beliefs_by_vector_filtered_on(&client, query_vec, limit, filter_ids)
+            .await
+    }
+
+    pub(crate) async fn query_beliefs_by_vector_filtered_on(
+        &self,
+        client: &Client,
+        query_vec: &[f32],
+        limit: crate::Selection,
         filter_ids: &[Uuid],
     ) -> Result<Vec<Uuid>> {
         if filter_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
-        let sql = format!(
-            "SELECT belief_id::text FROM public.belief_embeddings \
-             WHERE belief_id = ANY($2) \
-             ORDER BY embedding <=> $1 {limit_clause}"
-        );
-        let client = self.client.lock().await;
-        let rows = client.query(&sql, &[&vec, &filter_ids]).await?;
+        let vector = Vector::from(query_vec.to_vec());
+        let sql = vector_query(VectorTable::Beliefs, limit, true, false);
+        let rows = client.query(&sql, &[&vector, &filter_ids]).await?;
         rows.iter()
-            .map(|r| Ok(Uuid::parse_str(r.get::<_, &str>("belief_id"))?))
+            .map(|row| Ok(Uuid::parse_str(row.try_get::<_, &str>(0)?)?))
             .collect()
     }
 
     /// Cosine nearest-neighbour search over chunk_embeddings, returning (chunk_id, similarity).
     /// similarity = 1.0 - cosine_distance. Results ordered by similarity descending.
-    /// limit=0 means no limit. Used by auto-grounding in insert_belief.
+    /// Omitted selection returns all matches. Used by auto-grounding in insert_belief.
     pub async fn query_chunks_by_vector_scored(
         &self,
         query_vec: &[f32],
-        limit: usize,
+        limit: crate::Selection,
         filter_ids: Option<&[Uuid]>,
     ) -> Result<Vec<(Uuid, f64)>> {
-        let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
+        if filter_ids.is_some_and(|ids| ids.is_empty()) {
+            return Ok(Vec::new());
+        }
+        let vector = Vector::from(query_vec.to_vec());
+        let sql = vector_query(VectorTable::Chunks, limit, filter_ids.is_some(), true);
         let client = self.client.lock().await;
         let rows = match filter_ids {
-            None => {
-                let sql = format!(
-                    "SELECT chunk_id::text, 1.0 - (embedding <=> $1) AS similarity \
-                     FROM public.chunk_embeddings \
-                     ORDER BY embedding <=> $1 {limit_clause}"
-                );
-                client.query(&sql, &[&vec]).await?
-            }
-            Some(ids) => {
-                let sql = format!(
-                    "SELECT chunk_id::text, 1.0 - (embedding <=> $1) AS similarity \
-                     FROM public.chunk_embeddings \
-                     WHERE chunk_id = ANY($2) \
-                     ORDER BY embedding <=> $1 {limit_clause}"
-                );
-                client.query(&sql, &[&vec, &ids]).await?
-            }
+            None => client.query(&sql, &[&vector]).await?,
+            Some(ids) => client.query(&sql, &[&vector, &ids]).await?,
         };
         rows.iter()
-            .map(|r| {
-                let id = Uuid::parse_str(r.get::<_, &str>("chunk_id"))?;
-                let sim: f64 = r.get("similarity");
-                Ok((id, sim))
+            .map(|row| {
+                Ok((
+                    Uuid::parse_str(row.try_get::<_, &str>(0)?)?,
+                    row.try_get::<_, f64>("similarity")?,
+                ))
             })
             .collect()
     }
 
     /// Cosine nearest-neighbour search over belief_embeddings, returning (belief_id, similarity).
     /// similarity = 1.0 - cosine_distance. Results ordered by similarity descending.
-    /// limit=0 means no limit. Used by auto-grounding in load_document.
+    /// Omitted selection returns all matches. Used by auto-grounding in load_document.
     pub async fn query_beliefs_by_vector_scored(
         &self,
         query_vec: &[f32],
-        limit: usize,
+        limit: crate::Selection,
     ) -> Result<Vec<(Uuid, f64)>> {
-        let vec = Vector::from(query_vec.to_vec());
-        let limit_clause = if limit > 0 {
-            format!("LIMIT {limit}")
-        } else {
-            String::new()
-        };
-        let sql = format!(
-            "SELECT belief_id::text, 1.0 - (embedding <=> $1) AS similarity \
-             FROM public.belief_embeddings \
-             ORDER BY embedding <=> $1 {limit_clause}"
-        );
+        let vector = Vector::from(query_vec.to_vec());
+        let sql = vector_query(VectorTable::Beliefs, limit, false, true);
         let client = self.client.lock().await;
-        let rows = client.query(&sql, &[&vec]).await?;
+        let rows = client.query(&sql, &[&vector]).await?;
         rows.iter()
-            .map(|r| {
-                let id = Uuid::parse_str(r.get::<_, &str>("belief_id"))?;
-                let sim: f64 = r.get("similarity");
-                Ok((id, sim))
+            .map(|row| {
+                Ok((
+                    Uuid::parse_str(row.try_get::<_, &str>(0)?)?,
+                    row.try_get::<_, f64>("similarity")?,
+                ))
             })
             .collect()
     }
@@ -1855,6 +2014,15 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Fetch a single DocumentChunk by ID.
     pub async fn get_chunk_by_id(&self, id: Uuid) -> Result<Option<DocumentChunk>> {
+        let client = self.client.lock().await;
+        self.get_chunk_by_id_on(&client, id).await
+    }
+
+    pub(crate) async fn get_chunk_by_id_on(
+        &self,
+        client: &Client,
+        id: Uuid,
+    ) -> Result<Option<DocumentChunk>> {
         let g = &self.graph_name;
         let id_str = id.to_string();
         let sql = format!(
@@ -1870,7 +2038,6 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN c.id, c.documentPath, c.sectionPath, c.content, c.parentId, c.project
 $$) {CHUNK_RETURN_COLUMNS}"#
         );
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(None);
@@ -1900,6 +2067,33 @@ $$) {CHUNK_RETURN_COLUMNS}"#
         belief_id: Uuid,
         weight: Probability,
     ) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_grounding_on(tx.client(), chunk_id, belief_id, weight)
+            .await?;
+        self.recompute_learning(&tx, None, [belief_id].into())
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_grounding_on(
+        &self,
+        client: &Client,
+        chunk_id: Uuid,
+        belief_id: Uuid,
+        weight: Probability,
+    ) -> Result<()> {
+        if self.get_chunk_by_id_on(client, chunk_id).await?.is_none() {
+            return Err(crate::interaction::RequestCorrection::missing_reference(
+                "chunk_id", format!("The requested document passage {chunk_id} is not stored in Mimir."),
+                "Use query_document or list_documents to find the intended indexed passage. If the document is missing, ask the user whether to index it; do not invent a passage ID.",
+            ).into());
+        }
+        self.require_belief_on(client, belief_id, "belief_id")
+            .await?;
         let g = &self.graph_name;
         let c = chunk_id.to_string();
         let b = belief_id.to_string();
@@ -1912,13 +2106,8 @@ $$) {CHUNK_RETURN_COLUMNS}"#
   RETURN r.weight
 $$) AS (weight ag_catalog.agtype)"#
         );
-        let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
-
         // Step 1: create the GROUNDS edge (errors if endpoints missing).
-        let rows = tx.query(&create_sql, &[]).await?;
+        let rows = client.query(&create_sql, &[]).await?;
         if rows.is_empty() {
             bail!(
                 "insert_evidence: chunk or belief not found (chunk={}, belief={})",
@@ -1927,12 +2116,21 @@ $$) AS (weight ag_catalog.agtype)"#
             );
         }
 
-        // Recompute from the fixed prior and every current evidence source.
-        // This also updates descendants within the same transaction.
-        self.recompute_learning(&tx, None, [belief_id].into())
-            .await?;
+        Ok(())
+    }
 
-        tx.commit().await?;
+    pub(crate) async fn require_belief_on(
+        &self,
+        client: &Client,
+        id: Uuid,
+        field: &str,
+    ) -> Result<()> {
+        if self.get_belief_on(client, id).await?.is_none() {
+            return Err(crate::interaction::RequestCorrection::missing_reference(
+                field, format!("The requested belief {id} was not found in Mimir."),
+                "Use list_beliefs or query_relevant_beliefs to find the intended stored belief, then retry with its ID. If the intended record is unknown, ask the user. Do not invent an identifier.",
+            ).into());
+        }
         Ok(())
     }
 
@@ -1945,7 +2143,10 @@ $$) AS (weight ag_catalog.agtype)"#
         self.get_grounding_mass_all_on(&client).await
     }
 
-    async fn get_grounding_mass_all_on(&self, client: &Client) -> Result<HashMap<Uuid, f64>> {
+    pub(crate) async fn get_grounding_mass_all_on(
+        &self,
+        client: &Client,
+    ) -> Result<HashMap<Uuid, f64>> {
         let g = &self.graph_name;
         let sql = format!(
             r#"SELECT belief_id::text, total_weight::text
@@ -1972,6 +2173,18 @@ $$) AS (belief_id ag_catalog.agtype, total_weight ag_catalog.agtype)"#
         if belief_ids.is_empty() {
             return Ok(vec![]);
         }
+        let client = self.client.lock().await;
+        self.get_evidence_for_beliefs_on(&client, belief_ids).await
+    }
+
+    pub(crate) async fn get_evidence_for_beliefs_on(
+        &self,
+        client: &Client,
+        belief_ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, Uuid, f64)>> {
+        if belief_ids.is_empty() {
+            return Ok(vec![]);
+        }
         let g = &self.graph_name;
         let id_list = belief_ids
             .iter()
@@ -1986,7 +2199,6 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN b.id, c.id, r.weight
 $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catalog.agtype)"#
         );
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -1996,6 +2208,51 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
             out.push((belief_id, chunk_id, weight));
         }
         Ok(out)
+    }
+
+    pub(crate) async fn evidence_for_belief_snapshot(
+        &self,
+        belief_id: Uuid,
+        limit: crate::Selection,
+    ) -> Result<Vec<EvidenceRef>> {
+        self.evidence_after_links(belief_id, limit, || async { Ok(()) })
+            .await
+    }
+
+    async fn evidence_after_links<F, W>(
+        &self,
+        belief_id: Uuid,
+        limit: crate::Selection,
+        after_links: F,
+    ) -> Result<Vec<EvidenceRef>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let mut evidence = self
+            .get_evidence_for_beliefs_on(tx.client(), &[belief_id])
+            .await?;
+        evidence.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some(count) = limit {
+            evidence.truncate(count.get());
+        }
+        after_links().await?;
+        let mut result = Vec::with_capacity(evidence.len());
+        for (_, chunk_id, weight) in evidence {
+            if let Some(chunk) = self.get_chunk_by_id_on(tx.client(), chunk_id).await? {
+                result.push(EvidenceRef {
+                    chunk_id,
+                    document_path: chunk.document_path,
+                    section_path: chunk.section_path,
+                    snippet: chunk.content.trim().to_owned(),
+                    weight,
+                });
+            }
+        }
+        tx.commit().await?;
+        Ok(result)
     }
 
     /// Remove a specific GROUNDS edge. (Edges are also GC'd automatically by the
@@ -2063,6 +2320,17 @@ $$) AS (v ag_catalog.agtype)"#
         start_id: Uuid,
         project: &str,
     ) -> Result<Vec<Belief>> {
+        let client = self.client.lock().await;
+        self.direct_downstream_by_project_on(&client, start_id, project)
+            .await
+    }
+
+    pub(crate) async fn direct_downstream_by_project_on(
+        &self,
+        client: &Client,
+        start_id: Uuid,
+        project: &str,
+    ) -> Result<Vec<Belief>> {
         let g = &self.graph_name;
         let id_str = start_id.to_string();
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
@@ -2087,8 +2355,7 @@ $$) AS (v ag_catalog.agtype)"#
              $$, $1) {BELIEF_RETURN_COLUMNS}"
         );
 
-        let client = self.client.lock().await;
-        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
+        let rows = age_query_rows(client, &stmt, &prepare, &agtype_json).await?;
         let mut beliefs = Vec::with_capacity(rows.len());
         for row in &rows {
             beliefs.push(belief_from_simple_row(row)?);
@@ -2119,8 +2386,26 @@ impl AgeStore {
         limit: usize,
         offset: usize,
     ) -> Result<(Vec<Belief>, usize)> {
-        anyhow::ensure!((1..=10).contains(&limit), "limit must be in 1..=10");
-        anyhow::ensure!(offset <= i64::MAX as usize, "offset is too large");
+        self.list_beliefs_page_after_count(project, memory_type, limit, offset, || async { Ok(()) })
+            .await
+    }
+
+    async fn list_beliefs_page_after_count<F, W>(
+        &self,
+        project: Option<&str>,
+        memory_type: Option<MemoryType>,
+        limit: usize,
+        offset: usize,
+        after_count: F,
+    ) -> Result<(Vec<Belief>, usize)>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        anyhow::ensure!(
+            limit > 0,
+            "limit must be positive; omit selection to return all matching beliefs"
+        );
         let mut filters = Vec::new();
         if project.is_some() {
             filters.push("(n.project = $project OR n.project IS NULL)".to_owned());
@@ -2138,22 +2423,1156 @@ impl AgeStore {
         };
         let params = serde_json::json!({"project":project}).to_string();
         let g = &self.graph_name;
-        let client = self.client.lock().await;
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
         let count_stmt = format!("age_page_count_{}", Uuid::new_v4().simple());
         let count_sql = format!("PREPARE {count_stmt}(agtype) AS SELECT total::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN count(n) $$, $1) AS (total ag_catalog.agtype)");
-        let counts = age_query_rows(&client, &count_stmt, &count_sql, &params).await?;
+        let counts = age_query_rows(tx.client(), &count_stmt, &count_sql, &params).await?;
         let total = counts[0]
             .get("total")
             .ok_or_else(|| anyhow::anyhow!("missing count"))?
             .parse()?;
+        after_count().await?;
         let stmt = format!("age_page_{}", Uuid::new_v4().simple());
-        let sql = format!("PREPARE {stmt}(agtype) AS SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project $$,$1) {BELIEF_RETURN_COLUMNS} ORDER BY trim(both '\"' from created_at::text)::timestamptz,id::text LIMIT {limit} OFFSET {offset}");
-        let rows = age_query_rows(&client, &stmt, &sql, &params).await?;
-        Ok((
-            rows.iter()
-                .map(belief_from_simple_row)
-                .collect::<Result<_>>()?,
-            total,
-        ))
+        // Numeric comparisons express the requested slice without forcing a
+        // positive usize selection through PostgreSQL's bigint LIMIT/OFFSET.
+        let sql = format!("PREPARE {stmt}(agtype) AS SELECT * FROM (SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text,row_number() OVER (ORDER BY trim(both '\"' from created_at::text)::timestamptz,id::text) AS page_position FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project $$,$1) {BELIEF_RETURN_COLUMNS}) selected WHERE page_position::numeric > {offset}::numeric AND page_position::numeric <= {offset}::numeric + {limit}::numeric ORDER BY page_position");
+        let rows = age_query_rows(tx.client(), &stmt, &sql, &params).await?;
+        let beliefs = rows
+            .iter()
+            .map(belief_from_simple_row)
+            .collect::<Result<_>>()?;
+        tx.commit().await?;
+        Ok((beliefs, total))
+    }
+}
+
+#[cfg(test)]
+mod snapshot_read_tests {
+    use super::*;
+    use crate::{config::Config, db, MimirService};
+
+    fn config() -> Config {
+        Config {
+            database: snapshot_test_isolation::fixture().database_config(),
+            embeddings: None,
+            llm: None,
+            judge: None,
+            email: None,
+            retirement: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn retrieval_tie_break_ignores_belief_insertion_order() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(
+                setup
+                    .query_one("SELECT gen_random_uuid()", &[])
+                    .await?
+                    .get::<_, Uuid>(0),
+            );
+        }
+        ids.sort();
+        let project = format!("retrieval-ties-{}", ids[0]);
+        let term = format!("tiedbelief{}", ids[0].simple());
+        let mut beliefs = Vec::new();
+        for (index, &id) in ids.iter().enumerate() {
+            let mut belief = Belief::new_in_project(
+                term.clone(),
+                if index == 2 { 0.9 } else { 0.5 },
+                0.2,
+                project.clone(),
+            )?;
+            belief.id = id;
+            beliefs.push(belief);
+        }
+        let checked = async {
+            for order in [[1, 0], [0, 1]] {
+                writer.delete_project(&project).await?;
+                for index in order {
+                    writer.store.insert_belief(&beliefs[index]).await?;
+                }
+                let all = reader
+                    .query_relevant(&term, None, Some(&project), None)
+                    .await?;
+                anyhow::ensure!(all.iter().map(|value| value.id).collect::<Vec<_>>() == ids[..2]);
+                let selected = reader
+                    .query_relevant(&term, std::num::NonZeroUsize::new(1), Some(&project), None)
+                    .await?;
+                anyhow::ensure!(
+                    selected.len() == 1 && selected[0].id == ids[0],
+                    "equal matches must select the lower UUID"
+                );
+                writer.store.insert_belief(&beliefs[2]).await?;
+                let selected = reader
+                    .query_relevant(&term, std::num::NonZeroUsize::new(1), Some(&project), None)
+                    .await?;
+                anyhow::ensure!(
+                    selected.len() == 1 && selected[0].id == ids[2],
+                    "UUID must not override the existing probability key"
+                );
+            }
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retrieval_tie_break_orders_equal_belief_vectors() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(
+                setup
+                    .query_one("SELECT gen_random_uuid()", &[])
+                    .await?
+                    .get::<_, Uuid>(0),
+            );
+        }
+        ids.sort();
+        let project = format!("retrieval-vector-ties-{}", ids[0]);
+        let checked = async {
+            for index in [2, 1, 0] {
+                let mut belief = Belief::new_in_project(
+                    "equal-distance vector".into(),
+                    0.5,
+                    0.2,
+                    project.clone(),
+                )?;
+                belief.id = ids[index];
+                writer.store.insert_belief(&belief).await?;
+                writer
+                    .store
+                    .insert_belief_embedding(
+                        belief.id,
+                        if index == 0 {
+                            &[0.0, 1.0, 0.0]
+                        } else {
+                            &[1.0, 0.0, 0.0]
+                        },
+                    )
+                    .await?;
+            }
+            let expected = vec![ids[1], ids[2], ids[0]];
+            let filtered = writer
+                .store
+                .query_beliefs_by_vector_filtered(&[1.0, 0.0, 0.0], None, &ids)
+                .await?;
+            anyhow::ensure!(
+                filtered == expected,
+                "distance precedes UUID; equal distances use UUID"
+            );
+            let first = writer
+                .store
+                .query_beliefs_by_vector_filtered(
+                    &[1.0, 0.0, 0.0],
+                    std::num::NonZeroUsize::new(1),
+                    &ids,
+                )
+                .await?;
+            anyhow::ensure!(first == vec![ids[1]]);
+            let all = writer
+                .store
+                .query_beliefs_by_vector(&[1.0, 0.0, 0.0], None)
+                .await?;
+            anyhow::ensure!(
+                all.iter()
+                    .copied()
+                    .filter(|id| ids.contains(id))
+                    .collect::<Vec<_>>()
+                    == expected
+            );
+            let first = writer
+                .store
+                .query_beliefs_by_vector(&[1.0, 0.0, 0.0], std::num::NonZeroUsize::new(1))
+                .await?;
+            anyhow::ensure!(first == all[..1]);
+            let scored = writer
+                .store
+                .query_beliefs_by_vector_scored(&[1.0, 0.0, 0.0], None)
+                .await?;
+            anyhow::ensure!(scored.iter().map(|(id, _)| *id).collect::<Vec<_>>() == all);
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retrieval_tie_break_orders_equal_weight_enriched_passages() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(
+                setup
+                    .query_one("SELECT gen_random_uuid()", &[])
+                    .await?
+                    .get::<_, Uuid>(0),
+            );
+        }
+        ids.sort();
+        let project = format!("retrieval-passage-ties-{}", ids[0]);
+        let term = format!("tiedpassage{}", ids[0].simple());
+        let checked = async {
+            let belief = snapshot_test_isolation::seed_belief_in_project(
+                &term,
+                0.5,
+                0.2,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
+            for index in [1, 0] {
+                let chunk = DocumentChunk::with_id(
+                    ids[index],
+                    format!("/mimir-test/{project}.md"),
+                    vec![format!("section {index}")],
+                    format!("complete supporting passage {index}"),
+                    None,
+                    Some(project.clone()),
+                );
+                writer.store.insert_document_chunk(&chunk).await?;
+                writer.add_evidence(belief.id, chunk.id, 0.5).await?;
+            }
+            let all = reader
+                .query_relevant_grounded(&term, None, None, Some(&project))
+                .await?;
+            anyhow::ensure!(
+                all.len() == 1
+                    && all[0]
+                        .evidence
+                        .iter()
+                        .map(|entry| entry.chunk_id)
+                        .collect::<Vec<_>>()
+                        == ids[..2]
+            );
+            let selected = reader
+                .query_relevant_grounded(
+                    &term,
+                    None,
+                    std::num::NonZeroUsize::new(1),
+                    Some(&project),
+                )
+                .await?;
+            anyhow::ensure!(
+                selected[0].evidence.len() == 1 && selected[0].evidence[0].chunk_id == ids[0]
+            );
+            let stronger = DocumentChunk::with_id(
+                ids[2],
+                format!("/mimir-test/{project}.md"),
+                vec!["stronger".into()],
+                "a more strongly weighted passage".into(),
+                None,
+                Some(project.clone()),
+            );
+            writer.store.insert_document_chunk(&stronger).await?;
+            writer.add_evidence(belief.id, stronger.id, 0.9).await?;
+            let selected = reader
+                .query_relevant_grounded(
+                    &term,
+                    None,
+                    std::num::NonZeroUsize::new(1),
+                    Some(&project),
+                )
+                .await?;
+            anyhow::ensure!(
+                selected[0].evidence.len() == 1 && selected[0].evidence[0].chunk_id == ids[2],
+                "UUID must not override a stronger passage"
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn learning_context_snapshot_retains_procedures_outcomes_and_assessments() -> Result<()> {
+        use crate::assessment::{Assessment, Axis};
+        use crate::learning::{
+            BeliefTarget, Candidate, Experience, ObservationSource, Outcome, Review,
+        };
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let id: Uuid = setup
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-learning-context-{id}");
+        let term = format!("contextsnapshot{}", id.simple());
+        let checked = async {
+            let belief = snapshot_test_isolation::seed_belief_in_project(
+                &term,
+                0.5,
+                0.2,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
+            let source = Experience {
+                id,
+                project: project.clone(),
+                context: "source for a procedure".into(),
+                action: "observe support".into(),
+                outcome: Outcome::Success,
+                source: ObservationSource::ToolResult,
+                evidence: vec!["supporting observation".into()],
+                belief_ids: vec![belief.id],
+                pattern_id: None,
+                source_records: vec![],
+                learning_items: vec![],
+            };
+            writer.record_experience(&source, 0).await?;
+            let applied = writer
+                .review_experience(
+                    &Review {
+                        experience_id: id,
+                        experience_revision: 1,
+                        reviewer: "snapshot-test".into(),
+                        rationale: "observed support for this procedure".into(),
+                        feedback: vec![],
+                        links: vec![],
+                        superseded_beliefs: vec![],
+                        candidates: vec![Candidate::Pattern {
+                            key: "procedure".into(),
+                            situation: term.clone(),
+                            approach: "use the observed procedure".into(),
+                        }],
+                        candidate_feedback: vec![],
+                        candidate_links: vec![],
+                        extracted_items: vec![],
+                        source_coverage: vec![],
+                        assessments: vec![Assessment {
+                            target: BeliefTarget::Existing {
+                                belief_id: belief.id,
+                            },
+                            scope: "context-scope".into(),
+                            rubric: "context-rubric".into(),
+                            correctness: Axis {
+                                value: Some(1.0),
+                                weight: 1.0,
+                            },
+                            usefulness: Axis {
+                                value: Some(0.8),
+                                weight: 1.0,
+                            },
+                            evidence_indices: vec![0],
+                            item_ids: vec![],
+                            item_keys: vec![],
+                            rationale: "observed supporting evidence".into(),
+                        }],
+                    },
+                    0,
+                )
+                .await?;
+            let pattern = applied.candidate_ids["procedure"];
+            let usage_id: Uuid = setup
+                .query_one("SELECT gen_random_uuid()", &[])
+                .await?
+                .get(0);
+            let mut usage = source.clone();
+            usage.id = usage_id;
+            usage.pattern_id = Some(pattern);
+            usage.action = "use the procedure".into();
+            writer.record_experience(&usage, 0).await?;
+            let stored = serde_json::to_value(writer.get_belief(belief.id).await?)?;
+            let before = reader.query_learning_context(&term, &project, None).await?;
+            anyhow::ensure!(before.beliefs.len() == 1 && before.beliefs[0].id == belief.id);
+            anyhow::ensure!(before.patterns.len() == 1 && before.patterns[0].pattern.id == pattern);
+            anyhow::ensure!(
+                before.patterns[0].successes == 1
+                    && before.patterns[0]
+                        .candidate_provenance
+                        .as_ref()
+                        .is_some_and(|origin| origin.active)
+            );
+            anyhow::ensure!(before.assessments.len() == 1 && !before.assessments_truncated);
+            anyhow::ensure!(
+                serde_json::to_value(writer.get_belief(belief.id).await?)? == stored,
+                "context retrieval must not write back"
+            );
+            let interrupted = reader
+                .learning_context_after_beliefs(&term, &project, None, || async {
+                    anyhow::bail!("controlled learning-context interruption")
+                })
+                .await;
+            anyhow::ensure!(interrupted
+                .unwrap_err()
+                .to_string()
+                .contains("controlled learning-context interruption"));
+            anyhow::ensure!(
+                serde_json::to_value(reader.query_learning_context(&term, &project, None).await?)?
+                    == serde_json::to_value(&before)?,
+                "interruption must release its transaction"
+            );
+            let during = reader
+                .learning_context_after_beliefs(&term, &project, None, || async {
+                    writer.delete_project(&project).await?;
+                    Ok(())
+                })
+                .await?;
+            anyhow::ensure!(
+                serde_json::to_value(during)? == serde_json::to_value(before)?,
+                "beliefs, procedures, counts, provenance and assessments must share the first view"
+            );
+            let after = reader.query_learning_context(&term, &project, None).await?;
+            anyhow::ensure!(
+                after.beliefs.is_empty()
+                    && after.patterns.is_empty()
+                    && after.assessments.is_empty()
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn intervention_snapshot_retains_all_inputs_during_project_deletion() -> Result<()> {
+        use crate::learning::{Experience, Feedback, ObservationSource, Outcome, Review, Verdict};
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let id: Uuid = setup
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-intervention-{id}");
+        let checked = async {
+            let seed = snapshot_test_isolation::seed_belief_in_project("intervention target", 0.4, 0.2, &project, MemoryType::Fact).await?;
+            let child = snapshot_test_isolation::seed_belief_in_project("causal descendant", 0.3, 0.2, &project, MemoryType::Fact).await?;
+            let outside = snapshot_test_isolation::seed_belief_in_project("outside co-cause", 0.7, 0.2, &project, MemoryType::Fact).await?;
+            writer.store.insert_edge(&crate::graph::Edge::new(seed.id, child.id, EdgeType::Causes, 0.5)?).await?;
+            writer.store.insert_edge(&crate::graph::Edge::new(outside.id, child.id, EdgeType::Causes, 0.3)?).await?;
+            let chunk_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+            let chunk = DocumentChunk::with_id(chunk_id, format!("/mimir-test/{project}.md"), vec!["support".into()],
+                "document support for the descendant".into(), None, Some(project.clone()));
+            writer.store.insert_document_chunk(&chunk).await?;
+            writer.add_evidence(child.id, chunk_id, 0.6).await?;
+            writer.record_experience(&Experience { id, project: project.clone(), context: "observed support".into(),
+                action: "check the descendant".into(), outcome: Outcome::Success, source: ObservationSource::ToolResult,
+                evidence: vec!["supporting observation".into()], belief_ids: vec![child.id], pattern_id: None,
+                source_records: vec![], learning_items: vec![] }, 0).await?;
+            writer.review_experience(&Review { experience_id: id, experience_revision: 1, reviewer: "snapshot-test".into(),
+                rationale: "observed support".into(),
+                feedback: vec![Feedback { belief_id: child.id, verdict: Verdict::Support, weight: 0.5 }],
+                superseded_beliefs: vec![], links: vec![], candidate_feedback: vec![], candidate_links: vec![],
+                extracted_items: vec![], source_coverage: vec![], assessments: vec![], candidates: vec![] }, 0).await?;
+            let stored = serde_json::to_value(writer.get_belief(child.id).await?)?;
+            let before = reader.query_intervention(seed.id, 1.0).await?;
+            anyhow::ensure!(before.len() == 1 && before[0].0 == child.id, "the descendant must be projected");
+            anyhow::ensure!(serde_json::to_value(writer.get_belief(child.id).await?)? == stored, "normal intervention must not write back");
+            let interrupted = reader.intervention_after_target(seed.id, 1.0, || async {
+                anyhow::bail!("controlled intervention interruption")
+            }).await;
+            anyhow::ensure!(interrupted.unwrap_err().to_string().contains("controlled intervention interruption"));
+            anyhow::ensure!(serde_json::to_value(reader.query_intervention(seed.id, 1.0).await?)? == serde_json::to_value(&before)?, "interruption must release its read transaction");
+            let during = reader.intervention_after_target(seed.id, 1.0, || async {
+                anyhow::ensure!(writer.delete_project(&project).await? >= 3);
+                Ok(())
+            }).await?;
+            anyhow::ensure!(serde_json::to_value(during)? == serde_json::to_value(before)?, "target, descendants, both causes, review mass and grounding must share the first view");
+            let after = reader.query_intervention(seed.id, 1.0).await.unwrap_err();
+            anyhow::ensure!(after.to_string().contains("not found"), "the next request must see deletion");
+            anyhow::ensure!(reader.get_belief(child.id).await?.is_none());
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn document_query_snapshot_retains_selected_chunks_and_parents() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = AgeStore::new(
+            db::connect(&cfg.database).await?,
+            cfg.database.dbname.clone(),
+        )?;
+        let setup = db::connect(&cfg.database).await?;
+        for scoped in [false, true] {
+            let id: Uuid = setup
+                .query_one("SELECT gen_random_uuid()", &[])
+                .await?
+                .get(0);
+            let project = format!("consistent-document-query-{id}");
+            let scope = scoped.then_some(project.as_str());
+            let document = format!("/mimir-test/{project}.md");
+            let checked = async {
+                let parent_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+                let child_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+                let parent = DocumentChunk::with_id(parent_id, document.clone(), vec!["Parent".into()], "complete λ parent ".repeat(400), None, Some(project.clone()));
+                let child = DocumentChunk::with_id(child_id, document.clone(), vec!["Parent".into(), "Child".into()], "complete child passage ".repeat(400), Some(parent_id), Some(project.clone()));
+                writer.store.insert_document_chunk(&parent).await?;
+                writer.store.insert_document_chunk(&child).await?;
+                writer.store.insert_chunk_embedding(child_id, &[1.0, 0.0, 0.0]).await?;
+                let before = reader.document_query_snapshot(&[1.0, 0.0, 0.0], scope, None).await?;
+                let selected = before.iter().find(|value| value.id == child_id.to_string()).expect("selected child");
+                anyhow::ensure!(selected.content == child.content && selected.parent_content.as_ref() == Some(&parent.content), "must return complete child and parent content");
+                let interrupted = reader.document_query_after_first_read(&[1.0, 0.0, 0.0], scope, None, || async {
+                    anyhow::bail!("controlled document-query interruption")
+                }).await;
+                anyhow::ensure!(interrupted.unwrap_err().to_string().contains("controlled document-query interruption"));
+                let during = reader.document_query_after_first_read(&[1.0, 0.0, 0.0], scope, None, || async {
+                    writer.clear_document(&document).await?;
+                    Ok(())
+                }).await?;
+                anyhow::ensure!(serde_json::to_value(during)? == serde_json::to_value(before)?, "every selected field and parent must retain the initial database view: scoped={scoped}");
+                let after = reader.document_query_snapshot(&[1.0, 0.0, 0.0], scope, None).await?;
+                anyhow::ensure!(after.iter().all(|value| value.id != child_id.to_string()), "the next request must see the removal and reuse the connection");
+                Ok::<_, anyhow::Error>(())
+            }.await;
+            let cleanup = writer.delete_project(&project).await;
+            checked?;
+            cleanup?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retrieval_snapshot_retains_graph_and_passages_during_project_deletion() -> Result<()> {
+        fn grounded_value(values: Vec<crate::GroundedBelief>) -> serde_json::Value {
+            serde_json::Value::Array(values.into_iter().map(|value| serde_json::json!({
+                "belief": value.belief,
+                "evidence": value.evidence.into_iter().map(|entry| serde_json::json!({
+                    "chunk_id": entry.chunk_id, "document_path": entry.document_path,
+                    "section_path": entry.section_path, "snippet": entry.snippet, "weight": entry.weight,
+                })).collect::<Vec<_>>(),
+            })).collect())
+        }
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        for scoped in [false, true] {
+            for grounded in [false, true] {
+                let id: Uuid = setup
+                    .query_one("SELECT gen_random_uuid()", &[])
+                    .await?
+                    .get(0);
+                let project = format!("consistent-retrieval-{id}");
+                let term = format!("retrievalseed{}", id.simple());
+                let scope = scoped.then_some(project.as_str());
+                let checked = async {
+                    let seed = snapshot_test_isolation::seed_belief_in_project(&term, 0.8, 0.2, &project, MemoryType::Fact).await?;
+                    let descendant = snapshot_test_isolation::seed_belief_in_project("downstream without the query term", 0.6, 0.2, &project, MemoryType::Fact).await?;
+                    writer.store.insert_edge(&crate::graph::Edge::new(seed.id, descendant.id, EdgeType::Supports, 0.7)?).await?;
+                    let chunk_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+                    let chunk = DocumentChunk::with_id(chunk_id, format!("/mimir-test/{project}.md"), vec!["full section".into()],
+                        "supporting λ passage ".repeat(300), None, Some(project.clone()));
+                    writer.store.insert_document_chunk(&chunk).await?;
+                    writer.add_evidence(seed.id, chunk_id, 0.8).await?;
+                    let before = if grounded {
+                        let values = reader.query_relevant_grounded(&term, None, None, scope).await?;
+                        anyhow::ensure!(values.len() == 2 && values.iter().any(|v| v.belief.id == descendant.id), "must include graph expansion");
+                        anyhow::ensure!(values.iter().find(|v| v.belief.id == seed.id).unwrap().evidence.len() == 1, "must include the supporting passage");
+                        grounded_value(values)
+                    } else {
+                        let values = reader.query_relevant(&term, None, scope, Some(MemoryType::Fact)).await?;
+                        anyhow::ensure!(values.len() == 2 && values.iter().any(|v| v.id == descendant.id), "must include graph expansion");
+                        serde_json::to_value(values)?
+                    };
+                    let interrupted = reader.relevant_after_overlay(&term, None, scope, None, || async {
+                        anyhow::bail!("controlled retrieval interruption")
+                    }).await;
+                    anyhow::ensure!(interrupted.unwrap_err().to_string().contains("controlled retrieval interruption"));
+                    let during = if grounded {
+                        grounded_value(reader.grounded_after_overlay(&term, None, None, scope, || async {
+                            writer.delete_project(&project).await?;
+                            Ok(())
+                        }).await?)
+                    } else {
+                        serde_json::to_value(reader.relevant_after_overlay(&term, None, scope, Some(MemoryType::Fact), || async {
+                            writer.delete_project(&project).await?;
+                            Ok(())
+                        }).await?)?
+                    };
+                    anyhow::ensure!(during == before, "the complete retrieval must retain its original view: scoped={scoped}; grounded={grounded}; before={before}; during={during}");
+                    anyhow::ensure!(reader.query_relevant_grounded(&term, None, None, scope).await?.is_empty(), "the next request must see the deletion and reuse the released connection");
+                    Ok::<_, anyhow::Error>(())
+                }.await;
+                let cleanup = writer.delete_project(&project).await;
+                checked?;
+                cleanup?;
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retrieval_snapshot_vector_queries_retain_original_matches() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let id: Uuid = setup
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-retrieval-vectors-{id}");
+        let checked = async {
+            let seed = snapshot_test_isolation::seed_belief_in_project(
+                "vector snapshot",
+                0.8,
+                0.2,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
+            writer
+                .store
+                .insert_belief_embedding(seed.id, &[1.0, 0.0, 0.0])
+                .await?;
+            let mut client = reader.store.snapshot_connection().await;
+            let tx = snapshot_transaction(&mut client).await?;
+            reader.store.learning_overlay_on(tx.client()).await?;
+            let all = reader
+                .store
+                .query_beliefs_by_vector_on(tx.client(), &[1.0, 0.0, 0.0], None)
+                .await?;
+            anyhow::ensure!(all.contains(&seed.id));
+            writer.delete_project(&project).await?;
+            anyhow::ensure!(
+                reader
+                    .store
+                    .query_beliefs_by_vector_on(tx.client(), &[1.0, 0.0, 0.0], None)
+                    .await?
+                    == all
+            );
+            anyhow::ensure!(
+                reader
+                    .store
+                    .query_beliefs_by_vector_filtered_on(
+                        tx.client(),
+                        &[1.0, 0.0, 0.0],
+                        None,
+                        &[seed.id]
+                    )
+                    .await?
+                    == vec![seed.id]
+            );
+            tx.commit().await?;
+            drop(client);
+            anyhow::ensure!(reader
+                .store
+                .query_beliefs_by_vector_filtered(&[1.0, 0.0, 0.0], None, &[seed.id])
+                .await?
+                .is_empty());
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explanation_snapshot_retains_all_components_during_project_deletion() -> Result<()> {
+        use crate::learning::{
+            Experience, Feedback, IndependentBasis, IndependentProvenance, ObservationSource,
+            Outcome, Review, Verdict,
+        };
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let client = db::connect(&cfg.database).await?;
+        let id: Uuid = client
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-explanation-{id}");
+        let reader = AgeStore::new(client, cfg.database.dbname.clone())?;
+        let checked = async {
+            let parent = snapshot_test_isolation::seed_belief_in_project(
+                "supporting parent",
+                0.8,
+                0.2,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
+            let reference = format!("fixture: {project} independently supplied source");
+            let belief = snapshot_test_isolation::seed_independent_belief(
+                "retain the complete explanation",
+                0.5,
+                0.2,
+                Some(&project),
+                MemoryType::Fact,
+                &IndependentProvenance {
+                    basis: IndependentBasis::UserInstruction,
+                    reference: reference.clone(),
+                },
+            )
+            .await?;
+            writer
+                .add_edge(parent.id, belief.id, EdgeType::Supports, 0.7)
+                .await?;
+            let source = Experience {
+                id,
+                project: project.clone(),
+                context: "explanation read".into(),
+                action: "observe support".into(),
+                outcome: Outcome::Success,
+                source: ObservationSource::ToolResult,
+                evidence: vec!["observed result".into()],
+                belief_ids: vec![],
+                pattern_id: None,
+                learning_items: vec![],
+                source_records: vec![],
+            };
+            writer.record_experience(&source, 0).await?;
+            let review = Review {
+                experience_id: id,
+                experience_revision: 1,
+                reviewer: "snapshot-test".into(),
+                rationale: "observed support".into(),
+                feedback: vec![Feedback {
+                    belief_id: belief.id,
+                    verdict: Verdict::Support,
+                    weight: 0.5,
+                }],
+                links: vec![],
+                superseded_beliefs: vec![],
+                candidates: vec![],
+                candidate_feedback: vec![],
+                candidate_links: vec![],
+                extracted_items: vec![],
+                source_coverage: vec![],
+                assessments: vec![],
+            };
+            writer.review_experience(&review, 0).await?;
+            let before = writer
+                .explain_belief(belief.id, 0, std::num::NonZeroUsize::new(1))
+                .await?;
+            anyhow::ensure!(before["incoming_edges"].as_array().unwrap().len() == 1);
+            anyhow::ensure!(
+                before["learning"]["total"] == 1
+                    && before["learning"]["reviews"].as_array().unwrap().len() == 1
+            );
+            anyhow::ensure!(before["independent_provenance"]["reference"] == reference);
+            let interruption = reader
+                .explanation_after_belief(belief.id, 0, std::num::NonZeroUsize::new(1), || async {
+                    anyhow::bail!("controlled interruption after explanation belief")
+                })
+                .await
+                .unwrap_err();
+            anyhow::ensure!(interruption.to_string().contains("controlled interruption"));
+            anyhow::ensure!(
+                reader
+                    .explain_belief_snapshot(belief.id, 0, std::num::NonZeroUsize::new(1))
+                    .await?
+                    == before,
+                "an interrupted explanation must release its transaction and connection"
+            );
+            let during = reader
+                .explanation_after_belief(belief.id, 0, std::num::NonZeroUsize::new(1), || async {
+                    anyhow::ensure!(
+                        writer.delete_project(&project).await? >= 2,
+                        "the independent writer must commit project deletion"
+                    );
+                    Ok(())
+                })
+                .await?;
+            anyhow::ensure!(
+                during == before,
+                "all explanation fields must retain the first belief snapshot"
+            );
+            anyhow::ensure!(
+                writer
+                    .explain_belief(belief.id, 0, std::num::NonZeroUsize::new(1))
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("belief not found"),
+                "the next response must observe the committed deletion"
+            );
+            anyhow::ensure!(reader.get_belief(belief.id).await?.is_none());
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn assessment_snapshot_retains_scores_during_project_deletion() -> Result<()> {
+        use crate::assessment::{Assessment, Axis};
+        use crate::learning::{BeliefTarget, Experience, ObservationSource, Outcome, Review};
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let client = db::connect(&cfg.database).await?;
+        let id: Uuid = client
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-assessment-{id}");
+        let reader = AgeStore::new(client, cfg.database.dbname.clone())?;
+        let checked = async {
+            let belief = snapshot_test_isolation::seed_belief_in_project("one assessment view", 0.5, 0.2, &project, MemoryType::Fact).await?;
+            let source = Experience { id, project: project.clone(), context: "assessment read".into(),
+                action: "observe supporting evidence".into(), outcome: Outcome::Success,
+                source: ObservationSource::ToolResult, evidence: vec!["observed supporting result".into()],
+                belief_ids: vec![], pattern_id: None, learning_items: vec![], source_records: vec![] };
+            writer.record_experience(&source, 0).await?;
+            let review = Review { experience_id: id, experience_revision: 1, reviewer: "snapshot-test".into(),
+                rationale: "observed evidence".into(), feedback: vec![], links: vec![], superseded_beliefs: vec![],
+                candidates: vec![], candidate_feedback: vec![], candidate_links: vec![], extracted_items: vec![],
+                source_coverage: vec![], assessments: vec![Assessment {
+                    target: BeliefTarget::Existing { belief_id: belief.id }, scope: "snapshot-scope".into(), rubric: "snapshot-rubric".into(),
+                    correctness: Axis { value: Some(1.0), weight: 1.0 }, usefulness: Axis { value: Some(0.8), weight: 1.0 },
+                    evidence_indices: vec![0], item_ids: vec![], item_keys: vec![], rationale: "observed support".into(),
+                }] };
+            writer.review_experience(&review, 0).await?;
+            let before = writer.lesson_assessment(&project, belief.id, "snapshot-scope", "snapshot-rubric").await?;
+            let interruption = reader.lesson_assessment_after_target(&project, belief.id, "snapshot-scope", "snapshot-rubric", || async {
+                anyhow::bail!("controlled interruption after assessment target")
+            }).await.unwrap_err();
+            anyhow::ensure!(interruption.to_string().contains("controlled interruption"));
+            anyhow::ensure!(reader.lesson_assessment(&project, belief.id, "snapshot-scope", "snapshot-rubric").await? == before,
+                "an interrupted assessment read must release its transaction and connection");
+            let during = reader.lesson_assessment_after_target(&project, belief.id, "snapshot-scope", "snapshot-rubric", || async {
+                anyhow::ensure!(writer.delete_project(&project).await? > 0, "the independent writer must commit project deletion");
+                Ok(())
+            }).await?;
+            anyhow::ensure!(during == before, "assessment scores must retain the validated target snapshot: before={before}; during={during}");
+            let missing = reader.lesson_assessment(&project, belief.id, "snapshot-scope", "snapshot-rubric").await.unwrap_err();
+            anyhow::ensure!(missing.to_string().contains("not found"), "the next request must observe target deletion");
+            anyhow::ensure!(reader.get_belief(belief.id).await?.is_none());
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn history_snapshot_keeps_both_ledgers_during_a_new_revision() -> Result<()> {
+        use crate::learning::{Experience, ObservationSource, Outcome};
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let mut setup = db::connect(&cfg.database).await?;
+        let id: Uuid = setup
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-history-{id}");
+        let reader = AgeStore::new(
+            db::connect(&cfg.database).await?,
+            cfg.database.dbname.clone(),
+        )?;
+        let mut source = Experience {
+            id,
+            project: project.clone(),
+            context: "one coherent history response".into(),
+            action: "initial source".into(),
+            outcome: Outcome::Success,
+            source: ObservationSource::ToolResult,
+            evidence: vec!["observed first revision".into()],
+            belief_ids: vec![],
+            pattern_id: None,
+            learning_items: vec![],
+            source_records: vec![],
+        };
+        let checked = async {
+            writer.record_experience(&source, 0).await?;
+            source.action = "second source".into();
+            writer.record_experience(&source, 1).await?;
+            let historical_source = serde_json::json!({"older_payload_shape": [null, "λ original source", {"field": "retained"}]});
+            let historical_review = serde_json::json!({"older_review_shape": {"complete": "λ original review ".repeat(200)}});
+            let tx = setup.transaction().await?;
+            tx.execute("UPDATE mimir_experience_versions SET payload=$2::text::jsonb WHERE experience_id=$1 AND revision=1", &[&id, &historical_source.to_string()]).await?;
+            tx.execute("INSERT INTO mimir_review_versions(experience_id,revision,experience_revision,payload) VALUES($1,1,2,$2::text::jsonb)", &[&id,&historical_review.to_string()]).await?;
+            tx.execute("UPDATE mimir_experiences SET review_revision=1,reviewed_revision=2 WHERE id=$1", &[&id]).await?;
+            tx.commit().await?;
+            let before = writer.experience_history(id).await?;
+            anyhow::ensure!(before["experiences"][0]["payload"] == historical_source);
+            anyhow::ensure!(before["reviews"][0]["payload"] == historical_review);
+            anyhow::ensure!(writer.learning_review(id).await?["review"] == historical_review,
+                "current review must preserve raw historical fields");
+            source.action = "third source".into();
+            let current_payload = serde_json::to_string(&source)?;
+            let next_review = serde_json::json!({"new_review_shape": {"unchanged": [true, 4, "全文"]}}).to_string();
+            let during = reader.experience_history_after_sources(id, || async {
+                let tx = setup.transaction().await?;
+                tx.execute("INSERT INTO mimir_experience_versions(experience_id,revision,payload) VALUES($1,3,$2::text::jsonb)", &[&id, &current_payload]).await?;
+                tx.execute("INSERT INTO mimir_review_versions(experience_id,revision,experience_revision,payload) VALUES($1,2,3,$2::text::jsonb)", &[&id, &next_review]).await?;
+                tx.execute("UPDATE mimir_experiences SET revision=3,review_revision=2,reviewed_revision=3 WHERE id=$1", &[&id]).await?;
+                tx.commit().await?;
+                Ok(())
+            }).await?;
+            anyhow::ensure!(during == before, "both complete histories must retain the original source snapshot");
+            let after = writer.experience_history(id).await?;
+            anyhow::ensure!(after["experiences"].as_array().unwrap().len() == 3 && after["reviews"].as_array().unwrap().len() == 2,
+                "the next request must see both parts of the committed revision");
+            let current = writer.get_experience(id).await?.unwrap();
+            anyhow::ensure!(current.revision == 3 && current.experience.action == source.action);
+            anyhow::ensure!(!writer.pending_experiences(Some(&project), None).await?.iter().any(|row| row.experience.id == id),
+                "reading history must not create pending review work");
+            let failure = reader.experience_history_after_sources(id, || async {
+                anyhow::bail!("controlled interruption after source history")
+            }).await.unwrap_err();
+            anyhow::ensure!(failure.to_string().contains("controlled interruption"));
+            anyhow::ensure!(reader.experience_history(id).await? == after,
+                "an interrupted history response must release its transaction and connection");
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn contradictions_snapshot_keeps_endpoints_during_committed_delete() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let client = db::connect(&cfg.database).await?;
+        let suffix: String = client
+            .query_one("SELECT gen_random_uuid()::text", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-contradictions-{suffix}");
+        let reader = AgeStore::new(client, cfg.database.dbname.clone())?;
+        let checked = async {
+            let a = snapshot_test_isolation::seed_belief_in_project(
+                "first endpoint",
+                0.8,
+                0.1,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
+            let b = snapshot_test_isolation::seed_belief_in_project(
+                "second endpoint",
+                0.7,
+                0.1,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
+            writer
+                .add_edge(a.id, b.id, EdgeType::Contradicts, 1.0)
+                .await?;
+            let mut before = writer.get_contradictions(Some(&project)).await?;
+            before.sort();
+            anyhow::ensure!(
+                before.contains(&(a.id, b.id)) && before.contains(&(b.id, a.id)),
+                "both directions must be visible before deletion"
+            );
+            let (pairs, beliefs) = reader
+                .contradictions_after_pairs(Some(&project), || async {
+                    anyhow::ensure!(
+                        writer.delete_belief(a.id).await?,
+                        "the independent writer must commit endpoint removal"
+                    );
+                    Ok(())
+                })
+                .await?;
+            let belief_map = beliefs.iter().map(|belief| (belief.id, belief)).collect();
+            let mut during = writer
+                .inference
+                .detect_active_contradictions(&belief_map, &pairs);
+            during.sort();
+            anyhow::ensure!(
+                during == before,
+                "pairs and endpoint probabilities must come from the same original snapshot"
+            );
+            let after = writer.get_contradictions(Some(&project)).await?;
+            anyhow::ensure!(
+                !after.iter().any(|(from, to)| *from == a.id || *to == a.id),
+                "the next request must observe the committed endpoint removal"
+            );
+            let failure = reader
+                .contradictions_after_pairs(Some(&project), || async {
+                    anyhow::bail!("controlled interruption after contradiction pairs")
+                })
+                .await
+                .unwrap_err();
+            anyhow::ensure!(failure.to_string().contains("controlled interruption"));
+            let (reused_pairs, reused_beliefs) =
+                reader.contradictions_snapshot(Some(&project)).await?;
+            let reused_map = reused_beliefs
+                .iter()
+                .map(|belief| (belief.id, belief))
+                .collect();
+            let mut reused = writer
+                .inference
+                .detect_active_contradictions(&reused_map, &reused_pairs);
+            let mut after = after;
+            reused.sort();
+            after.sort();
+            anyhow::ensure!(
+                reused == after,
+                "an interrupted read must release its transaction and connection"
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn evidence_snapshot_keeps_selected_passages_during_document_removal() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let suffix: String = setup
+            .query_one("SELECT gen_random_uuid()::text", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-evidence-{suffix}");
+        let document = format!("/mimir-test/{project}.md");
+        let writer_store = AgeStore::new(setup, cfg.database.dbname.clone())?;
+        let reader = AgeStore::new(
+            db::connect(&cfg.database).await?,
+            cfg.database.dbname.clone(),
+        )?;
+        let belief = snapshot_test_isolation::seed_belief_in_project(
+            "retain the selected supporting passages",
+            0.5,
+            0.1,
+            &project,
+            MemoryType::Fact,
+        )
+        .await?;
+        let checked = async {
+            let ids = db::connect(&cfg.database).await?;
+            for (section, weight) in [("first", 0.9), ("second", 0.5)] {
+                let id: Uuid = ids.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+                let chunk = DocumentChunk::with_id(id, document.clone(), vec![section.into()],
+                    format!("{} complete {section} passage", "λ supporting text ".repeat(200)), None, Some(project.clone()));
+                writer_store.insert_document_chunk(&chunk).await?;
+                writer_store.insert_chunk_embedding(id, &[1.0, 0.0, 0.0]).await?;
+                writer.add_evidence(belief.id, id, weight).await?;
+            }
+            let before = writer.evidence_for_belief(belief.id, None).await?;
+            anyhow::ensure!(before.len() == 2 && before[0].weight > before[1].weight);
+            let view = |refs: &[EvidenceRef]| refs.iter().map(|r| (r.chunk_id, r.document_path.clone(),
+                r.section_path.clone(), r.snippet.clone(), r.weight.to_bits())).collect::<Vec<_>>();
+            let selected = writer.evidence_for_belief(belief.id, std::num::NonZeroUsize::new(1)).await?;
+            anyhow::ensure!(view(&selected) == view(&before[..1]),
+                "only an explicit positive selection may restrict the supporting passages");
+            let during = reader.evidence_after_links(belief.id, None, || async {
+                anyhow::ensure!(writer.clear_document(&document).await? == 2,
+                    "the independent writer must remove the selected document before passage reads");
+                Ok(())
+            }).await?;
+            anyhow::ensure!(view(&during) == view(&before),
+                "all selected passage fields must come from the link query's original snapshot");
+            anyhow::ensure!(writer.evidence_for_belief(belief.id, None).await?.is_empty(),
+                "the next response must observe the committed document removal");
+            let failure = reader.evidence_after_links(belief.id, None, || async {
+                anyhow::bail!("controlled interruption after grounding selection")
+            }).await.unwrap_err();
+            anyhow::ensure!(failure.to_string().contains("controlled interruption"));
+            anyhow::ensure!(reader.evidence_for_belief_snapshot(belief.id, None).await?.is_empty(),
+                "an interrupted evidence read must release its transaction and connection");
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn page_retains_count_snapshot_during_a_committed_delete() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let client = db::connect(&cfg.database).await?;
+        let suffix: String = client
+            .query_one("SELECT gen_random_uuid()::text", &[])
+            .await?
+            .get(0);
+        let project = format!("consistent-page-{suffix}");
+        let reader = AgeStore::new(client, cfg.database.dbname.clone())?;
+        let belief = snapshot_test_isolation::seed_belief_in_project(
+            "a page must keep its counted row",
+            0.5,
+            0.1,
+            &project,
+            MemoryType::Fact,
+        )
+        .await?;
+        let checked = async {
+            let (before, before_total) = reader.list_beliefs_page(Some(&project), None, usize::MAX, 0).await?;
+            let ids = |rows: &[Belief]| rows.iter().map(|row| row.id).collect::<Vec<_>>();
+            let original_ids = ids(&before);
+            anyhow::ensure!(original_ids.contains(&belief.id), "fixture belief must be visible before deletion");
+            let (during, total) = reader.list_beliefs_page_after_count(Some(&project), None, usize::MAX, 0, || async {
+                anyhow::ensure!(writer.delete_belief(belief.id).await?, "the independent writer must commit the deletion");
+                Ok(())
+            }).await?;
+            anyhow::ensure!(total == before_total && ids(&during) == original_ids,
+                "the count and rows must retain the same original view after the other connection commits");
+            let (after, after_total) = reader.list_beliefs_page(Some(&project), None, usize::MAX, 0).await?;
+            anyhow::ensure!(after_total + 1 == total, "the next request must see the committed deletion");
+            anyhow::ensure!(ids(&after) == original_ids.into_iter().filter(|id| *id != belief.id).collect::<Vec<_>>(),
+                "only the independently deleted belief may disappear");
+            let failure = reader.list_beliefs_page_after_count(Some(&project), None, 1, 0, || async {
+                anyhow::bail!("controlled interruption after the page count")
+            }).await.unwrap_err();
+            anyhow::ensure!(failure.to_string().contains("controlled interruption"));
+            let (reused, reused_total) = reader.list_beliefs_page(Some(&project), None, usize::MAX, 0).await?;
+            anyhow::ensure!(reused_total == after_total && ids(&reused) == ids(&after),
+                "dropping an unfinished read must close its transaction and leave the connection reusable");
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn snapshot_read_forbids_business_writes_and_releases_its_connection() -> Result<()> {
+        let mut client = db::connect(&config().database).await?;
+        let tx = snapshot_transaction(&mut client).await?;
+        let error = tx
+            .execute("DELETE FROM public.belief_embeddings WHERE false", &[])
+            .await
+            .unwrap_err();
+        anyhow::ensure!(
+            error.code() == Some(&tokio_postgres::error::SqlState::READ_ONLY_SQL_TRANSACTION),
+            "the snapshot must reject even an empty permanent-table write"
+        );
+        tx.rollback().await?;
+        let value: i32 = client.query_one("SELECT 1::integer", &[]).await?.get(0);
+        anyhow::ensure!(value == 1, "rollback must leave the connection usable");
+        Ok(())
     }
 }

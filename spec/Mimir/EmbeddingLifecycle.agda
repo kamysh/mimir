@@ -6,12 +6,14 @@ module Mimir.EmbeddingLifecycle where
 open import Data.Bool using (Bool; true; false)
 open import Data.List using (List; []; _∷_; _++_; length; map)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ)
-open import Data.Product using (_×_; _,_)
+open import Data.Nat using (ℕ; _≟_)
+open import Data.Empty using (⊥-elim)
+open import Relation.Nullary using (yes; no)
+open import Data.Product using (Σ; _×_; _,_)
 open import Data.String using (toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
 import Mimir.EmbeddingBackend as Backend
@@ -24,6 +26,51 @@ import Mimir.Validation as Validation
 import Mimir.Binary64 as Binary
 import Mimir.Effects as Effects
 import Data.Vec
+
+-- One source per embedding call. Stop and completion are terminal, ordered
+-- transitions; finishing cannot revive cancelled work or revoke a result.
+module Ownership where
+  data State : Set where running cancelled finished : State
+
+  stop complete : State → State
+  stop running = cancelled
+  stop cancelled = cancelled
+  stop finished = finished
+  complete running = finished
+  complete cancelled = cancelled
+  complete finished = finished
+
+  owned : State → Bool
+  owned running = true
+  owned cancelled = false
+  owned finished = false
+
+  stopReleasesOwnership : ∀ state → owned (stop state) ≡ false
+  stopReleasesOwnership running = refl
+  stopReleasesOwnership cancelled = refl
+  stopReleasesOwnership finished = refl
+
+  completionReleasesOwnership : ∀ state → owned (complete state) ≡ false
+  completionReleasesOwnership running = refl
+  completionReleasesOwnership cancelled = refl
+  completionReleasesOwnership finished = refl
+
+  completionCannotUndoStop : ∀ state → complete (stop state) ≡ stop state
+  completionCannotUndoStop running = refl
+  completionCannotUndoStop cancelled = refl
+  completionCannotUndoStop finished = refl
+
+  World = ℕ → State
+  stopJob : ℕ → World → World
+  stopJob identity world observed with observed ≟ identity
+  ... | yes _ = stop (world observed)
+  ... | no _ = world observed
+
+  otherJobsKeepTheirOwnership : ∀ identity other world → other ≢ identity →
+    stopJob identity world other ≡ world other
+  otherJobsKeepTheirOwnership identity other world different with other ≟ identity
+  ... | yes same = ⊥-elim (different same)
+  ... | no _ = refl
 
 root : Maybe Text → Maybe Path.NativePath → Maybe Path.Path
 root override home with Backend.cacheOverride override
@@ -38,6 +85,26 @@ modelDirectory path = Path.join path (toList "BAAI--bge-base-en-v1.5")
 tokenizerPath modelPath : Path.Path → Path.Path
 tokenizerPath path = Path.join (modelDirectory path) (toList "tokenizer.json")
 modelPath path = Path.join (modelDirectory path) (toList "onnx/model.onnx")
+
+-- Stopping a local worker is independent of progress by its model. A stop
+-- result requires the OS wait receipt, rather than merely sending a signal.
+module WorkerStop where
+  data Effect : Set where kill waitForExit : Effect
+  Reply : Effect → Set
+  Reply _ = Text ⊎ ⊤
+  module E = Effects.Protocol Effect Reply
+  stop : E.Script (Text ⊎ ⊤)
+  stop = E.ask kill λ _ → E.ask waitForExit E.done
+
+  killAlwaysPrecedesWait : ∀ continuation →
+    stop ≢ E.ask waitForExit continuation
+  killAlwaysPrecedesWait continuation ()
+
+  stopRequiresExitReceipt : ∀ {events result} → E.Runs stop events result →
+    Σ (Reply kill) (λ acknowledgement →
+      events ≡ (kill , acknowledgement) ∷ (waitForExit , result) ∷ [])
+  stopRequiresExitReceipt (E.replied _ _ acknowledgement (E.replied _ _ result (E.returned _))) =
+    acknowledgement , refl
 
 module Local (float : Ranking.F32) where
   module A = Backend.Arithmetic float
@@ -68,27 +135,49 @@ module Local (float : Ranking.F32) where
     embedding : A.E.Script (Text ⊎ List A.Vector) → State
     joining : Text ⊎ List A.Vector → State
     returned : Backend.CacheState → Text ⊎ List A.Vector → State
+    stopping : WorkerStop.E.Script (Text ⊎ ⊤) → State
+    stopped : Text ⊎ ⊤ → State
 
   data Step (withExtension : Path.Path → Text → Path.Path) (pid : Text)
-    (base : Path.Path) (batchSize : ℕ) (texts : List Text) : State → State → Set where
-    fresh : Step withExtension pid base batchSize texts (idle Backend.unloaded)
+    (base : Path.Path) (texts : List Text) : State → State → Set where
+    fresh : Step withExtension pid base texts (idle Backend.unloaded)
       (loading (load withExtension pid base))
-    reuse : Step withExtension pid base batchSize texts (idle Backend.ready)
-      (embedding (A.runBatches (Backend.batches batchSize texts)))
-    poisoned : Step withExtension pid base batchSize texts (idle Backend.poisoned)
+    reuse : Step withExtension pid base texts (idle Backend.ready)
+      (embedding (A.complete texts))
+    poisoned : Step withExtension pid base texts (idle Backend.poisoned)
       (returned Backend.poisoned (inj₁ (toList "embed state mutex poisoned")))
     loadReply : ∀ effect continuation reply →
-      Step withExtension pid base batchSize texts (loading (ask effect continuation)) (loading (continuation reply))
-    loadFailed : ∀ error → Step withExtension pid base batchSize texts (loading (done (inj₁ error)))
+      Step withExtension pid base texts (loading (ask effect continuation)) (loading (continuation reply))
+    loadFailed : ∀ error → Step withExtension pid base texts (loading (done (inj₁ error)))
       (returned Backend.unloaded (inj₁ error))
-    loaded : Step withExtension pid base batchSize texts (loading (done (inj₂ tt)))
-      (embedding (A.runBatches (Backend.batches batchSize texts)))
-    batchReply : ∀ effect continuation reply → Step withExtension pid base batchSize texts
+    loaded : Step withExtension pid base texts (loading (done (inj₂ tt)))
+      (embedding (A.complete texts))
+    batchReply : ∀ effect continuation reply → Step withExtension pid base texts
       (embedding (ask effect continuation)) (embedding (continuation reply))
-    completed : ∀ result → Step withExtension pid base batchSize texts (embedding (done result)) (joining result)
-    joined : ∀ result → Step withExtension pid base batchSize texts (joining result) (returned Backend.ready result)
-    joinFailed : ∀ result error → Step withExtension pid base batchSize texts (joining result)
+    completed : ∀ result → Step withExtension pid base texts (embedding (done result)) (joining result)
+    joined : ∀ result → Step withExtension pid base texts (joining result) (returned Backend.ready result)
+    joinFailed : ∀ result error → Step withExtension pid base texts (joining result)
       (returned Backend.ready (inj₁ error))
+    cancelLoading : ∀ script → Step withExtension pid base texts
+      (loading script) (stopping WorkerStop.stop)
+    cancelEmbedding : ∀ script → Step withExtension pid base texts
+      (embedding script) (stopping WorkerStop.stop)
+    cancelJoining : ∀ result → Step withExtension pid base texts
+      (joining result) (stopping WorkerStop.stop)
+    stopReply : ∀ effect continuation reply → Step withExtension pid base texts
+      (stopping (WorkerStop.E.ask effect continuation)) (stopping (continuation reply))
+    stopReturned : ∀ result → Step withExtension pid base texts
+      (stopping (WorkerStop.E.done result)) (stopped result)
+
+  -- Quantification includes a blocked dependency at any point of either
+  -- script: cancellation needs no tokenizer, download or inference reply.
+  canStopEveryLoadingStage : ∀ extension pid base texts script →
+    Step extension pid base texts (loading script) (stopping WorkerStop.stop)
+  canStopEveryLoadingStage extension pid base texts script = cancelLoading script
+
+  canStopEveryInferenceStage : ∀ extension pid base texts script →
+    Step extension pid base texts (embedding script) (stopping WorkerStop.stop)
+  canStopEveryInferenceStage extension pid base texts script = cancelEmbedding script
 
   start : Backend.CacheState → List Text → State
   start cached [] = returned cached (inj₂ [])
@@ -120,14 +209,15 @@ module Remote (float : Ranking.F32) (dimension maximumIndex : ℕ)
   decode raw = V.asObject raw >>= λ fields →
     Input.required "data" V.asArray (V.Object.normalize fields) >>= rows
 
+  requestFields : Config.Backend → List (Text × V.Value)
+  requestFields Config.voyage = (toList "input_type" , V.string (toList "document")) ∷
+    (toList "truncation" , V.boolean false) ∷ []
+  requestFields Config.openai = []
+  requestFields Config.local = []
+
   request : Config.Backend → Text → List Text → V.Value
   request backend model texts = V.object
-    ((toList "input" , V.array (map V.string texts)) ∷ (toList "model" , V.string model) ∷ extra)
-    where
-    extra : List (Text × V.Value)
-    extra with Backend.inputType backend
-    ... | nothing = []
-    ... | just value = (toList "input_type" , V.string value) ∷ []
+    ((toList "input" , V.array (map V.string texts)) ∷ (toList "model" , V.string model) ∷ requestFields backend)
 
   data Failure : Set where
     invalidBackend : Failure

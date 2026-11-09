@@ -5,8 +5,10 @@ pub mod documents;
 pub mod embed;
 pub mod graph;
 pub mod inference;
+pub mod interaction;
 pub mod learning;
 pub mod learning_sources;
+pub mod operation_catalogue;
 mod password;
 pub mod store;
 mod tls;
@@ -17,7 +19,7 @@ use uuid::Uuid;
 
 use config::Config;
 use documents::{parse_markdown, QueryResult};
-use embed::{make_backend, EmbeddingProvider};
+use embed::{make_backend, OwnedEmbeddingBackend};
 use graph::{Belief, EdgeType, MemoryType, Pattern, Probability};
 use inference::InferenceEngine;
 use store::AgeStore;
@@ -101,22 +103,56 @@ pub struct GroundedBelief {
     pub evidence: Vec<EvidenceRef>,
 }
 
+/// Omission requests all matches; a supplied count cannot be zero.
+pub type Selection = Option<std::num::NonZeroUsize>;
+
+#[cfg(test)]
+extern crate self as mimir_core;
+
 pub struct MimirService {
     store: AgeStore,
+    database: config::DatabaseConfig,
     inference: InferenceEngine,
-    embeddings: Option<Box<dyn EmbeddingProvider>>,
+    embeddings: Option<OwnedEmbeddingBackend>,
+    retirement: Option<toml::Value>,
 }
 
 impl MimirService {
     pub async fn connect(cfg: &Config) -> Result<Self> {
+        let embeddings = cfg.embeddings.as_ref().map(make_backend).transpose()?;
+        Self::connect_with_embeddings(cfg, embeddings).await
+    }
+
+    /// SDK hosts without a private worker entry point select the executable explicitly.
+    pub async fn connect_with_worker(cfg: &Config, executable: std::path::PathBuf) -> Result<Self> {
+        let embeddings = cfg
+            .embeddings
+            .as_ref()
+            .map(|settings| embed::make_backend_with_worker(settings, executable.clone()))
+            .transpose()?;
+        Self::connect_with_embeddings(cfg, embeddings).await
+    }
+
+    async fn connect_with_embeddings(
+        cfg: &Config,
+        embeddings: Option<OwnedEmbeddingBackend>,
+    ) -> Result<Self> {
         db::migrate(&cfg.database).await?;
         let client = db::connect(&cfg.database).await?;
-        let embeddings = cfg.embeddings.as_ref().map(make_backend);
         Ok(Self {
             store: AgeStore::new(client, cfg.database.dbname.clone())?,
+            database: cfg.database.clone(),
             inference: InferenceEngine::new(),
             embeddings,
+            retirement: cfg.retirement.clone(),
         })
+    }
+
+    /// Read the captured user policy without accessing business records.
+    pub fn retirement_policy(
+        &self,
+    ) -> std::result::Result<config::RetirementPolicy, config::RetirementIssue> {
+        config::retirement_policy(self.retirement.as_ref())
     }
 
     /// Add a new belief. Returns the created Belief.
@@ -181,31 +217,141 @@ impl MimirService {
         belief: Belief,
         provenance: Option<&crate::learning::IndependentProvenance>,
     ) -> Result<Belief> {
-        self.store
-            .insert_belief_with_provenance(&belief, provenance)
+        let prepared = self.prepare_belief_value(belief, provenance).await?;
+        self.publish_prepared_belief(&prepared).await
+    }
+
+    pub async fn prepare_belief(
+        &self,
+        content: &str,
+        probability: f64,
+        confidence: f64,
+        project: Option<&str>,
+        memory_type: MemoryType,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+    ) -> Result<preparation::PreparedBelief> {
+        let belief = match project {
+            Some(project) => {
+                Belief::new_in_project(content.into(), probability, confidence, project.into())?
+            }
+            None => Belief::new(content.into(), probability, confidence)?,
+        }
+        .with_memory_type(memory_type);
+        self.prepare_belief_value(belief, provenance).await
+    }
+
+    async fn prepare_belief_value(
+        &self,
+        mut belief: Belief,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+    ) -> Result<preparation::PreparedBelief> {
+        use interaction::Location;
+        use preparation::{PreparationRequired, PreparedBelief};
+        use validation::{Code, Segment};
+        if let Some(origin) = provenance {
+            origin.validate()?;
+        }
+        let embedder = self.embeddings.as_ref().ok_or_else(|| {
+            PreparationRequired::new(
+                Location::Configuration,
+                vec![Segment::Key("embeddings".into())],
+                Code::MissingEvidence,
+                "Embedding is not configured; no belief was stored.".into(),
+            )
+        })?;
+        let (id, created_at) = self
+            .store
+            .reserve_belief_preparation(belief.project.as_deref())
             .await?;
-        if let Some(embedder) = &self.embeddings {
-            let mut vecs = embedder
-                .embed(std::slice::from_ref(&belief.content))
-                .await?;
-            if let Some(v) = vecs.pop() {
-                self.store.insert_belief_embedding(belief.id, &v).await?;
-                self.auto_ground_belief(&belief, &v).await?;
+        belief.id = id;
+        belief.created_at = created_at;
+        belief.last_activated_at = created_at;
+        let vectors = self.embed_prepared_belief(embedder, &belief).await.map_err(|error| {
+            if error.is::<PreparationRequired>() { return error; }
+            if error.is::<embed::EmbeddingCancelled>() { return error; }
+            PreparationRequired::new(Location::Configuration, vec![Segment::Key("embeddings".into())], Code::MissingEvidence,
+                format!("Embedding preparation failed before publication: {error:#}. No belief was stored.")).into()
+        })?;
+        let vector = match vectors.as_slice() {
+            [vector] if preparation::usable_vector(vector) => vector.clone(),
+            _ => return Err(PreparationRequired::new(Location::Configuration, vec![Segment::Key("embeddings".into())], Code::MissingEvidence,
+                "The backend must return exactly one complete, finite, nonzero vector for this belief; no belief was stored.".into()).into()),
+        };
+        let support = self.store.prepare_belief_support(&belief, &vector).await.map_err(|error| PreparationRequired::new(
+            Location::Configuration, vec![Segment::Key("database".into())], Code::MissingEvidence,
+            format!("Indexed grounding preparation failed before publication: {error:#}. No belief was stored.")))?;
+        if support.is_empty() {
+            return Err(PreparationRequired::new(
+                Location::Arguments,
+                vec![Segment::Key("content".into())],
+                Code::MissingEvidence,
+                "No supporting passage was found in an indexed document; no belief was stored."
+                    .into(),
+            )
+            .into());
+        }
+        Ok(PreparedBelief {
+            belief,
+            provenance: provenance.cloned(),
+            vector,
+            support,
+        })
+    }
+
+    async fn embed_prepared_belief(
+        &self,
+        embedder: &OwnedEmbeddingBackend,
+        belief: &Belief,
+    ) -> Result<Vec<Vec<f32>>> {
+        use interaction::Location;
+        use preparation::PreparationRequired;
+        use validation::Code;
+        let stopped = |cause: String| {
+            PreparationRequired::new(
+            Location::Request, vec![], Code::MissingReference,
+            format!("Preparation {} stopped before publication: {cause}. No belief was stored. Read its original state and ask the user before starting new work.", belief.id))
+        };
+        // Subscribe first: revocation before the first read is seen in that
+        // read, and revocation afterward leaves an event for this wait.
+        let mut changes = db::EmbeddingOwnerSubscription::connect(&self.database)
+            .await
+            .map_err(|error| stopped(format!("cannot observe ownership changes: {error:#}")))?;
+        if !self.store.owns_belief_preparation(belief).await? {
+            return Err(stopped("publication ownership was revoked".into()).into());
+        }
+        let job = embedder.embed(std::slice::from_ref(&belief.content));
+        tokio::pin!(job);
+        loop {
+            tokio::select! {
+                biased;
+                change = changes.changed() => {
+                    change.map_err(|error| stopped(format!("ownership monitoring disconnected: {error:#}")))?;
+                    if !self.store.owns_belief_preparation(belief).await? {
+                        // Returning drops the owned provider future. A local
+                        // worker is killed and reaped before this returns.
+                        return Err(stopped("publication ownership was revoked".into()).into());
+                    }
+                }
+                result = &mut job => return result,
             }
         }
-        Ok(belief)
+    }
+
+    pub async fn publish_prepared_belief(
+        &self,
+        prepared: &preparation::PreparedBelief,
+    ) -> Result<Belief> {
+        self.store.publish_prepared_belief(prepared).await
     }
 
     /// Embed a belief's content and upsert the vector into `belief_embeddings`
     /// when an embedding backend is configured. No-op when `[embeddings]` is
     /// absent (the vector half of `query_relevant` simply degrades to empty).
-    /// Called by `add_belief` / `add_belief_in_project` and by the `reembed`
-    /// CLI to backfill existing beliefs.
+    /// Backfills existing beliefs. New belief insertion instead requires both
+    /// embedding and indexed grounding before one atomic publication.
     pub async fn embed_and_store_belief(&self, belief: &Belief) -> Result<()> {
         if let Some(embedder) = &self.embeddings {
-            let mut vecs = embedder
-                .embed(std::slice::from_ref(&belief.content))
-                .await?;
+            let mut vecs = self.embed_existing_belief(embedder, belief).await?;
             if let Some(v) = vecs.pop() {
                 self.store.insert_belief_embedding(belief.id, &v).await?;
             }
@@ -213,37 +359,36 @@ impl MimirService {
         Ok(())
     }
 
-    /// Auto-ground a newly inserted belief against existing document chunks.
-    /// Finds chunks with cosine similarity ≥ GROUND_THRESHOLD that are
-    /// project-compatible (same project, or either side is unscoped), then
-    /// creates GROUNDS edges. No-op when embeddings are not configured.
-    /// Formalised as Evidence.autoGroundBelief in the Agda spec.
-    async fn auto_ground_belief(&self, belief: &Belief, embedding: &[f32]) -> Result<()> {
-        // Find project-scoped chunk IDs to restrict the search, then search
-        // all global (unscoped) chunks too. We do a single scored search over
-        // all chunks, then filter by project compatibility in Rust.
-        let candidates = self
-            .store
-            .query_chunks_by_vector_scored(embedding, 20, None)
-            .await?;
-        for (chunk_id, sim) in candidates {
-            if sim < GROUND_THRESHOLD {
-                break; // results are ordered by similarity desc
+    async fn embed_existing_belief(
+        &self,
+        embedder: &OwnedEmbeddingBackend,
+        belief: &Belief,
+    ) -> Result<Vec<Vec<f32>>> {
+        // The subscription precedes the first target read: deletion either
+        // appears in that read or leaves a notification for this exact job.
+        let mut changes = db::EmbeddingOwnerSubscription::connect(&self.database).await?;
+        if self.store.get_belief(belief.id).await?.is_none() {
+            return Err(store::BeliefEmbeddingTargetMissing {
+                belief_id: belief.id,
             }
-            // Check project compatibility: fetch the chunk's project tag.
-            if let Some(chunk) = self.store.get_chunk_by_id(chunk_id).await? {
-                let compatible = match (&belief.project, &chunk.project) {
-                    (None, _) | (_, None) => true,
-                    (Some(bp), Some(cp)) => bp == cp,
-                };
-                if compatible {
-                    self.store
-                        .insert_evidence(chunk_id, belief.id, Probability::new(sim)?)
-                        .await?;
+            .into());
+        }
+        let job = embedder.embed(std::slice::from_ref(&belief.content));
+        tokio::pin!(job);
+        loop {
+            tokio::select! {
+                biased;
+                change = changes.changed() => {
+                    // A disconnected monitor cannot establish continued
+                    // ownership; returning drops this call's provider future.
+                    change?;
+                    if self.store.get_belief(belief.id).await?.is_none() {
+                        return Err(store::BeliefEmbeddingTargetMissing { belief_id: belief.id }.into());
+                    }
                 }
+                result = &mut job => return result,
             }
         }
-        Ok(())
     }
 
     /// Auto-ground newly loaded chunks against existing beliefs.
@@ -259,7 +404,7 @@ impl MimirService {
         for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
             let candidates = self
                 .store
-                .query_beliefs_by_vector_scored(embedding, 20)
+                .query_beliefs_by_vector_scored(embedding, None)
                 .await?;
             for (belief_id, sim) in candidates {
                 if sim < GROUND_THRESHOLD {
@@ -297,14 +442,14 @@ impl MimirService {
     /// Delete all beliefs and DocumentChunks tagged with the given project.
     /// Returns the combined count of vertices removed.
     pub async fn delete_project(&self, project: &str) -> Result<usize> {
-        let belief_count = self.store.delete_project(project).await?;
-        // Also clear document chunks tagged with this project.
-        let chunk_ids = self.store.get_chunk_ids_by_project(project).await?;
-        let chunk_count = chunk_ids.len();
-        self.store.delete_document_chunks(&chunk_ids).await?;
-        self.store.delete_chunk_embeddings(&chunk_ids).await?;
-        self.store.delete_learning_project(project).await?;
-        Ok(belief_count + chunk_count)
+        self.store.delete_project(project).await
+    }
+
+    pub async fn delete_project_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.delete_project_operation(step).await
     }
 
     /// Get a pattern by ID.
@@ -429,13 +574,41 @@ impl MimirService {
         target_id: Uuid,
         value: f64,
     ) -> Result<Vec<(Uuid, Probability)>> {
+        self.intervention_after_target(target_id, value, || async { Ok(()) })
+            .await
+    }
+
+    pub(crate) async fn intervention_after_target<F, W>(
+        &self,
+        target_id: Uuid,
+        value: f64,
+        after_target: F,
+    ) -> Result<Vec<(Uuid, Probability)>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
         let value = Probability::new(value)?;
-        if self.store.get_belief(target_id).await?.is_none() {
-            anyhow::bail!("belief {} not found", target_id);
+        let mut client = self.store.snapshot_connection().await;
+        let tx = store::snapshot_transaction(&mut client).await?;
+        if self
+            .store
+            .get_belief_on(tx.client(), target_id)
+            .await?
+            .is_none()
+        {
+            return Err(interaction::RequestCorrection::missing_reference(
+                "id", format!("The requested belief {target_id} was not found in Mimir."),
+                "Use list_beliefs or query_relevant_beliefs to find the intended stored belief, then retry with its ID. If the intended record is unknown, ask the user. Do not invent an identifier.",
+            ).into());
         }
-        let mut downstream = self.store.get_causal_downstream_beliefs(target_id).await?;
-        let (learning_mass, _) = self.store.learning_overlay().await?;
-        let grounding_mass = self.store.get_grounding_mass_all().await?;
+        after_target().await?;
+        let mut downstream = self
+            .store
+            .downstream_on(tx.client(), target_id, true)
+            .await?;
+        let (learning_mass, _) = self.store.learning_overlay_on(tx.client()).await?;
+        let grounding_mass = self.store.get_grounding_mass_all_on(tx.client()).await?;
         for belief in &mut downstream {
             belief.alpha0 += grounding_mass.get(&belief.id).copied().unwrap_or(0.0);
             if let Some((a, b)) = learning_mass.get(&belief.id) {
@@ -449,30 +622,22 @@ impl MimirService {
         // genuine CO-CAUSE outside the descendant set still counts (spec
         // Mimir.Inference keep-causes-into-nontarget). Surgery (in `intervene`)
         // then cuts only edges INTO the target.
-        let incoming = self.store.get_incoming_edges(&ids).await?;
+        let incoming = self.store.get_incoming_edges_on(tx.client(), &ids).await?;
         let edges = strip_source_means(&incoming);
         let external_means = external_means_from(&incoming, &ids);
         // No writeback — this is a hypothetical projection.
-        self.inference
-            .intervene(target_id, value, &downstream, &edges, &external_means)
+        let result =
+            self.inference
+                .intervene(target_id, value, &downstream, &edges, &external_means)?;
+        tx.commit().await?;
+        Ok(result)
     }
 
     /// Get active contradictions in the graph. Project-scoped the same way as
     /// `list_beliefs`: a pair is included only if both endpoints are visible
     /// in scope (tagged with `project` or untagged).
     pub async fn get_contradictions(&self, project: Option<&str>) -> Result<Vec<(Uuid, Uuid)>> {
-        let pairs = match project {
-            Some(p) => self.store.get_contradiction_pairs_by_project(p).await?,
-            None => self.store.get_contradiction_pairs().await?,
-        };
-        if pairs.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let beliefs = match project {
-            Some(p) => self.store.list_beliefs_by_project(p).await?,
-            None => self.store.list_beliefs().await?,
-        };
+        let (pairs, beliefs) = self.store.contradictions_snapshot(project).await?;
         let belief_map: std::collections::HashMap<Uuid, &Belief> =
             beliefs.iter().map(|b| (b.id, b)).collect();
 
@@ -511,9 +676,16 @@ impl MimirService {
     pub async fn sweep_expired_defeated(
         &self,
         prob_threshold: f64,
-        grace_hours: f64,
         project: Option<&str>,
     ) -> Result<usize> {
+        if !prob_threshold.is_finite() || !(0.0..=1.0).contains(&prob_threshold) {
+            return Err(validation::Refusal::invalid(
+                validation::Code::InvalidNumber,
+                vec![validation::Segment::Key("prob_threshold".into())],
+                "Supply a finite probability between 0 and 1 inclusive; no beliefs were read or deleted.",
+            ).into());
+        }
+        let grace_period = self.retirement_policy()?.duration();
         let edges = match project {
             Some(p) => self.store.get_defeats_with_timestamps_by_project(p).await?,
             None => self.store.get_defeats_with_timestamps().await?,
@@ -528,7 +700,6 @@ impl MimirService {
         let belief_map: std::collections::HashMap<Uuid, Belief> =
             beliefs.into_iter().map(|b| (b.id, b)).collect();
         let now = chrono::Utc::now();
-        let grace_period = chrono::Duration::minutes((grace_hours * 60.0).round() as i64);
         let candidates = self.inference.find_expired_defeated(
             &edges,
             &belief_map,
@@ -558,21 +729,67 @@ impl MimirService {
     /// probability desc). RRF fuses ranks (scale-agnostic); the weights let the
     /// reliable semantic leg lead while probability remains a real ranking signal
     /// rather than a tiebreaker or a naked multiply. Spec: `Mimir.Graph`
-    /// (query_relevant section). `limit = 0` means no limit.
+    /// (query_relevant section). Omitted selection means all matches.
     /// `project`, when given, restricts the candidate pool (token, vector,
     /// probability-prior, and graph-expansion legs) to beliefs tagged with
     /// that project plus untagged (global) beliefs — see `list_beliefs`.
     pub async fn query_relevant(
         &self,
         query: &str,
-        limit: usize,
+        limit: Selection,
         project: Option<&str>,
         prefer_type: Option<MemoryType>,
     ) -> Result<Vec<Belief>> {
-        let (_, superseded) = self.store.learning_overlay().await?;
+        self.relevant_after_overlay(query, limit, project, prefer_type, || async { Ok(()) })
+            .await
+    }
+
+    pub(crate) async fn relevant_after_overlay<F, W>(
+        &self,
+        query: &str,
+        limit: Selection,
+        project: Option<&str>,
+        prefer_type: Option<MemoryType>,
+        after_overlay: F,
+    ) -> Result<Vec<Belief>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.store.snapshot_connection().await;
+        let tx = store::snapshot_transaction(&mut client).await?;
+        let result = self
+            .relevant_on(
+                tx.client(),
+                query,
+                limit,
+                project,
+                prefer_type,
+                after_overlay,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    async fn relevant_on<F, W>(
+        &self,
+        client: &tokio_postgres::Client,
+        query: &str,
+        limit: Selection,
+        project: Option<&str>,
+        prefer_type: Option<MemoryType>,
+        after_overlay: F,
+    ) -> Result<Vec<Belief>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let (_, superseded) = self.store.learning_overlay_on(client).await?;
+        after_overlay().await?;
         let all: Vec<Belief> = match project {
-            Some(p) => self.store.list_beliefs_by_project(p).await?,
-            None => self.store.list_beliefs().await?,
+            Some(p) => self.store.list_beliefs_by_project_on(client, p).await?,
+            None => self.store.list_beliefs_on(client).await?,
         }
         .into_iter()
         // Working memory is task-local scratch, excluded from cross-session
@@ -611,34 +828,37 @@ impl MimirService {
                 })
                 .collect();
             scored.sort_by(|a, b| {
-                b.0.cmp(&a.0).then_with(|| {
-                    b.1.probability
-                        .value()
-                        .partial_cmp(&a.1.probability.value())
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
+                b.0.cmp(&a.0)
+                    .then_with(|| {
+                        b.1.probability
+                            .value()
+                            .partial_cmp(&a.1.probability.value())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .then_with(|| a.1.id.cmp(&b.1.id))
             });
             scored.into_iter().map(|(_, b)| b.id).collect()
         };
 
-        // ── Vector list: cosine top-k over belief_embeddings, when an
-        //    embedding backend is configured. The pool is intentionally larger
-        //    than `limit`; RRF + the probability sort + truncate decide the
-        //    final cut. If the embedder itself fails (model unavailable,
+        // ── Vector list: all eligible vectors participate in fusion.
+        //    Only the caller's final selection cuts the returned ranking. If the embedder itself fails (model unavailable,
         //    network error, etc.) we degrade to token-only with a warning
         //    rather than failing the whole query — partial recall beats none.
         let vector_ranked: Vec<Uuid> = if let Some(embedder) = &self.embeddings {
-            let pool_size = if limit > 0 { (limit * 4).max(20) } else { 50 };
             match embedder.embed(&[query.to_string()]).await {
                 Ok(mut vecs) => match vecs.pop() {
                     Some(qv) => match project {
                         Some(_) => {
                             let ids: Vec<Uuid> = all.iter().map(|b| b.id).collect();
                             self.store
-                                .query_beliefs_by_vector_filtered(&qv, pool_size, &ids)
+                                .query_beliefs_by_vector_filtered_on(client, &qv, None, &ids)
                                 .await?
                         }
-                        None => self.store.query_beliefs_by_vector(&qv, pool_size).await?,
+                        None => {
+                            self.store
+                                .query_beliefs_by_vector_on(client, &qv, None)
+                                .await?
+                        }
                     },
                     None => Vec::new(),
                 },
@@ -697,8 +917,11 @@ impl MimirService {
                     while !frontier.is_empty() {
                         let mut next_frontier = Vec::new();
                         for fid in frontier {
-                            let neighbors =
-                                self.store.get_direct_downstream_by_project(fid, p).await?;
+                            let mut neighbors = self
+                                .store
+                                .direct_downstream_by_project_on(client, fid, p)
+                                .await?;
+                            neighbors.sort_by_key(|belief| belief.id);
                             for b in neighbors {
                                 if b.memory_type == MemoryType::Working
                                     || superseded.contains(&b.id)
@@ -715,7 +938,7 @@ impl MimirService {
                     }
                 }
                 None => {
-                    let downstream = self.store.get_downstream_beliefs(id).await?;
+                    let downstream = self.store.downstream_on(client, id, false).await?;
                     for b in downstream {
                         if b.memory_type == MemoryType::Working || superseded.contains(&b.id) {
                             continue;
@@ -771,6 +994,7 @@ impl MimirService {
             prob_of[b]
                 .partial_cmp(&prob_of[a])
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.cmp(b))
         });
         // Type-preference list: matching-type beliefs first (stable order
         // preserved within each half), so they occupy the low-rank/high-weight
@@ -799,11 +1023,13 @@ impl MimirService {
         matched.sort_by(|a, b| {
             let sa = fused.get(&a.id).copied().unwrap_or(0.0);
             let sb = fused.get(&b.id).copied().unwrap_or(0.0);
-            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+            sb.partial_cmp(&sa)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.id.cmp(&b.id))
         });
 
-        if limit > 0 {
-            matched.truncate(limit);
+        if let Some(count) = limit {
+            matched.truncate(count.get());
         }
         Ok(matched)
     }
@@ -880,12 +1106,12 @@ impl MimirService {
     /// Semantic search over loaded document chunks.
     /// Embeds `context`, queries chunk_embeddings by cosine distance, fetches
     /// matching DocumentChunk vertices from AGE, enriches with parent content.
-    /// limit=0 means no limit.
+    /// Omitted selection means all matches.
     pub async fn query_document(
         &self,
         context: &str,
         project: Option<&str>,
-        limit: usize,
+        limit: Selection,
     ) -> Result<Vec<QueryResult>> {
         let embedder = self.embeddings.as_ref().ok_or_else(|| {
             anyhow::anyhow!("embeddings not configured — add [embeddings] to config.toml")
@@ -898,34 +1124,9 @@ impl MimirService {
             vecs.swap_remove(0)
         };
 
-        let filter_ids: Option<Vec<Uuid>> = match project {
-            None => None,
-            Some(proj) => Some(self.store.get_chunk_ids_by_project(proj).await?),
-        };
-
-        let chunk_ids = self
-            .store
-            .query_chunks_by_vector(&query_vec, limit, filter_ids.as_deref())
-            .await?;
-
-        let mut results = Vec::with_capacity(chunk_ids.len());
-        for id in chunk_ids {
-            let Some(chunk) = self.store.get_chunk_by_id(id).await? else {
-                continue;
-            };
-            let parent_content = match chunk.parent_id {
-                None => None,
-                Some(pid) => self.store.get_chunk_by_id(pid).await?.map(|p| p.content),
-            };
-            results.push(QueryResult {
-                id: chunk.id.to_string(),
-                document_path: chunk.document_path,
-                section_path: chunk.section_path,
-                content: chunk.content,
-                parent_content,
-            });
-        }
-        Ok(results)
+        self.store
+            .document_query_snapshot(&query_vec, project, limit)
+            .await
     }
 
     // -----------------------------------------------------------------------
@@ -946,48 +1147,82 @@ impl MimirService {
     }
 
     /// The grounding passages for a single belief, strongest first.
-    /// `limit = 0` means no cap.
+    /// Omit passage selection for all support; a supplied count is positive.
     pub async fn evidence_for_belief(
         &self,
         belief_id: Uuid,
-        limit: usize,
+        limit: Selection,
     ) -> Result<Vec<EvidenceRef>> {
-        let mut ev = self.store.get_evidence_for_beliefs(&[belief_id]).await?;
-        ev.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        if limit > 0 {
-            ev.truncate(limit);
-        }
-        let mut out = Vec::with_capacity(ev.len());
-        for (_belief, chunk_id, weight) in ev {
-            if let Some(c) = self.store.get_chunk_by_id(chunk_id).await? {
-                out.push(EvidenceRef {
-                    chunk_id,
-                    document_path: c.document_path,
-                    section_path: c.section_path,
-                    snippet: c.content.trim().to_string(),
-                    weight,
-                });
-            }
-        }
-        Ok(out)
+        self.store
+            .evidence_for_belief_snapshot(belief_id, limit)
+            .await
     }
 
     /// `query_relevant`, enriched with the top-k grounding passages per belief.
     /// `query_relevant` itself is unchanged (backward compatible); this is purely
-    /// additive. `evidence_per_belief = 0` means no cap.
+    /// additive. Omitted passage selection returns all supporting passages.
     pub async fn query_relevant_grounded(
         &self,
         query: &str,
-        limit: usize,
-        evidence_per_belief: usize,
+        limit: Selection,
+        evidence_per_belief: Selection,
         project: Option<&str>,
     ) -> Result<Vec<GroundedBelief>> {
-        let beliefs = self.query_relevant(query, limit, project, None).await?;
+        self.grounded_after_overlay(query, limit, evidence_per_belief, project, || async {
+            Ok(())
+        })
+        .await
+    }
+
+    pub(crate) async fn grounded_after_overlay<F, W>(
+        &self,
+        query: &str,
+        limit: Selection,
+        evidence_per_belief: Selection,
+        project: Option<&str>,
+        after_overlay: F,
+    ) -> Result<Vec<GroundedBelief>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.store.snapshot_connection().await;
+        let tx = store::snapshot_transaction(&mut client).await?;
+        let result = self
+            .grounded_on(
+                tx.client(),
+                query,
+                limit,
+                evidence_per_belief,
+                project,
+                after_overlay,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    async fn grounded_on<F, W>(
+        &self,
+        client: &tokio_postgres::Client,
+        query: &str,
+        limit: Selection,
+        evidence_per_belief: Selection,
+        project: Option<&str>,
+        after_overlay: F,
+    ) -> Result<Vec<GroundedBelief>>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let beliefs = self
+            .relevant_on(client, query, limit, project, None, after_overlay)
+            .await?;
         if beliefs.is_empty() {
             return Ok(vec![]);
         }
         let ids: Vec<Uuid> = beliefs.iter().map(|b| b.id).collect();
-        let ev = self.store.get_evidence_for_beliefs(&ids).await?;
+        let ev = self.store.get_evidence_for_beliefs_on(client, &ids).await?;
 
         // Group (chunk_id, weight) by belief_id.
         let mut by_belief: std::collections::HashMap<Uuid, Vec<(Uuid, f64)>> =
@@ -1009,9 +1244,13 @@ impl MimirService {
             if let Some(entries) = by_belief.get(&belief.id) {
                 let mut entries = entries.clone();
                 // Strongest grounding first.
-                entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                if evidence_per_belief > 0 {
-                    entries.truncate(evidence_per_belief);
+                entries.sort_by(|a, b| {
+                    b.1.partial_cmp(&a.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.0.cmp(&b.0))
+                });
+                if let Some(count) = evidence_per_belief {
+                    entries.truncate(count.get());
                 }
                 for (chunk_id, weight) in entries {
                     if let std::collections::hash_map::Entry::Vacant(e) =
@@ -1019,7 +1258,7 @@ impl MimirService {
                     {
                         let r = self
                             .store
-                            .get_chunk_by_id(chunk_id)
+                            .get_chunk_by_id_on(client, chunk_id)
                             .await?
                             .map(|c| EvidenceRef {
                                 chunk_id,
@@ -1044,6 +1283,103 @@ impl MimirService {
         Ok(out)
     }
 
+    /// Reserve operation metadata without executing a business handler.
+    pub async fn reserve_operation(
+        &self,
+        request_key: &str,
+    ) -> Result<store::OperationReservation> {
+        self.store.reserve_operation(request_key).await
+    }
+
+    pub async fn read_operation_reservation(
+        &self,
+        token: Uuid,
+    ) -> Result<Option<store::OperationReservation>> {
+        self.store.read_operation_reservation(token).await
+    }
+
+    pub async fn bind_operation_request(
+        &self,
+        token: Uuid,
+        request: &store::OperationBindingRequest,
+    ) -> Result<store::OperationBindingDecision> {
+        self.store.bind_operation_request(token, request).await
+    }
+
+    pub async fn read_operation_binding(
+        &self,
+        token: Uuid,
+    ) -> Result<Option<store::OperationBinding>> {
+        self.store.read_operation_binding(token).await
+    }
+
+    pub async fn commit_operation_step<F>(
+        &self,
+        step: &store::RegisteredStep,
+        apply: F,
+    ) -> Result<store::StepDecision>
+    where
+        F: for<'a, 'client> FnOnce(
+            &'a tokio_postgres::Transaction<'client>,
+            &'a store::OperationBindingRequest,
+        ) -> store::StepWork<'a>,
+    {
+        self.store.commit_operation_step(step, apply).await
+    }
+
+    pub async fn commit_final_operation_step<F>(
+        &self,
+        step: &store::RegisteredStep,
+        apply: F,
+    ) -> Result<store::StepDecision>
+    where
+        F: for<'a, 'client> FnOnce(
+            &'a tokio_postgres::Transaction<'client>,
+            &'a store::OperationBindingRequest,
+        ) -> store::FinalStepWork<'a>,
+    {
+        self.store.commit_final_operation_step(step, apply).await
+    }
+
+    pub async fn read_operation_step(
+        &self,
+        token: Uuid,
+        step: &str,
+    ) -> Result<Option<store::StepReceipt>> {
+        self.store.read_operation_step(token, step).await
+    }
+
+    pub async fn prepare_operation<F>(
+        &self,
+        token: Uuid,
+        expected: &store::OperationBindingRequest,
+        select: F,
+    ) -> Result<store::PlanDecision>
+    where
+        F: for<'a, 'client> FnOnce(
+            &'a tokio_postgres::Transaction<'client>,
+            &'a store::OperationBinding,
+        ) -> store::SelectionWork<'a>,
+    {
+        self.store.prepare_operation(token, expected, select).await
+    }
+
+    pub async fn complete_operation(
+        &self,
+        plan: &store::OperationPlan,
+        reply: serde_json::Value,
+    ) -> Result<store::CompletionDecision> {
+        self.store.complete_operation(plan, reply).await
+    }
+
+    pub async fn read_operation_outcome(
+        &self,
+        token: Uuid,
+        expected: Option<&store::OperationBindingRequest>,
+    ) -> Result<store::OperationOutcome> {
+        self.store.read_operation_outcome(token, expected).await
+    }
+
     /// Collect graph statistics.
     pub async fn stats(&self) -> Result<MimirStats> {
         let beliefs = self.store.count_beliefs().await?;
@@ -1061,3 +1397,4 @@ impl MimirService {
 }
 
 pub mod operations;
+pub mod preparation;

@@ -1,6 +1,8 @@
 {-# OPTIONS --safe #-}
 -- Mimir frames one line and trims its text before asking the standard JSON
 -- parser. The supplied library owns UTF-8 admission and complete JSON syntax.
+-- Its field-preserving visitor supplies object members before normalization;
+-- Envelope.extract rejects repeated names before selecting any handler.
 import Mimir.StandardLibrary
 module Mimir.McpInput (library : Mimir.StandardLibrary.Contract) where
 
@@ -12,6 +14,7 @@ import Mimir.StandardLibrary as Library
 import Mimir.ReadLine as Lines
 import Mimir.StructuredValue as JSON
 import Mimir.McpEnvelope as Envelope
+import Data.Sum
 
 data BodyOutcome (input : Text) : Set where
   blank : input ≡ [] → BodyOutcome input
@@ -36,7 +39,7 @@ module Parser where
   trimmed : ∀ text → BodyOutcome text
   trimmed [] = blank refl
   trimmed text@(_ ∷ _) = fromJSON
-    (Library.Contract.jsonValue library (Library.Contract.encodeUTF8 library text))
+    (Library.Contract.jsonMembers library (Library.Contract.encodeUTF8 library text))
 
   readBody : ∀ text → BodyOutcome (body text)
   readBody text = trimmed (trim text)
@@ -47,9 +50,11 @@ module Parser where
   ... | Lines.invalidUTF8 framed error = invalidUTF8 framed error
   ... | Lines.success framed text = line framed text (readBody text)
 
-request : JSON.Value → Envelope.Request
+request : JSON.Value → Data.Sum._⊎_ Envelope.Problem Envelope.Request
 request = Envelope.extract
 
-command : JSON.Value → Envelope.Command
-command value = Envelope.dispatch (request value)
+command : JSON.Value → Data.Sum._⊎_ Envelope.Problem Envelope.Command
+command value with request value
+... | Data.Sum.inj₁ diagnostic = Data.Sum.inj₁ diagnostic
+... | Data.Sum.inj₂ admitted = Data.Sum.inj₂ (Envelope.dispatch admitted)
 

@@ -9,7 +9,7 @@ open import Data.Bool.ListAction using (all; any)
 open import Data.Maybe using (Maybe; just; nothing; is-just; is-nothing)
 open import Data.Nat using (ℕ; _≤?_)
 open import Data.Fin using (_≟_)
-open import Data.Product using (_×_; _,_)
+open import Data.Product using (_×_; _,_; Σ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Data.String using (String; toList)
@@ -34,6 +34,7 @@ import Mimir.ConfigurationSchema as Core
 import Mimir.NotificationConfig as Email
 import Mimir.NotificationConfigurationWire as EmailWire
 import Mimir.Effects as Effects
+import Mimir.ConfigurationUpgrade as Upgrade
 
 infixl 1 _>>=_
 _>>=_ : ∀ {E A B : Set} → E ⊎ A → (A → E ⊎ B) → E ⊎ B
@@ -48,9 +49,14 @@ data Backend : Set where claudeCode codex commandMode api : Backend
 data Provider : Set where openai anthropic openrouter deepseek zai gemini compatible : Provider
 data Effort : Set where minimal low medium high xhigh : Effort
 
+record DailyTime : Set where
+  constructor dailyTime
+  field hour minute : ℕ
+
 record Judge : Set where
   constructor judgeSettings
-  field batchSize : ℕ; project : Maybe Text; mcpCommand : Text; mcpArgs : List Text
+  field project : Maybe Text; mcpCommand : Text; mcpArgs : List Text
+        dailyReportTime : Maybe DailyTime
 
 record Llm : Set where
   constructor llmSettings
@@ -71,11 +77,20 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
   module Num = Numbers conversion
   module E = EmailWire.Decode sizeMaximum
 
+  dailyTimeValue : V.Value → Validation.Fault ⊎ DailyTime
+  dailyTimeValue = recordOf ("hour" ∷ "minute" ∷ []) (λ fields →
+    required "hour" (unsigned 255) fields >>= λ hour →
+    required "minute" (unsigned 255) fields >>= λ minute → inj₂ (dailyTime hour minute))
+
   judge : V.Value → Validation.Fault ⊎ Judge
-  judge = recordOf ("batch_size" ∷ "project" ∷ "mcp_command" ∷ "mcp_args" ∷ []) (λ fields →
-    defaulted "batch_size" 5 (unsigned sizeMaximum) fields >>= λ batch → optional "project" V.asString fields >>= λ project →
+  judge raw with view raw (toList "batch_size")
+  ... | just _ = inj₁ (Validation.fault (Validation.key "batch_size" ∷ []) Validation.unsupportedCombination
+    "judge.batch_size is obsolete; run mimir config upgrade to remove it, then mimir config check")
+  ... | nothing = recordOf ("project" ∷ "mcp_command" ∷ "mcp_args" ∷ "daily_report_time" ∷ []) (λ fields →
+    optional "project" V.asString fields >>= λ project →
     defaulted "mcp_command" (toList "mimir-mcp") V.asString fields >>= λ cmd →
-    defaulted "mcp_args" [] (readArray V.asString) fields >>= λ args → inj₂ (judgeSettings batch project cmd args))
+    defaulted "mcp_args" [] (readArray V.asString) fields >>= λ args →
+    optional "daily_report_time" dailyTimeValue fields >>= λ time → inj₂ (judgeSettings project cmd args time)) raw
 
   llm : V.Value → Validation.Fault ⊎ Llm
   llm = recordOf ("backend" ∷ "model" ∷ "reasoning_effort" ∷ "provider" ∷ "api_key" ∷ "base_url" ∷ "command" ∷ "args" ∷ [])
@@ -93,11 +108,14 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
   ... | inj₂ value = inj₂ value
 
   email : Maybe V.Value → Text ⊎ Email.Config
-  email nothing = inj₂ (record Email.defaults { timeoutSeconds = 0 ; retrySeconds = 0 ; maximumAttempts = 0 })
+  email nothing = inj₂ Email.defaults
   email (just raw) = section "email" E.decode (just raw)
 
   sections : Core.Config → Text ⊎ Runtime
-  sections core = section "judge" judge (Core.Config.judge core) >>= λ j →
+  sections core = Upgrade.checkOptional "judge" Upgrade.judgeKeys (Core.Config.judge core) >>= λ _ →
+    Upgrade.checkOptional "llm" Upgrade.llmKeys (Core.Config.llm core) >>= λ _ →
+    Upgrade.checkOptional "email" Upgrade.emailKeys (Core.Config.email core) >>= λ _ →
+    section "judge" judge (Core.Config.judge core) >>= λ j →
     section "llm" llm (Core.Config.llm core) >>= λ l → email (Core.Config.email core) >>= λ e →
     inj₂ (runtime core j l e)
 
@@ -147,8 +165,23 @@ module Validate (libraries : Libraries) where
     ensure (URL.emptyUsername url ∧ URL.noPassword url ∧ URL.noQuery url ∧ URL.noFragment url)
       "llm.base_url must not contain credentials, query, or fragment"
 
+  dailyTimeCheck : DailyTime → Text ⊎ ⊤
+  dailyTimeCheck value = ensure
+    (does (DailyTime.hour value ≤? 23) ∧ does (DailyTime.minute value ≤? 59))
+    "judge.daily_report_time requires hour 0..23 and minute 0..59"
+
+  reportTime : Bool → Maybe DailyTime → Text ⊎ ⊤
+  reportTime true nothing = inj₁ (toList "Set judge.daily_report_time = { hour = H, minute = M } to your chosen local delivery time before enabling email")
+  reportTime false nothing = inj₂ tt
+  reportTime _ (just value) = dailyTimeCheck value
+
+  enabledEmailRequiresChosenTime : ∀ value → reportTime true value ≡ inj₂ tt →
+    Σ DailyTime (λ time → value ≡ just time)
+  enabledEmailRequiresChosenTime nothing ()
+  enabledEmailRequiresChosenTime (just time) admitted = time , refl
+
   judge : Judge → Text ⊎ ⊤
-  judge j = ensure (does (1 ≤? Judge.batchSize j)) "judge.batch_size must be positive" >>= λ _ →
+  judge j =
     optionalCheck (λ p → ensure (clean p) "invalid judge.project") (Judge.project j) >>= λ _ →
     ensure (clean (Judge.mcpCommand j)) "invalid judge.mcp_command" >>= λ _ →
     ensure (plainCommand (Libraries.path libraries (Judge.mcpCommand j)) ∨ absoluteCommand (Judge.mcpCommand j))
@@ -195,7 +228,8 @@ module Validate (libraries : Libraries) where
 
   validate : Runtime → Text ⊎ ⊤
   validate r = judge (Runtime.judge r) >>= λ _ → llm (Runtime.llm r) >>= λ _ →
-    email (Email.validate (Runtime.email r))
+    email (Email.validate (Runtime.email r)) >>= λ _ →
+    reportTime (Email.Config.enabled (Runtime.email r)) (Judge.dailyReportTime (Runtime.judge r))
     where
     email : Validation.Checked (Email.Valid (Runtime.email r)) → Text ⊎ ⊤
     email (Validation.rejected fault _) = inj₁ (Validation.Fault.explanation fault)

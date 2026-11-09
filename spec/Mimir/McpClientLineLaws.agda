@@ -37,13 +37,13 @@ module Exact where
       Framed (F.advance before byte notLF) events after →
       Framed before ((Line.readByte , Line.byteRead byte) ∷ events) after
 
-  diagnosticCannotComplete : ∀ events after →
-    F.Runs F.diagnostic events (F.complete after) → ⊥
-  diagnosticCannotComplete ._ after (F.replied refl bytes (F.replied () reply rest))
+  diagnosticCannotComplete : ∀ cleanup events after →
+    F.Runs (F.diagnostic cleanup) events (F.complete after) → ⊥
+  diagnosticCannotComplete cleanup ._ after (F.replied refl bytes (F.replied () reply rest))
 
   settlingCannotComplete : ∀ events after →
     F.Runs F.settling events (F.complete after) → ⊥
-  settlingCannotComplete ._ after (F.replied refl reply run) = diagnosticCannotComplete _ after run
+  settlingCannotComplete ._ after (F.replied refl reply run) = diagnosticCannotComplete reply _ after run
 
   frameReceipt : ∀ before events after →
     F.Runs (F.reading before) events (F.complete after) → Framed before events after

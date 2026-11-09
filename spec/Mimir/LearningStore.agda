@@ -5,12 +5,16 @@
 module Mimir.LearningStore where
 
 open import Data.Float.Base using (Float)
+open import Data.Bool using (Bool; true; false; not; _∨_)
 open import Data.List using (List; []; _∷_; map)
+open import Data.Bool.ListAction using (any)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≟_)
 open import Data.Integer using (ℤ)
+import Data.Integer.Properties as Integer
 open import Data.Product using (_×_; _,_)
-open import Relation.Nullary using (yes; no)
+open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Relation.Nullary using (yes; no; does)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
 open import Mimir.ExperienceSchema using (Experience)
 import Mimir.ReviewObservation as Observation
@@ -18,6 +22,8 @@ import Mimir.ExperienceRead as Read
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.IndependentProvenance as Independent
 import Mimir.ItemAllocation as Allocation
+import Mimir.DatabaseTransaction as Database
+open import Mimir.SourceReview using (_≟Text_)
 
 record SourceVersion : Set where
   constructor sourceVersion
@@ -68,3 +74,93 @@ newSource payload revision now w = record w
 sourceHistoryPreserved : ∀ payload revision now w →
   World.sources (newSource payload revision now w) ≡ sourceVersion payload revision now ∷ World.sources w
 sourceHistoryPreserved payload revision now w = refl
+
+-- The database trigger emits an empty queue-change hint, never experience
+-- content. PostgreSQL delivers transactional NOTIFY only on publication and
+-- can coalesce identical hints within a transaction. The durable queue, rather
+-- than a count of hints, remains the authority after a wake or reconnect.
+data ReviewQueueSignal : Set where
+  reviewQueueChanged : ReviewQueueSignal
+
+pending : Observation.Snapshot → Bool
+pending value = does (Observation.Snapshot.reviewedRevision value Integer.<?
+  Observation.Snapshot.revision value)
+
+needsWake : Maybe Observation.Snapshot → Observation.Snapshot → Bool
+needsWake old value with pending value
+... | false = false
+... | true with old
+...   | nothing = true
+...   | just previous = not (pending previous) ∨
+  (not (does (Observation.Snapshot.revision previous Integer.≟ Observation.Snapshot.revision value)) ∨
+   not (does (Experience.project (Observation.Snapshot.experience previous) ≟Text
+     Experience.project (Observation.Snapshot.experience value))))
+
+queueChanged : World → World → Bool
+queueChanged before after = any (λ row → needsWake
+  (Read.get (Read.identity row) (World.current before)) (Read.Row.snapshot row)) (World.current after)
+
+queueSignals : World → World → List ReviewQueueSignal
+queueSignals before after with queueChanged before after
+... | false = []
+... | true = reviewQueueChanged ∷ []
+
+-- A net change requires a wake, but a trigger can also signal a committed
+-- intermediate change that was later restored in the same transaction.
+-- These extra empty hints are harmless: their meaning is "scan the queue",
+-- never "exactly one experience changed".
+data CoversQueueChange : Bool → List ReviewQueueSignal → Set where
+  unchanged : ∀ signals → CoversQueueChange false signals
+  changed : ∀ rest → CoversQueueChange true (reviewQueueChanged ∷ rest)
+
+observedSignals : ∀ {before proposed receipt actual} →
+  Database.Atomic before proposed receipt actual → List ReviewQueueSignal → Set
+observedSignals {before} {proposed} Database.committedAll signals = CoversQueueChange (queueChanged before proposed) signals
+observedSignals Database.abortedNone signals = signals ≡ []
+observedSignals Database.unknownBefore signals = signals ≡ []
+observedSignals {before} {proposed} Database.unknownAfter signals = CoversQueueChange (queueChanged before proposed) signals
+
+lostAcknowledgementPreservesObservedWake : ∀ before proposed signals →
+  observedSignals {before} {proposed} Database.committedAll signals →
+  observedSignals {before} {proposed} Database.unknownAfter signals
+lostAcknowledgementPreservesObservedWake before proposed signals covered = covered
+
+-- Model the native commit boundary, including both real possibilities after
+-- acknowledgement loss. This is not a claim that a transient NOTIFY is a
+-- durable receipt, nor a reimplementation of PostgreSQL's delivery mechanism.
+-- This function gives the minimum required hint, not an exact native count;
+-- observedSignals specifies acceptable native observations, including extras.
+publishedSignals : ∀ {before proposed receipt actual} →
+  Database.Atomic before proposed receipt actual → List ReviewQueueSignal
+publishedSignals {before} {proposed} Database.committedAll = queueSignals before proposed
+publishedSignals Database.abortedNone = []
+publishedSignals Database.unknownBefore = []
+publishedSignals {before} {proposed} Database.unknownAfter = queueSignals before proposed
+
+publicationAndSignalTogether : ∀ {before proposed receipt actual}
+  (commit : Database.Atomic before proposed receipt actual) →
+  (actual ≡ before × publishedSignals commit ≡ []) ⊎
+  (actual ≡ proposed × publishedSignals commit ≡ queueSignals before proposed)
+publicationAndSignalTogether Database.committedAll = inj₂ (refl , refl)
+publicationAndSignalTogether Database.abortedNone = inj₁ (refl , refl)
+publicationAndSignalTogether Database.unknownBefore = inj₁ (refl , refl)
+publicationAndSignalTogether Database.unknownAfter = inj₂ (refl , refl)
+
+rollbackSendsNoSignal : ∀ before proposed →
+  publishedSignals {before} {proposed} Database.abortedNone ≡ []
+rollbackSendsNoSignal before proposed = refl
+
+lostAcknowledgementKeepsCommittedSignal : ∀ before proposed →
+  publishedSignals {before} {proposed} Database.unknownAfter ≡
+  publishedSignals {before} {proposed} Database.committedAll
+lostAcknowledgementKeepsCommittedSignal before proposed = refl
+
+newPendingSourceWakes : ∀ value → pending value ≡ true → needsWake nothing value ≡ true
+newPendingSourceWakes value eligible rewrite eligible = refl
+
+completedSourceDoesNotWake : ∀ old value → pending value ≡ false → needsWake old value ≡ false
+completedSourceDoesNotWake old value complete rewrite complete = refl
+
+restoredEligibilityWakes : ∀ old value → pending old ≡ false → pending value ≡ true →
+  needsWake (just old) value ≡ true
+restoredEligibilityWakes old value complete eligible rewrite eligible | complete = refl

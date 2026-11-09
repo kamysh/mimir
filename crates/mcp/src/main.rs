@@ -1,6 +1,11 @@
+mod admission;
+mod envelope;
 mod learning;
 #[cfg(test)]
 mod learning_cycle_test;
+pub mod operation_catalogue;
+#[cfg(all(test, unix))]
+mod session_owned_tests;
 use anyhow::Result;
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
@@ -103,7 +108,7 @@ fn tools_list() -> Value {
     let mut tools = json!([
         {
             "name": "insert_belief",
-            "description": "Add a belief grounded in an explicit user instruction or document independent of a queued incident. Provenance is required and persisted. Incident-derived conclusions must use record_experience and review_experience candidates; a standalone prior plus review feedback would count one incident twice.",
+            "description": "Store a belief from an explicit user instruction or document independent of a queued incident. Provenance is required. Before storing anything, Mimir requires a complete embedding and a supporting passage from an indexed, project-compatible document. If either prerequisite is unavailable, the normal result is needs_input: open a dialog with the user using its explanation and suggested correction. Do not invent evidence, shorten the source, or change the model automatically. Incident-derived conclusions must use record_experience and review_experience candidates; a standalone prior plus review feedback would count one incident twice.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -113,7 +118,7 @@ fn tools_list() -> Value {
                     "confidence":  { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                     "project":     { "type": "string", "description": "Optional project scope. Beliefs in a project can be bulk-deleted with delete_project when the project is done." },
                     "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Functional memory type. 'fact' (default): declarative knowledge that decays over time absent reinforcement. 'experiential': a hard-won working lesson (gotcha, corrected approach) — exempt from time-decay, since its truth doesn't erode with elapsed time. 'working': task-local scratch memory, excluded from cross-session query_relevant retrieval." },
-                    "provenance": { "type": "object", "additionalProperties": false, "properties": { "basis": {"type":"string","enum":["user_instruction","document"]}, "reference": {"type":"string","minLength":1,"maxLength":2048} }, "required": ["basis","reference"], "description": "Identify the independent source. Do not use this tool for a conclusion derived from an experience." }
+                    "provenance": { "type": "object", "additionalProperties": false, "properties": { "basis": {"type":"string","enum":["user_instruction","document"]}, "reference": {"type":"string","minLength":1} }, "required": ["basis","reference"], "description": "Identify the independent source. Do not use this tool for a conclusion derived from an experience." }
                 },
                 "required": ["content", "probability", "confidence", "provenance"]
             }
@@ -124,7 +129,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string" }
+                    "id": { "type": "string", "format": "uuid" }
                 },
                 "required": ["id"]
             }
@@ -146,7 +151,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string" }
+                    "id": { "type": "string", "format": "uuid" }
                 },
                 "required": ["id"]
             }
@@ -171,8 +176,8 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "from_id": { "type": "string" },
-                    "to_id":   { "type": "string" },
+                    "from_id": { "type": "string", "format": "uuid" },
+                    "to_id":   { "type": "string", "format": "uuid" },
                     "weight":  { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                 },
                 "required": ["from_id", "to_id", "weight"]
@@ -184,8 +189,8 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "from_id": { "type": "string" },
-                    "to_id":   { "type": "string" },
+                    "from_id": { "type": "string", "format": "uuid" },
+                    "to_id":   { "type": "string", "format": "uuid" },
                     "weight":  { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                 },
                 "required": ["from_id", "to_id", "weight"]
@@ -197,8 +202,8 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "from_id": { "type": "string" },
-                    "to_id":   { "type": "string" },
+                    "from_id": { "type": "string", "format": "uuid" },
+                    "to_id":   { "type": "string", "format": "uuid" },
                     "weight":  { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                 },
                 "required": ["from_id", "to_id", "weight"]
@@ -210,8 +215,8 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id_a":   { "type": "string" },
-                    "id_b":   { "type": "string" },
+                    "id_a":   { "type": "string", "format": "uuid" },
+                    "id_b":   { "type": "string", "format": "uuid" },
                     "weight": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 1.0 }
                 },
                 "required": ["id_a", "id_b"]
@@ -223,7 +228,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string" }
+                    "id": { "type": "string", "format": "uuid" }
                 },
                 "required": ["id"]
             }
@@ -236,7 +241,7 @@ fn tools_list() -> Value {
                 "properties": {
                     "project": { "type": "string", "description": "Restrict to this project's beliefs plus untagged (global) beliefs. Omit to list everything." },
                     "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Restrict to this memory type. Useful for orphan cleanup of leftover Working beliefs from an interrupted prior session — NOT a substitute for tracking the IDs of Working beliefs your own session wrote, since this filter has no session-identity concept and cannot distinguish your in-flight Working beliefs from a concurrent session's on a shared DB." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 10, "description": "Return a page of at most this many beliefs, ordered by created_at then id. When present, the result is an object with beliefs, total, offset, and next_offset." },
+                    "limit": { "type": "integer", "minimum": 1, "description": "Return a page of at most this many beliefs, ordered by created_at then id. Supply a positive integer, or omit limit to return all matching beliefs. Zero is invalid. When present, the result is an object with beliefs, total, offset, and next_offset." },
                     "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Zero-based position in the filtered, oldest-first result. Requires limit; use next_offset from the previous page." }
                 }
             }
@@ -274,12 +279,11 @@ fn tools_list() -> Value {
         },
         {
             "name": "sweep_expired_defeated",
-            "description": "Delete defeated beliefs whose grace period has elapsed (attenuated deletion — a defeated belief is deleted only once its probability has decayed below prob_threshold AND grace_hours have passed since it was last defeated, giving a wrong record_defeat call time to be caught and reversed first). Returns count of beliefs deleted. If project is given, restricts the sweep to that project's beliefs plus untagged (global) beliefs.",
+            "description": "Delete defeated beliefs below prob_threshold after the user-configured [retirement].grace_hours period. Retention is required configuration with no default and cannot be overridden in this request. If it is missing or invalid, ask the user to choose or repair it; no sweep runs. Returns the deletion count. A project restricts selection to that project's beliefs plus untagged beliefs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "prob_threshold": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.3, "description": "Probability below which a defeated belief becomes eligible for deletion." },
-                    "grace_hours": { "type": "number", "minimum": 0.0, "default": 24.0, "description": "Hours since the belief was last defeated before it can be deleted." },
                     "project": { "type": "string", "description": "Restrict the sweep to this project's beliefs plus untagged (global) beliefs. Omit to sweep everything." }
                 }
             }
@@ -291,9 +295,9 @@ fn tools_list() -> Value {
                 "type": "object",
                 "properties": {
                     "context":          { "type": "string" },
-                    "limit":            { "type": "integer", "minimum": 0, "default": 10 },
+                    "limit":            { "type": "integer", "minimum": 1, "description": "Positive result count; omit for all matching records. Zero is invalid." },
                     "include_evidence":   { "type": "boolean", "default": false },
-                    "evidence_per_belief":{ "type": "integer", "minimum": 0, "default": 3 },
+                    "evidence_per_belief":{ "type": "integer", "minimum": 1, "description": "Positive passage count per belief; omit for all supporting passages. Zero is invalid." },
                     "project":          { "type": "string", "description": "Restrict the candidate pool to this project's beliefs plus untagged (global) beliefs. Omit to search everything." },
                     "prefer_type":      { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Nudge ranking toward this memory type — a soft preference (same weight class as the probability prior), never strong enough to lift an off-topic belief of the preferred type over a real semantic match. Omit for type-neutral ranking." }
                 },
@@ -306,8 +310,8 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "belief_id": { "type": "string" },
-                    "chunk_id":  { "type": "string" },
+                    "belief_id": { "type": "string", "format": "uuid" },
+                    "chunk_id":  { "type": "string", "format": "uuid" },
                     "weight":    { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 1.0 }
                 },
                 "required": ["belief_id", "chunk_id"]
@@ -319,7 +323,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "belief_id": { "type": "string" }
+                    "belief_id": { "type": "string", "format": "uuid" }
                 },
                 "required": ["belief_id"]
             }
@@ -330,7 +334,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string" }
+                    "id": { "type": "string", "format": "uuid" }
                 },
                 "required": ["id"]
             }
@@ -341,7 +345,7 @@ fn tools_list() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id":    { "type": "string" },
+                    "id":    { "type": "string", "format": "uuid" },
                     "value": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                 },
                 "required": ["id", "value"]
@@ -367,7 +371,7 @@ fn tools_list() -> Value {
                 "properties": {
                     "context": { "type": "string", "description": "Query text to embed and search." },
                     "project": { "type": "string", "description": "Restrict search to chunks tagged with this project." },
-                    "limit":   { "type": "integer", "minimum": 0, "default": 5, "description": "Maximum results (0 = no limit)." }
+                    "limit":   { "type": "integer", "minimum": 1, "description": "Positive result count; omit for all matching chunks. Zero is invalid." }
                 },
                 "required": ["context"]
             }
@@ -385,6 +389,9 @@ fn tools_list() -> Value {
         }
     ]);
     tools.as_array_mut().unwrap().extend(learning::tools());
+    for tool in tools.as_array_mut().unwrap() {
+        admission::close_objects(&mut tool["inputSchema"]);
+    }
     tools
 }
 
@@ -392,20 +399,21 @@ fn tools_list() -> Value {
 // Tool dispatch
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Result<Value> {
-    match name {
-        "explain_belief"
-        | "record_experience"
-        | "review_experience"
-        | "get_learning_review"
-        | "get_experience"
-        | "experience_history"
-        | "pending_experiences"
-        | "query_learning_context"
-        | "learning_capabilities"
-        | "get_lesson_assessment"
-        | "lesson_assessment_history" => learning::call(svc, name, args).await,
-        "insert_belief" => {
+    operation_catalogue::Catalogue::new(tools_list())?
+        .call(svc, name, args)
+        .await
+}
+
+async fn handle_graph_call(
+    svc: &MimirService,
+    operation: operation_catalogue::GraphOperation,
+    args: &Value,
+) -> Result<Value> {
+    use operation_catalogue::GraphOperation;
+    match operation {
+        GraphOperation::InsertBelief => {
             let provenance: IndependentProvenance = serde_json::from_value(
                 args.get("provenance")
                     .ok_or_else(|| anyhow::anyhow!("missing 'provenance'"))?
@@ -440,7 +448,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(serde_json::to_value(&belief)?)
         }
 
-        "delete_belief" => {
+        GraphOperation::DeleteBelief => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -449,7 +457,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "deleted": deleted }))
         }
 
-        "delete_project" => {
+        GraphOperation::DeleteProject => {
             let project = args["project"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'project'"))?;
@@ -457,7 +465,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "deleted": count }))
         }
 
-        "delete_pattern" => {
+        GraphOperation::DeletePattern => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -466,7 +474,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "deleted": deleted }))
         }
 
-        "insert_pattern" => {
+        GraphOperation::InsertPattern => {
             let situation = args["situation"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'situation'"))?;
@@ -492,7 +500,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(serde_json::to_value(&pattern)?)
         }
 
-        "record_support" => {
+        GraphOperation::RecordSupport => {
             let from_str = args["from_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
@@ -510,7 +518,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "record_cause" => {
+        GraphOperation::RecordCause => {
             let from_str = args["from_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
@@ -528,7 +536,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "record_defeat" => {
+        GraphOperation::RecordDefeat => {
             let from_str = args["from_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
@@ -547,7 +555,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "record_contradiction" => {
+        GraphOperation::RecordContradiction => {
             let id_a_str = args["id_a"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id_a'"))?;
@@ -563,7 +571,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "get_belief" => {
+        GraphOperation::GetBelief => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -572,7 +580,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(serde_json::to_value(&belief)?)
         }
 
-        "list_beliefs" => {
+        GraphOperation::ListBeliefs => {
             let project = args["project"].as_str();
             let memory_type = match args["memory_type"].as_str() {
                 Some(s) => Some(
@@ -584,26 +592,23 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             match args.get("limit") {
                 None => {
                     if args.get("offset").is_some() {
-                        anyhow::bail!("'offset' requires 'limit'");
+                        return Ok(serde_json::to_value(admission::offset_requires_selection())?);
                     }
                     Ok(serde_json::to_value(
                         svc.list_beliefs_filtered(project, memory_type).await?,
                     )?)
                 }
                 Some(raw_limit) => {
-                    let limit = raw_limit
-                        .as_u64()
-                        .filter(|n| (1..=10).contains(n))
-                        .ok_or_else(|| anyhow::anyhow!("'limit' must be an integer from 1 to 10"))?
-                        as usize;
+                    let limit = match admission::positive_selection("limit", raw_limit) {
+                        Ok(count) => count.get(),
+                        Err(correction) => return Ok(serde_json::to_value(correction)?),
+                    };
                     let offset = match args.get("offset") {
                         None => 0,
-                        Some(raw_offset) => raw_offset
-                            .as_u64()
-                            .and_then(|n| usize::try_from(n).ok())
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("'offset' must be a nonnegative integer")
-                            })?,
+                        Some(raw_offset) => match admission::page_offset(raw_offset) {
+                            Ok(offset) => offset,
+                            Err(correction) => return Ok(serde_json::to_value(correction)?),
+                        },
                     };
                     svc.list_beliefs_page(project, memory_type, limit, offset)
                         .await
@@ -611,13 +616,13 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             }
         }
 
-        "list_patterns" => {
+        GraphOperation::ListPatterns => {
             let project = args["project"].as_str();
             let patterns = svc.list_patterns(project).await?;
             Ok(serde_json::to_value(&patterns)?)
         }
 
-        "get_contradictions" => {
+        GraphOperation::GetContradictions => {
             let project = args["project"].as_str();
             let pairs = svc.get_contradictions(project).await?;
             let result: Vec<Value> = pairs
@@ -627,41 +632,44 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "decay_all" => {
+        GraphOperation::DecayAll => {
             let decay_factor = args["decay_factor"].as_f64();
             let project = args["project"].as_str();
             let count = svc.decay_beliefs(decay_factor, project).await?;
             Ok(json!({ "decayed": count }))
         }
 
-        "sweep_expired_defeated" => {
+        GraphOperation::SweepExpiredDefeated => {
             let prob_threshold = args["prob_threshold"].as_f64().unwrap_or(0.3);
-            let grace_hours = args["grace_hours"].as_f64().unwrap_or(24.0);
             let project = args["project"].as_str();
-            let count = svc
-                .sweep_expired_defeated(prob_threshold, grace_hours, project)
-                .await?;
+            let count = svc.sweep_expired_defeated(prob_threshold, project).await?;
             Ok(json!({ "deleted": count }))
         }
 
-        "query_relevant" => {
+        GraphOperation::QueryRelevant => {
             let query = args["context"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
-            let limit = args["limit"].as_u64().unwrap_or(10) as usize;
+            let limit = match admission::selection(args, "limit") {
+                Ok(selection) => selection,
+                Err(correction) => return Ok(serde_json::to_value(correction)?),
+            };
             let include_evidence = args["include_evidence"].as_bool().unwrap_or(false);
             let project = args["project"].as_str();
             let prefer_type = args["prefer_type"]
                 .as_str()
                 .map(|s| s.parse::<mimir_core::graph::MemoryType>())
                 .transpose()?;
+            let per = match admission::selection(args, "evidence_per_belief") {
+                Ok(selection) => selection,
+                Err(correction) => return Ok(serde_json::to_value(correction)?),
+            };
             if !include_evidence {
                 let beliefs = svc
                     .query_relevant(query, limit, project, prefer_type)
                     .await?;
                 return Ok(serde_json::to_value(&beliefs)?);
             }
-            let per = args["evidence_per_belief"].as_u64().unwrap_or(3) as usize;
             let grounded = svc
                 .query_relevant_grounded(query, limit, per, project)
                 .await?;
@@ -691,7 +699,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "add_evidence" => {
+        GraphOperation::AddEvidence => {
             let belief_str = args["belief_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'belief_id'"))?;
@@ -705,7 +713,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "get_evidence" => {
+        GraphOperation::GetEvidence => {
             let belief_str = args["belief_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'belief_id'"))?;
@@ -713,7 +721,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             // query_relevant_grounded with a degenerate query would re-rank; instead
             // pull evidence directly for this one belief via the grounded path on an
             // exact id is overkill — use the store accessor through a tiny helper.
-            let grounded = svc.evidence_for_belief(belief_id, 0).await?;
+            let grounded = svc.evidence_for_belief(belief_id, None).await?;
             let result: Vec<Value> = grounded
                 .into_iter()
                 .map(|e| {
@@ -729,7 +737,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "propagate_from" => {
+        GraphOperation::PropagateFrom => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -744,7 +752,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "query_intervention" => {
+        GraphOperation::QueryIntervention => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -762,7 +770,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "load_document" => {
+        GraphOperation::LoadDocument => {
             let path = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
@@ -771,25 +779,26 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "loaded": count }))
         }
 
-        "query_document" => {
+        GraphOperation::QueryDocument => {
             let context = args["context"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
             let project = args["project"].as_str();
-            let limit = args["limit"].as_u64().unwrap_or(5) as usize;
+            let limit = match admission::selection(args, "limit") {
+                Ok(selection) => selection,
+                Err(correction) => return Ok(serde_json::to_value(correction)?),
+            };
             let results = svc.query_document(context, project, limit).await?;
             Ok(serde_json::to_value(&results)?)
         }
 
-        "clear_document" => {
+        GraphOperation::ClearDocument => {
             let path = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
             let count = svc.clear_document(path).await?;
             Ok(json!({ "cleared": count }))
         }
-
-        other => anyhow::bail!("unknown tool: {}", other),
     }
 }
 
@@ -797,8 +806,15 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
 // Main loop
 // ---------------------------------------------------------------------------
 
+fn main() -> Result<()> {
+    if let Some(result) = mimir_core::embed::worker_entrypoint() {
+        return result;
+    }
+    application_main()
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn application_main() -> Result<()> {
     // Mimir.Startup: only an empty invocation may load configuration or connect.
     // Keep OS strings intact so invalid Unicode is a usage error, not a panic.
     const USAGE: &str = "Usage: mimir-mcp [--help | --version]";
@@ -823,6 +839,8 @@ async fn main() -> Result<()> {
         }
     }
 
+    let catalogue = operation_catalogue::Catalogue::new(tools_list())?;
+
     let (cfg, operations) = match Config::load_with_operations(&Config::config_path()) {
         Ok(c) => c,
         Err(e) => {
@@ -844,93 +862,158 @@ async fn main() -> Result<()> {
     // Connect to database (and embedding client if configured).
     let svc = MimirService::connect(&cfg).await?;
 
-    // Async I/O on stdin/stdout.
-    let stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-    let mut reader = BufReader::new(stdin);
-    let mut line = String::new();
+    serve(
+        &svc,
+        &catalogue,
+        BufReader::new(tokio::io::stdin()),
+        tokio::io::stdout(),
+    )
+    .await
+}
 
+async fn serve<R, W>(
+    svc: &MimirService,
+    catalogue: &operation_catalogue::Catalogue,
+    mut reader: R,
+    mut stdout: W,
+) -> Result<()>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut partial = Vec::new();
+    let mut queued = std::collections::VecDeque::new();
     loop {
-        line.clear();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 {
-            // EOF
-            break;
-        }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let request: Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(e) => {
-                error!("parse error: {}", e);
-                // No id available — use null
-                let resp = err_response(&Value::Null, -32700, &format!("parse error: {e}"));
-                let mut out = resp.to_string();
-                out.push('\n');
-                stdout.write_all(out.as_bytes()).await?;
-                stdout.flush().await?;
-                continue;
-            }
-        };
-
-        let is_notification = request.get("id").is_none();
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
-        let params = request
-            .get("params")
-            .cloned()
-            .unwrap_or(Value::Object(serde_json::Map::new()));
-
-        let response = match method {
-            "initialize" => ok_response(
-                &id,
-                json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "mimir", "version": env!("CARGO_PKG_VERSION") }
-                }),
-            ),
-
-            "tools/list" => ok_response(&id, json!({ "tools": tools_list() })),
-
-            "tools/call" => {
-                let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let empty_obj = Value::Object(serde_json::Map::new());
-                let arguments = params.get("arguments").unwrap_or(&empty_obj);
-
-                match handle_tool_call(&svc, tool_name, arguments).await {
-                    Ok(result) => ok_response(
-                        &id,
-                        json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
-                    ),
-                    Err(e) => {
-                        let mut response = err_response(&id, -32000, &e.to_string());
-                        if let Some(refusal) = e.downcast_ref::<mimir_core::validation::Refusal>() {
-                            response["error"]["data"] = serde_json::to_value(refusal)?;
-                        }
-                        response
-                    }
+        let line = match queued.pop_front() {
+            Some(line) => line,
+            None => {
+                if reader.read_until(b'\n', &mut partial).await? == 0 {
+                    return Ok(());
                 }
-            }
-
-            other => {
-                error!("unknown method: {}", other);
-                err_response(&id, -32601, "Method not found")
+                std::mem::take(&mut partial)
             }
         };
+        let disconnected = {
+            let exchange = exchange_line(svc, catalogue, &line, &mut stdout);
+            tokio::pin!(exchange);
+            tokio::select! {
+                biased;
+                closed = read_ahead(&mut reader, &mut partial, &mut queued) => Some(closed),
+                result = &mut exchange => { result?; None },
+            }
+            // Leaving this scope drops the active request future. Its owned
+            // local worker terminates and waits for exit before Drop returns.
+        };
+        if let Some(closed) = disconnected {
+            closed?;
+            return Ok(());
+        }
+    }
+}
 
-        if !is_notification {
-            let mut out = response.to_string();
+async fn read_ahead<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    partial: &mut Vec<u8>,
+    queued: &mut std::collections::VecDeque<Vec<u8>>,
+) -> std::io::Result<()> {
+    loop {
+        if reader.read_until(b'\n', partial).await? == 0 {
+            return Ok(());
+        }
+        queued.push_back(std::mem::take(partial));
+    }
+}
+
+async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
+    svc: &MimirService,
+    catalogue: &operation_catalogue::Catalogue,
+    line: &[u8],
+    stdout: &mut W,
+) -> Result<()> {
+    let text = match std::str::from_utf8(line) {
+        Ok(text) => text,
+        Err(error) => {
+            let response = envelope::parse_error(&error.to_string());
+            stdout.write_all(format!("{response}\n").as_bytes()).await?;
+            stdout.flush().await?;
+            return Ok(());
+        }
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    let request = match envelope::parse(trimmed) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("parse error: {}", e);
+            let resp = envelope::parse_error(&e.to_string());
+            let mut out = resp.to_string();
             out.push('\n');
             stdout.write_all(out.as_bytes()).await?;
             stdout.flush().await?;
+            return Ok(());
         }
-    }
+    };
 
+    let request = match request {
+        envelope::Incoming::Request(request) => request,
+        envelope::Incoming::Notification { method, diagnostic } => {
+            if let Some(diagnostic) = diagnostic {
+                error!(method, correction = %serde_json::to_string(&diagnostic)?, "notification was not executed");
+            }
+            return Ok(());
+        }
+        envelope::Incoming::Rejected(response) => {
+            stdout.write_all(format!("{response}\n").as_bytes()).await?;
+            stdout.flush().await?;
+            return Ok(());
+        }
+    };
+    let id = request.id();
+    let method = request.method();
+    let params = request.params();
+
+    let response = match method {
+        "initialize" => ok_response(
+            &id,
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "mimir", "version": env!("CARGO_PKG_VERSION") }
+            }),
+        ),
+
+        "tools/list" => ok_response(&id, json!({ "tools": catalogue.advertised() })),
+
+        "tools/call" => match admission::tool_parameters(params) {
+            Err(correction) => envelope::invalid_params(id, correction),
+            Ok((tool_name, arguments)) => match catalogue.call(svc, tool_name, &arguments).await {
+                Ok(result) => ok_response(
+                    &id,
+                    json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
+                ),
+                Err(e) => {
+                    let mut response = err_response(&id, -32000, &e.to_string());
+                    if let Some(refusal) = e.downcast_ref::<mimir_core::validation::Refusal>() {
+                        response["error"]["data"] = serde_json::to_value(refusal)?;
+                    }
+                    response
+                }
+            },
+        },
+
+        other => {
+            error!("unknown method: {}", other);
+            err_response(&id, -32601, "Method not found")
+        }
+    };
+
+    let mut out = response.to_string();
+    out.push('\n');
+    stdout.write_all(out.as_bytes()).await?;
+    stdout.flush().await?;
     Ok(())
 }
 

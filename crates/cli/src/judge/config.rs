@@ -49,16 +49,37 @@ impl ReasoningEffort {
     }
 }
 
+#[derive(Clone, Copy, Deserialize, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DailyTime {
+    pub hour: u8,
+    pub minute: u8,
+}
+
+impl DailyTime {
+    pub fn validate(self) -> Result<()> {
+        ensure!(
+            self.hour < 24 && self.minute < 60,
+            "judge.daily_report_time requires hour 0..23 and minute 0..59"
+        );
+        Ok(())
+    }
+
+    pub fn local_time(self) -> chrono::NaiveTime {
+        chrono::NaiveTime::from_hms_opt(self.hour.into(), self.minute.into(), 0)
+            .expect("daily report time was validated before admission")
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JudgeConfig {
-    #[serde(default = "default_batch_size")]
-    pub batch_size: usize,
     pub project: Option<String>,
     #[serde(default = "default_mcp_command")]
     pub mcp_command: String,
     #[serde(default)]
     pub mcp_args: Vec<String>,
+    pub daily_report_time: Option<DailyTime>,
 }
 
 #[derive(Deserialize)]
@@ -85,9 +106,6 @@ pub struct RuntimeConfig {
     pub email: EmailConfig,
 }
 
-fn default_batch_size() -> usize {
-    5
-}
 fn default_mcp_command() -> String {
     "mimir-mcp".into()
 }
@@ -216,7 +234,9 @@ fn endpoint(raw: &str) -> Result<()> {
 
 impl JudgeConfig {
     fn validate(&self) -> Result<()> {
-        ensure!(self.batch_size > 0, "judge.batch_size must be positive");
+        if let Some(time) = self.daily_report_time {
+            time.validate()?;
+        }
         if let Some(project) = &self.project {
             nonempty(project, "judge.project")?;
         }
@@ -297,18 +317,17 @@ pub fn load(explicit: Option<&Path>) -> Result<RuntimeConfig> {
     let path = resolved_path(explicit)?;
     validate_file_security(&path)?;
     let (core, operations) = Config::load_with_operations(&path)?;
-    let judge: JudgeConfig = section(core.judge.as_ref(), "judge")?;
-    if let Some(llm) = &core.llm {
-        for retired in [
-            "timeout_seconds",
-            "max_calls",
-            "max_output_tokens",
-            "max_budget_usd",
-        ] {
-            ensure!(!llm.contains_key(retired),
-                "llm.{retired} is obsolete: Mimir no longer imposes review budgets. Run `mimir config upgrade` to remove obsolete limits, then `mimir config check`");
-        }
+    mimir_core::operations::check_retired_limits(&core)?;
+    if let Some(value) = core
+        .judge
+        .as_ref()
+        .and_then(|table| table.get("daily_report_time"))
+    {
+        let time: DailyTime = value.clone().try_into().map_err(|_| anyhow!(
+            "judge.daily_report_time must contain exactly hour and minute as integers; set {{ hour = H, minute = M }} to your chosen local time"))?;
+        time.validate()?;
     }
+    let judge: JudgeConfig = section(core.judge.as_ref(), "judge")?;
     let llm: LlmConfig = section(core.llm.as_ref(), "llm")?;
     let email: EmailConfig = match core.email.as_ref() {
         Some(table) => section(Some(table), "email")?,
@@ -317,6 +336,8 @@ pub fn load(explicit: Option<&Path>) -> Result<RuntimeConfig> {
     judge.validate()?;
     llm.validate()?;
     email.validate()?;
+    ensure!(!email.enabled || judge.daily_report_time.is_some(),
+        "Set judge.daily_report_time = {{ hour = H, minute = M }} to your chosen local delivery time before enabling email; Mimir supplies no default");
     Ok(RuntimeConfig {
         path,
         core,
@@ -334,14 +355,13 @@ mod tests {
 
     const DATABASE: &str =
         "config_version=1\n[logging]\ndirectory='/tmp/mimir-fixture-logs'\n[database]\nhost='localhost'\nport=5432\ndbname='mimir'\nuser='mimir'\n";
-    const HARNESS: &str =
-        "[judge]\nbatch_size=5\n[llm]\nbackend='claude-code'\nmodel='test-model'\n";
+    const HARNESS: &str = "[judge]\n[llm]\nbackend='claude-code'\nmodel='test-model'\n";
 
     struct Fixture(PathBuf);
     impl Fixture {
         fn new(mode: u32) -> Self {
-            let base = Path::new("/var/tmp/mimir/step4");
-            std::fs::create_dir_all(base).unwrap();
+            let base = std::env::temp_dir().join("mimir-step4");
+            std::fs::create_dir_all(&base).unwrap();
             let path = base.join(format!("fixture-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&path).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
@@ -362,6 +382,41 @@ mod tests {
     fn valid(text: &str) -> bool {
         let fixture = Fixture::new(0o700);
         load(Some(&fixture.config(text, 0o600))).is_ok()
+    }
+
+    #[test]
+    fn retired_email_limits_name_the_field_and_the_correction() {
+        for key in ["timeout_seconds", "retry_seconds", "max_attempts"] {
+            for value in ["0", "5", "'wrong-type'"] {
+                let fixture = Fixture::new(0o700);
+                let text = format!("{DATABASE}{HARNESS}[email]\n{key}={value}\n");
+                let error = load(Some(&fixture.config(&text, 0o600)))
+                    .err()
+                    .unwrap()
+                    .to_string();
+                assert!(
+                    error.contains(&format!("email.{key} is obsolete")),
+                    "{error}"
+                );
+                assert!(error.contains("mimir config upgrade"), "{error}");
+                assert!(error.contains("mimir config check"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn retired_batch_count_explains_the_upgrade_for_every_value() {
+        for value in ["0", "5", "1000000", "'wrong-type'"] {
+            let fixture = Fixture::new(0o700);
+            let text = format!("{DATABASE}[judge]\nbatch_size={value}\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n");
+            let error = load(Some(&fixture.config(&text, 0o600)))
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.contains("judge.batch_size is obsolete"), "{error}");
+            assert!(error.contains("mimir config upgrade"), "{error}");
+            assert!(error.contains("mimir config check"), "{error}");
+        }
     }
 
     #[test]
@@ -424,7 +479,11 @@ mod tests {
 
     #[test]
     fn email_password_google_and_microsoft_oauth() {
-        let common = format!("{DATABASE}{HARNESS}[email]\nenabled=true\nhost='smtp.example.com'\nport=587\ntls='starttls'\nfrom='a@example.com'\nto=['b@example.com']\nusername='a@example.com'\n");
+        let harness = HARNESS.replace(
+            "[judge]\n",
+            "[judge]\ndaily_report_time={ hour=14, minute=35 }\n",
+        );
+        let common = format!("{DATABASE}{harness}[email]\nenabled=true\nhost='smtp.example.com'\nport=587\ntls='starttls'\nfrom='a@example.com'\nto=['b@example.com']\nusername='a@example.com'\n");
         assert!(valid(&format!(
             "{common}auth='password'\npassword='private'\n"
         )));
@@ -432,6 +491,41 @@ mod tests {
         assert!(valid(&format!("{common}auth='oauth2'\n[email.oauth]\nprovider='microsoft'\nclient_id='client'\nrefresh_token='token'\ntenant='common'\nscope='https://outlook.office.com/SMTP.Send offline_access'\n")));
         assert!(!valid(&format!("{common}auth='oauth2'\n[email.oauth]\nprovider='microsoft'\nclient_id='client'\nrefresh_token='token'\ntenant='common'\nscope='SMTP.Send offline_access'\n")));
         assert!(!valid(&format!("{common}auth='oauth2'\npassword='bad'\n[email.oauth]\nprovider='google'\nclient_id='client'\nrefresh_token='token'\n")));
+    }
+
+    #[test]
+    fn daily_time_is_user_selected_and_required_for_enabled_email() {
+        let mail = "[email]\nenabled=true\nhost='smtp.example.test'\nport=587\ntls='starttls'\nfrom='a@example.test'\nto=['b@example.test']\nauth='none'\n";
+        let fixture = Fixture::new(0o700);
+        let path = fixture.config(&format!("{DATABASE}{HARNESS}{mail}"), 0o600);
+        let error = load(Some(&path)).err().unwrap().to_string();
+        assert!(
+            error.contains("judge.daily_report_time")
+                && error.contains("chosen local delivery time")
+        );
+        for time in ["{ hour=0, minute=0 }", "{ hour=23, minute=59 }"] {
+            let harness =
+                HARNESS.replace("[judge]\n", &format!("[judge]\ndaily_report_time={time}\n"));
+            assert!(valid(&format!("{DATABASE}{harness}{mail}")));
+        }
+        for time in [
+            "{ hour=24, minute=0 }",
+            "{ hour=0, minute=60 }",
+            "{ hour=9 }",
+            "{ hour=9, minute=1, guessed=true }",
+        ] {
+            let harness =
+                HARNESS.replace("[judge]\n", &format!("[judge]\ndaily_report_time={time}\n"));
+            assert!(!valid(&format!("{DATABASE}{harness}{mail}")));
+            assert!(
+                !valid(&format!("{DATABASE}{harness}")),
+                "supplied invalid values must not be ignored when email is disabled"
+            );
+        }
+        assert!(
+            valid(&format!("{DATABASE}{HARNESS}")),
+            "disabled email needs no schedule"
+        );
     }
 
     #[test]

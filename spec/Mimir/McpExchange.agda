@@ -1,5 +1,6 @@
 {-# OPTIONS --safe #-}
--- One server exchange. Tool execution precedes notification suppression.
+-- One server exchange. Envelope admission and notification suppression precede
+-- every business handler.
 -- Serialization, partial writes and flushes have separate receipts; no write
 -- failure is silently retried and a write request is not an acknowledgement.
 module Mimir.McpExchange where
@@ -14,10 +15,11 @@ open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Bits using (Byte)
 open import Mimir.Text using (Text)
-open import Data.String using (toList)
+open import Data.String using (toList; fromList)
 import Mimir.StructuredValue as JSON
 import Mimir.McpEnvelope as Envelope
 import Mimir.Effects as Effects
+import Mimir.Validation as V
 
 data Payload : Set where
   initialized tools : Payload
@@ -26,6 +28,7 @@ data Payload : Set where
 data Response : Set where
   ok : JSON.Value → Payload → Response
   error : JSON.Value → ℤ → Text → Response
+  protocolProblem : Envelope.Problem → Response
 
 data WriteReply (bytes : List Byte) : Set where
   written : WriteReply bytes
@@ -89,26 +92,70 @@ afterTool identityValue (inj₁ message) = respond identityValue (error (Envelop
 afterTool identityValue (inj₂ value) = ask (formatTool value) (afterFormat identityValue)
 
 dispatch : Envelope.Identity → Envelope.Command → Script Outcome
-dispatch identityValue Envelope.initialize = respond identityValue (ok (Envelope.Identity.value identityValue) initialized)
-dispatch identityValue Envelope.listTools = respond identityValue (ok (Envelope.Identity.value identityValue) tools)
-dispatch identityValue (Envelope.callTool name args) = ask (handleTool name args) (afterTool identityValue)
-dispatch identityValue (Envelope.unknownMethod name) = respond identityValue
-  (error (Envelope.Identity.value identityValue) -[1+ 32600 ] (toList "Method not found"))
+dispatch (Envelope.identity false id) command = done nextLine
+dispatch (Envelope.identity true id) Envelope.initialize = emit (ok id initialized)
+dispatch (Envelope.identity true id) Envelope.listTools = emit (ok id tools)
+dispatch (Envelope.identity true id) (Envelope.callTool name args) =
+  ask (handleTool name args) (afterTool (Envelope.identity true id))
+dispatch (Envelope.identity true id) (Envelope.unknownMethod name) =
+  emit (error id -[1+ 32600 ] (toList "Method not found"))
+dispatch (Envelope.identity true id) (Envelope.invalidParams details) =
+  emit (protocolProblem (Envelope.problem (Envelope.identity true id) -[1+ 32601 ] details))
 
-exchange : Envelope.Request → Script Outcome
-exchange invocation = dispatch (Envelope.Request.identityValue invocation) (Envelope.dispatch invocation)
+exchange : Envelope.Problem ⊎ Envelope.Request → Script Outcome
+exchange (inj₁ diagnostic) = respond (Envelope.Problem.response diagnostic) (protocolProblem diagnostic)
+exchange (inj₂ invocation) = dispatch (Envelope.identityValue invocation) (Envelope.dispatch invocation)
 
 parseError : Text → Script Outcome
-parseError message = emit (error JSON.null -[1+ 32699 ] (toList "parse error: " ++ message))
+parseError message = emit (protocolProblem (Envelope.problem
+  (Envelope.identity true JSON.null) -[1+ 32699 ] (Envelope.Correction.claim
+    (Envelope.Correction.item Envelope.Correction.request
+      (V.fault [] V.malformedInput (fromList (toList "The request could not be parsed: " ++ message)))
+      (toList "One complete UTF-8 JSON request object per line.")
+      (toList "Repair the JSON syntax or UTF-8 encoding and resend the complete request with its client-chosen ID.")) [])))
 
-notificationStillExecutes : ∀ id name args →
-  dispatch (Envelope.identity false id) (Envelope.callTool name args) ≡
-    ask (handleTool name args) (afterTool (Envelope.identity false id))
-notificationStillExecutes id name args = refl
+-- Rejected input can only serialize and deliver its correction. This excludes
+-- both business-handler execution and formatting a business result.
+data ProtocolOnly : List Event → Set where
+  empty : ProtocolOnly []
+  serialization : ∀ response reply {events} → ProtocolOnly events →
+    ProtocolOnly ((serialize response , reply) ∷ events)
+  writing : ∀ bytes reply {events} → ProtocolOnly events →
+    ProtocolOnly ((write bytes , reply) ∷ events)
+  flushing : ∀ reply {events} → ProtocolOnly events →
+    ProtocolOnly ((flush , reply) ∷ events)
 
-notificationFormatErrorStops : ∀ id message →
-  afterFormat (Envelope.identity false id) (inj₁ message) ≡ done (stopped (formatting message))
-notificationFormatErrorStops id message = refl
+flushOnly : ∀ reply events result → Runs (afterFlush reply) events result → ProtocolOnly events
+flushOnly completed _ _ (returned _) = empty
+flushOnly (failed _) _ _ (returned _) = empty
+
+writeOnly : ∀ bytes reply events result → Runs (afterWrite bytes reply) events result → ProtocolOnly events
+writeOnly bytes written _ _ (replied _ _ reply run) = flushing reply (flushOnly reply _ _ run)
+writeOnly bytes (failed _ _ _ _) _ _ (returned _) = empty
+
+serializeOnly : ∀ reply events result → Runs (afterSerialize reply) events result → ProtocolOnly events
+serializeOnly (panicked _) _ _ (returned _) = empty
+serializeOnly (serialized bytes) _ _ (replied _ _ reply run) =
+  writing _ reply (writeOnly _ reply _ _ run)
+
+invalidMethodParametersHaveNoBusinessEffects : ∀ id report events result →
+  Runs (dispatch (Envelope.identity true id) (Envelope.invalidParams report)) events result →
+  ProtocolOnly events
+invalidMethodParametersHaveNoBusinessEffects id report events result (replied _ _ reply run) =
+  serialization _ reply (serializeOnly reply _ _ run)
+
+rejectedInputHasNoBusinessEffects : ∀ diagnostic events result →
+  Runs (exchange (inj₁ diagnostic)) events result → ProtocolOnly events
+rejectedInputHasNoBusinessEffects diagnostic events result run with Envelope.Identity.reply (Envelope.Problem.response diagnostic)
+... | false with run
+...   | returned _ = empty
+rejectedInputHasNoBusinessEffects diagnostic events result (replied _ _ reply run) | true =
+  serialization _ reply (serializeOnly reply _ _ run)
+
+notificationHasNoEffects : ∀ id command events result →
+  Runs (dispatch (Envelope.identity false id) command) events result →
+  events ≡ [] × result ≡ nextLine
+notificationHasNoEffects id command events result (returned _) = refl , refl
 
 notificationSuccessEmitsNothing : ∀ id text events result →
   Runs (afterFormat (Envelope.identity false id) (inj₂ text)) events result →

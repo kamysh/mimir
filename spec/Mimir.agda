@@ -56,6 +56,7 @@ import Mimir.BitLogic
 import Mimir.SignedMachine
 
 import Mimir.Effects
+import Mimir.Recovery
 import Mimir.AtomicFile
 import Mimir.CharacterRules
 import Mimir.OAuthCache
@@ -209,20 +210,14 @@ import Mimir.McpErrorDelivery
 import Mimir.WriteAllFlush
 import Mimir.McpSendBytes
 import Mimir.DiagnosticText
-import Mimir.SourceWindow
-import Mimir.SourceLineOffset
 import Mimir.SourceFailure
 import Mimir.JudgeStateRecords
 import Mimir.JudgeConfirmationLedger
 import Mimir.JudgeIncident
 import Mimir.JudgeIncidentEvidence
 import Mimir.UnsignedMachine
-import Mimir.JudgeTraceEvent
-import Mimir.LastElement
-import Mimir.JudgeTraceTrim
 import Mimir.FirstListMatch
 import Mimir.JudgeTraceSelection
-import Mimir.JudgeTraceRetention
 import Mimir.JudgeTraceStart
 import Mimir.JudgeTraceMutation
 import Mimir.UUIDGroups
@@ -480,7 +475,6 @@ import Mimir.CoreLibrary
 
 import Mimir.OperationalConfiguration
 import Mimir.OperationalLogRetention
-import Mimir.OperationalLogSteps
 import Mimir.OperationalLogProtocol
 import Mimir.ConfigurationUpgrade
 import Mimir.OperationalDiagnostics

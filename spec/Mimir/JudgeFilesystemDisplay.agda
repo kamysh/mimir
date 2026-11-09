@@ -24,10 +24,9 @@ module With (Path Handle NativeError : Set) where
   display nativeDisplay directoryOwnership = toList "state directory must be owned by the user and private"
   display nativeDisplay createDirectory = toList "unable to create state directory"
   display nativeDisplay unsafeLock = toList "unsafe state lock"
-  display nativeDisplay unsafeReport = toList "unsafe or oversized state report"
+  display nativeDisplay unsafeReport = toList "unsafe state report"
   display nativeDisplay oversizedReport = toList "oversized state report"
   display nativeDisplay invalidReport = toList "invalid state report"
-  display nativeDisplay oversizedWrite = toList "state file is too large"
   display nativeDisplay (native error) = nativeDisplay error
 
   nativePreserved : ∀ nativeDisplay error → display nativeDisplay (native error) ≡ nativeDisplay error

@@ -4,7 +4,6 @@ use std::io::Write;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
 
 struct Fixture(PathBuf);
 
@@ -21,24 +20,16 @@ impl Fixture {
     }
 
     fn run(&self, args: &[OsString]) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_mimir-mcp"))
+        Command::new(env!("CARGO_BIN_EXE_mimir-mcp"))
             .args(args)
             .env("MIMIR_CONFIG", self.config())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while child.try_wait().unwrap().is_none() {
-            if Instant::now() >= deadline {
-                child.kill().unwrap();
-                let output = child.wait_with_output().unwrap();
-                panic!("startup did not exit promptly for {args:?}: {output:?}");
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        child.wait_with_output().unwrap()
+            .unwrap()
+            .wait_with_output()
+            .unwrap()
     }
 }
 

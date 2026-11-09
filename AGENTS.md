@@ -7,6 +7,9 @@ procedure. Both use purpose-focused guidance and advisory lifecycle reminders.
 
 ## Read this first
 
+- The source version is **2.3.0**, pending release. Archive installation commands
+  below remain pinned to **2.2.3** until a 2.3.0 release is published; do not
+  assume that a source version identifies an available download.
 - All steps are idempotent. Safe to rerun. If interrupted, restart
   from **State detection** below, not from Step 1.
 - After every step, run the verify command. Do not stack failures —
@@ -95,7 +98,7 @@ Bind the answers as shell variables once, then re-use in every command below:
 | `VOLUME` | Docker volume for the postgres data dir (e.g. `mimir_data`). If sharing a container with muninn, use the same volume. |
 | `DB_USER` | PostgreSQL role for mimir. |
 | `DB_NAME` | Database for mimir. |
-| `EMBEDDING_BACKEND` | `local` (no API key, downloads ~120 MB) \| `voyage` \| `openai`. Required only for `load_document` / `query_document`; omit the `[embeddings]` section entirely if you only need the belief graph. |
+| `EMBEDDING_BACKEND` | `local` (no API key, downloads ~120 MB) \| `voyage` \| `openai`. Required for new belief publication and document embedding. New beliefs also need support from an indexed document. Omit only for operations that need no embedding, such as reading existing beliefs. |
 
 ## Preflight (must all pass)
 
@@ -164,10 +167,14 @@ docker run -d \
   -p "127.0.0.1:${PORT}:5432" \
   -v "${VOLUME}:/var/lib/postgresql/data" \
   kamysh/postgres-ai:latest
-sleep 3
 ```
 
-**Verify:**
+**Verify actual database readiness:** run this immediately; elapsed time is not
+evidence that PostgreSQL is ready. If initialization is still in progress,
+inspect `docker logs "$CONTAINER"` and repeat this verification after startup
+completes. Do not continue to role/database setup until the query succeeds.
+No startup delay, retry count or deadline is selected by this procedure.
+
 ```sh
 docker exec "$CONTAINER" psql -U postgres -c 'SELECT 1' >/dev/null && echo OK
 ```
@@ -248,7 +255,7 @@ without user confirmation.
 
 If the config is absent, choose **one** creation command:
 
-Belief graph only (omit the embedding arguments entirely):
+Existing graph reads and operations that need no embedding (omit the embedding arguments):
 
 ```sh
 mimir init host=localhost port="${PORT}" dbname="${DB_NAME}" user="${DB_USER}"
@@ -335,10 +342,14 @@ beliefs left unresolved by earlier sessions. The standard skill now selects
 `fact` or `experiential` explicitly for durable knowledge, and installs no Stop
 consolidation gate. Existing working beliefs are not modified by changing hooks.
 
-The historical judge template assumes the earlier working-first/Stop-gate
-workflow. Review that assumption, its age criteria and its mutations before
-choosing to schedule it. It is separate from a per-turn Claude critic, and is not
-required for ordinary retrieval or the new agent integration.
+The historical maintenance template requires an explicit user policy for
+eligible projects/beliefs, completed ownership and permitted actions. It has
+no default cleanup age or processing quota. Missing or unclear policy must
+request a user decision and leave all beliefs untouched. Do not let an agent
+invent a policy or borrow the separate defeated-belief retirement setting.
+See the [workflow guide](docs/claude-code-setup/mimir-judge-working/README.md).
+This is separate from a per-turn Claude critic and is not required for ordinary
+retrieval or the new agent integration.
 
 Source files: [`docs/claude-code-setup/mimir-judge-working/`](docs/claude-code-setup/mimir-judge-working/)
 (`prompt.md`, `run.sh`, `mcp-config.json`). `mcp-config.json` is for this
@@ -358,25 +369,21 @@ chmod +x "$HOME/.claude/mimir-judge-working.sh"
 Unlike Step 7's prompt, this one contains a `CURRENT_TIME_UTC` placeholder —
 `run.sh` substitutes it with the real current time at invocation, since the
 judge has no clock or shell access of its own and needs a fixed reference
-point to compare each belief's `created_at` against. Do not strip this
+point when interpreting the user's policy. The time is context, not permission
+to delete or a reason to assume a session has ended. Do not strip this
 substitution when adapting the script.
 
-**Scheduling** — same options as Step 7, but hourly instead of weekly:
-
-- **systemd (Linux)**: a `systemd --user` timer running
-  `bash "$HOME/.claude/mimir-judge-working.sh"` hourly, output appended to a
-  log file. (On NixOS, prefer a declarative `systemd.services`/
-  `systemd.timers` module.)
-- **launchd (macOS)**: an equivalent hourly `LaunchAgent`.
-- **cron**: `0 * * * * $HOME/.claude/mimir-judge-working.sh >> $HOME/.claude/mimir-judge-working.log 2>&1`
-  as a fallback.
+**Scheduling:** require the user's cleanup policy and chosen schedule before
+enabling anything. Do not select a default cadence or change a system service
+as part of ordinary agent installation.
 
 **Verify:**
 ```sh
-bash "$HOME/.claude/mimir-judge-working.sh"
+bash -n "$HOME/.claude/mimir-judge-working.sh"
 ```
-Should complete without error. If it found and processed any orphans, a
-summary `working` belief appears under project `mimir-meta`.
+This checks shell syntax without executing the model or maintenance. An actual
+run needs the user's policy and approval; it reports completed work and pending
+decisions in its output, without automatically creating a summary belief.
 
 ## Final verification
 

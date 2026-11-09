@@ -1,5 +1,6 @@
 mod api;
 pub mod config;
+mod config_events;
 mod diagnose;
 mod digest;
 mod evidence;
@@ -44,26 +45,19 @@ pub enum JudgeCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
-    /// Run one bounded review batch.
+    /// Run one review batch.
     Run {
         #[arg(long)]
         config: Option<PathBuf>,
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
-    /// Repeatedly review bounded batches; an empty queue makes no model call.
+    /// Watch for review work; an empty queue makes no model call.
     Watch {
         #[arg(long)]
         config: Option<PathBuf>,
         #[arg(long)]
         state_dir: Option<PathBuf>,
-        /// Delay between runs. Must be at least one minute.
-        #[arg(long, default_value_t = 300)]
-        interval_seconds: u64,
-        /// After this many consecutive failed runs, retry hourly and log
-        /// only when the failure episode begins or ends.
-        #[arg(long, default_value_t = 3)]
-        max_consecutive_failures: usize,
     },
     /// Read the last local run report.
     Status {
@@ -139,54 +133,13 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
             }
         },
         JudgeCommand::Run { config, state_dir } => run_once(config, state_dir, false).await.code,
-        JudgeCommand::Watch {
-            config,
-            state_dir,
-            interval_seconds,
-            max_consecutive_failures,
-        } => {
-            if interval_seconds == 0 || max_consecutive_failures == 0 {
-                println!(
-                    "{}",
-                    json!({"status":"invalid_config","reason":"invalid_watch_bounds"})
-                );
-                return INVALID_CONFIG;
+        JudgeCommand::Watch { config, state_dir } => {
+            let mut notifications = None;
+            let result = watch(config, state_dir, &mut notifications).await;
+            if let Some(notifications) = notifications {
+                notifications.shutdown().await;
             }
-            let mut watch = WatchState::default();
-            let mut digest_problem = false;
-            loop {
-                let outcome = run_once(config.clone(), state_dir.clone(), true).await;
-                let problem = digest::tick(config.as_deref(), state_dir.as_deref(), &outcome)
-                    .await
-                    .unwrap_or(true);
-                if problem != digest_problem {
-                    eprintln!(
-                        "judge daily email: {}",
-                        if problem {
-                            "unavailable; will retry"
-                        } else {
-                            "available"
-                        }
-                    );
-                    digest_problem = problem;
-                }
-                let (delay, transition) =
-                    watch.advance(outcome, interval_seconds, max_consecutive_failures);
-                let next_attempt = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |t| t.as_secs())
-                    .saturating_add(delay);
-                if let Ok(path) = state::resolve(state_dir.as_deref()) {
-                    if let Ok(Some(state)) = state::State::lock(path) {
-                        let _ = state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"waiting","next_attempt_unix":next_attempt,"delay_seconds":delay,"consecutive_failures":watch.consecutive_failures}));
-                    }
-                }
-                if let Some(message) = transition {
-                    eprintln!("{message}");
-                    eprintln!("Next attempt in {delay} seconds. For cause and recovery steps, run: mimir judge diagnose");
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-            }
+            result
         }
         JudgeCommand::Status { state_dir } => {
             let path = match state::resolve(state_dir.as_deref()) {
@@ -289,25 +242,327 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
     }
 }
 
+fn retry_command() -> String {
+    format!("kill -HUP {}", std::process::id())
+}
+
+async fn receive_retry(signal: &mut tokio::signal::unix::Signal) -> anyhow::Result<()> {
+    signal
+        .recv()
+        .await
+        .ok_or_else(|| anyhow::anyhow!("SIGHUP retry event source closed"))
+}
+
+async fn wait_for_explicit_retry(signal: &mut tokio::signal::unix::Signal) -> anyhow::Result<bool> {
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => Ok(false),
+        received = receive_retry(signal) => received.map(|()| true),
+    }
+}
+
+fn write_watch_runtime(
+    state_dir: Option<&std::path::Path>,
+    next: NextAttempt,
+    cause: Option<&str>,
+) {
+    let runtime = json!({
+        "version":env!("CARGO_PKG_VERSION"), "pid":std::process::id(),
+        "phase":match next {
+            NextAttempt::Immediately => "running",
+            NextAttempt::WorkEvent => "waiting_for_work",
+            NextAttempt::Prerequisite => "waiting_for_prerequisite",
+        },
+        "waiting_for": if next == NextAttempt::Prerequisite {Some("configuration_change_or_explicit_retry")} else {None},
+        "cause":cause, "retry_command":retry_command(),
+    });
+    if let Ok(path) = state::resolve(state_dir) {
+        if let Ok(Some(state)) = state::State::lock(path) {
+            let _ = state.write_runtime(&runtime);
+        }
+    }
+}
+
+async fn load_watch_subscription(
+    path: &std::path::Path,
+    state_dir: Option<&std::path::Path>,
+    events: &mut config_events::ConfigEvents,
+    retry: &mut tokio::signal::unix::Signal,
+) -> anyhow::Result<
+    Option<(
+        config::RuntimeConfig,
+        mimir_core::db::ReviewQueueSubscription,
+    )>,
+> {
+    load_watch_connection(path, state_dir, events, retry, |database| async move {
+        mimir_core::db::ReviewQueueSubscription::connect(&database).await
+    })
+    .await
+}
+
+async fn load_watch_connection<Connection, Connect, Attempt>(
+    path: &std::path::Path,
+    state_dir: Option<&std::path::Path>,
+    events: &mut config_events::ConfigEvents,
+    retry: &mut tokio::signal::unix::Signal,
+    mut connect: Connect,
+) -> anyhow::Result<Option<(config::RuntimeConfig, Connection)>>
+where
+    Connect: FnMut(mimir_core::config::DatabaseConfig) -> Attempt,
+    Attempt: std::future::Future<Output = anyhow::Result<Connection>>,
+{
+    loop {
+        let Some(settings) = load_watch_settings(path, state_dir, events, retry).await? else {
+            return Ok(None);
+        };
+        let connected = tokio::select! {
+            _ = tokio::signal::ctrl_c() => return Ok(None),
+            changed = events.changed() => { changed?; continue; },
+            received = receive_retry(retry) => { received?; continue; },
+            connected = connect(settings.core.database.clone()) => connected,
+        };
+        match connected {
+            Ok(subscription) => return Ok(Some((settings, subscription))),
+            Err(error) => {
+                write_watch_runtime(
+                    state_dir,
+                    NextAttempt::Prerequisite,
+                    Some("database_subscription_failed"),
+                );
+                eprintln!("Unable to subscribe to review work: {error:#}. Restore the reported database prerequisite, then edit the selected configuration or explicitly retry with: {}. No pending work was selected.", retry_command());
+            }
+        }
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => return Ok(None),
+            changed = events.changed() => changed?,
+            received = receive_retry(retry) => received?,
+        }
+    }
+}
+
+async fn watch(
+    config: Option<PathBuf>,
+    state_dir: Option<PathBuf>,
+    notifications: &mut Option<notification::Worker>,
+) -> i32 {
+    let mut retry = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+        Ok(signal) => signal,
+        Err(error) => {
+            eprintln!("Unable to register the SIGHUP retry signal: {error}. Correct the reported OS error and restart the watcher.");
+            return UNAVAILABLE;
+        }
+    };
+    let path = match config::resolved_path(config.as_deref()) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Invalid watcher configuration path: {error:#}. Choose a valid --config path and retry.");
+            return INVALID_CONFIG;
+        }
+    };
+    let mut watch = WatchState::default();
+    let mut digest_problem = false;
+    'observe: loop {
+        let mut events = match config_events::ConfigEvents::new(&path) {
+            Ok(events) => events,
+            Err(error) => {
+                write_watch_runtime(
+                    state_dir.as_deref(),
+                    NextAttempt::Prerequisite,
+                    Some("configuration_event_source_unavailable"),
+                );
+                eprintln!("Unable to observe configuration changes for {}: {error:#}. Correct the reported OS prerequisite, then explicitly retry with: {}", path.display(), retry_command());
+                match wait_for_explicit_retry(&mut retry).await {
+                    Ok(true) => continue,
+                    Ok(false) => return 0,
+                    Err(error) => {
+                        eprintln!(
+                            "Retry event source unavailable: {error:#}. Restart the watcher."
+                        );
+                        return UNAVAILABLE;
+                    }
+                }
+            }
+        };
+        let (mut settings, mut subscription) = match load_watch_subscription(
+            &path,
+            state_dir.as_deref(),
+            &mut events,
+            &mut retry,
+        )
+        .await
+        {
+            Ok(Some(ready)) => ready,
+            Ok(None) => return 0,
+            Err(error) => {
+                write_watch_runtime(
+                    state_dir.as_deref(),
+                    NextAttempt::Prerequisite,
+                    Some("watch_event_source_unavailable"),
+                );
+                eprintln!("Watcher event source unavailable: {error:#}. Correct the reported prerequisite, then explicitly retry with: {}", retry_command());
+                match wait_for_explicit_retry(&mut retry).await {
+                    Ok(true) => continue,
+                    Ok(false) => return 0,
+                    Err(error) => {
+                        eprintln!(
+                            "Retry event source unavailable: {error:#}. Restart the watcher."
+                        );
+                        return UNAVAILABLE;
+                    }
+                }
+            }
+        };
+        if notifications.is_none() {
+            let notification_path = match state::resolve(state_dir.as_deref()) {
+                Ok(path) => path,
+                Err(error) => {
+                    eprintln!("Invalid notification state path: {error:#}");
+                    return UNAVAILABLE;
+                }
+            };
+            *notifications = match notification::Worker::start(&settings, &notification_path) {
+                Ok(worker) => Some(worker),
+                Err(error) => {
+                    eprintln!("Cannot start notification owner: {error:#}. Review processing continues and pending mail remains saved; stop another watcher owning this directory or correct the reported path problem, then restart this watcher.");
+                    None
+                }
+            };
+        }
+        let notifications = notifications.as_ref();
+        loop {
+            let outcome = run_with_settings(
+                &settings,
+                state_dir.clone(),
+                true,
+                notifications.map_or(notification::Mode::Standalone, notification::Mode::Queued),
+            )
+            .await;
+            let problem = state::resolve(state_dir.as_deref())
+                .and_then(|path| match notifications {
+                    Some(worker) => worker.digest(&settings, &path, &outcome),
+                    None if settings.email.enabled => {
+                        Err(anyhow::anyhow!("notification worker is unavailable"))
+                    }
+                    None => Ok(()),
+                })
+                .is_err();
+            if problem != digest_problem {
+                eprintln!(
+                    "judge daily email queue: {}",
+                    if problem {
+                        "unavailable; inspect watcher state"
+                    } else {
+                        "available"
+                    }
+                );
+                digest_problem = problem;
+            }
+            let (next, transition) = watch.advance(outcome);
+            write_watch_runtime(
+                state_dir.as_deref(),
+                next,
+                (next == NextAttempt::Prerequisite).then_some("incomplete_or_degraded_batch"),
+            );
+            if let Some(message) = transition {
+                eprintln!("{message}");
+            }
+            if next == NextAttempt::Prerequisite {
+                eprintln!("Review work is paused for correction. Inspect mimir judge diagnose and correct the reported prerequisite. Configuration edits reload automatically; explicitly retry with: {}", retry_command());
+            }
+            let reconnect = tokio::select! {
+                biased;
+                _ = tokio::signal::ctrl_c() => return 0,
+                changed = events.changed() => {
+                    if let Err(error) = changed {
+                        write_watch_runtime(state_dir.as_deref(), NextAttempt::Prerequisite, Some("watch_event_source_unavailable")); eprintln!("Watcher event source unavailable: {error:#}. Correct the reported prerequisite, then explicitly retry with: {}", retry_command());
+                        match wait_for_explicit_retry(&mut retry).await { Ok(true) => continue 'observe, Ok(false) => return 0, Err(error) => {eprintln!("Retry event source unavailable: {error:#}. Restart the watcher."); return UNAVAILABLE;} }
+                    }
+                    true
+                },
+                received = receive_retry(&mut retry) => {
+                    if let Err(error) = received { eprintln!("Retry event source unavailable: {error:#}. Restart the watcher."); return UNAVAILABLE; }
+                    true
+                },
+                result = next.wait_with(std::future::pending, || subscription.changed()) => {
+                    if let Err(error) = result {
+                        eprintln!("Review work listener disconnected: {error:#}. Re-subscribing before reading saved pending work.");
+                        true
+                    } else {false}
+                },
+            };
+            if reconnect {
+                // A durable scan covers missed hints after the new LISTEN.
+                // Close the old connection before waiting for its replacement.
+                drop(subscription);
+                match load_watch_subscription(&path, state_dir.as_deref(), &mut events, &mut retry)
+                    .await
+                {
+                    Ok(Some((replacement, connected))) => {
+                        settings = replacement;
+                        subscription = connected;
+                    }
+                    Ok(None) => return 0,
+                    Err(error) => {
+                        write_watch_runtime(
+                            state_dir.as_deref(),
+                            NextAttempt::Prerequisite,
+                            Some("watch_event_source_unavailable"),
+                        );
+                        eprintln!("Watcher event source unavailable: {error:#}. Correct the reported prerequisite, then explicitly retry with: {}", retry_command());
+                        match wait_for_explicit_retry(&mut retry).await {
+                            Ok(true) => continue 'observe,
+                            Ok(false) => return 0,
+                            Err(error) => {
+                                eprintln!("Retry event source unavailable: {error:#}. Restart the watcher.");
+                                return UNAVAILABLE;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 struct RunOutcome {
     code: i32,
     degraded: bool,
     idle: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NextAttempt {
+    Immediately,
+    WorkEvent,
+    Prerequisite,
+}
+
+impl NextAttempt {
+    async fn wait_with<F, W, C, E>(self, retry: F, changed: C) -> anyhow::Result<()>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = ()>,
+        C: FnOnce() -> E,
+        E: std::future::Future<Output = anyhow::Result<()>>,
+    {
+        match self {
+            Self::Immediately => Ok(()),
+            Self::WorkEvent => changed().await,
+            Self::Prerequisite => {
+                retry().await;
+                Ok(())
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct WatchState {
-    consecutive_failures: usize,
     episode_active: bool,
 }
 
 impl WatchState {
-    fn advance(
-        &mut self,
-        outcome: RunOutcome,
-        interval_seconds: u64,
-        backoff_after: usize,
-    ) -> (u64, Option<&'static str>) {
+    fn advance(&mut self, outcome: RunOutcome) -> (NextAttempt, Option<&'static str>) {
         let transition = if outcome.degraded {
             if self.episode_active {
                 None
@@ -329,17 +584,37 @@ impl WatchState {
         } else if outcome.idle {
             self.episode_active = false;
         }
-        if outcome.code == 0 {
-            self.consecutive_failures = 0;
+        let next = if outcome.code == 0 && !outcome.degraded && !outcome.idle {
+            NextAttempt::Immediately
+        } else if outcome.code == 0 && !outcome.degraded && outcome.idle {
+            NextAttempt::WorkEvent
         } else {
-            self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-        }
-        let delay = if self.consecutive_failures >= backoff_after {
-            interval_seconds.max(3600)
-        } else {
-            interval_seconds
+            NextAttempt::Prerequisite
         };
-        (delay, transition)
+        (next, transition)
+    }
+}
+
+async fn load_watch_settings(
+    path: &std::path::Path,
+    state_dir: Option<&std::path::Path>,
+    events: &mut config_events::ConfigEvents,
+    retry: &mut tokio::signal::unix::Signal,
+) -> anyhow::Result<Option<config::RuntimeConfig>> {
+    loop {
+        events.rearm()?;
+        match config::load(Some(path)) {
+            Ok(settings) => return Ok(Some(settings)),
+            Err(error) => {
+                record_invalid_configuration(state_dir, &error);
+                eprintln!("Watcher configuration needs correction: {error:#}. Run mimir judge check-config --config {}, correct that file, and save it. Save the correction or send the printed SIGHUP retry command; no batch will start with invalid settings.", path.display());
+            }
+        }
+        tokio::select! {
+            changed = events.changed() => changed?,
+            received = receive_retry(retry) => received?,
+            _ = tokio::signal::ctrl_c() => return Ok(None),
+        }
     }
 }
 
@@ -352,7 +627,7 @@ fn record_invalid_configuration(state_dir: Option<&std::path::Path>, error: &any
     };
     let mut report = state::Report::new("blocked", 0, 0, 0, 0, 0);
     report.block_reason = Some("invalid_config".into());
-    report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
+    report.failure_detail = Some(format!("{error:#}"));
     let _ = state.record_incident(&report);
     let _ = state.write(&report);
 }
@@ -380,6 +655,23 @@ async fn run_once(
             };
         }
     };
+    run_with_settings(
+        &settings,
+        state_dir,
+        watch_mode,
+        notification::Mode::Standalone,
+    )
+    .await
+}
+
+// Used by watcher startup after it subscribes with these exact settings. It
+// must not reread the mutable source file between subscription and first scan.
+async fn run_with_settings(
+    settings: &config::RuntimeConfig,
+    state_dir: Option<PathBuf>,
+    watch_mode: bool,
+    delivery: notification::Mode<'_>,
+) -> RunOutcome {
     let path = match state::resolve(state_dir.as_deref()) {
         Ok(path) => path,
         Err(_) => {
@@ -449,16 +741,20 @@ async fn run_once(
     let _=state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"reviewing","config_format":settings.operations.config_version}));
     let report = match settings.llm.backend {
         config::Backend::Api => match api::ApiBackend::new(&settings.llm) {
-            Ok(Some(mut backend)) => runner::run(&settings, &state, &mut backend).await,
-            Ok(None) => runner::run(&settings, &state, &mut runner::UnavailableBackend).await,
+            Ok(Some(mut backend)) => runner::run(settings, &state, &mut backend, delivery).await,
+            Ok(None) => {
+                runner::run(settings, &state, &mut runner::UnavailableBackend, delivery).await
+            }
             Err(error) => {
-                runner::setup_failure(&settings, &state, "backend_configuration", &error).await
+                runner::setup_failure(settings, &state, "backend_configuration", &error, delivery)
+                    .await
             }
         },
         _ => match harness::Harness::new(&settings.llm) {
-            Ok(mut backend) => runner::run(&settings, &state, &mut backend).await,
+            Ok(mut backend) => runner::run(settings, &state, &mut backend, delivery).await,
             Err(error) => {
-                runner::setup_failure(&settings, &state, "backend_configuration", &error).await
+                runner::setup_failure(settings, &state, "backend_configuration", &error, delivery)
+                    .await
             }
         },
     };
@@ -502,6 +798,177 @@ mod watch_tests {
     use super::*;
     use std::os::unix::fs::OpenOptionsExt;
 
+    #[test]
+    fn private_configuration_failure_keeps_the_complete_repair_explanation() {
+        let work = harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
+        let state_dir = work.path().join("state");
+        let explanation = format!(
+            "first line\n{}\nrepair: correct the named configuration field",
+            "x".repeat(10_000)
+        );
+        let error = anyhow::anyhow!(explanation).context("fixture configuration rejected");
+        let complete = format!("{error:#}");
+        record_invalid_configuration(Some(&state_dir), &error);
+        let saved = state::read(&state_dir).unwrap().unwrap();
+        assert_eq!(saved.failure_detail.as_deref(), Some(complete.as_str()));
+        let incident = state::read_failure(&state_dir).unwrap().unwrap();
+        assert_eq!(
+            incident.first.failure_detail.as_deref(),
+            Some(complete.as_str())
+        );
+        assert!(complete.ends_with("repair: correct the named configuration field"));
+    }
+
+    #[tokio::test]
+    async fn malformed_config_waits_for_correction_without_replacing_admitted_settings() {
+        use std::future::{poll_fn, Future};
+        let work = harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
+        let text = |dbname: &str| {
+            format!(
+            "config_version=1\n[logging]\ndirectory={}\n[database]\nhost='127.0.0.1'\nport=15432\nuser='fixture-user'\ndbname={}\n[judge]\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n",
+            toml::Value::String(work.path().join("logs").display().to_string()),
+            toml::Value::String(dbname.to_owned())
+        )
+        };
+        let path = work
+            .write("config.toml", text("admitted").as_bytes())
+            .unwrap();
+        let admitted = config::load(Some(&path)).unwrap();
+        let invalid = "[database]\nunknown_field=true\n";
+        std::fs::write(&path, invalid).unwrap();
+        let mut events = config_events::ConfigEvents::new(&path).unwrap();
+        let state = work.path().join("state");
+        let mut retry =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).unwrap();
+        let corrected = load_watch_settings(&path, Some(&state), &mut events, &mut retry);
+        tokio::pin!(corrected);
+        assert!(
+            poll_fn(|cx| std::task::Poll::Ready(corrected.as_mut().poll(cx).is_pending())).await
+        );
+        assert_eq!(admitted.core.database.dbname, "admitted");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+        assert_eq!(
+            state::read(&state)
+                .unwrap()
+                .unwrap()
+                .block_reason
+                .as_deref(),
+            Some("invalid_config")
+        );
+        std::fs::write(&path, text("corrected")).unwrap();
+        let corrected = corrected.await.unwrap().unwrap();
+        assert_eq!(corrected.core.database.dbname, "corrected");
+        assert_eq!(admitted.core.database.dbname, "admitted");
+    }
+
+    #[tokio::test]
+    async fn idle_waits_for_an_event_without_a_timer_or_busy_loop() {
+        use std::future::{poll_fn, Future};
+        let mut watch = WatchState::default();
+        let (next, _) = watch.advance(RunOutcome {
+            code: 0,
+            degraded: false,
+            idle: true,
+        });
+        assert_eq!(next, NextAttempt::WorkEvent);
+        let (wake, received) = tokio::sync::oneshot::channel();
+        let wait = next.wait_with(
+            || -> std::future::Ready<()> { panic!("Idle work must not construct a timer") },
+            || async {
+                received.await?;
+                Ok(())
+            },
+        );
+        tokio::pin!(wait);
+        assert!(poll_fn(|cx| std::task::Poll::Ready(wait.as_mut().poll(cx).is_pending())).await);
+        wake.send(()).unwrap();
+        wait.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_connection_waits_for_correction_without_resubmitting() {
+        use std::future::{poll_fn, Future};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let work = harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
+        let text = |dbname: &str| {
+            format!(
+            "config_version=1\n[logging]\ndirectory={}\n[database]\nhost='127.0.0.1'\nport=15432\nuser='fixture-user'\ndbname={}\n[judge]\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n",
+            toml::Value::String(work.path().join("logs").display().to_string()),
+            toml::Value::String(dbname.to_owned()))
+        };
+        let path = work
+            .write("config.toml", text("admitted").as_bytes())
+            .unwrap();
+        let mut events = config_events::ConfigEvents::new(&path).unwrap();
+        let mut retry =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let attempts = calls.clone();
+        let state = work.path().join("state");
+        let connection = load_watch_connection(
+            &path,
+            Some(&state),
+            &mut events,
+            &mut retry,
+            move |database| {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(if database.dbname == "corrected" {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("fixture database unavailable"))
+                })
+            },
+        );
+        tokio::pin!(connection);
+        assert!(
+            poll_fn(|cx| std::task::Poll::Ready(connection.as_mut().poll(cx).is_pending())).await
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            poll_fn(|cx| std::task::Poll::Ready(connection.as_mut().poll(cx).is_pending())).await
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        std::fs::write(&path, text("corrected")).unwrap();
+        let (settings, ()) = connection.await.unwrap().unwrap();
+        assert_eq!(settings.core.database.dbname, "corrected");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn ready_batches_continue_without_constructing_a_timer() {
+        let mut watch = WatchState::default();
+        let ready = [
+            RunOutcome {
+                code: 0,
+                degraded: false,
+                idle: false,
+            },
+            RunOutcome {
+                code: 0,
+                degraded: false,
+                idle: false,
+            },
+        ];
+        let mut completed = 0;
+        for outcome in ready {
+            let (next, _) = watch.advance(outcome);
+            assert_eq!(next, NextAttempt::Immediately);
+            next.wait_with(
+                || -> std::future::Ready<()> { panic!("Ready work must not construct a timer") },
+                || -> std::future::Ready<anyhow::Result<()>> {
+                    panic!("Ready work must not wait for a work event")
+                },
+            )
+            .await
+            .unwrap();
+            completed += 1;
+        }
+        assert_eq!(completed, 2);
+    }
+
     #[tokio::test]
     async fn invalid_configuration_replaces_stale_status_and_preserves_incident() {
         let dir =
@@ -534,69 +1001,23 @@ mod watch_tests {
     }
 
     #[test]
-    fn persistent_failures_log_once_and_back_off_without_stopping() {
+    fn failed_and_deferred_work_wait_for_a_prerequisite_without_count_policy() {
         let mut watch = WatchState::default();
         let failure = || RunOutcome {
             code: INCOMPLETE,
             degraded: true,
             idle: false,
         };
-        assert!(watch.advance(failure(), 60, 3).1.is_some());
-        assert_eq!(watch.advance(failure(), 60, 3), (60, None));
+        assert_eq!(watch.advance(failure()).0, NextAttempt::Prerequisite);
+        assert_eq!(watch.advance(failure()), (NextAttempt::Prerequisite, None));
         assert_eq!(
-            watch.advance(
-                RunOutcome {
-                    code: INVALID_CONFIG,
-                    degraded: true,
-                    idle: false,
-                },
-                60,
-                3
-            ),
-            (3600, None)
+            watch.advance(RunOutcome {
+                code: 0,
+                degraded: true,
+                idle: false
+            }),
+            (NextAttempt::Prerequisite, None)
         );
-        for _ in 0..1000 {
-            assert_eq!(watch.advance(failure(), 60, 3), (3600, None));
-        }
-        assert!(watch
-            .advance(
-                RunOutcome {
-                    code: 0,
-                    degraded: false,
-                    idle: true,
-                },
-                60,
-                3
-            )
-            .1
-            .is_some());
-        assert_eq!(
-            watch.advance(
-                RunOutcome {
-                    code: 0,
-                    degraded: false,
-                    idle: true,
-                },
-                60,
-                3
-            ),
-            (60, None)
-        );
-    }
-
-    #[test]
-    fn deferred_review_does_not_repeat_errors_or_exhaust_failure_limit() {
-        let mut watch = WatchState::default();
-        let deferred = || RunOutcome {
-            code: 0,
-            degraded: true,
-            idle: false,
-        };
-        assert!(watch.advance(deferred(), 300, 3).1.is_some());
-        for _ in 0..1000 {
-            assert_eq!(watch.advance(deferred(), 300, 3), (300, None));
-        }
-        assert_eq!(watch.consecutive_failures, 0);
     }
 
     #[test]
@@ -617,15 +1038,130 @@ mod watch_tests {
             degraded: false,
             idle: true,
         };
-        assert!(watch.advance(failure(), 300, 3).1.is_some());
-        for _ in 0..1000 {
-            assert_eq!(watch.advance(complete(), 300, 3), (300, None));
-            assert_eq!(watch.advance(failure(), 300, 3), (300, None));
+        assert!(watch.advance(failure()).1.is_some());
+        assert_eq!(watch.advance(complete()), (NextAttempt::Immediately, None));
+        assert_eq!(watch.advance(failure()), (NextAttempt::Prerequisite, None));
+        assert_eq!(watch.advance(idle()).1, Some("judge watch: recovered"));
+        assert_eq!(watch.advance(idle()), (NextAttempt::WorkEvent, None));
+    }
+
+    #[tokio::test]
+    async fn prerequisite_wait_does_not_poll_unrelated_work_and_resumes_on_explicit_retry() {
+        use std::future::{poll_fn, Future};
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let wait = NextAttempt::Prerequisite.wait_with(
+            || async {
+                receive.await.unwrap();
+            },
+            || -> std::future::Ready<anyhow::Result<()>> {
+                panic!("A work event cannot correct a missing prerequisite")
+            },
+        );
+        tokio::pin!(wait);
+        assert!(poll_fn(|cx| std::task::Poll::Ready(wait.as_mut().poll(cx).is_pending())).await);
+        send.send(()).unwrap();
+        wait.await.unwrap();
+    }
+
+    #[test]
+    fn watch_has_no_interval_or_failure_threshold_options() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Args {
+            #[command(subcommand)]
+            command: JudgeCommand,
+        }
+        assert!(Args::try_parse_from(["fixture", "watch"]).is_ok());
+        assert!(Args::try_parse_from(["fixture", "watch", "--interval-seconds", "300"]).is_err());
+        assert!(
+            Args::try_parse_from(["fixture", "watch", "--max-consecutive-failures", "3"]).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn sighup_wakes_the_owned_child_retry_receiver() {
+        use std::io::{BufRead, Write};
+        const CHILD: &str = "MIMIR_TEST_RETRY_SIGNAL_CHILD";
+        if std::env::var(CHILD).as_deref() == Ok("1") {
+            let mut retry =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).unwrap();
+            println!("retry-ready");
+            std::io::stdout().flush().unwrap();
+            receive_retry(&mut retry).await.unwrap();
+            println!("retry-received");
+            return;
+        }
+        struct OwnedChild(std::process::Child);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                if self.0.try_wait().is_ok_and(|status| status.is_none()) {
+                    let _ = self.0.kill();
+                }
+                let _ = self.0.wait();
+            }
+        }
+        use std::os::unix::fs::DirBuilderExt;
+        // Keep complete child output outside the Nix shell's temporary files.
+        let log_root = std::env::var_os("MIMIR_TEST_LOG_DIRECTORY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        let logs = log_root.join(format!("mimir-retry-signal-{}", uuid::Uuid::new_v4()));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&logs)
+            .unwrap();
+        let stderr = std::fs::File::create(logs.join("child.stderr")).unwrap();
+        let mut stdout_log = std::fs::File::create(logs.join("child.stdout")).unwrap();
+        let mut child = OwnedChild(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "judge::watch_tests::sighup_wakes_the_owned_child_retry_receiver",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(stderr)
+                .spawn()
+                .unwrap(),
+        );
+        let mut output = std::io::BufReader::new(child.0.stdout.take().unwrap());
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            assert_ne!(
+                output.read_until(b'\n', &mut line).unwrap(),
+                0,
+                "child exited before registering SIGHUP; logs {}",
+                logs.display()
+            );
+            stdout_log.write_all(&line).unwrap();
+            stdout_log.flush().unwrap();
+            if line == b"retry-ready\n" {
+                break;
+            }
         }
         assert_eq!(
-            watch.advance(idle(), 300, 3).1,
-            Some("judge watch: recovered")
+            unsafe { libc::kill(child.0.id() as libc::pid_t, libc::SIGHUP) },
+            0
         );
-        assert_eq!(watch.advance(idle(), 300, 3), (300, None));
+        let mut received = false;
+        loop {
+            line.clear();
+            if output.read_until(b'\n', &mut line).unwrap() == 0 {
+                break;
+            }
+            stdout_log.write_all(&line).unwrap();
+            stdout_log.flush().unwrap();
+            received |= line == b"retry-received\n";
+        }
+        assert!(
+            received,
+            "child did not observe retry; logs {}",
+            logs.display()
+        );
+        assert!(child.0.wait().unwrap().success());
+        eprintln!("SIGHUP child output retained at {}", logs.display());
     }
 }

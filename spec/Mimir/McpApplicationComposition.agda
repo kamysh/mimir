@@ -17,6 +17,9 @@ import Mimir.StructuredValue as Schema
 import Mimir.ApplicationProtocol as Application
 import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
+import Mimir.ApplicationStore as Store
+import Mimir.McpErrors as Errors
+module Correction = Errors.AgentCorrection
 
 data External : Exchange.Effect → Set where
   format : ∀ value → External (Exchange.formatTool value)
@@ -33,8 +36,14 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
   -- receives the retained typed cause; it cannot select application success.
   module WithDiagnostic (render : H.Diagnostic → Text) where
     data Materialized : H.Result → Text ⊎ JSON.Value → Set where
-      error : ∀ cause → Materialized (inj₁ cause) (inj₁ (render cause))
-      value : ∀ schema → Materialized (inj₂ schema) (inj₂ schema)
+      error : ∀ cause → Materialized (H.failure cause) (inj₁ (render cause))
+      value : ∀ schema → Materialized (H.completed schema) (inj₂ schema)
+      correction : ∀ {before after} (proof : Correction.Certified Store.World before after) →
+        Materialized (H.inputCorrection (Correction.Certified.report proof)) (inj₂ (Correction.emitCorrection proof))
+      preparation : ∀ {before after : Store.World}
+        (proof : Correction.Certified Store.BusinessSnapshot
+          (Store.businessSnapshot before) (Store.businessSnapshot after)) →
+        Materialized (H.preparationDecision (Correction.Certified.report proof)) (inj₂ (Correction.emitCorrection proof))
 
     data Event : Set where
       external : (effect : Exchange.Effect) → External effect → Exchange.Reply effect → Event

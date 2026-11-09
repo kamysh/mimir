@@ -97,7 +97,36 @@ fn successful_replacement_is_private_and_replaces_the_whole_file() {
 }
 
 #[test]
-fn encoding_and_size_rejection_leave_the_directory_untouched() {
+fn complete_large_diagnostics_keep_the_same_private_file_checks() {
+    let directory = Directory::new();
+    let state = State::lock(directory.0.clone()).unwrap().unwrap();
+    let report = Report::new("blocked", 0, 0, 0, 0, 0);
+    let id = state.begin_trace(&report, 0).unwrap();
+    let mut diagnostics = read_diagnostics(&directory.0).unwrap();
+    let explanation = format!("begin\n{}\nfinal explanation", "λ".repeat(2 * 1024 * 1024));
+    diagnostics.attempts[0].block_reason = Some(explanation.clone());
+    state.write_named(DIAGNOSTICS_FILE, &diagnostics).unwrap();
+    let path = directory.0.join(DIAGNOSTICS_FILE);
+    assert!(fs::metadata(&path).unwrap().len() > 3 * 1024 * 1024);
+    let saved = read_diagnostics(&directory.0).unwrap();
+    assert_eq!(saved.attempts[0].id, id);
+    assert_eq!(
+        saved.attempts[0].block_reason.as_deref(),
+        Some(explanation.as_str())
+    );
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        read_diagnostics(&directory.0).is_err(),
+        "large files still require private permissions"
+    );
+}
+
+#[test]
+fn encoding_rejection_leaves_the_directory_untouched() {
     struct Fails;
     impl Serialize for Fails {
         fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
@@ -114,9 +143,6 @@ fn encoding_and_size_rejection_leave_the_directory_untouched() {
         .collect();
     names_before.sort();
     assert!(state.write_named(STATUS_FILE, &Fails).is_err());
-    assert!(state
-        .write_named_limited(STATUS_FILE, &"oversized", Some(1))
-        .is_err());
     let mut names_after: Vec<_> = fs::read_dir(&directory.0)
         .unwrap()
         .map(|e| e.unwrap().file_name())
@@ -161,7 +187,7 @@ fn restart_retains_committed_report_and_marks_running_trace_interrupted() {
 }
 
 #[test]
-fn full_batch_state_is_preserved_while_diagnostic_metadata_is_bounded() {
+fn complete_selected_work_is_preserved_in_report_and_diagnostics() {
     let directory = Directory::new();
     let state = State::lock(directory.0.clone()).unwrap().unwrap();
     let mut report = Report::new("blocked", 100_000, 0, 0, 100_000, 0);
@@ -169,18 +195,15 @@ fn full_batch_state_is_preserved_while_diagnostic_metadata_is_bounded() {
     state.write(&report).unwrap();
     let saved = read(&directory.0).unwrap().unwrap();
     assert_eq!(saved.selected_ids, report.selected_ids);
-    assert!(fs::metadata(directory.0.join(STATUS_FILE)).unwrap().len() > MAX_DIAGNOSTICS);
+    assert!(fs::metadata(directory.0.join(STATUS_FILE)).unwrap().len() > 3 * 1024 * 1024);
     let id = state.begin_trace(&report, 0).unwrap();
     state.finish_trace(id, &report).unwrap();
     let traces = read_diagnostics(&directory.0).unwrap();
-    assert_eq!(
-        traces.attempts[0].selected_ids,
-        report.selected_ids[..MAX_TRACE_EVENTS]
-    );
+    assert_eq!(traces.attempts[0].selected_ids, report.selected_ids);
     assert!(
         fs::metadata(directory.0.join(DIAGNOSTICS_FILE))
             .unwrap()
             .len()
-            < MAX_TRACE as u64
+            > 3 * 1024 * 1024
     );
 }

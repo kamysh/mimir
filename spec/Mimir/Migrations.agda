@@ -14,7 +14,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 
 data Migration : Set where
   initial searchPath beliefEmbeddings evidenceEdges betaBeliefs learningLedger
-    reviewCandidates assessments itemOwners postgresItemAllocation : Migration
+    reviewCandidates assessments itemOwners postgresItemAllocation reviewQueueNotifications operationReservations operationBindings operationStepReplies operationPlans operationRequestKeys candidateKeyContent embeddingOwners : Migration
 
 name : Migration → String
 name initial = "initial"
@@ -27,6 +27,14 @@ name reviewCandidates = "review-candidates"
 name assessments = "learning-assessments"
 name itemOwners = "learning-item-owners"
 name postgresItemAllocation = "postgres-item-allocation"
+name reviewQueueNotifications = "review-queue-notifications"
+name operationReservations = "operation-reservations"
+name operationBindings = "operation-bindings"
+name operationStepReplies = "operation-step-replies"
+name operationPlans = "operation-plans"
+name operationRequestKeys = "operation-request-keys"
+name candidateKeyContent = "candidate-key-content"
+name embeddingOwners = "embedding-publication-owners"
 
 predecessor : Migration → Maybe Migration
 predecessor initial = nothing
@@ -39,10 +47,19 @@ predecessor reviewCandidates = just learningLedger
 predecessor assessments = just reviewCandidates
 predecessor itemOwners = just assessments
 predecessor postgresItemAllocation = just itemOwners
+predecessor reviewQueueNotifications = just postgresItemAllocation
+predecessor operationReservations = just reviewQueueNotifications
+predecessor operationBindings = just operationReservations
+predecessor operationStepReplies = just operationBindings
+predecessor operationPlans = just operationStepReplies
+predecessor operationRequestKeys = just operationPlans
+predecessor candidateKeyContent = just operationRequestKeys
+predecessor embeddingOwners = just candidateKeyContent
 
 manifest : List Migration
 manifest = initial ∷ searchPath ∷ beliefEmbeddings ∷ evidenceEdges ∷
-  betaBeliefs ∷ learningLedger ∷ reviewCandidates ∷ assessments ∷ itemOwners ∷ postgresItemAllocation ∷ []
+  betaBeliefs ∷ learningLedger ∷ reviewCandidates ∷ assessments ∷ itemOwners ∷ postgresItemAllocation ∷
+  reviewQueueNotifications ∷ operationReservations ∷ operationBindings ∷ operationStepReplies ∷ operationPlans ∷ operationRequestKeys ∷ candidateKeyContent ∷ embeddingOwners ∷ []
 
 -- The executable lifecycle is MigrationDriver. The former untyped state
 -- table was removed because it conflated queued rollback with acknowledgement

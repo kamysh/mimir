@@ -40,10 +40,11 @@ backends = ("voyage" , voyage) ∷ ("openai" , openai) ∷ ("local" , local) ∷
 
 data Error : Set where
   unknownKey invalidMode invalidBackend : Error
-  invalidPort invalidBatchSize : U.Error → Error
+  invalidPort : U.Error → Error
+  retiredBatchSize : Error
 
-module Read (parser : U.Parser) (sizeMaximum : ℕ) where
-  open Overrides sizeMaximum
+module Read (parser : U.Parser) where
+  open Overrides
 
   decode : Key → Text → Error ⊎ Setting
   decode hostKey value = inj₂ (host value)
@@ -65,9 +66,7 @@ module Read (parser : U.Parser) (sizeMaximum : ℕ) where
   ... | just parsed = inj₂ (backend parsed)
   decode modelKey value = inj₂ (model value)
   decode apiKeyKey value = inj₂ (apiKey value)
-  decode batchKey value with U.parse parser sizeMaximum value
-  ... | inj₁ error = inj₁ (invalidBatchSize error)
-  ... | inj₂ parsed = inj₂ (batchSize parsed)
+  decode batchKey value = inj₁ retiredBatchSize
   decode cacheKey value = inj₂ (cacheDirectory value)
 
   pair : String × Text → Error ⊎ Setting

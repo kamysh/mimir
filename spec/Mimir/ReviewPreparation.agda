@@ -13,9 +13,9 @@ open import Data.Maybe using (Maybe)
 open import Data.Product using (_,_)
 open import Data.Nat using (ℕ)
 open import Data.Integer using (ℤ)
-open import Data.Sum using (_⊎_; inj₂)
+open import Data.Sum using (_⊎_; inj₂; map₁)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; subst)
-open import Mimir.Validation using (Fault; result)
+open import Mimir.Validation using (Fault; result; at; key; prependPath)
 open import Mimir.RecordDecoding using (_>>=_)
 open import Mimir.ExperienceSchema using (Experience; validateReviewSources)
 open import Mimir.ReviewSchema using (Review; validateReview)
@@ -77,6 +77,8 @@ module For (before : Input) (requested : Review) (clock : Candidate → ℤ) whe
   record Prepared : Set where
     constructor prepared
     field
+      existingReferences : Targets.ReferencesValid (Experience.project current)
+        (beliefs (Input.nodes before)) (Admission.existingReferences requested)
       reservation : Reservation
       admitted : Admission.For.Admitted (environment reservation) requested
       materializedAgrees : Admission.For.materialized (environment reservation) requested
@@ -86,18 +88,21 @@ module For (before : Input) (requested : Review) (clock : Candidate → ℤ) whe
         (Review.extracted requested) afterOwners
 
   prepare : (Candidate → ℕ) → Fault ⊎ Prepared
-  prepare fresh = result (validateReview requested) >>= λ structure →
+  prepare fresh = result (at (key "review") (validateReview requested)) >>= λ structure →
     result (Admission.checkPin originalEnvironment requested) >>= λ pinned →
-    result (validateReviewSources current requested) >>= λ sources →
-    result (Admission.checkPrior (Input.prior before) requested) >>= λ retained →
+    result (Targets.checkReferences (Experience.project current) (beliefs (Input.nodes before))
+      (Admission.existingReferences requested)) >>= λ existingReferences →
+    result (at (key "review") (validateReviewSources current requested)) >>= λ sources →
+    result (at (key "review") (Admission.checkPrior (Input.prior before) requested)) >>= λ retained →
     Ownership.prepare (Review.experienceID requested) (Input.owners before) (Review.extracted requested)
       >>= λ { (afterOwners , ownershipPlan) →
-    Candidates.prepareValid occupied (Input.registry before) requested structure fresh >>= λ reservation →
-    result (validateReviewSources current (Candidates.materialized reservation)) >>= λ materializedSources →
+    map₁ (prependPath (key "review"))
+      (Candidates.prepareValid occupied (Input.registry before) requested structure fresh) >>= λ reservation →
+    result (at (key "review") (validateReviewSources current (Candidates.materialized reservation))) >>= λ materializedSources →
     result (Targets.validate (Experience.project current) (beliefs (proposedNodes reservation))
       (Admission.targetIDs (Candidates.materialized reservation))) >>= λ targets →
     result (Admission.checkRecordedEvidence current (Candidates.materialized reservation)) >>= λ evidence →
-    inj₂ (prepared reservation record
+    inj₂ (prepared existingReferences reservation record
       { pinned = pinned
       ; retained = retained
       ; sourcesValid = sources

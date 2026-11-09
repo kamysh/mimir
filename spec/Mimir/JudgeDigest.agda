@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- Daily database-wide digest: local 09:00 boundary, calendar catch-up,
+-- Daily database-wide digest: user-configured local boundary, calendar catch-up,
 -- repeatable-read read-only query sequence, then durable notification cursor.
 module Mimir.JudgeDigest where
 
@@ -33,6 +33,25 @@ import Mimir.UnixPath as Path
 import Mimir.Effects as Effects
 open import Mimir.LocalCalendar public using (Calendar; Now; localDay; localHour; localZone)
 import Mimir.LocalCalendar as Local
+import Data.Fin
+import Data.Empty
+
+reportSecond : Config.DailyTime → ℕ
+reportSecond time = Config.DailyTime.hour time Data.Nat.* 3600 Data.Nat.+ Config.DailyTime.minute time Data.Nat.* 60
+
+-- Queue admission is remembered independently of delivery. A pending SMTP
+-- call therefore cannot cause the calendar owner to enqueue the same day again.
+module CalendarAdmission where
+  offer : ℤ → Maybe ℤ → Maybe ℤ
+  offer today nothing = just today
+  offer today (just previous) with today ≟ previous
+  ... | yes _ = nothing
+  ... | no _ = just today
+
+  admittedDayIsNotOfferedAgain : ∀ day → offer day (just day) ≡ nothing
+  admittedDayIsNotOfferedAgain day with day ≟ day
+  ... | yes _ = refl
+  ... | no different = Data.Empty.⊥-elim (different refl)
 
 record Counts : Set where
   constructor counts
@@ -110,7 +129,7 @@ render calendar daily cumulative pending run zone =
   toList "\n\nSource revisions count stored updates to experiences. They are distinct from the per-run 'corrected' status counter.\n"
 
 data Effect : Set where
-  localNow loadConfig resolveState : Effect
+  localNow resolveState : Effect
   readReport : Path.Path → Effect
   readCursor : Email.Config → Path.Path → Effect
   connect : Config.Runtime → Effect
@@ -121,7 +140,6 @@ data Effect : Set where
 
 Reply : Effect → Set
 Reply localNow = Now
-Reply loadConfig = Text ⊎ Config.Runtime
 Reply resolveState = Text ⊎ Path.Path
 Reply (readReport _) = Maybe Diagnostics.R.Report
 Reply (readCursor _ _) = Text ⊎ Delivery.Cursor
@@ -219,7 +237,7 @@ module Run (calendar : Calendar) where
     (inj₂ connection) → content connection first through run (localZone calendar now) >>= λ where
       (inj₁ error) → ask (close connection) (λ _ → done (inj₁ error))
       (inj₂ body) → ask (readReport path) λ report →
-        ask (send settings path (Delivery.digest (Calendar.showDay calendar through) (body ++ Diagnostics.summary report ++ toList "The watcher retries automatically while running, with hourly backoff after repeated failures. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/v2.2.1/docs/operations.md\n")))
+        ask (send settings path (Delivery.digest (Calendar.showDay calendar through) (body ++ Diagnostics.summary report ++ toList "After an unresolved prerequisite, the watcher waits for a configuration correction or explicit SIGHUP retry. The running watcher prints the retry command. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/main/docs/operations.md\n")))
         (λ reply → ask (close connection) (λ _ → done (sent reply)))
 
   cursor : Config.Runtime → Path.Path → ℤ → Now → Host.Outcome → (Text ⊎ Delivery.Cursor) → Script (Text ⊎ Bool)
@@ -227,24 +245,25 @@ module Run (calendar : Calendar) where
   cursor settings path through now run (inj₂ previous) with first (Delivery.Cursor.throughDay previous) through
   ... | inj₁ error = done (inj₁ error)
   ... | inj₂ nothing = done (inj₂ false)
-  ... | inj₂ (just first) with Delivery.Cursor.nextDue previous Data.Nat.≤? Now.unixSeconds now
-  ...   | no _ = done (inj₂ (Delivery.Cursor.lastAttemptFailed previous))
-  ...   | yes _ = collect settings path first through now run
+  ... | inj₂ (just first) = collect settings path first through now run
 
-  configured : ℤ → Now → Host.Outcome → Reply loadConfig → Script (Text ⊎ Bool)
-  configured through now run (inj₁ error) = done (inj₁ error)
-  configured through now run (inj₂ settings) with Email.Config.enabled (Config.Runtime.email settings)
+  configured : ℤ → Now → Host.Outcome → Config.Runtime → Script (Text ⊎ Bool)
+  configured through now run settings with Email.Config.enabled (Config.Runtime.email settings)
   ... | false = done (inj₂ false)
   ... | true = ask resolveState λ where
     (inj₁ error) → done (inj₁ error)
     (inj₂ path) → ask (readCursor (Config.Runtime.email settings) path) (cursor settings path through now run)
 
-  observed : Host.Outcome → Now → Script (Text ⊎ Bool)
-  observed run now with 9 Data.Nat.≤? localHour calendar now
-  ... | no _ = done (inj₂ false)
-  ... | yes _ with Calendar.minimumDay calendar <? localDay calendar now
-  ...   | no _ = done (inj₂ false)
-  ...   | yes _ = ask loadConfig (configured (localDay calendar now - + 1) now run)
+  observed : Config.Runtime → Host.Outcome → Now → Script (Text ⊎ Bool)
+  observed settings run now with Config.Judge.dailyReportTime (Config.Runtime.judge settings)
+  ... | nothing = done (inj₂ false)
+  ... | just time with Calendar.deliveryBoundary calendar (localDay calendar now) (reportSecond time)
+  ...   | nothing = done (inj₁ (toList "local delivery time is unavailable; inspect the computer clock and configured time"))
+  ...   | just boundary with boundary Integer.≤? Local.instant now
+  ...     | no _ = done (inj₂ false)
+  ...     | yes _ with Calendar.minimumDay calendar <? localDay calendar now
+  ...       | no _ = done (inj₂ false)
+  ...       | yes _ = configured (localDay calendar now - + 1) now run settings
 
-  tick : Host.Outcome → Script (Text ⊎ Bool)
-  tick run = ask localNow (observed run)
+  tick : Config.Runtime → Host.Outcome → Script (Text ⊎ Bool)
+  tick settings run = ask localNow (observed settings run)

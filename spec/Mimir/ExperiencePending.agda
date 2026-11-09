@@ -8,6 +8,7 @@ open import Data.List using ([]; _∷_)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 import Data.List.Relation.Unary.All.Properties as All
 open import Data.Nat using (_≟_; _≤?_)
+open import Data.Maybe using (just; nothing)
 import Data.Integer.Properties as Integer
 open import Data.Product using (_,_)
 open import Data.Sum using (inj₁; inj₂)
@@ -63,10 +64,12 @@ sortPreserves P (storedRow ∷ rows) (valid ∷ rest) = insertPreserves P stored
 
 queryEligible : ∀ project limit excluded rows batch →
   Read.pendingExperiences project limit excluded rows ≡ Read.selected batch → All (Pending.Eligible excluded) batch
-queryEligible project limit excluded rows batch returned with does (1 ≤? limit)
+queryEligible project nothing excluded rows ._ refl = All.map⁺
+  (sortPreserves _ _ (selectedEligible project excluded rows))
+queryEligible project (just limit) excluded rows batch returned with does (1 ≤? limit)
 ... | false with returned
 ...   | ()
-queryEligible project limit excluded rows batch returned | true with returned
+queryEligible project (just limit) excluded rows batch returned | true with returned
 ... | refl = All.map⁺ (All.take⁺ limit
   (sortPreserves _ _ (selectedEligible project excluded rows)))
 
@@ -80,10 +83,14 @@ pendingResultAgrees .(Read.selected batch) batch refl = refl
 publicQueryEligible : ∀ project limit excluded events batch →
   Query.E.Runs (Query.start (Query.pending project limit excluded)) events (Query.pendingResult (Read.selected batch)) →
   All (Pending.Eligible excluded) batch
-publicQueryEligible project limit excluded events batch execution with does (1 ≤? limit)
+publicQueryEligible project nothing excluded events batch (Query.E.replied _ _ (inj₁ failure) ())
+publicQueryEligible project nothing excluded events batch (Query.E.replied _ _ (inj₂ observed) remaining) =
+  queryEligible project nothing excluded (Store.World.current observed) batch
+    (pendingResultAgrees _ batch (doneAgrees _ _ _ remaining))
+publicQueryEligible project (just limit) excluded events batch execution with does (1 ≤? limit)
 ... | false with execution
 ...   | ()
-publicQueryEligible project limit excluded events batch execution | true with execution
+publicQueryEligible project (just limit) excluded events batch execution | true with execution
 ... | Query.E.replied _ _ (inj₁ failure) ()
-... | Query.E.replied _ _ (inj₂ observed) remaining = queryEligible project limit excluded (Store.World.current observed) batch
+... | Query.E.replied _ _ (inj₂ observed) remaining = queryEligible project (just limit) excluded (Store.World.current observed) batch
   (pendingResultAgrees _ batch (doneAgrees _ _ _ remaining))

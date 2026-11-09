@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
--- Concrete database-read meanings for the retrieval machine. A fresh snapshot
--- is supplied per read; these contracts do not assert repeatable-read isolation.
+-- Concrete database-read meanings for the retrieval machine. A complete
+-- response uses one read-only stable snapshot, including traversal reads.
 module Mimir.RetrievalReadContract where
 
 open import Data.List using (List; []; _∷_; concatMap)

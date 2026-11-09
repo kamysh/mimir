@@ -5,6 +5,7 @@ Usage: python3 tests/database-connections.py /path/to/connection_probe
 Requires Docker, openssl, and the postgres-ai image (override PG_TEST_IMAGE).
 Complete subprocess output is retained in the printed artifact directory.
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,28 +14,33 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 
 REPO = Path(__file__).resolve().parents[1]
 APP = "mimir" if (REPO / "mimir-setup").exists() else "muninn"
 PROBE = str(Path(sys.argv[1]).resolve())
-ROOT = Path(tempfile.mkdtemp(prefix=f"{APP}-connection-tests-", dir="/var/tmp"))
+ROOT = Path(tempfile.mkdtemp(prefix=f"{APP}-connection-tests-", dir="/tmp"))
 print(f"Artifacts: {ROOT}", flush=True)
 IMAGE = os.environ.get("PG_TEST_IMAGE", "sha256:79fb863620098b1e443338075bb65f6775130cbcb381f115d4272719256e334d")
 ENV = {k: v for k, v in os.environ.items() if not k.startswith("PG")}
 COUNT = 0
 CONTAINERS = []
+runner_spec = importlib.util.spec_from_file_location("connection_command_owner", REPO / "scripts/test-isolated.py")
+runner = importlib.util.module_from_spec(runner_spec)
+runner_spec.loader.exec_module(runner)
+COMMANDS = runner.Run(ROOT)
+FINAL_POSTGRES_START = "MIMIR_CONNECTION_POSTGRES_FINAL_START"
 
 
-def run(args, *, env=None, data=None, check=True):
+def run(args, *, env=None, data=None, check=True, until=None):
     global COUNT
-    COUNT += 1
-    result = subprocess.run(args, input=data, text=True, capture_output=True,
-                            env=env or ENV, timeout=60)
-    (ROOT / f"{COUNT:04}.stdout").write_text(result.stdout)
-    (ROOT / f"{COUNT:04}.stderr").write_text(result.stderr)
-    (ROOT / f"{COUNT:04}.exit").write_text(str(result.returncode))
-    if check and result.returncode:
+    # Keep the connection campaign's environment while reusing the maintained
+    # command owner's complete capture, interruption and readiness handling.
+    code, output = COMMANDS.command("connection", args, env=ENV if env is None else env,
+                                    input=data, check=False, until=until)
+    COUNT = COMMANDS.count
+    error = (ROOT / f"{COUNT:03}-connection.stderr").read_text()
+    result = subprocess.CompletedProcess(args, code, output, error)
+    if check and result.returncode and until is None:
         raise AssertionError(f"command {COUNT} failed; see retained output")
     return result
 
@@ -73,25 +79,21 @@ initdb -D /var/lib/postgresql/data --username=postgres --auth-local=trust --auth
 cp /fixture/HBA /var/lib/postgresql/data/pg_hba.conf
 cp /fixture/server.key /var/lib/postgresql/data/server.key
 chmod 600 /var/lib/postgresql/data/server.key
-exec postgres -D /var/lib/postgresql/data -c listen_addresses='*' -c shared_preload_libraries=age \
+printf '%s\\n' 'FINAL_START' >&2
+exec postgres -D /var/lib/postgresql/data -c lc_messages=C -c listen_addresses='*' -c shared_preload_libraries=age \
  -c unix_socket_directories=/var/lib/postgresql/data -c search_path=public,ag_catalog \
  -c ssl=TLS -c ssl_cert_file=/fixture/server.crt -c ssl_key_file=/var/lib/postgresql/data/server.key \
  -c ssl_ca_file=/fixture/ca.crt
-""".replace("HBA", config.name).replace("TLS", "on" if tls else "off")
+""".replace("HBA", config.name).replace("TLS", "on" if tls else "off").replace("FINAL_START", FINAL_POSTGRES_START)
     run(["docker", "create", "--name", name, "--label", "connection-test=" + str(ROOT),
-         "--user", "999:999", "--memory", "512m", "--tmpfs",
-         "/var/lib/postgresql/data:rw,size=256m,uid=999,gid=999,mode=0700",
+         "--user", "999:999",
          "--publish", "127.0.0.1::5432", "--mount", f"type=bind,src={ROOT},dst=/fixture,readonly",
          "--env", "PGHOST=/var/lib/postgresql/data", "--entrypoint", "/bin/bash", IMAGE, "-c", script])
     CONTAINERS.append(name)
     run(["docker", "start", name])
-    for _ in range(60):
-        if run(["docker", "exec", name, "pg_isready", "-U", "postgres"], check=False).returncode == 0:
-            break
-        time.sleep(0.5)
-    else:
-        run(["docker", "logs", name], check=False)
-        raise AssertionError("fixture did not start")
+    run(["docker", "logs", "--follow", name],
+        until=(FINAL_POSTGRES_START, runner.POSTGRES_READY))
+    run(["docker", "exec", name, "pg_isready", "--timeout=0", "-U", "postgres"])
     port = int(run(["docker", "port", name, "5432/tcp"]).stdout.strip().rsplit(":", 1)[1])
     sql(name, "CREATE EXTENSION age; CREATE EXTENSION vector; CREATE EXTENSION pgcrypto;")
     return name, port
@@ -122,7 +124,8 @@ def probe(label, port, fields=None, env=None, ok=True, ssl=False, path="query", 
     values = dict(host="127.0.0.1", port=port, dbname=database, user=user, ssl_mode="disable")
     values.update(fields or {})
     cfg = ROOT / "config.toml"
-    cfg.write_text("[database]\n" + "".join(f"{k} = {json.dumps(v, ensure_ascii=False)}\n" for k, v in values.items()))
+    cfg.write_text("config_version = 1\n[logging]\ndirectory = " + json.dumps(str(ROOT / "logs")) +
+                   "\n[database]\n" + "".join(f"{k} = {json.dumps(v, ensure_ascii=False)}\n" for k, v in values.items()))
     cfg.chmod(0o600)
     result = run([PROBE, str(cfg), path], env={**ENV, "PGPASSFILE": str(ROOT / "absent"), **(env or {})}, check=False)
     assert (result.returncode == 0) == ok, f"{label}: unexpected result, command {COUNT}"
@@ -247,7 +250,7 @@ finally:
         result = run(["docker", "inspect", "--format", '{{index .Config.Labels "connection-test"}}', name])
         assert result.stdout.strip() == str(ROOT), "cleanup identity mismatch"
         run(["docker", "logs", name], check=False)
-        run(["docker", "rm", "-f", name])
+        run(["docker", "rm", "-f", "--volumes", name])
     # Keep complete logs; generated test-only keys/config are not needed later.
     for pattern in ["*.key", "*.csr", "*.srl", "config.toml", "*passwords"]:
         for entry in ROOT.glob(pattern):

@@ -6,6 +6,9 @@ use crate::config::{DatabaseConfig, SslMode};
 
 const SEARCH_PATH: &str = "public,ag_catalog";
 
+/// Empty-payload commit hints; listeners must read the durable pending queue.
+pub const REVIEW_QUEUE_CHANNEL: &str = "mimir_review_queue_changed";
+
 static MIGRATIONS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 const RECEIPT_JSON: &str = include_str!("../migrations/.kryzhen-import-receipt.json");
 
@@ -82,13 +85,13 @@ async fn apply_migrations(client: &mut Client, migrations: &[kryzhen::Migration]
     Ok(())
 }
 
-/// Open a single tokio-postgres connection.
+/// Build the shared PostgreSQL settings for ordinary clients and listeners.
 ///
 /// tokio-postgres handles SslMode::Prefer natively: it sends an SSLRequest and
 /// falls back to plaintext if the server declines TLS. This requires passing
 /// the TLS connector directly to `cfg.connect()` — deadpool commits the
 /// connector type before the SSLRequest exchange, breaking Prefer fallback.
-pub async fn connect(cfg: &DatabaseConfig) -> Result<Client> {
+fn postgres_config(cfg: &DatabaseConfig) -> tokio_postgres::Config {
     let mut pg_cfg = tokio_postgres::Config::new();
     pg_cfg.host(&cfg.host);
     pg_cfg.port(cfg.port);
@@ -113,18 +116,105 @@ pub async fn connect(cfg: &DatabaseConfig) -> Result<Client> {
             tokio_postgres::config::SslMode::Require
         }
     });
+    pg_cfg
+}
 
-    let tls = crate::tls::connector(
+fn tls_connector(cfg: &DatabaseConfig) -> Result<postgres_native_tls::MakeTlsConnector> {
+    crate::tls::connector(
         &cfg.ssl_mode,
         cfg.ssl_root_cert.as_deref(),
         cfg.ssl_client_cert.as_deref(),
         cfg.ssl_client_key.as_deref(),
-    )?;
-    let (client, conn) = pg_cfg.connect(tls).await?;
+    )
+}
+
+/// Open a client and drive its ordinary query connection in the background.
+pub async fn connect(cfg: &DatabaseConfig) -> Result<Client> {
+    let (client, conn) = postgres_config(cfg).connect(tls_connector(cfg)?).await?;
     tokio::spawn(async move {
         if let Err(e) = conn.await {
             tracing::error!("postgres connection error: {e}");
         }
     });
     Ok(client)
+}
+
+/// Returned only after the server acknowledges LISTEN. Private fields prevent
+/// callers from constructing an unsubscribed value. Retain it across the initial
+/// queue scan so a change remains available to the subsequent event wait.
+pub struct ReviewQueueSubscription {
+    client: Client,
+    events: tokio::sync::mpsc::UnboundedReceiver<Result<()>>,
+    reader: tokio::task::JoinHandle<()>,
+}
+
+impl ReviewQueueSubscription {
+    pub async fn connect(cfg: &DatabaseConfig) -> Result<Self> {
+        Self::connect_channel(cfg, REVIEW_QUEUE_CHANNEL).await
+    }
+
+    async fn connect_channel(cfg: &DatabaseConfig, channel: &'static str) -> Result<Self> {
+        let (client, mut connection) = postgres_config(cfg).connect(tls_connector(cfg)?).await?;
+        let (sent, events) = tokio::sync::mpsc::unbounded_channel();
+        let reader = tokio::spawn(async move {
+            while let Some(message) = std::future::poll_fn(|cx| connection.poll_message(cx)).await {
+                let event = match message {
+                    Ok(tokio_postgres::AsyncMessage::Notification(notification))
+                        if notification.channel() == channel =>
+                    {
+                        Ok(())
+                    }
+                    Ok(_) => continue,
+                    Err(error) => {
+                        let _ = sent.send(Err(error.into()));
+                        return;
+                    }
+                };
+                if sent.send(event).is_err() {
+                    return;
+                }
+            }
+            let _ = sent.send(Err(anyhow::anyhow!("{channel} listener disconnected")));
+        });
+        let subscription = Self {
+            client,
+            events,
+            reader,
+        };
+        subscription
+            .client
+            .batch_execute(&format!("LISTEN {channel}"))
+            .await?;
+        Ok(subscription)
+    }
+
+    /// A hint to rescan; this is not a saved review or a count of changed rows.
+    pub async fn changed(&mut self) -> Result<()> {
+        self.events
+            .recv()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("review queue listener stopped"))?
+    }
+}
+
+/// Subscribed before checking an owner's durable row. Empty hints never
+/// identify which job stopped; each request must recheck its own owner.
+pub(crate) struct EmbeddingOwnerSubscription(ReviewQueueSubscription);
+
+impl EmbeddingOwnerSubscription {
+    pub(crate) async fn connect(cfg: &DatabaseConfig) -> Result<Self> {
+        Ok(Self(
+            ReviewQueueSubscription::connect_channel(cfg, "mimir_embedding_owners_changed").await?,
+        ))
+    }
+
+    pub(crate) async fn changed(&mut self) -> Result<()> {
+        self.0.changed().await
+    }
+}
+
+impl Drop for ReviewQueueSubscription {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
 }

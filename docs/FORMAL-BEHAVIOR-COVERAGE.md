@@ -18,6 +18,52 @@ The inventory contains **34 MCP tools, 30 CLI leaf commands, seven lifecycle gro
 
 Protocols distinguish application decisions from external observations. Database, filesystem, network and subprocess replies retain failure and uncertain outcomes. Their concrete application meanings are supplied by the storage, transaction, publication, codec and lifecycle modules listed below; they are not unrestricted successful application callbacks. A `Runs` control transcript alone is not a Rust conformance proof or proof that real I/O happened.
 
+## Recovery goal
+
+`Recovery.Business` fixes the observation to the complete shared
+`ApplicationStore.World` and semantic reply. An operation supplies its intended
+state and expected reply for the original invocation, with no replacement goal
+or private observation function. See [the recovery contract](RECOVERY-CONTRACT.md).
+This is the foundation from #71; required convergence instances and exclusive
+dispatch through them remain later plan work. Existing raw dispatch is not yet
+claimed to enforce this goal.
+
+## Review queue signals
+
+Committed changes to pending experiences emit an empty review-queue hint on
+`mimir_review_queue_changed`. `LearningStore.needsWake` defines eligibility and
+source/project changes; `publishedSignals` and `publicationAndSignalTogether`
+tie the hint to the atomic publication boundary, including lost acknowledgements.
+Rollback sends no hint. `observedSignals` permits harmless extra committed hints,
+including an intermediate row change restored before commit; it requires a wake
+for a net queue change. The hint carries no source content and is not a durable
+review receipt. Listeners must scan the queue after subscribing and reconnecting.
+The watch CLI starts in `JudgeHost.subscribing`.
+`JudgeDigestComposition.firstBatchRequiresSubscription` requires a configuration
+receipt, an acknowledged subscription to that configuration's database, and the
+first batch using that same loaded configuration. `firstBatchAcknowledgedListen`
+proves the connection and acknowledgement order. The Rust subscription retains
+incoming hints across the initial scan. Each batch hands its MCP child a private
+configuration copy, read back before use; `JudgeHostProtocol.PreparedMcpConfig`
+requires that the observed settings match. Editing the original file cannot
+redirect the admitted batch. Preparation failure starts no MCP child. Idle
+waiting uses database events. A lost listener returns to the same subscribing
+phase and requires a new scan before waiting; missed hints cannot hide saved
+work. OS file events request configuration reload and resubscription before
+the next batch. Invalid settings wait for a correction event;
+`invalidConfigurationCannotStartBatch` excludes a batch from that state.
+`Round` uses one admitted configuration for both the batch and daily summary.
+No polling timer is added by subscription, reconnection or configuration reload.
+
+Watch-mode notification finalization requires queue admission, with receipts that
+exclude synchronous submission. `queuedFinalizationNeedsNoDelivery` proves that
+the finisher never requests inline mail delivery. The next review round requires
+only the captured daily job's admission, without an SMTP completion premise.
+The worker queue accepts another job while a delivery is active; cancellation
+and joining leave no owned worker running. Native verification stalls an actual
+local SMTP connection while another report is persisted, then checks transport
+closure and notification-lock release on shutdown.
+
 ## Stored belief evidence
 
 [EvidenceValidity](../spec/Mimir/EvidenceValidity.agda) defines valid stored
@@ -156,7 +202,7 @@ Every operation below also uses the shared input/dispatch/output/MCP composition
 | MCP startup and request loop | [McpServiceProcess](../spec/Mimir/McpServiceProcess.agda), [McpRuntimeComposition](../spec/Mimir/McpRuntimeComposition.agda), [McpApplicationComposition](../spec/Mimir/McpApplicationComposition.agda), [McpToolExecution](../spec/Mimir/McpToolExecution.agda), [PublicRequest](../spec/Mimir/PublicRequest.agda), [ApplicationProtocol](../spec/Mimir/ApplicationProtocol.agda), [ApplicationOutput](../spec/Mimir/ApplicationOutput.agda), [PublicEncoding](../spec/Mimir/PublicEncoding.agda) |
 | Configuration, connection and credentials | [ConfigurationProtocol](../spec/Mimir/ConfigurationProtocol.agda), [ConfigurationSchema](../spec/Mimir/ConfigurationSchema.agda), [ConfigurationValues](../spec/Mimir/ConfigurationValues.agda), [ConnectionProtocol](../spec/Mimir/ConnectionProtocol.agda), [Password](../spec/Mimir/Password.agda), [TLS](../spec/Mimir/TLS.agda), [ServiceStartup](../spec/Mimir/ServiceStartup.agda), [ServiceConnection](../spec/Mimir/ServiceConnection.agda), [CoreLibrary](../spec/Mimir/CoreLibrary.agda) |
 | Database bootstrap and ten schema migrations | [MigrationSchema](../spec/Mimir/MigrationSchema.agda), [MigrationScriptBinding](../spec/Mimir/MigrationScriptBinding.agda), [ItemOwnerBackfill](../spec/Mimir/ItemOwnerBackfill.agda), [MigrationRuntime](../spec/Mimir/MigrationRuntime.agda), [MigrationComposition](../spec/Mimir/MigrationComposition.agda), [MigrationHistory](../spec/Mimir/MigrationHistory.agda) |
-| Judge host, provider and subprocess lifecycle | [JudgeHostProtocol](../spec/Mimir/JudgeHostProtocol.agda), [JudgeWorkflowComposition](../spec/Mimir/JudgeWorkflowComposition.agda), [JudgeBackendComposition](../spec/Mimir/JudgeBackendComposition.agda), [JudgeClientStartup](../spec/Mimir/JudgeClientStartup.agda), [JudgeMcpLifecycle](../spec/Mimir/JudgeMcpLifecycle.agda), [JudgeAPIAdapter](../spec/Mimir/JudgeAPIAdapter.agda), [JudgeHarnessAdapter](../spec/Mimir/JudgeHarnessAdapter.agda), [JudgePersistenceComposition](../spec/Mimir/JudgePersistenceComposition.agda), [JudgeFinalizationComposition](../spec/Mimir/JudgeFinalizationComposition.agda), [OperationalLogSteps](../spec/Mimir/OperationalLogSteps.agda), [OperationalLogProtocol](../spec/Mimir/OperationalLogProtocol.agda), [OperationalLifecycle](../spec/Mimir/OperationalLifecycle.agda), [log-write and startup guarantees](FORMAL-OPERATIONAL-LOGS.md) |
+| Judge host, provider and subprocess lifecycle | [JudgeHostProtocol](../spec/Mimir/JudgeHostProtocol.agda), [JudgeWorkflowComposition](../spec/Mimir/JudgeWorkflowComposition.agda), [JudgeBackendComposition](../spec/Mimir/JudgeBackendComposition.agda), [JudgeClientStartup](../spec/Mimir/JudgeClientStartup.agda), [JudgeMcpLifecycle](../spec/Mimir/JudgeMcpLifecycle.agda), [JudgeAPIAdapter](../spec/Mimir/JudgeAPIAdapter.agda), [JudgeHarnessAdapter](../spec/Mimir/JudgeHarnessAdapter.agda), [JudgePersistenceComposition](../spec/Mimir/JudgePersistenceComposition.agda), [JudgeFinalizationComposition](../spec/Mimir/JudgeFinalizationComposition.agda), [OperationalLogProtocol](../spec/Mimir/OperationalLogProtocol.agda), [OperationalLifecycle](../spec/Mimir/OperationalLifecycle.agda), [log-write and startup guarantees](FORMAL-OPERATIONAL-LOGS.md) |
 | Notification, digest and OAuth lifecycle | [JudgeDigestComposition](../spec/Mimir/JudgeDigestComposition.agda), [JudgeDigestSnapshot](../spec/Mimir/JudgeDigestSnapshot.agda), [NotificationComposition](../spec/Mimir/NotificationComposition.agda), [NotificationRuntime](../spec/Mimir/NotificationRuntime.agda), [NotificationFileBinding](../spec/Mimir/NotificationFileBinding.agda), [NotificationCodec](../spec/Mimir/NotificationCodec.agda), [NotificationWire](../spec/Mimir/NotificationWire.agda), [NotificationMail](../spec/Mimir/NotificationMail.agda), [OAuthComposition](../spec/Mimir/OAuthComposition.agda), [OAuthResponseBinding](../spec/Mimir/OAuthResponseBinding.agda), [SMTPProtocol](../spec/Mimir/SMTPProtocol.agda) |
 | Embedding backend and automatic grounding | [EmbeddingService](../spec/Mimir/EmbeddingService.agda), [EmbeddingLifecycle](../spec/Mimir/EmbeddingLifecycle.agda), [EmbeddingBackend](../spec/Mimir/EmbeddingBackend.agda), [EmbeddingBatch](../spec/Mimir/EmbeddingBatch.agda), [BeliefEmbeddingStorage](../spec/Mimir/BeliefEmbeddingStorage.agda), [GroundingStorageBinding](../spec/Mimir/GroundingStorageBinding.agda), [DocumentLoading](../spec/Mimir/DocumentLoading.agda) |
 | Experience/review concurrency and recovery | [LearningTransaction](../spec/Mimir/LearningTransaction.agda), [LearningTransactionReceipt](../spec/Mimir/LearningTransactionReceipt.agda), [LearningOperations](../spec/Mimir/LearningOperations.agda), [LearningPublication](../spec/Mimir/LearningPublication.agda), [ReviewNumericalPublication](../spec/Mimir/ReviewNumericalPublication.agda), [ReviewPreparationPublication](../spec/Mimir/ReviewPreparationPublication.agda), [DatabaseTransaction](../spec/Mimir/DatabaseTransaction.agda), [DatabaseAdvisoryLock](../spec/Mimir/DatabaseAdvisoryLock.agda), [DatabaseReadCommitted](../spec/Mimir/DatabaseReadCommitted.agda), [LearningQueryBinding](../spec/Mimir/LearningQueryBinding.agda), [LearningTransactionDatabase](../spec/Mimir/LearningTransactionDatabase.agda), [NativeLockOrder](../spec/Mimir/NativeLockOrder.agda), [ReviewCompetition](../spec/Mimir/ReviewCompetition.agda), [competing review guarantees](FORMAL-REVIEW-COMPETITION.md) |

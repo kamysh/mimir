@@ -18,6 +18,8 @@ import Mimir.CandidateProvenance as Candidate
 import Mimir.IndependentProvenance as Independent
 import Mimir.PosteriorComputation as Numeric
 import Mimir.ApplicationFloat as FloatInput
+import Mimir.RetrievalRanking as Ranking
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 
 findBelief : ℕ → List Graph.Node → Maybe Graph.BeliefValues
 findBelief id [] = nothing
@@ -70,11 +72,17 @@ record Page : Set where
   constructor page
   field entries : List Review; total : ℕ; nextOffset : Maybe ℕ
 
-paginate : ℕ → ℕ → List Review → Page
-paginate offset limit rows with (offset + length (take limit (drop offset rows))) <? length rows
+paginate : ℕ → Ranking.Selection → List Review → Page
+paginate offset nothing rows = page (drop offset rows) (length rows) nothing
+paginate offset (just count) rows with (offset + length (take (Ranking.PositiveCount.count count) (drop offset rows))) <? length rows
 ... | yes more = page (take limit (drop offset rows)) (length rows)
   (just (offset + length (take limit (drop offset rows))))
+  where limit = Ranking.PositiveCount.count count
 ... | no finished = page (take limit (drop offset rows)) (length rows) nothing
+  where limit = Ranking.PositiveCount.count count
+
+allSelectionKeepsRemainder : ∀ offset rows → Page.entries (paginate offset nothing rows) ≡ drop offset rows
+allSelectionKeepsRemainder offset rows = refl
 
 record Explanation : Set where
   constructor explanation
@@ -86,7 +94,7 @@ record Explanation : Set where
     independentProvenance : Independent.Read
 
 data Result : Set where
-  beliefMissing invalidLimit invalidStoredProvenance : Result
+  beliefMissing invalidStoredProvenance : Result
   explained : Explanation → Result
 
 origin : ℕ → Store.World → Independent.Read
@@ -94,14 +102,12 @@ origin id w with Numeric.lookup id (Store.World.independentOrigins w)
 ... | nothing = Independent.noProvenance
 ... | just value = Independent.decode value
 
-get : ℕ → ℕ → ℕ → Store.World → Result
+get : ℕ → ℕ → Ranking.Selection → Store.World → Result
 get id offset limit w with findBelief id (Publication.World.nodes (Store.World.publication w))
 ... | nothing = beliefMissing
-... | just b with does (1 ≤? limit)
-...   | false = invalidLimit
-...   | true with origin id w
-...     | Independent.malformed = invalidStoredProvenance
-...     | provenance = explained (explanation b
+... | just b with origin id w
+...   | Independent.malformed = invalidStoredProvenance
+...   | provenance = explained (explanation b
   (parents id (Publication.World.nodes (Store.World.publication w)) (Publication.World.edges (Store.World.publication w)))
   (paginate offset limit (reviews id (Store.identities w) (Publication.World.ledger (Store.World.publication w))))
   (Candidate.get id w) provenance)

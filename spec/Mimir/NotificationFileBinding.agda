@@ -23,7 +23,7 @@ module Bound (standard : Library.Contract) (library : Codec.JSONLibrary) (sizeMa
   private
     module R name = F.Decoded (Codec.Value name) Validation.Fault (C.bytes name)
 
-  readResult : ∀ name → F.FS.Result (Maybe (R.R.Read name (just 1048576))) →
+  readResult : ∀ name → F.FS.Result (Maybe (R.R.Read name nothing)) →
     F.FS.Error ⊎ Maybe (Codec.Value name)
   readResult name (inj₁ failure) = inj₁ failure
   readResult name (inj₂ nothing) = inj₂ nothing
@@ -33,7 +33,6 @@ module Bound (standard : Library.Contract) (library : Codec.JSONLibrary) (sizeMa
     observed : ∀ events reply → F.FS.Runs (R.read name held name) events reply → Read held name (readResult name reply)
 
   writeResult : F.WriteResult → Delivery.WriteReceipt
-  writeResult F.oversized = Delivery.refused
   writeResult (F.replaced F.W.committed) = Delivery.durable
   writeResult (F.replaced (F.W.unchanged _ _)) = Delivery.refused
   writeResult (F.replaced (F.W.uncertain _ _)) = Delivery.uncertain

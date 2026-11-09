@@ -9,6 +9,7 @@ import Mimir.ReviewPreparationPublication as Publication
 import Mimir.AssessmentRead as Read
 import Mimir.AssessmentSelection as Selection
 import Mimir.LearningRecompute as Recompute
+import Mimir.RetrievalRanking as Ranking
 
 view : Store.World → Read.World
 view w = Read.world (Publication.World.ledger (Store.World.publication w))
@@ -19,5 +20,5 @@ scores : Selection.Query → Store.World → Read.ScoreResult
 scores q w = Read.getAssessment q
   (map Recompute.target (Recompute.beliefs (Publication.World.nodes (Store.World.publication w)))) (view w)
 
-history : Selection.Query → Store.World → ℕ → ℕ → Read.HistoryResult
+history : Selection.Query → Store.World → ℕ → Ranking.Selection → Read.HistoryResult
 history q w offset limit = Read.history q (view w) offset limit

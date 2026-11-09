@@ -3,8 +3,8 @@
 -- Global beliefs are readable context, but are not implicit learning targets.
 module Mimir.LearningTargets where
 
-open import Data.List using (List; []; _∷_)
-open import Data.List.Relation.Unary.All using (All)
+open import Data.List using (List; []; _∷_; _++_)
+open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≟_)
 open import Data.Product using (_×_; _,_)
@@ -49,6 +49,29 @@ Valid project beliefs = All (λ id → Allowed project (lookup id beliefs))
 
 validate : ∀ project beliefs ids → Checked (Valid project beliefs ids)
 validate project beliefs = allChecked (λ id → checkAllowed project (lookup id beliefs))
+
+-- A public reference retains its actual request location; it is not numbered
+-- again in a flattened list of graph IDs.
+record Reference : Set where
+  constructor reference
+  field identity : ℕ; location : List Segment
+
+checkReference : ∀ project beliefs r → Checked (Allowed project (lookup (Reference.identity r) beliefs))
+checkReference project beliefs r with checkAllowed project (lookup (Reference.identity r) beliefs)
+... | accepted proof = accepted proof
+... | rejected detail invalid = rejected
+  (problem (Reference.location r ++ Fault.path detail) (Fault.code detail) (Fault.explanation detail)) invalid
+
+ReferencesValid : Text → List Belief → List Reference → Set
+ReferencesValid project beliefs = All (λ r → Allowed project (lookup (Reference.identity r) beliefs))
+
+checkReferences : ∀ project beliefs refs → Checked (ReferencesValid project beliefs refs)
+checkReferences project beliefs [] = accepted []
+checkReferences project beliefs (r ∷ rest) with checkReference project beliefs r
+... | rejected detail invalid = rejected detail (λ { (proof ∷ _) → invalid proof })
+... | accepted proof with checkReferences project beliefs rest
+...   | rejected detail invalid = rejected detail (λ { (_ ∷ proofs) → invalid proofs })
+...   | accepted proofs = accepted (proof ∷ proofs)
 
 globalCannotBeChanged : ∀ project id memory → Allowed project (just (belief id nothing memory)) → ⊥
 globalCannotBeChanged project id memory (impossible , persistent) = impossible

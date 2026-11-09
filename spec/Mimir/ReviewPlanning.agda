@@ -5,7 +5,7 @@
 module Mimir.ReviewPlanning where
 
 open import Data.Bool using (true; false)
-open import Data.List using ([]; map)
+open import Data.List using ([]; _∷_; map)
 open import Data.List.Relation.Unary.All using (All)
 open import Data.Integer using (ℤ; +_)
 open import Data.Nat using (ℕ; _<?_; _≟_)
@@ -17,7 +17,7 @@ open import Mimir.ExperienceSchema using (Experience)
 open import Mimir.ReviewSchema using (Review; validateReview)
 open import Mimir.LearningCandidates using (Candidate)
 open import Mimir.SourceReview using (_≟Text_)
-open import Mimir.Validation using (Fault; fault; staleRevision; wrongIdentity; accepted; rejected)
+open import Mimir.Validation using (Fault; fault; key; prependPath; staleRevision; wrongIdentity; accepted; rejected)
 open import Mimir.RevisionBounds using (i64Maximum)
 import Mimir.LearningKeys as Keys
 import Mimir.CandidateRegistry as Registry
@@ -44,7 +44,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
     field
       same : Ledger.R.replay F.state expected (Keys.review requested) ≡ true
       pinned : Admission.Pinned F.P.originalEnvironment requested
-      declarations : All (Batch.Declared (Review.experienceID requested) (Publication.World.registry before))
+      declarations : All (Replay.Declared (Review.experienceID requested) (Publication.World.registry before))
         (Review.candidates requested)
 
   data Decision : Set where
@@ -54,7 +54,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
 
   plan : (Candidate → ℕ) → Decision
   plan identities with validateReview requested
-  ... | rejected failure invalid = refused failure
+  ... | rejected failure invalid = refused (prependPath (key "review") failure)
   ... | accepted structure with expected <? i64Maximum
   ...   | no invalid = refused (fault [] staleRevision "expected review revision exceeds storage range")
   ...   | yes room with Admission.checkPin F.P.originalEnvironment requested
@@ -67,7 +67,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
   ...           | accepted declarations = replay (replayed retry pinned declarations)
   plan identities | accepted structure | yes room | accepted pinned | yes project | false
     with expected ≟ Ledger.R.Cell.review F.state
-  ... | no different = refused (fault [] staleRevision "stale review revision")
+  ... | no different = refused (fault (key "expected_review_revision" ∷ []) staleRevision "stale review revision")
   ... | yes same with F.P.prepare identities
   ...   | inj₁ failure = refused failure
   ...   | inj₂ preparation = fresh (F.fresh project same retry room preparation)
@@ -81,7 +81,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
   replayBindings receipt = Read.bindings (Review.candidates requested) (Replayed.declarations receipt)
 
   replayBindingsSupported : ∀ receipt →
-    All (Batch.Supported (Review.experienceID requested) (Publication.World.registry before)) (replayBindings receipt)
+    All (Replay.Supported (Review.experienceID requested) (Publication.World.registry before)) (replayBindings receipt)
   replayBindingsSupported receipt = Read.allSupported (Review.candidates requested)
     (Replayed.declarations receipt)
 

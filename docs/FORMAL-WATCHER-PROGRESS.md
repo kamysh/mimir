@@ -5,17 +5,36 @@ confirm work that can be completed. A retry proves only the first.
 
 ## Continued attempts
 
-One round includes the actual batch program, the daily notification check, and
-the configured wait. If those operations return and the timer gets time to run,
-the watcher returns to the next batch. A batch failure or an unavailable daily
-notification changes the recorded state and waiting period, but does not exit
-the loop. Repeated failures can increase the delay to an hour. A signal or an
-invalid starting configuration is outside this continued-operation condition.
+One round includes the actual batch program and admission of a daily-summary job.
+A successful, non-idle, non-degraded batch continues directly to the next queue
+check, without constructing a timer or waiting for a timer acknowledgement.
+An empty queue waits for a database work event, then scans again. It cannot
+construct a timer. Incomplete-work paths still use the configured wait; their
+replacements and removal of failure backoff are tracked in #67. No retained
+wait is approved by this description.
 
 The `Round` record and `roundTrace` proof in
 [JudgeDigestComposition](../spec/Mimir/JudgeDigestComposition.agda) connect these
-conditions to the actual repeated watcher program. The timer acknowledgement
-is an external scheduling condition, not a proof about the operating system.
+conditions to the actual repeated watcher program.
+`successfulRoundNeedsNoTimer` constructs the continuation of every successful
+non-idle batch without a timer premise, for any configured interval, failure
+history, or digest reply. The timer acknowledgement on the remaining waiting
+paths is an external scheduling condition, not a proof about the operating
+system. `JudgeHost.idleBatchWaitsForWork` covers every idle batch and digest
+reply. Its continuation requires an actual listener event; cancellation exits
+the wait. A disconnected listener returns to the subscription phase, which
+requires a fresh configuration receipt, acknowledgement and queue scan before
+waiting again. A failed reconnection reports the missing prerequisite and
+restart instruction. OS file events wake configuration reload at batch
+boundaries, including an idle wait. Invalid replacements pause for a correction
+event without overwriting the file or publishing the invalid settings.
+`invalidConfigurationCannotStartBatch` excludes batch execution from that wait.
+Each round uses the same admitted settings for review and the daily summary.
+Watch-mode finalization queues its alert instead of awaiting SMTP or OAuth.
+`queuedFinalizationNeedsNoDelivery` excludes inline delivery from that path;
+the composed queue receipt also excludes synchronous submission. Queue admission
+remains possible while an earlier delivery is active. The owned worker's joined
+state contains no active task after cancellation.
 
 ## Completing stable work after recovery
 
@@ -29,8 +48,10 @@ revisions and all of the following conditions:
 - Each selected revision receives a valid completed review. Final database
   reads confirm its identity and unchanged source revision, acknowledge that
   source revision, and show a newer review revision.
-- Batch work and the daily notification check return, and the timer continues
-  receiving time to run. The watcher is not stopped.
+- Batch work and notification queue admission return. SMTP and OAuth need not
+  return for review processing to continue. Any remaining waiting
+  path receives its required external event. Productive batches have no timer
+  prerequisite. The watcher is not stopped.
 
 Under these conditions, every original revision is confirmed within at most as
 many attempts as there were revisions in the original queue. For example,

@@ -42,7 +42,7 @@ different IDs cannot automatically be recognized as the same real event.
 A target is an existing `belief_id` or a belief candidate declared in that same
 review. A procedure can be represented by an explicit belief about its behavior
 and benefit; standalone Pattern records retain their existing success-count
-semantics. Scope and rubric keys are required, at most 200 bytes, and participate
+semantics. Scope and rubric keys are required and participate
 in aggregation identity. Different keys never pool evidence automatically.
 
 Correctness values are in [0,1], usefulness values in [-1,1], and weights in
@@ -80,16 +80,19 @@ neutral benefit. Neither score grants authority or proves causal benefit.
 `get_lesson_assessment` requires `project`, `belief_id`, `scope`, and `rubric`.
 It validates project ownership and returns the current scores. Querying a valid
 lesson with no active evidence returns the prior. `lesson_assessment_history`
-accepts the same keys plus `offset` and `limit` (1–100) and returns immutable
+accepts the same keys plus an optional nonnegative `offset` and positive `limit` and returns immutable
 contributions, their source/review revisions, current applicability flag and a
 next-page offset. `experience_history` supplies the matching source versions.
+Omitting `limit` returns all remaining matches, starting at `offset` or zero.
+An explicit count has no extra server ceiling; zero requests a correction.
+`explain_belief` uses the same selection rule for its active review list.
+The judge accepts these optional selections and does not add a result ceiling.
 History remains inspectable after a target is removed, while current-score reads
 require an existing target.
 
 `query_learning_context` includes `assessments` for the returned beliefs, grouped
-by exact applicability scope and rubric. It caps groups at 100 and explicitly
-sets `assessments_truncated`. Use exact assessment/history queries for known
-groups beyond that retrieval budget. This does not change similarity ranking or
+by exact applicability scope and rubric, without an extra group cutoff.
+`assessments_truncated` remains false for compatibility. This does not change similarity ranking or
 silently substitute a learning score for generic belief probability.
 
 Revising an experience immediately makes its old review contributions inactive.
@@ -97,6 +100,47 @@ Revising a review replaces its contributions atomically. Retrying an acknowledge
 or ambiguously acknowledged request reuses the same IDs, expected revision and
 payload. Conflicting or stale payloads fail. Historical rows remain immutable;
 queries join the active revision pointers so obsolete evidence cannot contribute.
+
+Candidate names belong to one experience. Declare each name once in a review;
+later reviews must retain its original belief or pattern declaration. A belief
+target using `candidate_key` must name a belief candidate declared in that same
+review. A pattern name cannot be used as a belief target.
+
+Duplicate or undeclared names, changed declarations and attempts to publish a
+deleted candidate return `needs_input` with the affected field and repair
+guidance before publication. Use `get_learning_review` and `experience_history`
+to inspect the original declaration and assigned ID. If different knowledge was
+intended, ask the user which declaration or new stable name is appropriate;
+do not silently rename or recreate a candidate. Refusal leaves the review and
+candidate history unchanged. Retrying an already completed review still returns
+its original answer after a candidate is deleted, without recreating that node.
+
+An experience correction also keeps its original project and every original
+source record, including actor, provenance, text and optional recorded time.
+If a request drops or changes a source, `needs_input` identifies
+`experience.source_records` and names the original source that must be retained.
+Read `get_experience` and `experience_history`, keep that original record, and
+append a separate correction record. A project change identifies
+`experience.project`; it cannot move the existing experience to another project.
+These refusals roll back any item allocations made by the rejected request.
+
+A review correction retains every original extracted item's identity, source,
+actor, exact quotation and kind. An omitted or rewritten item produces
+`needs_input` at `review.extracted_items` before new candidate embedding starts.
+Read the original review and history, retain those items under their saved IDs
+or stable keys, and put revised interpretation in conditions, predictions or
+assessment rationale. New items can be added. The publication transaction
+rechecks retention, and a refused correction cannot publish new items or nodes.
+
+Source coverage, actor and quotation checks also run before candidate embedding.
+Their `needs_input` response points to the affected source reference, actor,
+statement or coverage array. Read the saved experience: each source needs one
+coverage record, and extracted text must copy a contiguous passage with its
+recorded actor. Preserve literal backslashes, JSON escapes and whitespace;
+speakers named inside a message belong in interpretation rather than replacing
+the source record's actor. Source reviews use typed assessments rather than
+legacy feedback or links. Complete validation still checks allocated identities
+and whether each item has an assessment or unresolved coverage before commit.
 
 ## Compatibility and formal contract
 

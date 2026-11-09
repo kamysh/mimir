@@ -1,7 +1,8 @@
 {-# OPTIONS --safe #-}
 -- Service orchestration for propagation, intervention, decay, contradictions
--- and defeated-belief sweep. Every read is a separate observation. The
--- dependency owns I/O; all application numerical decisions are concrete.
+-- and defeated-belief sweep. Ordinary reads are separate observations;
+-- contradictions and intervention inputs explicitly share read-only snapshots.
+-- The dependency owns I/O; application numerical decisions are concrete.
 module Mimir.InferenceProtocol where
 
 open import Data.Bool using (Bool; true; false; _∧_; not)
@@ -26,6 +27,7 @@ import Mimir.LearningRecompute as L
 import Mimir.ReviewSchema as Reviews
 import Mimir.DatabaseTransaction as DB
 import Mimir.EvidenceValidity as Evidence
+import Mimir.ApplicationStore as Store
 
 record Incoming : Set where
   constructor incoming
@@ -37,7 +39,6 @@ data Request : Set where
   decay : Maybe Text → Float → Request
   contradictions : Maybe Text → Request
   sweep : Maybe Text → Float → ℤ → Request -- grace in nanoseconds
-  sweepHours : Maybe Text → Float → Float → Request
 
 data Effect : Set where
   getBelief : ℕ → Effect
@@ -45,9 +46,14 @@ data Effect : Set where
   activeReviews groundingMasses : Effect
   incomingEdges : List ℕ → Effect
   listBeliefs : Maybe Text → Effect
-  contradictionPairs defeatTimes : Maybe Text → Effect
+  defeatTimes : Maybe Text → Effect
+  openContradictions : Maybe Text → Effect
+  snapshotBeliefs : ℕ → Store.World → Maybe Text → Effect
+  closeContradictions : ℕ → Effect
+  openIntervention : ℕ → Effect
+  inSnapshot : ℕ → Store.World → Effect → Effect
+  closeIntervention : ℕ → Effect
   clock : Effect
-  convertGraceHours : Float → Effect
   hashIteration : List ℕ → Effect
   persistBeta : P.State → Effect
   deleteBelief : ℕ → Effect -- GraphDeletion.Operation, including its transaction
@@ -59,12 +65,14 @@ Reply activeReviews = Text ⊎ List Reviews.Review
 Reply groundingMasses = Text ⊎ List (ℕ × Float)
 Reply (incomingEdges ids) = Text ⊎ List Incoming
 Reply (listBeliefs project) = Text ⊎ List G.BeliefValues
-Reply (contradictionPairs project) = Text ⊎ List (ℕ × ℕ)
+Reply (openContradictions project) = Text ⊎ (ℕ × Store.World × List (ℕ × ℕ))
+Reply (snapshotBeliefs tx first project) = Text ⊎ List G.BeliefValues
+Reply (closeContradictions tx) = ⊤
+Reply (openIntervention id) = Text ⊎ (ℕ × Store.World × Maybe G.BeliefValues)
+Reply (inSnapshot tx first effect) = Reply effect
+Reply (closeIntervention tx) = ⊤
 Reply (defeatTimes project) = Text ⊎ List N.Defeat
 Reply clock = ℤ
--- Standard round(hours*60), Rust saturating i64 conversion and chrono minutes.
--- Conversion occurs only after nonempty defeats, beliefs and the clock read.
-Reply (convertGraceHours hours) = Maybe ℤ
 Reply (hashIteration ids) = Σ (List ℕ) (λ order → order ↭ ids)
 Reply (persistBeta writes) = Text ⊎ DB.Receipt
 Reply (deleteBelief id) = Text ⊎ Bool
@@ -76,10 +84,12 @@ data Result : Set where
   failed : Text → Result
   missingBelief invalidProbability invalidDecay invalidNumericInput invalidNumericWrite : Result
   publicationUncertain publicationAborted : Result
-  durationOutOfRange : Result
   projected propagated : List (ℕ × Float) → Bool → Result
   changed deleted : ℕ → Result
   pairs : List (ℕ × ℕ) → Result
+
+closeRead : ℕ → Result → Script Result
+closeRead tx result = ask (closeContradictions tx) (λ _ → done result)
 
 read : (effect : Effect) → ∀ {A} → Reply effect ≡ (Text ⊎ A) → (A → Script Result) → Script Result
 read effect {A} same next = ask effect (λ response → receive (subst (λ X → X) same response))
@@ -143,6 +153,24 @@ afterSeed causal id value = read (descendants id causal) refl (λ beliefs →
       (calculate causal id value beliefs reviews ground))))
   where open import Relation.Binary.PropositionalEquality using (refl)
 
+closeProjection : ℕ → Result → Script Result
+closeProjection tx result = ask (closeIntervention tx) (λ _ → done result)
+
+readAt : ℕ → Store.World → (effect : Effect) → ∀ {A} → Reply effect ≡ (Text ⊎ A) →
+  (A → Script Result) → Script Result
+readAt tx first effect {A} same next = ask (inSnapshot tx first effect)
+  (λ response → receive (subst (λ X → X) same response))
+  where
+  receive : Text ⊎ A → Script Result
+  receive (inj₁ error) = closeProjection tx (failed error)
+  receive (inj₂ value) = next value
+
+projectFrom : ℕ → Store.World → ℕ → Float → Script Result
+projectFrom tx first id value = readAt tx first (descendants id true) refl (λ beliefs →
+  readAt tx first activeReviews refl (λ reviews → readAt tx first groundingMasses refl (λ ground →
+    readAt tx first (incomingEdges (map G.BeliefValues.identity beliefs Data.List.++ (id ∷ []))) refl
+      (λ incomingRows → calculate true id value beliefs reviews ground incomingRows >>= closeProjection tx))))
+
 sweepDeletes : ℕ → List ℕ → Script Result
 sweepDeletes count [] = done (deleted count)
 sweepDeletes count (id ∷ ids) = read (deleteBelief id) refl (λ
@@ -155,8 +183,10 @@ start (propagate id) = read (getBelief id) refl (λ
   where open import Relation.Binary.PropositionalEquality using (refl)
 start (intervention id value) with N.probability value
 ... | false = done invalidProbability
-... | true = read (getBelief id) refl (λ
-  { nothing → done missingBelief ; (just b) → afterSeed true id value })
+... | true = ask (openIntervention id) (λ
+  { (inj₁ error) → done (failed error)
+  ; (inj₂ (tx , first , nothing)) → closeProjection tx missingBelief
+  ; (inj₂ (tx , first , just b)) → projectFrom tx first id value })
   where open import Relation.Binary.PropositionalEquality using (refl)
 start (decay project factor) = read (listBeliefs project) refl (λ beliefs →
   read groundingMasses refl (λ ground → ask clock (λ now → decide (N.decay now factor ground beliefs))))
@@ -165,14 +195,17 @@ start (decay project factor) = read (listBeliefs project) refl (λ beliefs →
   decide : Maybe P.State → Script Result
   decide nothing = done invalidDecay
   decide (just writes) = persist writes (changed (length writes))
-start (contradictions project) = read (contradictionPairs project) refl decide
+start (contradictions project) = read (openContradictions project) refl decide
   where
   open import Relation.Binary.PropositionalEquality using (refl)
-  decide : List (ℕ × ℕ) → Script Result
-  decide [] = done (pairs [])
-  decide candidates@(_ ∷ _) = read (listBeliefs project) refl
-    (λ beliefs → done (pairs (N.activeContradictions beliefs candidates)))
-start (sweep project threshold grace) = read (defeatTimes project) refl decide
+  decide : ℕ × Store.World × List (ℕ × ℕ) → Script Result
+  decide (tx , first , []) = closeRead tx (pairs [])
+  decide (tx , first , candidates@(_ ∷ _)) = ask (snapshotBeliefs tx first project) (λ
+    { (inj₁ error) → closeRead tx (failed error)
+    ; (inj₂ beliefs) → closeRead tx (pairs (N.activeContradictions beliefs candidates)) })
+start (sweep project threshold grace) with N.probability threshold
+... | false = done invalidProbability
+... | true = read (defeatTimes project) refl decide
   where
   open import Relation.Binary.PropositionalEquality using (refl)
   decide : List N.Defeat → Script Result
@@ -180,14 +213,12 @@ start (sweep project threshold grace) = read (defeatTimes project) refl decide
   decide edges@(_ ∷ _) = read (listBeliefs project) refl (λ beliefs → ask clock (λ now →
     ask (hashIteration (Ranking.unique (map N.Defeat.target edges))) (λ { (order , sameMembers) →
       sweepDeletes 0 (N.expiredTargets now grace threshold beliefs edges order) })))
-start (sweepHours project threshold hours) = read (defeatTimes project) refl decide
-  where
-  afterDuration : List N.Defeat → List G.BeliefValues → ℤ → Maybe ℤ → Script Result
-  afterDuration edges beliefs now nothing = done durationOutOfRange
-  afterDuration edges beliefs now (just grace) =
-    ask (hashIteration (Ranking.unique (map N.Defeat.target edges))) (λ { (order , sameMembers) →
-      sweepDeletes 0 (N.expiredTargets now grace threshold beliefs edges order) })
-  decide : List N.Defeat → Script Result
-  decide [] = done (deleted 0)
-  decide edges@(_ ∷ _) = read (listBeliefs project) refl (λ beliefs → ask clock (λ now →
-    ask (convertGraceHours hours) (afterDuration edges beliefs now)))
+
+-- An invalid threshold cannot even read the store, whatever the project,
+-- retention policy or replies a caller might otherwise supply.
+invalidSweepHasNoEffects : ∀ project threshold grace events result →
+  N.probability threshold ≡ false →
+  E.Runs (start (sweep project threshold grace)) events result →
+  events ≡ [] × result ≡ invalidProbability
+invalidSweepHasNoEffects project threshold grace events result rejected run
+  rewrite rejected = E.completedCannotProduceEffects run

@@ -1,11 +1,11 @@
 {-# OPTIONS --safe #-}
 -- Subprocess supervision: concurrent stdin/stdout/stderr, complete stdout,
--- bounded diagnostic retention and process-group cleanup before reaping. Signals
+-- complete stderr and process-group cleanup before reaping. Signals
 -- are requests to the OS; they are not claims that every descendant terminated.
 module Mimir.JudgeProcess where
 
 open import Data.Bool using (Bool; true; false; _∧_)
-open import Data.List using (List; []; _∷_; _++_; length; take)
+open import Data.List using (List; []; _∷_; _++_; length)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤_; _<_; _≤?_; _+_)
 open import Data.Product using (_×_; _,_)
@@ -20,17 +20,12 @@ import Mimir.SourceFailure as Source
 import Mimir.Effects as Effects
 
 data Stream : Set where stdout stderr : Stream
--- Diagnostic storage is bounded; the stderr pipe is still fully drained.
-diagnosticLimit : ℕ
-diagnosticLimit = 64 * 1024 where open import Data.Nat using (_*_)
-
 retain : Stream → List Byte → List Byte
-retain stdout value = value
-retain stderr value = take diagnosticLimit value
+retain stream value = value
 
 record Chunk : Set where
   constructor chunk
-  field bytes : List Byte; bounded : length bytes ≤ 8192; nonempty : 0 < length bytes
+  field bytes : List Byte; nonempty : 0 < length bytes
 
 data Failure : Set where
   nativeFailure : Text → Failure
@@ -178,9 +173,12 @@ data Trace : State → List (Maybe P.Event) → State → Set where
   step : ∀ {before middle after event events} → Transition before event middle →
     Trace middle events after → Trace before (event ∷ events) after
 
--- Retaining stderr never imposes a limit on successful model output.
+-- Neither stream loses bytes, for every accumulated value and new read.
+streamsComplete : ∀ stream before part → retain stream (before ++ part) ≡ before ++ part
+streamsComplete stream before part = refl
+
 stdoutComplete : ∀ before part → retain stdout (before ++ part) ≡ before ++ part
-stdoutComplete before part = refl
+stdoutComplete = streamsComplete stdout
 
 reapedCannotSignalAgain : ∀ pid result status →
   afterCleanupWait pid result (inj₂ status) ≡ done (finished result)

@@ -20,6 +20,105 @@ impl Drop for Directory {
     }
 }
 
+fn queued_event(status: crate::EventStatus) -> crate::Event {
+    crate::Event {
+        source: "judge".into(),
+        incident_key: "review batch".into(),
+        status,
+        details: Some("complete affected work and repair instructions".into()),
+    }
+}
+
+#[test]
+fn incoming_events_survive_restart_while_sender_lock_is_held() {
+    let directory = Directory::new();
+    let sender = StateDir::lock(&directory.0).unwrap();
+    let event = queued_event(crate::EventStatus::Failure {
+        code: "review_incomplete".into(),
+        summary: "Review needs attention".into(),
+    });
+    let queue = crate::IncomingEvents::new(&directory.0).unwrap();
+    let id = queue.enqueue(&event).unwrap();
+    drop(queue);
+    let reopened = crate::IncomingEvents::new(&directory.0).unwrap();
+    let consumer = reopened.claim().unwrap();
+    assert_eq!(
+        consumer.front().unwrap(),
+        Some(crate::PendingEvent { id, event })
+    );
+    assert_eq!(
+        fs::metadata(directory.0.join(INCOMING_FILE))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    drop(sender);
+}
+
+#[test]
+fn incoming_acknowledgement_preserves_concurrent_appends_and_event_order() {
+    let directory = Directory::new();
+    let queue = crate::IncomingEvents::new(&directory.0).unwrap();
+    let first = queued_event(crate::EventStatus::Progress);
+    let first_id = queue.enqueue(&first).unwrap();
+    let consumer = queue.claim().unwrap();
+    assert_eq!(consumer.front().unwrap().unwrap().id, first_id);
+    let later = queued_event(crate::EventStatus::Recovery);
+    let later_id = queue.enqueue(&later).unwrap();
+    let before = fs::read(directory.0.join(INCOMING_FILE)).unwrap();
+    assert!(consumer.acknowledge(&later_id).is_err());
+    assert_eq!(fs::read(directory.0.join(INCOMING_FILE)).unwrap(), before);
+    consumer.acknowledge(&first_id).unwrap();
+    assert_eq!(
+        consumer.front().unwrap(),
+        Some(crate::PendingEvent {
+            id: later_id.clone(),
+            event: later
+        })
+    );
+    consumer.acknowledge(&later_id).unwrap();
+    assert!(consumer.front().unwrap().is_none());
+}
+
+#[test]
+fn incoming_consumer_ownership_releases_without_losing_unacknowledged_work() {
+    let directory = Directory::new();
+    let queue = crate::IncomingEvents::new(&directory.0).unwrap();
+    let id = queue
+        .enqueue(&queued_event(crate::EventStatus::Progress))
+        .unwrap();
+    let first = queue.claim().unwrap();
+    assert!(queue.claim().is_err());
+    drop(first);
+    let second = queue.claim().unwrap();
+    assert_eq!(second.front().unwrap().unwrap().id, id);
+}
+
+#[test]
+fn incoming_invalid_event_and_unknown_version_preserve_existing_file() {
+    let directory = Directory::new();
+    let queue = crate::IncomingEvents::new(&directory.0).unwrap();
+    queue
+        .enqueue(&queued_event(crate::EventStatus::Progress))
+        .unwrap();
+    let mut invalid = queued_event(crate::EventStatus::Recovery);
+    invalid.source = "invalid source".into();
+    let file = directory.0.join(INCOMING_FILE);
+    let before = fs::read(&file).unwrap();
+    assert!(queue.enqueue(&invalid).is_err());
+    assert_eq!(fs::read(&file).unwrap(), before);
+    let mut stored: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    stored["schema_version"] = 2.into();
+    let bytes = serde_json::to_vec(&stored).unwrap();
+    fs::write(&file, &bytes).unwrap();
+    assert!(queue
+        .enqueue(&queued_event(crate::EventStatus::Progress))
+        .is_err());
+    assert_eq!(fs::read(&file).unwrap(), bytes);
+}
+
 #[test]
 fn failed_exclusive_creation_preserves_existing_file_and_symlink() {
     let directory = Directory::new();
@@ -99,7 +198,7 @@ fn successful_replacement_is_private_and_replaces_the_whole_file() {
 }
 
 #[test]
-fn encoding_and_size_rejection_preserve_all_named_files() {
+fn encoding_rejection_preserves_all_named_files() {
     struct Fails;
     impl Serialize for Fails {
         fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
@@ -108,15 +207,44 @@ fn encoding_and_size_rejection_preserve_all_named_files() {
     }
     let directory = Directory::new();
     let state = StateDir::lock(&directory.0).unwrap();
-    let oversized = "x".repeat(MAX_STATE as usize);
     for name in [STATE_FILE, OAUTH_FILE, DIGEST_FILE] {
         state.write_named(name, &"original").unwrap();
         let before = fs::read(directory.0.join(name)).unwrap();
         let count = fs::read_dir(&directory.0).unwrap().count();
         assert!(state.write_named(name, &Fails).is_err());
-        assert!(state.write_named(name, &oversized).is_err());
         assert_eq!(fs::read(directory.0.join(name)).unwrap(), before);
         assert_eq!(fs::read_dir(&directory.0).unwrap().count(), count);
+    }
+}
+
+#[test]
+fn complete_large_named_files_survive_replacement_and_reopening() {
+    let directory = Directory::new();
+    let complete = format!(
+        "{}last-complete-state-field",
+        "λ state field ".repeat(100_000)
+    );
+    assert!(complete.len() > 1024 * 1024);
+    {
+        let state = StateDir::lock(&directory.0).unwrap();
+        for name in [STATE_FILE, OAUTH_FILE, DIGEST_FILE] {
+            state.write_named(name, &complete).unwrap();
+        }
+    }
+    let reopened = StateDir::lock(&directory.0).unwrap();
+    for name in [STATE_FILE, OAUTH_FILE, DIGEST_FILE] {
+        assert_eq!(
+            reopened.read_named::<String>(name).unwrap().as_ref(),
+            Some(&complete)
+        );
+        assert_eq!(
+            fs::metadata(directory.0.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 }
 

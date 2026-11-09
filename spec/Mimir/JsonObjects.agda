@@ -85,7 +85,7 @@ module Object (Value : Set) where
   checkKnown allowed [] = accepted []
   checkKnown allowed ((name , value) ∷ rest) with Names.present? name allowed
   ... | no unknown = rejected
-    (fault (fieldKey name ∷ []) malformedInput "unknown field")
+    (fault (fieldKey name ∷ []) unknownField "unknown field")
     (λ { (known ∷ others) → unknown known })
   ... | yes known with checkKnown allowed rest
   ...   | accepted others = accepted (known ∷ others)

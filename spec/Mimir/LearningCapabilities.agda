@@ -26,6 +26,9 @@ record Capabilities : Set where
     contractVersion assessmentModelVersion : ℕ
     sourceCoverage typedItems revisionOwnedAssessments legacyProbabilityUnchanged : Bool
 
+current : Capabilities
+current = capabilities 3 1 true true true true
+
 Compatible : ℕ → ℕ → Capabilities → Set
 Compatible contract model actual = Capabilities.contractVersion actual ≡ contract ×
   (Capabilities.assessmentModelVersion actual ≡ model ×

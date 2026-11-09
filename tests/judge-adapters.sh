@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+selection="${1:-all}"
+case "$selection" in
+    all|--cancellation-only) ;;
+    *) printf 'Usage: tests/judge-adapters.sh [--cancellation-only]\n' >&2; exit 2 ;;
+esac
+
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 python3 "$repo/tests/support/fixture.py" check
 base="$(mktemp -d "$MIMIR_TEST_ROOT/adapters.XXXXXXXX")"
 bin="$MIMIR_TEST_MIMIR"
-mcp="$MIMIR_TEST_MCP"
 export MIMIR_ADAPTER_FIXTURE_ROOT="$base"
 mkdir -p "$base/bin"
 rustc --edition=2021 tests/judge_process_fixture.rs -o "$base/judge-process-fixture"
@@ -77,14 +82,10 @@ make_config() {
 
 call_tool() {
     local config="$1" name="$2" args="$3"
-    local capture="$base/rpc-$(uuidgen)" result=0
+    local capture="$base/rpc-$(uuidgen)"
     jq -cn --arg name "$name" --argjson args "$args" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$name,arguments:$args}}' > "$capture.request"
-    MIMIR_CONFIG="$config" "$mcp" < "$capture.request" > "$capture.stdout" 2> "$capture.stderr" || result=$?
-    printf '%s\n' "$result" > "$capture.exit"
-    if [[ "$result" -ne 0 ]]; then
-        cat "$capture.stderr" >&2
-        return "$result"
-    fi
+    python3 "$repo/tests/support/fixture.py" rpc --config "$config" \
+        --request "$capture.request" --report "$capture"
     jq -er '.result.content[0].text | fromjson' "$capture.stdout"
 }
 
@@ -104,6 +105,7 @@ seed() {
     call_tool "$config" record_experience "$args" | jq -e '.revision == 1' >/dev/null
 }
 
+if [[ "$selection" == all ]]; then
 for kind in claude-code codex command; do
     project="step6-${kind}-$(uuidgen)"
     id="$(uuidgen)"
@@ -119,8 +121,12 @@ for kind in claude-code codex command; do
     call_tool "$config" delete_project "$(jq -nc --arg project "$project" '{project:$project}')" >/dev/null
     current_project=
 done
+fi
 
 for mode in crash malformed oversized slow fork 'done'; do
+    if [[ "$selection" == --cancellation-only && "$mode" != slow && "$mode" != fork ]]; then
+        continue
+    fi
     project="step6-${mode}-$(uuidgen)"
     id="$(uuidgen)"
     config="$base/${mode}.toml"
@@ -147,10 +153,8 @@ for mode in crash malformed oversized slow fork 'done'; do
     fi
     if [[ "$mode" == fork ]]; then
         pid="$(cat "$base/descendant.pid")"
-        for _ in $(seq 1 30); do
-            if [[ ! -e "/proc/$pid/stat" ]] || [[ "$(awk '{print $3}' "/proc/$pid/stat")" == Z ]]; then break; fi
-            sleep 0.05
-        done
+        # The fixture descendant holds the model's stdout/stderr open. CLI
+        # completion has already joined those readers after stopping the group.
         test ! -e "/proc/$pid/stat" || test "$(awk '{print $3}' "/proc/$pid/stat")" == Z
     fi
     unset MIMIR_JUDGE_FIXTURE_MODE MIMIR_JUDGE_FIXTURE_PID_FILE
@@ -158,6 +162,7 @@ for mode in crash malformed oversized slow fork 'done'; do
     current_project=
 done
 
+if [[ "$selection" == all ]]; then
 project="step6-incompatible-$(uuidgen)"
 id="$(uuidgen)"
 config="$base/incompatible.toml"
@@ -173,6 +178,7 @@ jq -e '.status == "blocked" and .confirmed == 0' "$base/incompatible-report.json
 test ! -e "$base/incompatible-invoked-model"
 call_tool "$config" delete_project "$(jq -nc --arg project "$project" '{project:$project}')" >/dev/null
 current_project=
+fi
 
 project="step6-watch-$(uuidgen)"
 id="$(uuidgen)"
@@ -184,10 +190,12 @@ seed "$config" "$project" "$id"
 MIMIR_JUDGE_FIXTURE_MODE=crash python3 "$repo/tests/support/fixture.py" cancel \
     --ready "$base/state-watch/judge-status.json" --stderr-ready 'judge watch: incomplete run' \
     --report "$base/watch-stdout" -- "$bin" judge watch --config "$config" \
-    --state-dir "$base/state-watch" --interval-seconds 60 --max-consecutive-failures 1
+    --state-dir "$base/state-watch"
 test ! -s "$base/watch-stdout"
 test "$(grep -c 'judge watch: incomplete run' "$base/watch-stdout.stderr")" -eq 1
-jq -e '.phase == "waiting" and .delay_seconds == 3600' "$base/state-watch/judge-runtime.json" >/dev/null
+jq -e '.phase == "waiting_for_prerequisite"
+    and .waiting_for == "configuration_change_or_explicit_retry"
+    and has("delay_seconds") == false' "$base/state-watch/judge-runtime.json" >/dev/null
 "$bin" judge status --state-dir "$base/state-watch" \
     | jq -e '.report.status == "blocked" and .report.block_reason == "backend_error"
         and .report.diagnostics_id != null
@@ -195,4 +203,8 @@ jq -e '.phase == "waiting" and .delay_seconds == 3600' "$base/state-watch/judge-
 call_tool "$config" pending_experiences "$(jq -nc --arg project "$project" '{project:$project,limit:1}')" | jq -e 'length == 1' >/dev/null
 call_tool "$config" delete_project "$(jq -nc --arg project "$project" '{project:$project}')" >/dev/null
 current_project=
-printf 'judge adapter fixtures passed: Claude, Codex, custom, crash, malformed, oversized, cancellation, descendant cleanup, false completion, incompatible flags, quiet watch retry\n'
+if [[ "$selection" == --cancellation-only ]]; then
+    printf 'judge cancellation fixtures passed: stalled model, descendant cleanup, explicit-retry watcher\n'
+else
+    printf 'judge adapter fixtures passed: Claude, Codex, custom, crash, malformed, oversized, cancellation, descendant cleanup, false completion, incompatible flags, quiet explicit retry\n'
+fi

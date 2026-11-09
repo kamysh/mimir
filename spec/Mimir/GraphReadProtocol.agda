@@ -1,6 +1,7 @@
 {-# OPTIONS --safe #-}
--- Concrete projections of independently observed SELECT snapshots. This is
--- deliberately not a single-snapshot fiction for multi-query read operations.
+-- Ordinary reads retain independently observed SELECT snapshots. Paging uses
+-- an explicit read-only stable transaction: its row query is tied to the
+-- original count snapshot by StorageReadBinding, not an unrelated observation.
 module Mimir.GraphReadProtocol where
 
 open import Data.Bool using (Bool; true; false; _∧_)
@@ -8,8 +9,10 @@ open import Data.List using (List; []; _∷_; length; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤?_; _≟_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.Product using (_×_; _,_)
 open import Data.Unit using (⊤)
 open import Relation.Nullary using (does)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
 import Mimir.LearningStore as Learning
@@ -30,29 +33,46 @@ data Request : Set where
   listBeliefs : Maybe Text → Maybe C.Memory → Request
   listPatterns : Maybe Text → Request
   beliefPage : Maybe Text → Maybe C.Memory → ℕ → ℕ → Request -- limit, offset
-  explain : ℕ → ℕ → ℕ → Request -- id, offset, limit
+  explain : ℕ → ℕ → Ranking.Selection → Request -- id, offset, optional positive selection
   stats : Request
 
 data Statement : Set where
   belief patternNode incoming reviews candidate independent : ℕ → Statement
   beliefs countBeliefs : Maybe Text → Maybe C.Memory → Statement
-  pageRows : Maybe Text → Maybe C.Memory → ℕ → ℕ → Statement
   patterns : Maybe Text → Statement
   countPatterns : Statement
   countEdges : R.Relation → Statement
 
 data Effect : Set where
-  beginRead : Effect
+  openExplanation : ℕ → Effect
+  explanationSnapshot : ℕ → Store.World → Statement → Effect
+  openPage : Maybe Text → Maybe C.Memory → Effect
+  pageSnapshotRows : ℕ → Store.World → Maybe Text → Maybe C.Memory → ℕ → ℕ → Effect
   select : Maybe ℕ → Statement → Effect
   dropTransaction : ℕ → Effect
 
 Reply : Effect → Set
-Reply beginRead = Text ⊎ ℕ
+Reply (openExplanation _) = Text ⊎ (ℕ × Store.World)
+Reply (explanationSnapshot _ _ _) = Text ⊎ Store.World
+Reply (openPage project memory) = Text ⊎ (ℕ × Store.World)
+Reply (pageSnapshotRows tx initial project memory limit offset) = Text ⊎ Store.World
 Reply (select handle statement) = Text ⊎ Store.World
 Reply (dropTransaction tx) = ⊤
 
 module E = Effects.Protocol Effect Reply
 open E
+
+pageAnswer : Maybe Text → Maybe C.Memory → ℕ → ℕ → Store.World → Records.Page
+pageAnswer project memory limit offset snapshot = Records.pageResult project memory limit offset
+  (length (Records.listBeliefs project memory (Store.beliefs snapshot))) (Store.beliefs snapshot)
+
+-- The same count/row semantics, with the database's stable-read guarantee
+-- supplied at its boundary. No caller-supplied answer or readiness predicate.
+pageUsesCountSnapshot : ∀ project memory limit offset first second → second ≡ first →
+  Records.pageResult project memory limit offset
+    (length (Records.listBeliefs project memory (Store.beliefs first))) (Store.beliefs second) ≡
+  pageAnswer project memory limit offset first
+pageUsesCountSnapshot project memory limit offset first .first refl = refl
 
 record Statistics : Set where
   constructor statistics
@@ -82,34 +102,53 @@ countRelation : R.Relation → Store.World → ℕ
 countRelation relation w = length (filterᵇ (λ e → does (R.relationCode relation ≟ R.relationCode (Edges.Edge.relation e)))
   (Publication.World.edges (Learning.World.publication (Store.World.learning w))))
 
-finishExplanation : ℕ → G.BeliefValues → List Explanation.Incoming → Explanation.Page →
-  Maybe Candidate.Provenance → Store.World → Script Result
-finishExplanation id b parents selectedPage provenance w with Explanation.origin id (Store.World.learning w)
-... | Origin.malformed = done invalidProvenance
-... | source = done (explained (Explanation.explanation b parents selectedPage provenance source))
+fromExplanation : Explanation.Result → Result
+fromExplanation Explanation.beliefMissing = missingBelief
+fromExplanation Explanation.invalidStoredProvenance = invalidProvenance
+fromExplanation (Explanation.explained value) = explained value
 
-afterReviews : ℕ → G.BeliefValues → List Explanation.Incoming → ℕ → ℕ → ℕ → Store.World → Script Result
-afterReviews id b parents offset limit tx w = ask (dropTransaction tx) (λ _ →
-  read nothing (candidate id) (λ c → read nothing (independent id)
-    (finishExplanation id b parents page (Candidate.get id (Store.World.learning c)))))
-  where
-  learn = Store.World.learning w
-  page = Explanation.paginate offset limit (Explanation.reviews id (Learning.identities learn)
-    (Publication.World.ledger (Learning.World.publication learn)))
+explanationAnswer : ℕ → ℕ → Ranking.Selection → Store.World → Result
+explanationAnswer id offset limit state = fromExplanation (Explanation.get id offset limit (Store.World.learning state))
 
-afterParents : ℕ → G.BeliefValues → ℕ → ℕ → Store.World → Script Result
-afterParents id b offset limit w with does (1 ≤? limit)
-... | false = done invalidPage
-... | true = ask beginRead (λ
-  { (inj₁ error) → done (failed error)
-  ; (inj₂ tx) → read (just tx) (reviews id) (afterReviews id b parents offset limit tx) })
-  where parents = Explanation.parents id (Store.nodes w)
-          (Publication.World.edges (Learning.World.publication (Store.World.learning w)))
+explanationFromViews : ℕ → ℕ → Ranking.Selection → Store.World → Store.World → Store.World → Store.World → Store.World → Result
+explanationFromViews id offset limit beliefView parentView reviewView candidateView originView
+  with Explanation.findBelief id (Store.nodes beliefView)
+... | nothing = missingBelief
+... | just b with Explanation.origin id (Store.World.learning originView)
+...   | Origin.malformed = invalidProvenance
+...   | source = explained (Explanation.explanation b
+  (Explanation.parents id (Store.nodes parentView)
+    (Publication.World.edges (Learning.World.publication (Store.World.learning parentView))))
+  (Explanation.paginate offset limit (Explanation.reviews id
+    (Learning.identities (Store.World.learning reviewView))
+    (Publication.World.ledger (Learning.World.publication (Store.World.learning reviewView)))))
+  (Candidate.get id (Store.World.learning candidateView)) source)
 
-afterBelief : ℕ → ℕ → ℕ → Store.World → Script Result
-afterBelief id offset limit w with Ranking.lookup id (Store.beliefs w)
-... | nothing = done missingBelief
-... | just b = read nothing (incoming id) (afterParents id b offset limit)
+explanationFromOneView : ∀ id offset limit original parentsView reviewsView candidateView originView →
+  parentsView ≡ original → reviewsView ≡ original → candidateView ≡ original → originView ≡ original →
+  explanationFromViews id offset limit original parentsView reviewsView candidateView originView ≡
+  explanationAnswer id offset limit original
+explanationFromOneView id offset limit original .original .original .original .original refl refl refl refl
+  with Explanation.findBelief id (Store.nodes original)
+... | nothing = refl
+... | just b with Explanation.origin id (Store.World.learning original)
+...   | Origin.malformed = refl
+...   | Origin.noProvenance = refl
+...   | Origin.found origin = refl
+
+pinnedRead : ℕ → Store.World → Statement → (Store.World → Script Result) → Script Result
+pinnedRead tx original statement next = ask (explanationSnapshot tx original statement) λ where
+  (inj₁ error) → close (just tx) (failed error)
+  (inj₂ observed) → next observed
+
+explainFromBelief : ℕ → ℕ → Ranking.Selection → ℕ → Store.World → Script Result
+explainFromBelief id offset limit tx original with Explanation.findBelief id (Store.nodes original)
+... | nothing = close (just tx) missingBelief
+... | just b = pinnedRead tx original (incoming id) λ parentsView →
+  pinnedRead tx original (reviews id) λ reviewsView →
+  pinnedRead tx original (candidate id) λ candidateView →
+  pinnedRead tx original (independent id) λ originView →
+  close (just tx) (explanationFromViews id offset limit original parentsView reviewsView candidateView originView)
 
 start : Request → Script Result
 start (getBelief id) = read nothing (belief id) (λ w → done (beliefResult (Ranking.lookup id (Store.beliefs w))))
@@ -121,11 +160,15 @@ start (listPatterns project) = read nothing (patterns project) (λ w → done
   (patternList (Records.listPatterns project (Store.patterns (Store.nodes w)))))
 start (beliefPage project memory limit offset) with Records.pageAdmitted limit offset
 ... | false = done invalidPage
-... | true = read nothing (countBeliefs project memory) (λ first →
-  read nothing (pageRows project memory limit offset) (λ second → done (paged
-    (Records.pageResult project memory limit offset
-      (length (Records.listBeliefs project memory (Store.beliefs first))) (Store.beliefs second)))))
-start (explain id offset limit) = read nothing (belief id) (afterBelief id offset limit)
+... | true = ask (openPage project memory) (λ
+  { (inj₁ error) → done (failed error)
+  ; (inj₂ (tx , first)) → ask (pageSnapshotRows tx first project memory limit offset) (λ
+      { (inj₁ error) → close (just tx) (failed error)
+      ; (inj₂ second) → close (just tx) (paged (Records.pageResult project memory limit offset
+          (length (Records.listBeliefs project memory (Store.beliefs first))) (Store.beliefs second))) }) })
+start (explain id offset limit) = ask (openExplanation id) λ where
+  (inj₁ error) → done (failed error)
+  (inj₂ (tx , original)) → explainFromBelief id offset limit tx original
 start stats = read nothing (countBeliefs nothing nothing) (λ b → read nothing countPatterns (λ p →
   read nothing (countEdges R.supports) (λ s → read nothing (countEdges R.defeats) (λ d →
   read nothing (countEdges R.causes) (λ c → read nothing (countEdges R.contradicts) (λ k → done

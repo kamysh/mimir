@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- The ten embedded application migrations. This is the concrete DDL/data
+-- The embedded application migrations. This is the concrete DDL/data
 -- contract supplied to MigrationDriver.executeOriginalSQL; PostgreSQL executes
 -- these operations inside the driver's transaction, before both ledger writes.
 -- SQL expression arithmetic, collation and NULL semantics are database
@@ -16,8 +16,10 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.ItemOwnerBackfill as Historical
 import Mimir.ItemOwners as Owners
+import Mimir.LearningStore as Learning
+import Mimir.DatabaseTransaction as Database
 open import Mimir.Migrations public
-  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs)
+  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys; candidateKeyContent; embeddingOwners)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation;
@@ -133,6 +135,26 @@ allocatedItemOwners = table "mimir_learning_item_owners"
    required "source_ref" text ∷ required "actor" text ∷ optional "item_key" text ∷ [])
   ("item_id" ∷ []) (("experience_id" ∷ "item_key" ∷ []) ∷ []) (experienceFK ∷ []) (localKeyValid ∷ [])
 
+reservationTable : Table
+reservationTable = table "mimir_operation_reservations"
+  (column "operation_token" uuid false postgresUUID ∷
+   column "reserved_at" timestamp false now ∷ [])
+  ("operation_token" ∷ []) [] [] []
+
+requestKeyTable : Table
+requestKeyTable = table "mimir_operation_request_keys"
+  (required "request_key" text ∷ required "operation_token" uuid ∷ [])
+  ("request_key" ∷ []) (("operation_token" ∷ []) ∷ [])
+  (references ("operation_token" ∷ []) "mimir_operation_reservations" ("operation_token" ∷ []) restrict ∷ [])
+  (less (number "0" ∷ charLength (trimSpaces (columnValue "request_key" ∷ []) ∷ []) ∷ []) ∷ [])
+
+embeddingOwnerTable : Table
+embeddingOwnerTable = table "mimir_embedding_owners"
+  (column "owner_token" uuid false postgresUUID ∷ optional "project" text ∷
+   column "reserved_at" timestamp false now ∷ optional "operation_token" uuid ∷ [])
+  ("owner_token" ∷ []) []
+  (references ("operation_token" ∷ []) "mimir_operation_reservations" ("operation_token" ∷ []) restrict ∷ []) []
+
 -- Label creation catches all PostgreSQL exceptions in the existing SQL; that
 -- native behavior is explicit and must not be confused with a label-exists proof.
 data DDL : Set where
@@ -147,6 +169,8 @@ data DDL : Set where
   setColumnDefault : String → String → Default → DDL
   addUniqueConstraint : String → String → List String → DDL
   addCheckConstraint : String → String → Expr → DDL
+  dropCheckConstraint : String → String → DDL
+  installReviewQueueNotifier installEmbeddingOwnerNotifier installImmutableOperationBindings installImmutableStepReplies installImmutableOperationPlans installImmutableRequestKeys : DDL
 
 kappa alpha beta : Expr
 kappa = add (number "2.0" ∷ multiply (columnValue "confidence" ∷ number "198.0" ∷ []) ∷ [])
@@ -178,6 +202,31 @@ body allocation =
   addUniqueConstraint "mimir_learning_item_owners" "mimir_learning_item_local_key"
     ("experience_id" ∷ "item_key" ∷ []) ∷
   addCheckConstraint "mimir_learning_item_owners" "mimir_learning_item_key_nonempty" localKeyValid ∷ []
+body reviewQueueNotifications = installReviewQueueNotifier ∷ []
+body operationReservations = create reservationTable ∷ []
+body operationBindings = installImmutableOperationBindings ∷ []
+body operationStepReplies = installImmutableStepReplies ∷ []
+body operationPlans = installImmutableOperationPlans ∷ []
+body operationRequestKeys = create requestKeyTable ∷ installImmutableRequestKeys ∷ []
+body embeddingOwners = create embeddingOwnerTable ∷ installEmbeddingOwnerNotifier ∷ []
+body candidateKeyContent =
+  dropCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_check" ∷
+  addCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_nonempty"
+    (less (number "0" ∷ charLength (columnValue "candidate_key" ∷ []) ∷ [])) ∷ []
+
+-- The trigger's concrete meaning is the pending-source rule, with signals
+-- coupled to publication. This is a native PostgreSQL contract; the SQL body
+-- is bound exactly and exercised against PostgreSQL by the integration test.
+data QueueDataEffect : DDL → Learning.World → Learning.World → Database.Receipt →
+  Learning.World → List Learning.ReviewQueueSignal → Set where
+  queuePublication : ∀ {before proposed receipt actual}
+    (commit : Database.Atomic before proposed receipt actual) {signals} → Learning.observedSignals commit signals →
+    QueueDataEffect installReviewQueueNotifier before proposed receipt actual
+      signals
+
+queueRollbackCannotWake : ∀ before proposed actual signals →
+  QueueDataEffect installReviewQueueNotifier before proposed Database.aborted actual signals → signals ≡ []
+queueRollbackCannotWake before proposed .before signals (queuePublication Database.abortedNone noSignal) = noSignal
 
 -- PostgreSQL supplies the decoded historical rows and execution order. The
 -- application's data rule is insert-missing-only, linked to its general laws.

@@ -12,7 +12,7 @@ open import Data.Product using (Σ; _×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
-open import Mimir.Validation using (Fault; accepted; rejected)
+open import Mimir.Validation using (Fault; key; prependPath; accepted; rejected)
 open import Mimir.LearningCandidates using (Candidate)
 open import Mimir.LearningSchema using (Target; candidate)
 open import Mimir.ReviewSchema using (Review; ReviewValid; validateReview)
@@ -32,7 +32,7 @@ prepareValid : ∀ occupied before requested → ReviewValid requested →
   (Candidate → ℕ) → Fault ⊎ Prepared occupied before requested
 prepareValid occupied before requested valid fresh
   with Batch.prepare occupied (Review.experienceID requested) before (Review.candidates requested) fresh
-... | inj₁ fault = inj₁ fault
+... | inj₁ fault = inj₁ (prependPath (key "candidates") fault)
 ... | inj₂ (after , bindings , reservations)
   with Resolution.Apply.checkReady (Review.candidates requested) bindings requested
 ...   | rejected failure invalid = inj₁ failure

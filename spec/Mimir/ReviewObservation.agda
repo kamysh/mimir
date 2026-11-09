@@ -20,7 +20,7 @@ open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.ExperienceSchema using (Experience)
 open import Mimir.Validation
-open import Mimir.Collections using (module Equality; pairEqual; atMost; checkCount)
+open import Mimir.Collections using (module Equality; pairEqual)
 open import Mimir.RevisionBounds using (i64Maximum)
 
 record Snapshot : Set where
@@ -160,12 +160,10 @@ checkBatchEntry project s = combine (checkSnapshot s) (checkScope project s)
 
 module Identities = Equality ℕ _≟_
 
-BatchValid : ℕ → Maybe Text → List Snapshot → Set
-BatchValid limit project batch = atMost limit batch ×
-  (Identities.Unique (map (λ s → Experience.identity (Snapshot.experience s)) batch) ×
-    All (BatchEntry project) batch)
+BatchValid : Maybe Text → List Snapshot → Set
+BatchValid project batch = Identities.Unique (map (λ s → Experience.identity (Snapshot.experience s)) batch) ×
+    All (BatchEntry project) batch
 
-validateBatch : ∀ limit project batch → Checked (BatchValid limit project batch)
-validateBatch limit project batch = combine (checkCount limit batch)
-  (combine (Identities.checkUnique (map (λ s → Experience.identity (Snapshot.experience s)) batch))
-    (allChecked (checkBatchEntry project) batch))
+validateBatch : ∀ project batch → Checked (BatchValid project batch)
+validateBatch project batch = combine (Identities.checkUnique (map (λ s → Experience.identity (Snapshot.experience s)) batch))
+    (allChecked (checkBatchEntry project) batch)

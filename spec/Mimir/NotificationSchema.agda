@@ -14,7 +14,7 @@ open import Relation.Nullary using (Dec)
 open import Relation.Nullary.Decidable.Core using (_×-dec_; _⊎-dec_)
 open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text
-open import Mimir.CharacterRules using (Control; control?; NoControls; noControls?; TokenValid; tokenValid?)
+open import Mimir.CharacterRules using (Control; control?; NoControls; noControls?)
 open import Mimir.Collections using (all?; negate)
 open import Mimir.NotificationIncident using (Event; Status; failure; progress; recovery)
 open import Mimir.Validation
@@ -34,16 +34,16 @@ identifierChar? : ∀ c → Dec (IdentifierChar c)
 identifierChar? c = asciiAlphaNumeric? c ⊎-dec ((c ≟ '-') ⊎-dec ((c ≟ '_') ⊎-dec (c ≟ '.')))
 
 Identifier : Text → Set
-Identifier text = Nonempty text × (Bounded 64 text × All IdentifierChar text)
+Identifier text = Nonempty text × All IdentifierChar text
 
 identifier? : ∀ text → Dec (Identifier text)
-identifier? text = nonempty? text ×-dec (bounded? 64 text ×-dec all? identifierChar? text)
+identifier? text = nonempty? text ×-dec all? identifierChar? text
 
 Summary : Text → Set
-Summary text = Nonblank text × (Bounded 160 text × NoControls text)
+Summary text = Nonblank text × NoControls text
 
 summary? : ∀ text → Dec (Summary text)
-summary? text = nonblank? text ×-dec (bounded? 160 text ×-dec noControls? text)
+summary? text = nonblank? text ×-dec noControls? text
 
 DetailChar : Char → Set
 DetailChar c = c ≡ '\n' ⊎ (Control c → ⊥)
@@ -53,14 +53,19 @@ detailChar? c = (c ≟ '\n') ⊎-dec negate (control? c)
 
 Details : Maybe Text → Set
 Details nothing = ⊤
-Details (just text) = Nonempty text × (Bounded 2048 text × All DetailChar text)
+Details (just text) = Nonempty text × All DetailChar text
 
 checkDetails : ∀ details → Checked (Details details)
 checkDetails nothing = accepted tt
 checkDetails (just text) = combine
   (check (fault [] emptyText "notification details must not be empty") (nonempty? text))
-  (combine (check (fault [] textTooLong "notification details exceed 2048 UTF-8 bytes") (bounded? 2048 text))
-    (check (fault [] malformedInput "notification details contain a control other than LF") (all? detailChar? text)))
+  (check (fault [] malformedInput "notification details contain a control other than LF") (all? detailChar? text))
+
+IncidentKey : Text → Set
+IncidentKey text = Nonempty text × NoControls text
+
+incidentKey? : ∀ text → Dec (IncidentKey text)
+incidentKey? text = nonempty? text ×-dec noControls? text
 
 StatusValid : Status → Set
 StatusValid (failure code summary) = Identifier code × Summary summary
@@ -75,14 +80,14 @@ checkStatus progress = accepted tt
 checkStatus recovery = accepted tt
 
 EventValid : Event → Set
-EventValid e = Identifier (Event.source e) × (TokenValid 128 (Event.incidentKey e) ×
+EventValid e = Identifier (Event.source e) × (IncidentKey (Event.incidentKey e) ×
   (StatusValid (Event.status e) × Details (Event.details e)))
 
 checkEvent : ∀ e → Checked (EventValid e)
 checkEvent e = combine
   (at (key "source") (check (fault [] malformedInput "invalid notification source") (identifier? (Event.source e))))
   (combine (at (key "incident_key") (check (fault [] malformedInput "invalid notification incident key")
-      (tokenValid? 128 (Event.incidentKey e))))
+      (incidentKey? (Event.incidentKey e))))
     (combine (at (key "status") (checkStatus (Event.status e)))
       (at (key "details") (checkDetails (Event.details e)))))
 

@@ -15,7 +15,7 @@ mod isolation;
 use mimir_core::{
     config::{Config, DatabaseConfig, EmbeddingBackend, EmbeddingsConfig},
     db,
-    embed::make_backend,
+    embed::make_backend_with_worker,
     store::AgeStore,
     MimirService,
 };
@@ -25,7 +25,6 @@ fn local_embeddings() -> EmbeddingsConfig {
         backend: EmbeddingBackend::Local,
         model: String::new(),
         api_key: None,
-        batch_size: 0,
         cache_dir: None,
     }
 }
@@ -58,7 +57,8 @@ async fn vector_leg_ranking() {
         target.probability.value()
     );
 
-    let embedder = make_backend(&local_embeddings());
+    let embedder = make_backend_with_worker(&local_embeddings(), isolation::fixture().mcp.into())
+        .expect("initialize embedding backend");
 
     for (label, q) in [
         ("VERBOSE_PROMPT", VERBOSE_PROMPT),
@@ -71,7 +71,7 @@ async fn vector_leg_ranking() {
             .pop()
             .expect("one vector");
         let ranked = store
-            .query_beliefs_by_vector(&qv, 0)
+            .query_beliefs_by_vector(&qv, None)
             .await
             .expect("vector query");
         let rank = ranked.iter().position(|id| *id == target.id);
@@ -110,8 +110,11 @@ async fn full_query_relevant_ranking() {
         llm: None,
         judge: None,
         email: None,
+        retirement: None,
     };
-    let svc = MimirService::connect(&cfg).await.expect("connect");
+    let svc = MimirService::connect_with_worker(&cfg, isolation::fixture().mcp.into())
+        .await
+        .expect("connect");
 
     for (label, q) in [
         ("VERBOSE_PROMPT", VERBOSE_PROMPT),
@@ -119,7 +122,7 @@ async fn full_query_relevant_ranking() {
     ] {
         let t0 = std::time::Instant::now();
         let res = svc
-            .query_relevant(q, 10, None, None)
+            .query_relevant(q, std::num::NonZeroUsize::new(10), None, None)
             .await
             .expect("query_relevant");
         let elapsed = t0.elapsed();

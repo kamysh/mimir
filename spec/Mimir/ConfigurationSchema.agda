@@ -7,10 +7,12 @@ module Mimir.ConfigurationSchema where
 open import Data.List using (List; []; _∷_; map; reverse)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
+open import Data.Integer using (ℤ)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (String; toList; fromList)
 open import Relation.Nullary using (yes; no)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.Validation using (Fault)
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
@@ -20,10 +22,39 @@ import Mimir.OperationalConfiguration as Operations
 import Mimir.ConfigurationValues as C
 import Mimir.ConfigurationInput as Input
 import Mimir.SourceReview as TextEquality
+import Mimir.StandardLibrary as Library
+import Mimir.PublicInput as Public
+import Mimir.Validation as Validation
+import Mimir.Binary64 as Binary
+open import Mimir.JsonObjects using (forbid)
 
 record Config : Set where
   constructor config
-  field operations : Operations.Admitted; core : C.Config; llm judge email : Maybe V.Value
+  field operations : Operations.Admitted; core : C.Config; llm judge email retirement : Maybe V.Value
+
+-- Unset/malformed optional retention never prevents other tools from starting.
+-- Sweeping alone requires the user-owned policy, before any store operation.
+module Retirement (conversion : Library.Contract) where
+  module Numbers = Public.Numbers conversion
+
+  duration : V.Value → Fault ⊎ ℤ
+  duration raw = Numbers.number raw >>= λ hours → checked hours
+    where
+    checked : Binary.Number → Fault ⊎ ℤ
+    checked hours with Library.Contract.userHoursToNanoseconds conversion hours
+    ... | just period = inj₂ period
+    ... | nothing = inj₁ (Validation.fault [] Validation.invalidNumber
+      "Choose a finite nonnegative grace_hours duration representable by the clock; no value will be guessed.")
+
+  tablePolicy : V.Value → Fault ⊎ ℤ
+  tablePolicy raw = V.asObject raw >>= λ fields →
+    Validation.result (V.Object.checkUnknowns forbid (toList "grace_hours" ∷ []) fields) >>= λ _ →
+    required "grace_hours" duration (V.Object.normalize fields)
+
+  resolve : Maybe V.Value → Fault ⊎ ℤ
+  resolve nothing = inj₁ (Validation.fault (Validation.key "retirement" ∷ Validation.key "grace_hours" ∷ [])
+    Validation.missingField "Sweeping needs the user's configured retirement.grace_hours; ask the user and do not choose a default.")
+  resolve (just raw) = V.withField (toList "retirement") (tablePolicy raw)
 
 sslMode : V.Value → Fault ⊎ C.Mode
 sslMode = enum (("disable" , C.disable) ∷ ("prefer" , C.prefer) ∷ ("require" , C.require) ∷
@@ -47,14 +78,24 @@ database raw = V.asObject raw >>= λ entries → fields (V.Object.normalize entr
     optional "ssl_client_cert" V.asString values >>= λ cert → optional "ssl_client_key" V.asString values >>= λ key →
     inj₂ (C.database host dbname user port password passfile mode root cert key)
 
-module Decode (sizeMaximum : ℕ) where
+module Decode where
+  batchRetired : Fault
+  batchRetired = Validation.fault (Validation.key "batch_size" ∷ []) Validation.unsupportedCombination
+    "embeddings.batch_size is obsolete; run mimir config upgrade to remove it, then mimir config check. Embedding processes the complete request without a grouping limit."
+
   embeddings : V.Value → Fault ⊎ C.Embeddings
-  embeddings raw = V.asObject raw >>= λ entries → fields (V.Object.normalize entries)
+  embeddings raw with Public.view raw (toList "batch_size")
+  ... | just _ = inj₁ batchRetired
+  ... | nothing = V.asObject raw >>= λ entries → fields (V.Object.normalize entries)
     where
     fields : V.Object.View → Fault ⊎ C.Embeddings
     fields values = required "backend" backend values >>= λ backend → defaulted "model" [] V.asString values >>= λ model →
-      optional "api_key" V.asString values >>= λ key → defaulted "batch_size" 0 (unsigned sizeMaximum) values >>= λ batch →
-      optional "cache_dir" V.asString values >>= λ cache → inj₂ (C.embeddings backend model key batch cache)
+      optional "api_key" V.asString values >>= λ key →
+      optional "cache_dir" V.asString values >>= λ cache → inj₂ (C.embeddings backend model key cache)
+
+  anyRetiredBatchValueRequiresCorrection : ∀ raw value →
+    Public.view raw (toList "batch_size") ≡ just value → embeddings raw ≡ inj₁ batchRetired
+  anyRetiredBatchValueRequiresCorrection raw value present rewrite present = refl
 
   decode : V.Value → Fault ⊎ Config
   decode raw = Operations.decode raw >>= λ operations →
@@ -63,7 +104,8 @@ module Decode (sizeMaximum : ℕ) where
     fields : Operations.Admitted → V.Object.View → Fault ⊎ Config
     fields operations values = required "database" database values >>= λ db → optional "embeddings" embeddings values >>= λ embed →
       optional "llm" table values >>= λ llm → optional "judge" table values >>= λ judge → optional "email" table values >>= λ email →
-      inj₂ (config operations (C.config db embed) llm judge email)
+      optional "retirement" (λ value → inj₂ value) values >>= λ retirement →
+      inj₂ (config operations (C.config db embed) llm judge email retirement)
 
 -- CLI parsing splits only at the first '='; values can contain more equals
 -- signs, whitespace or an empty string. Keys are not trimmed or case-folded.
