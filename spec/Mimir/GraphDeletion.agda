@@ -14,6 +14,7 @@ open import Data.String using (toList)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Relation.Nullary using (does)
 open import Data.Empty using (⊥)
+import Data.Unit
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
 import Mimir.CandidateGraph as Graph
@@ -125,7 +126,13 @@ module PatternRecovery where
     { Effect = Checked.Effect; Reply = Checked.Reply; script = Checked.script
     ; Atomic = Checked.Atomic; converges = Checked.converges; progress = Checked.progress }
 
-  module Run = Recovery.CheckedFor certified
+  -- Cancellation and pending are lawful outcomes, never completed deletion.
+  Success : Saved.Result → Set
+  Success (Saved.done _) = Data.Unit.⊤
+  Success Saved.needsRecovery = ⊥
+  Success (Saved.cancelled _) = ⊥
+
+  module Run = Recovery.CheckedFor certified Success
 
   -- The generic interruption relation includes every prefix and a commit
   -- whose acknowledgement was lost. Both the state and original reply agree.

@@ -99,7 +99,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       (selected : Observation.Snapshot) → (currentAccount : Queue.Account initial) → (report : R.Report) →
       RevisionReceipt selected currentAccount report → Script R.Report
     afterRevision clientReady original rest selected currentAccount report receipt
-      with One.Outcome.fatal result | One.Outcome.failed result
+      with One.Outcome.blocked result | One.Outcome.failed result
       where result = RevisionReceipt.outcome receipt
     ... | true | _ = finish (One.Outcome.report result)
       where result = RevisionReceipt.outcome receipt

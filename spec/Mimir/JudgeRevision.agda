@@ -86,7 +86,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   record Outcome : Set where
     constructor outcome
-    field account : Queue.Account initial; report : R.Report; failed fatal : Bool
+    field account : Queue.Account initial; report : R.Report; failed blocked : Bool
 
   data Effect : Set where
     willCallModel : Effect
@@ -111,8 +111,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     executing : Script State → State
     finished : Outcome → State
 
-  fatal : Work → Text → Error → State
-  fatal w reason failure = finished (outcome (Work.account w)
+  blocked : Work → Text → Error → State
+  blocked w reason failure = finished (outcome (Work.account w)
     (record (R.captureSource (Error.source failure) (Work.report w))
       { status = toList "blocked" ; blockReason = just reason
       ; failureDetail = just (Error.detail failure) }) true true)
@@ -124,7 +124,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
     ask (appendTrace id (R.newEvent observed identity (toList kind)
       (Budget.Counts.models (Queue.Account.totals (Work.account w)))
       (Budget.Counts.tools (Queue.Account.totals (Work.account w))) name detail)) λ where
-        (inj₁ failure) → done (fatal w (toList "diagnostics_write_error") (error failure nothing))
+        (inj₁ failure) → done (blocked w (toList "diagnostics_write_error") (error failure nothing))
         (inj₂ tt) → next)
 
   fromScoped : ∀ {A} → Scoped.P.Script A → Script A
@@ -214,9 +214,9 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   rejectionMessage _ = nothing
 
   afterObservation : Work → Reply observe → Script State
-  afterObservation w (inj₁ failure) = done (fatal w (toList "mcp_or_configuration_error") failure)
+  afterObservation w (inj₁ failure) = done (blocked w (toList "mcp_or_configuration_error") failure)
   afterObservation w (inj₂ snapshot) with Observation.observe pin snapshot
-  ... | Observation.malformed failure = done (fatal w (toList "mcp_or_configuration_error")
+  ... | Observation.malformed failure = done (blocked w (toList "mcp_or_configuration_error")
       (error (Display.fault display failure) nothing))
   ... | receipt with Policy.step (Work.policy w) (Policy.reviewed (Batch.label receipt))
   ...   | Policy.mkStep next Policy.continueRevision = done (loop (record w { policy = next }))
@@ -335,7 +335,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   start : Queue.Account initial → R.Report → State
   start currentAccount report = loop (work currentAccount report Policy.initial nothing nothing nothing)
 
-  -- Applies to every outcome, including fatal diagnostic or transport errors.
+  -- Applies to every outcome, including blocked diagnostic or transport attempts.
   -- Account construction itself contains the original, shared charge trace.
   providerRequestsCounted : ∀ result →
     Budget.Counts.models (Queue.Account.totals (Outcome.account result)) ≡
