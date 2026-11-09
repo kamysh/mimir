@@ -315,16 +315,39 @@ impl std::fmt::Debug for Config {
     }
 }
 
+/// A complete private file is linked into an absent target name. The owned
+/// temporary name is never the public configuration path.
 fn write_private_config(path: &std::path::Path, content: &str) -> anyhow::Result<()> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-        }
+    prepare_private_config(path, |file| {
+        use std::io::Write;
+        file.write_all(content.as_bytes())
+    })
+}
+
+fn prepare_private_config(
+    path: &std::path::Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut directories = std::fs::DirBuilder::new();
+    directories.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        directories.mode(0o700);
     }
+    directories
+        .create(parent)
+        .context("unable to prepare the config directory")?;
+    let temporary = parent.join(format!(
+        ".mimir-config-{}-{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -332,8 +355,73 @@ fn write_private_config(path: &std::path::Path, content: &str) -> anyhow::Result
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path)?.write_all(content.as_bytes())?;
+    let mut file = options
+        .open(&temporary)
+        .context("unable to create a private temporary config")?;
+    struct OwnedTemporary(std::path::PathBuf);
+    impl Drop for OwnedTemporary {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let owned = OwnedTemporary(temporary);
+    write(&mut file)
+        .context("unable to finish writing the private config; the target was not changed")?;
+    file.sync_all()
+        .context("unable to sync the private config; the target was not changed")?;
+    // hard_link is create-if-absent on the same filesystem. Unlike rename,
+    // it cannot replace an existing file, including one created during a race.
+    std::fs::hard_link(&owned.0, path)?;
+    std::fs::remove_file(&owned.0)
+        .context("config is complete; unable to remove its owned temporary name")?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all().context("config is complete but directory durability is uncertain; read it back and retry the same request")?;
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConfigCreation {
+    Created(std::path::PathBuf),
+    AlreadyConfigured(std::path::PathBuf),
+}
+
+fn matching_existing_config(
+    path: &std::path::Path,
+    pairs: &[(String, String)],
+    requested: &Config,
+) -> anyhow::Result<ConfigCreation> {
+    // Validate the full installed format, but compare ONLY the explicitly
+    // requested fields. Never print existing values or serialize over the file.
+    let existing = Config::load_from_path(path)?;
+    let current = toml::Value::try_from(&existing)?;
+    let desired = toml::Value::try_from(requested)?;
+    let mut conflicts = std::collections::BTreeSet::new();
+    for (key, _) in pairs {
+        let (section, field) = match key.as_str() {
+            "backend" | "model" | "api_key" | "cache_dir" => ("embeddings", key.as_str()),
+            _ => ("database", key.as_str()),
+        };
+        if current.get(section).and_then(|v| v.get(field))
+            != desired.get(section).and_then(|v| v.get(field))
+        {
+            conflicts.insert(format!("{section}.{field}"));
+        }
+    }
+    anyhow::ensure!(conflicts.is_empty(),
+        "Config already exists at {} with different requested fields: {}. No settings were changed. Ask the user whether to keep the existing settings or explicitly edit these fields; do not overwrite the file or guess replacement values.",
+        path.display(), conflicts.into_iter().collect::<Vec<_>>().join(", "));
+    // Also finishes directory durability if a previous successful publication
+    // lost its acknowledgement. File contents and permissions stay untouched.
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path)?.sync_all()?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(ConfigCreation::AlreadyConfigured(path.to_owned()))
 }
 
 impl Config {
@@ -407,19 +495,21 @@ impl Config {
 
     /// Build a config non-interactively from `KEY=VALUE` overrides on top of
     /// sane defaults (host=localhost, port=5432, dbname=mimir, user=mimir, no
-    /// embeddings), write it to the default path, and return the path. Fails
-    /// if the file already exists — same safety contract as `create_template`.
+    /// embeddings). An existing valid file is preserved and checked against
+    /// only the requested fields; conflicts require a user decision.
     ///
     /// Recognised keys: host, port, dbname, user, password, pgpassfile, ssl_mode, ssl_root_cert,
     /// ssl_client_cert, ssl_client_key, backend, model, api_key,
     /// cache_dir. `backend`/`model`/`api_key`/`cache_dir` populate
     /// `[embeddings]`, which is included only if `backend` is given.
-    pub fn create_from_kv(pairs: &[(String, String)]) -> anyhow::Result<std::path::PathBuf> {
-        let path = Self::config_path();
-        if path.exists() {
-            anyhow::bail!("config already exists at {}", path.display());
-        }
+    pub fn create_from_kv(pairs: &[(String, String)]) -> anyhow::Result<ConfigCreation> {
+        Self::create_from_kv_at(&Self::config_path(), pairs)
+    }
 
+    fn create_from_kv_at(
+        path: &std::path::Path,
+        pairs: &[(String, String)],
+    ) -> anyhow::Result<ConfigCreation> {
         let mut database = DatabaseConfig {
             host: "localhost".to_string(),
             port: 5432,
@@ -521,11 +611,22 @@ impl Config {
             email: None,
             retirement: None,
         };
+        if std::fs::symlink_metadata(path).is_ok() {
+            return matching_existing_config(path, pairs, &config);
+        }
         let content = crate::operations::Operations::defaults()?.header()?
             + &toml::to_string_pretty(&config)?;
-
-        write_private_config(&path, &content)?;
-        Ok(path)
+        match write_private_config(path, &content) {
+            Ok(()) => Ok(ConfigCreation::Created(path.to_owned())),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) =>
+            {
+                matching_existing_config(path, pairs, &config)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -643,5 +744,127 @@ mod runtime_config_tests {
         assert!(write_private_config(&path, "replacement").is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod complete_creation_tests {
+    use super::*;
+    use std::io::Write;
+    fn fixture() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("mimir-complete-config-{}", uuid::Uuid::new_v4()))
+    }
+    #[test]
+    fn interrupted_write_and_a_concurrent_creator_never_expose_partial_or_replace_files(
+    ) -> anyhow::Result<()> {
+        let directory = fixture();
+        let path = directory.join("config.toml");
+        let failed = prepare_private_config(&path, |file| {
+            file.write_all(b"partial secret")?;
+            Err(std::io::Error::other("controlled interrupted write"))
+        });
+        assert!(failed.is_err());
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_dir(&directory)?.count(), 0);
+        let failed = prepare_private_config(&path, |file| {
+            file.write_all(b"our complete config")?;
+            std::fs::write(&path, b"another creator's config")
+        });
+        assert!(failed.is_err());
+        assert_eq!(std::fs::read(&path)?, b"another creator's config");
+        assert_eq!(std::fs::read_dir(&directory)?.count(), 1);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+    #[test]
+    fn retries_compare_only_requested_fields_and_preserve_all_existing_bytes() -> anyhow::Result<()>
+    {
+        let directory = fixture();
+        let path = directory.join("config.toml");
+        let initial = vec![
+            ("host".into(), "first-host".into()),
+            ("port".into(), "5433".into()),
+            ("password".into(), "secret-value".into()),
+        ];
+        assert_eq!(
+            Config::create_from_kv_at(&path, &initial)?,
+            ConfigCreation::Created(path.clone())
+        );
+        let mut original = std::fs::read_to_string(&path)?;
+        original.push_str("\n# preserve this comment\n[email]\npassword='other-secret'\n");
+        std::fs::write(&path, &original)?;
+        let repeated = vec![("host".into(), "first-host".into())];
+        assert_eq!(
+            Config::create_from_kv_at(&path, &repeated)?,
+            ConfigCreation::AlreadyConfigured(path.clone())
+        );
+        assert_eq!(std::fs::read_to_string(&path)?, original);
+        let error = Config::create_from_kv_at(
+            &path,
+            &[
+                ("password".into(), "different-secret".into()),
+                ("host".into(), "other-host".into()),
+            ],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("database.password")
+                && error.contains("database.host")
+                && error.contains("Ask the user")
+        );
+        assert!(
+            !error.contains("secret-value")
+                && !error.contains("different-secret")
+                && !error.contains("other-secret")
+        );
+        assert_eq!(std::fs::read_to_string(&path)?, original);
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+    #[test]
+    fn malformed_existing_files_and_invalid_requests_are_preserved() -> anyhow::Result<()> {
+        let directory = fixture();
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join("config.toml");
+        let original = "malformed='private-secret'\n[broken";
+        std::fs::write(&path, original)?;
+        for pairs in [
+            vec![("host".into(), "localhost".into())],
+            vec![("port".into(), "invalid".into())],
+        ] {
+            let error = Config::create_from_kv_at(&path, &pairs)
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("private-secret"));
+            assert_eq!(std::fs::read_to_string(&path)?, original);
+        }
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+    #[test]
+    #[cfg(unix)]
+    fn creation_preserves_existing_parent_permissions_and_dangling_symlinks() -> anyhow::Result<()>
+    {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let directory = fixture();
+        std::fs::create_dir_all(&directory)?;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o750))?;
+        let path = directory.join("config.toml");
+        write_private_config(&path, "complete")?;
+        assert_eq!(
+            std::fs::metadata(&directory)?.permissions().mode() & 0o777,
+            0o750
+        );
+        std::fs::remove_file(&path)?;
+        symlink("missing-owned-by-someone-else", &path)?;
+        assert!(write_private_config(&path, "replacement").is_err());
+        assert_eq!(
+            std::fs::read_link(&path)?,
+            std::path::Path::new("missing-owned-by-someone-else")
+        );
+        assert!(!directory.join("missing-owned-by-someone-else").exists());
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
     }
 }
