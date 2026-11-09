@@ -6,6 +6,19 @@ use anyhow::{ensure, Context};
 use std::collections::HashSet;
 use tokio_postgres::Transaction;
 
+fn validate_record_source(experience: &Experience, expected: i64) -> Result<()> {
+    experience
+        .validate()
+        .map_err(RequestCorrection::source_input)?;
+    if !(0..i64::MAX).contains(&expected) {
+        return Err(RequestCorrection::source_input(crate::validation::Refusal::invalid(
+            Code::InvalidNumber, vec![Segment::Key("expected_revision".into())],
+            "expected_revision must be nonnegative and leave one representable increment in the stored signed 64-bit revision counter. Read the current experience; do not invent a revision or clamp its value."
+        ).into()));
+    }
+    Ok(())
+}
+
 fn record_revision_refusal(supplied: i64, current: i64) -> anyhow::Error {
     RequestCorrection::stale_revision(vec![Segment::Key("expected_revision".into())],
         format!("stale experience revision: supplied {supplied}; current is {current}. New experiences require expected_revision=0."), RECORD_REVISION_READBACK).into()
@@ -699,15 +712,29 @@ impl AgeStore {
         experience: &Experience,
         expected: i64,
     ) -> Result<ExperienceState> {
-        experience.validate()?;
-        ensure!(
-            (0..i64::MAX).contains(&expected),
-            "expected_revision must be nonnegative"
-        );
+        validate_record_source(experience, expected)?;
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
+        let (result, fresh) = self
+            .record_source_in(&tx, experience, expected, None)
+            .await?;
+        if fresh {
+            tx.commit().await?;
+        } else {
+            tx.rollback().await?;
+        }
+        Ok(result)
+    }
+
+    async fn record_source_in(
+        &self,
+        tx: &Transaction<'_>,
+        experience: &Experience,
+        expected: i64,
+        posterior_time: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<(ExperienceState, bool)> {
         let prior = tx
             .query_opt(&format!("{CURRENT} WHERE e.id=$1"), &[&experience.id])
             .await?
@@ -728,7 +755,7 @@ impl AgeStore {
         }
         let mut allocated = experience.clone();
         Self::resolve_item_ids(
-            &tx,
+            tx,
             experience.id,
             &mut allocated.learning_items,
             &["experience", "learning_items"],
@@ -751,7 +778,7 @@ impl AgeStore {
             }
             if p.experience == *experience && (expected == p.revision || expected == p.revision - 1)
             {
-                return Ok(p.clone());
+                return Ok((p.clone(), false));
             }
             if expected != p.revision {
                 return Err(record_revision_refusal(expected, p.revision));
@@ -762,7 +789,7 @@ impl AgeStore {
             }
         }
         let target_ids: HashSet<_> = experience.belief_ids.iter().copied().collect();
-        let beliefs = self.learning_beliefs_for_ids(&tx, &target_ids).await?;
+        let beliefs = self.learning_beliefs_for_ids(tx, &target_ids).await?;
         validate_named_targets(
             &beliefs,
             &experience.project,
@@ -801,21 +828,112 @@ impl AgeStore {
                     format!("The requested pattern {id} belongs to project {project:?}, not the experience project {:?}.", experience.project)).into());
             }
         }
-        let old_review = Self::active_review(&tx, experience.id).await?;
+        let old_review = Self::active_review(tx, experience.id).await?;
         let affected = review_targets(old_review.iter());
         let revision = expected + 1;
         tx.execute("INSERT INTO mimir_experiences(id,project,revision) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET revision=$3,updated_at=now()", &[&experience.id,&experience.project,&revision]).await?;
         tx.execute("INSERT INTO mimir_experience_versions(experience_id,revision,payload) VALUES($1,$2,$3::text::jsonb)", &[&experience.id,&revision,&payload]).await?;
-        self.replace_review_edges(&tx, experience.id, &[]).await?;
-        self.recompute_learning(&tx, Some(&experience.project), affected)
+        self.replace_review_edges(tx, experience.id, &[]).await?;
+        let publication_time = match posterior_time {
+            Some(time) => time,
+            None => Self::posterior_time_on(tx.client()).await?,
+        };
+        self.recompute_learning_at(tx, Some(&experience.project), affected, publication_time)
             .await?;
         let result = state(
             &tx.query_one(&format!("{CURRENT} WHERE e.id=$1"), &[&experience.id])
                 .await?,
         )?;
-        tx.commit().await?;
-        Ok(result)
+        Ok((result, true))
     }
+
+    /// Source, ownership, posterior consequences and the original response
+    /// share the registered transaction. The caller's incident ID is retained.
+    pub async fn record_experience_operation(&self, step: &RegisteredStep) -> Result<StepDecision> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Arguments {
+            experience: Experience,
+            expected_revision: i64,
+        }
+        fn original(request: &OperationBindingRequest) -> Result<Arguments> {
+            if request.operation() != "record_experience" {
+                return Err(RequestCorrection::bound_graph_request("operation_token", Code::WrongIdentity,
+                    "This token does not name a record_experience request; no experience was changed.".into(),
+                    "The original token bound to the intended record_experience request.").into());
+            }
+            if !request
+                .settings()
+                .as_object()
+                .is_some_and(|settings| settings.is_empty())
+            {
+                return Err(RequestCorrection::bound_graph_request(
+                    "settings",
+                    Code::UnknownField,
+                    "record_experience has no per-request settings; no experience was changed."
+                        .into(),
+                    "An empty settings object for the original source request.",
+                )
+                .into());
+            }
+            let args: Arguments = serde_json::from_value(request.arguments().clone())
+                .map_err(|error| RequestCorrection::bound_graph_request("", Code::MalformedInput,
+                    format!("Invalid original source request: {error}. No experience was changed."),
+                    "Exactly experience and expected_revision, using the advertised experience schema and its original stable incident UUID."))?;
+            validate_record_source(&args.experience, args.expected_revision)
+                .map_err(RequestCorrection::bound_source_repair)?;
+            Ok(args)
+        }
+        original(step.expected())?;
+        if step.description().site
+            != crate::operation_catalogue::CommitSite::ExperiencePublication.name()
+        {
+            return Err(RequestCorrection::bound_graph_request(
+                "plan",
+                Code::WrongIdentity,
+                "This step is not the registered source publication; no experience was changed."
+                    .into(),
+                "The original record_experience plan's store.record_experience step.",
+            )
+            .into());
+        }
+        let owner = AgeStore {
+            client: self.client.clone(),
+            graph_name: self.graph_name.clone(),
+        };
+        let token = step.token();
+        self.commit_final_operation_step(step, move |tx, request| {
+            Box::pin(async move {
+                let args = original(request)?;
+                tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+                    .await?;
+                let posterior_time = Self::reserved_publication_time(tx, token).await?;
+                // The original raw API rolls back all tentative allocations on an
+                // exact source replay. Preserve that behavior while saving its reply.
+                tx.batch_execute("SAVEPOINT mimir_source_preparation")
+                    .await?;
+                let (state, fresh) = owner
+                    .record_source_in(
+                        tx,
+                        &args.experience,
+                        args.expected_revision,
+                        Some(posterior_time),
+                    )
+                    .await?;
+                if !fresh {
+                    tx.batch_execute("ROLLBACK TO SAVEPOINT mimir_source_preparation")
+                        .await?;
+                }
+                tx.batch_execute("RELEASE SAVEPOINT mimir_source_preparation")
+                    .await?;
+                let reply = serde_json::to_value(state)?;
+                Ok((reply.clone(), reply))
+            })
+        })
+        .await
+        .map_err(RequestCorrection::bound_source_repair)
+    }
+
     pub async fn review_experience(
         &self,
         review: &Review,
