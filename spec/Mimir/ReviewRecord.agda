@@ -19,6 +19,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
 open import Mimir.ReviewSchema using (Review)
 open import Mimir.LearningCandidates using (Candidate)
 import Mimir.Validation as Validation
+import Mimir.PosteriorComputation as Posterior
 import Mimir.ExperienceSchema as Experience
 import Mimir.LearningStore as Store
 import Mimir.ExperienceRead as Read
@@ -45,47 +46,48 @@ data Decision : Set where
   replay : Observation.Snapshot → Decision
   fresh : Store.World → Observation.Snapshot → Bool → Decision
 
-module For (before : Store.World) (old : Observation.Snapshot) (requested : Review)
-  (expected : ℕ) (clock : Candidate → ℤ) (now : ℤ)
-  (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes (Store.World.publication before)))) where
+module WithCalculator (calculator : Posterior.Calculator) where
+  module For (before : Store.World) (old : Observation.Snapshot) (requested : Review)
+    (expected : ℕ) (clock : Candidate → ℤ) (now : ℤ)
+    (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes (Store.World.publication before)))) where
 
-  module N = Numerical.For (Store.World.publication before) (Observation.Snapshot.experience old)
-    requested clock unique expected (Store.identities before) (Store.World.grounding before)
+    module N = Numerical.For calculator (Store.World.publication before) (Observation.Snapshot.experience old)
+      requested clock unique expected (Store.identities before) (Store.World.grounding before)
 
-  convert : N.Decision → Decision
-  convert (N.refused failure) = rejected (invalid failure)
-  convert (N.numericFailure failure) = rejected (numeric failure)
-  convert (N.replay receipt) = replay (record old { candidateIDs = N.P.replayBindings receipt })
-  convert d@(N.fresh selected nodes same limit) = fresh
-    (record before
-      { publication = N.proposed d
-      ; current = Store.reviewed (record result { candidateIDs = [] }) (Store.World.current before)
-      ; reviewTimes = Store.reviewTime (Review.experienceID requested) (suc expected) now ∷ Store.World.reviewTimes before }) result limit
-    where
-    result = record old
-      { reviewRevision = + suc expected
-      ; reviewedRevision = Observation.Snapshot.revision old
-      ; candidateIDs = Candidates.Prepared.bindings
-          (N.F.P.Prepared.reservation (N.F.Fresh.preparation selected)) }
+    convert : N.Decision → Decision
+    convert (N.refused failure) = rejected (invalid failure)
+    convert (N.numericFailure failure) = rejected (numeric failure)
+    convert (N.replay receipt) = replay (record old { candidateIDs = N.P.replayBindings receipt })
+    convert d@(N.fresh selected nodes same limit) = fresh
+      (record before
+        { publication = N.proposed d
+        ; current = Store.reviewed (record result { candidateIDs = [] }) (Store.World.current before)
+        ; reviewTimes = Store.reviewTime (Review.experienceID requested) (suc expected) now ∷ Store.World.reviewTimes before }) result limit
+      where
+      result = record old
+        { reviewRevision = + suc expected
+        ; reviewedRevision = Observation.Snapshot.revision old
+        ; candidateIDs = Candidates.Prepared.bindings
+            (N.F.P.Prepared.reservation (N.F.Fresh.preparation selected)) }
 
-  plan : (Candidate → ℕ) → Decision
-  plan identities = convert (N.plan identities)
+    plan : (Candidate → ℕ) → Decision
+    plan identities = convert (N.plan identities)
 
-checkState : Store.World → Observation.Snapshot → Review → ℕ → (Candidate → ℤ) → ℤ → (Candidate → ℕ) → Decision
-checkState before old requested expected clock now identities with Observation.checkSnapshot old
-... | Validation.rejected failure refutation = rejected (invalid failure)
-... | Validation.accepted valid with Record.coherent before old
-...   | false = rejected incoherentSnapshot
-...   | true with Registry.IDs.checkUnique (map Graph.nodeID (Publication.World.nodes (Store.World.publication before)))
-...     | Validation.rejected failure refutation = rejected (invalid failure)
-...     | Validation.accepted unique = For.plan before old requested expected clock now unique identities
+  checkState : Store.World → Observation.Snapshot → Review → ℕ → (Candidate → ℤ) → ℤ → (Candidate → ℕ) → Decision
+  checkState before old requested expected clock now identities with Observation.checkSnapshot old
+  ... | Validation.rejected failure refutation = rejected (invalid failure)
+  ... | Validation.accepted valid with Record.coherent before old
+  ...   | false = rejected incoherentSnapshot
+  ...   | true with Registry.IDs.checkUnique (map Graph.nodeID (Publication.World.nodes (Store.World.publication before)))
+  ...     | Validation.rejected failure refutation = rejected (invalid failure)
+  ...     | Validation.accepted unique = For.plan before old requested expected clock now unique identities
 
-plan : Store.World → Review → ℤ → (Candidate → ℤ) → ℤ → (Candidate → ℕ) → Decision
-plan before requested expected clock now identities with does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))
-... | false = rejected invalidExpected
-... | true with Read.get (Review.experienceID requested) (Store.World.current before)
-...   | nothing = rejected missingExperience
-...   | just old = checkState before old requested ∣ expected ∣ clock now identities
+  plan : Store.World → Review → ℤ → (Candidate → ℤ) → ℤ → (Candidate → ℕ) → Decision
+  plan before requested expected clock now identities with does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))
+  ... | false = rejected invalidExpected
+  ... | true with Read.get (Review.experienceID requested) (Store.World.current before)
+  ...   | nothing = rejected missingExperience
+  ...   | just old = checkState before old requested ∣ expected ∣ clock now identities
 
 proposed : Store.World → Decision → Store.World
 proposed before (rejected failure) = before
@@ -151,7 +153,7 @@ installPrepared ((belief , value) ∷ rest) before = installPrepared rest (recor
       (Application.EmbeddingOwnerRow.token owner ≟ Graph.BeliefValues.identity belief)))
       (Application.World.embeddingOwners before) })
 
-module PreparedReview (requested : Review) (expected : ℤ) (clock : Candidate → ℤ)
+module PreparedReview (calculator : Posterior.Calculator) (requested : Review) (expected : ℤ) (clock : Candidate → ℤ)
   (now : ℤ) (identities : Candidate → ℕ) (supplied : List PreparedCandidate) where
 
   identity : Candidate → ℕ
@@ -196,7 +198,7 @@ module PreparedReview (requested : Review) (expected : ℤ) (clock : Candidate �
 
   intended : Application.World → Result
   intended before = finish before (selections before)
-    (plan (pending before) requested expected timestamp now identity)
+    (WithCalculator.plan calculator (pending before) requested expected timestamp now identity)
 
   missingPreparationCannotPublish : ∀ before after observed limit →
     finish before nothing (fresh after observed limit) ≡ needsPreparation
@@ -205,7 +207,7 @@ module PreparedReview (requested : Review) (expected : ℤ) (clock : Candidate �
   missingPreparationRulesOutPublication : ∀ before after observed limit →
     selections before ≡ nothing → intended before ≢ published after observed limit
   missingPreparationRulesOutPublication before after observed limit missing
-    with plan (pending before) requested expected timestamp now identity
+    with WithCalculator.plan calculator (pending before) requested expected timestamp now identity
   ... | rejected failure = λ ()
   ... | replay original = λ ()
   ... | fresh proposed original numericLimit rewrite missing = λ ()

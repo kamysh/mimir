@@ -31,6 +31,7 @@ import Mimir.AssessmentScores as Scores
 import Mimir.GraphNumerics as Numeric
 import Mimir.GraphWrites as Writes
 import Mimir.GroundingPublication as Publication
+import Mimir.PosteriorComputation as Posterior
 import Mimir.LearningTransaction as Transaction
 open import Mimir.SourceReview using (_≟Text_)
 open import Relation.Nullary using (does)
@@ -163,8 +164,8 @@ retainedBackfillKeepsItsJob belief before state present rewrite present = refl
 -- and every prepared supporting passage. Rechecking cannot silently discard
 -- a passage selected during preparation. Numerical effects reuse the existing
 -- whole-world grounding meaning, inside this same publication transaction.
-module Atomic (database : ℕ) where
-  module P = Publication.Operation database
+module Atomic (database : ℕ) (calculator : Posterior.Calculator) where
+  module P = Publication.Operation database calculator
   module T = Transaction.Over Store.World G.BeliefValues Publication.Failure database 671942183
   paired : G.BeliefValues → Maybe Origin.Provenance → Prepared → Store.World → Store.World
   paired belief origin value before = record inserted

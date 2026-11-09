@@ -15,14 +15,15 @@ import Mimir.ApplicationStore as Store
 import Mimir.GroundingProtocol as Ground
 import Mimir.StorageReadBinding as Reads
 import Mimir.StorageSemantics as Semantics
+import Mimir.PosteriorComputation as Posterior
 import Mimir.RetrievalRanking as Ranking
 import Mimir.DatabaseReadCommitted as Committed
 open import Mimir.Text using (Text)
 
-module Bound (database : ℕ) (ops : Reads.VectorOperations) (reads : Committed.Contract Store.World) where
+module Bound (database : ℕ) (calculator : Posterior.Calculator) (ops : Reads.VectorOperations) (reads : Committed.Contract Store.World) where
   private
     module R = Reads.Vectors ops
-    module S = Semantics.Bound database
+    module S = Semantics.Bound database calculator
     module C = Committed.Contract reads
 
   similarity : Store.Vector → ℕ × Store.Vector → ℕ × Float

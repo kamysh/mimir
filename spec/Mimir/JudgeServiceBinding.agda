@@ -32,6 +32,9 @@ import Mimir.StructuredValue as V
 import Mimir.Validation as Validation
 import Mimir.McpErrors as Errors
 import Mimir.ApplicationStore as Store
+import Mimir.GraphMutationProtocol as Mutation
+import Mimir.DatabaseTransaction as Database
+import Mimir.ReviewSchema as Review
 module Correction = Errors.AgentCorrection
 import Mimir.SourceFailure as Source
 import Mimir.RpcReply
@@ -118,6 +121,14 @@ module Bind (conversion : Conversion.Contract) (format : Encoding.Formatting)
       H.Handled (Envelope.literal (Catalog.wireName tool)) args events
         (H.preparationDecision (Correction.Certified.report proof)) →
       Dialogue tool args (inj₂ (Correction.emitCorrection proof))
+    partial : ∀ {before after} events edge report →
+      H.Handled (Envelope.literal (Catalog.wireName tool)) args events
+        (H.partialDecision edge report) →
+      Mutation.StatementReceipt (Mutation.insertEdge
+        (Mutation.CommittedEdge.from edge) (Mutation.CommittedEdge.to edge)
+        Review.defeats (Mutation.CommittedEdge.weight edge)) before
+        (Mutation.receipt Database.committed) after →
+      Dialogue tool args (inj₂ (H.P.partialValue edge report))
 
   record Receipt (id : ℕ) (tool : Catalog.Tool) (args : V.Value) (reply : Scope.Failure ⊎ V.Value) : Set where
     field client : ClientCall id tool args reply

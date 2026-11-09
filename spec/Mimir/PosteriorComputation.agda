@@ -17,6 +17,9 @@ open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Relation.Nullary using (Dec; yes; no; does)
 open import Relation.Nullary.Decidable.Core using (_×-dec_)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; trans; sym; cong; subst)
+import Data.Float.Properties as FloatEquality
+import Data.List.Relation.Unary.Any as Any
+import Data.List.Properties as Lists
 import Mimir.ReviewSchema as Review
 import Mimir.AssessmentScores as Scores
 open import Mimir.SourceReview using (boolTrue?)
@@ -644,19 +647,6 @@ sweep seed external edges (n ∷ ns) state delta with lookup (Node.identity n) s
   (maximum delta (Scores.absolute (mean updated - mean old)))
   where updated = incoming seed (Node.identity n) state external edges (Node.fixed n)
 
-record Outcome : Set where
-  constructor outcome
-  field state : State; converged numericFailure : Bool
-
-iterate : ℕ → Seed → External → List Edge → List Node → State → Outcome
-iterate zero seed external edges nodes state = outcome state false false
-iterate (suc fuel) seed external edges nodes state
-  with sweep seed external edges nodes state 0.0
-... | sweepResult after delta true = outcome after false true
-... | sweepResult after delta false with delta <ᵇ 0.000000001
-...   | true = outcome after true false
-...   | false = iterate fuel seed external edges nodes after
-
 changed : Beta → Beta → Bool
 changed old new =
   (Beta.alpha old <ᵇ Beta.alpha new) ∨ (Beta.alpha new <ᵇ Beta.alpha old) ∨
@@ -670,55 +660,243 @@ updates (n ∷ ns) state with lookup (Node.identity n) state
 ...   | false = updates ns state
 ...   | true = (Node.identity n , b) ∷ updates ns state
 
-record Result : Set where
-  constructor result
-  field writes : State; iterationLimitReached numericFailure : Bool
-
-finish : List Node → Outcome → Result
-finish nodes (outcome final converged true) = result [] false true
-finish nodes (outcome final converged false) with validState final
-... | false = result [] false true
-... | true = result (updates nodes final) (not converged) false
-
-calculation : Seed → External → List Edge → List Node → State → Outcome
-calculation seed external edges ordered initial with dependencyOrder edges (length ordered) ordered
-... | nothing = iterate 50 seed external edges ordered initial
-... | just (resolved , plan) = outcome (calculate seed external edges resolved initial) true false
-
 -- The selection is the one used by the actual application calculation.
 -- Its certificate is computed from the graph, not supplied by a request.
 acyclicApplicationCalculationComplete : ∀ seed external edges nodes resolved plan →
   dependencyOrder edges (length (order seed nodes)) (order seed nodes) ≡ just (resolved , plan) →
   PosteriorGoal seed external edges (order seed nodes)
-    (Outcome.state (calculation seed external edges (order seed nodes) (initial nodes)))
-acyclicApplicationCalculationComplete seed external edges nodes resolved plan selected rewrite selected =
+    (calculate seed external edges resolved (initial nodes))
+acyclicApplicationCalculationComplete seed external edges nodes resolved plan selected =
   dependencyCalculationComplete seed external edges (order seed nodes) resolved (initial nodes) plan
     (orderAll seed nodes (initialCoversEveryNode nodes))
 
 -- Acyclic means a dependency ordering exists, independently of which order
 -- the selector chooses. This theorem includes progress: such an input cannot
--- fall through to the old cyclic pass allowance, at any graph depth.
+-- be mistaken for a cyclic input, at any graph depth.
 acyclicApplicationAlwaysCompletes : ∀ seed external edges nodes witness →
   DependencyPlan edges (order seed nodes) witness →
   Σ (List Node) (λ resolved → Σ (DependencyPlan edges (order seed nodes) resolved) (λ plan →
     dependencyOrder edges (length (order seed nodes)) (order seed nodes) ≡ just (resolved , plan) ×
     PosteriorGoal seed external edges (order seed nodes)
-      (Outcome.state (calculation seed external edges (order seed nodes) (initial nodes)))))
+      (calculate seed external edges resolved (initial nodes))))
 acyclicApplicationAlwaysCompletes seed external edges nodes witness proof
   with dependencyOrderProgress (length (order seed nodes)) edges (order seed nodes) witness proof ≤-refl
 ... | resolved , plan , selected = resolved , plan , selected ,
   acyclicApplicationCalculationComplete seed external edges nodes resolved plan selected
 
-run : Seed → External → List Edge → List Node → Result
-run seed external edges nodes with validSeed seed ∧ validExternal edges external ∧ validEdges edges ∧ validNodes nodes
-... | false = result [] false true
-... | true = finish ordered (calculation seed external edges ordered (initial nodes))
-  where
-  ordered = order seed nodes
-
 contradictionInert : ∀ delta b → contribute Review.contradicts delta b ≡ b
 contradictionInert delta b = refl
 
-exhaustionReturnsCurrent : ∀ seed external edges nodes state →
-  iterate zero seed external edges nodes state ≡ outcome state false false
-exhaustionReturnsCurrent seed external edges nodes state = refl
+-- Exact cyclic completion is a condition on every final posterior. Floating
+-- arithmetic and its decidable equality remain standard-library operations.
+-- The search below has no pass allowance or approximate stopping threshold.
+betaEqual? : ∀ (first second : Beta) → Dec (first ≡ second)
+betaEqual? (beta a b) (beta c d) with FloatEquality._≟_ a c | FloatEquality._≟_ b d
+... | yes refl | yes refl = yes refl
+... | no unequal | _ = no (λ { refl → unequal refl })
+... | yes _ | no unequal = no (λ { refl → unequal refl })
+
+stateEqual? : ∀ (first second : State) → Dec (first ≡ second)
+stateEqual? [] [] = yes refl
+stateEqual? [] (_ ∷ _) = no (λ ())
+stateEqual? (_ ∷ _) [] = no (λ ())
+stateEqual? ((id , value) ∷ rest) ((other , next) ∷ rest₂)
+  with id ≟ other | betaEqual? value next | stateEqual? rest rest₂
+... | yes refl | yes refl | yes refl = yes refl
+... | no unequal | _ | _ = no (λ { refl → unequal refl })
+... | yes _ | no unequal | _ = no (λ { refl → unequal refl })
+... | yes _ | yes _ | no unequal = no (λ { refl → unequal refl })
+
+posteriorGoal? : ∀ seed external edges nodes final →
+  Dec (PosteriorGoal seed external edges nodes final)
+posteriorGoal? seed external edges nodes final = allDec decide nodes
+  where
+  decide : ∀ n → Dec (lookup (Node.identity n) final ≡ just
+    (incoming seed (Node.identity n) final external edges (Node.fixed n)))
+  decide n with lookup (Node.identity n) final
+  ... | nothing = no (λ ())
+  ... | just value with betaEqual? value (incoming seed (Node.identity n) final external edges (Node.fixed n))
+  ...   | yes refl = yes refl
+  ...   | no unequal = no (λ { refl → unequal refl })
+
+seenState? : ∀ value values → Dec (Any.Any (value ≡_) values)
+seenState? value [] = no (λ ())
+seenState? value (first ∷ rest) with stateEqual? value first | seenState? value rest
+... | yes same | _ = yes (Any.here same)
+... | no _ | yes found = yes (Any.there found)
+... | no different | no absent = no (λ
+  { (Any.here same) → different same
+  ; (Any.there found) → absent found })
+
+module Cyclic (seed : Seed) (external : External) (edges : List Edge) (nodes : List Node) where
+  data Phase : Set where
+    searching : State → List State → Phase
+    settled : (final : State) → PosteriorGoal seed external edges nodes final → Phase
+    needsDecision : (repeated : State) (visited : List State) →
+      Any.Any (repeated ≡_) visited → (PosteriorGoal seed external edges nodes repeated → ⊥) → Phase
+    invalid : State → Phase
+
+  begin : State → Phase
+  begin current = searching current (current ∷ [])
+
+  inspect : State → List State → Phase
+  inspect after visited with validState after
+  ... | false = invalid after
+  ... | true with posteriorGoal? seed external edges nodes after
+  ...   | yes complete = settled after complete
+  ...   | no incomplete with seenState? after visited
+  ...     | yes repeated = needsDecision after visited repeated incomplete
+  ...     | no fresh = searching after (after ∷ visited)
+
+  advance : Phase → Phase
+  advance (searching current visited) with sweep seed external edges nodes current 0.0
+  ... | sweepResult after delta true = invalid after
+  ... | sweepResult after delta false = inspect after visited
+  advance phase@(settled _ _) = phase
+  advance phase@(needsDecision _ _ _ _) = phase
+  advance phase@(invalid _) = phase
+
+  -- Finite observed executions of the uncapped state machine. There is no
+  -- constructor that stops a calculation because an allowance was exhausted.
+  data Runs : Phase → Phase → Set where
+    stopped : ∀ phase → Runs phase phase
+    advanced : ∀ phase final → Runs (advance phase) final → Runs phase final
+
+  counts : Phase → State
+  counts (searching current _) = current
+  counts (settled final _) = final
+  counts (needsDecision repeated _ _ _) = repeated
+  counts (invalid current) = current
+
+  -- Replay actual observed sweeps, rather than accepting a caller's claim
+  -- that repetition occurred. Exhausting an observation list is never a
+  -- successful stopping condition: the resulting phase must be terminal.
+  observed : (phase : Phase) → List State → Maybe (Σ Phase (Runs phase))
+  observed phase [] = just (phase , stopped phase)
+  observed phase (seen ∷ rest) with stateEqual? seen (counts (advance phase))
+  ... | no different = nothing
+  ... | yes same with observed (advance phase) rest
+  ...   | nothing = nothing
+  ...   | just (final , steps) = just (final , advanced phase final steps)
+
+  -- Intermediate iterates and a repeated, incomplete state never supply a
+  -- write set. Only the independent complete-posterior condition permits it.
+  writes : Phase → State
+  writes (searching _ _) = []
+  writes (settled final complete) = updates nodes final
+  writes (needsDecision _ _ _ _) = []
+  writes (invalid _) = []
+
+  incompleteRepeatCannotPublish : ∀ repeated visited seen incomplete →
+    writes (needsDecision repeated visited seen incomplete) ≡ []
+  incompleteRepeatCannotPublish repeated visited seen incomplete = refl
+
+  exactGoalTakesPriorityOverRepetition : ∀ final visited complete →
+    validState final ≡ true → posteriorGoal? seed external edges nodes final ≡ yes complete →
+    inspect final visited ≡ settled final complete
+  exactGoalTakesPriorityOverRepetition final visited complete admitted goal
+    rewrite admitted | goal = refl
+
+-- A calculation boundary supplies observations, never a trusted assertion
+-- that its answer is correct. Both acceptance and repetition are checked here.
+-- A finite incomplete transcript cannot be converted to a completed result.
+data CalculationReport : Set where
+  candidate : State → CalculationReport
+  sweeps : List State → CalculationReport
+
+module Assess (seed : Seed) (external : External) (edges : List Edge) (nodes : List Node) where
+  ordered = order seed nodes
+  module C = Cyclic seed external edges ordered
+
+  Shape : State → Set
+  Shape final = map proj₁ final ≡ map Node.identity ordered
+
+  data Verdict : Set where
+    rejected : Verdict
+    accepted : (final : State) → ValidState final → Shape final →
+      PosteriorGoal seed external edges ordered final → Verdict
+    repeated : (final : State) (visited : List State) →
+      (seen : Any.Any (final ≡_) visited) →
+      (incomplete : PosteriorGoal seed external edges ordered final → ⊥) →
+      C.Runs (C.begin (initial ordered)) (C.needsDecision final visited seen incomplete) → Verdict
+
+  checkCandidate : State → Verdict
+  checkCandidate final with validState final in valid
+  ... | false = rejected
+  ... | true with Lists.≡-dec _≟_ (map proj₁ final) (map Node.identity ordered)
+  ...   | no wrongShape = rejected
+  ...   | yes shape with posteriorGoal? seed external edges ordered final
+  ...     | no incomplete = rejected
+  ...     | yes complete = accepted final (validStateSound final valid) shape complete
+
+  terminal : (phase : C.Phase) → C.Runs (C.begin (initial ordered)) phase → Verdict
+  terminal (C.searching _ _) steps = rejected
+  terminal (C.invalid _) steps = rejected
+  terminal (C.settled final _) steps = checkCandidate final
+  terminal (C.needsDecision final visited seen incomplete) steps =
+    repeated final visited seen incomplete steps
+
+  check : CalculationReport → Verdict
+  check report with validSeed seed ∧ validExternal edges external ∧ validEdges edges ∧ validNodes nodes
+  ... | false = rejected
+  ... | true with report
+  ...   | candidate final = checkCandidate final
+  ...   | sweeps observations with C.observed (C.begin (initial ordered)) observations
+  ...     | nothing = rejected
+  ...     | just (phase , steps) = terminal phase steps
+
+  writes : Verdict → State
+  writes rejected = []
+  writes (accepted final _ _ _) = updates ordered final
+  writes (repeated _ _ _ _ _) = []
+
+  repeatedCannotSupplyWrites : ∀ final visited seen incomplete steps →
+    writes (repeated final visited seen incomplete steps) ≡ []
+  repeatedCannotSupplyWrites final visited seen incomplete steps = refl
+
+  acceptedCounts : Verdict → Maybe State
+  acceptedCounts rejected = nothing
+  acceptedCounts (accepted final _ _ _) = just final
+  acceptedCounts (repeated _ _ _ _ _) = nothing
+
+  -- This is a property of the executable checker for ANY report, not a
+  -- premise requiring the calculation implementation to be correct.
+  acceptedReportSatisfiesEveryEquation : ∀ report final →
+    acceptedCounts (check report) ≡ just final →
+    PosteriorGoal seed external edges ordered final
+  acceptedReportSatisfiesEveryEquation report final acceptedReport with check report
+  ... | rejected with acceptedReport
+  ...   | ()
+  acceptedReportSatisfiesEveryEquation report final refl | accepted .final valid shape complete = complete
+  acceptedReportSatisfiesEveryEquation report final acceptedReport | repeated _ _ _ _ _ with acceptedReport
+  ... | ()
+
+  acceptedReportContainsExactlyTheSelectedNodes : ∀ report final →
+    acceptedCounts (check report) ≡ just final → Shape final
+  acceptedReportContainsExactlyTheSelectedNodes report final acceptedReport with check report
+  ... | rejected with acceptedReport
+  ...   | ()
+  acceptedReportContainsExactlyTheSelectedNodes report final refl | accepted .final valid shape complete = shape
+  acceptedReportContainsExactlyTheSelectedNodes report final acceptedReport | repeated _ _ _ _ _ with acceptedReport
+  ... | ()
+
+-- The calculation implementation supplies a raw observed answer. It is not
+-- assumed correct, nor used as an intended-world function: run validates it.
+Calculator : Set
+Calculator = Seed → External → List Edge → List Node → CalculationReport
+
+record Result : Set where
+  constructor result
+  field
+    writes : State
+    numericFailure : Bool
+    dialogue : Maybe (State × List State)
+
+run : Seed → External → List Edge → List Node → CalculationReport → Result
+run seed external edges nodes report = finish (A.check report)
+  where
+  module A = Assess seed external edges nodes
+  finish : A.Verdict → Result
+  finish A.rejected = result [] true nothing
+  finish outcome@(A.accepted final valid shape complete) = result (A.writes outcome) false nothing
+  finish (A.repeated final visited seen incomplete steps) = result [] false (just (final , visited))

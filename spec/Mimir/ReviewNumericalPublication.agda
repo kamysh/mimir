@@ -22,6 +22,7 @@ import Mimir.ReviewLedger as Ledger
 import Mimir.ReviewPlanning as Planning
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.LearningRecompute as Recompute
+import Mimir.PosteriorComputation as Posterior
 
 linkTargets : List Link → List ℕ
 linkTargets [] = []
@@ -40,8 +41,9 @@ oldTargets (just r) = targets r
 
 data NumericFailure : Set where
   foreignTarget invalidInput invalidWrite : NumericFailure
+  numericalDecision : Posterior.State → List Posterior.State → NumericFailure
 
-module For (before : Publication.World) (current : Experience) (requested : Review)
+module For (calculator : Posterior.Calculator) (before : Publication.World) (current : Experience) (requested : Review)
   (clock : Candidate → ℤ)
   (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes before)))
   (expected : ℕ) (experienceIDs : List ℕ) (ground : List (ℕ × Float)) where
@@ -60,7 +62,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
   -- The identity proof is about the actual calculated node list, not a
   -- caller-supplied assertion that numeric code preserves graph identity.
   complete : (selected : F.Fresh expected) → Decision
-  complete selected with Recompute.run project roots
+  complete selected with Recompute.run calculator project roots
     (Publication.World.nodes staged) (Publication.World.edges staged)
     (Recompute.activeReviews project experienceIDs (Publication.World.ledger staged)) ground
     in calculated
@@ -71,7 +73,8 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
   ... | Recompute.foreignTarget = numericFailure foreignTarget
   ... | Recompute.invalidNumericInput = numericFailure invalidInput
   ... | Recompute.invalidNumericWrite = numericFailure invalidWrite
-  ... | Recompute.recomputed nodes limit = fresh selected nodes (Recompute.runPreservesIdentities (Experience.project current)
+  ... | Recompute.needsDecision counts history = numericFailure (numericalDecision counts history)
+  ... | Recompute.recomputed nodes limit = fresh selected nodes (Recompute.runPreservesIdentities calculator (Experience.project current)
      (oldTargets F.prior ++
       targets (F.P.materialized (F.Fresh.preparation selected)))
      (Publication.World.nodes (F.publish selected))

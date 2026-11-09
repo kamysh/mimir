@@ -257,13 +257,16 @@ module AgentCorrection where
        (toList "expected" , string (Item.expected detail)) ∷
        (toList "suggested_correction" , string (Item.suggestedCorrection detail)) ∷ [])
 
+  issues : Claim → Value
+  issues report = array (map encodeItem (Claim.first report ∷ Claim.rest report))
+
   emitCorrection : ∀ {World before after} → Certified World before after → Value
   emitCorrection proof = object
     ((toList "status" , string (toList "needs_input")) ∷
      (toList "business_changes" , string (toList "none")) ∷
      (toList "next_action" , string (toList "correct_request_or_ask_user")) ∷
      (toList "message" , string instruction) ∷
-     (toList "issues" , array (map encodeItem (Claim.first report ∷ Claim.rest report))) ∷ [])
+     (toList "issues" , issues report) ∷ [])
     where report = Certified.report proof
 
   -- Decode the application response, not JSON syntax. A tag alone cannot

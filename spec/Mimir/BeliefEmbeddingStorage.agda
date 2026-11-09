@@ -33,8 +33,9 @@ import Mimir.DatabaseTransaction as DB
 import Mimir.McpErrors as Errors
 import Mimir.EmbeddingLifecycle as Lifecycle
 import Mimir.CandidateGraph as G
+import Mimir.PosteriorComputation as Posterior
 
-module Bound (database maximumIndex : ℕ) (float : Ranking.F32)
+module Bound (database maximumIndex : ℕ) (calculator : Posterior.Calculator) (float : Ranking.F32)
   (numeric : JSON.Value → Validation.Fault ⊎ Ranking.F32.Value float)
   (widen : Ranking.F32.Value float → Float)
   (home : Maybe Path.NativePath) (withExtension : Path.Path → Text → Path.Path) (pid : Text)
@@ -44,7 +45,7 @@ module Bound (database maximumIndex : ℕ) (float : Ranking.F32)
     module E = Embedding.Run float 768 maximumIndex numeric widen home withExtension pid
     module R = Committed.Contract reads
     module Vectors = Read.Vectors ops
-    module Atomic = B.Atomic database
+    module Atomic = B.Atomic database calculator
 
   module WithErrors (display : E.Failure → Text) where
     result : E.Result → Text ⊎ List Store.Vector

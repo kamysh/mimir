@@ -158,12 +158,14 @@ applyPreservesOriginals changes (Graph.beliefNode b ∷ rest)
 data Result : Set where
   foreignTarget invalidNumericInput invalidNumericWrite : Result
   recomputed : List Graph.Node → Bool → Result
+  needsDecision : Posterior.State → List Posterior.State → Result
 
 finish : List Graph.Node → Posterior.Result → Result
 finish nodes r with not (Posterior.Result.numericFailure r) ∧ validWrites (Posterior.Result.writes r)
 ... | false = invalidNumericWrite
-... | true = recomputed (apply (Posterior.Result.writes r) nodes)
-  (Posterior.Result.iterationLimitReached r)
+... | true with Posterior.Result.dialogue r
+...   | just (counts , history) = needsDecision counts history
+...   | nothing = recomputed (apply (Posterior.Result.writes r) nodes) false
 
 finishPreservesValidity : ∀ nodes r after limit → All Evidence.ValidNode nodes →
   finish nodes r ≡ recomputed after limit → All Evidence.ValidNode after
@@ -171,7 +173,10 @@ finishPreservesValidity nodes r after limit valid observed
   with not (Posterior.Result.numericFailure r) ∧ validWrites (Posterior.Result.writes r) in admitted
 ... | false with observed
 ...   | ()
-finishPreservesValidity nodes r after limit valid refl | true =
+finishPreservesValidity nodes r after limit valid observed | true with Posterior.Result.dialogue r
+... | just decision with observed
+...   | ()
+finishPreservesValidity nodes r after .false valid refl | true | nothing =
   applyPreservesValidity (Posterior.Result.writes r) nodes
     (Posterior.validStateSound (Posterior.Result.writes r)
       (Posterior.andRight (not (Posterior.Result.numericFailure r)) (validWrites (Posterior.Result.writes r)) admitted)) valid
@@ -180,9 +185,14 @@ failedCalculationCannotSucceed : ∀ nodes r → Posterior.Result.numericFailure
   finish nodes r ≡ invalidNumericWrite
 failedCalculationCannotSucceed nodes r failed rewrite failed = refl
 
-run : Text → List ℕ → List Graph.Node → List Edges.Edge →
+evaluate : Posterior.Calculator → List Graph.Node → List Posterior.Node → List Posterior.Edge → Posterior.Result
+evaluate calculator nodes prepared incoming = Posterior.run nothing ext incoming prepared
+  (calculator nothing ext incoming prepared)
+  where ext = external (map Posterior.Node.identity prepared) (beliefs nodes)
+
+run : Posterior.Calculator → Text → List ℕ → List Graph.Node → List Edges.Edge →
   List Review.Review → List (ℕ × Float) → Result
-run project roots nodes edges reviews ground with owned project chosen
+run calculator project roots nodes edges reviews ground with owned project chosen
   where chosen = selected (closure project (beliefs nodes) edges roots) (beliefs nodes)
 ... | false = foreignTarget
 ... | true with prepareNodes (concatMap Review.Review.feedbacks reviews) ground chosen
@@ -191,26 +201,26 @@ run project roots nodes edges reviews ground with owned project chosen
 ...   | nothing | _ = invalidNumericInput
 ...   | just prepared | nothing = invalidNumericInput
 ...   | just prepared | just incoming = finish nodes
-  (Posterior.run nothing (external (map Posterior.Node.identity prepared) (beliefs nodes)) incoming prepared)
+  (evaluate calculator nodes prepared incoming)
 
-runPreservesValidity : ∀ project roots nodes edges reviews ground after limit →
-  All Evidence.ValidNode nodes → run project roots nodes edges reviews ground ≡ recomputed after limit →
+runPreservesValidity : ∀ calculator project roots nodes edges reviews ground after limit →
+  All Evidence.ValidNode nodes → run calculator project roots nodes edges reviews ground ≡ recomputed after limit →
   All Evidence.ValidNode after
-runPreservesValidity project roots nodes edges reviews ground after limit valid observed
+runPreservesValidity calculator project roots nodes edges reviews ground after limit valid observed
   with owned project (selected (closure project (beliefs nodes) edges roots) (beliefs nodes))
 ... | false with observed
 ...   | ()
-runPreservesValidity project roots nodes edges reviews ground after limit valid observed | true
+runPreservesValidity calculator project roots nodes edges reviews ground after limit valid observed | true
   with prepareNodes (concatMap Review.Review.feedbacks reviews) ground chosen
   | prepareEdges (map Graph.BeliefValues.identity chosen) edges
   where chosen = selected (closure project (beliefs nodes) edges roots) (beliefs nodes)
 ... | nothing | _ with observed
 ...   | ()
-runPreservesValidity project roots nodes edges reviews ground after limit valid observed | true | just prepared | nothing with observed
+runPreservesValidity calculator project roots nodes edges reviews ground after limit valid observed | true | just prepared | nothing with observed
 ... | ()
-runPreservesValidity project roots nodes edges reviews ground after limit valid observed | true | just prepared | just incoming =
+runPreservesValidity calculator project roots nodes edges reviews ground after limit valid observed | true | just prepared | just incoming =
   finishPreservesValidity nodes
-    (Posterior.run nothing (external (map Posterior.Node.identity prepared) (beliefs nodes)) incoming prepared)
+    (evaluate calculator nodes prepared incoming)
     after limit valid observed
 
 identitiesPreserved : ∀ changes nodes → map Graph.nodeID (apply changes nodes) ≡ map Graph.nodeID nodes
@@ -227,27 +237,28 @@ finishPreservesIdentities : ∀ nodes r after limit → finish nodes r ≡ recom
 finishPreservesIdentities nodes r after limit proof with not (Posterior.Result.numericFailure r) ∧ validWrites (Posterior.Result.writes r)
 ... | false with proof
 ...   | ()
-finishPreservesIdentities nodes r after limit refl | true = identitiesPreserved (Posterior.Result.writes r) nodes
+finishPreservesIdentities nodes r after limit observed | true with Posterior.Result.dialogue r
+... | just decision with observed
+...   | ()
+finishPreservesIdentities nodes r after .false refl | true | nothing = identitiesPreserved (Posterior.Result.writes r) nodes
 
-runPreservesIdentities : ∀ project roots nodes edges reviews ground after limit →
-  run project roots nodes edges reviews ground ≡ recomputed after limit →
+runPreservesIdentities : ∀ calculator project roots nodes edges reviews ground after limit →
+  run calculator project roots nodes edges reviews ground ≡ recomputed after limit →
   map Graph.nodeID after ≡ map Graph.nodeID nodes
-runPreservesIdentities project roots nodes edges reviews ground after limit proof
+runPreservesIdentities calculator project roots nodes edges reviews ground after limit proof
   with owned project (selected (closure project (beliefs nodes) edges roots) (beliefs nodes))
 ... | false with proof
 ...   | ()
-runPreservesIdentities project roots nodes edges reviews ground after limit proof | true
+runPreservesIdentities calculator project roots nodes edges reviews ground after limit proof | true
   with prepareNodes (concatMap Review.Review.feedbacks reviews) ground chosen
   | prepareEdges (map Graph.BeliefValues.identity chosen) edges
   where chosen = selected (closure project (beliefs nodes) edges roots) (beliefs nodes)
 ... | nothing | _ with proof
 ...   | ()
-runPreservesIdentities project roots nodes edges reviews ground after limit proof | true | just prepared | nothing with proof
+runPreservesIdentities calculator project roots nodes edges reviews ground after limit proof | true | just prepared | nothing with proof
 ... | ()
-runPreservesIdentities project roots nodes edges reviews ground after limit proof | true | just prepared | just incoming = finishPreservesIdentities nodes
-  (Posterior.run nothing
-   (external (map Posterior.Node.identity prepared) (beliefs nodes))
-   incoming prepared)
+runPreservesIdentities calculator project roots nodes edges reviews ground after limit proof | true | just prepared | just incoming = finishPreservesIdentities nodes
+  (evaluate calculator nodes prepared incoming)
   after limit proof
 
 -- Identity deletion has no project restriction. It uses the same numerical
@@ -260,12 +271,12 @@ activeReviewsScoped nothing (id ∷ ids) ledger with Ledger.activeApplied
 ... | nothing = activeReviewsScoped nothing ids ledger
 ... | just applied = applied ∷ activeReviewsScoped nothing ids ledger
 
-runGlobal : List ℕ → List Graph.Node → List Edges.Edge →
+runGlobal : Posterior.Calculator → List ℕ → List Graph.Node → List Edges.Edge →
   List Review.Review → List (ℕ × Float) → Result
-runGlobal roots nodes edges reviews ground with prepareNodes (concatMap Review.Review.feedbacks reviews) ground chosen
+runGlobal calculator roots nodes edges reviews ground with prepareNodes (concatMap Review.Review.feedbacks reviews) ground chosen
   | prepareEdges (map Graph.BeliefValues.identity chosen) edges
   where chosen = selected (closureScoped nothing (beliefs nodes) edges roots) (beliefs nodes)
 ... | nothing | _ = invalidNumericInput
 ... | just prepared | nothing = invalidNumericInput
 ... | just prepared | just incoming = finish nodes
-  (Posterior.run nothing (external (map Posterior.Node.identity prepared) (beliefs nodes)) incoming prepared)
+  (evaluate calculator nodes prepared incoming)

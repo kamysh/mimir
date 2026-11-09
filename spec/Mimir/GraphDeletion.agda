@@ -20,6 +20,7 @@ import Mimir.GraphRecords as Records
 import Mimir.RetrievalRanking as Ranking
 import Mimir.ReviewEdges as Edges
 import Mimir.LearningRecompute as Recompute
+import Mimir.PosteriorComputation as Posterior
 import Mimir.LearningStore as Learning
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.LearningTransaction as Transaction
@@ -161,7 +162,9 @@ data Failure : Set where
   storageFailure : Text → Failure
   foreignTarget invalidNumericInput invalidNumericWrite : Failure
 
-module Operation (database : ℕ) where
+  numericalDecision : Posterior.State → List Posterior.State → Failure
+
+module Operation (database : ℕ) (calculator : Posterior.Calculator) where
   module T = Transaction.Over Store.World Bool Failure database 671942183
 
   finish : Store.World → Recompute.Result → T.Decision
@@ -169,13 +172,14 @@ module Operation (database : ℕ) where
   finish state Recompute.foreignTarget = T.reject foreignTarget
   finish state Recompute.invalidNumericInput = T.reject invalidNumericInput
   finish state Recompute.invalidNumericWrite = T.reject invalidNumericWrite
+  finish state (Recompute.needsDecision counts history) = T.reject (numericalDecision counts history)
 
   delete : Kind → ℕ → Store.World → T.Decision
   delete kind id state with exists kind id state
   ... | false = T.replay false
   ... | true with kind
   ...   | patternNode = T.replace (Store.removeNodes (id ∷ []) true state) true
-  ...   | belief = finish proposed (Recompute.runGlobal (children id state)
+  ...   | belief = finish proposed (Recompute.runGlobal calculator (children id state)
     (Store.nodes proposed) (Publication.World.edges pub)
     (Recompute.activeReviewsScoped nothing (Learning.identities learn) (Publication.World.ledger pub))
     (Store.groundingMasses proposed))

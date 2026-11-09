@@ -17,6 +17,7 @@ open import Data.String using (toList)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.PublicRequest as Public
+import Mimir.PosteriorComputation as Posterior
 import Mimir.GraphMutationProtocol as Mutation
 import Mimir.GraphReadProtocol as Read
 import Mimir.GraphDeletion as Deletion
@@ -48,6 +49,7 @@ configurationCorrection detail = Correction.claim
 record Environment : Set₁ where
   field
     database dimension : ℕ
+    calculator : Posterior.Calculator
     embeddingsEnabled : Bool
     f32 : Ranking.F32
     unicode : Ranking.Unicode
@@ -60,11 +62,11 @@ record Environment : Set₁ where
 
 module Run (environment : Environment) where
   open Environment environment
-  module Delete = Deletion.Operation database
+  module Delete = Deletion.Operation database calculator
   module Forget = Project.Operation database
-  module Grounding = Ground.Operation database
+  module Grounding = Ground.Operation database calculator
   module Document = Documents.Operations database dimension
-  module Learn (q : Learning.Request) = Learning.Protocol database q candidateClock now candidateIdentity
+  module Learn (q : Learning.Request) = Learning.Protocol database q candidateClock now candidateIdentity calculator
   module Retrieve = Retrieval.Run f32 unicode
   module LearningContext = Context.Run f32 unicode databaseTextBefore
 

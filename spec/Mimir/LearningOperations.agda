@@ -23,6 +23,7 @@ open import Mimir.ExperienceSchema using (Experience)
 open import Mimir.ReviewSchema using (Review)
 open import Mimir.LearningCandidates using (Candidate)
 import Mimir.ExperienceSchema as ExperienceSchema
+import Mimir.PosteriorComputation as Posterior
 import Mimir.ReviewSchema as ReviewSchema
 import Mimir.LearningStore as Store
 import Mimir.ExperienceRecord as Recording
@@ -244,7 +245,7 @@ admit (reviewExperience reviewValue expected) with expectedValid expected
 ... | true = nothing
 
 module Protocol (database : ℕ) (request : Request)
-  (clock : Candidate → ℤ) (now : ℤ) (identities : Candidate → ℕ) where
+  (clock : Candidate → ℤ) (now : ℤ) (identities : Candidate → ℕ) (calculator : Posterior.Calculator) where
 
   module T = Transaction.Over Store.World Observation.Snapshot Failure database 671942183
   module Receipts = Receipt.Over Store.World Observation.Snapshot Failure database 671942183
@@ -259,7 +260,7 @@ module Protocol (database : ℕ) (request : Request)
   module CompleteReview (input : Input.Review) (expected : ℤ)
     (prepared : List Reviewing.PreparedCandidate) where
 
-    module Meaning (canonical : Review) = Reviewing.PreparedReview canonical expected clock now identities prepared
+    module Meaning (canonical : Review) = Reviewing.PreparedReview calculator canonical expected clock now identities prepared
 
     convert : (canonical : Review) → Meaning.Result canonical → Full.Decision
     convert canonical (Meaning.refused failure) = Full.reject (reviewFailure failure)
@@ -297,12 +298,12 @@ module Protocol (database : ℕ) (request : Request)
   reviewReady : ℤ → Failure ⊎ (Store.World × Review) → T.Allocation T.Decision
   reviewReady expected (inj₁ failure) = T.resolved (T.reject failure)
   reviewReady expected (inj₂ (staged , canonical)) =
-    T.resolved (reviewed (Reviewing.plan staged canonical expected clock now identities))
+    T.resolved (reviewed (Reviewing.WithCalculator.plan calculator staged canonical expected clock now identities))
 
   decide : Request → Store.World → T.Allocation T.Decision
   decide (recordExperience sourceValue expected) before = T.bindAllocation (Normalize.experience sourceValue before) λ where
     (inj₁ failure) → T.resolved (T.reject failure)
-    (inj₂ (staged , canonical)) → T.resolved (recorded (Recording.plan staged canonical expected now))
+    (inj₂ (staged , canonical)) → T.resolved (recorded (Recording.WithCalculator.plan calculator staged canonical expected now))
   decide (reviewExperience reviewValue expected) before =
     T.bindAllocation (Normalize.review reviewValue before) (reviewReady expected)
 
@@ -330,7 +331,7 @@ module Protocol (database : ℕ) (request : Request)
 
   recordedExperienceRetry : ∀ input expected before assigned value →
     Normalize.RecordedItems (Input.Experience.identity input) before (Input.Experience.items input) assigned →
-    Recording.plan before (Input.canonicalExperience input assigned) expected now ≡ Recording.replay value →
+    Recording.WithCalculator.plan calculator before (Input.canonicalExperience input assigned) expected now ≡ Recording.replay value →
     decide (recordExperience input expected) before ≡ T.resolved (T.replay value)
   recordedExperienceRetry input expected before assigned value recorded replay
     rewrite Normalize.recordedExperienceNeedsNoAllocation input before assigned recorded | replay = refl
@@ -339,7 +340,7 @@ module Protocol (database : ℕ) (request : Request)
     Normalize.RecordedItems (Input.Review.experienceID input) before (Input.Review.extracted input) assigned →
     Normalize.assessments (Store.World.itemKeys before) (Input.Review.experienceID input) (Input.Review.assessments input)
       ≡ inj₂ (resolved , supported) →
-    Reviewing.plan before (Input.canonicalReview input assigned resolved) expected clock now identities ≡ Reviewing.replay value →
+    Reviewing.WithCalculator.plan calculator before (Input.canonicalReview input assigned resolved) expected clock now identities ≡ Reviewing.replay value →
     decide (reviewExperience input expected) before ≡ T.resolved (T.replay value)
   recordedReviewRetry input expected before assigned resolved supported value recorded references replay
     rewrite Normalize.recordedReviewNeedsNoAllocation input before assigned resolved supported recorded references | replay = refl
@@ -349,7 +350,7 @@ module Protocol (database : ℕ) (request : Request)
   -- desired result and do not request a second PostgreSQL identity.
   namedExperienceRetry : ∀ input expected before assigned value →
     Normalize.NamedItems (Input.Experience.identity input) before (Input.Experience.items input) assigned →
-    Recording.plan before (Input.canonicalExperience input assigned) expected now ≡ Recording.replay value →
+    Recording.WithCalculator.plan calculator before (Input.canonicalExperience input assigned) expected now ≡ Recording.replay value →
     decide (recordExperience input expected) before ≡ T.resolved (T.replay value)
   namedExperienceRetry input expected before assigned value saved replay =
     recordedExperienceRetry input expected before assigned value
@@ -359,7 +360,7 @@ module Protocol (database : ℕ) (request : Request)
     Normalize.NamedItems (Input.Review.experienceID input) before (Input.Review.extracted input) assigned →
     Normalize.assessments (Store.World.itemKeys before) (Input.Review.experienceID input) (Input.Review.assessments input)
       ≡ inj₂ (resolved , supported) →
-    Reviewing.plan before (Input.canonicalReview input assigned resolved) expected clock now identities ≡ Reviewing.replay value →
+    Reviewing.WithCalculator.plan calculator before (Input.canonicalReview input assigned resolved) expected clock now identities ≡ Reviewing.replay value →
     decide (reviewExperience input expected) before ≡ T.resolved (T.replay value)
   namedReviewRetry input expected before assigned resolved supported value saved references replay =
     recordedReviewRetry input expected before assigned resolved supported value

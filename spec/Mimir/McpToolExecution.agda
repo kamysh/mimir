@@ -27,6 +27,7 @@ import Mimir.ApplicationOutput as Output
 import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
 import Mimir.McpErrors as Errors
+import Mimir.GraphMutationProtocol as Mutation
 module Correction = Errors.AgentCorrection
 
 all : List T.Tool
@@ -61,6 +62,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
     failure : Diagnostic → Result
     inputCorrection : Correction.Claim → Result
     preparationDecision : Correction.Claim → Result
+    partialDecision : Mutation.CommittedEdge → Correction.Claim → Result
     completed : V.Value → Result
 
   unknownTool : Envelope.Text → Correction.Claim
@@ -81,6 +83,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   ... | P.success value = completed value
   ... | P.failure cause = failure (operationFailed cause)
   ... | P.decision report = preparationDecision report
+  ... | P.partialDecision edge report = partialDecision edge report
 
   data Handled (name : Envelope.Text) (raw : V.Value) : List A.Event → Result → Set where
     unknown : lookup name ≡ nothing → Handled name raw [] (inputCorrection (unknownTool name))
@@ -119,6 +122,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   ... | P.success value = λ ()
   ... | P.failure cause = λ ()
   ... | P.decision report₁ = λ ()
+  ... | P.partialDecision edge report₁ = λ ()
 
   correctionWitness : ∀ name raw events reply report → Handled name raw events reply →
     reply ≡ inputCorrection report → events ≡ []

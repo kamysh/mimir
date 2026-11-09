@@ -42,6 +42,37 @@ impl RegisteredOperation {
             }
         }
         let result = call(self.handler, service, input).await;
+        if self.handler == Operation::Graph(GraphOperation::RecordDefeat) {
+            if let Err(error) = &result {
+                if let Some(decision) =
+                    error.downcast_ref::<mimir_core::inference::EdgeCommittedDecision>()
+                {
+                    return Ok(decision.response().clone());
+                }
+            }
+        }
+        if matches!(
+            self.handler,
+            Operation::Graph(
+                GraphOperation::PropagateFrom
+                    | GraphOperation::QueryIntervention
+                    | GraphOperation::InsertBelief
+                    | GraphOperation::DeleteBelief
+                    | GraphOperation::AddEvidence
+            ) | Operation::Learning(
+                LearningOperation::RecordExperience | LearningOperation::ReviewExperience
+            )
+        ) {
+            if let Err(error) = &result {
+                if let Some(decision) =
+                    error.downcast_ref::<mimir_core::inference::NumericalDecision>()
+                {
+                    let correction =
+                        mimir_core::interaction::NeedsInput::new(decision.issue().clone(), vec![])?;
+                    return Ok(serde_json::to_value(correction)?);
+                }
+            }
+        }
         // A refusal from an inner step does not certify a larger operation
         // with earlier commits (for example document loading and grounding).
         if matches!(
