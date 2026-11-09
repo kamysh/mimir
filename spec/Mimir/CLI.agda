@@ -244,6 +244,7 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
   after command value with O.project value
   ... | O.failure cause = done (inj₁ (operation cause))
   ... | O.decision report = emit (configurationDecision report)
+  ... | O.partialDecision edge report = emit (commandOutput command value)
   ... | O.success _ = success command value
 
   dispatch : ServiceCommand → Script (Failure ⊎ ⊤)
