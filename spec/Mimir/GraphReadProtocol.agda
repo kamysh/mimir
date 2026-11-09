@@ -1,7 +1,6 @@
 {-# OPTIONS --safe #-}
--- Ordinary reads retain independently observed SELECT snapshots. Paging uses
--- an explicit read-only stable transaction: its row query is tied to the
--- original count snapshot by StorageReadBinding, not an unrelated observation.
+-- Composite reads use an explicit read-only stable transaction. Paging,
+-- statistics and explanations retain their original response snapshot.
 module Mimir.GraphReadProtocol where
 
 open import Data.Bool using (Bool; true; false; _∧_)
@@ -48,6 +47,8 @@ data Effect : Set where
   explanationSnapshot : ℕ → Store.World → Statement → Effect
   openPage : Maybe Text → Maybe C.Memory → Effect
   pageSnapshotRows : ℕ → Store.World → Maybe Text → Maybe C.Memory → ℕ → ℕ → Effect
+  openStatistics : Effect
+  statisticsSnapshot : ℕ → Store.World → Statement → Effect
   select : Maybe ℕ → Statement → Effect
   dropTransaction : ℕ → Effect
 
@@ -56,6 +57,8 @@ Reply (openExplanation _) = Text ⊎ (ℕ × Store.World)
 Reply (explanationSnapshot _ _ _) = Text ⊎ Store.World
 Reply (openPage project memory) = Text ⊎ (ℕ × Store.World)
 Reply (pageSnapshotRows tx initial project memory limit offset) = Text ⊎ Store.World
+Reply openStatistics = Text ⊎ (ℕ × Store.World)
+Reply (statisticsSnapshot tx initial statement) = Text ⊎ Store.World
 Reply (select handle statement) = Text ⊎ Store.World
 Reply (dropTransaction tx) = ⊤
 
@@ -101,6 +104,25 @@ read handle statement next = ask (select handle statement) (λ
 countRelation : R.Relation → Store.World → ℕ
 countRelation relation w = length (filterᵇ (λ e → does (R.relationCode relation ≟ R.relationCode (Edges.Edge.relation e)))
   (Publication.World.edges (Learning.World.publication (Store.World.learning w))))
+
+statisticsFromViews : Store.World → Store.World → Store.World → Store.World → Store.World → Store.World → Statistics
+statisticsFromViews beliefView patternView supportView defeatView causeView contradictionView = statistics
+  (length (Store.beliefs beliefView)) (length (Store.patterns (Store.nodes patternView)))
+  (countRelation R.supports supportView) (countRelation R.defeats defeatView)
+  (countRelation R.causes causeView) (countRelation R.contradicts contradictionView)
+
+statisticsAnswer : Store.World → Statistics
+statisticsAnswer snapshot = statisticsFromViews snapshot snapshot snapshot snapshot snapshot snapshot
+
+statisticsViewsAgree : ∀ first patternView supportView defeatView causeView contradictionView →
+  patternView ≡ first → supportView ≡ first → defeatView ≡ first → causeView ≡ first → contradictionView ≡ first →
+  statisticsFromViews first patternView supportView defeatView causeView contradictionView ≡ statisticsAnswer first
+statisticsViewsAgree first .first .first .first .first .first refl refl refl refl refl = refl
+
+statisticsRead : ℕ → Store.World → Statement → (Store.World → Script Result) → Script Result
+statisticsRead tx first statement next = ask (statisticsSnapshot tx first statement) λ where
+  (inj₁ error) → close (just tx) (failed error)
+  (inj₂ observed) → next observed
 
 fromExplanation : Explanation.Result → Result
 fromExplanation Explanation.beliefMissing = missingBelief
@@ -169,9 +191,11 @@ start (beliefPage project memory limit offset) with Records.pageAdmitted limit o
 start (explain id offset limit) = ask (openExplanation id) λ where
   (inj₁ error) → done (failed error)
   (inj₂ (tx , original)) → explainFromBelief id offset limit tx original
-start stats = read nothing (countBeliefs nothing nothing) (λ b → read nothing countPatterns (λ p →
-  read nothing (countEdges R.supports) (λ s → read nothing (countEdges R.defeats) (λ d →
-  read nothing (countEdges R.causes) (λ c → read nothing (countEdges R.contradicts) (λ k → done
-    (counted (statistics (length (Store.beliefs b)) (length (Store.patterns (Store.nodes p)))
-      (countRelation R.supports s) (countRelation R.defeats d) (countRelation R.causes c)
-      (countRelation R.contradicts k)))))))))
+start stats = ask openStatistics λ where
+  (inj₁ error) → done (failed error)
+  (inj₂ (tx , first)) → statisticsRead tx first countPatterns (λ patterns →
+    statisticsRead tx first (countEdges R.supports) (λ supports →
+    statisticsRead tx first (countEdges R.defeats) (λ defeats →
+    statisticsRead tx first (countEdges R.causes) (λ causes →
+    statisticsRead tx first (countEdges R.contradicts) (λ contradictions → close (just tx)
+      (counted (statisticsFromViews first patterns supports defeats causes contradictions)))))))

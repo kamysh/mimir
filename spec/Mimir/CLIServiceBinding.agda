@@ -4,6 +4,7 @@
 module Mimir.CLIServiceBinding where
 
 open import Data.Bool using (Bool)
+open import Data.Float.Base using (Float)
 open import Data.List using (List; []; _∷_)
 open import Data.Nat using (ℕ)
 open import Data.Product using (_,_)
@@ -21,11 +22,14 @@ import Mimir.ConnectionProtocol as Connection
 import Mimir.ServiceConnection as Service
 import Mimir.MigrationRuntime as Migration
 import Mimir.StandardLibrary as Library
+import Mimir.ApplicationStore as Store
+import Mimir.DatabaseReadCommitted as Committed
 
 module Bound (conversion : Library.Contract) (environment : Application.Environment) (format : Encoding.Formatting)
   (sizeMaximum : ℕ) (path : Path.Path) (connectionEnvironment : Connection.Environment)
-  (decimalPort : ℕ → Text) (certificateBlocks : Text → List Text) (unix : Bool) where
-  module C = CLI.Run conversion environment format
+  (decimalPort : ℕ → Text) (certificateBlocks : Text → List Text) (unix : Bool)
+  (databaseSum : List Float → Float) (reads : Committed.Contract Store.World) where
+  module C = CLI.Run conversion environment format databaseSum
   private
     module S = Service.Bound sizeMaximum path connectionEnvironment decimalPort certificateBlocks unix
     module M = Migration.Runtime Text Text
@@ -44,6 +48,9 @@ module Bound (conversion : Library.Contract) (environment : Application.Environm
     connected : ∀ reply → Connected migrations reply → Receipt migrations C.connect reply
     executed : ∀ request events reply → A.admission request ≡ inj₂ tt →
       A.Runs (A.start request) events reply → Receipt migrations (C.execute request) reply
+    observed : ∀ request (event : Committed.Contract.Read reads) reply →
+      C.Observation request (Committed.Contract.snapshot reads event) reply → Receipt migrations (C.observe request) (inj₂ reply)
+    observationFailed : ∀ request detail → Receipt migrations (C.observe request) (inj₁ detail)
     printed : ∀ line reply → Receipt migrations (C.print line) reply
 
   data Runs (migrations : M.Inputs) : C.P.Script (C.Failure Data.Sum.⊎ Data.Unit.⊤) →

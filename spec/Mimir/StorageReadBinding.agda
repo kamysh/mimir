@@ -37,6 +37,7 @@ import Mimir.PublicEncoding as Encoding
 import Mimir.StructuredValue as Wire
 import Mimir.LearningCandidates as Candidates
 import Mimir.LearningCapabilities as Capabilities
+import Mimir.ReviewSchema as Review
 
 eligibleVectors : Maybe (List ℕ) → List (ℕ × Store.Vector) → List (ℕ × Store.Vector)
 eligibleVectors nothing rows = rows
@@ -161,6 +162,10 @@ module Observed (reads : Committed.Contract Store.World) where
   GraphReply (Graph.openPage project memory) (inj₂ (tx , first)) = Σ Read (λ read → first ≡ snapshot read)
   GraphReply (Graph.pageSnapshotRows tx first project memory limit offset) (inj₁ error) = ⊤
   GraphReply (Graph.pageSnapshotRows tx first project memory limit offset) (inj₂ second) = second ≡ first
+  GraphReply Graph.openStatistics (inj₁ error) = ⊤
+  GraphReply Graph.openStatistics (inj₂ (tx , first)) = Σ Read (λ read → first ≡ snapshot read)
+  GraphReply (Graph.statisticsSnapshot tx first statement) (inj₁ error) = ⊤
+  GraphReply (Graph.statisticsSnapshot tx first statement) (inj₂ observed) = observed ≡ first
   GraphReply (Graph.dropTransaction tx) reply = ⊤
 
   pageReplyUsesItsOriginalSnapshot : ∀ tx first second project memory limit offset →
@@ -170,6 +175,18 @@ module Observed (reads : Committed.Contract Store.World) where
     Graph.pageAnswer project memory limit offset first
   pageReplyUsesItsOriginalSnapshot tx first second project memory limit offset stable =
     Graph.pageUsesCountSnapshot project memory limit offset first second stable
+
+  statisticsRepliesUseOriginalSnapshot : ∀ tx first patternView supportView defeatView causeView contradictionView →
+    GraphReply (Graph.statisticsSnapshot tx first Graph.countPatterns) (inj₂ patternView) →
+    GraphReply (Graph.statisticsSnapshot tx first (Graph.countEdges Review.supports)) (inj₂ supportView) →
+    GraphReply (Graph.statisticsSnapshot tx first (Graph.countEdges Review.defeats)) (inj₂ defeatView) →
+    GraphReply (Graph.statisticsSnapshot tx first (Graph.countEdges Review.causes)) (inj₂ causeView) →
+    GraphReply (Graph.statisticsSnapshot tx first (Graph.countEdges Review.contradicts)) (inj₂ contradictionView) →
+    Graph.statisticsFromViews first patternView supportView defeatView causeView contradictionView ≡ Graph.statisticsAnswer first
+  statisticsRepliesUseOriginalSnapshot tx first patternView supportView defeatView causeView contradictionView
+    patternStable supportStable defeatStable causeStable contradictionStable =
+    Graph.statisticsViewsAgree first patternView supportView defeatView causeView contradictionView
+      patternStable supportStable defeatStable causeStable contradictionStable
 
   EvidenceReply : (effect : Evidence.Effect) → Evidence.Reply effect → Set
   EvidenceReply (Evidence.readGrounds ids) (inj₁ error) = ⊤
@@ -315,6 +332,7 @@ module BasicReads (format : Encoding.Formatting) where
   module Encode = Encoding.Encode format
 
   data Request : Set where
+    stats : Request
     getBelief : ℕ → Request
     listBeliefs : Maybe Text → Maybe Candidates.Memory → Request
     beliefPage : Maybe Text → Maybe Candidates.Memory → ℕ → ℕ → Request
@@ -332,6 +350,14 @@ module BasicReads (format : Encoding.Formatting) where
   ... | just chunk = Evidence.referenceOf (Store.Ground.weight edgeRow) chunk ∷ supportingPassages state later
 
   answer : Request → Store.World → Wire.Value
+  answer stats state = Encoding.object
+    (("beliefs" , Wire.unsigned (Graph.Statistics.beliefCount counts)) ∷
+     ("patterns" , Wire.unsigned (Graph.Statistics.patternCount counts)) ∷
+     ("supports" , Wire.unsigned (Graph.Statistics.supportCount counts)) ∷
+     ("defeats" , Wire.unsigned (Graph.Statistics.defeatCount counts)) ∷
+     ("causes" , Wire.unsigned (Graph.Statistics.causeCount counts)) ∷
+     ("contradicts" , Wire.unsigned (Graph.Statistics.contradictionCount counts)) ∷ [])
+    where counts = Graph.statisticsAnswer state
   answer (getBelief id) state = Encoding.optional Encode.belief (Ranking.lookup id (Store.beliefs state))
   answer (listBeliefs project memory) state = Wire.array
     (map Encode.belief (Records.listBeliefs project memory (Store.beliefs state)))

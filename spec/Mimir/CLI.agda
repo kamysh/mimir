@@ -6,15 +6,16 @@ module Mimir.CLI where
 
 open import Data.Bool using (Bool; true; false; not; _∧_)
 open import Data.Float.Base using (Float; _<ᵇ_)
+open import Data.Empty using (⊥)
 open import Data.List using (List; []; _∷_; map; _++_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc; _≟_; _≤?_)
-open import Data.Product using (Σ; _×_; _,_)
+open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.String using (String; toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (does; yes; no)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; subst)
 open import Mimir.Text using (Text)
 import Mimir.ConfigurationPath as Path
 import Mimir.PublicRequest as Public
@@ -34,6 +35,13 @@ import Mimir.Validation as Validation
 import Mimir.StandardLibrary as Library
 import Mimir.McpErrors as Errors
 import Mimir.GraphNumerics as Numeric
+import Mimir.GraphRecords as Records
+import Mimir.ApplicationStore as Store
+import Mimir.StorageSemantics as Stored
+import Mimir.InferenceStorageBinding as InferenceStore
+import Mimir.PosteriorComputation as Posterior
+import Mimir.Recovery as Recovery
+import Mimir.DatabaseReadCommitted as Committed
 module Correction = Errors.AgentCorrection
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
 
@@ -169,9 +177,96 @@ parseExit version = just 0
 parseExit (invalid _) = just 0
 parseExit (parsedCommand _) = nothing
 
-module Run (conversion : Library.Contract) (environment : Application.Environment) (format : Encoding.Formatting) where
+-- CLI details are part of the same observation as the count, pair selection or
+-- numerical calculation. Their content comes from that world, never later reads.
+module DatabaseObservations (databaseSum : List Float → Float) (calculator : Posterior.Calculator) where
+  module Project = InferenceStore.InterventionRecovery databaseSum calculator
+  module N = Project.N
+
+  data Request : Set where
+    readStats : Request
+    readContradictions : Maybe Text → Request
+    readIntervention : ℕ → Float → Request
+
+  PairDetail = ℕ × ℕ × Maybe Graph.BeliefValues × Maybe Graph.BeliefValues
+  ProjectionDetail = ℕ × Float × Maybe Graph.BeliefValues
+
+  data Result : Set where
+    counts : Read.Statistics → Result
+    pairs : List PairDetail → Result
+    projection : N.Result → List ProjectionDetail → Result
+
+  selectCommand : Library.Contract → ServiceCommand → Validation.Fault ⊎ Maybe Request
+  selectCommand conversion stats = inj₂ (just readStats)
+  selectCommand conversion (contradictions scope) = inj₂ (just (readContradictions scope))
+  selectCommand conversion (intervene identity value) = Input.readUUID conversion (V.string identity) >>=
+    λ target → inj₂ (just (readIntervention target value))
+  selectCommand conversion _ = inj₂ nothing
+
+  contradictionDetails : Maybe Text → Store.World → List PairDetail
+  contradictionDetails scope before = map details (deduplicate
+    (Numeric.activeContradictions (Records.listBeliefs scope nothing (Store.beliefs before))
+      (Stored.contradictions scope before)))
+    where
+    details : ℕ × ℕ → PairDetail
+    details (first , second) = first , second , Ranking.lookup first (Store.beliefs before) ,
+      Ranking.lookup second (Store.beliefs before)
+
+  projectionDetails : Store.World → N.Result → List ProjectionDetail
+  projectionDetails before (N.calculated updates) = map
+    (λ { (identity , value) → identity , value , Ranking.lookup identity (Store.beliefs before) }) updates
+  projectionDetails before _ = []
+
+  answer : Request → Store.World → Result
+  answer readStats before = counts (Read.statisticsAnswer before)
+  answer (readContradictions scope) before = pairs (contradictionDetails scope before)
+  answer (readIntervention identity value) before = projection result (projectionDetails before result)
+    where result = Project.answer (Project.input identity value) before
+
+  Goal : Request → Store.World → Store.World → Result → Set
+  Goal readStats before after (counts value) = after ≡ before × value ≡ Read.statisticsAnswer before
+  Goal (readContradictions scope) before after (pairs rows) = after ≡ before × rows ≡ contradictionDetails scope before
+  Goal (readIntervention identity value) before after (projection result rows) =
+    Project.Goal (Project.input identity value) before after result × rows ≡ projectionDetails before result
+  Goal _ _ _ _ = ⊥
+
+  meaning : ∀ input before → Goal input before before (answer input before)
+  meaning readStats before = refl , refl
+  meaning (readContradictions scope) before = refl , refl
+  meaning (readIntervention identity value) before =
+    (λ time → Project.answerMeetsGoal time (Project.input identity value) before) , refl
+
+  module ReadOnly = Recovery.ReadOnly answer
+  module R = ReadOnly.Checked
+
+  completedMeetsGoal : ∀ input before after reply → R.X.Completed (R.script input) before after reply →
+    Goal input before after reply
+  completedMeetsGoal input before after reply complete with R.completedMeetsIntent input before after reply complete
+  ... | refl = meaning input before
+
+  completedPreservesWholeWorld : ∀ input before after reply → R.X.Completed (R.script input) before after reply → after ≡ before
+  completedPreservesWholeWorld input before after reply complete = cong proj₁ (R.completedMeetsIntent input before after reply complete)
+
+  operation : Recovery.RecoverableFor Store.World Request Result Goal
+  operation = record
+    { Effect = R.Effect; Reply = R.Reply; script = R.script; Atomic = R.Atomic
+    ; progress = R.progress
+    ; converges = λ input before interrupted after reply interruption complete →
+        subst (λ initial → Goal input initial after reply)
+          (ReadOnly.interruptedPreservesAllState input before interrupted interruption)
+          (completedMeetsGoal input interrupted after reply complete)
+    }
+
+  Success : Result → Set
+  Success (counts _) = ⊤
+  Success (pairs _) = ⊤
+  Success (projection result _) = Project.Success result
+
+module Run (conversion : Library.Contract) (environment : Application.Environment) (format : Encoding.Formatting)
+  (databaseSum : List Float → Float) where
   module A = Application.Run environment
   module O = Output.Project environment format
+  module D = DatabaseObservations databaseSum (Application.Environment.calculator environment)
 
   data Failure : Set where
     connection : Text → Failure
@@ -187,46 +282,68 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
     emptyIntervention emptyContradictions : Line
     intervention : ℕ → Float → Maybe Graph.BeliefValues → Line
     contradiction : ℕ → ℕ → Maybe Graph.BeliefValues → Maybe Graph.BeliefValues → Line
+    observationDecision : D.N.Result → Line
 
   data Effect : Set where
     connect : Effect
     execute : Public.Request → Effect
+    observe : D.Request → Effect
     print : Line → Effect
 
   Reply : Effect → Set
   Reply connect = Text ⊎ ⊤
   Reply (execute _) = A.Result
+  Reply (observe _) = Text ⊎ D.Result
   Reply (print _) = Text ⊎ ⊤
   module P = Effects.Protocol Effect Reply
   open P using (Script; done; ask) renaming (_>>=_ to _then_)
+
+  data Observation (input : D.Request) (before : Store.World) : D.Result → Set where
+    completedObservation : ∀ after reply →
+      D.R.X.Completed (D.R.script input) before after reply → Observation input before reply
 
   emit : Line → Script (Failure ⊎ ⊤)
   emit line = ask (print line) λ where
     (inj₁ error) → done (inj₁ (output error))
     (inj₂ tt) → done (inj₂ tt)
 
-  fetch : ℕ → Script (Failure ⊎ Maybe Graph.BeliefValues)
-  fetch id = ask (execute (Public.read (Read.getBelief id))) λ where
-    (A.readResult (Read.beliefResult value)) → done (inj₂ value)
-    result → done (inj₁ (operation result))
+  outputLines : D.Result → List Line
+  outputLines (D.counts values) = commandOutput stats (A.readResult (Read.counted values)) ∷ []
+  outputLines (D.pairs []) = emptyContradictions ∷ []
+  outputLines (D.pairs values@(_ ∷ _)) = map (λ { (a , b , first , second) → contradiction a b first second }) values
+  outputLines (D.projection (D.N.calculated []) rows) = emptyIntervention ∷ []
+  outputLines (D.projection (D.N.calculated (_ ∷ _)) rows) = map
+    (λ { (id , probability , belief) → intervention id probability belief }) rows
+  outputLines (D.projection result rows) = observationDecision result ∷ []
 
-  interventions : List (ℕ × Float) → Script (Failure ⊎ ⊤)
-  interventions [] = done (inj₂ tt)
-  interventions ((id , probability) ∷ rest) = fetch id then λ where
+  emitLines : List Line → Script (Failure ⊎ ⊤)
+  emitLines [] = done (inj₂ tt)
+  emitLines (line ∷ rest) = emit line then λ where
     (inj₁ error) → done (inj₁ error)
-    (inj₂ belief) → emit (intervention id probability belief) then λ where
-      (inj₁ error) → done (inj₁ error)
-      (inj₂ tt) → interventions rest
+    (inj₂ tt) → emitLines rest
 
-  contradictionsOutput : List (ℕ × ℕ) → Script (Failure ⊎ ⊤)
-  contradictionsOutput [] = done (inj₂ tt)
-  contradictionsOutput ((a , b) ∷ rest) = fetch a then λ where
-    (inj₁ error) → done (inj₁ error)
-    (inj₂ first) → fetch b then λ where
-      (inj₁ error) → done (inj₁ error)
-      (inj₂ second) → emit (contradiction a b first second) then λ where
-        (inj₁ error) → done (inj₁ error)
-        (inj₂ tt) → contradictionsOutput rest
+  observedOutput : D.Result → Script (Failure ⊎ ⊤)
+  observedOutput result = emitLines (outputLines result)
+
+  data Printed : List Line → List P.Event → Set where
+    none : Printed [] []
+    next : ∀ line lines events → Printed lines events → Printed (line ∷ lines) ((print line , inj₂ tt) ∷ events)
+
+  completedOutputIsExact : ∀ lines events → P.Runs (emitLines lines) events (inj₂ tt) → Printed lines events
+  completedOutputIsExact [] .[] (P.returned _) = none
+  completedOutputIsExact (line ∷ lines) events (P.replied _ _ (inj₁ error) ())
+  completedOutputIsExact (line ∷ lines) events (P.replied _ _ (inj₂ tt) rest) =
+    next line lines _ (completedOutputIsExact lines _ rest)
+
+  observationOutputMeetsGoal : ∀ input before after reply → D.R.X.Completed (D.R.script input) before after reply →
+    ∀ events → P.Runs (observedOutput reply) events (inj₂ tt) →
+    D.Goal input before after reply × Printed (outputLines reply) events
+  observationOutputMeetsGoal input before after reply complete events emitted =
+    D.completedMeetsGoal input before after reply complete , completedOutputIsExact (outputLines reply) events emitted
+
+  afterObservation : Text ⊎ D.Result → Script (Failure ⊎ ⊤)
+  afterObservation (inj₁ error) = done (inj₁ (connection error))
+  afterObservation (inj₂ result) = observedOutput result
 
   projectResult : ServiceCommand → A.Result → A.Result
   projectResult (list _ limit) (A.readResult (Read.beliefList rows)) = A.readResult (Read.beliefList (listRows limit rows))
@@ -234,10 +351,6 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
   projectResult command value = value
 
   success : ServiceCommand → A.Result → Script (Failure ⊎ ⊤)
-  success (intervene _ _) (A.inferred (Inference.projected [] _)) = emit emptyIntervention
-  success (intervene _ _) (A.inferred (Inference.projected values@(_ ∷ _) _)) = interventions values
-  success (contradictions _) (A.inferred (Inference.pairs [])) = emit emptyContradictions
-  success (contradictions _) (A.inferred (Inference.pairs values@(_ ∷ _))) = contradictionsOutput (deduplicate values)
   success command value = emit (commandOutput command (projectResult command value))
 
   after : ServiceCommand → A.Result → Script (Failure ⊎ ⊤)
@@ -247,8 +360,8 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
   ... | O.partialDecision edge report = emit (commandOutput command value)
   ... | O.success _ = success command value
 
-  dispatch : ServiceCommand → Script (Failure ⊎ ⊤)
-  dispatch command with request conversion command
+  dispatchOrdinary : ServiceCommand → Script (Failure ⊎ ⊤)
+  dispatchOrdinary command with request conversion command
   ... | inj₁ error = emit (inputDecision (Correction.claim
       (Correction.item Correction.arguments error
         (toList "Arguments accepted by this Mimir command.")
@@ -256,6 +369,14 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
   ... | inj₂ request with A.admission request
   ...   | inj₁ detail = emit (configurationDecision (Application.configurationCorrection detail))
   ...   | inj₂ tt = ask (execute request) (after command)
+
+  dispatch : ServiceCommand → Script (Failure ⊎ ⊤)
+  dispatch command with D.selectCommand conversion command
+  ... | inj₁ error = emit (inputDecision (Correction.claim
+    (Correction.item Correction.arguments error (toList "A stored belief UUID.")
+      (toList "Correct the indicated UUID. If the intended belief is unknown, ask the user instead of inventing an identifier.")) []))
+  ... | inj₂ nothing = dispatchOrdinary command
+  ... | inj₂ (just input) = ask (observe input) afterObservation
 
   connectThen : ServiceCommand → Script (Failure ⊎ ⊤)
   connectThen command = ask connect λ where
@@ -290,12 +411,15 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
   data Executed : Public.Request → A.Result → Set where
     application : ∀ request events result → A.Runs (A.start request) events result → Executed request result
 
-  data Receipt : (effect : Effect) → Reply effect → Set where
-    connected : ∀ response → Receipt connect response
-    printed : ∀ line response → Receipt (print line) response
-    executed : ∀ request response → Executed request response → Receipt (execute request) response
+  data Receipt (reads : Committed.Contract Store.World) : (effect : Effect) → Reply effect → Set where
+    connected : ∀ response → Receipt reads connect response
+    printed : ∀ line response → Receipt reads (print line) response
+    executed : ∀ request response → Executed request response → Receipt reads (execute request) response
+    observed : ∀ input (event : Committed.Contract.Read reads) response →
+      Observation input (Committed.Contract.snapshot reads event) response → Receipt reads (observe input) (inj₂ response)
+    observationFailed : ∀ input detail → Receipt reads (observe input) (inj₁ detail)
 
-  data Runs : Script (Failure ⊎ ⊤) → List P.Event → Failure ⊎ ⊤ → Set where
-    returned : ∀ result → Runs (done result) [] result
-    responded : ∀ effect continuation reply events result → Receipt effect reply →
-      Runs (continuation reply) events result → Runs (ask effect continuation) ((effect , reply) ∷ events) result
+  data Runs (reads : Committed.Contract Store.World) : Script (Failure ⊎ ⊤) → List P.Event → Failure ⊎ ⊤ → Set where
+    returned : ∀ result → Runs reads (done result) [] result
+    responded : ∀ effect continuation reply events result → Receipt reads effect reply →
+      Runs reads (continuation reply) events result → Runs reads (ask effect continuation) ((effect , reply) ∷ events) result

@@ -686,6 +686,33 @@ impl MimirService {
         F: FnOnce() -> W,
         W: std::future::Future<Output = Result<()>>,
     {
+        self.intervention_snapshot_after_target(target_id, value, false, after_target)
+            .await
+            .map(|(updates, _)| updates)
+    }
+
+    /// The CLI's projected values and displayed belief text share one view.
+    /// Existing public query responses still contain only projected values.
+    pub async fn query_intervention_with_beliefs(
+        &self,
+        target_id: Uuid,
+        value: f64,
+    ) -> Result<(Vec<(Uuid, Probability)>, Vec<Belief>)> {
+        self.intervention_snapshot_after_target(target_id, value, true, || async { Ok(()) })
+            .await
+    }
+
+    pub(crate) async fn intervention_snapshot_after_target<F, W>(
+        &self,
+        target_id: Uuid,
+        value: f64,
+        include_beliefs: bool,
+        after_target: F,
+    ) -> Result<(Vec<(Uuid, Probability)>, Vec<Belief>)>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
         let value = Probability::new(value)?;
         let mut client = self.store.snapshot_connection().await;
         let tx = store::snapshot_transaction(&mut client).await?;
@@ -705,6 +732,13 @@ impl MimirService {
             .store
             .downstream_on(tx.client(), target_id, true)
             .await?;
+        // Keep physical belief values before adding the temporary numerical
+        // overlay. They are the same records a lookup in this view returns.
+        let beliefs = if include_beliefs {
+            downstream.clone()
+        } else {
+            Vec::new()
+        };
         let (learning_mass, _) = self.store.learning_overlay_on(tx.client()).await?;
         let grounding_mass = self.store.get_grounding_mass_all_on(tx.client()).await?;
         for belief in &mut downstream {
@@ -728,20 +762,56 @@ impl MimirService {
             self.inference
                 .intervene(target_id, value, &downstream, &edges, &external_means)?;
         tx.commit().await?;
-        Ok(result)
+        Ok((result, beliefs))
     }
 
     /// Get active contradictions in the graph. Project-scoped the same way as
     /// `list_beliefs`: a pair is included only if both endpoints are visible
     /// in scope (tagged with `project` or untagged).
     pub async fn get_contradictions(&self, project: Option<&str>) -> Result<Vec<(Uuid, Uuid)>> {
+        self.get_contradictions_with_beliefs(project)
+            .await
+            .map(|(pairs, _)| pairs)
+    }
+
+    /// Return active pairs and their original-view records for CLI display.
+    pub async fn get_contradictions_with_beliefs(
+        &self,
+        project: Option<&str>,
+    ) -> Result<(Vec<(Uuid, Uuid)>, Vec<Belief>)> {
         let (pairs, beliefs) = self.store.contradictions_snapshot(project).await?;
+        Ok(self.active_contradiction_details(pairs, beliefs))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn contradictions_with_beliefs_after_pairs<F, W>(
+        &self,
+        project: Option<&str>,
+        after_pairs: F,
+    ) -> Result<(Vec<(Uuid, Uuid)>, Vec<Belief>)>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let (pairs, beliefs) = self
+            .store
+            .contradictions_after_pairs(project, after_pairs)
+            .await?;
+        Ok(self.active_contradiction_details(pairs, beliefs))
+    }
+
+    fn active_contradiction_details(
+        &self,
+        pairs: Vec<(Uuid, Uuid)>,
+        beliefs: Vec<Belief>,
+    ) -> (Vec<(Uuid, Uuid)>, Vec<Belief>) {
         let belief_map: std::collections::HashMap<Uuid, &Belief> =
             beliefs.iter().map(|b| (b.id, b)).collect();
 
-        Ok(self
+        let active = self
             .inference
-            .detect_active_contradictions(&belief_map, &pairs))
+            .detect_active_contradictions(&belief_map, &pairs);
+        (active, beliefs)
     }
 
     /// Apply time decay to beliefs, write updates. `project`, when given,
@@ -1654,17 +1724,7 @@ impl MimirService {
 
     /// Collect graph statistics.
     pub async fn stats(&self) -> Result<MimirStats> {
-        let beliefs = self.store.count_beliefs().await?;
-        let patterns = self.store.count_patterns().await?;
-        let (supports, defeats, causes, contradicts) = self.store.count_edges().await?;
-        Ok(MimirStats {
-            beliefs,
-            patterns,
-            supports,
-            defeats,
-            causes,
-            contradicts,
-        })
+        self.store.stats_snapshot().await
     }
 }
 

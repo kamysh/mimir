@@ -759,9 +759,13 @@ async fn cmd_intervene(id: &str, value: f64) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("invalid UUID: {}", id))?;
 
     let svc = connect().await?;
-    let Some(updates) = corrections::reference(svc.query_intervention(target, value).await)? else {
+    let Some((updates, beliefs)) =
+        corrections::reference(svc.query_intervention_with_beliefs(target, value).await)?
+    else {
         return Ok(());
     };
+    let beliefs: std::collections::HashMap<_, _> =
+        beliefs.iter().map(|belief| (belief.id, belief)).collect();
 
     if updates.is_empty() {
         println!("(no causal descendants affected)");
@@ -770,10 +774,9 @@ async fn cmd_intervene(id: &str, value: f64) -> Result<()> {
 
     for (uid, prob) in &updates {
         // Fetch content for a readable line; fall back to the bare id.
-        let content = svc
-            .get_belief(*uid)
-            .await?
-            .map(|b| b.content)
+        let content = beliefs
+            .get(uid)
+            .map(|belief| belief.content.as_str())
             .unwrap_or_default();
         println!("{}  p_proj={:.3}  {}", uid, prob.value(), content);
     }
@@ -958,7 +961,9 @@ async fn cmd_clear_doc(path: &str) -> Result<()> {
 
 async fn cmd_contradictions(project: Option<&str>) -> Result<()> {
     let svc = connect().await?;
-    let pairs = svc.get_contradictions(project).await?;
+    let (pairs, beliefs) = svc.get_contradictions_with_beliefs(project).await?;
+    let beliefs: std::collections::HashMap<_, _> =
+        beliefs.iter().map(|belief| (belief.id, belief)).collect();
 
     if pairs.is_empty() {
         println!("(no active contradictions)");
@@ -980,14 +985,12 @@ async fn cmd_contradictions(project: Option<&str>) -> Result<()> {
     }
 
     for (a, b) in &deduped {
-        let ba = svc.get_belief(*a).await?;
-        let bb = svc.get_belief(*b).await?;
-        let ca = ba
-            .as_ref()
+        let ca = beliefs
+            .get(a)
             .map(|b| b.content.clone())
             .unwrap_or_else(|| a.to_string());
-        let cb = bb
-            .as_ref()
+        let cb = beliefs
+            .get(b)
             .map(|b| b.content.clone())
             .unwrap_or_else(|| b.to_string());
         println!("  [{}]  ⟺  [{}]", ca, cb);
