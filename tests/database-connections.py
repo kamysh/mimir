@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import subprocess
@@ -107,6 +108,40 @@ def escaped(value):
     return value.replace("\\", "\\\\").replace(":", "\\:")
 
 
+def current_migration_names(directory):
+    names = []
+    for path in sorted(directory.glob("*.sql")):
+        lines = path.read_text().splitlines()
+        assert lines and lines[0].strip() == "-- #!migration", f"missing migration header: {path}"
+        found = []
+        terminated = False
+        for line in lines[1:]:
+            assert line.lstrip().startswith("--"), f"unterminated migration header: {path}"
+            match = re.fullmatch(r'\s*--\s*name:\s*(.+)\s*[,;]\s*', line)
+            if match:
+                name = json.loads(match.group(1))
+                assert isinstance(name, str) and name, f"invalid migration name: {path}"
+                found.append(name)
+            if line.rstrip().endswith(";"):
+                terminated = True
+                break
+        assert terminated and len(found) == 1, f"expected one migration name: {path}"
+        names.extend(found)
+    assert names and len(names) == len(set(names)), "missing or repeated source migration names"
+    return sorted(names)
+
+
+def check_migration_schemas(query, source_names):
+    actual_names = sorted(json.loads(query(
+        "SELECT COALESCE(json_agg(name), '[]'::json) FROM mallard.applied_migrations;")))
+    assert actual_names == source_names, f"migration ledger names differ: expected {source_names!r}, got {actual_names!r}"
+    expected = sorted((name, "public") for name in source_names)
+    actual = sorted(tuple(row) for row in json.loads(query(
+        "SELECT COALESCE(json_agg(json_build_array(migration_name,schema)), '[]'::json) "
+        "FROM mallard.applied_migration_schemas;")))
+    assert actual == expected, f"migration schema owners differ: expected {expected!r}, got {actual!r}"
+
+
 def password_file(name, port, password, user="tester", database="postgres"):
     path = ROOT / name
     path.write_text("# ignored\ninvalid\nwrong:*:*:*:wrong\n" +
@@ -181,17 +216,20 @@ try:
                     "-d", migration_db, "-v", "ON_ERROR_STOP=1"], data=statement).stdout.strip()
     def ledger():
         return migration_sql("SELECT json_agg(row_to_json(m) ORDER BY name) FROM mallard.applied_migrations m;")
+    expected_migrations = current_migration_names(REPO / "crates/core/migrations")
     probe("fresh migration with Kryzhen 2", port, {"password": SECRET}, path="migrate", database=migration_db)
     before = ledger()
+    check_migration_schemas(migration_sql, expected_migrations)
     migration_sql("CREATE TABLE public.upgrade_sentinel(value text); INSERT INTO public.upgrade_sentinel VALUES ('preserved');")
     migration_sql("DROP TABLE mallard.applied_migration_schemas; DROP TABLE mallard.migrator_version; "
                   "DROP INDEX mallard.applied_migrations_name_key;")
     probe("upgrade existing Kryzhen history", port, {"password": SECRET}, path="migrate", database=migration_db)
     assert ledger() == before, "upgrade replayed or changed canonical migration history"
     assert migration_sql("SELECT value FROM public.upgrade_sentinel;") == "preserved"
-    assert migration_sql("SELECT bool_and(schema='public') AND count(*)=7 FROM mallard.applied_migration_schemas;") == "t"
+    check_migration_schemas(migration_sql, expected_migrations)
     probe("migration upgrade is idempotent", port, {"password": SECRET}, path="migrate", database=migration_db)
     assert ledger() == before
+    check_migration_schemas(migration_sql, expected_migrations)
     receipt = json.loads((REPO / "crates/core/migrations/.kryzhen-import-receipt.json").read_text())
     imported = receipt['migrations']
     names = ','.join("'" + row['kryzhen_name'].replace("'", "''") + "'" for row in imported)
@@ -204,10 +242,11 @@ try:
                       f"{row['version']},'{row['sqlx_description']}',true,decode('{row['sqlx_checksum_hex']}','hex'),0);")
     probe("import historical sqlx receipt with Kryzhen 2", port, {"password": SECRET}, path="migrate", database=migration_db)
     assert migration_sql("SELECT to_regclass('public._sqlx_migrations') IS NULL;") == "t"
-    assert migration_sql("SELECT bool_and(schema='public') AND count(*)=7 FROM mallard.applied_migration_schemas;") == "t"
+    check_migration_schemas(migration_sql, expected_migrations)
     before = ledger()
     probe("sqlx import is idempotent", port, {"password": SECRET}, path="migrate", database=migration_db)
     assert ledger() == before
+    check_migration_schemas(migration_sql, expected_migrations)
     migration_sql("UPDATE mallard.applied_migrations SET checksum=decode(repeat('00',32),'hex') "
                   "WHERE name=(SELECT name FROM mallard.applied_migrations ORDER BY name LIMIT 1);")
     tampered = ledger()
