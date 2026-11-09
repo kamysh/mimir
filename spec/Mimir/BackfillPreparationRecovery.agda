@@ -177,10 +177,15 @@ module Preparation (library : Library.Contract) where
   ReplyMeaning request before (stopped Step.needsRecovery) = ⊤
   ReplyMeaning request before (stopped (Step.cancelled receipt)) = Store.lookupCancellation before (Input.token request) ≡ just receipt
 
-  canonical : ∀ request before → Store.lookupCancellation before (Input.token request) ≡ nothing → Σ Result (ReplyMeaning request before)
-  canonical request before active with A.original (Input.token request) (Step.registration before) in original
-  ... | inj₁ fault = stopped (Step.needsInput fault) , tt
-  ... | inj₂ selectedContext = ready selectedContext , original , active
+  canonicalReply : Validation.Fault ⊎ A.Context → Result
+  canonicalReply (inj₁ fault) = stopped (Step.needsInput fault)
+  canonicalReply (inj₂ selectedContext) = ready selectedContext
+
+  canonicalMeaning : ∀ request before → Store.lookupCancellation before (Input.token request) ≡ nothing →
+    ReplyMeaning request before (canonicalReply (A.original (Input.token request) (Step.registration before)))
+  canonicalMeaning request before active with A.original (Input.token request) (Step.registration before) in observed
+  ... | inj₁ fault = tt
+  ... | inj₂ selectedContext = observed , active
 
   bindingSignature : Store.BindingRow → Wire.Value
   bindingSignature binding = Wire.array
@@ -200,22 +205,44 @@ module Preparation (library : Library.Contract) where
   InspectionMeaning request before needsSnapshot =
     Store.lookupCancellation before (Input.token request) ≡ nothing × plan (Input.token request) before ≡ nothing
 
-  checkedInspect : ∀ request expected before → Σ Inspection (InspectionMeaning request before)
-  checkedInspect request expected before with AdmissionStore.reservation (Input.token request) (Store.OperationTables.reservations (tables before))
-  ... | nothing = terminal (stopped (Step.needsInput unknown)) , tt
+  inspectWith : Input → Store.BindingRow → Store.World → Result → Inspection
+  inspectWith request expected before result with AdmissionStore.reservation (Input.token request) (Store.OperationTables.reservations (tables before))
+  ... | nothing = terminal (stopped (Step.needsInput unknown))
   ... | just _ with binding (Input.token request) before
-  ... | nothing = terminal (stopped (Step.needsInput unknown)) , tt
+  ... | nothing = terminal (stopped (Step.needsInput unknown))
   ... | just actual with matches expected actual
-  ... | false = terminal (stopped (Step.needsInput mismatch)) , tt
-  ... | true with Store.lookupCancellation before (Input.token request) in cancelled
-  ... | just receipt = terminal (stopped (Step.cancelled receipt)) , cancelled
-  ... | nothing with plan (Input.token request) before in savedPlan
-  ... | nothing = needsSnapshot , cancelled , savedPlan
-  ... | just _ with canonical request before cancelled
-  ... | result , certified = terminal result , certified
+  ... | false = terminal (stopped (Step.needsInput mismatch))
+  ... | true with Store.lookupCancellation before (Input.token request)
+  ... | just receipt = terminal (stopped (Step.cancelled receipt))
+  ... | nothing with plan (Input.token request) before
+  ... | nothing = needsSnapshot
+  ... | just _ = terminal result
 
   inspect : Input → Store.BindingRow → Store.World → Inspection
-  inspect request expected before = proj₁ (checkedInspect request expected before)
+  inspect request expected before = inspectWith request expected before
+    (canonicalReply (A.original (Input.token request) (Step.registration before)))
+
+  inspectWithMeaning : ∀ request expected before result →
+    (Store.lookupCancellation before (Input.token request) ≡ nothing → ReplyMeaning request before result) →
+    InspectionMeaning request before (inspectWith request expected before result)
+  inspectWithMeaning request expected before result certified with AdmissionStore.reservation (Input.token request) (Store.OperationTables.reservations (tables before))
+  ... | nothing = tt
+  ... | just _ with binding (Input.token request) before
+  ... | nothing = tt
+  ... | just actual with matches expected actual
+  ... | false = tt
+  ... | true with Store.lookupCancellation before (Input.token request) in cancelled
+  ... | just receipt = cancelled
+  ... | nothing with plan (Input.token request) before in savedPlan
+  ... | nothing = cancelled , savedPlan
+  ... | just _ = certified refl
+
+  inspectionMeaning : ∀ request expected before → InspectionMeaning request before (inspect request expected before)
+  inspectionMeaning request expected before = inspectWithMeaning request expected before _
+    (canonicalMeaning request before)
+
+  checkedInspect : ∀ request expected before → Σ Inspection (InspectionMeaning request before)
+  checkedInspect request expected before = inspect request expected before , inspectionMeaning request expected before
 
   hasSavedRows : ℕ → List Store.SavedReplyRow → Bool
   hasSavedRows token [] = false
@@ -591,3 +618,178 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
   operation : Recovery.RecoverableFor Store.World Input Result Goal
   operation = record
     { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic; converges = converges; progress = progress }
+
+  record Existing (request : Input) (before : Store.World) : Set where
+    field reserved : Store.ReservationRow
+          original : Store.BindingRow
+          raw : Wire.Value
+          reservationPresent : AdmissionStore.reservation (Input.token request) (Store.OperationTables.reservations (tables before)) ≡ just reserved
+          bindingPresent : binding (Input.token request) before ≡ just original
+          planPresent : plan (Input.token request) before ≡ just raw
+          isReembed : Controls.Plan.textEqual (Store.BindingRow.operation original) (toList "reembed") ≡ true
+          arguments : Store.BindingRow.arguments original ≡ Wire.object []
+          configured : A.provider (Store.BindingRow.settings original) ≡ true
+
+  registeredFacts : ∀ request before reserved original raw →
+    AdmissionStore.originalPlan (toList "reembed") (Input.token request) (Step.registration before) ≡ inj₂ (reserved , original , raw) →
+    Store.BindingRow.arguments original ≡ Wire.object [] → A.provider (Store.BindingRow.settings original) ≡ true → Existing request before
+  registeredFacts request before reserved original raw known arguments configured
+    with AdmissionStore.reservation (Input.token request) (Store.OperationTables.reservations (tables before)) in reservationFound
+  ... | nothing with known
+  ... | ()
+  registeredFacts request before reserved original raw known arguments configured | just actualReservation
+    with binding (Input.token request) before in bindingFound
+  ... | nothing with known
+  ... | ()
+  registeredFacts request before reserved original raw known arguments configured | just actualReservation | just actualBinding
+    with Controls.Plan.textEqual (Store.BindingRow.operation actualBinding) (toList "reembed") in operationFound
+  ... | false with known
+  ... | ()
+  registeredFacts request before reserved original raw known arguments configured | just actualReservation | just actualBinding | true
+    with plan (Input.token request) before in planFound
+  ... | nothing with known
+  ... | ()
+  registeredFacts request before reserved original raw known arguments configured | just actualReservation | just actualBinding | true | just actualPlan with known
+  ... | refl = record
+    { reserved = actualReservation; original = actualBinding; raw = actualPlan
+    ; reservationPresent = reservationFound; bindingPresent = bindingFound; planPresent = planFound
+    ; isReembed = operationFound; arguments = arguments; configured = configured }
+
+  canonicalFacts : ∀ request before selectedContext → A.original (Input.token request) (Step.registration before) ≡ inj₂ selectedContext → Existing request before
+  canonicalFacts request before selectedContext known
+    with AdmissionStore.originalPlan (toList "reembed") (Input.token request) (Step.registration before) in resolved
+  ... | inj₁ fault with known
+  ... | ()
+  canonicalFacts request before selectedContext known | inj₂ (reserved , original , raw)
+    with Store.BindingRow.arguments original in arguments | A.provider (Store.BindingRow.settings original) in configured
+  ... | Wire.object [] | true = registeredFacts request before reserved original raw resolved arguments configured
+  canonicalFacts request before selectedContext known | inj₂ (reserved , original , raw) | Wire.object [] | false with known
+  ... | ()
+  canonicalFacts request before selectedContext known | inj₂ (reserved , original , raw) | Wire.object (_ ∷ _) | _ with known
+  ... | ()
+  canonicalFacts request before selectedContext known | inj₂ (reserved , original , raw) | Wire.null | _ with known
+  ... | ()
+  canonicalFacts request before selectedContext known | inj₂ (reserved , original , raw) | Wire.boolean _ | _ with known
+  ... | ()
+  canonicalFacts request before selectedContext known | inj₂ (reserved , original , raw) | Wire.string _ | _ with known
+  ... | ()
+  canonicalFacts request before selectedContext known | inj₂ (reserved , original , raw) | Wire.signed _ | _ with known
+  ... | ()
+  canonicalFacts request before selectedContext known | inj₂ (reserved , original , raw) | Wire.unsigned _ | _ with known
+  ... | ()
+  canonicalFacts request before selectedContext known | inj₂ (reserved , original , raw) | Wire.floating _ | _ with known
+  ... | ()
+  canonicalFacts request before selectedContext known | inj₂ (reserved , original , raw) | Wire.array _ | _ with known
+  ... | ()
+
+  existingAllowed : ∀ request before → Existing request before → allowed request before ≡ true
+  existingAllowed request before existing rewrite Existing.bindingPresent existing | Existing.isReembed existing
+    | Existing.arguments existing | Existing.configured existing = refl
+
+  bindingReplay : ∀ request received before (existing : Existing request before) →
+    Store.lookupCancellation before (Input.token request) ≡ nothing →
+    bind request received before ≡ (before , bound (Existing.original existing))
+  bindingReplay request received before existing active rewrite existingAllowed request before existing
+    | Existing.reservationPresent existing | active | Existing.bindingPresent existing = refl
+
+  matchesSelf : ∀ original → matches original original ≡ true
+  matchesSelf original with Lists.≡-dec Fin._≟_
+    (Library.Contract.compactJSON library (bindingSignature original))
+    (Library.Contract.compactJSON library (bindingSignature original))
+  ... | yes _ = refl
+  ... | no impossible = ⊥-elim (impossible refl)
+
+  inspectionReplay : ∀ request before selectedContext (existing : Existing request before) →
+    A.original (Input.token request) (Step.registration before) ≡ inj₂ selectedContext →
+    Store.lookupCancellation before (Input.token request) ≡ nothing →
+    inspect request (Existing.original existing) before ≡ terminal (ready selectedContext)
+  inspectionReplay request before selectedContext existing known active
+    rewrite known | Existing.reservationPresent existing | Existing.bindingPresent existing
+      | matchesSelf (Existing.original existing) | active | Existing.planPresent existing = refl
+
+  doneObservation : ∀ (before after : Store.World) (expected reply : Result) events → E.Runs (E.done expected) events reply →
+    X.Changes before events after → after ≡ before × reply ≡ expected
+  doneObservation before .before expected .expected .[] (E.returned _) (X.unchanged _) = refl , refl
+
+  inspectionCompletion : ∀ request expected before after selectedContext reply →
+    inspect request expected before ≡ terminal (ready selectedContext) →
+    X.Completed (E.ask (inspectOriginal request expected) (afterInspection request expected)) before after reply →
+    after ≡ before × reply ≡ ready selectedContext
+  inspectionCompletion request expected before after selectedContext reply known
+    (X.completed (_ ∷ events) (E.replied _ _ observed execution)
+      (X.changed _ _ _ middle (reported , unchanged) changes))
+    with doneObservation middle after (ready selectedContext) reply events
+      (subst (λ reading → E.Runs (afterInspection request expected reading) events reply) (trans reported known) execution) changes
+  ... | state , answer = trans state unchanged , answer
+
+  -- Once the original plan exists, replay performs no capture/provider work.
+  -- It returns that same decoder-derived capability regardless of current
+  -- configuration and independently observed PostgreSQL timestamps.
+  replayReady : ∀ request before selectedContext {middle prepared} →
+    A.original (Input.token request) (Step.registration before) ≡ inj₂ selectedContext →
+    Store.lookupCancellation before (Input.token request) ≡ nothing →
+    X.Completed (script request) before middle prepared →
+    middle ≡ before × prepared ≡ ready selectedContext
+  replayReady request before selectedContext {middle = final} {prepared} known active
+    (X.completed (_ ∷ events) (E.replied _ _ (received , reply) execution)
+      (X.changed _ _ _ middle physical changes)) = trans (proj₁ remaining) state , proj₂ remaining
+    where
+    existing = canonicalFacts request before selectedContext known
+    observed = trans (bindingObservation request received before middle reply physical)
+      (bindingReplay request received before existing active)
+    state = cong proj₁ observed
+    reported = cong proj₂ observed
+    subsequent = X.completed events
+      (subst (λ result → E.Runs (afterBinding request (received , result)) events prepared) reported execution) changes
+    inspected = trans (cong (inspect request (Existing.original existing)) state)
+      (inspectionReplay request before selectedContext existing known active)
+    remaining = inspectionCompletion request (Existing.original existing) middle final selectedContext prepared inspected subsequent
+
+  completedReadyCanonical : ∀ request before after selectedContext → X.Completed (script request) before after (ready selectedContext) →
+    A.original (Input.token request) (Step.registration after) ≡ inj₂ selectedContext
+  completedReadyCanonical request before after selectedContext completion = proj₁ (proj₂
+    (Recovery.RecoverableFor.completedMeetsGoal operation request before after (ready selectedContext) completion))
+
+  completedReadyNotCancelled : ∀ request before after selectedContext → X.Completed (script request) before after (ready selectedContext) →
+    Store.lookupCancellation after (Input.token request) ≡ nothing
+  completedReadyNotCancelled request before after selectedContext completion = proj₂ (proj₂
+    (Recovery.RecoverableFor.completedMeetsGoal operation request before after (ready selectedContext) completion))
+
+  existingPlanCannotBeReplaced : ∀ request expected sources (candidate : Codec.Candidate sources) before original →
+    plan (Input.token request) before ≡ just original → proj₁ (publish request expected candidate before) ≡ before
+  existingPlanCannotBeReplaced request expected sources candidate before original known
+    with decidePublication request expected sources candidate before
+  ... | preserve result certified = refl
+  ... | freshPlan selectedContext certified absent with trans (sym known) absent
+  ... | ()
+
+  everyBindingReceiptCovered : ∀ request received before receipt after →
+    DB.Atomic before (proj₁ (bind request received before)) receipt after → X.Interrupted (script request) before after
+  everyBindingReceiptCovered request received before .DB.committed .(proj₁ (bind request received before)) DB.committedAll =
+    X.beforeReply [] (bindOriginal request) (afterBinding request) before
+      (received , proj₂ (bind request received before)) _ (E.stopped _) (X.unchanged before)
+      (refl , bindPhysical request received before)
+  everyBindingReceiptCovered request received before .DB.aborted .before DB.abortedNone =
+    X.atPrefix [] (script request) before (E.stopped _) (X.unchanged before)
+  everyBindingReceiptCovered request received before .DB.acknowledgementLost .before DB.unknownBefore =
+    X.atPrefix [] (script request) before (E.stopped _) (X.unchanged before)
+  everyBindingReceiptCovered request received before .DB.acknowledgementLost .(proj₁ (bind request received before)) DB.unknownAfter =
+    X.beforeReply [] (bindOriginal request) (afterBinding request) before
+      (received , proj₂ (bind request received before)) _ (E.stopped _) (X.unchanged before)
+      (refl , bindPhysical request received before)
+
+  everyPlanReceiptCovered : ∀ request expected sources (candidate : Codec.Candidate sources) before receipt after →
+    DB.Atomic before (proj₁ (publish request expected candidate before)) receipt after →
+    X.Interrupted (E.ask (publishOriginal request expected candidate) E.done) before after
+  everyPlanReceiptCovered request expected sources candidate before .DB.committed .(proj₁ (publish request expected candidate before)) DB.committedAll =
+    X.beforeReply [] (publishOriginal request expected candidate) E.done before
+      (proj₂ (publish request expected candidate before)) _ (E.stopped _) (X.unchanged before)
+      (refl , publishPhysical request expected sources candidate before)
+  everyPlanReceiptCovered request expected sources candidate before .DB.aborted .before DB.abortedNone =
+    X.atPrefix [] (E.ask (publishOriginal request expected candidate) E.done) before (E.stopped _) (X.unchanged before)
+  everyPlanReceiptCovered request expected sources candidate before .DB.acknowledgementLost .before DB.unknownBefore =
+    X.atPrefix [] (E.ask (publishOriginal request expected candidate) E.done) before (E.stopped _) (X.unchanged before)
+  everyPlanReceiptCovered request expected sources candidate before .DB.acknowledgementLost .(proj₁ (publish request expected candidate before)) DB.unknownAfter =
+    X.beforeReply [] (publishOriginal request expected candidate) E.done before
+      (proj₂ (publish request expected candidate before)) _ (E.stopped _) (X.unchanged before)
+      (refl , publishPhysical request expected sources candidate before)
