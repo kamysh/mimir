@@ -181,13 +181,30 @@ pub struct VoyageBackend {
     http: reqwest::Client,
 }
 
+// The embedding job owns request lifetime. Reqwest otherwise supplies socket
+// deadlines, keepalive probes, retries and a fixed redirect-count ceiling.
+fn hosted_http_client() -> Result<reqwest::Client> {
+    let builder = reqwest::Client::builder()
+        .pool_idle_timeout(None)
+        .tcp_keepalive(None)
+        .tcp_keepalive_interval(None)
+        .tcp_keepalive_retries(None)
+        .retry(reqwest::retry::never())
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            attempt.follow()
+        }));
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    let builder = builder.tcp_user_timeout(None);
+    builder.build().context("building embedding HTTP client")
+}
+
 impl VoyageBackend {
-    fn new(api_key: String, model: String) -> Self {
-        Self {
+    fn new(api_key: String, model: String) -> Result<Self> {
+        Ok(Self {
             api_key,
             model,
-            http: reqwest::Client::new(),
-        }
+            http: hosted_http_client()?,
+        })
     }
 
     fn request_body(&self, texts: &[String]) -> serde_json::Value {
@@ -231,12 +248,12 @@ pub struct OpenAiBackend {
 }
 
 impl OpenAiBackend {
-    fn new(api_key: String, model: String) -> Self {
-        Self {
+    fn new(api_key: String, model: String) -> Result<Self> {
+        Ok(Self {
             api_key,
             model,
-            http: reqwest::Client::new(),
-        }
+            http: hosted_http_client()?,
+        })
     }
 }
 
@@ -403,13 +420,20 @@ fn download_blocking(url: &str, dest: &std::path::Path) -> Result<()> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| url.to_string());
     tracing::info!(url, dest = %dest.display(), "downloading model file");
-    let client = reqwest::blocking::Client::builder()
+    let builder = reqwest::blocking::Client::builder()
         .timeout(None)
+        .connect_timeout(None)
+        .pool_idle_timeout(None)
+        .tcp_keepalive(None)
+        .tcp_keepalive_interval(None)
+        .tcp_keepalive_retries(None)
+        .retry(reqwest::retry::never())
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             attempt.follow()
-        }))
-        .build()
-        .context("building HTTP client")?;
+        }));
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    let builder = builder.tcp_user_timeout(None);
+    let client = builder.build().context("building HTTP client")?;
     let mut resp = client
         .get(url)
         .send()
@@ -568,7 +592,8 @@ mod complete_input_tests {
     #[test]
     fn voyage_request_disables_provider_clipping_and_preserves_complete_text() {
         let backend =
-            VoyageBackend::new("fixture-only-no-account".into(), "configured-model".into());
+            VoyageBackend::new("fixture-only-no-account".into(), "configured-model".into())
+                .unwrap();
         let texts = vec![
             format!(
                 "{}final important condition",
@@ -706,23 +731,23 @@ fn embed_with_state(
 // Factory
 // ---------------------------------------------------------------------------
 
-pub fn make_backend(cfg: &EmbeddingsConfig) -> OwnedEmbeddingBackend {
+pub fn make_backend(cfg: &EmbeddingsConfig) -> Result<OwnedEmbeddingBackend> {
     let provider: Box<dyn EmbeddingProvider> = match cfg.backend {
         EmbeddingBackend::Voyage => Box::new(VoyageBackend::new(
             cfg.api_key.clone().unwrap_or_default(),
             cfg.model.clone(),
-        )),
+        )?),
         EmbeddingBackend::OpenAi => Box::new(OpenAiBackend::new(
             cfg.api_key.clone().unwrap_or_default(),
             cfg.model.clone(),
-        )),
+        )?),
         EmbeddingBackend::Local => Box::new(local_worker::LocalBackend::new(
             cfg.batch_size,
             cfg.cache_dir.clone(),
             None,
         )),
     };
-    OwnedEmbeddingBackend { provider }
+    Ok(OwnedEmbeddingBackend { provider })
 }
 
 /// For SDK hosts that do not implement `worker_entrypoint`, name a compatible
@@ -730,15 +755,15 @@ pub fn make_backend(cfg: &EmbeddingsConfig) -> OwnedEmbeddingBackend {
 pub fn make_backend_with_worker(
     cfg: &EmbeddingsConfig,
     executable: PathBuf,
-) -> OwnedEmbeddingBackend {
+) -> Result<OwnedEmbeddingBackend> {
     if matches!(cfg.backend, EmbeddingBackend::Local) {
-        OwnedEmbeddingBackend {
+        Ok(OwnedEmbeddingBackend {
             provider: Box::new(local_worker::LocalBackend::new(
                 cfg.batch_size,
                 cfg.cache_dir.clone(),
                 Some(executable),
             )),
-        }
+        })
     } else {
         make_backend(cfg)
     }
@@ -1053,5 +1078,100 @@ mod download_tests {
         server.join().unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"complete");
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod http_ownership_tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    struct Request {
+        client: reqwest::Client,
+        url: String,
+    }
+
+    impl EmbeddingProvider for Request {
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [String],
+            _cancellation: EmbeddingCancellation,
+        ) -> EmbedFuture<'a> {
+            Box::pin(async move {
+                let response = self.client.get(&self.url).send().await?;
+                remote_embeddings(response, texts.len(), "fixture-only").await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_clients_follow_complete_redirects_and_close_on_owner_cancellation() -> Result<()>
+    {
+        for client in [
+            VoyageBackend::new("fixture-only".into(), "fixture-model".into())?.http,
+            OpenAiBackend::new("fixture-only".into(), "fixture-model".into())?.http,
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let (ready, body_ready) = tokio::sync::oneshot::channel();
+            let mut ready = Some(ready);
+            let mut server = tokio::spawn(async move {
+                for hop in 0..=12 {
+                    let (stream, _) = listener.accept().await?;
+                    let mut stream = BufReader::new(stream);
+                    let mut line = String::new();
+                    stream.read_line(&mut line).await?;
+                    anyhow::ensure!(line.starts_with(&format!("GET /{hop} ")));
+                    loop {
+                        line.clear();
+                        anyhow::ensure!(stream.read_line(&mut line).await? != 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    if hop < 12 {
+                        stream.get_mut().write_all(format!("HTTP/1.1 302 Found\r\nLocation: /{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",hop + 1).as_bytes()).await?;
+                    } else {
+                        stream.get_mut().write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n").await?;
+                        ready.take().unwrap().send(()).unwrap();
+                        let mut byte = [0];
+                        anyhow::ensure!(
+                            stream.read(&mut byte).await? == 0,
+                            "cancelled owner must close the unfinished response"
+                        );
+                    }
+                }
+                Ok::<_, anyhow::Error>(())
+            });
+            let backend = OwnedEmbeddingBackend {
+                provider: Box::new(Request {
+                    client,
+                    url: format!("http://{address}/0"),
+                }),
+            };
+            let input = vec!["complete input".into()];
+            let mut job = backend.embed(&input);
+            let stop = job.stop_handle();
+            tokio::select! {
+                result = &mut job => {
+                    server.abort();
+                    let _ = server.await;
+                    anyhow::bail!("request ended before the complete redirect chain and explicit cancellation: {result:?}");
+                }
+                result = &mut server => {
+                    anyhow::bail!("server ended before cancellation: {result:?}");
+                }
+                result = body_ready => { result?; }
+            }
+            stop.cancel();
+            let result = job.await;
+            if !matches!(&result, Err(error) if error.is::<EmbeddingCancelled>()) {
+                server.abort();
+                let _ = server.await;
+                anyhow::bail!("cancelled request returned {result:?}");
+            }
+            server.await??;
+        }
+        Ok(())
     }
 }

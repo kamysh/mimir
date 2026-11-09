@@ -104,8 +104,16 @@ impl<'a> ApiBackend<'a> {
             .map_err(|_| anyhow!("invalid model metadata URL"))?
             .pop_if_empty()
             .push(&config.model);
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
+        let builder = Client::builder()
+            .pool_idle_timeout(None)
+            .tcp_keepalive(None)
+            .tcp_keepalive_interval(None)
+            .tcp_keepalive_retries(None)
+            .retry(reqwest::retry::never())
+            .redirect(reqwest::redirect::Policy::none());
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        let builder = builder.tcp_user_timeout(None);
+        let client = builder
             .build()
             .map_err(|_| anyhow!("unable to initialize API transport"))?;
         Ok(Some(Self {

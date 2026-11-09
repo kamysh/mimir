@@ -58,7 +58,8 @@ async fn vector_leg_ranking() {
         target.probability.value()
     );
 
-    let embedder = make_backend_with_worker(&local_embeddings(), isolation::fixture().mcp.into());
+    let embedder = make_backend_with_worker(&local_embeddings(), isolation::fixture().mcp.into())
+        .expect("initialize embedding backend");
 
     for (label, q) in [
         ("VERBOSE_PROMPT", VERBOSE_PROMPT),

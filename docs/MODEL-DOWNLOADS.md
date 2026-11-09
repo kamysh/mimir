@@ -5,6 +5,12 @@ server may finish its response, and redirects may reach their final target.
 The blocking HTTP client's timeout is explicitly disabled, so removing the old
 ten-minute setting does not activate a library default timeout.
 
+The client also clears Reqwest's socket deadline, keepalive timings and probe
+count, idle-pool expiry and automatic retries. A connection is owned by its
+embedding worker. Mimir does not invent a deadline for packet loss or a slow
+peer. Operating-system and remote-server errors can still end a connection;
+they are reported rather than replaced with another application timeout.
+
 The embedding call owns its local worker. Explicit cancellation stops that
 worker, reaps it and removes its owned partial download. Completed cached files
 and another worker's partial files are preserved. Removing a timer does not

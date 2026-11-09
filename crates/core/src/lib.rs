@@ -119,7 +119,7 @@ pub struct MimirService {
 
 impl MimirService {
     pub async fn connect(cfg: &Config) -> Result<Self> {
-        let embeddings = cfg.embeddings.as_ref().map(make_backend);
+        let embeddings = cfg.embeddings.as_ref().map(make_backend).transpose()?;
         Self::connect_with_embeddings(cfg, embeddings).await
     }
 
@@ -128,7 +128,8 @@ impl MimirService {
         let embeddings = cfg
             .embeddings
             .as_ref()
-            .map(|settings| embed::make_backend_with_worker(settings, executable.clone()));
+            .map(|settings| embed::make_backend_with_worker(settings, executable.clone()))
+            .transpose()?;
         Self::connect_with_embeddings(cfg, embeddings).await
     }
 
