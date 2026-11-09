@@ -14,6 +14,7 @@ use tokio_postgres::{GenericClient, Transaction};
 use uuid::Uuid;
 
 pub(super) const RESULT_KEY: &str = "@operation-result";
+const PLAN_BINDING_MISMATCH: &str = "The saved plan belongs to a different operation than this token's original request. Read its binding, plan and saved answers and ask the user to resolve the mismatch. Do not repeat changes or invent a completion answer.";
 pub type Selections = Vec<(CommitSite, Vec<String>)>;
 pub type SelectionWork<'a> = Pin<Box<dyn Future<Output = Result<Selections>> + Send + 'a>>;
 
@@ -379,6 +380,13 @@ impl AgeStore {
             tx.rollback().await?;
             return Ok(OperationOutcome::AwaitingPlan(original));
         };
+        if plan.operation.as_str() != original.request.operation() {
+            tx.rollback().await?;
+            return Ok(OperationOutcome::NeedsRecovery {
+                binding: original,
+                reason: PLAN_BINDING_MISMATCH.into(),
+            });
+        }
         let (rows, result, next) = progress(&tx, token, &plan).await?;
         let outcome = if let Some(reply) = result {
             OperationOutcome::Completed {
@@ -439,6 +447,9 @@ impl AgeStore {
             return Ok(PlanDecision::Cancelled(cancelled));
         }
         if let Some(stored) = load(&*client, token).await? {
+            if stored.operation.as_str() != original.request.operation() {
+                return Ok(PlanDecision::NeedsRecovery(PLAN_BINDING_MISMATCH.into()));
+            }
             return Ok(PlanDecision::Ready(OperationPlan {
                 inner: Arc::new(Inner {
                     binding: original,
@@ -478,6 +489,10 @@ impl AgeStore {
         }
         // Another caller may have published the original plan during capture.
         if let Some(stored) = load(&tx, token).await? {
+            if stored.operation.as_str() != original.request.operation() {
+                tx.rollback().await?;
+                return Ok(PlanDecision::NeedsRecovery(PLAN_BINDING_MISMATCH.into()));
+            }
             tx.commit().await?;
             return Ok(PlanDecision::Ready(OperationPlan {
                 inner: Arc::new(Inner {
