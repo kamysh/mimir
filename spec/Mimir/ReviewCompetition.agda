@@ -193,10 +193,11 @@ module For (calculator : Posterior.Calculator) (posteriorTime : ℤ) (database :
 -- which program is first; actual read replies are derived by the binding.
 module Competing (calculator : Posterior.Calculator) (database : ℕ) (first second : Input.Review) (expected : ℕ)
   (firstClock secondClock : Candidate → ℤ) (firstNow secondNow : ℤ)
+  (firstPosteriorTime secondPosteriorTime : ℤ)
   (firstIDs secondIDs : Candidate → ℕ)
   (sameTarget : Input.Review.experienceID first ≡ Input.Review.experienceID second) where
-  module F = For calculator database first (+ expected) firstClock firstNow firstIDs
-  module S = For calculator database second (+ expected) secondClock secondNow secondIDs
+  module F = For calculator firstPosteriorTime database first (+ expected) firstClock firstNow firstIDs
+  module S = For calculator secondPosteriorTime database second (+ expected) secondClock secondNow secondIDs
 
   module Bound (locks : Lock.Contract) (reads : Committed.Contract Store.World)
     (nativeDatabase : Lock.Contract.Database locks) (nativeKey : Lock.Contract.Key locks)
@@ -272,10 +273,11 @@ module Competing (calculator : Posterior.Calculator) (database : ℕ) (first sec
 -- acquisition snapshots as the shared lease history.
 module BothOrders (calculator : Posterior.Calculator) (database : ℕ) (first second : Input.Review) (expected : ℕ)
   (firstClock secondClock : Candidate → ℤ) (firstNow secondNow : ℤ)
+  (firstPosteriorTime secondPosteriorTime : ℤ)
   (firstIDs secondIDs : Candidate → ℕ)
   (sameTarget : Input.Review.experienceID first ≡ Input.Review.experienceID second) where
-  module Forward = Competing calculator database first second expected firstClock secondClock firstNow secondNow firstIDs secondIDs sameTarget
-  module Reverse = Competing calculator database second first expected secondClock firstClock secondNow firstNow secondIDs firstIDs (sym sameTarget)
+  module Forward = Competing calculator database first second expected firstClock secondClock firstNow secondNow firstPosteriorTime secondPosteriorTime firstIDs secondIDs sameTarget
+  module Reverse = Competing calculator database second first expected secondClock firstClock secondNow firstNow secondPosteriorTime firstPosteriorTime secondIDs firstIDs (sym sameTarget)
 
   module Bound (locks : Lock.Contract) (reads : Committed.Contract Store.World)
     (nativeDatabase : Lock.Contract.Database locks) (nativeKey : Lock.Contract.Key locks)
