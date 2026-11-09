@@ -493,7 +493,7 @@ impl State {
     }
 
     fn write_named<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
-        let bytes = serde_json::to_vec(value)?;
+        let bytes = mimir_json::to_vec(value)?;
         let temp = self
             .path
             .join(format!(".judge-{}-{}.tmp", name, Uuid::new_v4()));
@@ -582,7 +582,7 @@ fn read_named<T: for<'de> Deserialize<'de>>(path: &Path, name: &str) -> Result<O
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     Ok(Some(
-        serde_json::from_slice(&bytes).map_err(|_| anyhow!("invalid state report"))?,
+        mimir_json::from_slice(&bytes).map_err(|_| anyhow!("invalid state report"))?,
     ))
 }
 
@@ -604,8 +604,8 @@ mod tests {
             "λ".repeat(5000)
         );
         let failure = FailureDiagnostic::new(identity, &tool, &detail);
-        let encoded = serde_json::to_string(&failure).unwrap();
-        let decoded: FailureDiagnostic = serde_json::from_str(&encoded).unwrap();
+        let encoded = mimir_json::to_string(&failure).unwrap();
+        let decoded: FailureDiagnostic = mimir_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.tool, tool);
         assert_eq!(decoded.detail, detail);
         assert!(
@@ -614,7 +614,7 @@ mod tests {
         );
         let event = DiagnosticEvent::new(identity, &kind, 2, 3, Some(&tool), Some(&detail));
         let decoded: DiagnosticEvent =
-            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+            mimir_json::from_str(&mimir_json::to_string(&event).unwrap()).unwrap();
         assert_eq!(decoded.kind, kind);
         assert_eq!(decoded.tool.as_deref(), Some(tool.as_str()));
         assert_eq!(decoded.detail.as_deref(), Some(detail.as_str()));
@@ -713,7 +713,7 @@ mod tests {
         failed.block_reason = Some("tool_error".into());
         failed.selected_ids = vec![Uuid::new_v4()];
         let malformed = b"{\"review\": }";
-        let parse_error = serde_json::from_slice::<serde_json::Value>(malformed)
+        let parse_error = mimir_json::from_slice::<serde_json::Value>(malformed)
             .err()
             .unwrap();
         failed.failure_source = Some(SourceFailure::json(
@@ -768,7 +768,7 @@ mod tests {
             .mode();
         assert_eq!(incident_mode & 0o077, 0);
         assert!(incident.first.notification.is_empty());
-        assert!(serde_json::to_value(&incident.first)
+        assert!(mimir_json::to_value(&incident.first)
             .unwrap()
             .get("notification")
             .is_none());
@@ -797,7 +797,7 @@ mod tests {
     #[test]
     fn malformed_source_is_complete_and_legacy_partial_records_remain_readable() {
         let source = format!("{{\"items\":[{}]}}", "0,".repeat(100_000));
-        let error = serde_json::from_str::<serde_json::Value>(&source)
+        let error = mimir_json::from_str::<serde_json::Value>(&source)
             .err()
             .unwrap();
         let failure = SourceFailure::json("invalid response", source.as_bytes(), error);
@@ -805,12 +805,12 @@ mod tests {
         assert_eq!(failure.excerpt, source);
         assert_eq!(failure.excerpt_start, 0);
         let saved: SourceFailure =
-            serde_json::from_str(&serde_json::to_string(&failure).unwrap()).unwrap();
+            mimir_json::from_str(&mimir_json::to_string(&failure).unwrap()).unwrap();
         assert_eq!(saved.excerpt, source);
         assert_eq!(saved.total_bytes, source.len());
         let input = SourceFailure::input("invalid input", source.as_bytes(), "unable to parse");
         assert_eq!(input.excerpt, source);
-        let legacy: SourceFailure = serde_json::from_value(serde_json::json!({
+        let legacy: SourceFailure = mimir_json::from_value(serde_json::json!({
             "stage":"old response","detail":"old error","total_bytes":70000,
             "excerpt_start":2000,"excerpt":"historical partial text"
         }))
@@ -824,12 +824,12 @@ mod tests {
     fn legacy_remaining_budget_is_not_reported_as_work_performed() {
         let id = Uuid::new_v4();
         let event = DiagnosticEvent::new(id, "model_request", 25, 26, None, None);
-        let mut wire = serde_json::to_value(event).unwrap();
+        let mut wire = mimir_json::to_value(event).unwrap();
         wire.as_object_mut().unwrap().remove("model_requests");
         wire.as_object_mut().unwrap().remove("tool_attempts");
         wire["model_remaining"] = serde_json::json!(5);
         wire["tool_remaining"] = serde_json::json!(6);
-        let decoded: DiagnosticEvent = serde_json::from_value(wire).unwrap();
+        let decoded: DiagnosticEvent = mimir_json::from_value(wire).unwrap();
         assert_eq!(decoded.model_requests, None);
         assert_eq!(decoded.tool_attempts, None);
     }
@@ -867,7 +867,7 @@ mod tests {
         assert_eq!(trace.id, id);
         assert_eq!(trace.events.len(), 80);
         assert_eq!(trace.events_omitted, 0);
-        assert!(serde_json::to_vec(trace).unwrap().len() > 256 * 1024);
+        assert!(mimir_json::to_vec(trace).unwrap().len() > 256 * 1024);
         assert!(trace
             .events
             .iter()

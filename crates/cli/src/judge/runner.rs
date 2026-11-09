@@ -15,8 +15,14 @@ use uuid::Uuid;
 
 #[cfg_attr(not(test), allow(dead_code))] // Step 6/7 adapters will construct actions.
 pub enum Action {
-    Tool { name: String, arguments: Value },
-    RejectedTool { name: String, source: SourceFailure },
+    Tool {
+        name: String,
+        arguments: mimir_json::Document,
+    },
+    RejectedTool {
+        name: String,
+        source: SourceFailure,
+    },
     Done,
 }
 
@@ -78,8 +84,9 @@ impl Backend for UnavailableBackend {
     }
 }
 
-fn parse_state(value: Value) -> Result<ExperienceState> {
-    serde_json::from_value(value.clone()).map_err(|error| {
+fn parse_state(value: impl Into<mimir_json::Document>) -> Result<ExperienceState> {
+    let value = value.into();
+    mimir_json::decode_ref(&value).map_err(|error| {
         state::SourceFailure::json(
             "invalid experience state",
             value.to_string().as_bytes(),
@@ -114,8 +121,9 @@ async fn scoped_tool(
     client: &mut Client,
     selected: &ExperienceState,
     name: &str,
-    mut args: Value,
+    args: impl Into<mimir_json::Document>,
 ) -> Result<Value> {
+    let mut args = args.into();
     input_ensure!(args.is_object(), "tool arguments must be an object");
     let project = project_for(selected);
     let id = selected.experience.id.to_string();
@@ -153,14 +161,15 @@ async fn scoped_tool(
                 args["expected_review_revision"].as_i64() == Some(selected.review_revision),
                 "stale review token"
             );
-            let mut review: Review =
-                serde_json::from_value(args["review"].clone()).map_err(|error| {
-                    state::SourceFailure::json(
-                        "invalid review arguments",
-                        args["review"].to_string().as_bytes(),
-                        error,
-                    )
-                })?;
+            let mut review: Review = mimir_json::decode_ref(&args["review"]).map_err(|error| {
+                state::SourceFailure::json(
+                    "invalid review arguments",
+                    mimir_json::to_string(&args["review"])
+                        .expect("JSON serializes")
+                        .as_bytes(),
+                    error,
+                )
+            })?;
             input_ensure!(
                 review.experience_id == selected.experience.id
                     && review.experience_revision == selected.revision,
@@ -177,7 +186,7 @@ async fn scoped_tool(
             // Source validation needs PostgreSQL-assigned item IDs and resolved
             // assessment keys. The service performs it after allocation, inside
             // the review transaction; the judge forwards the raw keyed input.
-            args["review"] = serde_json::to_value(review)?;
+            mimir_json::replace(&mut args["review"], mimir_json::to_value(review)?);
         }
         "query_relevant" | "query_learning_context" | "get_contradictions" => {
             input_ensure!(
@@ -229,13 +238,13 @@ async fn scoped_tool(
         }
         _ => return Err(InputRejected("tool is not allowed for judge".into()).into()),
     }
-    let mut value = client.tool(name, args).await?;
+    let mut value = client.tool(name, args.into_value()).await?;
     // A correction is a complete tool outcome of its own. Decode the entire
     // envelope before skipping result-shape checks; a status string alone is
     // not evidence that the server certified no business changes.
     if value.get("status").and_then(Value::as_str) == Some("needs_input") {
-        serde_json::from_value::<mimir_core::interaction::NeedsInput>(value.clone())?;
-        return Ok(value);
+        mimir_json::decode_ref::<mimir_core::interaction::NeedsInput>(&value)?;
+        return Ok(value.into_value());
     }
     if name == "get_experience" {
         let state = parse_state(value.clone())?;
@@ -286,10 +295,13 @@ async fn scoped_tool(
                     .as_str()
                     .ok_or_else(|| anyhow!("invalid explanation edge"))?;
                 if visible_belief(client, source, project).await? {
-                    filtered.push(edge.clone());
+                    filtered.push(mimir_json::Document::new(mimir_json::clone_value(edge)));
                 }
             }
-            value["incoming_edges"] = json!(filtered);
+            mimir_json::replace(
+                &mut value["incoming_edges"],
+                mimir_json::to_value(&filtered)?,
+            );
         }
         "query_intervention" => {
             let rows = value
@@ -327,11 +339,11 @@ async fn scoped_tool(
                     filtered.push(json!([a, b]));
                 }
             }
-            value = json!(filtered);
+            value = json!(filtered).into();
         }
         _ => {}
     }
-    Ok(value)
+    Ok(value.into_value())
 }
 
 async fn observe(client: &mut Client, selected: &ExperienceState) -> Result<&'static str> {
@@ -511,7 +523,7 @@ async fn run_inner<B: Backend>(
         arguments["project"] = json!(project);
     }
     let fetched = client.tool("pending_experiences", arguments).await?;
-    let batch: Vec<ExperienceState> = serde_json::from_value(fetched.clone()).map_err(|error| {
+    let batch: Vec<ExperienceState> = mimir_json::decode_ref(&fetched).map_err(|error| {
         state::SourceFailure::json(
             "invalid pending batch",
             fetched.to_string().as_bytes(),
@@ -549,7 +561,7 @@ async fn run_inner<B: Backend>(
     let mut tool_used: usize = 0;
     let mut failed = false;
     for selected in &batch {
-        let mut last: Option<Value> = None;
+        let mut last: Option<mimir_json::Document> = None;
         let mut candidate_rejections = 0;
         let mut candidate_rejection_detail = None;
         let mut last_rejection: Option<(String, String, Option<SourceFailure>)> = None;
@@ -559,7 +571,7 @@ async fn run_inner<B: Backend>(
             let will_call_model = backend.will_call_model(selected);
             if will_call_model {
                 model_used = model_used.saturating_add(1);
-                let detail = last.as_ref().map(Value::to_string);
+                let detail = last.as_ref().map(ToString::to_string);
                 trace(
                     state,
                     report,
@@ -571,7 +583,11 @@ async fn run_inner<B: Backend>(
                 )?;
             }
             let action = match backend
-                .next(selected, last.as_ref(), client.allowed_tools())
+                .next(
+                    selected,
+                    last.as_ref().map(|v| &**v),
+                    client.allowed_tools(),
+                )
                 .await
             {
                 Ok(action) => action,
@@ -622,7 +638,7 @@ async fn run_inner<B: Backend>(
                     // location and a fixed correction instruction, never the input.
                     last = Some(json!({"error":"invalid_tool_arguments",
                         "message":source.detail,
-                        "guidance":"Correct the tool arguments using the supplied schema and resend the call."}));
+                        "guidance":"Correct the tool arguments using the supplied schema and resend the call."}).into());
                     last_rejection = Some((name, source.to_string(), Some(source)));
                 }
                 Action::Tool { name, arguments } => {
@@ -636,12 +652,15 @@ async fn run_inner<B: Backend>(
                         Some(&arguments.to_string()),
                     )?;
                     tool_used = tool_used.saturating_add(1);
-                    let attempted_review = arguments.get("review").cloned();
+                    let attempted_review = arguments
+                        .get("review")
+                        .map(|v| mimir_json::Document::new(mimir_json::clone_value(v)));
                     match scoped_tool(&mut client, selected, &name, arguments).await {
                         Ok(value) => {
+                            let value = mimir_json::Document::new(value);
                             if value.get("status").and_then(Value::as_str) == Some("needs_input") {
                                 let correction: mimir_core::interaction::NeedsInput =
-                                    serde_json::from_value(value.clone())?;
+                                    mimir_json::decode_ref(&value)?;
                                 trace(
                                     state,
                                     report,
@@ -696,7 +715,7 @@ async fn run_inner<B: Backend>(
                             candidate_rejections += 1;
                             candidate_rejection_detail = Some(format!("{error:#}"));
                             last = Some(json!({"error":"candidate_key_conflict",
-                                "guidance":"A candidate key from an earlier review has a different declaration. Inspect experience_history. Reuse a key only with its exact original kind and declaration; use a new key for a revised claim."}));
+                                "guidance":"A candidate key from an earlier review has a different declaration. Inspect experience_history. Reuse a key only with its exact original kind and declaration; use a new key for a revised claim."}).into());
                         }
                         Err(error)
                             if error.downcast_ref::<InputRejected>().is_some()
@@ -746,7 +765,7 @@ async fn run_inner<B: Backend>(
                             last = Some(json!({"error":"invalid_tool_arguments",
                                 "message":message,
                                 "fault":fault,
-                                "guidance":"Correct the tool arguments and resubmit the request. The rejected call changed nothing."}));
+                                "guidance":"Correct the tool arguments and resubmit the request. The rejected call changed nothing."}).into());
                             let focused = fault.and_then(|fault| {
                                 use mimir_core::validation::{Code, Segment};
                                 if fault.code != Code::QuotationMismatch { return None; }
@@ -754,7 +773,7 @@ async fn run_inner<B: Backend>(
                                 let item = attempted_review.as_ref()?.get("extracted_items")?.get(index)?;
                                 let source_ref = item.get("source_ref")?.as_str()?;
                                 let source = selected.experience.source_records.iter().find(|s|s.source_ref==source_ref)?;
-                                let payload = json!({"fault":fault,"rejected_item":item,"cited_source":source}).to_string();
+                                let payload = mimir_json::Document::new(json!({"fault":fault,"rejected_item":mimir_json::Document::new(mimir_json::clone_value(item)),"cited_source":source})).to_string();
                                 Some(SourceFailure::input("quotation_mismatch",payload.as_bytes(),&fault.message))
                             });
                             last_rejection = Some((
@@ -796,7 +815,7 @@ async fn run_inner<B: Backend>(
                     report.diagnostic = Some(FailureDiagnostic::new(
                         selected.experience.id,
                         &name,
-                        &serde_json::to_string(&correction)?,
+                        &mimir_json::to_string(&correction)?,
                     ));
                 }
             }
@@ -937,7 +956,7 @@ mod tests {
                         arguments: json!({"expected_review_revision": if matches!(self.mode, Mode::Stale) { 99 } else { selected.review_revision },
                             "review":{"experience_id":selected.experience.id,
                                 "experience_revision":selected.revision,"reviewer":"untrusted-model",
-                                "rationale":"deterministic review of test observation"}}),
+                                "rationale":"deterministic review of test observation"}}).into(),
                     }),
                     Mode::FalseDone => Ok(Action::Done),
                     Mode::Crash => bail!("fake backend crashed"),
@@ -1066,7 +1085,7 @@ mod tests {
                             "candidates":candidates,
                             "candidate_feedback":[{"target":{"candidate_key":"fixture-key"},"verdict":"support","weight":0.8}]
                         }
-                    }),
+                    }).into(),
                 })
             })
         }
@@ -1103,7 +1122,7 @@ mod tests {
                 }
                 Ok(Action::Tool {
                     name: "get_experience".into(),
-                    arguments: json!({"id":selected.experience.id}),
+                    arguments: json!({"id":selected.experience.id}).into(),
                 })
             })
         }
@@ -1140,7 +1159,7 @@ mod tests {
                     return Ok(match self.case {
                         RejectionCase::MalformedJson | RejectionCase::Exhausted => {
                             let input = "{\"review\": }";
-                            let error = serde_json::from_str::<Value>(input).err().unwrap();
+                            let error = mimir_json::from_str::<Value>(input).err().unwrap();
                             Action::RejectedTool {
                                 name: "review_experience".into(),
                                 source: SourceFailure::json(
@@ -1152,12 +1171,13 @@ mod tests {
                         }
                         RejectionCase::LocalValidation => Action::Tool {
                             name: "review_experience".into(),
-                            arguments: json!({"expected_review_revision":-1}),
+                            arguments: json!({"expected_review_revision":-1}).into(),
                         },
                         RejectionCase::MimirError => Action::Tool {
                             name: "query_relevant".into(),
                             arguments: json!({"project":selected.experience.project,
-                                "context":"fixture observation","limit":1}),
+                                "context":"fixture observation","limit":1})
+                            .into(),
                         },
                     });
                 }
@@ -1171,7 +1191,8 @@ mod tests {
                             "reviewer":"fixture",
                             "rationale":"corrected tool request"
                         }
-                    }),
+                    })
+                    .into(),
                 })
             })
         }
@@ -1187,7 +1208,7 @@ mod tests {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let request_log = dir.join("requests.jsonl");
         let id = Uuid::new_v4();
-        let selected: ExperienceState = serde_json::from_value(json!({
+        let selected: ExperienceState = mimir_json::from_value(json!({
             "experience": {
                 "id": id, "project": "judge-retry-fixture", "context": "fixture observation",
                 "action": "review the suggestion", "outcome": "unknown", "source": "user_feedback",
@@ -1271,7 +1292,7 @@ mod tests {
         let requests: Vec<Value> = std::fs::read_to_string(&request_log)
             .unwrap()
             .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .map(|line| mimir_json::from_str::<Value>(line).unwrap())
             .filter(|request| request["params"]["name"] == "review_experience")
             .collect();
         assert_eq!(
@@ -1530,13 +1551,13 @@ mod tests {
                     let action = match self.step {
                         0 => Action::Tool {
                             name: "query_learning_context".into(),
-                            arguments: json!({"context":"check this source","project":selected.experience.project,"limit":1,"limt":1}),
+                            arguments: json!({"context":"check this source","project":selected.experience.project,"limit":1,"limt":1}).into(),
                         },
                         1 => {
                             let value =
                                 last.ok_or_else(|| anyhow!("missing correction feedback"))?;
                             let correction: mimir_core::interaction::NeedsInput =
-                                serde_json::from_value(value.clone())?;
+                                mimir_json::decode_ref(&value)?;
                             ensure!(
                                 correction.issues().iter().any(|item| item.fault().path
                                     == vec![mimir_core::validation::Segment::Key("limt".into())]),
@@ -1544,7 +1565,7 @@ mod tests {
                             );
                             Action::Tool {
                                 name: "query_learning_context".into(),
-                                arguments: json!({"context":"check this source","project":selected.experience.project,"limit":1}),
+                                arguments: json!({"context":"check this source","project":selected.experience.project,"limit":1}).into(),
                             }
                         }
                         2 => {
@@ -1559,7 +1580,7 @@ mod tests {
                                 arguments: json!({
                                 "expected_review_revision":selected.review_revision,"review":{
                                     "experience_id":selected.experience.id,"experience_revision":selected.revision,
-                                    "reviewer":"fixture","rationale":"corrected the query before completing review"}}),
+                                    "reviewer":"fixture","rationale":"corrected the query before completing review"}}).into(),
                             }
                         }
                         _ => bail!("completed review should have been observed"),
@@ -1638,7 +1659,7 @@ mod tests {
                 Box::pin(async move {
                     if let Some(value) = last {
                         let correction: mimir_core::interaction::NeedsInput =
-                            serde_json::from_value(value.clone())?;
+                            mimir_json::decode_ref(&value)?;
                         ensure!(correction.issues()[0]
                             .suggested_correction()
                             .contains("Open a dialog"));
@@ -1652,7 +1673,8 @@ mod tests {
                     Ok(Action::Tool {
                         name: "review_experience".into(),
                         arguments: json!({
-                        "expected_review_revision":selected.review_revision,"review":review}),
+                        "expected_review_revision":selected.review_revision,"review":review})
+                        .into(),
                     })
                 })
             }
@@ -1717,7 +1739,7 @@ mod tests {
             .ok_or_else(|| anyhow!("user decision was discarded"))?;
         ensure!(diagnostic.experience_id == ids[0]);
         let correction: mimir_core::interaction::NeedsInput =
-            serde_json::from_str(&diagnostic.detail)?;
+            mimir_json::from_str(&diagnostic.detail)?;
         ensure!(correction.issues()[0]
             .fault()
             .message
@@ -1762,7 +1784,8 @@ mod tests {
                         arguments: json!({"expected_review_revision":selected.review_revision,
                             "review":{"experience_id":selected.experience.id,
                                 "experience_revision":selected.revision,"reviewer":"fixture",
-                                "rationale":"review each owned fixture source"}}),
+                                "rationale":"review each owned fixture source"}})
+                        .into(),
                     })
                 })
             }

@@ -109,9 +109,9 @@ fn incoming_invalid_event_and_unknown_version_preserve_existing_file() {
     let before = fs::read(&file).unwrap();
     assert!(queue.enqueue(&invalid).is_err());
     assert_eq!(fs::read(&file).unwrap(), before);
-    let mut stored: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    let mut stored: serde_json::Value = mimir_json::from_slice(&before).unwrap();
     stored["schema_version"] = 2.into();
-    let bytes = serde_json::to_vec(&stored).unwrap();
+    let bytes = mimir_json::to_vec(&stored).unwrap();
     fs::write(&file, &bytes).unwrap();
     assert!(queue
         .enqueue(&queued_event(crate::EventStatus::Progress))

@@ -25,7 +25,7 @@ impl NumericalDecision {
             .collect();
         let item = CorrectionItem::new(Location::Arguments, Fault {
             path: vec![], code: Code::UnsupportedCombination,
-            message: format!("Cyclic propagation repeats {} distinct stored-count states without satisfying every final posterior equation. This calculation produced no complete result. Repeating values: {}", cycle.len(), serde_json::to_string(&values).expect("posterior count diagnostics serialize")),
+            message: format!("Cyclic propagation repeats {} distinct stored-count states without satisfying every final posterior equation. This calculation produced no complete result. Repeating values: {}", cycle.len(), mimir_json::to_string(&values).expect("posterior count diagnostics serialize")),
         },
         "Every final alpha and beta must equal the value recomputed from its fixed prior and all incoming evidence in that same final state.".into(),
         "Open a dialog with the user showing the repeated values. Ask whether to cancel or agree on an explicit numerical accuracy policy before retrying. Do not choose an iterate, change weights, invent a tolerance, or retry automatically.".into())
@@ -40,7 +40,7 @@ impl NumericalDecision {
 
 impl std::fmt::Display for NumericalDecision {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match serde_json::to_string(self.issue()) {
+        match mimir_json::to_string(self.issue()) {
             Ok(value) => output.write_str(&value),
             Err(_) => output.write_str(
                 "Cyclic propagation needs a user decision; this calculation produced no complete result.",

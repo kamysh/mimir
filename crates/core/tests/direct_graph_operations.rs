@@ -126,17 +126,17 @@ CREATE TRIGGER {function} BEFORE INSERT ON "{graph}"."Pattern" FOR EACH ROW EXEC
         ))
         .await?;
     let first = attempted?;
-    let pattern: mimir_core::graph::Pattern = serde_json::from_value(first.reply.clone())?;
+    let pattern: mimir_core::graph::Pattern = mimir_json::from_value(first.reply.clone())?;
     ensure!(pattern.project.as_deref() == Some(project.as_str()));
     ensure!(pattern.activation_count == 0);
-    let before = serde_json::to_value(store.list_patterns_by_project(&project).await?)?;
+    let before = mimir_json::to_value(store.list_patterns_by_project(&project).await?)?;
     let reopened = MimirService::connect(&config()).await?;
     let replay = done(&reopened, &step, true).await?;
     ensure!(first == replay);
-    ensure!(serde_json::to_value(store.list_patterns_by_project(&project).await?)? == before);
+    ensure!(mimir_json::to_value(store.list_patterns_by_project(&project).await?)? == before);
     ensure!(
-        serde_json::to_value(store.get_pattern(pattern.id).await?)?
-            == serde_json::to_value(Some(&pattern))?
+        mimir_json::to_value(store.get_pattern(pattern.id).await?)?
+            == mimir_json::to_value(Some(&pattern))?
     );
     store.delete_project(&project).await?;
     Ok(())
@@ -153,7 +153,7 @@ async fn direct_relationship_replays_do_not_duplicate_either_contradiction_direc
     b.id = identity().await?;
     store.insert_belief(&a).await?;
     store.insert_belief(&b).await?;
-    let beliefs_before = serde_json::to_value(store.list_beliefs_by_project(&project).await?)?;
+    let beliefs_before = mimir_json::to_value(store.list_beliefs_by_project(&project).await?)?;
     for (operation, arguments, expected_edges) in [
         (
             "record_support",
@@ -170,13 +170,13 @@ async fn direct_relationship_replays_do_not_duplicate_either_contradiction_direc
         let step = plan(&service, operation, arguments, json!({})).await?;
         let first = done(&service, &step, false).await?;
         ensure!(first.reply == json!({"ok":true}));
-        let before = serde_json::to_value(store.get_edges_among(&[a.id, b.id]).await?)?;
+        let before = mimir_json::to_value(store.get_edges_among(&[a.id, b.id]).await?)?;
         ensure!(before.as_array().unwrap().len() == expected_edges);
         let reopened = MimirService::connect(&config()).await?;
         ensure!(done(&reopened, &step, false).await? == first);
-        ensure!(serde_json::to_value(store.get_edges_among(&[a.id, b.id]).await?)? == before);
+        ensure!(mimir_json::to_value(store.get_edges_among(&[a.id, b.id]).await?)? == before);
         ensure!(
-            serde_json::to_value(store.list_beliefs_by_project(&project).await?)? == beliefs_before
+            mimir_json::to_value(store.list_beliefs_by_project(&project).await?)? == beliefs_before
         );
     }
     store.delete_project(&project).await?;
@@ -189,7 +189,7 @@ async fn malformed_bound_requests_and_missing_endpoints_remain_pending_without_w
     let (store, service) = setup().await?;
     let project = format!("direct-refusal-{}", identity().await?);
     let missing = identity().await?;
-    let patterns = serde_json::to_value(store.list_patterns().await?)?;
+    let patterns = mimir_json::to_value(store.list_patterns().await?)?;
     let edges = store.count_edges().await?;
     for (operation, arguments, settings, is_pattern) in [
         (
@@ -256,7 +256,7 @@ async fn malformed_bound_requests_and_missing_endpoints_remain_pending_without_w
             ensure!(repair.contains("Keep the original token"));
         }
         pending(&service, &step).await?;
-        ensure!(serde_json::to_value(store.list_patterns().await?)? == patterns);
+        ensure!(mimir_json::to_value(store.list_patterns().await?)? == patterns);
         ensure!(store.count_edges().await? == edges);
     }
     Ok(())

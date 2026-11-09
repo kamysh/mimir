@@ -233,13 +233,13 @@ mod complete_input_tests {
         let coverage: Vec<_> = experience.source_records.iter().map(|s| json!({
             "source_ref":s.source_ref,"status":"unresolved","reason":"Awaiting independent evidence. ".repeat(200)
         })).collect();
-        let mut review: Review = serde_json::from_value(json!({
+        let mut review: Review = mimir_json::from_value(json!({
             "experience_id":experience.id,"experience_revision":1,"reviewer":"fixture","rationale":"complete input",
             "extracted_items":items,"source_coverage":coverage
         })).unwrap();
         review.validate().unwrap();
         validate_review(&review, &experience).unwrap();
-        assert!(serde_json::to_vec(&review).unwrap().len() > 65536);
+        assert!(mimir_json::to_vec(&review).unwrap().len() > 65536);
         review.extracted_items[0].statement = "This quotation never occurred.".into();
         assert!(validate_review(&review, &experience).is_err());
         let mut duplicated = experience.source_records.clone();

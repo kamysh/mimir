@@ -23,7 +23,7 @@ enum Wire {
 struct Call {
     id: String,
     name: String,
-    arguments: std::result::Result<Value, SourceFailure>,
+    arguments: std::result::Result<mimir_json::Document, SourceFailure>,
 }
 
 impl Call {
@@ -49,10 +49,10 @@ pub struct ApiBackend<'a> {
     native_output_maximum: Option<u64>,
     client: Client,
     selected_id: Option<Uuid>,
-    history: Vec<Value>,
+    history: Vec<mimir_json::Document>,
     pending: VecDeque<Call>,
     awaiting: Option<String>,
-    results: Vec<Value>,
+    results: Vec<mimir_json::Document>,
 }
 
 impl<'a> ApiBackend<'a> {
@@ -139,7 +139,7 @@ impl<'a> ApiBackend<'a> {
         self.pending.clear();
         self.awaiting = None;
         self.results.clear();
-        let content = serde_json::to_string(selected)?;
+        let content = mimir_json::to_string(selected)?;
         self.history = match self.wire {
             Wire::OpenAi => vec![json!({"role":"user","content":content})],
             Wire::Anthropic => {
@@ -149,7 +149,10 @@ impl<'a> ApiBackend<'a> {
                 json!({"role":"system","content":Self::instructions(selected)}),
                 json!({"role":"user","content":content}),
             ],
-        };
+        }
+        .into_iter()
+        .map(mimir_json::Document::new)
+        .collect();
         Ok(())
     }
 
@@ -164,25 +167,25 @@ impl<'a> ApiBackend<'a> {
         )
     }
 
-    fn definitions(&self, tools: &[Value]) -> Result<Vec<Value>> {
+    fn definitions(&self, tools: &[Value]) -> Result<Vec<mimir_json::Document>> {
         tools
             .iter()
             .map(|tool| {
                 let name = tool["name"]
                     .as_str()
                     .ok_or_else(|| anyhow!("invalid MCP tool definition"))?;
-                let schema = tool["inputSchema"]
-                    .as_object()
-                    .ok_or_else(|| anyhow!("invalid MCP tool schema"))?;
+                ensure!(tool["inputSchema"].is_object(), "invalid MCP tool schema");
+                let schema =
+                    mimir_json::Document::new(mimir_json::clone_value(&tool["inputSchema"]));
                 let description = tool["description"].as_str().unwrap_or("");
-                Ok(match self.wire {
+                Ok(mimir_json::Document::new(match self.wire {
                     Wire::OpenAi => json!({"type":"function","name":name,
                         "description":description,"parameters":schema,"strict":false}),
                     Wire::Anthropic => json!({"name":name,"description":description,
                         "input_schema":schema}),
                     Wire::Chat => json!({"type":"function","function":{"name":name,
                         "description":description,"parameters":schema}}),
-                })
+                }))
             })
             .collect()
     }
@@ -194,8 +197,9 @@ impl<'a> ApiBackend<'a> {
         match self.wire {
             Wire::OpenAi | Wire::Chat => self.history.append(&mut self.results),
             Wire::Anthropic => {
-                self.history
-                    .push(json!({"role":"user","content":self.results}));
+                self.history.push(mimir_json::Document::new(
+                    json!({"role":"user","content":self.results}),
+                ));
                 self.results.clear();
             }
         }
@@ -238,9 +242,10 @@ impl<'a> ApiBackend<'a> {
         if self.wire != Wire::Anthropic || self.native_output_maximum.is_some() {
             return Ok(());
         }
-        let reply = self
-            .send_builder(self.client.get(&self.metadata_url))
-            .await?;
+        let reply = mimir_json::Document::new(
+            self.send_builder(self.client.get(&self.metadata_url))
+                .await?,
+        );
         self.native_output_maximum = Some(
             reply["max_tokens"]
                 .as_u64()
@@ -253,6 +258,7 @@ impl<'a> ApiBackend<'a> {
     }
 
     async fn send(&self, request: Value) -> Result<Value> {
+        let request = mimir_json::Document::new(request);
         self.send_builder(self.client.post(&self.url).json(&request))
             .await
     }
@@ -292,7 +298,7 @@ impl<'a> ApiBackend<'a> {
         if !status.is_success() {
             bail!("{}", classify_error(status, &bytes));
         }
-        serde_json::from_slice(&bytes)
+        mimir_json::from_slice(&bytes)
             .map_err(|error| SourceFailure::json("invalid provider JSON", &bytes, error).into())
     }
 
@@ -320,7 +326,7 @@ impl<'a> ApiBackend<'a> {
                         .as_str()
                         .ok_or_else(|| anyhow!("missing OpenAI function name"))?;
                     let arguments = match item["arguments"].as_str() {
-                        Some(encoded) => serde_json::from_str(encoded).map_err(|error| {
+                        Some(encoded) => mimir_json::from_str(encoded).map_err(|error| {
                             SourceFailure::json(
                                 "invalid OpenAI function arguments",
                                 encoded.as_bytes(),
@@ -329,7 +335,7 @@ impl<'a> ApiBackend<'a> {
                         }),
                         None => Err(SourceFailure::input(
                             "invalid OpenAI function arguments",
-                            item["arguments"].to_string().as_bytes(),
+                            mimir_json::to_string(&item["arguments"])?.as_bytes(),
                             "function arguments must be JSON text",
                         )),
                     };
@@ -348,7 +354,11 @@ impl<'a> ApiBackend<'a> {
             }
         }
         // Replay the complete output, including encrypted reasoning items.
-        self.history.extend(output.iter().cloned());
+        self.history.extend(
+            output
+                .iter()
+                .map(|v| mimir_json::Document::new(mimir_json::clone_value(v))),
+        );
         self.pending = calls;
         Ok(())
     }
@@ -368,7 +378,8 @@ impl<'a> ApiBackend<'a> {
                     let name = block["name"]
                         .as_str()
                         .ok_or_else(|| anyhow!("missing Anthropic tool name"))?;
-                    let arguments = block["input"].clone();
+                    let arguments =
+                        mimir_json::Document::new(mimir_json::clone_value(&block["input"]));
                     ensure!(
                         !id.is_empty() && seen.insert(id),
                         "invalid Anthropic tool call"
@@ -411,7 +422,7 @@ impl<'a> ApiBackend<'a> {
         }
         // Preserve thinking/signatures and their original order verbatim.
         self.history
-            .push(json!({"role":"assistant","content":content}));
+            .push(mimir_json::Document::new(json!({"role":"assistant","content":mimir_json::Document::new(mimir_json::clone_value(&reply["content"]))})));
         self.pending = calls;
         Ok(())
     }
@@ -451,19 +462,21 @@ impl<'a> ApiBackend<'a> {
                 "invalid chat function call"
             );
             let arguments = match &call["function"]["arguments"] {
-                Value::String(encoded) => serde_json::from_str(encoded).map_err(|error| {
+                Value::String(encoded) => mimir_json::from_str(encoded).map_err(|error| {
                     SourceFailure::json(
                         "invalid chat function arguments",
                         encoded.as_bytes(),
                         error,
                     )
                 }),
-                Value::Object(object) if self.config.provider == Some(Provider::Zai) => {
-                    Ok(Value::Object(object.clone()))
+                Value::Object(_) if self.config.provider == Some(Provider::Zai) => {
+                    Ok(mimir_json::Document::new(mimir_json::clone_value(
+                        &call["function"]["arguments"],
+                    )))
                 }
                 other => Err(SourceFailure::input(
                     "invalid chat function arguments",
-                    other.to_string().as_bytes(),
+                    mimir_json::to_string(other)?.as_bytes(),
                     "function arguments must be JSON text",
                 )),
             };
@@ -475,7 +488,8 @@ impl<'a> ApiBackend<'a> {
         }
         // Retain reasoning_content and Gemini's thought signature in their
         // original assistant message. Send every parallel tool result after it.
-        self.history.push(message.clone());
+        self.history
+            .push(mimir_json::Document::new(mimir_json::clone_value(message)));
         self.pending = calls;
         Ok(())
     }
@@ -489,16 +503,17 @@ impl<'a> ApiBackend<'a> {
         self.reset(selected)?;
         match (self.awaiting.take(), last) {
             (Some(id), Some(result)) => {
-                let content = serde_json::to_string(result)?;
-                self.results.push(match self.wire {
-                    Wire::OpenAi => {
-                        json!({"type":"function_call_output","call_id":id,"output":content})
-                    }
-                    Wire::Anthropic => {
-                        json!({"type":"tool_result","tool_use_id":id,"content":content})
-                    }
-                    Wire::Chat => json!({"role":"tool","tool_call_id":id,"content":content}),
-                });
+                let content = mimir_json::to_string(result)?;
+                self.results
+                    .push(mimir_json::Document::new(match self.wire {
+                        Wire::OpenAi => {
+                            json!({"type":"function_call_output","call_id":id,"output":content})
+                        }
+                        Wire::Anthropic => {
+                            json!({"type":"tool_result","tool_use_id":id,"content":content})
+                        }
+                        Wire::Chat => json!({"role":"tool","tool_call_id":id,"content":content}),
+                    }));
             }
             (None, None) => {}
             _ => bail!("provider tool result sequence is invalid"),
@@ -510,7 +525,7 @@ impl<'a> ApiBackend<'a> {
         self.flush_results()?;
         self.model_capacity().await?;
         let request = self.request(selected, tools)?;
-        let reply = self.send(request).await?;
+        let reply = mimir_json::Document::new(self.send(request).await?);
         match self.wire {
             Wire::OpenAi => self.parse_openai(&reply)?,
             Wire::Anthropic => self.parse_anthropic(&reply)?,
@@ -541,7 +556,7 @@ impl Backend for ApiBackend<'_> {
 }
 
 fn classify_error(status: StatusCode, bytes: &[u8]) -> &'static str {
-    let code = serde_json::from_slice::<Value>(bytes)
+    let code = mimir_json::from_slice::<Value>(bytes)
         .ok()
         .and_then(|v| v["error"]["code"].as_str().map(str::to_owned));
     match status.as_u16() {
@@ -626,10 +641,10 @@ mod tests {
                     body: if length == 0 {
                         Value::Null
                     } else {
-                        serde_json::from_slice(&bytes[boundary..boundary + length]).unwrap()
+                        mimir_json::from_slice(&bytes[boundary..boundary + length]).unwrap()
                     },
                 });
-                let body = serde_json::to_vec(&body).unwrap();
+                let body = mimir_json::to_vec(&body).unwrap();
                 let response = format!(
                     "HTTP/1.1 {status} fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
@@ -700,6 +715,37 @@ mod tests {
             "inputSchema":{"type":"object","properties":{"id":{"type":"string"}},
             "required":["id"]}}),
         ]
+    }
+
+    #[test]
+    fn deep_json_provider_history_and_schema_are_preserved_without_recursive_cleanup() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let config = config(Provider::Openai, "http://127.0.0.1:1/v1".into());
+                let mut backend = ApiBackend::new(&config).unwrap().unwrap();
+                let nested =
+                    mimir_json::parse(&format!("{}null{}", "[".repeat(10000), "]".repeat(10000)))
+                        .unwrap();
+                let response = mimir_json::Document::new(
+                    json!({"status":"completed","output":[{"type":"reasoning","future":nested}]}),
+                );
+                backend.parse_openai(&response).unwrap();
+                let mut tools = mimir_json::Document::new(Value::Array(tools()));
+                tools[0]["inputSchema"]["future_schema_annotation"] =
+                    mimir_json::clone_value(&response["output"][0]["future"]);
+                let request = mimir_json::Document::new(
+                    backend
+                        .request(&selected(), tools.as_array().unwrap())
+                        .unwrap(),
+                );
+                assert!(mimir_json::to_string(&request)
+                    .unwrap()
+                    .contains("future_schema_annotation"));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1133,7 +1179,7 @@ mod tests {
             Action::Done
         ));
         let requests = server.await.unwrap();
-        assert!(serde_json::to_vec(&requests[0].body).unwrap().len() > 2 * 1024 * 1024);
+        assert!(mimir_json::to_vec(&requests[0].body).unwrap().len() > 2 * 1024 * 1024);
         assert_eq!(backend.history.last().unwrap()["content"], large);
     }
 

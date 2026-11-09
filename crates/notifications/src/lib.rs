@@ -225,7 +225,7 @@ impl Event {
     }
 
     fn map_key(&self) -> String {
-        serde_json::to_string(&(&self.source, &self.incident_key)).expect("string event key")
+        mimir_json::to_string(&(&self.source, &self.incident_key)).expect("string event key")
     }
 }
 

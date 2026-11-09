@@ -170,7 +170,7 @@ async fn deletion_and_original_result_commit_once_without_touching_another_proje
     let retained = seed(&store, &service).await?;
     present(&store, &removed, true).await?;
     present(&store, &retained, true).await?;
-    let retained_before = serde_json::to_value(store.get_belief(retained.belief).await?)?;
+    let retained_before = mimir_json::to_value(store.get_belief(retained.belief).await?)?;
     let (token, step) = admitted(&service, &removed).await?;
     let StepDecision::Done(first) = service.delete_project_operation(&step).await? else {
         panic!("deletion did not complete")
@@ -179,7 +179,7 @@ async fn deletion_and_original_result_commit_once_without_touching_another_proje
     present(&store, &removed, false).await?;
     present(&store, &retained, true).await?;
     assert_eq!(
-        serde_json::to_value(store.get_belief(retained.belief).await?)?,
+        mimir_json::to_value(store.get_belief(retained.belief).await?)?,
         retained_before
     );
     drop(service);

@@ -25,7 +25,7 @@ struct Capture {
 }
 
 pub(super) fn pending_keys(value: &Value) -> Result<Vec<String>> {
-    let captured: Capture = serde_json::from_value(value.clone())?;
+    let captured: Capture = mimir_json::from_value(value.clone())?;
     let mut previous = None;
     let mut pending = Vec::new();
     for source in &captured.beliefs {
@@ -45,7 +45,7 @@ pub(super) fn pending_keys(value: &Value) -> Result<Vec<String>> {
     // UUID parsing also accepts alternate spellings; persisted snapshots use
     // the one canonical representation produced by the server.
     ensure!(
-        serde_json::to_value(&captured)? == *value,
+        mimir_json::to_value(&captured)? == *value,
         "The captured source selection does not use its canonical stored representation"
     );
     Ok(pending)
@@ -82,13 +82,13 @@ impl AgeStore {
                         .map(|belief| Source {
                             id: belief.id,
                             content: belief.content,
-                            project: serde_json::to_value(belief.project)
+                            project: mimir_json::to_value(belief.project)
                                 .expect("optional string is JSON"),
                             already_embedded: embedded.contains(&belief.id),
                         })
                         .collect(),
                 };
-                let value = serde_json::to_value(capture)?;
+                let value = mimir_json::to_value(capture)?;
                 let pending = pending_keys(&value)?;
                 Ok(CapturedSelection {
                     selections: vec![(CommitSite::BeliefVectorPublication, pending)],

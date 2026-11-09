@@ -349,7 +349,7 @@ impl Review {
                 Segment::Index(index),
             ];
             if !assessment_keys.insert((
-                serde_json::to_string(&assessment.target)?,
+                mimir_json::to_string(&assessment.target)?,
                 &assessment.scope,
                 &assessment.rubric,
             )) {

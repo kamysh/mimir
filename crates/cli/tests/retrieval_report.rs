@@ -84,7 +84,7 @@ fn run(root: &Path, name: &str, args: &[&str], input: Option<serde_json::Value>)
             .stdin
             .take()
             .unwrap()
-            .write_all(serde_json::to_string(&input)?.as_bytes())?;
+            .write_all(mimir_json::to_string(&input)?.as_bytes())?;
     }
     let output = child.wait_with_output()?;
     std::fs::write(root.join(format!("{name}.stdout")), &output.stdout)?;
@@ -144,7 +144,7 @@ async fn cli_and_hooks_keep_informative_coverage_and_pretool_stdout_valid_json()
         ] {
             let output = run(&root, name, &args, input)?;
             let shown = if name == "pretool" {
-                let value: serde_json::Value = serde_json::from_str(&output)?;
+                let value: serde_json::Value = mimir_json::from_str(&output)?;
                 ensure!(value["hookSpecificOutput"]["hookEventName"] == "PreToolUse");
                 value["hookSpecificOutput"]["additionalContext"]
                     .as_str()

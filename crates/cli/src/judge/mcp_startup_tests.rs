@@ -20,7 +20,7 @@ fn catalogue() -> Value {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).unwrap()
+    mimir_json::from_slice(&output.stdout).unwrap()
 }
 
 fn advertised_mut<'a>(catalogue: &'a mut Value, name: &str) -> &'a mut Value {
@@ -30,6 +30,30 @@ fn advertised_mut<'a>(catalogue: &'a mut Value, name: &str) -> &'a mut Value {
         .iter_mut()
         .find(|tool| tool["name"] == name)
         .unwrap()
+}
+
+#[test]
+fn deep_json_schema_survives_catalogue_copy_and_partial_validation_errors() {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let mut valid = mimir_json::Document::new(catalogue());
+            let nested =
+                mimir_json::parse(&format!("{}null{}", "[".repeat(10000), "]".repeat(10000)))
+                    .unwrap();
+            advertised_mut(&mut valid, "get_experience")["inputSchema"]
+                ["future_schema_annotation"] = nested.into_value();
+            let allowed = mimir_json::Document::new(Value::Array(checked_tools(&valid).unwrap()));
+            assert!(mimir_json::to_string(&allowed)
+                .unwrap()
+                .contains("future_schema_annotation"));
+            advertised_mut(&mut valid, "review_experience")["inputSchema"]["properties"]
+                ["review"]["type"] = json!("wrong");
+            assert!(checked_tools(&valid).is_err());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
@@ -241,7 +265,7 @@ impl Fixture {
         fs::read_to_string(self.path.join("requests"))
             .unwrap()
             .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
+            .map(|line| mimir_json::from_str(line).unwrap())
             .collect()
     }
 

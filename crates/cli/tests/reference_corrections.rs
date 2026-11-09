@@ -60,7 +60,7 @@ async fn missing_references_ask_for_lookup_without_changes_and_keep_clients_usab
         retirement: None,
     })
     .await?;
-    let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+    let before = mimir_json::to_value(service.get_belief(belief.id).await?)?;
     let edge_counts = store.count_edges().await?;
     let stderr = std::fs::File::create(
         fixture
@@ -93,9 +93,9 @@ async fn missing_references_ask_for_lookup_without_changes_and_keep_clients_usab
             input.flush().await?;
             let mut line = String::new();
             ensure!(output.read_line(&mut line).await? != 0, "MCP stopped on {name}");
-            let response: Value = serde_json::from_str(&line)?;
+            let response: Value = mimir_json::from_str(&line)?;
             ensure!(response.get("error").is_none(), "{name} did not offer a correction: {response}");
-            let decision: NeedsInput = serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+            let decision: NeedsInput = mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
             let issue = &decision.issues()[0];
             ensure!(issue.fault().code == Code::MissingReference && issue.fault().path == vec![Segment::Key(field.into())]);
             ensure!(issue.suggested_correction().contains("query_") && issue.suggested_correction().contains("user"));
@@ -104,10 +104,10 @@ async fn missing_references_ask_for_lookup_without_changes_and_keep_clients_usab
                     .args(["evidence", "add", arguments["chunk_id"].as_str().unwrap(), arguments["belief_id"].as_str().unwrap()])
                     .output().await?;
                 ensure!(cli.status.success(), "CLI grounding did not offer a correction: {}", String::from_utf8_lossy(&cli.stderr));
-                let cli_decision: NeedsInput = serde_json::from_slice(&cli.stdout)?;
+                let cli_decision: NeedsInput = mimir_json::from_slice(&cli.stdout)?;
                 ensure!(cli_decision == decision, "CLI and MCP disagree on grounding references");
             }
-            ensure!(serde_json::to_value(service.get_belief(belief.id).await?)? == before);
+            ensure!(mimir_json::to_value(service.get_belief(belief.id).await?)? == before);
             ensure!(store.count_edges().await? == edge_counts);
             ensure!(service.evidence_for_belief(belief.id, None).await?.is_empty());
             if name == "query_intervention" { intervention = Some(decision); }
@@ -115,7 +115,7 @@ async fn missing_references_ask_for_lookup_without_changes_and_keep_clients_usab
         // The same validly formed but absent ID has the same CLI diagnosis.
         let cli = tokio::process::Command::new(env!("CARGO_BIN_EXE_mimir")).args(["intervene", &missing.to_string(), "0.5"]).output().await?;
         ensure!(cli.status.success(), "CLI did not offer a correction: {}", String::from_utf8_lossy(&cli.stderr));
-        let decision: NeedsInput = serde_json::from_slice(&cli.stdout)?;
+        let decision: NeedsInput = mimir_json::from_slice(&cli.stdout)?;
         ensure!(decision == intervention.unwrap(), "CLI and MCP disagree on a missing reference");
         // Reads and idempotent deletion retain their advertised absence results.
         // The same MCP connection remains usable after every correction.
@@ -125,8 +125,8 @@ async fn missing_references_ask_for_lookup_without_changes_and_keep_clients_usab
             input.flush().await?;
             let mut line = String::new();
             ensure!(output.read_line(&mut line).await? != 0);
-            let response: Value = serde_json::from_str(&line)?;
-            let result: Value = serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+            let response: Value = mimir_json::from_str(&line)?;
+            let result: Value = mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
             ensure!(result == expected, "advertised absence meaning changed: {response}");
         }
         Ok::<_, anyhow::Error>(())

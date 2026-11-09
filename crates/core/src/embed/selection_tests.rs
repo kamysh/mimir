@@ -78,7 +78,7 @@ async fn semantic_availability_preserves_literal_results_and_explains_each_actua
     belief.id = id;
     store.insert_belief(&belief).await?;
     store.insert_belief_embedding(id, &[1.0, 0.0, 0.0]).await?;
-    let before = serde_json::to_value(store.get_belief(id).await?)?;
+    let before = mimir_json::to_value(store.get_belief(id).await?)?;
     let complete_cause = format!(
         "The complete input has 513 positions; this backend accepts 512. {}",
         "Complete provider detail. ".repeat(400)
@@ -178,7 +178,7 @@ async fn semantic_availability_preserves_literal_results_and_explains_each_actua
                 .await?;
             assert_eq!(context.retrieval, report.retrieval);
             assert_eq!(context.beliefs[0].id, id);
-            assert_eq!(serde_json::to_value(store.get_belief(id).await?)?, before);
+            assert_eq!(mimir_json::to_value(store.get_belief(id).await?)?, before);
             assert_eq!(seen.lock().unwrap().len(), if configured { 3 } else { 0 });
             assert!(seen
                 .lock()
