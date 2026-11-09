@@ -1,4 +1,4 @@
-# Registered backfill checkpoint
+# Registered backfill
 
 The internal `reembed_operation` path keeps the original selected beliefs and
 model settings. Each vector and its saved item answer commit together. The last
@@ -20,8 +20,13 @@ An operation that already completed returns its original saved answer, even
 after a later deletion or configuration change. It does not recreate deleted
 beliefs or vectors.
 
-This is part of issue #147. Focused native tests verify the behavior above, and
-Agda checks the item policy, original-plan admission and complete-selection
-requirements. The proof covering every interruption across capture and the
-repeated body remains unfinished. Public CLI/MCP token routing is separate work;
-the existing `mimir reembed` command does not yet use this internal path.
+The Agda recovery certificate covers binding the original model, reading the
+source snapshot, saving its plan and committing every vector and answer. A
+completed retry must preserve unrelated records and original saved answers.
+The first completion requires the whole original selection to be complete and
+the saved totals to match the item answers. A stopped preparation cannot claim
+successful embedding.
+
+Focused native tests check the database changes and event-driven cancellation.
+Public CLI/MCP token routing remains separate work in #85 and #86; the existing
+`mimir reembed` command does not yet use this internal registered path.
