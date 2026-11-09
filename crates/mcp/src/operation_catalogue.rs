@@ -8,13 +8,28 @@ use std::collections::{BTreeMap, BTreeSet};
 pub type Input = Value;
 
 pub use mimir_core::operation_catalogue::{
-    CommitBoundary, GraphOperation, LearningOperation, Operation,
+    CommitBoundary, ControlOperation, GraphOperation, LearningOperation, Operation,
 };
 
 async fn call(operation: Operation, service: &MimirService, input: &Input) -> Result<Value> {
+    if let Some(writer) = operation.registered_write() {
+        let token = super::operation_protocol::token(input)?;
+        let mut arguments = mimir_json::Document::new(mimir_json::clone_value(input));
+        arguments
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("Use the advertised argument object"))?
+            .remove("operation_token");
+        let result = service
+            .execute_registered_write(writer, token, arguments)
+            .await?;
+        return super::operation_protocol::outcome(token, result);
+    }
     match operation {
         Operation::Graph(operation) => super::handle_graph_call(service, operation, input).await,
         Operation::Learning(operation) => super::learning::call(service, operation, input).await,
+        Operation::Control(operation) => {
+            super::operation_protocol::call(operation, service, input).await
+        }
     }
 }
 
@@ -36,12 +51,19 @@ impl RegisteredOperation {
         if let Some(correction) = super::admission::arguments(self.input_schema(), input) {
             return Ok(mimir_json::to_value(correction)?);
         }
-        if self.handler == Operation::Graph(GraphOperation::SweepExpiredDefeated) {
-            if let Err(issue) = service.retirement_policy() {
+        let result = call(self.handler, service, input).await;
+        if let Err(error) = &result {
+            if let Some(issue) = error.downcast_ref::<mimir_core::WriteAdmissionIssue>() {
                 return Ok(mimir_json::to_value(issue.correction())?);
             }
         }
-        let result = call(self.handler, service, input).await;
+        if self.handler == Operation::Graph(GraphOperation::SweepExpiredDefeated) {
+            if let Err(error) = &result {
+                if let Some(issue) = error.downcast_ref::<mimir_core::config::RetirementIssue>() {
+                    return Ok(mimir_json::to_value(issue.correction())?);
+                }
+            }
+        }
         // Read-only handlers cannot have changed business data. Sweep also
         // acknowledges rollback before exposing a stored-value diagnostic;
         // an unacknowledged rollback deliberately strips that typed cause.
@@ -189,6 +211,13 @@ impl Catalogue {
                 descriptor["inputSchema"].is_object(),
                 "compiled tool {name} has no input schema"
             );
+            if handler.registered_write().is_some() {
+                let schema = &descriptor["inputSchema"];
+                ensure!(schema["properties"]["operation_token"]["type"]=="string"
+                    && schema["properties"]["operation_token"]["format"]=="uuid"
+                    && schema["required"].as_array().is_some_and(|fields|fields.iter().any(|field|field=="operation_token")),
+                    "registered writer {name} must advertise its required PostgreSQL operation_token UUID");
+            }
             let mut descriptor = descriptor.clone();
             super::admission::close_objects(&mut descriptor["inputSchema"]);
             entries.push(RegisteredOperation {
@@ -279,6 +308,15 @@ mod tests {
             .unwrap()
             .push(json!({"name":"unregistered_tool","inputSchema":{}}));
         assert!(Catalogue::new(unknown).is_err());
+        let mut bypass = original.clone();
+        bypass[0]["inputSchema"]["required"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|field| field != "operation_token");
+        assert!(
+            Catalogue::new(bypass).is_err(),
+            "a registered writer cannot drop mandatory token admission"
+        );
         let mut no_input = original;
         no_input[0].as_object_mut().unwrap().remove("inputSchema");
         assert!(Catalogue::new(no_input).is_err());

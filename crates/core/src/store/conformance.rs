@@ -12,7 +12,7 @@ struct DefeatArguments {
 fn defeat_arguments(request: &OperationBindingRequest) -> Result<DefeatArguments> {
     anyhow::ensure!(request.operation()=="record_defeat" && request.settings().as_object().is_some_and(|v|v.is_empty()),
         "Use the original record_defeat request with empty settings; read its binding and outcome before continuing");
-    let args:DefeatArguments=mimir_json::from_value(request.arguments().clone())
+    let args:DefeatArguments=mimir_json::decode_ref(request.arguments())
         .context("record_defeat requires from_id and to_id UUIDs and a numeric weight in [0,1], with no other fields")?;
     Probability::new(args.weight)?;
     Ok(args)
@@ -141,7 +141,7 @@ impl AgeStore {
             }
             anyhow::ensure!(request.operation()=="propagate_from" && request.settings().as_object().is_some_and(|v|v.is_empty()),
                 "Use the original propagate_from request with empty settings; read its binding and outcome before continuing");
-            let args: Arguments = mimir_json::from_value(request.arguments().clone()).context(
+            let args: Arguments = mimir_json::decode_ref(request.arguments()).context(
                 "propagate_from requires exactly one id field containing the source UUID",
             )?;
             Ok(args.id)
@@ -332,7 +332,7 @@ impl AgeStore {
         fn original(request: &super::OperationBindingRequest) -> Result<Arguments> {
             anyhow::ensure!(request.operation()=="decay_all" && request.settings().as_object().is_some_and(|settings|settings.is_empty()),
                 "Use the original decay_all binding with empty settings; read its saved outcome before continuing");
-            let args:Arguments=mimir_json::from_value(request.arguments().clone()).context("Correct decay_all arguments: supply only decay_factor and project with their declared types")?;
+            let args:Arguments=mimir_json::decode_ref(request.arguments()).context("Correct decay_all arguments: supply only decay_factor and project with their declared types")?;
             anyhow::ensure!(args.decay_factor.is_finite() && (0.0..=1.0).contains(&args.decay_factor),
                 "decay_factor must be finite and between 0 and 1 inclusive; correct it before writing");
             Ok(args)
@@ -473,7 +473,7 @@ impl AgeStore {
             }
             anyhow::ensure!(request.operation()=="clear_document",
                 "Use the original clear_document request and its saved path preparation; no document was changed");
-            let original:Arguments=mimir_json::from_value(request.arguments().clone())
+            let original:Arguments=mimir_json::decode_ref(request.arguments())
                 .context("clear_document requires exactly one string path field. Read the saved binding and outcome. Ask the user whether to cancel this unfinished token and reserve corrected work; do not replace its bound arguments")?;
             let prepared:Prepared=mimir_json::from_value(request.settings().clone())
                 .context("The server's original resolved_path preparation is required. Read the saved binding and outcome. Ask the user whether to cancel this unfinished token and reserve corrected work with server path preparation; do not guess a path or change this token's settings")?;

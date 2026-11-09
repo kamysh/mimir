@@ -510,3 +510,55 @@ async fn a_later_provider_failure_keeps_every_candidate_unpublished_and_the_oper
         .is_none());
     Ok(())
 }
+
+#[tokio::test]
+async fn malformed_saved_owner_opens_recovery_without_replacement_or_publication() -> Result<()> {
+    let (service, project) = service(None).await?;
+    passage(&service, Some(&project), 0, "malformed-saved-review-owner").await?;
+    let review = review_request(&service, &project).await?;
+    let plan = plan(&service, &review, 0).await?;
+    let step = plan.steps()[0].id().to_owned();
+    let token = plan.operation_token();
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    client.execute("INSERT INTO mimir_operation_step_replies(operation_token,step,reply) VALUES($1,$2,'{\"id\":\"unreadable saved allocation\"}'::jsonb)", &[&token,&step]).await?;
+    let original = service.read_operation_step(token, &step).await?.unwrap();
+    let error = service
+        .review_experience_operation(&plan)
+        .await
+        .unwrap_err();
+    let correction = error
+        .downcast_ref::<PreparationRequired>()
+        .expect("Stored owner decoding must ask for correction");
+    assert!(correction.to_string().contains("saved preparation answer"));
+    assert!(correction
+        .to_string()
+        .contains("do not allocate a replacement owner"));
+    assert_eq!(
+        service.read_operation_step(token, &step).await?.unwrap(),
+        original
+    );
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM mimir_embedding_owners WHERE operation_token=$1",
+                &[&token]
+            )
+            .await?
+            .get::<_, i64>(0),
+        0
+    );
+    assert!(service
+        .read_operation_step(token, "@operation-result")
+        .await?
+        .is_none());
+    assert_eq!(
+        service
+            .get_experience(review.experience_id)
+            .await?
+            .unwrap()
+            .review_revision,
+        0
+    );
+    assert!(service.list_beliefs(Some(&project)).await?.is_empty());
+    Ok(())
+}

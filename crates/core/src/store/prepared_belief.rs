@@ -67,6 +67,10 @@ fn original_arguments(request: &OperationBindingRequest) -> Result<BeliefArgumen
     ).into())
 }
 
+pub(crate) fn admit_request(request: &OperationBindingRequest) -> Result<()> {
+    original_arguments(request).map(|_| ())
+}
+
 fn decode_original_arguments(request: &OperationBindingRequest) -> Result<BeliefArguments> {
     anyhow::ensure!(request.operation() == "insert_belief",
         "Use the original insert_belief operation; read its saved binding and outcome before continuing");

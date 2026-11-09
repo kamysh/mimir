@@ -3,6 +3,8 @@ mod backfill_service;
 pub mod config;
 pub mod db;
 mod document_service;
+mod registered_dispatch;
+pub use registered_dispatch::WriteAdmissionIssue;
 pub mod documents;
 pub mod embed;
 pub mod graph;

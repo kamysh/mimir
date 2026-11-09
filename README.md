@@ -439,6 +439,12 @@ docker ps --filter name=postgres-ai
 
 ## MCP tools
 
+Writes require a PostgreSQL-issued `operation_token`. First call
+`reserve_operation` with a stable request key; keep the returned token and the
+same arguments on retries. `operation_outcome` reads the original saved result.
+See the [operation protocol](docs/OPERATION-PROTOCOL.md) for correction,
+pending work and explicit cancellation.
+
 Every new belief needs an indexed-document passage with its actual chunk ID,
 exact document path and quotation, and the submitting agent’s explanation of
 support. Source references do not change probability. Missing support or an
@@ -447,6 +453,9 @@ unavailable embedding returns guidance to open the user dialog. See
 
 | Tool | What it does |
 |---|---|
+| `reserve_operation` | Reserve or recover an action's original token using its stable `request_key`; run no business work |
+| `operation_outcome` | Read the original request, saved progress and final result using its token |
+| `cancel_operation` | Explicitly revoke unfinished publication after the user decides; preserve prior changes and completed results |
 | `insert_belief` | Add a belief with `content`, `probability` [0,1], `confidence` [0,1], independent `provenance` and required indexed-document `grounding` citations; an embedding is prepared before publication |
 | `delete_belief` | Remove a belief and all its edges by `id` |
 | `insert_pattern` | Add a pattern with `situation`, `approach`, `success_rate` [0,1] |
@@ -463,7 +472,6 @@ unavailable embedding returns guidance to open the user dialog. See
 | `query_relevant` | Hybrid retrieval: text match + graph expansion, ordered by probability |
 | `propagate_from` | Run defeat propagation from a seed belief `id` |
 | `query_intervention` | Counterfactual `P(downstream \| do(id = value))`: severs the target's incoming edges, propagates along CAUSES only. Read-only — returns `projected_probability` for causal descendants; never mutates |
-| `update_confidence` | Update the `confidence` value of a belief |
 | `decay_all` | Apply time decay to all beliefs (`decay_factor` defaults to 0.99) |
 | `load_document` | Parse a markdown file into chunks, embed, and index for semantic search |
 | `query_document` | Semantic search over indexed document chunks |

@@ -3,14 +3,18 @@ pub(crate) use backfill::{BackfillSource, BackfillState};
 mod cancellations;
 mod conformance;
 mod direct_graph;
+pub(crate) use direct_graph::admit_request as admit_direct_request;
 mod learning;
+pub(crate) use learning::admit_source_operation;
 mod operation_plans;
 mod operation_steps;
 mod prepared_belief;
+pub(crate) use prepared_belief::admit_request as admit_belief_request;
 pub(crate) use prepared_belief::BeliefPublicationState;
 mod prepared_document;
 pub(crate) use prepared_document::{document_arguments, DocumentDraft, DocumentPreparation};
 mod review_operation;
+pub(crate) use review_operation::admit_request as admit_review_request;
 pub(crate) use review_operation::ReviewPublicationState;
 mod project_deletion;
 mod reservations;
@@ -717,7 +721,7 @@ $$) AS (ok ag_catalog.agtype)"#
                     && request.settings().as_object().is_some_and(|settings| settings.is_empty()),
                 "delete_belief requires its original operation name and empty settings; read the binding and outcome, then resolve the request before writing"
             );
-            let arguments: Arguments = mimir_json::from_value(request.arguments().clone())
+            let arguments: Arguments = mimir_json::decode_ref(request.arguments())
                 .context("delete_belief requires exactly one id field containing a UUID; correct the original request before writing")?;
             Ok(arguments.id)
         }
@@ -2361,12 +2365,12 @@ $$) {CHUNK_RETURN_COLUMNS}"#
                 "Evidence changes have no per-request settings; read the original binding and outcome before continuing");
             match request.operation() {
                 "add_evidence" => {
-                    let args: Add = mimir_json::from_value(request.arguments().clone())
+                    let args: Add = mimir_json::decode_ref(request.arguments())
                         .context("add_evidence requires chunk_id and belief_id UUIDs, and an optional numeric weight in [0,1]; correct the original request before writing")?;
                     let weight = Probability::new(args.weight)?;
                     Ok(Change::Add(args, weight))
                 }
-                "delete_evidence" => Ok(Change::Remove(mimir_json::from_value(request.arguments().clone())
+                "delete_evidence" => Ok(Change::Remove(mimir_json::decode_ref(request.arguments())
                     .context("delete_evidence requires exactly chunk_id and belief_id UUIDs; correct the original request before writing")?)),
                 _ => anyhow::bail!("Use the original registered evidence operation; no evidence was changed"),
             }

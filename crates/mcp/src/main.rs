@@ -4,6 +4,7 @@ mod learning;
 #[cfg(test)]
 mod learning_cycle_test;
 pub mod operation_catalogue;
+mod operation_protocol;
 #[cfg(all(test, unix))]
 mod session_owned_tests;
 use anyhow::Result;
@@ -13,12 +14,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::error;
 
-use mimir_core::{
-    config::Config,
-    graph::{EdgeType, MemoryType},
-    learning::IndependentProvenance,
-    MimirService,
-};
+use mimir_core::{config::Config, graph::MemoryType, MimirService};
 
 // ---------------------------------------------------------------------------
 // JSON-RPC helpers
@@ -391,7 +387,29 @@ fn tools_list() -> Value {
         }
     ]);
     tools.as_array_mut().unwrap().extend(learning::tools());
+    tools
+        .as_array_mut()
+        .unwrap()
+        .extend(operation_protocol::descriptors());
     for tool in tools.as_array_mut().unwrap() {
+        let writer = mimir_core::operation_catalogue::Operation::ALL
+            .iter()
+            .find(|operation| tool["name"].as_str() == Some(operation.name()))
+            .and_then(|operation| operation.registered_write());
+        if writer.is_some() {
+            tool["inputSchema"]["properties"]["operation_token"] = json!({
+                "type":"string","format":"uuid",
+                "description":"First call reserve_operation with a stable request_key. Supply its PostgreSQL-issued token here and keep the exact same tool and arguments on retries. Use operation_outcome to read the original result; never invent a token or replace an unfinished request."});
+            let schema = tool["inputSchema"]
+                .as_object_mut()
+                .expect("compiled tool schema is an object");
+            schema
+                .entry("required")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .expect("compiled required fields are an array")
+                .push(json!("operation_token"));
+        }
         admission::close_objects(&mut tool["inputSchema"]);
     }
     tools
@@ -415,166 +433,15 @@ async fn handle_graph_call(
 ) -> Result<Value> {
     use operation_catalogue::GraphOperation;
     match operation {
-        GraphOperation::InsertBelief => {
-            let provenance: IndependentProvenance = mimir_json::decode_ref(
-                args.get("provenance")
-                    .ok_or_else(|| anyhow::anyhow!("missing 'provenance'"))?,
-            )?;
-            provenance.validate()?;
-            let content = args["content"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'content'"))?;
-            let probability = args["probability"]
-                .as_f64()
-                .ok_or_else(|| anyhow::anyhow!("missing 'probability'"))?;
-            let confidence = args["confidence"]
-                .as_f64()
-                .ok_or_else(|| anyhow::anyhow!("missing 'confidence'"))?;
-            let memory_type = match args["memory_type"].as_str() {
-                Some(s) => s
-                    .parse::<MemoryType>()
-                    .map_err(|e| anyhow::anyhow!("invalid 'memory_type': {e}"))?,
-                None => MemoryType::default(),
-            };
-            let grounding: Vec<mimir_core::preparation::IndexedSupport> =
-                mimir_json::from_value(args["grounding"].clone())?;
-            let belief = svc
-                .add_independent_belief(
-                    content,
-                    probability,
-                    confidence,
-                    args["project"].as_str(),
-                    memory_type,
-                    &provenance,
-                    &grounding,
-                )
-                .await?;
-            Ok(mimir_json::to_value(&belief)?)
-        }
-
-        GraphOperation::DeleteBelief => {
-            let id_str = args["id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
-            let id = uuid::Uuid::parse_str(id_str)?;
-            let deleted = svc.delete_belief(id).await?;
-            Ok(json!({ "deleted": deleted }))
-        }
-
-        GraphOperation::DeleteProject => {
-            let project = args["project"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'project'"))?;
-            let count = svc.delete_project(project).await?;
-            Ok(json!({ "deleted": count }))
-        }
-
-        GraphOperation::DeletePattern => {
-            let id_str = args["id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
-            let id = uuid::Uuid::parse_str(id_str)?;
-            let deleted = svc.delete_pattern(id).await?;
-            Ok(json!({ "deleted": deleted }))
-        }
-
-        GraphOperation::InsertPattern => {
-            let situation = args["situation"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'situation'"))?;
-            let approach = args["approach"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'approach'"))?;
-            let success_rate = args["success_rate"]
-                .as_f64()
-                .ok_or_else(|| anyhow::anyhow!("missing 'success_rate'"))?;
-            let pattern = svc
-                .add_pattern_in_project(
-                    situation,
-                    approach,
-                    success_rate,
-                    args.get("project")
-                        .map(|v| {
-                            v.as_str()
-                                .ok_or_else(|| anyhow::anyhow!("project must be a string"))
-                        })
-                        .transpose()?,
-                )
-                .await?;
-            Ok(mimir_json::to_value(&pattern)?)
-        }
-
-        GraphOperation::RecordSupport => {
-            let from_str = args["from_id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
-            let to_str = args["to_id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'to_id'"))?;
-            let weight = args["weight"]
-                .as_f64()
-                .ok_or_else(|| anyhow::anyhow!("missing 'weight'"))?;
-
-            let from_id = uuid::Uuid::parse_str(from_str)?;
-            let to_id = uuid::Uuid::parse_str(to_str)?;
-            svc.add_edge(from_id, to_id, EdgeType::Supports, weight)
-                .await?;
-            Ok(json!({ "ok": true }))
-        }
-
-        GraphOperation::RecordCause => {
-            let from_str = args["from_id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
-            let to_str = args["to_id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'to_id'"))?;
-            let weight = args["weight"]
-                .as_f64()
-                .ok_or_else(|| anyhow::anyhow!("missing 'weight'"))?;
-
-            let from_id = uuid::Uuid::parse_str(from_str)?;
-            let to_id = uuid::Uuid::parse_str(to_str)?;
-            svc.add_edge(from_id, to_id, EdgeType::Causes, weight)
-                .await?;
-            Ok(json!({ "ok": true }))
-        }
-
-        GraphOperation::RecordDefeat => {
-            let from_str = args["from_id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
-            let to_str = args["to_id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'to_id'"))?;
-            let weight = args["weight"]
-                .as_f64()
-                .ok_or_else(|| anyhow::anyhow!("missing 'weight'"))?;
-
-            let from_id = uuid::Uuid::parse_str(from_str)?;
-            let to_id = uuid::Uuid::parse_str(to_str)?;
-            // Propagation happens automatically inside add_edge for EdgeType::Defeats
-            svc.add_edge(from_id, to_id, EdgeType::Defeats, weight)
-                .await?;
-            Ok(json!({ "ok": true }))
-        }
-
-        GraphOperation::RecordContradiction => {
-            let id_a_str = args["id_a"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'id_a'"))?;
-            let id_b_str = args["id_b"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'id_b'"))?;
-            let weight = args["weight"].as_f64().unwrap_or(1.0);
-
-            let id_a = uuid::Uuid::parse_str(id_a_str)?;
-            let id_b = uuid::Uuid::parse_str(id_b_str)?;
-            svc.add_edge(id_a, id_b, EdgeType::Contradicts, weight)
-                .await?;
-            Ok(json!({ "ok": true }))
-        }
-
+        GraphOperation::InsertBelief => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
+        GraphOperation::DeleteBelief => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
+        GraphOperation::DeleteProject => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
+        GraphOperation::DeletePattern => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
+        GraphOperation::InsertPattern => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
+        GraphOperation::RecordSupport => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
+        GraphOperation::RecordCause => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
+        GraphOperation::RecordDefeat => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
+        GraphOperation::RecordContradiction => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
         GraphOperation::GetBelief => {
             let id_str = args["id"]
                 .as_str()
@@ -636,20 +503,8 @@ async fn handle_graph_call(
             Ok(json!(result))
         }
 
-        GraphOperation::DecayAll => {
-            let decay_factor = args["decay_factor"].as_f64();
-            let project = args["project"].as_str();
-            let count = svc.decay_beliefs(decay_factor, project).await?;
-            Ok(json!({ "decayed": count }))
-        }
-
-        GraphOperation::SweepExpiredDefeated => {
-            let prob_threshold = args["prob_threshold"].as_f64().unwrap_or(0.3);
-            let project = args["project"].as_str();
-            let count = svc.sweep_expired_defeated(prob_threshold, project).await?;
-            Ok(json!({ "deleted": count }))
-        }
-
+        GraphOperation::DecayAll => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
+        GraphOperation::SweepExpiredDefeated => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
         GraphOperation::QueryRelevant => {
             let query = args["context"]
                 .as_str()
@@ -705,20 +560,7 @@ async fn handle_graph_call(
             Ok(json!({"beliefs":result,"retrieval":grounded.retrieval}))
         }
 
-        GraphOperation::AddEvidence => {
-            let belief_str = args["belief_id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'belief_id'"))?;
-            let chunk_str = args["chunk_id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'chunk_id'"))?;
-            let weight = args["weight"].as_f64().unwrap_or(1.0);
-            let belief_id = uuid::Uuid::parse_str(belief_str)?;
-            let chunk_id = uuid::Uuid::parse_str(chunk_str)?;
-            svc.add_evidence(belief_id, chunk_id, weight).await?;
-            Ok(json!({ "ok": true }))
-        }
-
+        GraphOperation::AddEvidence => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
         GraphOperation::GetEvidence => {
             let belief_str = args["belief_id"]
                 .as_str()
@@ -743,21 +585,7 @@ async fn handle_graph_call(
             Ok(json!(result))
         }
 
-        GraphOperation::PropagateFrom => {
-            let id_str = args["id"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
-            let id = uuid::Uuid::parse_str(id_str)?;
-            let updates = svc.propagate_from(id).await?;
-            let result: Vec<Value> = updates
-                .into_iter()
-                .map(
-                    |(uid, prob)| json!({ "id": uid.to_string(), "new_probability": prob.value() }),
-                )
-                .collect();
-            Ok(json!(result))
-        }
-
+        GraphOperation::PropagateFrom => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
         GraphOperation::QueryIntervention => {
             let id_str = args["id"]
                 .as_str()
@@ -776,15 +604,7 @@ async fn handle_graph_call(
             Ok(json!(result))
         }
 
-        GraphOperation::LoadDocument => {
-            let path = args["path"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
-            let project = args["project"].as_str();
-            let count = svc.load_document(path, project).await?;
-            Ok(json!({ "loaded": count }))
-        }
-
+        GraphOperation::LoadDocument => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
         GraphOperation::QueryDocument => {
             let context = args["context"]
                 .as_str()
@@ -798,13 +618,7 @@ async fn handle_graph_call(
             Ok(mimir_json::to_value(&results)?)
         }
 
-        GraphOperation::ClearDocument => {
-            let path = args["path"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
-            let count = svc.clear_document(path).await?;
-            Ok(json!({ "cleared": count }))
-        }
+        GraphOperation::ClearDocument => anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
     }
 }
 
