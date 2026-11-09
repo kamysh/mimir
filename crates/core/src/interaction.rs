@@ -187,6 +187,21 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    pub(crate) fn review_conflict(
+        path: Vec<Segment>,
+        code: Code,
+        message: String,
+        repair: &str,
+    ) -> Self {
+        let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
+            "One assessment per target, scope and rubric; one relationship per endpoint pair and kind; one feedback entry per belief. A target cannot receive both typed assessments and legacy contributions in the same review, and a relationship cannot point to itself.".into(),
+            format!("{repair} Keep the same experience ID and source revision. If the intended evidence or relationship is uncertain, ask the user. Do not invent an assessment, silently discard conflicting evidence, or create another incident to bypass this correction."))
+            .expect("review conflict includes its affected field and repair");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained review conflict"),
+        }
+    }
+
     /// Called only around the pure source validator before publication.
     pub(crate) fn review_source(error: anyhow::Error) -> anyhow::Error {
         let refusal = match error.downcast::<crate::validation::Refusal>() {

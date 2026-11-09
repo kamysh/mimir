@@ -319,38 +319,43 @@ impl Review {
                 &assessment.target,
                 target_path("assessments", index, "target"),
             )?;
-            ensure!(
-                assessment_keys.insert((
-                    serde_json::to_string(&assessment.target)?,
-                    &assessment.scope,
-                    &assessment.rubric
-                )),
-                "duplicate incident assessment"
-            );
-            ensure!(
-                !self
-                    .candidate_feedback
-                    .iter()
-                    .any(|f| f.target == assessment.target),
-                "typed and legacy feedback overlap"
-            );
-            if let BeliefTarget::Existing { belief_id } = assessment.target {
-                ensure!(
-                    !self.feedback.iter().any(|f| f.belief_id == belief_id)
-                        && !self
-                            .links
-                            .iter()
-                            .any(|l| l.to_id == belief_id || l.from_id == belief_id),
-                    "typed and legacy evidence overlap"
-                );
+            let path = vec![
+                Segment::Key("review".into()),
+                Segment::Key("assessments".into()),
+                Segment::Index(index),
+            ];
+            if !assessment_keys.insert((
+                serde_json::to_string(&assessment.target)?,
+                &assessment.scope,
+                &assessment.rubric,
+            )) {
+                return Err(RequestCorrection::review_conflict(path, Code::Duplicate,
+                    format!("Assessment at index {index} repeats the same target, scope and rubric."),
+                    "Submit one assessment for this target, scope and rubric; reconcile the repeated entries against the recorded evidence before resubmitting.").into());
             }
-            ensure!(
-                !self
+            let candidate_overlap = self
+                .candidate_feedback
+                .iter()
+                .any(|f| f.target == assessment.target)
+                || self
                     .candidate_links
                     .iter()
-                    .any(|l| l.from == assessment.target || l.to == assessment.target),
-                "typed and legacy evidence overlap"
-            );
+                    .any(|l| l.from == assessment.target || l.to == assessment.target);
+            let existing_overlap = match assessment.target {
+                BeliefTarget::Existing { belief_id } => {
+                    self.feedback.iter().any(|f| f.belief_id == belief_id)
+                        || self
+                            .links
+                            .iter()
+                            .any(|l| l.to_id == belief_id || l.from_id == belief_id)
+                }
+                _ => false,
+            };
+            if candidate_overlap || existing_overlap {
+                return Err(RequestCorrection::review_conflict(path, Code::UnsupportedCombination,
+                    format!("Assessment at index {index} targets a belief also named in feedback, candidate_feedback, links or candidate_links. This would count the same incident through both contribution formats."),
+                    "Choose one contribution format for this target: keep its typed assessments and remove the overlapping legacy entries, or revise the review to use only the intended legacy contributions for that target. Preserve the evidence and explain the chosen interpretation.").into());
+            }
         }
         for (index, link) in self.candidate_links.iter().enumerate() {
             crate::graph::Probability::new(link.weight)?;
@@ -358,26 +363,38 @@ impl Review {
             validate_target(&link.to, target_path("candidate_links", index, "to"))?;
         }
         let mut link_keys = std::collections::HashSet::new();
-        for link in &self.links {
+        for (index, link) in self.links.iter().enumerate() {
             crate::graph::Probability::new(link.weight)?;
-            ensure!(link.from_id != link.to_id, "self links are not permitted");
+            let path = vec![
+                Segment::Key("review".into()),
+                Segment::Key("links".into()),
+                Segment::Index(index),
+            ];
+            if link.from_id == link.to_id {
+                return Err(RequestCorrection::review_conflict(path, Code::UnsupportedCombination,
+                    format!("Relationship at index {index} points from belief {} back to itself.", link.from_id),
+                    "Use two distinct beliefs returned by list_beliefs, or omit the relationship if no relationship between different beliefs was intended.").into());
+            }
             let (a, b) = if link.relation == EdgeType::Contradicts && link.from_id > link.to_id {
                 (link.to_id, link.from_id)
             } else {
                 (link.from_id, link.to_id)
             };
-            ensure!(
-                link_keys.insert((a, b, link.relation.as_str())),
-                "duplicate relationship"
-            );
+            if !link_keys.insert((a, b, link.relation.as_str())) {
+                return Err(RequestCorrection::review_conflict(path, Code::Duplicate,
+                    format!("Relationship at index {index} repeats {} between beliefs {a} and {b}; reversing a contradiction does not make another relationship.", link.relation.as_str()),
+                    "Submit each relationship once. Reconcile its repeated weights against the evidence; do not count a reversed contradiction twice.").into());
+            }
         }
         let mut seen = std::collections::HashSet::new();
-        for f in &self.feedback {
+        for (index, f) in self.feedback.iter().enumerate() {
             crate::graph::Probability::new(f.weight)?;
-            ensure!(
-                seen.insert(f.belief_id),
-                "one assessment per belief per experience"
-            );
+            if !seen.insert(f.belief_id) {
+                return Err(RequestCorrection::review_conflict(
+                    vec![Segment::Key("review".into()), Segment::Key("feedback".into()), Segment::Index(index)], Code::Duplicate,
+                    format!("Feedback at index {index} repeats belief {}; one incident cannot supply multiple legacy feedback entries for that belief.", f.belief_id),
+                    "Submit one feedback entry for this belief. Reconcile its verdict and weight against the recorded evidence before resubmitting.").into());
+            }
         }
         Ok(())
     }
@@ -668,23 +685,34 @@ mod review_validation_tests {
             extracted_items: vec![],
             source_coverage: vec![],
         };
-        let undeclared = "candidate belief reference must be declared in this review";
-        assert!(review
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains(undeclared));
+        fn missing_target(review: &Review, collection: &str, endpoint: &str) {
+            let error = review.validate().unwrap_err();
+            let correction = error
+                .downcast_ref::<RequestCorrection>()
+                .expect("request correction");
+            let issue = &correction.correction().issues()[0];
+            assert_eq!(issue.fault().code, Code::MissingReference);
+            assert_eq!(
+                issue.fault().path,
+                vec![
+                    Segment::Key("review".into()),
+                    Segment::Key(collection.into()),
+                    Segment::Index(0),
+                    Segment::Key(endpoint.into()),
+                    Segment::Key("candidate_key".into())
+                ]
+            );
+            assert!(issue.expected().contains("belief candidate"));
+            assert!(issue.suggested_correction().contains("list_beliefs"));
+        }
+        missing_target(&review, "candidate_feedback", "target");
 
         review.candidates.push(Candidate::Pattern {
             key: "claim".into(),
             situation: "situation".into(),
             approach: "approach".into(),
         });
-        assert!(review
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains(undeclared));
+        missing_target(&review, "candidate_feedback", "target");
 
         review.candidates[0] = Candidate::Belief {
             key: "claim".into(),
@@ -704,11 +732,7 @@ mod review_validation_tests {
             relation: EdgeType::Supports,
             weight: 0.7,
         });
-        assert!(review
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains(undeclared));
+        missing_target(&review, "candidate_links", "to");
         review.candidate_links[0].to = BeliefTarget::Candidate {
             candidate_key: "claim".into(),
         };

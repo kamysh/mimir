@@ -88,6 +88,81 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
 }
 
 #[tokio::test]
+async fn conflicting_review_entries_offer_repairs_without_changing_saved_work() -> Result<()> {
+    use mimir_core::graph::MemoryType;
+    let service = test_service().await?;
+    let id = fixture_identity().await?;
+    let project = format!("review-conflicts-{id}");
+    let first = isolation::seed_belief_in_project(
+        "first review target",
+        0.5,
+        0.1,
+        &project,
+        MemoryType::Fact,
+    )
+    .await?;
+    let second = isolation::seed_belief_in_project(
+        "second review target",
+        0.5,
+        0.1,
+        &project,
+        MemoryType::Fact,
+    )
+    .await?;
+    let mut client = Client::start(id)?;
+    let checked = async {
+        let source=json!({"id":id,"project":project,"context":"inspect conflicting review entries","action":"retain each observed contribution once","outcome":"unknown","source":"tool_result","evidence":["isolated fixture observation"],"belief_ids":[first.id,second.id]});
+        client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?;
+        let original=client.call("get_experience",json!({"id":id})).await?;
+        let history=client.call("experience_history",json!({"id":id})).await?;
+        let saved_review=client.call("get_learning_review",json!({"id":id})).await?;
+        let base=json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"unresolved fixture observation"});
+        let assessment=json!({"target":{"belief_id":first.id},"scope":"fixture","rubric":"fixture","correctness":{"value":null,"weight":0},"usefulness":{"value":null,"weight":0},"evidence_indices":[],"rationale":"unresolved"});
+        let feedback=json!({"belief_id":first.id,"verdict":"support","weight":0});
+        let link=json!({"from_id":first.id,"to_id":second.id,"relation":"Contradicts","weight":0});
+        let candidate_feedback=json!({"target":{"belief_id":first.id},"verdict":"support","weight":0});
+        let candidate_link=json!({"from":{"belief_id":first.id},"to":{"belief_id":second.id},"relation":"Supports","weight":0});
+        let mut cases=Vec::new();
+        let mut duplicate=base.clone();duplicate["assessments"]=json!([assessment,assessment]);
+        cases.push((duplicate,json!(["review","assessments",1]),Code::Duplicate));
+        for (field,entry) in [("feedback",feedback.clone()),("links",link.clone()),("candidate_feedback",candidate_feedback),("candidate_links",candidate_link)] {
+            let mut review=base.clone(); review["assessments"]=json!([assessment]);review[field]=json!([entry]);
+            cases.push((review,json!(["review","assessments",0]),Code::UnsupportedCombination));
+        }
+        let mut self_link=base.clone();self_link["links"]=json!([{"from_id":first.id,"to_id":first.id,"relation":"Supports","weight":0}]);
+        cases.push((self_link,json!(["review","links",0]),Code::UnsupportedCombination));
+        for repeated in [link.clone(),json!({"from_id":second.id,"to_id":first.id,"relation":"Contradicts","weight":0})] {
+            let mut review=base.clone();review["links"]=json!([link,repeated]);
+            cases.push((review,json!(["review","links",1]),Code::Duplicate));
+        }
+        let mut duplicate_feedback=base.clone();duplicate_feedback["feedback"]=json!([feedback,feedback]);
+        cases.push((duplicate_feedback,json!(["review","feedback",1]),Code::Duplicate));
+        for (review,path,code) in cases {
+            let result=client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
+            let correction:NeedsInput=serde_json::from_value(result)?;
+            let item=&correction.issues()[0];
+            ensure!(item.fault().code==code && serde_json::to_value(&item.fault().path)?==path);
+            ensure!(!item.fault().message.is_empty() && !item.expected().is_empty());
+            ensure!(item.suggested_correction().contains("same experience ID"));
+            ensure!(client.call("get_experience",json!({"id":id})).await?==original,"conflict changed its experience");
+            ensure!(client.call("experience_history",json!({"id":id})).await?==history,"conflict changed its history");
+            ensure!(client.call("get_learning_review",json!({"id":id})).await?==saved_review,"conflict published a review");
+        }
+        let mut corrected=base;corrected["assessments"]=json!([assessment]);
+        let result=client.call("review_experience",json!({"review":corrected,"expected_review_revision":0})).await?;
+        ensure!(result["review_revision"]==1,"corrected request did not complete: {result}");
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    let cleanup = service.delete_project(&project).await;
+    checked?;
+    ensure!(stopped.success());
+    cleanup?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn learning_history_and_explanations_return_all_or_the_explicit_positive_selection(
 ) -> Result<()> {
     use mimir_core::graph::MemoryType;
