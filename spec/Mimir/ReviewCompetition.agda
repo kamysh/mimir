@@ -39,10 +39,10 @@ reviewRevision : Store.World → ℕ → ℕ
 reviewRevision before identity = Ledger.R.Cell.review
   (Ledger.World.cells (Publication.World.ledger (Store.World.publication before)) identity)
 
-module First (calculator : Posterior.Calculator) (before : Store.World) (old : Observation.Snapshot) (requested : Review)
+module First (calculator : Posterior.Calculator) (posteriorTime : ℤ) (before : Store.World) (old : Observation.Snapshot) (requested : Review)
   (expected : ℕ) (clock : Candidate → ℤ) (now : ℤ)
   (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes (Store.World.publication before)))) where
-  module V = Reviewing.WithCalculator.For calculator before old requested expected clock now unique
+  module V = Reviewing.WithCalculator.For calculator posteriorTime before old requested expected clock now unique
   module N = V.N
 
   after : (selected : N.F.Fresh expected) (nodes : Data.List.List Graph.Node) →
@@ -58,10 +58,10 @@ module First (calculator : Posterior.Calculator) (before : Store.World) (old : O
         (Ledger.World.cells (Publication.World.ledger (Store.World.publication before))) =
       cong suc (sym (N.F.Fresh.expectedMatches selected))
 
-module For (calculator : Posterior.Calculator) (database : ℕ) (requested : Input.Review) (expected : ℤ)
+module For (calculator : Posterior.Calculator) (posteriorTime : ℤ) (database : ℕ) (requested : Input.Review) (expected : ℤ)
   (clock : Candidate → ℤ) (now : ℤ) (identities : Candidate → ℕ) where
   request = Operations.reviewExperience requested expected
-  module P = Operations.Protocol database request clock now identities calculator
+  module P = Operations.Protocol database request clock now identities calculator posteriorTime
   module D = Database.Over Store.World Observation.Snapshot Operations.Failure database 671942183
 
   module Bound (locks : Lock.Contract) (reads : Committed.Contract Store.World)
@@ -73,7 +73,7 @@ module For (calculator : Posterior.Calculator) (database : ℕ) (requested : Inp
     module Canonical (requested : Review) where
       module Against (before : Store.World) (old : Observation.Snapshot) (expectedNat : ℕ)
         (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes (Store.World.publication before)))) where
-        module V = Reviewing.WithCalculator.For calculator before old requested expectedNat clock now unique
+        module V = Reviewing.WithCalculator.For calculator posteriorTime before old requested expectedNat clock now unique
         module N = V.N
 
         abstract
@@ -96,7 +96,7 @@ module For (calculator : Posterior.Calculator) (database : ℕ) (requested : Inp
       abstract
         checkStateInert : ∀ before old expectedNat →
           expectedNat ≢ reviewRevision before (Experience.Experience.identity (Observation.Snapshot.experience old)) →
-          B.Inert (P.reviewed (Reviewing.WithCalculator.checkState calculator before old requested expectedNat clock now identities))
+          B.Inert (P.reviewed (Reviewing.WithCalculator.checkState calculator posteriorTime before old requested expectedNat clock now identities))
         checkStateInert before old expectedNat stale with Observation.checkSnapshot old
         ... | Validation.rejected failure invalid = B.reject _
         ... | Validation.accepted valid with Recording.coherent before old
@@ -108,7 +108,7 @@ module For (calculator : Posterior.Calculator) (database : ℕ) (requested : Inp
 
       abstract
         checkStateAdvanced : ∀ before old expectedNat after resultSnapshot →
-          P.reviewed (Reviewing.WithCalculator.checkState calculator before old requested expectedNat clock now identities) ≡ P.T.replace after resultSnapshot →
+          P.reviewed (Reviewing.WithCalculator.checkState calculator posteriorTime before old requested expectedNat clock now identities) ≡ P.T.replace after resultSnapshot →
           reviewRevision after (Experience.Experience.identity (Observation.Snapshot.experience old)) ≡ suc expectedNat
         checkStateAdvanced before old expectedNat after resultSnapshot observed with Observation.checkSnapshot old
         ... | Validation.rejected failure invalid with observed
@@ -125,7 +125,7 @@ module For (calculator : Posterior.Calculator) (database : ℕ) (requested : Inp
 
       abstract
         planInert : ∀ before → ∣ expected ∣ ≢ reviewRevision before (Review.experienceID requested) →
-          B.Inert (P.reviewed (Reviewing.WithCalculator.plan calculator before requested expected clock now identities))
+          B.Inert (P.reviewed (Reviewing.WithCalculator.plan calculator posteriorTime before requested expected clock now identities))
         planInert before stale with Operations.expectedValid expected
         ... | false = B.reject _
         ... | true with Read.get (Review.experienceID requested) (Store.World.current before) in found
@@ -135,7 +135,7 @@ module For (calculator : Posterior.Calculator) (database : ℕ) (requested : Inp
             (Read.lookupIdentity (Review.experienceID requested) (Store.World.current before) old found))))
 
       abstract
-        freshProposalAdvances : ∀ before after resultSnapshot → P.reviewed (Reviewing.WithCalculator.plan calculator before requested expected clock now identities) ≡ P.T.replace after resultSnapshot →
+        freshProposalAdvances : ∀ before after resultSnapshot → P.reviewed (Reviewing.WithCalculator.plan calculator posteriorTime before requested expected clock now identities) ≡ P.T.replace after resultSnapshot →
           reviewRevision after (Review.experienceID requested) ≡ suc ∣ expected ∣
         freshProposalAdvances before after resultSnapshot observed with Operations.expectedValid expected
         ... | false with observed

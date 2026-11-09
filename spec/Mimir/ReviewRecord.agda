@@ -46,13 +46,13 @@ data Decision : Set where
   replay : Observation.Snapshot → Decision
   fresh : Store.World → Observation.Snapshot → Bool → Decision
 
-module WithCalculator (calculator : Posterior.Calculator) where
+module WithCalculator (calculator : Posterior.Calculator) (posteriorTime : ℤ) where
   module For (before : Store.World) (old : Observation.Snapshot) (requested : Review)
     (expected : ℕ) (clock : Candidate → ℤ) (now : ℤ)
     (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes (Store.World.publication before)))) where
 
     module N = Numerical.For calculator (Store.World.publication before) (Observation.Snapshot.experience old)
-      requested clock now unique expected (Store.identities before) (Store.World.grounding before)
+      requested clock posteriorTime unique expected (Store.identities before) (Store.World.grounding before)
 
     convert : N.Decision → Decision
     convert (N.refused failure) = rejected (invalid failure)
@@ -153,7 +153,7 @@ installPrepared ((belief , value) ∷ rest) before = installPrepared rest (recor
       (Application.EmbeddingOwnerRow.token owner ≟ Graph.BeliefValues.identity belief)))
       (Application.World.embeddingOwners before) })
 
-module PreparedReview (calculator : Posterior.Calculator) (requested : Review) (expected : ℤ) (clock : Candidate → ℤ)
+module PreparedReview (calculator : Posterior.Calculator) (posteriorTime : ℤ) (requested : Review) (expected : ℤ) (clock : Candidate → ℤ)
   (now : ℤ) (identities : Candidate → ℕ) (supplied : List PreparedCandidate) where
 
   identity : Candidate → ℕ
@@ -198,7 +198,7 @@ module PreparedReview (calculator : Posterior.Calculator) (requested : Review) (
 
   intended : Application.World → Result
   intended before = finish before (selections before)
-    (WithCalculator.plan calculator (pending before) requested expected timestamp now identity)
+    (WithCalculator.plan calculator posteriorTime (pending before) requested expected timestamp now identity)
 
   missingPreparationCannotPublish : ∀ before after observed limit →
     finish before nothing (fresh after observed limit) ≡ needsPreparation
@@ -207,7 +207,7 @@ module PreparedReview (calculator : Posterior.Calculator) (requested : Review) (
   missingPreparationRulesOutPublication : ∀ before after observed limit →
     selections before ≡ nothing → intended before ≢ published after observed limit
   missingPreparationRulesOutPublication before after observed limit missing
-    with WithCalculator.plan calculator (pending before) requested expected timestamp now identity
+    with WithCalculator.plan calculator posteriorTime (pending before) requested expected timestamp now identity
   ... | rejected failure = λ ()
   ... | replay original = λ ()
   ... | fresh proposed original numericLimit rewrite missing = λ ()

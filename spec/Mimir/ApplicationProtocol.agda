@@ -55,6 +55,7 @@ record Environment : Set₁ where
     unicode : Ranking.Unicode
     databaseTextBefore : Text → Text → Bool
     now : ℤ
+    posteriorTime : ℤ -- PostgreSQL sample after the learning lock, distinct from recorded metadata time
     retirementPolicy : Validation.Fault ⊎ ℤ
     candidateClock : Candidates.Candidate → ℤ
     candidateIdentity : Candidates.Candidate → ℕ
@@ -62,11 +63,11 @@ record Environment : Set₁ where
 
 module Run (environment : Environment) where
   open Environment environment
-  module Delete = Deletion.Operation database calculator now
+  module Delete = Deletion.Operation database calculator posteriorTime
   module Forget = Project.Operation database
-  module Grounding = Ground.Operation database calculator now
+  module Grounding = Ground.Operation database calculator posteriorTime
   module Document = Documents.Operations database dimension
-  module Learn (q : Learning.Request) = Learning.Protocol database q candidateClock now candidateIdentity calculator
+  module Learn (q : Learning.Request) = Learning.Protocol database q candidateClock now candidateIdentity calculator posteriorTime
   module Retrieve = Retrieval.Run f32 unicode
   module LearningContext = Context.Run f32 unicode databaseTextBefore
 

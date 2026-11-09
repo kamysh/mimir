@@ -21,6 +21,8 @@ This includes propagation, source/review changes, evidence changes and deletion
 of a related belief. Ordinary writers sample PostgreSQL time after acquiring
 the shared write lock. Registered writers use their original reservation time.
 The stored baseline can only move forward. Activation remains a separate event.
+Source and review history retain their existing transaction timestamps; those
+recorded times and the separate posterior clock reading remain distinct.
 
 Decay uses the full elapsed nanoseconds, so advancing the baseline does not
 discard a fractional second. An unchanged or earlier clock returns the exact
