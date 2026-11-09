@@ -24,10 +24,11 @@ import Mimir.PublicInput as Input
 
 -- Only these obsolete application budgets are removed. Other settings retain
 -- their values and order, including model/provider credentials.
-llmKeys judgeKeys emailKeys : List String
+llmKeys judgeKeys emailKeys embeddingKeys : List String
 llmKeys = "timeout_seconds" ∷ "max_calls" ∷ "max_output_tokens" ∷ "max_budget_usd" ∷ []
 judgeKeys = "batch_size" ∷ []
 emailKeys = "timeout_seconds" ∷ "retry_seconds" ∷ "max_attempts" ∷ []
+embeddingKeys = "batch_size" ∷ []
 
 named : List String → Text → Bool
 named [] key = false
@@ -93,6 +94,12 @@ emailRetired = named emailKeys
 
 module Email = Filter emailRetired
 
+module Embeddings = Filter (named embeddingKeys)
+
+upgradeEmbeddings : Maybe Fields → Maybe Fields
+upgradeEmbeddings nothing = nothing
+upgradeEmbeddings (just fields) = just (Embeddings.removeRetired fields)
+
 upgradeEmail : Maybe Fields → Maybe Fields
 upgradeEmail nothing = nothing
 upgradeEmail (just fields) = just (Email.removeRetired fields)
@@ -108,10 +115,10 @@ upgradeLlm (just fields) = just (removeRetired fields)
 module Document (Payload : Set) where
   record Before : Set where
     constructor before
-    field version : Maybe ℕ; logging : Fields; llm judge email : Maybe Fields; payload : Payload
+    field version : Maybe ℕ; logging : Fields; llm judge email embeddings : Maybe Fields; payload : Payload
   record After : Set where
     constructor after
-    field operations : O.Admitted; logging : Fields; llm judge email : Maybe Fields; payload : Payload
+    field operations : O.Admitted; logging : Fields; llm judge email embeddings : Maybe Fields; payload : Payload
   data Failure : Set where futureVersion : Failure; invalid : Fault → Failure
 
   validate : Before → Failure ⊎ After
@@ -121,7 +128,7 @@ module Document (Payload : Set) where
   ...   | inj₁ fault = inj₁ (invalid fault)
   ...   | inj₂ accepted = inj₂ (after accepted (Logging.removeRetired (Before.logging old))
     (upgradeLlm (Before.llm old)) (upgradeJudge (Before.judge old))
-    (upgradeEmail (Before.email old)) (Before.payload old))
+    (upgradeEmail (Before.email old)) (upgradeEmbeddings (Before.embeddings old)) (Before.payload old))
 
   upgrade : Before → Failure ⊎ After
   upgrade old with Before.version old
@@ -139,7 +146,7 @@ module Document (Payload : Set) where
   ...   | ()
   payloadPreserved old .(after accepted (Logging.removeRetired (Before.logging old))
     (upgradeLlm (Before.llm old)) (upgradeJudge (Before.judge old))
-    (upgradeEmail (Before.email old)) (Before.payload old)) refl | inj₂ logs | inj₂ accepted = refl
+    (upgradeEmail (Before.email old)) (upgradeEmbeddings (Before.embeddings old)) (Before.payload old)) refl | inj₂ logs | inj₂ accepted = refl
 
   -- Startup requires the admitted value, so the new package cannot execute
   -- application I/O using absent or incompatible operational settings.

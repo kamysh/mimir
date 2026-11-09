@@ -15,6 +15,7 @@ pub const CONFIG_VERSION: u32 = 1;
 pub const RETIRED_LIMIT_SETTINGS: &[(&str, &[&str])] = &[
     ("logging", &["max_file_bytes", "retained_files"]),
     ("judge", &["batch_size"]),
+    ("embeddings", &["batch_size"]),
     (
         "llm",
         &[
@@ -299,10 +300,10 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
-    fn upgrade_removes_only_the_judges_retired_batch_count() {
+    fn upgrade_removes_retired_batch_settings_and_preserves_other_settings() {
         let dir = directory();
         let path = dir.join("config.toml");
-        fs::write(&path, format!("config_version=1\n{DB}\n[logging]\ndirectory={}\n[embeddings]\nbackend='local'\nbatch_size=4 # preserve embedding setting\n[judge]\nbatch_size=5\nproject='user-project' # preserve scope\nmcp_args=['user-argument']\n[llm]\nbackend='command'\nmodel='chosen'\ncommand='/bin/true'\n",
+        fs::write(&path, format!("config_version=1\n{DB}\n[logging]\ndirectory={}\n[embeddings]\nbackend='local'\nbatch_size=4 # retire this setting\ncache_dir='/fixture/cache' # preserve embedding setting\n[judge]\nbatch_size=5\nproject='user-project' # preserve scope\nmcp_args=['user-argument']\n[llm]\nbackend='command'\nmodel='chosen'\ncommand='/bin/true'\n",
             toml::Value::String(dir.join("logs").display().to_string()))).unwrap();
         upgrade(&path, None).unwrap();
         let first = fs::read_to_string(&path).unwrap();
@@ -313,7 +314,11 @@ mod tests {
             value["judge"]["mcp_args"][0].as_str(),
             Some("user-argument")
         );
-        assert_eq!(value["embeddings"]["batch_size"].as_integer(), Some(4));
+        assert!(value["embeddings"].get("batch_size").is_none());
+        assert_eq!(
+            value["embeddings"]["cache_dir"].as_str(),
+            Some("/fixture/cache")
+        );
         assert!(first.contains("# preserve embedding setting"));
         assert!(first.contains("# preserve scope"));
         assert!(first.contains(DB));

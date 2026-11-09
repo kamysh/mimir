@@ -319,17 +319,11 @@ struct EmbedState {
 
 struct LocalModel {
     state: Mutex<Option<Arc<EmbedState>>>,
-    batch_size: Option<usize>,
     cache_dir: Option<PathBuf>,
 }
 
 impl LocalModel {
-    fn new(batch_size: usize, cache_dir: Option<String>) -> Self {
-        let batch_size = if batch_size == 0 {
-            None
-        } else {
-            Some(batch_size)
-        };
+    fn new(cache_dir: Option<String>) -> Self {
         let cache_dir = cache_dir.and_then(|p| {
             let t = p.trim().to_string();
             if t.is_empty() {
@@ -340,7 +334,6 @@ impl LocalModel {
         });
         Self {
             state: Mutex::new(None),
-            batch_size,
             cache_dir,
         }
     }
@@ -650,79 +643,78 @@ mod complete_input_tests {
 fn embed_with_state(
     state: &EmbedState,
     texts: &[String],
-    batch_size: Option<usize>,
     cancellation: &EmbeddingCancellation,
 ) -> Result<Vec<Vec<f32>>> {
-    let chunk_size = batch_size.unwrap_or(texts.len()).max(1);
+    cancellation.check()?;
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
     let mut all_embeddings = Vec::with_capacity(texts.len());
 
-    for chunk in texts.chunks(chunk_size) {
-        cancellation.check()?;
-        let mut encodings = state
-            .tokenizer
-            .encode_batch(chunk.to_vec(), true)
-            .map_err(|e| anyhow::anyhow!("tokenizer encode_batch: {e}"))?;
+    cancellation.check()?;
+    let mut encodings = state
+        .tokenizer
+        .encode_batch(texts.to_vec(), true)
+        .map_err(|e| anyhow::anyhow!("tokenizer encode_batch: {e}"))?;
 
-        // Validate complete encodings before any model call. Padding extends
-        // shorter inputs; it never truncates a longer one.
-        let seq_len = complete_sequence_length(&encodings)?;
-        let batch = chunk.len();
+    // Validate complete encodings before any model call. Padding extends
+    // shorter inputs; it never truncates a longer one.
+    let seq_len = complete_sequence_length(&encodings)?;
+    let batch = texts.len();
 
-        let mut input_ids = vec![0i64; batch * seq_len];
-        let mut attention_mask = vec![0i64; batch * seq_len];
-        let mut token_type_ids = vec![0i64; batch * seq_len];
+    let mut input_ids = vec![0i64; batch * seq_len];
+    let mut attention_mask = vec![0i64; batch * seq_len];
+    let mut token_type_ids = vec![0i64; batch * seq_len];
 
-        for (b, enc) in encodings.iter_mut().enumerate() {
-            let ids = enc.get_ids();
-            let masks = enc.get_attention_mask();
-            let types = enc.get_type_ids();
-            let len = ids.len();
-            for s in 0..len {
-                input_ids[b * seq_len + s] = ids[s] as i64;
-                attention_mask[b * seq_len + s] = masks[s] as i64;
-                token_type_ids[b * seq_len + s] = types[s] as i64;
+    for (b, enc) in encodings.iter_mut().enumerate() {
+        let ids = enc.get_ids();
+        let masks = enc.get_attention_mask();
+        let types = enc.get_type_ids();
+        let len = ids.len();
+        for s in 0..len {
+            input_ids[b * seq_len + s] = ids[s] as i64;
+            attention_mask[b * seq_len + s] = masks[s] as i64;
+            token_type_ids[b * seq_len + s] = types[s] as i64;
+        }
+    }
+
+    let ids_t: Tensor = tract_ndarray::Array2::from_shape_vec((batch, seq_len), input_ids)?.into();
+    let mask_t: Tensor =
+        tract_ndarray::Array2::from_shape_vec((batch, seq_len), attention_mask.clone())?.into();
+    let types_t: Tensor =
+        tract_ndarray::Array2::from_shape_vec((batch, seq_len), token_type_ids)?.into();
+
+    let model = state
+        .model
+        .lock()
+        .map_err(|_| anyhow::anyhow!("model mutex poisoned"))?;
+    cancellation.check()?;
+    let outputs = model
+        .run(tvec![ids_t.into(), mask_t.into(), types_t.into()])
+        .context("running ONNX model")?;
+
+    // last_hidden_state: [batch, seq, 768]
+    let hidden = outputs[0]
+        .to_array_view::<f32>()
+        .context("extracting model output")?;
+
+    for b in 0..batch {
+        let mut emb = vec![0f32; LOCAL_DIM];
+        let mut count = 0f32;
+        for s in 0..seq_len {
+            if attention_mask[b * seq_len + s] > 0 {
+                for d in 0..LOCAL_DIM {
+                    emb[d] += hidden[[b, s, d]];
+                }
+                count += 1.0;
             }
         }
-
-        let ids_t: Tensor =
-            tract_ndarray::Array2::from_shape_vec((batch, seq_len), input_ids)?.into();
-        let mask_t: Tensor =
-            tract_ndarray::Array2::from_shape_vec((batch, seq_len), attention_mask.clone())?.into();
-        let types_t: Tensor =
-            tract_ndarray::Array2::from_shape_vec((batch, seq_len), token_type_ids)?.into();
-
-        let model = state
-            .model
-            .lock()
-            .map_err(|_| anyhow::anyhow!("model mutex poisoned"))?;
-        cancellation.check()?;
-        let outputs = model
-            .run(tvec![ids_t.into(), mask_t.into(), types_t.into()])
-            .context("running ONNX model")?;
-
-        // last_hidden_state: [batch, seq, 768]
-        let hidden = outputs[0]
-            .to_array_view::<f32>()
-            .context("extracting model output")?;
-
-        for b in 0..batch {
-            let mut emb = vec![0f32; LOCAL_DIM];
-            let mut count = 0f32;
-            for s in 0..seq_len {
-                if attention_mask[b * seq_len + s] > 0 {
-                    for d in 0..LOCAL_DIM {
-                        emb[d] += hidden[[b, s, d]];
-                    }
-                    count += 1.0;
-                }
+        if count > 0.0 {
+            for v in &mut emb {
+                *v /= count;
             }
-            if count > 0.0 {
-                for v in &mut emb {
-                    *v /= count;
-                }
-            }
-            all_embeddings.push(emb);
         }
+        all_embeddings.push(emb);
     }
     Ok(all_embeddings)
 }
@@ -741,11 +733,9 @@ pub fn make_backend(cfg: &EmbeddingsConfig) -> Result<OwnedEmbeddingBackend> {
             cfg.api_key.clone().unwrap_or_default(),
             cfg.model.clone(),
         )?),
-        EmbeddingBackend::Local => Box::new(local_worker::LocalBackend::new(
-            cfg.batch_size,
-            cfg.cache_dir.clone(),
-            None,
-        )),
+        EmbeddingBackend::Local => {
+            Box::new(local_worker::LocalBackend::new(cfg.cache_dir.clone(), None))
+        }
     };
     Ok(OwnedEmbeddingBackend { provider })
 }
@@ -759,7 +749,6 @@ pub fn make_backend_with_worker(
     if matches!(cfg.backend, EmbeddingBackend::Local) {
         Ok(OwnedEmbeddingBackend {
             provider: Box::new(local_worker::LocalBackend::new(
-                cfg.batch_size,
                 cfg.cache_dir.clone(),
                 Some(executable),
             )),

@@ -62,8 +62,8 @@ Reply (editor _ _) = Bool ⊎ ℕ
 module P = Effects.Protocol Effect Reply
 open P using (Script; done; ask; _>>=_)
 
-module Run (sizeMaximum : ℕ) where
-  module Decode = Schema.Decode sizeMaximum
+module Run where
+  module Decode = Schema.Decode
 
   caseDecoded : Validation.Fault ⊎ Schema.Config → Script (Failure ⊎ Schema.Config)
   caseDecoded (inj₁ fault) = done (inj₁ (validation fault))
@@ -104,7 +104,7 @@ module Run (sizeMaximum : ℕ) where
         ((filesystem path content effect , reply) ∷ events) result
 
   module Creation (parser : Unsigned.Parser) where
-    module Overrides = Input.Read parser sizeMaximum
+    module Overrides = Input.Read parser
 
     -- Creation checks existence before decoding overrides. The actual writer
     -- is the WriteRun relation above, preserving O_EXCL and partial-write states.

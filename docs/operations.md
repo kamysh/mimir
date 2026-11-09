@@ -179,6 +179,7 @@ Checking and upgrading use the same list:
 | --- | --- |
 | `logging` | `max_file_bytes`, `retained_files` |
 | `judge` | `batch_size` |
+| `embeddings` | `batch_size` |
 | `llm` | `timeout_seconds`, `max_calls`, `max_output_tokens`, `max_budget_usd` |
 | `email` | `timeout_seconds`, `retry_seconds`, `max_attempts` |
 

@@ -1,12 +1,12 @@
 {-# OPTIONS --safe #-}
 -- Backend-specific application policy. HTTP, tokenization and ONNX execution
--- are dependency operations; caching, batch boundaries, padding, pooling and
+-- are dependency operations; caching, complete input, padding, pooling and
 -- response alignment are Mimir decisions. No model/network operation is run by
 -- checking this specification.
 module Mimir.EmbeddingBackend where
 
 open import Data.Bool using (Bool; true; false; _∧_)
-open import Data.List using (List; []; _∷_; _++_; length; take; drop; foldl; replicate)
+open import Data.List using (List; []; _∷_; _++_; length; foldl; replicate)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc; _⊔_; _∸_; _≤?_)
 open import Data.Product using (_×_; _,_)
@@ -38,23 +38,6 @@ cacheOverride nothing = nothing
 cacheOverride (just path) with trim path
 ... | [] = nothing
 ... | clean@(_ ∷ _) = just clean
-
-chunkSize : ℕ → ℕ → ℕ
-chunkSize zero count = count ⊔ 1
-chunkSize (suc n) count = suc n
-
--- Fuel is exactly the initial input length; every nonempty step consumes at
--- least one input. No provider budget or arbitrary batch cutoff is introduced.
-batchesFuel : ℕ → ℕ → List Text → List (List Text)
-batchesFuel zero size texts = []
-batchesFuel (suc fuel) size [] = []
-batchesFuel (suc fuel) size texts@(_ ∷ _) =
-  take (suc size) texts ∷ batchesFuel fuel size (drop (suc size) texts)
-
-batches : ℕ → List Text → List (List Text)
-batches zero [] = []
-batches zero texts@(_ ∷ _) = texts ∷ []
-batches (suc size) texts = batchesFuel (length texts) size texts
 
 record Tokens : Set where
   constructor tokens
@@ -166,18 +149,20 @@ module Arithmetic (float : Ranking.F32) where
     size = sequenceLength (V.toList encoded)
     inputs = Data.List.map (padTokens size) (V.toList encoded)
 
-  batch : List Text → Script (Text ⊎ List Vector)
-  batch texts = ask (tokenize texts true) (λ
-    { (inj₁ error) → done (inj₁ error)
-    ; (inj₂ encoded) → encodedBatch encoded })
+  afterTokenization : ∀ {count} → Text ⊎ V.Vec Tokens count → Script (Text ⊎ List Vector)
+  afterTokenization (inj₁ error) = done (inj₁ error)
+  afterTokenization (inj₂ encoded) = encodedBatch encoded
 
-  runBatches : List (List Text) → Script (Text ⊎ List Vector)
-  runBatches [] = done (inj₂ [])
-  runBatches (texts ∷ rest) = batch texts >>= λ
-    { (inj₁ error) → done (inj₁ error)
-    ; (inj₂ vectors) → runBatches rest >>= λ
-      { (inj₁ error) → done (inj₁ error)
-      ; (inj₂ later) → done (inj₂ (vectors ++ later)) } }
+  batch : List Text → Script (Text ⊎ List Vector)
+  batch texts = ask (tokenize texts true) afterTokenization
+
+  complete : List Text → Script (Text ⊎ List Vector)
+  complete [] = done (inj₂ [])
+  complete texts@(_ ∷ _) = batch texts
+
+  completeRequestTokenizedTogether : ∀ first rest →
+    complete (first ∷ rest) ≡ ask (tokenize (first ∷ rest) true) afterTokenization
+  completeRequestTokenizedTogether first rest = refl
 
 data CacheState : Set where unloaded loading ready poisoned : CacheState
 data CacheEvent : Set where acquire loaded failed releasePoison : CacheEvent

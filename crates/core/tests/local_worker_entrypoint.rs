@@ -28,14 +28,14 @@ fn both_binaries_serve_private_embedding_protocol_without_loading_configuration(
         let mut output = BufReader::new(child.stdout.take().unwrap());
         for _ in 0..2 {
             input
-                .write_all(b"{\"version\":1,\"texts\":[],\"batch_size\":null,\"cache_dir\":null}\n")
+                .write_all(b"{\"version\":2,\"texts\":[],\"cache_dir\":null}\n")
                 .unwrap();
             input.flush().unwrap();
             let mut line = String::new();
             assert_ne!(output.read_line(&mut line).unwrap(), 0);
             assert_eq!(
                 serde_json::from_str::<serde_json::Value>(&line).unwrap(),
-                serde_json::json!({"status":"started","version":1})
+                serde_json::json!({"status":"started","version":2})
             );
             line.clear();
             assert_ne!(output.read_line(&mut line).unwrap(), 0);

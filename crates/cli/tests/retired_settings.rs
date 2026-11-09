@@ -4,6 +4,8 @@ use std::{path::Path, process::Command};
 
 fn run(root: &Path, name: &str, args: &[&str]) -> Result<std::process::Output> {
     let output = Command::new(env!("CARGO_BIN_EXE_mimir"))
+        .env("MIMIR_CONFIG", root.join("init-only-config.toml"))
+        .env("XDG_STATE_HOME", root.join("state"))
         .args(args)
         .output()?;
     std::fs::write(root.join(format!("{name}.stdout")), &output.stdout)?;
@@ -13,6 +15,33 @@ fn run(root: &Path, name: &str, args: &[&str]) -> Result<std::process::Output> {
         format!("{:?}\n", output.status.code()),
     )?;
     Ok(output)
+}
+
+#[test]
+fn retired_embedding_init_argument_explains_the_fix_without_creating_configuration() -> Result<()> {
+    let root = std::env::temp_dir().join(format!(
+        "mimir-retired-embedding-init-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir(&root)?;
+    for (index, value) in ["0", "4", "private-retired-value"].into_iter().enumerate() {
+        let argument = format!("batch_size={value}");
+        let output = run(&root, &format!("init-{index}"), &["init", &argument])?;
+        ensure!(!output.status.success());
+        let diagnostic = String::from_utf8(output.stderr)?;
+        ensure!(
+            diagnostic.contains("embeddings.batch_size is obsolete")
+                && diagnostic.contains("mimir config upgrade"),
+            "{diagnostic}"
+        );
+        ensure!(!diagnostic.contains("private-retired-value"));
+        ensure!(
+            !root.join("init-only-config.toml").exists(),
+            "retired argument created configuration"
+        );
+    }
+    eprintln!("Complete init diagnostics retained at {}", root.display());
+    Ok(())
 }
 
 #[test]
@@ -28,6 +57,7 @@ fn check_and_upgrade_share_retired_fields_and_preserve_user_configuration_offlin
         ("logging", "max_file_bytes"),
         ("logging", "retained_files"),
         ("judge", "batch_size"),
+        ("embeddings", "batch_size"),
         ("llm", "timeout_seconds"),
         ("llm", "max_calls"),
         ("llm", "max_output_tokens"),
@@ -46,7 +76,7 @@ fn check_and_upgrade_share_retired_fields_and_preserve_user_configuration_offlin
                 String::new()
             }
         };
-        let text=format!("config_version=1 # keep format comment\n[logging]\ndirectory={}\n{}[database]\nhost='127.0.0.1' # keep connection comment\nport=1\ndbname='offline-fixture'\nuser='fixture'\npassword='private-fixture-password'\n[embeddings]\nbackend='local'\nbatch_size=4 # preserve unrelated user setting\n[judge]\nproject='chosen-user-project'\n{}[llm]\nbackend='command'\nmodel='chosen-model' # preserve model comment\ncommand='/bin/true'\nargs=['one','two']\n{}[email]\nenabled=false\nusername='configured-user'\n{}[email.oauth]\nprovider='google'\nclient_id='configured-client'\nrefresh_token='private-fixture-refresh-token'\n[unrelated]\nuser_setting='preserve this'\n",toml::Value::String(root.join("logs").display().to_string()),extra("logging"),extra("judge"),extra("llm"),extra("email"));
+        let text=format!("config_version=1 # keep format comment\n[logging]\ndirectory={}\n{}[database]\nhost='127.0.0.1' # keep connection comment\nport=1\ndbname='offline-fixture'\nuser='fixture'\npassword='private-fixture-password'\n[embeddings]\nbackend='local'\ncache_dir='/fixture/model-cache' # preserve unrelated user setting\n{}[judge]\nproject='chosen-user-project'\n{}[llm]\nbackend='command'\nmodel='chosen-model' # preserve model comment\ncommand='/bin/true'\nargs=['one','two']\n{}[email]\nenabled=false\nusername='configured-user'\n{}[email.oauth]\nprovider='google'\nclient_id='configured-client'\nrefresh_token='private-fixture-refresh-token'\n[unrelated]\nuser_setting='preserve this'\n",toml::Value::String(root.join("logs").display().to_string()),extra("logging"),extra("embeddings"),extra("judge"),extra("llm"),extra("email"));
         let path = root.join(format!("{index}.toml"));
         std::fs::write(&path, &text)?;
         #[cfg(unix)]

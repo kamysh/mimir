@@ -12,6 +12,7 @@ open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (String; toList; fromList)
 open import Relation.Nullary using (yes; no)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.Validation using (Fault)
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
@@ -77,14 +78,24 @@ database raw = V.asObject raw >>= λ entries → fields (V.Object.normalize entr
     optional "ssl_client_cert" V.asString values >>= λ cert → optional "ssl_client_key" V.asString values >>= λ key →
     inj₂ (C.database host dbname user port password passfile mode root cert key)
 
-module Decode (sizeMaximum : ℕ) where
+module Decode where
+  batchRetired : Fault
+  batchRetired = Validation.fault (Validation.key "batch_size" ∷ []) Validation.unsupportedCombination
+    "embeddings.batch_size is obsolete; run mimir config upgrade to remove it, then mimir config check. Embedding processes the complete request without a grouping limit."
+
   embeddings : V.Value → Fault ⊎ C.Embeddings
-  embeddings raw = V.asObject raw >>= λ entries → fields (V.Object.normalize entries)
+  embeddings raw with Public.view raw (toList "batch_size")
+  ... | just _ = inj₁ batchRetired
+  ... | nothing = V.asObject raw >>= λ entries → fields (V.Object.normalize entries)
     where
     fields : V.Object.View → Fault ⊎ C.Embeddings
     fields values = required "backend" backend values >>= λ backend → defaulted "model" [] V.asString values >>= λ model →
-      optional "api_key" V.asString values >>= λ key → defaulted "batch_size" 0 (unsigned sizeMaximum) values >>= λ batch →
-      optional "cache_dir" V.asString values >>= λ cache → inj₂ (C.embeddings backend model key batch cache)
+      optional "api_key" V.asString values >>= λ key →
+      optional "cache_dir" V.asString values >>= λ cache → inj₂ (C.embeddings backend model key cache)
+
+  anyRetiredBatchValueRequiresCorrection : ∀ raw value →
+    Public.view raw (toList "batch_size") ≡ just value → embeddings raw ≡ inj₁ batchRetired
+  anyRetiredBatchValueRequiresCorrection raw value present rewrite present = refl
 
   decode : V.Value → Fault ⊎ Config
   decode raw = Operations.decode raw >>= λ operations →

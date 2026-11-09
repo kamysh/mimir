@@ -38,7 +38,7 @@ Compatible conversion configurationValue environment =
 module Bound (sizeMaximum : ℕ) (path : Path.Path) (environment : Connection.Environment)
   (decimalPort : ℕ → Text) (certificateBlocks : Text → List Text) (unix : Bool) where
   private
-    module C = Configuration.Run sizeMaximum
+    module C = Configuration.Run
     module M = Migration.Runtime Text Text
     module S configurationValue = Startup.Run (Config.Config.core configurationValue) environment decimalPort certificateBlocks unix
 

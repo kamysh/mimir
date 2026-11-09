@@ -6,14 +6,13 @@ use std::process::{Child, Command, Stdio};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const FLAG: &str = "--embedding-worker";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
     version: u32,
     texts: Vec<String>,
-    batch_size: Option<std::num::NonZeroUsize>,
     cache_dir: Option<String>,
 }
 
@@ -27,20 +26,14 @@ enum Response {
 
 pub(super) struct LocalBackend {
     idle: Mutex<Vec<Worker>>,
-    batch_size: Option<std::num::NonZeroUsize>,
     cache_dir: Option<String>,
     executable: Option<PathBuf>,
 }
 
 impl LocalBackend {
-    pub(super) fn new(
-        batch_size: usize,
-        cache_dir: Option<String>,
-        executable: Option<PathBuf>,
-    ) -> Self {
+    pub(super) fn new(cache_dir: Option<String>, executable: Option<PathBuf>) -> Self {
         Self {
             idle: Mutex::new(Vec::new()),
-            batch_size: std::num::NonZeroUsize::new(batch_size),
             cache_dir: cache_dir
                 .map(|path| path.trim().to_owned())
                 .filter(|path| !path.is_empty()),
@@ -75,7 +68,6 @@ impl EmbeddingProvider for LocalBackend {
             let request = Request {
                 version: VERSION,
                 texts: texts.to_vec(),
-                batch_size: self.batch_size,
                 cache_dir: self.cache_dir.clone(),
             };
             let result = worker.exchange(&request).await;
@@ -255,7 +247,7 @@ fn worker_main() -> Result<()> {
         std::process::exit(0);
     });
     let mut model: Option<LocalModel> = None;
-    let mut selected: Option<(Option<std::num::NonZeroUsize>, Option<String>)> = None;
+    let mut selected: Option<Option<String>> = None;
     let mut output = std::io::stdout().lock();
     for line in receiver {
         let request: Request = serde_json::from_str(&line?)?;
@@ -270,12 +262,9 @@ fn worker_main() -> Result<()> {
             if request.texts.is_empty() {
                 return Ok(Vec::new());
             }
-            let settings = (request.batch_size, request.cache_dir.clone());
+            let settings = request.cache_dir.clone();
             if selected.as_ref() != Some(&settings) {
-                model = Some(LocalModel::new(
-                    request.batch_size.map_or(0, |size| size.get()),
-                    request.cache_dir,
-                ));
+                model = Some(LocalModel::new(request.cache_dir));
                 selected = Some(settings);
             }
             let model = model.as_ref().context("worker model absent")?;
@@ -284,7 +273,6 @@ fn worker_main() -> Result<()> {
             embed_with_state(
                 &state,
                 &request.texts,
-                model.batch_size,
                 &EmbeddingCancellation { state: received },
             )
         })();
@@ -325,14 +313,13 @@ mod tests {
         Request {
             version: VERSION,
             texts: vec!["whole input".into()],
-            batch_size: None,
             cache_dir: Some(cache.join("model-cache").display().to_string()),
         }
     }
 
     #[tokio::test]
     async fn stopped_native_work_is_killed_and_reaped() {
-        let (directory, program) = fixture("json.loads(sys.stdin.readline())\nprint(json.dumps({'status':'started','version':1}),flush=True)\nwhile True: pass");
+        let (directory, program) = fixture("json.loads(sys.stdin.readline())\nprint(json.dumps({'status':'started','version':2}),flush=True)\nwhile True: pass");
         let mut worker = Worker::spawn(program).unwrap();
         worker
             .input
@@ -364,10 +351,9 @@ mod tests {
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
         let socket = directory.join("ready.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let (program_directory, program) = fixture(&format!("import socket,os\njson.loads(sys.stdin.readline())\nprint(json.dumps({{'status':'started','version':1}}),flush=True)\ns=socket.socket(socket.AF_UNIX)\ns.connect({:?})\ns.sendall((str(os.getpid())+'\\n').encode())\nwhile True: pass", socket.to_str().unwrap()));
+        let (program_directory, program) = fixture(&format!("import socket,os\njson.loads(sys.stdin.readline())\nprint(json.dumps({{'status':'started','version':2}}),flush=True)\ns=socket.socket(socket.AF_UNIX)\ns.connect({:?})\ns.sendall((str(os.getpid())+'\\n').encode())\nwhile True: pass", socket.to_str().unwrap()));
         let backend = OwnedEmbeddingBackend {
             provider: Box::new(LocalBackend::new(
-                0,
                 Some(directory.join("model-cache").display().to_string()),
                 Some(program),
             )),
@@ -391,7 +377,7 @@ mod tests {
 
     #[tokio::test]
     async fn exchange_preserves_whole_vectors_and_reuses_one_process() {
-        let (directory, program) = fixture("for line in sys.stdin:\n request=json.loads(line)\n print(json.dumps({'status':'started','version':1}),flush=True)\n print(json.dumps({'status':'complete','vectors':[[0.125]*768 for text in request['texts']]}),flush=True)");
+        let (directory, program) = fixture("for line in sys.stdin:\n request=json.loads(line)\n print(json.dumps({'status':'started','version':2}),flush=True)\n print(json.dumps({'status':'complete','vectors':[[0.125]*768 for text in request['texts']]}),flush=True)");
         let mut worker = Worker::spawn(program).unwrap();
         let pid = worker.child.id();
         let expected = vec![vec![0.125; LOCAL_DIM]];
@@ -409,8 +395,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn complete_collection_reaches_worker_once_without_a_batch_setting() {
+        let (directory, program) = fixture("for line in sys.stdin:\n request=json.loads(line)\n assert sorted(request)==['cache_dir','texts','version']\n assert request['version']==2\n assert request['texts']==['input-'+str(i) for i in range(257)]\n print(json.dumps({'status':'started','version':2}),flush=True)\n print(json.dumps({'status':'complete','vectors':[[float(i)]*768 for i in range(len(request['texts']))]}),flush=True)");
+        let backend = make_backend_with_worker(
+            &EmbeddingsConfig {
+                backend: EmbeddingBackend::Local,
+                model: String::new(),
+                api_key: None,
+                cache_dir: Some(directory.join("model-cache").display().to_string()),
+            },
+            program,
+        )
+        .unwrap();
+        let texts: Vec<String> = (0..257).map(|index| format!("input-{index}")).collect();
+        let vectors = backend.embed(&texts).await.unwrap();
+        assert_eq!(vectors.len(), texts.len());
+        for (index, vector) in vectors.iter().enumerate() {
+            assert_eq!(vector, &vec![index as f32; LOCAL_DIM]);
+        }
+        drop(backend);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
     async fn dropping_one_job_does_not_stop_another_worker() {
-        let (directory, program) = fixture("json.loads(sys.stdin.readline())\nprint(json.dumps({'status':'started','version':1}),flush=True)\nwhile True: pass");
+        let (directory, program) = fixture("json.loads(sys.stdin.readline())\nprint(json.dumps({'status':'started','version':2}),flush=True)\nwhile True: pass");
         let mut first = Worker::spawn(program.clone()).unwrap();
         let mut second = Worker::spawn(program).unwrap();
         first
@@ -443,9 +452,8 @@ mod tests {
 
     #[tokio::test]
     async fn provider_failure_keeps_complete_private_diagnostics() {
-        let (directory, program) = fixture("json.loads(sys.stdin.readline())\nsys.stderr.write('whole diagnostic\\n'*10000)\nsys.stderr.flush()\nprint(json.dumps({'status':'started','version':1}),flush=True)\nprint(json.dumps({'status':'failed','message':'model rejected input'}),flush=True)\nsys.stdin.read()");
+        let (directory, program) = fixture("json.loads(sys.stdin.readline())\nsys.stderr.write('whole diagnostic\\n'*10000)\nsys.stderr.flush()\nprint(json.dumps({'status':'started','version':2}),flush=True)\nprint(json.dumps({'status':'failed','message':'model rejected input'}),flush=True)\nsys.stdin.read()");
         let backend = LocalBackend::new(
-            0,
             Some(directory.join("model-cache").display().to_string()),
             Some(program),
         );

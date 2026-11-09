@@ -30,7 +30,7 @@ module Process (sizeMaximum : ℕ) (configurationPath : Path.Path)
   (certificateBlocks : Text → List Text) (unix : Bool)
   (environment : Application.Environment) (format : Encoding.Formatting) (conversion : Conversion.Contract)
   where
-  module C = Configuration.Run sizeMaximum
+  module C = Configuration.Run
   module S config = Startup.Run (Config.Config.core config) connectionEnvironment decimalPort certificateBlocks unix
   module M = Migration.Runtime Text Text
   module R = Runtime.Run environment format conversion

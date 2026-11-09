@@ -139,45 +139,45 @@ module Local (float : Ranking.F32) where
     stopped : Text ⊎ ⊤ → State
 
   data Step (withExtension : Path.Path → Text → Path.Path) (pid : Text)
-    (base : Path.Path) (batchSize : ℕ) (texts : List Text) : State → State → Set where
-    fresh : Step withExtension pid base batchSize texts (idle Backend.unloaded)
+    (base : Path.Path) (texts : List Text) : State → State → Set where
+    fresh : Step withExtension pid base texts (idle Backend.unloaded)
       (loading (load withExtension pid base))
-    reuse : Step withExtension pid base batchSize texts (idle Backend.ready)
-      (embedding (A.runBatches (Backend.batches batchSize texts)))
-    poisoned : Step withExtension pid base batchSize texts (idle Backend.poisoned)
+    reuse : Step withExtension pid base texts (idle Backend.ready)
+      (embedding (A.complete texts))
+    poisoned : Step withExtension pid base texts (idle Backend.poisoned)
       (returned Backend.poisoned (inj₁ (toList "embed state mutex poisoned")))
     loadReply : ∀ effect continuation reply →
-      Step withExtension pid base batchSize texts (loading (ask effect continuation)) (loading (continuation reply))
-    loadFailed : ∀ error → Step withExtension pid base batchSize texts (loading (done (inj₁ error)))
+      Step withExtension pid base texts (loading (ask effect continuation)) (loading (continuation reply))
+    loadFailed : ∀ error → Step withExtension pid base texts (loading (done (inj₁ error)))
       (returned Backend.unloaded (inj₁ error))
-    loaded : Step withExtension pid base batchSize texts (loading (done (inj₂ tt)))
-      (embedding (A.runBatches (Backend.batches batchSize texts)))
-    batchReply : ∀ effect continuation reply → Step withExtension pid base batchSize texts
+    loaded : Step withExtension pid base texts (loading (done (inj₂ tt)))
+      (embedding (A.complete texts))
+    batchReply : ∀ effect continuation reply → Step withExtension pid base texts
       (embedding (ask effect continuation)) (embedding (continuation reply))
-    completed : ∀ result → Step withExtension pid base batchSize texts (embedding (done result)) (joining result)
-    joined : ∀ result → Step withExtension pid base batchSize texts (joining result) (returned Backend.ready result)
-    joinFailed : ∀ result error → Step withExtension pid base batchSize texts (joining result)
+    completed : ∀ result → Step withExtension pid base texts (embedding (done result)) (joining result)
+    joined : ∀ result → Step withExtension pid base texts (joining result) (returned Backend.ready result)
+    joinFailed : ∀ result error → Step withExtension pid base texts (joining result)
       (returned Backend.ready (inj₁ error))
-    cancelLoading : ∀ script → Step withExtension pid base batchSize texts
+    cancelLoading : ∀ script → Step withExtension pid base texts
       (loading script) (stopping WorkerStop.stop)
-    cancelEmbedding : ∀ script → Step withExtension pid base batchSize texts
+    cancelEmbedding : ∀ script → Step withExtension pid base texts
       (embedding script) (stopping WorkerStop.stop)
-    cancelJoining : ∀ result → Step withExtension pid base batchSize texts
+    cancelJoining : ∀ result → Step withExtension pid base texts
       (joining result) (stopping WorkerStop.stop)
-    stopReply : ∀ effect continuation reply → Step withExtension pid base batchSize texts
+    stopReply : ∀ effect continuation reply → Step withExtension pid base texts
       (stopping (WorkerStop.E.ask effect continuation)) (stopping (continuation reply))
-    stopReturned : ∀ result → Step withExtension pid base batchSize texts
+    stopReturned : ∀ result → Step withExtension pid base texts
       (stopping (WorkerStop.E.done result)) (stopped result)
 
   -- Quantification includes a blocked dependency at any point of either
   -- script: cancellation needs no tokenizer, download or inference reply.
-  canStopEveryLoadingStage : ∀ extension pid base batch texts script →
-    Step extension pid base batch texts (loading script) (stopping WorkerStop.stop)
-  canStopEveryLoadingStage extension pid base batch texts script = cancelLoading script
+  canStopEveryLoadingStage : ∀ extension pid base texts script →
+    Step extension pid base texts (loading script) (stopping WorkerStop.stop)
+  canStopEveryLoadingStage extension pid base texts script = cancelLoading script
 
-  canStopEveryInferenceStage : ∀ extension pid base batch texts script →
-    Step extension pid base batch texts (embedding script) (stopping WorkerStop.stop)
-  canStopEveryInferenceStage extension pid base batch texts script = cancelEmbedding script
+  canStopEveryInferenceStage : ∀ extension pid base texts script →
+    Step extension pid base texts (embedding script) (stopping WorkerStop.stop)
+  canStopEveryInferenceStage extension pid base texts script = cancelEmbedding script
 
   start : Backend.CacheState → List Text → State
   start cached [] = returned cached (inj₂ [])

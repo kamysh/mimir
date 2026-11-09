@@ -89,7 +89,6 @@ async fn grounded_service(project: &str) -> GroundedReviewService {
                 backend: EmbeddingBackend::Local,
                 model: String::new(),
                 api_key: None,
-                batch_size: 0,
                 cache_dir: Some(directory.join("cache").display().to_string()),
             }),
             llm: None,

@@ -12,6 +12,7 @@ pub enum EmbeddingBackend {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(try_from = "EmbeddingInput")]
 pub struct EmbeddingsConfig {
     pub backend: EmbeddingBackend,
     /// Used by Voyage and OpenAI backends. Ignored for local.
@@ -20,15 +21,86 @@ pub struct EmbeddingsConfig {
     /// Required for Voyage and OpenAI. Not needed for local.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    /// Local backend: batch size for embedding calls (0 = no limit).
-    #[serde(default)]
-    pub batch_size: usize,
     /// Local backend: directory to cache downloaded model files.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_dir: Option<String>,
 }
 
+pub(crate) const RETIRED_EMBEDDING_BATCH: &str = "embeddings.batch_size is obsolete: run `mimir config upgrade` to remove it, then `mimir config check`. Embedding processes the complete request without a grouping limit.";
+
+#[derive(Deserialize)]
+struct EmbeddingInput {
+    backend: EmbeddingBackend,
+    #[serde(default)]
+    model: String,
+    api_key: Option<String>,
+    cache_dir: Option<String>,
+    // Preserve acceptance of unrelated future settings, but never silently
+    // reinterpret an explicitly retired setting. Values are not retained.
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, serde::de::IgnoredAny>,
+}
+
+impl TryFrom<EmbeddingInput> for EmbeddingsConfig {
+    type Error = &'static str;
+
+    fn try_from(input: EmbeddingInput) -> Result<Self, Self::Error> {
+        if input.extra.contains_key("batch_size") {
+            return Err(RETIRED_EMBEDDING_BATCH);
+        }
+        Ok(Self {
+            backend: input.backend,
+            model: input.model,
+            api_key: input.api_key,
+            cache_dir: input.cache_dir,
+        })
+    }
+}
+
 // ── SSL mode ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod embedding_policy_tests {
+    use super::*;
+
+    #[test]
+    fn retired_embedding_batch_values_are_never_silently_reinterpreted() {
+        for value in [
+            "0",
+            "4",
+            "-1",
+            "false",
+            "'private-retired-value'",
+            "[]",
+            "{}",
+        ] {
+            let error = toml::from_str::<EmbeddingsConfig>(&format!(
+                "backend='local'\nbatch_size={value}\n"
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(RETIRED_EMBEDDING_BATCH), "{error}");
+            assert!(!error.contains("private-retired-value"), "{error}");
+        }
+        let error = serde_json::from_value::<EmbeddingsConfig>(serde_json::json!({
+            "backend":"local", "batch_size":null
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(RETIRED_EMBEDDING_BATCH), "{error}");
+    }
+
+    #[test]
+    fn complete_input_configuration_round_trips_without_a_batch_policy() {
+        let input =
+            "backend='local'\ncache_dir='/fixture/cache'\nunrelated='preserved compatibility'\n";
+        let config: EmbeddingsConfig = toml::from_str(input).unwrap();
+        let saved = toml::to_string(&config).unwrap();
+        assert!(!saved.contains("batch_size"));
+        assert_eq!(toml::from_str::<EmbeddingsConfig>(&saved).unwrap(), config);
+        assert_eq!(config.cache_dir.as_deref(), Some("/fixture/cache"));
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -308,6 +380,13 @@ impl Config {
             anyhow::anyhow!("invalid Mimir config TOML (source omitted to protect credentials)")
         })?;
         let operations = crate::operations::Operations::decode(&value)?;
+        anyhow::ensure!(
+            value
+                .get("embeddings")
+                .and_then(|table| table.get("batch_size"))
+                .is_none(),
+            RETIRED_EMBEDDING_BATCH
+        );
         let config = value
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid Mimir database/embedding configuration"))?;
@@ -332,8 +411,8 @@ impl Config {
     /// if the file already exists — same safety contract as `create_template`.
     ///
     /// Recognised keys: host, port, dbname, user, password, pgpassfile, ssl_mode, ssl_root_cert,
-    /// ssl_client_cert, ssl_client_key, backend, model, api_key, batch_size,
-    /// cache_dir. `backend`/`model`/`api_key`/`batch_size`/`cache_dir` populate
+    /// ssl_client_cert, ssl_client_key, backend, model, api_key,
+    /// cache_dir. `backend`/`model`/`api_key`/`cache_dir` populate
     /// `[embeddings]`, which is included only if `backend` is given.
     pub fn create_from_kv(pairs: &[(String, String)]) -> anyhow::Result<std::path::PathBuf> {
         let path = Self::config_path();
@@ -395,7 +474,6 @@ impl Config {
                         backend: EmbeddingBackend::Local,
                         model: String::new(),
                         api_key: None,
-                        batch_size: 0,
                         cache_dir: None,
                     });
                     e.backend = backend;
@@ -406,7 +484,6 @@ impl Config {
                             backend: EmbeddingBackend::Local,
                             model: String::new(),
                             api_key: None,
-                            batch_size: 0,
                             cache_dir: None,
                         })
                         .model = value.clone();
@@ -417,32 +494,17 @@ impl Config {
                             backend: EmbeddingBackend::Local,
                             model: String::new(),
                             api_key: None,
-                            batch_size: 0,
                             cache_dir: None,
                         })
                         .api_key = Some(value.clone());
                 }
-                "batch_size" => {
-                    let batch_size = value
-                        .parse()
-                        .map_err(|_| anyhow::anyhow!("invalid batch_size: {value}"))?;
-                    embeddings
-                        .get_or_insert_with(|| EmbeddingsConfig {
-                            backend: EmbeddingBackend::Local,
-                            model: String::new(),
-                            api_key: None,
-                            batch_size: 0,
-                            cache_dir: None,
-                        })
-                        .batch_size = batch_size;
-                }
+                "batch_size" => anyhow::bail!(RETIRED_EMBEDDING_BATCH),
                 "cache_dir" => {
                     embeddings
                         .get_or_insert_with(|| EmbeddingsConfig {
                             backend: EmbeddingBackend::Local,
                             model: String::new(),
                             api_key: None,
-                            batch_size: 0,
                             cache_dir: None,
                         })
                         .cache_dir = Some(value.clone());
