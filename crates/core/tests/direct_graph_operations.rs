@@ -245,6 +245,16 @@ async fn malformed_bound_requests_and_missing_endpoints_remain_pending_without_w
             .downcast_ref::<RequestCorrection>()
             .expect("typed correction");
         ensure!(!correction.correction().issues().is_empty());
+        let issue = &correction.correction().issues()[0];
+        if issue.fault().code != mimir_core::validation::Code::MissingReference {
+            let repair = issue.suggested_correction();
+            ensure!(repair.contains("ask the user whether"));
+            ensure!(repair.contains("cancel this pending operation"));
+            ensure!(repair.contains("reserve a corrected request"));
+            ensure!(repair.contains("Do not rewrite a bound request"));
+            ensure!(repair.contains("automatically cancel or reserve replacement work"));
+            ensure!(repair.contains("Keep the original token"));
+        }
         pending(&service, &step).await?;
         ensure!(serde_json::to_value(store.list_patterns().await?)? == patterns);
         ensure!(store.count_edges().await? == edges);

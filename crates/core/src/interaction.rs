@@ -196,7 +196,7 @@ impl RequestCorrection {
         let issue = CorrectionItem::new(Location::Arguments,
             Fault { path: if field.is_empty() { vec![] } else { vec![Segment::Key(field.into())] }, code, message },
             expected.into(),
-            "Read the original operation binding and the tool schema. Correct the indicated request before publication; if its intended values are unknown, ask the user. Keep the original token for outcome readback after a lost reply; do not change a bound request or invent identifiers.".into())
+            "Read the original operation binding, its saved outcome and the tool schema. If the stored arguments are wrong, ask the user whether to cancel this pending operation and reserve a corrected request. Do not rewrite a bound request, automatically cancel or reserve replacement work, or invent identifiers. Keep the original token for outcome readback after a lost reply. If intended values are unknown, ask the user rather than guessing.".into())
             .expect("bound graph correction gives a request and repair");
         Self {
             correction: NeedsInput::new(issue, vec![]).expect("explained graph correction"),
