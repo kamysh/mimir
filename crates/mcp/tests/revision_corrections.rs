@@ -88,6 +88,39 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
 }
 
 #[tokio::test]
+async fn blank_learning_context_project_offers_correction_and_keeps_connection_usable() -> Result<()>
+{
+    let id = fixture_identity().await?;
+    let mut client = Client::start(id)?;
+    let project = format!("context-project-correction-{id}");
+    let valid = json!({"context":"literal context", "project":project});
+    let before = client.call("query_learning_context", valid.clone()).await?;
+    for project in ["", " \t\r\n", "\u{2003}"] {
+        let response = client
+            .call(
+                "query_learning_context",
+                json!({"context":"literal context", "project":project}),
+            )
+            .await?;
+        let correction: NeedsInput = serde_json::from_value(response.clone())?;
+        let issue = &correction.issues()[0];
+        ensure!(issue.fault().path == vec![Segment::Key("project".into())]);
+        ensure!(issue.fault().code == Code::EmptyText);
+        ensure!(issue.expected().contains("nonblank project"));
+        ensure!(issue.suggested_correction().contains("ask the user"));
+        ensure!(response["business_changes"] == "none");
+    }
+    let after = client.call("query_learning_context", valid).await?;
+    ensure!(
+        after == before,
+        "corrections changed the learning-context response"
+    );
+    drop(client.input);
+    ensure!(client.child.wait().await?.success());
+    Ok(())
+}
+
+#[tokio::test]
 async fn local_key_mistakes_offer_precise_repairs_before_any_reservation_or_publication(
 ) -> Result<()> {
     use mimir_core::graph::MemoryType;

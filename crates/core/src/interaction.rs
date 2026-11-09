@@ -187,6 +187,23 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    pub(crate) fn learning_context_project() -> Self {
+        let issue = CorrectionItem::new(
+            Location::Arguments,
+            Fault {
+                path: vec![Segment::Key("project".into())],
+                code: Code::EmptyText,
+                message: "The supplied project is blank or contains only whitespace.".into(),
+            },
+            "The explicit, nonblank project for the intended learning context.".into(),
+            "Supply the intended project from the task context and retry. If it is not known, ask the user. Do not invent a project or substitute an unrelated one.".into(),
+        )
+        .expect("the project correction identifies its field and repair");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained project correction"),
+        }
+    }
+
     pub(crate) fn local_key(path: Vec<Segment>, code: Code, message: String) -> Self {
         let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
             "A nonempty stable local key, with no leading or trailing whitespace. Spaces inside a key are allowed. Each key appears once in its declaration or reference list.".into(),

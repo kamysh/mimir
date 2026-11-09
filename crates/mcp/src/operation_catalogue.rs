@@ -57,6 +57,7 @@ impl RegisteredOperation {
                 LearningOperation::RecordExperience
                     | LearningOperation::ReviewExperience
                     | LearningOperation::GetLessonAssessment
+                    | LearningOperation::QueryLearningContext
             )
         ) {
             if let Err(error) = &result {

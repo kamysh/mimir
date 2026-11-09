@@ -1084,9 +1084,12 @@
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda",
-        "spec/Mimir/PreparedRetrieval.agda"
+        "spec/Mimir/PreparedRetrieval.agda",
+        "spec/Mimir/OrderedRetrieval.agda",
+        "spec/Mimir/PublicRetrievalRecovery.agda",
+        "spec/Mimir/PublicLearningContextRecovery.agda"
       ],
-      "remaining": "Prepared complete context intent is concrete. Public preparation/receipt coupling and Rust correspondence remain open.",
+      "remaining": "Public whole-world context recovery composes the required complete retrieval certificate and concrete same-view procedure/outcome/assessment assembly; blank project requests correction before work. Mandatory dispatcher registration (#74) and Rust statement correspondence remain open.",
       "baseline_gap": "Pattern statistics and provenance defined; ranking and belief/assessment assembly compose in step 3."
     }
   ],
