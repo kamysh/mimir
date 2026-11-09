@@ -48,5 +48,36 @@ class MigrationBodyTests(unittest.TestCase):
                             coverage.embedded_sql_body(source.replace('Keep old IDs.', 'Replace IDs.')))
 
 
+class OperationControlCatalogueTests(unittest.TestCase):
+    def setUp(self):
+        self.native = (REPO / 'crates/core/src/operation_catalogue.rs').read_text()
+        self.formal = (REPO / 'spec/Mimir/OperationControls.agda').read_text()
+
+    def test_internal_operations_and_repeated_sites_match_the_same_catalogue(self):
+        self.assertEqual(coverage.native_registered_operations(self.native),
+                         coverage.formal_control_operations(self.formal))
+
+    def test_an_undeclared_internal_name_cannot_be_silently_ignored(self):
+        changed = self.native.replace(
+            '.or_else(|| (name == "delete_evidence").then_some(Self::DeleteEvidence))',
+            '.or_else(|| (name == "delete_evidence").then_some(Self::DeleteEvidence))\n'
+            '            .or_else(|| (name == "undeclared_alias").then_some(Self::DeleteEvidence))')
+        self.assertNotEqual(changed, self.native)
+        with self.assertRaises(AssertionError):
+            coverage.native_registered_operations(changed)
+
+    def test_duplicate_formal_entries_are_rejected(self):
+        original = next(line for line in self.formal.splitlines() if 'entry "insert_belief"' in line)
+        changed = self.formal.replace(original, original + '\n' + original)
+        with self.assertRaises(AssertionError):
+            coverage.formal_control_operations(changed)
+
+    def test_repeated_and_single_sites_cannot_be_interchanged(self):
+        changed = self.formal.replace('repeated "store.delete_belief"', 'once "store.delete_belief"')
+        self.assertNotEqual(changed, self.formal)
+        self.assertNotEqual(coverage.native_registered_operations(self.native),
+                            coverage.formal_control_operations(changed))
+
+
 if __name__ == '__main__':
     unittest.main()
