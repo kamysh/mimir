@@ -54,7 +54,7 @@ record Creation : Set where
     timestamp : ℤ
 
 value : Creation → Node
-value (creation experience identity (belief name content memory) project timestamp) =
+value (creation experience identity (belief name content memory cited) project timestamp) =
   beliefNode (beliefValues identity content (just project) memory timestamp timestamp timestamp 0.5 0.0 1.0 1.0 1.0 1.0)
 value (creation experience identity (patternCandidate name situation approach) project timestamp) =
   patternNode (patternValues identity situation approach (just project) timestamp 0 0.5)
@@ -68,11 +68,11 @@ nodeProject (beliefNode fields) = BeliefValues.project fields
 nodeProject (patternNode fields) = PatternValues.project fields
 
 identityExact : ∀ command → nodeID (value command) ≡ Creation.identity command
-identityExact (creation experience identity (belief name content memory) project timestamp) = refl
+identityExact (creation experience identity (belief name content memory cited) project timestamp) = refl
 identityExact (creation experience identity (patternCandidate name situation approach) project timestamp) = refl
 
 projectExact : ∀ command → nodeProject (value command) ≡ just (Creation.project command)
-projectExact (creation experience identity (belief name content memory) project timestamp) = refl
+projectExact (creation experience identity (belief name content memory cited) project timestamp) = refl
 projectExact (creation experience identity (patternCandidate name situation approach) project timestamp) = refl
 
 -- Reused reservations issue no CREATE. A new reservation issues one command

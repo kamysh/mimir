@@ -153,6 +153,10 @@ pub enum Candidate {
         content: String,
         #[serde(default = "experiential_memory")]
         memory_type: crate::graph::MemoryType,
+        // Empty is retained only for immutable declarations published by an
+        // older version. New publication validates this before preparation.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        grounding: Vec<crate::preparation::IndexedSupport>,
     },
     Pattern {
         key: String,
@@ -530,10 +534,19 @@ impl crate::MimirService {
                 key,
                 content,
                 memory_type,
+                grounding,
             } = candidate
             {
                 let value = self
-                    .prepare_belief(&content, 0.5, 0.0, Some(&project), memory_type, None)
+                    .prepare_belief(
+                        &content,
+                        0.5,
+                        0.0,
+                        Some(&project),
+                        memory_type,
+                        None,
+                        &grounding,
+                    )
                     .await
                     .map_err(|error| {
                         match error.downcast_ref::<crate::preparation::PreparationRequired>() {
@@ -753,6 +766,7 @@ mod review_validation_tests {
             key: "claim".into(),
             content: "supported claim".into(),
             memory_type: crate::graph::MemoryType::Experiential,
+            grounding: vec![],
         };
         review.validate().unwrap();
 

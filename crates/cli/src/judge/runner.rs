@@ -188,7 +188,7 @@ async fn scoped_tool(
             // the review transaction; the judge forwards the raw keyed input.
             mimir_json::replace(&mut args["review"], mimir_json::to_value(review)?);
         }
-        "query_relevant" | "query_learning_context" | "get_contradictions" => {
+        "query_relevant" | "query_learning_context" | "query_document" | "get_contradictions" => {
             input_ensure!(
                 args["project"] == project,
                 "query is outside selected project"
@@ -254,6 +254,11 @@ async fn scoped_tool(
         );
     }
     match name {
+        "query_document" => {
+            value
+                .as_array()
+                .ok_or_else(|| anyhow!("invalid indexed-document search result"))?;
+        }
         "query_relevant" => {
             let beliefs = value
                 .get("beliefs")

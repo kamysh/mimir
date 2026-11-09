@@ -29,7 +29,7 @@ record Reference : Set where
 
 record Grounded : Set where
   constructor grounded
-  field belief : G.BeliefValues; evidence : List Reference
+  field belief : G.BeliefValues; evidence : List Reference; sources : List Documents.Citation
 
 referenceOf : Float → Documents.Chunk → Reference
 referenceOf weight c = reference (Documents.Chunk.identity c) (Documents.Chunk.document c)
@@ -67,7 +67,7 @@ data Effect : Set where
   closeSnapshot : ℕ → Effect
 
 Reply : Effect → Set
-Reply (readGrounds ids) = Text ⊎ List Store.Ground
+Reply (readGrounds ids) = Text ⊎ (List Store.Ground × List (ℕ × List Documents.Citation))
 Reply (readChunk id) = Text ⊎ Maybe Documents.Chunk
 Reply (openSnapshot belief) = Text ⊎ (ℕ × Store.World × List Store.Ground)
 Reply (readSnapshotChunk tx first id) = Text ⊎ Maybe Documents.Chunk
@@ -92,13 +92,13 @@ refs (edge ∷ rest) cache with Lookup.lookup (Store.Ground.chunk edge) cache
   ; (inj₂ observed) → refs rest ((Store.Ground.chunk edge , observed) ∷ cache) >>= λ result →
       done (prepend (Store.Ground.weight edge) observed result) })
 
-enrich : Ranking.Selection → List Store.Ground → List G.BeliefValues → Cache → Script (Text ⊎ List Grounded)
-enrich limit grounds [] cache = done (inj₂ [])
-enrich limit grounds (belief ∷ rest) cache = refs (rankedStable (G.BeliefValues.identity belief) limit grounds) cache >>= λ
+enrich : Ranking.Selection → List Store.Ground → List (ℕ × List Documents.Citation) → List G.BeliefValues → Cache → Script (Text ⊎ List Grounded)
+enrich limit grounds sources [] cache = done (inj₂ [])
+enrich limit grounds sources (belief ∷ rest) cache = refs (rankedStable (G.BeliefValues.identity belief) limit grounds) cache >>= λ
   { (inj₁ error) → done (inj₁ error)
-  ; (inj₂ (evidence , after)) → enrich limit grounds rest after >>= λ
+  ; (inj₂ (evidence , after)) → enrich limit grounds sources rest after >>= λ
       { (inj₁ error) → done (inj₁ error)
-      ; (inj₂ later) → done (inj₂ (grounded belief evidence ∷ later)) } }
+      ; (inj₂ later) → done (inj₂ (grounded belief evidence (Store.sourceReferences (G.BeliefValues.identity belief) sources) ∷ later)) } }
 
 uncached : ℕ → Store.World → List Store.Ground → Script (Text ⊎ List Reference)
 uncached tx first [] = done (inj₂ [])
@@ -121,4 +121,4 @@ one belief limit = ask (openSnapshot belief) (λ
 many : Ranking.Selection → List G.BeliefValues → Script (Text ⊎ List Grounded)
 many limit [] = done (inj₂ [])
 many limit beliefs@(_ ∷ _) = ask (readGrounds (Data.List.map G.BeliefValues.identity beliefs)) (λ
-  { (inj₁ error) → done (inj₁ error) ; (inj₂ grounds) → enrich limit grounds beliefs [] })
+  { (inj₁ error) → done (inj₁ error) ; (inj₂ (grounds , sources)) → enrich limit grounds sources beliefs [] })

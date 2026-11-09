@@ -88,6 +88,79 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
 }
 
 #[tokio::test]
+async fn belief_citations_offer_field_corrections_and_keep_the_connection_usable() -> Result<()> {
+    let service = test_service().await?;
+    let id = fixture_identity().await?;
+    let project = format!("citation-fields-{id}");
+    let mut client = Client::start(id)?;
+    let request = json!({"content":"Retries retain the original operation identity.","probability":0.7,"confidence":0.5,"project":project,
+        "provenance":{"basis":"document","reference":"The indexed retry guide"}});
+    let correction: NeedsInput =
+        mimir_json::from_value(client.call("insert_belief", request.clone()).await?)?;
+    ensure!(correction.issues().iter().any(|issue| issue.fault().path
+        == vec![Segment::Key("grounding".into())]
+        && issue.fault().code == Code::MissingField));
+    let mut malformed = request.clone();
+    malformed["grounding"] = json!([{"chunk_id":"not-a-uuid","document_path":"/guide.md","quotation":"Original text","explanation":"Why it supports the claim"}]);
+    let correction: NeedsInput =
+        mimir_json::from_value(client.call("insert_belief", malformed).await?)?;
+    ensure!(correction.issues().iter().any(|issue| issue.fault().path
+        == vec![
+            Segment::Key("grounding".into()),
+            Segment::Index(0),
+            Segment::Key("chunk_id".into())
+        ]));
+    let mut weighted = request.clone();
+    weighted["grounding"] = json!([{"chunk_id":id,"document_path":"/guide.md","quotation":"Original text","explanation":"Why it supports the claim","weight":1.0}]);
+    let correction: NeedsInput =
+        mimir_json::from_value(client.call("insert_belief", weighted).await?)?;
+    ensure!(correction.issues().iter().any(|issue| issue.fault().path
+        == vec![
+            Segment::Key("grounding".into()),
+            Segment::Index(0),
+            Segment::Key("weight".into())
+        ]
+        && issue.fault().code == Code::UnknownField));
+    let store = mimir_core::store::AgeStore::new(
+        db::connect(&isolation::fixture().database_config()).await?,
+        isolation::fixture().database_config().dbname,
+    )?;
+    let chunk = mimir_core::documents::DocumentChunk::with_id(
+        id,
+        format!("/citation-fields/{id}.md"),
+        vec![],
+        "Clients must reuse the original operation identifier when retrying.".into(),
+        None,
+        Some(project.clone()),
+    );
+    store.insert_document_chunk(&chunk).await?;
+    let mut vector = vec![0.0; 768];
+    vector[0] = 1.0;
+    store.insert_chunk_embedding(id, &vector).await?;
+    let mut valid = request;
+    valid["grounding"] = json!([{"chunk_id":id,"document_path":chunk.document_path,"quotation":chunk.content,
+        "explanation":"The passage explicitly requires retries to retain the original operation identifier."}]);
+    let correction: NeedsInput =
+        mimir_json::from_value(client.call("insert_belief", valid).await?)?;
+    ensure!(correction.issues().iter().any(|issue| issue.location()
+        == mimir_core::interaction::Location::Configuration
+        && issue.fault().path == vec![Segment::Key("embeddings".into())]));
+    ensure!(
+        service.list_beliefs(Some(&project)).await?.is_empty(),
+        "Incomplete preparation published a belief"
+    );
+    let after = client
+        .call("list_beliefs", json!({"project":project}))
+        .await?;
+    ensure!(
+        after.as_array().is_some_and(|values| values.is_empty()),
+        "Correction did not leave the MCP session usable: {after}"
+    );
+    service.delete_project(&project).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn blank_source_fields_offer_precise_corrections_and_keep_the_mcp_connection_usable(
 ) -> Result<()> {
     let service = test_service().await?;

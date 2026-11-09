@@ -19,7 +19,7 @@ import Mimir.ExperienceRead as Read
 data Kind : Set where beliefKind patternKind : Kind
 
 kindOf : Candidate → Kind
-kindOf (belief key content memory) = beliefKind
+kindOf (belief key content memory cited) = beliefKind
 kindOf (patternCandidate key situation approach) = patternKind
 
 declares : Text → List Candidate → Bool

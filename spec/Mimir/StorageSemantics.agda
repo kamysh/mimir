@@ -35,7 +35,6 @@ import Mimir.RetrievalRanking as Ranking
 import Mimir.BeliefEmbedding as Embedding
 import Mimir.IndependentProvenance as Origin
 import Mimir.GroundingPublication as Ground
-import Mimir.GroundingProtocol as AutoGround
 import Mimir.GraphDeletion as Deletion
 import Mimir.DatabaseTransaction as DB
 import Mimir.EvidenceValidity as Evidence

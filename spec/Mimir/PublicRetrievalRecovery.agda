@@ -56,7 +56,8 @@ supportingPassages snapshot (edge ∷ rest) with Store.chunk (Store.Ground.chunk
 groundedBeliefs : Ranking.Selection → Store.World → List Graph.BeliefValues → List Evidence.Grounded
 groundedBeliefs selection snapshot [] = []
 groundedBeliefs selection snapshot (belief ∷ rest) = Evidence.grounded belief
-  (supportingPassages snapshot (Evidence.rankedStable (Graph.BeliefValues.identity belief) selection (Semantics.groundRows snapshot))) ∷
+  (supportingPassages snapshot (Evidence.rankedStable (Graph.BeliefValues.identity belief) selection (Semantics.groundRows snapshot)))
+  (Store.sourcesFor (Graph.BeliefValues.identity belief) snapshot) ∷
   groundedBeliefs selection snapshot rest
 
 enrichmentPreservesBeliefsAndOrder : ∀ selection snapshot beliefs →

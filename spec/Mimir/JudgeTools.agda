@@ -16,7 +16,7 @@ import Mimir.ToolCatalog as Catalog
 
 data Query : Set where
   lessonAssessment assessmentHistory experience experienceHistory learningReview
-    relevant learningContext contradictions belief explanation intervention : Query
+    relevant learningContext document contradictions belief explanation intervention : Query
 
 data Kind : Set where
   query : Query → Kind
@@ -30,6 +30,7 @@ queryOperation experienceHistory = Catalog.experienceHistory
 queryOperation learningReview = Catalog.getLearningReview
 queryOperation relevant = Catalog.queryRelevant
 queryOperation learningContext = Catalog.queryLearningContext
+queryOperation document = Catalog.queryDocument
 queryOperation contradictions = Catalog.getContradictions
 queryOperation belief = Catalog.getBelief
 queryOperation explanation = Catalog.explainBelief
@@ -45,6 +46,7 @@ name kind = toList (Catalog.wireName (operation kind))
 allowed : List Kind
 allowed = review ∷ query lessonAssessment ∷ query assessmentHistory ∷ query experience ∷
   query experienceHistory ∷ query learningReview ∷ query relevant ∷ query learningContext ∷
+  query document ∷
   query contradictions ∷ query belief ∷ query explanation ∷ query intervention ∷ []
 
 lookup : Text → List Kind → Maybe Kind
@@ -69,6 +71,7 @@ lookupComplete (query experienceHistory) = refl
 lookupComplete (query learningReview) = refl
 lookupComplete (query relevant) = refl
 lookupComplete (query learningContext) = refl
+lookupComplete (query document) = refl
 lookupComplete (query contradictions) = refl
 lookupComplete (query belief) = refl
 lookupComplete (query explanation) = refl

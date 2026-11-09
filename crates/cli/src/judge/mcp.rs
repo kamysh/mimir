@@ -467,6 +467,14 @@ fn checked_tools(result: &Value) -> Result<Vec<Value>> {
             ][..],
         ),
         (
+            "query_document",
+            &[
+                ("context", "string"),
+                ("project", "string"),
+                ("limit", "integer"),
+            ][..],
+        ),
+        (
             "explain_belief",
             &[
                 ("id", "string"),

@@ -627,6 +627,7 @@ impl AgeStore {
                     key,
                     content,
                     memory_type,
+                    grounding,
                 } => {
                     let value = prepared.get(key).ok_or_else(|| crate::preparation::PreparationRequired::new(
                         crate::interaction::Location::Arguments,
@@ -639,6 +640,19 @@ impl AgeStore {
                             && value.belief.project.as_deref() == Some(project),
                         "prepared candidate declaration or project changed"
                     );
+                    if *grounding
+                        != value
+                            .support
+                            .iter()
+                            .map(|passage| passage.citation.clone())
+                            .collect::<Vec<_>>()
+                    {
+                        return Err(crate::preparation::PreparationRequired::new(
+                            crate::interaction::Location::Arguments,
+                            vec![crate::validation::Segment::Key("review".into()),crate::validation::Segment::Key("candidates".into()),crate::validation::Segment::Index(index),crate::validation::Segment::Key("grounding".into())],
+                            crate::validation::Code::WrongIdentity,
+                            format!("Candidate {key} no longer has the exact source citations prepared for this declaration. Retain its original citation and explanation, or open the user dialog before submitting a changed claim. No review was committed.")).into());
+                    }
                     (value.belief.id, value.belief.created_at)
                 }
                 Candidate::Pattern { .. } => {
@@ -1605,7 +1619,8 @@ impl AgeStore {
             .await?;
         let candidate_provenance = self.candidate_provenance_on(tx.client(), id).await?;
         let independent_provenance = self.independent_provenance_on(tx.client(), id).await?;
-        let result = serde_json::json!({"belief":belief,"incoming_edges":parents,"learning":reviews,
+        let sources = self.belief_sources_on(tx.client(), id).await?;
+        let result = serde_json::json!({"belief":belief,"sources":sources,"incoming_edges":parents,"learning":reviews,
             "candidate_provenance":candidate_provenance,"independent_provenance":independent_provenance});
         tx.commit().await?;
         Ok(result)

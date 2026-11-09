@@ -9269,54 +9269,6 @@
         },
         {
           "kind": "fn",
-          "name": "auto_ground_belief",
-          "line": 254,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ApplicationProtocol.agda",
-            "spec/Mimir/ApplicationStore.agda",
-            "spec/Mimir/ServiceConnection.agda",
-            "spec/Mimir/GraphMutationProtocol.agda",
-            "spec/Mimir/GraphReadProtocol.agda",
-            "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
-            "spec/Mimir/InferenceProtocol.agda",
-            "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
-            "spec/Mimir/DocumentQuery.agda",
-            "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/GroundingProtocol.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "fn",
-          "name": "auto_ground_chunks",
-          "line": 287,
-          "specification": [],
-          "status": "behavioral-area-mapped-rust-correspondence-open",
-          "behavioral_area": [
-            "spec/Mimir/ApplicationProtocol.agda",
-            "spec/Mimir/ApplicationStore.agda",
-            "spec/Mimir/ServiceConnection.agda",
-            "spec/Mimir/GraphMutationProtocol.agda",
-            "spec/Mimir/GraphReadProtocol.agda",
-            "spec/Mimir/GraphDeletion.agda",
-            "spec/Mimir/ProjectDeletion.agda",
-            "spec/Mimir/InferenceProtocol.agda",
-            "spec/Mimir/RetrievalProtocol.agda",
-            "spec/Mimir/DocumentLoading.agda",
-            "spec/Mimir/DocumentQuery.agda",
-            "spec/Mimir/EvidenceRead.agda",
-            "spec/Mimir/GroundingProtocol.agda",
-            "spec/Mimir/BeliefEmbedding.agda"
-          ],
-          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
-        },
-        {
-          "kind": "fn",
           "name": "list_embedded_belief_ids",
           "line": 321,
           "specification": [],
@@ -18277,6 +18229,19 @@
       "status": "behavioral-area-mapped-rust-correspondence-open",
       "specification_status": "behavior-defined-and-local-proof-checked",
       "proof_boundary_category": "application_protocol"
+    },
+    {
+      "path": "crates/core/migrations/023_belief_sources.sql",
+      "definitions": [],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "proof_boundary_category": "database_contract",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/Migrations.agda",
+        "spec/Mimir/MigrationSchema.agda",
+        "spec/Mimir/MigrationScriptBinding.agda"
+      ],
+      "specification_status": "behavior-defined-and-aggregate-checked"
     }
   ],
   "dependency_contracts": [
@@ -18470,7 +18435,7 @@
         "formal_status": "One external-interface postulate outside the safe spec import graph; the Rust adapter correspondence remains open.",
         "approval": "User selected Approve for the PostgreSQL transaction-atomicity question on 2026-10-30.",
         "module_file": "assumptions/Mimir/Assumptions/PostgreSQL.agda",
-        "declaration": "atomicTransactions : (State : Set) → Mimir.DatabaseTransaction.Contract State",
+        "declaration": "atomicTransactions : (State : Set) \u2192 Mimir.DatabaseTransaction.Contract State",
         "isolation_audit": "/tmp/mimir-assumption-isolation-audit-eejzpx6r.json",
         "verification": "/tmp/mimir-agda-approved-postgresql-vetBrZBn.log and .exit",
         "verification_limit": "Checks the declaration and imports; PostgreSQL behavior is assumed, not proved."

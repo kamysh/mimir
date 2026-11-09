@@ -7,6 +7,7 @@ mod learning;
 mod operation_plans;
 mod operation_steps;
 mod prepared_belief;
+pub(crate) use prepared_belief::BeliefPublicationState;
 mod project_deletion;
 mod reservations;
 mod retirement;
@@ -1926,6 +1927,13 @@ $$) AS (ok ag_catalog.agtype)"#
         };
         self.recompute_learning_at(tx, None, affected, publication_time)
             .await?;
+        // AGE graph writes bypass PostgreSQL row triggers. This actual writer
+        // wakes each owner to recheck its own cited indexed passages.
+        tx.query(
+            "SELECT pg_notify('mimir_embedding_owners_changed', '')",
+            &[],
+        )
+        .await?;
         Ok(())
     }
 
@@ -1951,6 +1959,12 @@ $$) AS (ok ag_catalog.agtype)"#
             .execute(
                 "DELETE FROM public.chunk_embeddings WHERE chunk_id = ANY($1)",
                 &[&ids],
+            )
+            .await?;
+        client
+            .query(
+                "SELECT pg_notify('mimir_embedding_owners_changed', '')",
+                &[],
             )
             .await?;
         Ok(())

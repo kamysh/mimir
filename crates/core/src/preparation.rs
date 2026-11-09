@@ -2,11 +2,48 @@
 use crate::{
     config::{EmbeddingBackend, EmbeddingsConfig},
     documents::DocumentChunk,
-    graph::{Belief, Probability},
+    graph::Belief,
     interaction::{CorrectionItem, Location, NeedsInput},
     learning::IndependentProvenance,
     validation::{Code, Fault, Segment},
 };
+
+/// The submitting agent cites an indexed passage and explains its support.
+/// The explanation is retained as that agent's account, not certified truth.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexedSupport {
+    pub chunk_id: uuid::Uuid,
+    pub document_path: String,
+    pub quotation: String,
+    pub explanation: String,
+}
+
+impl IndexedSupport {
+    pub(crate) fn validate_fields(&self, index: usize) -> anyhow::Result<()> {
+        for (field, value) in [
+            ("document_path", &self.document_path),
+            ("quotation", &self.quotation),
+            ("explanation", &self.explanation),
+        ] {
+            if value.trim().is_empty() {
+                return Err(PreparationRequired::new(Location::Arguments,
+                    vec![Segment::Key("grounding".into()), Segment::Index(index), Segment::Key(field.into())],
+                    Code::EmptyText,
+                    format!("grounding[{index}].{field} must contain nonblank text. Cite the actual indexed document and an exact supporting quotation, then explain why it supports this belief. If support is unclear, open the user dialog before publication.")).into());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Bound to a concrete indexed source read. A caller cannot construct this
+/// receipt through the public write API or substitute its own document text.
+#[derive(Clone, Debug)]
+pub(crate) struct ValidatedSupport {
+    pub(crate) chunk: DocumentChunk,
+    pub(crate) citation: IndexedSupport,
+}
 
 /// Semantic provider choices for the immutable operation binding. Credentials,
 /// cache location and execution batching are deliberately absent.
@@ -74,6 +111,17 @@ pub struct PreparationRequired {
 }
 
 impl PreparationRequired {
+    pub(crate) fn bound_request(code: Code, message: String) -> Self {
+        let item=CorrectionItem::new(Location::Request,
+            Fault {path:vec![Segment::Key("operation_token".into())],code,message},
+            "The original immutable belief request, with its declared fields and server-selected settings.".into(),
+            "Read this token's saved binding and outcome. If its arguments are wrong, ask the user to explicitly cancel unfinished work before reserving a corrected request. Do not rewrite a bound request, silently cancel it, or invent a replacement token.".into())
+            .expect("bound-request guidance names the original record and the authorized correction path");
+        Self {
+            correction: NeedsInput::new(item, vec![]).expect("one explained bound-request issue"),
+        }
+    }
+
     pub(crate) fn backfill(code: Code, message: String) -> Self {
         let item=CorrectionItem::new(Location::Configuration,
             Fault {path:vec![Segment::Key("embeddings".into())],code,message},
@@ -141,12 +189,6 @@ impl std::fmt::Display for PreparationRequired {
 
 impl std::error::Error for PreparationRequired {}
 
-#[derive(Clone, Debug)]
-pub(crate) struct SupportingPassage {
-    pub(crate) chunk: DocumentChunk,
-    pub(crate) weight: Probability,
-}
-
 /// Fields stay private to this crate. Public callers cannot declare that their
 /// own arbitrary vector or passage list constitutes successful preparation.
 #[derive(Clone, Debug)]
@@ -154,7 +196,7 @@ pub struct PreparedBelief {
     pub(crate) belief: Belief,
     pub(crate) provenance: Option<IndependentProvenance>,
     pub(crate) vector: Vec<f32>,
-    pub(crate) support: Vec<SupportingPassage>,
+    pub(crate) support: Vec<ValidatedSupport>,
 }
 
 impl PreparedBelief {

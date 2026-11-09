@@ -38,7 +38,7 @@ record CommittedEdge : Set where
   field from to : ℕ; weight : Number
 
 data Request : Set where
-  belief : Text → Float → Float → Maybe Text → C.Memory → Maybe Origin.Provenance → Request
+  belief : Text → Float → Float → Maybe Text → C.Memory → Maybe Origin.Provenance → List Embedding.Citation → Request
   patternNode : Text → Text → Float → Maybe Text → Request
   edge : ℕ → ℕ → R.Relation → Number → Request
 
@@ -114,11 +114,11 @@ afterEmbedding : G.BeliefValues → Embedding.InsertionResult → Script Result
 afterEmbedding b (inj₁ error) = done (embeddingFailed error)
 afterEmbedding b (inj₂ storedBelief) = done (insertedBelief storedBelief)
 
-makeBelief : Bool → Text → Float → Float → Maybe Text → C.Memory → Maybe Origin.Provenance → ℕ × ℤ → Script Result
-makeBelief enabled content probability confidence project memory origin (id , now)
+makeBelief : Bool → Text → Float → Float → Maybe Text → C.Memory → Maybe Origin.Provenance → List Embedding.Citation → ℕ × ℤ → Script Result
+makeBelief enabled content probability confidence project memory origin cited (id , now)
   with Records.newBelief id now content probability confidence project memory
 ... | nothing = done invalidNumbers
-... | just b = liftEmbedding (Embedding.start enabled b origin) >>= afterEmbedding b
+... | just b = liftEmbedding (Embedding.start enabled b origin cited) >>= afterEmbedding b
 
 write : Statement → Script Result → Script Result
 write command next = ask (statement command) (λ
@@ -147,7 +147,7 @@ afterEdge R.causes from to weight = done edgeInserted
 afterEdge R.contradicts from to weight = done edgeInserted
 
 start : Bool → Request → Script Result
-start enabled (belief content probability confidence project memory nothing)
+start enabled (belief content probability confidence project memory nothing cited)
   with Numbers.probability probability ∧ Numbers.probability confidence
 ... | false = done invalidNumbers
 ... | true with enabled
@@ -155,8 +155,8 @@ start enabled (belief content probability confidence project memory nothing)
 ...   | true = ask (newBeliefOwner project) λ where
   (inj₁ error) → done (embeddingFailed (Embedding.needsUserDecision
     (Embedding.preparationDecision Embedding.Correction.configuration (Validation.key "database" ∷ []) error)))
-  (inj₂ value) → makeBelief true content probability confidence project memory nothing value
-start enabled (belief content probability confidence project memory (just origin)) with Origin.validate origin
+  (inj₂ value) → makeBelief true content probability confidence project memory nothing cited value
+start enabled (belief content probability confidence project memory (just origin) cited) with Origin.validate origin
 ... | Validation.rejected fault invalid = done invalidOrigin
 ... | Validation.accepted valid with Numbers.probability probability ∧ Numbers.probability confidence
 ...   | false = done invalidNumbers
@@ -165,7 +165,7 @@ start enabled (belief content probability confidence project memory (just origin
 ...     | true = ask (newBeliefOwner project) λ where
   (inj₁ error) → done (embeddingFailed (Embedding.needsUserDecision
     (Embedding.preparationDecision Embedding.Correction.configuration (Validation.key "database" ∷ []) error)))
-  (inj₂ value) → makeBelief true content probability confidence project memory (just origin) value
+  (inj₂ value) → makeBelief true content probability confidence project memory (just origin) cited value
 start enabled (patternNode situation approach success project) = ask newIdentityAndTime (makePattern situation approach success project)
 start enabled (edge from to relation weight) with Numeric.number weight
 ... | nothing = done invalidNumbers

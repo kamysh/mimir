@@ -1,7 +1,7 @@
 {-# OPTIONS --safe #-}
 -- Loading prepares and validates the replacement before its atomic publication.
--- The existing paired-storage law governs failure behavior. Automatic grounding
--- follows successful publication; a later grounding failure does not undo it.
+-- The existing paired-storage law governs failure behavior. Indexing does not
+-- assert support for existing beliefs; that requires an explicit cited passage.
 module Mimir.DocumentLoading where
 
 open import Data.Bool using (Bool; true; false)
@@ -18,7 +18,6 @@ import Mimir.ApplicationStore as Store
 import Mimir.DocumentStore as Documents
 import Mimir.DocumentPublication as Publication
 import Mimir.Markdown as Markdown
-import Mimir.GroundingProtocol as Grounding
 import Mimir.LearningTransaction as Transaction
 import Mimir.Validation as Validation
 import Mimir.Effects as Effects
@@ -45,14 +44,12 @@ module Operations (database dimension : ℕ) where
     canonicalize readUTF8 : Text → Effect
     embed : List Text → Effect
     transaction : T.Effect → Effect
-    grounding : Grounding.Effect → Effect
 
   Reply : Effect → Set
   Reply (canonicalize path) = Text ⊎ Text
   Reply (readUTF8 path) = Text ⊎ Text
   Reply (embed texts) = Text ⊎ List Store.Vector
   Reply (transaction effect) = T.Reply effect
-  Reply (grounding effect) = Grounding.Reply effect
 
   module E = Effects.Protocol Effect Reply
   open E
@@ -61,24 +58,14 @@ module Operations (database dimension : ℕ) where
     embeddingsDisabled invalidEmbeddingShape : Result
     failed : Text → Result
     transactionResult : T.Outcome → Result
-    groundingFailed : ℕ → Grounding.Result → Result
     loaded cleared : ℕ → Result
 
   liftTransaction : T.E.Script T.Outcome → Script T.Outcome
   liftTransaction (T.E.done result) = done result
   liftTransaction (T.E.ask effect next) = ask (transaction effect) (λ reply → liftTransaction (next reply))
 
-  liftGrounding : Grounding.E.Script Grounding.Result → Script Grounding.Result
-  liftGrounding (Grounding.E.done result) = done result
-  liftGrounding (Grounding.E.ask effect next) = ask (grounding effect) (λ reply → liftGrounding (next reply))
-
-  afterGrounding : ℕ → Grounding.Result → Script Result
-  afterGrounding count Grounding.success = done (loaded count)
-  afterGrounding count result = done (groundingFailed count result)
-
   afterReplace : T.Outcome → Script Result
-  afterReplace (T.applied (count , entries)) = liftGrounding (Grounding.groundChunks
-    (map (λ entry → P.D.Stored.chunk entry , toList (P.D.Stored.embedding entry)) entries)) >>= afterGrounding count
+  afterReplace (T.applied (count , entries)) = done (loaded count)
   afterReplace result = done (transactionResult result)
 
   afterEmbedding : Text → List Documents.Chunk → Text ⊎ List Store.Vector → Script Result

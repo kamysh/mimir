@@ -179,7 +179,7 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     defaulted "feedback" [] (readArray feedback) fields >>= λ feedbacks →
     defaulted "links" [] (readArray link) fields >>= λ links →
     defaulted "superseded_beliefs" [] (readArray uuid) fields >>= λ superseded →
-    defaulted "candidates" [] (readArray (Candidate.decode Objects.keepLast)) fields >>= λ candidates →
+    defaulted "candidates" [] (readArray (Candidate.decode (readUUID conversion) Objects.keepLast)) fields >>= λ candidates →
     defaulted "candidate_feedback" [] (readArray candidateFeedback) fields >>= λ candidateFeedbacks →
     defaulted "candidate_links" [] (readArray candidateLink) fields >>= λ candidateLinks →
     defaulted "assessments" [] (readArray assessment) fields >>= λ assessments →
@@ -197,7 +197,7 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     defaulted "feedback" [] (readArray feedback) fields >>= λ feedbacks →
     defaulted "links" [] (readArray link) fields >>= λ links →
     defaulted "superseded_beliefs" [] (readArray uuid) fields >>= λ superseded →
-    defaulted "candidates" [] (readArray (Candidate.decode Objects.keepLast)) fields >>= λ candidates →
+    defaulted "candidates" [] (readArray (Candidate.decode (readUUID conversion) Objects.keepLast)) fields >>= λ candidates →
     defaulted "candidate_feedback" [] (readArray candidateFeedback) fields >>= λ candidateFeedbacks →
     defaulted "candidate_links" [] (readArray candidateLink) fields >>= λ candidateLinks →
     defaulted "assessments" [] (readArray assessmentInput) fields >>= λ assessments →
