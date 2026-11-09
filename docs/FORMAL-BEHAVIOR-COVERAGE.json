@@ -155,9 +155,12 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/PatternPublicationRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/auto-ground success and failure sequences."
     },
     {
@@ -185,9 +188,12 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/DirectGraphRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
     },
     {
@@ -215,9 +221,12 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/DirectGraphRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
     },
     {
@@ -275,9 +284,12 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/DirectGraphRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
     },
     {

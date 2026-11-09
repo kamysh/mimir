@@ -187,6 +187,21 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    pub(crate) fn bound_graph_request(
+        field: &str,
+        code: Code,
+        message: String,
+        expected: &str,
+    ) -> Self {
+        let issue = CorrectionItem::new(Location::Arguments,
+            Fault { path: if field.is_empty() { vec![] } else { vec![Segment::Key(field.into())] }, code, message },
+            expected.into(),
+            "Read the original operation binding and the tool schema. Correct the indicated request before publication; if its intended values are unknown, ask the user. Keep the original token for outcome readback after a lost reply; do not change a bound request or invent identifiers.".into())
+            .expect("bound graph correction gives a request and repair");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained graph correction"),
+        }
+    }
     pub(crate) fn local_key(path: Vec<Segment>, code: Code, message: String) -> Self {
         let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
             "A nonempty stable local key, with no leading or trailing whitespace. Spaces inside a key are allowed. Each key appears once in its declaration or reference list.".into(),
