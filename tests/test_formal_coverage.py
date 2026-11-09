@@ -83,7 +83,7 @@ class OperationControlCatalogueTests(unittest.TestCase):
         self.assertEqual(coverage.native_struct_fields(source, 'StoredPlan'),
                          coverage.formal_field_names(self.formal, 'fieldNames'))
         capture = (REPO / 'crates/core/src/store/backfill.rs').read_text()
-        self.assertEqual(coverage.native_struct_fields(capture, 'Source'),
+        self.assertEqual(coverage.native_struct_fields(capture, 'BackfillSource'),
                          coverage.formal_field_names(self.formal, 'sourceFieldNames'))
         self.assertEqual(coverage.native_struct_fields(capture, 'Capture'),
                          coverage.formal_field_names(self.formal, 'captureFieldNames'))
