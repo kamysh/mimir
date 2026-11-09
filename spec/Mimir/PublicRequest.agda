@@ -295,10 +295,16 @@ module Decode (conversion : Conversion.Contract) where
   readTool tool _ = inj₁ (Validation.fault [] Validation.wrongType "Tool arguments must be an object")
 
   -- Stored bindings may contain serde's explicit null representation of an
-  -- absent optional string. This is separate from public schema admission;
-  -- malformed non-null supplied values still go through the same checks.
+  -- absent Option<String>. Other handlers deliberately reject explicit null;
+  -- in particular insert_pattern uses a custom optional-project visitor.
+  storedOptionalNull : Tools.Tool → Bool
+  storedOptionalNull Tools.insertBelief = true
+  storedOptionalNull Tools.decayAll = true
+  storedOptionalNull Tools.loadDocument = true
+  storedOptionalNull _ = false
+
   boundFields : Tools.Tool → V.Object.View → Fault ⊎ Request
-  boundFields tool fields = suppliedTypesWith true fields >>= λ _ → decode tool fields
+  boundFields tool fields = suppliedTypesWith (storedOptionalNull tool) fields >>= λ _ → decode tool fields
 
   readBoundTool : Tools.Tool → V.Value → Fault ⊎ Request
   readBoundTool tool (V.object fields) with V.Object.checkUnknowns forbid (acceptedFields tool) fields
