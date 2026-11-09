@@ -187,6 +187,16 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    pub(crate) fn local_key(path: Vec<Segment>, code: Code, message: String) -> Self {
+        let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
+            "A nonempty stable local key, with no leading or trailing whitespace. Spaces inside a key are allowed. Each key appears once in its declaration or reference list.".into(),
+            "For existing work, call get_experience and get_learning_review with the same experience ID and copy the saved key exactly. For new work, supply a nonempty key with no whitespace at either end. Submit each key once in this list. Ask the user if the intended key or item is uncertain. Do not silently trim, rename, invent an identity, or create another incident to bypass this correction.".into())
+            .expect("local key correction identifies its field and repair");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained local key correction"),
+        }
+    }
+
     pub(crate) fn review_conflict(
         path: Vec<Segment>,
         code: Code,

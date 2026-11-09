@@ -14,7 +14,7 @@ open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; trans)
 open import Mimir.Text using (Text)
 open import Mimir.Validation using (Fault; fault; problem; Segment; key; index; prependPath; missingReference; accepted; rejected)
-import Mimir.SourceSchema as Source
+import Mimir.LearningCandidates as LocalKeys
 import Mimir.LearningInput as Input
 import Mimir.LearningSchema as L
 import Mimir.ExperienceSchema as X
@@ -167,17 +167,17 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ)
     T.Allocation (Failure ⊎ (Store.World × L.LearningItem))
   item experience input before with Input.Item.localKey input
   ... | nothing = identified experience input before
-  ... | just name with Source.checkNamed name
+  ... | just name with LocalKeys.checkTrimmed name
   ...   | rejected failure proof = T.resolved (inj₁ (invalid (prependPath (key "key") failure)))
   ...   | accepted proof = identified experience input before
 
   itemAlreadyReserved : ∀ experience input before name identity →
     Input.Item.identity input ≡ nothing → Input.Item.localKey input ≡ just name →
-    Source.NamedText name → Store.World.itemKeys before experience name ≡ just identity →
+    LocalKeys.Trimmed name → Store.World.itemKeys before experience name ≡ just identity →
     Publication.World.owners (Store.World.publication before) identity ≡ just (owner experience input) →
     item experience input before ≡ T.resolved (inj₂ (before , Input.canonicalItem identity input))
   itemAlreadyReserved experience input before name identity omitted keyed named reserved owned
-    rewrite keyed with Source.checkNamed name
+    rewrite keyed with LocalKeys.checkTrimmed name
   ... | rejected failure invalidName = ⊥-elim (invalidName named)
   ... | accepted valid rewrite omitted | keyed | reserved | owned
     with experience ≟ experience
@@ -189,11 +189,11 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ)
 
   unreservedItemRequestsPostgres : ∀ experience input before name →
     Input.Item.identity input ≡ nothing → Input.Item.localKey input ≡ just name →
-    Source.NamedText name → Store.World.itemKeys before experience name ≡ nothing →
+    LocalKeys.Trimmed name → Store.World.itemKeys before experience name ≡ nothing →
     item experience input before ≡ T.reserve experience name (Input.Item.reference input) (Input.Item.actor input)
       (afterPostgres experience name input before)
   unreservedItemRequestsPostgres experience input before name omitted keyed named absent
-    rewrite keyed with Source.checkNamed name
+    rewrite keyed with LocalKeys.checkTrimmed name
   ... | rejected failure invalidName = ⊥-elim (invalidName named)
   ... | accepted valid rewrite omitted | keyed | absent = refl
 
@@ -244,7 +244,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ)
     noNamedItems : NamedItems experience before [] []
     namedItem : ∀ input rest name identity remaining →
       Input.Item.identity input ≡ nothing → Input.Item.localKey input ≡ just name →
-      Source.NamedText name → Store.World.itemKeys before experience name ≡ just identity →
+      LocalKeys.Trimmed name → Store.World.itemKeys before experience name ≡ just identity →
       Publication.World.owners (Store.World.publication before) identity ≡ just (owner experience input) →
       NamedItems experience before rest remaining →
       NamedItems experience before (input ∷ rest) (Input.canonicalItem identity input ∷ remaining)
@@ -346,7 +346,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ)
     itemPreservesLedger : ∀ experience input before → PreservesLedger before (item experience input before)
     itemPreservesLedger experience input before with Input.Item.localKey input
     ... | nothing = identifiedPreservesLedger experience input before
-    ... | just name with Source.checkNamed name
+    ... | just name with LocalKeys.checkTrimmed name
     ...   | rejected failure invalidName = λ after value ()
     ...   | accepted valid = identifiedPreservesLedger experience input before
 

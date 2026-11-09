@@ -168,10 +168,7 @@ impl Candidate {
 
     fn validate(&self) -> Result<()> {
         let key = self.key();
-        ensure!(
-            !key.trim().is_empty() && key == key.trim(),
-            "candidate key must be a nonempty trimmed string"
-        );
+        crate::assessment::validate_local_key(key, vec![Segment::Key("key".into())])?;
         match self {
             Self::Belief {
                 content,
@@ -271,8 +268,17 @@ impl Review {
             "reviewer and rationale are required"
         );
         let mut candidate_keys = std::collections::HashSet::new();
-        for candidate in &self.candidates {
-            candidate.validate()?;
+        for (index, candidate) in self.candidates.iter().enumerate() {
+            candidate.validate().map_err(|error| {
+                RequestCorrection::prefix(
+                    error,
+                    &[
+                        Segment::Key("review".into()),
+                        Segment::Key("candidates".into()),
+                        Segment::Index(index),
+                    ],
+                )
+            })?;
             if !candidate_keys.insert(candidate.key()) {
                 return Err(RequestCorrection::candidate_declaration(
                     vec![Segment::Key("review".into()), Segment::Key("candidates".into())], Code::Duplicate,
@@ -314,7 +320,16 @@ impl Review {
         }
         let mut assessment_keys = std::collections::HashSet::new();
         for (index, assessment) in self.assessments.iter().enumerate() {
-            assessment.validate()?;
+            assessment.validate().map_err(|error| {
+                RequestCorrection::prefix(
+                    error,
+                    &[
+                        Segment::Key("review".into()),
+                        Segment::Key("assessments".into()),
+                        Segment::Index(index),
+                    ],
+                )
+            })?;
             validate_target(
                 &assessment.target,
                 target_path("assessments", index, "target"),

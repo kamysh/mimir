@@ -15,9 +15,11 @@ open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
-open import Mimir.Validation using (Fault; fault; key; index; Segment; wrongIdentity; missingReference)
+open import Mimir.Validation using (Fault; fault; key; index; Segment; wrongIdentity; missingReference;
+  accepted; rejected; prependPath)
 import Mimir.ItemOwners as Owners
 import Mimir.LearningContracts as Contracts
+import Mimir.LearningCandidates as LocalKeys
 
 Keys = ℕ → Text → Maybe ℕ
 
@@ -122,25 +124,29 @@ unreservedUUIDCannotAllocate keys owners identity owner unused rewrite unused = 
 -- ledger. A missing reference refuses the whole plan; no partial list escapes.
 data References (keys : Keys) (experience : ℕ) : List Text → List ℕ → Set where
   none : References keys experience [] []
-  more : ∀ {name names identity identities} → keys experience name ≡ just identity →
+  more : ∀ {name names identity identities} → LocalKeys.Trimmed name → keys experience name ≡ just identity →
     References keys experience names identities →
     References keys experience (name ∷ names) (identity ∷ identities)
 
 resolveReferencesFrom : ∀ offset keys experience names → Fault ⊎ Σ (List ℕ) (References keys experience names)
 resolveReferencesFrom offset keys experience [] = inj₂ ([] , none)
-resolveReferencesFrom offset keys experience (name ∷ names) with keys experience name in found
-... | nothing = inj₁ (fault (index offset ∷ []) missingReference "unknown learning item key")
-... | just identity with resolveReferencesFrom (suc offset) keys experience names
-...   | inj₁ failure = inj₁ failure
-...   | inj₂ (identities , supported) = inj₂ (identity ∷ identities , more found supported)
+resolveReferencesFrom offset keys experience (name ∷ names) with LocalKeys.checkTrimmed name
+... | rejected failure invalid = inj₁ (prependPath (index offset) failure)
+... | accepted named with keys experience name in found
+...   | nothing = inj₁ (fault (index offset ∷ []) missingReference "unknown learning item key")
+...   | just identity with resolveReferencesFrom (suc offset) keys experience names
+...     | inj₁ failure = inj₁ failure
+...     | inj₂ (identities , supported) = inj₂ (identity ∷ identities , more named found supported)
 
 resolveReferences : ∀ keys experience names → Fault ⊎ Σ (List ℕ) (References keys experience names)
-resolveReferences = resolveReferencesFrom 0
+resolveReferences keys experience names with LocalKeys.Keys.checkUnique names
+... | rejected failure invalid = inj₁ failure
+... | accepted unique = resolveReferencesFrom 0 keys experience names
 
 referenceCountExact : ∀ {keys experience names identities} → References keys experience names identities →
   length names ≡ length identities
 referenceCountExact none = refl
-referenceCountExact (more found remaining) rewrite referenceCountExact remaining = refl
+referenceCountExact (more named found remaining) rewrite referenceCountExact remaining = refl
 
 allocationCollisionRefused : ∀ keys owners experience name source actor sqlIdentity old →
   keys experience name ≡ nothing → owners sqlIdentity ≡ just old →

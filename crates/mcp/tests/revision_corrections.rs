@@ -88,6 +88,76 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
 }
 
 #[tokio::test]
+async fn local_key_mistakes_offer_precise_repairs_before_any_reservation_or_publication(
+) -> Result<()> {
+    use mimir_core::graph::MemoryType;
+    let service = test_service().await?;
+    let id = fixture_identity().await?;
+    let project = format!("local-keys-{id}");
+    let belief =
+        isolation::seed_belief_in_project("local key target", 0.5, 0.1, &project, MemoryType::Fact)
+            .await?;
+    let db = db::connect(&isolation::fixture().database_config()).await?;
+    let mut client = Client::start(id)?;
+    let checked=async {
+        let item=json!({"kind":"decision","key":"local item","source_ref":"source/0","actor":"human","statement":"Keep every key unchanged.","conditions":"fixture"});
+        let source=json!({"id":id,"project":project,"context":"local keys","action":"reuse exact identifiers","outcome":"unknown","source":"user_feedback","evidence":["source/0"],"source_records":[{"source_ref":"source/0","actor":"human","provenance":"user_feedback","text":"Keep every key unchanged."}],"learning_items":[item]});
+        for bad in ["", " ", " local item", "local item ", "\u{00a0}local item"] {
+            let mut invalid=source.clone();invalid["learning_items"][0]["key"]=json!(bad);
+            let result=client.call("record_experience",json!({"experience":invalid,"expected_revision":0})).await?;
+            key_correction(result,json!(["experience","learning_items",0,"key"]),if bad.trim().is_empty(){Code::EmptyText}else{Code::MalformedInput})?;
+            ensure!(service.get_experience(id).await?.is_none());
+            ensure!(db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1",&[&id]).await?.get::<_,i64>(0)==0);
+        }
+        let mut duplicate=source.clone();duplicate["learning_items"]=json!([item,item]);
+        key_correction(client.call("record_experience",json!({"experience":duplicate,"expected_revision":0})).await?,json!(["experience","learning_items",1,"key"]),Code::Duplicate)?;
+        let stored=client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?;
+        ensure!(stored["experience"]["learning_items"][0]["key"]=="local item","a valid internal space was rewritten");
+        let history=service.experience_history(id).await?;
+        let assessment=json!({"target":{"belief_id":belief.id},"scope":"fixture","rubric":"fixture","correctness":{"value":null,"weight":0},"usefulness":{"value":null,"weight":0},"evidence_indices":[],"item_keys":["local item"],"rationale":"unresolved"});
+        let candidate=json!({"kind":"pattern","key":"candidate step","situation":"reuse local identifiers","approach":"read the original key first"});
+        let review=json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"preserve every key","candidates":[candidate],"assessments":[assessment],"source_coverage":[{"source_ref":"source/0","status":"complete","reason":"original evidence retained"}]});
+        for bad in ["", " ", " candidate step", "candidate step ", "\u{00a0}candidate step"] {
+            let mut invalid=review.clone();invalid["candidates"][0]["key"]=json!(bad);
+            key_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,json!(["review","candidates",0,"key"]),if bad.trim().is_empty(){Code::EmptyText}else{Code::MalformedInput})?;
+            ensure!(service.experience_history(id).await?==history);
+        }
+        for bad in ["", " ", " local item", "local item ", "\u{00a0}local item"] {
+            let mut invalid=review.clone();invalid["assessments"][0]["item_keys"]=json!([bad]);
+            key_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,json!(["review","assessments",0,"item_keys",0]),if bad.trim().is_empty(){Code::EmptyText}else{Code::MalformedInput})?;
+            ensure!(service.experience_history(id).await?==history);
+        }
+        let mut duplicate=review.clone();duplicate["assessments"][0]["item_keys"]=json!(["local item","local item"]);
+        key_correction(client.call("review_experience",json!({"review":duplicate,"expected_review_revision":0})).await?,json!(["review","assessments",0,"item_keys",1]),Code::Duplicate)?;
+        ensure!(db.query_one("SELECT count(*) FROM mimir_review_candidates WHERE experience_id=$1",&[&id]).await?.get::<_,i64>(0)==0);
+        let completed=client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
+        ensure!(completed["review_revision"]==1);
+        let history=service.experience_history(id).await?;
+        ensure!(client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?==completed);
+        ensure!(service.experience_history(id).await?==history);
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    let cleanup = service.delete_project(&project).await;
+    checked?;
+    ensure!(stopped.success());
+    cleanup?;
+    Ok(())
+}
+
+fn key_correction(result: Value, path: Value, code: Code) -> Result<()> {
+    let correction: NeedsInput = serde_json::from_value(result)?;
+    let issue = &correction.issues()[0];
+    ensure!(
+        serde_json::to_value(&issue.fault().path)? == path && issue.fault().code == code,
+        "wrong key correction: {correction:?}"
+    );
+    ensure!(!issue.expected().is_empty() && !issue.suggested_correction().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn conflicting_review_entries_offer_repairs_without_changing_saved_work() -> Result<()> {
     use mimir_core::graph::MemoryType;
     let service = test_service().await?;
