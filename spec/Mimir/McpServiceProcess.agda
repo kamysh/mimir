@@ -74,7 +74,7 @@ module Process (sizeMaximum : ℕ) (configurationPath : Path.Path)
         Step migrations (starting config before) (service config event) (starting config after)
       failed : ∀ config failure → Step migrations (starting config (S.failed {config = config} failure)) serviceReturned (exited (serviceFailure config failure))
       ready : ∀ config service → CoreConnection.Compatible conversion config environment →
-        Step migrations (starting config (S.ready {config = config} service)) serviceReturned (serving config service R.R.reading)
+        Step migrations (starting config (S.ready {config = config} service)) serviceReturned (serving config service (R.R.reading []))
       request : ∀ config service before event after → Loop.Step before event after →
         Step migrations (serving config service before) (exchange event) (serving config service after)
       finished : ∀ config service reason → Step migrations (serving config service (R.R.exited reason)) serviceReturned (exited (runtimeExit reason))

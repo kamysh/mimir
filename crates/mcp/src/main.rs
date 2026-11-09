@@ -4,6 +4,8 @@ mod learning;
 #[cfg(test)]
 mod learning_cycle_test;
 pub mod operation_catalogue;
+#[cfg(all(test, unix))]
+mod session_owned_tests;
 use anyhow::Result;
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
@@ -860,109 +862,158 @@ async fn application_main() -> Result<()> {
     // Connect to database (and embedding client if configured).
     let svc = MimirService::connect(&cfg).await?;
 
-    // Async I/O on stdin/stdout.
-    let stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-    let mut reader = BufReader::new(stdin);
-    let mut line = Vec::new();
+    serve(
+        &svc,
+        &catalogue,
+        BufReader::new(tokio::io::stdin()),
+        tokio::io::stdout(),
+    )
+    .await
+}
 
+async fn serve<R, W>(
+    svc: &MimirService,
+    catalogue: &operation_catalogue::Catalogue,
+    mut reader: R,
+    mut stdout: W,
+) -> Result<()>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut partial = Vec::new();
+    let mut queued = std::collections::VecDeque::new();
     loop {
-        line.clear();
-        let n = reader.read_until(b'\n', &mut line).await?;
-        if n == 0 {
-            // EOF
-            break;
-        }
-
-        let text = match std::str::from_utf8(&line) {
-            Ok(text) => text,
-            Err(error) => {
-                let response = envelope::parse_error(&error.to_string());
-                stdout.write_all(format!("{response}\n").as_bytes()).await?;
-                stdout.flush().await?;
-                continue;
-            }
-        };
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let request = match envelope::parse(trimmed) {
-            Ok(v) => v,
-            Err(e) => {
-                error!("parse error: {}", e);
-                let resp = envelope::parse_error(&e.to_string());
-                let mut out = resp.to_string();
-                out.push('\n');
-                stdout.write_all(out.as_bytes()).await?;
-                stdout.flush().await?;
-                continue;
-            }
-        };
-
-        let request = match request {
-            envelope::Incoming::Request(request) => request,
-            envelope::Incoming::Notification { method, diagnostic } => {
-                if let Some(diagnostic) = diagnostic {
-                    error!(method, correction = %serde_json::to_string(&diagnostic)?, "notification was not executed");
+        let line = match queued.pop_front() {
+            Some(line) => line,
+            None => {
+                if reader.read_until(b'\n', &mut partial).await? == 0 {
+                    return Ok(());
                 }
-                continue;
-            }
-            envelope::Incoming::Rejected(response) => {
-                stdout.write_all(format!("{response}\n").as_bytes()).await?;
-                stdout.flush().await?;
-                continue;
+                std::mem::take(&mut partial)
             }
         };
-        let id = request.id();
-        let method = request.method();
-        let params = request.params();
-
-        let response = match method {
-            "initialize" => ok_response(
-                &id,
-                json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "mimir", "version": env!("CARGO_PKG_VERSION") }
-                }),
-            ),
-
-            "tools/list" => ok_response(&id, json!({ "tools": catalogue.advertised() })),
-
-            "tools/call" => match admission::tool_parameters(params) {
-                Err(correction) => envelope::invalid_params(id, correction),
-                Ok((tool_name, arguments)) => match catalogue
-                    .call(&svc, tool_name, &arguments)
-                    .await
-                {
-                    Ok(result) => ok_response(
-                        &id,
-                        json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
-                    ),
-                    Err(e) => {
-                        let mut response = err_response(&id, -32000, &e.to_string());
-                        if let Some(refusal) = e.downcast_ref::<mimir_core::validation::Refusal>() {
-                            response["error"]["data"] = serde_json::to_value(refusal)?;
-                        }
-                        response
-                    }
-                },
-            },
-
-            other => {
-                error!("unknown method: {}", other);
-                err_response(&id, -32601, "Method not found")
+        let disconnected = {
+            let exchange = exchange_line(svc, catalogue, &line, &mut stdout);
+            tokio::pin!(exchange);
+            tokio::select! {
+                biased;
+                closed = read_ahead(&mut reader, &mut partial, &mut queued) => Some(closed),
+                result = &mut exchange => { result?; None },
             }
+            // Leaving this scope drops the active request future. Its owned
+            // local worker terminates and waits for exit before Drop returns.
         };
+        if let Some(closed) = disconnected {
+            closed?;
+            return Ok(());
+        }
+    }
+}
 
-        let mut out = response.to_string();
-        out.push('\n');
-        stdout.write_all(out.as_bytes()).await?;
-        stdout.flush().await?;
+async fn read_ahead<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    partial: &mut Vec<u8>,
+    queued: &mut std::collections::VecDeque<Vec<u8>>,
+) -> std::io::Result<()> {
+    loop {
+        if reader.read_until(b'\n', partial).await? == 0 {
+            return Ok(());
+        }
+        queued.push_back(std::mem::take(partial));
+    }
+}
+
+async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
+    svc: &MimirService,
+    catalogue: &operation_catalogue::Catalogue,
+    line: &[u8],
+    stdout: &mut W,
+) -> Result<()> {
+    let text = match std::str::from_utf8(line) {
+        Ok(text) => text,
+        Err(error) => {
+            let response = envelope::parse_error(&error.to_string());
+            stdout.write_all(format!("{response}\n").as_bytes()).await?;
+            stdout.flush().await?;
+            return Ok(());
+        }
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(());
     }
 
+    let request = match envelope::parse(trimmed) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("parse error: {}", e);
+            let resp = envelope::parse_error(&e.to_string());
+            let mut out = resp.to_string();
+            out.push('\n');
+            stdout.write_all(out.as_bytes()).await?;
+            stdout.flush().await?;
+            return Ok(());
+        }
+    };
+
+    let request = match request {
+        envelope::Incoming::Request(request) => request,
+        envelope::Incoming::Notification { method, diagnostic } => {
+            if let Some(diagnostic) = diagnostic {
+                error!(method, correction = %serde_json::to_string(&diagnostic)?, "notification was not executed");
+            }
+            return Ok(());
+        }
+        envelope::Incoming::Rejected(response) => {
+            stdout.write_all(format!("{response}\n").as_bytes()).await?;
+            stdout.flush().await?;
+            return Ok(());
+        }
+    };
+    let id = request.id();
+    let method = request.method();
+    let params = request.params();
+
+    let response = match method {
+        "initialize" => ok_response(
+            &id,
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "mimir", "version": env!("CARGO_PKG_VERSION") }
+            }),
+        ),
+
+        "tools/list" => ok_response(&id, json!({ "tools": catalogue.advertised() })),
+
+        "tools/call" => match admission::tool_parameters(params) {
+            Err(correction) => envelope::invalid_params(id, correction),
+            Ok((tool_name, arguments)) => match catalogue.call(svc, tool_name, &arguments).await {
+                Ok(result) => ok_response(
+                    &id,
+                    json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
+                ),
+                Err(e) => {
+                    let mut response = err_response(&id, -32000, &e.to_string());
+                    if let Some(refusal) = e.downcast_ref::<mimir_core::validation::Refusal>() {
+                        response["error"]["data"] = serde_json::to_value(refusal)?;
+                    }
+                    response
+                }
+            },
+        },
+
+        other => {
+            error!("unknown method: {}", other);
+            err_response(&id, -32601, "Method not found")
+        }
+    };
+
+    let mut out = response.to_string();
+    out.push('\n');
+    stdout.write_all(out.as_bytes()).await?;
+    stdout.flush().await?;
     Ok(())
 }
 

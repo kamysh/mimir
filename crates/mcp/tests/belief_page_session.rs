@@ -221,13 +221,29 @@ async fn positive_selection_has_no_ten_record_ceiling_and_zero_is_a_correction()
             }
             "zero" | "negative-offset" | "missing-selection" => {
                 let correction: NeedsInput = serde_json::from_str(text)?;
+                let issue = &correction.issues()[0];
+                let (field, code) = match name {
+                    "zero" => ("limit", mimir_core::validation::Code::InvalidNumber),
+                    "negative-offset" => ("offset", mimir_core::validation::Code::InvalidNumber),
+                    "missing-selection" => ("limit", mimir_core::validation::Code::MissingField),
+                    _ => unreachable!(),
+                };
                 ensure!(
-                    serde_json::to_string(&correction)?.contains(match name {
-                        "zero" => "omit limit to return all matching records",
-                        "negative-offset" => "nonnegative",
-                        "missing-selection" => "positive limit",
+                    serde_json::to_value(&issue.fault().path)? == json!([field])
+                        && issue.fault().code == code
+                );
+                let guidance = format!("{} {}", issue.expected(), issue.suggested_correction());
+                ensure!(
+                    match name {
+                        "zero" =>
+                            guidance.contains("positive")
+                                && guidance.contains("omit limit")
+                                && guidance.contains("all matching"),
+                        "negative-offset" =>
+                            guidance.contains("nonnegative") || guidance.contains("at least 0"),
+                        "missing-selection" => guidance.contains("positive limit"),
                         _ => unreachable!(),
-                    }),
+                    },
                     "missing correction: {result}"
                 );
             }

@@ -38,6 +38,16 @@ directory must be writable when starting application work; the offline check
 does not create directories. No database schema change is needed for these
 operational settings.
 
+## Closing an MCP session
+
+The server watches client input while a request is running. Closing the
+connection cancels the unfinished request and discards queued requests. An
+owned local embedding worker is terminated and reaped before the server returns;
+requests that remain connected still run in arrival order.
+
+Disconnect does not undo changes already committed to the database. Read back
+the affected work before retrying a write whose response was lost.
+
 ## When a review fails
 
 Run this on the computer named in the email:
