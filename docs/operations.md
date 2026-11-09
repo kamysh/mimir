@@ -38,6 +38,14 @@ directory must be writable when starting application work; the offline check
 does not create directories. No database schema change is needed for these
 operational settings.
 
+## Understanding belief-search coverage
+
+Belief searches return both the beliefs and a `retrieval` report. The report
+states which matching was performed, whether semantic search was available,
+its actual cause when unavailable, and what that means for result coverage.
+Literal identifiers and error codes remain useful keyword queries. See
+[retrieval coverage](RETRIEVAL-COVERAGE.md) for the response shape and next steps.
+
 ## Closing an MCP session
 
 The server watches client input while a request is running. Closing the

@@ -290,7 +290,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "query_relevant",
-            "description": "Hybrid retrieval: text match + graph-proximity expansion, ordered by probability. Set include_evidence=true to also return, per belief, the document passages that ground it (with weights). If project is given, restricts the candidate pool to that project's beliefs plus untagged (global) beliefs.",
+            "description": "Retrieve beliefs with an explicit {beliefs, retrieval} report. The retrieval field states whether semantic matching was performed, its actual unavailability cause, matching used, result-coverage implications and next step. Keyword matching remains valid for literal contexts such as identifiers and error codes. Set include_evidence=true to include supporting document passages per belief. If project is given, include that project's beliefs and untagged global beliefs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -671,9 +671,10 @@ async fn handle_graph_call(
                 return Ok(serde_json::to_value(&beliefs)?);
             }
             let grounded = svc
-                .query_relevant_grounded(query, limit, per, project)
+                .query_relevant_grounded_preferred(query, limit, per, project, prefer_type)
                 .await?;
             let result: Vec<Value> = grounded
+                .beliefs
                 .into_iter()
                 .map(|gb| {
                     let mut belief_json = serde_json::to_value(&gb.belief).unwrap_or(json!({}));
@@ -696,7 +697,7 @@ async fn handle_graph_call(
                     belief_json
                 })
                 .collect();
-            Ok(json!(result))
+            Ok(json!({"beliefs":result,"retrieval":grounded.retrieval}))
         }
 
         GraphOperation::AddEvidence => {

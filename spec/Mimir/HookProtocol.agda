@@ -23,6 +23,7 @@ import Mimir.GraphReadProtocol as Read
 import Mimir.CandidateGraph as Graph
 import Mimir.LearningCandidates as Candidates
 import Mimir.Effects as Effects
+import Mimir.RetrievalProtocol as Retrieval
 
 member : Text → V.Value → Maybe V.Value
 member name (V.object fields) = V.Object.normalize fields name
@@ -62,7 +63,7 @@ sessionFile id = toList "mimir-session-project-" ++ id
 data Message : Set where
   -- Every selected belief retains its complete content in the injected or
   -- working-belief message; terminal/JSON encoding adds no excerpt width.
-  promptContext pretoolContext : List Graph.BeliefValues → Message
+  promptContext pretoolContext : Retrieval.Coverage → List Graph.BeliefValues → Message
   unconsolidated : List Graph.BeliefValues → Message
   preexisting : Text → List Graph.BeliefValues → Message
 
@@ -115,7 +116,7 @@ module Run (environment : Application.Environment) where
     (just project) → done project
     nothing → ask currentDirectory done
 
-  message : CLI.HookCommand → List Graph.BeliefValues → Message
+  message : CLI.HookCommand → Retrieval.Coverage → List Graph.BeliefValues → Message
   message CLI.prompt = promptContext
   message _ = pretoolContext
 
@@ -123,8 +124,8 @@ module Run (environment : Application.Environment) where
   inject kind text scope = ask connect λ where
     (inj₁ _) → done 0
     (inj₂ tt) → ask (execute (Public.relevant text nothing scope nothing false nothing)) λ where
-      (A.relevantResult []) → done 0
-      (A.relevantResult beliefs@(_ ∷ _)) → ask (stdout (message kind beliefs)) (λ _ → done 0)
+      (A.relevantResult result) → ask (stdout
+        (message kind (Retrieval.Report.retrieval result) (Retrieval.Report.beliefs result))) (λ _ → done 0)
       _ → done 0
 
   stop : Maybe Text → V.Value → Script ℕ

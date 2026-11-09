@@ -250,7 +250,7 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
     textIs project (V.string (Experience.Experience.project (Observation.Snapshot.experience state)))
   ...   | true = done (inj₂ value)
   ...   | false = done (inj₁ (invalidResponse (toList "MCP returned out-of-scope experience")))
-  afterValue (Tools.query Tools.relevant) value with array value
+  afterValue (Tools.query Tools.relevant) value with array (get "beliefs" value)
   ... | inj₁ error = done (inj₁ error)
   ... | inj₂ rows with allVisible project rows
   ...   | true = done (inj₂ value)

@@ -247,6 +247,8 @@ async fn scoped_tool(
     match name {
         "query_relevant" => {
             let beliefs = value
+                .get("beliefs")
+                .ok_or_else(|| anyhow!("belief search result is missing beliefs"))?
                 .as_array()
                 .ok_or_else(|| anyhow!("invalid belief search result"))?;
             ensure!(

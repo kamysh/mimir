@@ -15,6 +15,7 @@ open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.ExperienceSchema using (Experience; success; failure; unknown)
 open import Mimir.SourceSchema using (agentReport; toolResult; userFeedback)
+import Data.Empty
 import Mimir.LearningStore as Store
 import Mimir.ExperienceRead as Read
 import Mimir.ReviewObservation as Observation
@@ -72,3 +73,21 @@ reportedSuccessIsUnknown e c report rewrite report with Experience.outcome e
 ... | success = refl
 ... | failure = refl
 ... | unknown = refl
+
+-- A stored claim and an unknown measurement never become measured success
+-- or measured failure merely because retrieval displayed the procedure.
+unknownOutcomeCannotBeMeasured : ∀ e c → Experience.outcome e ≡ unknown →
+  observe e c ≡ counts (Counts.successes c) (Counts.failures c) (suc (Counts.unknowns c))
+unknownOutcomeCannotBeMeasured e c unknownOutcome rewrite unknownOutcome
+  with Experience.provenance e
+... | agentReport = refl
+... | toolResult = refl
+... | userFeedback = refl
+
+otherProjectCannotCount : ∀ project id entry rows c →
+  (Experience.project (Observation.Snapshot.experience (Read.Row.snapshot entry)) ≡ project → Data.Empty.⊥) →
+  accumulate project id (entry ∷ rows) c ≡ accumulate project id rows c
+otherProjectCannotCount project id entry rows c foreign
+  with Experience.project (Observation.Snapshot.experience (Read.Row.snapshot entry)) ≟Text project
+... | no different = refl
+... | yes same = Data.Empty.⊥-elim (foreign same)

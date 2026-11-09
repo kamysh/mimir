@@ -1647,6 +1647,7 @@ async fn supersession_is_reversible_and_feedback_survives_propagation() {
         )
         .await
         .unwrap()
+        .beliefs
         .iter()
         .any(|x| x.id == a.id));
     let before = svc.get_belief(a.id).await.unwrap().unwrap();
@@ -1666,6 +1667,7 @@ async fn supersession_is_reversible_and_feedback_survives_propagation() {
         )
         .await
         .unwrap()
+        .beliefs
         .iter()
         .any(|x| x.id == a.id));
     assert!((svc.get_belief(a.id).await.unwrap().unwrap().beta - a.beta0).abs() < 1e-9);

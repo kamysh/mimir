@@ -738,7 +738,8 @@ async fn test_query_relevant_excludes_working_from_candidate_pool() {
     let results = svc
         .query_relevant(&format!("factterm {term}"), None, Some(&ctx.project), None)
         .await
-        .unwrap();
+        .unwrap()
+        .beliefs;
     assert!(
         results.iter().any(|b| b.id == fact.id),
         "fact belief with matching content should be retrieved"
@@ -780,7 +781,8 @@ async fn test_query_relevant_excludes_working_from_graph_expansion() {
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .beliefs;
     assert!(
         results.iter().any(|b| b.id == seed.id),
         "seed itself should match"
@@ -816,7 +818,8 @@ async fn test_query_relevant_prefer_type_reorders_tied_matches() {
     let neutral = svc
         .query_relevant(&format!("tiedterm {term}"), None, Some(&ctx.project), None)
         .await
-        .unwrap();
+        .unwrap()
+        .beliefs;
     assert_eq!(neutral.len(), 2, "both tied beliefs should be returned");
 
     let preferred = svc
@@ -827,7 +830,8 @@ async fn test_query_relevant_prefer_type_reorders_tied_matches() {
             Some(mimir_core::graph::MemoryType::Experiential),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .beliefs;
     assert_eq!(
         preferred.len(),
         2,
@@ -886,7 +890,8 @@ async fn test_query_relevant_excludes_beliefs_reachable_only_via_out_of_scope_br
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .beliefs;
     assert!(
         results.iter().any(|b| b.id == seed.id),
         "seed itself should match"
@@ -1080,7 +1085,8 @@ async fn test_add_and_query_grounded() {
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .beliefs;
     let gb = grounded
         .iter()
         .find(|g| g.belief.id == b.id)

@@ -35,6 +35,7 @@ import Mimir.ReviewEdges as Edges
 import Mimir.IndependentProvenance as Origin
 import Mimir.CandidateProvenance as Provenance
 import Mimir.PatternOutcomes as Pattern
+import Mimir.RetrievalProtocol as Retrieval
 import Mimir.LearningContext as Context
 import Mimir.LearningContextProtocol as ContextProtocol
 import Mimir.AssessmentRead as Assessment
@@ -204,9 +205,12 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project original@A.invalidGrounding = failure original
   project (A.evidenceResult (inj₂ refs)) = success (V.array (map reference refs))
   project original@(A.evidenceResult (inj₁ error)) = failure original
-  project (A.relevantResult beliefs) = success (V.array (map belief beliefs))
-  project (A.groundedResult (inj₂ beliefs)) = success (V.array (map grounded beliefs))
-  project original@(A.groundedResult (inj₁ error)) = failure original
+  project (A.relevantResult result) = success (object
+    (("beliefs" , V.array (map belief (Retrieval.Report.beliefs result))) ∷
+     ("retrieval" , Retrieval.coverageValue (Retrieval.Report.retrieval result)) ∷ []))
+  project (A.groundedResult observedCoverage (inj₂ beliefs)) = success (object
+    (("beliefs" , V.array (map grounded beliefs)) ∷ ("retrieval" , Retrieval.coverageValue observedCoverage) ∷ []))
+  project original@(A.groundedResult observedCoverage (inj₁ error)) = failure original
   project (A.documentResult (A.Document.loaded n)) = success (count "loaded" n)
   project (A.documentResult (A.Document.cleared n)) = success (count "cleared" n)
   project original@(A.documentResult _) = failure original
@@ -236,7 +240,8 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   ... | nothing = failure original
   ... | just assessments = success (object (("beliefs" , V.array (map belief (ContextProtocol.Output.beliefs result))) ∷
     ("patterns" , V.array (map patternResult (ContextProtocol.Output.patterns result))) ∷ ("assessments" , V.array assessments) ∷
-    ("assessments_truncated" , V.boolean (Context.Assessments.truncated (ContextProtocol.Output.assessments result))) ∷ []))
+    ("assessments_truncated" , V.boolean (Context.Assessments.truncated (ContextProtocol.Output.assessments result))) ∷
+    ("retrieval" , Retrieval.coverageValue (ContextProtocol.Output.retrieval result)) ∷ []))
   project (A.capabilitiesResult c) = success (Capabilities.encode c)
   project original@(A.failed _) = failure original
   project original@A.invalidContext = failure original
