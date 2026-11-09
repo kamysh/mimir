@@ -484,9 +484,9 @@ impl MimirService {
         approach: &str,
         success_rate: f64,
     ) -> Result<Pattern> {
-        let pattern = Pattern::new(situation.to_string(), approach.to_string(), success_rate)?;
-        self.store.insert_pattern(&pattern).await?;
-        Ok(pattern)
+        self.store
+            .create_pattern(situation, approach, success_rate, None)
+            .await
     }
 
     /// Add an edge between two beliefs. Validates both exist.

@@ -566,10 +566,9 @@ impl crate::MimirService {
         success_rate: f64,
         project: Option<&str>,
     ) -> Result<Pattern> {
-        let mut pattern = Pattern::new(situation.into(), approach.into(), success_rate)?;
-        pattern.project = project.map(str::to_owned);
-        self.store.insert_pattern(&pattern).await?;
-        Ok(pattern)
+        self.store
+            .create_pattern(situation, approach, success_rate, project)
+            .await
     }
     /// Retrieve relevant procedures with observed results alongside beliefs.
     /// Relevance comes first; outcome estimates break ties between equally
