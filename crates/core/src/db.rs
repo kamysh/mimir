@@ -157,13 +157,18 @@ impl ReviewQueueSubscription {
     }
 
     async fn connect_channel(cfg: &DatabaseConfig, channel: &'static str) -> Result<Self> {
+        Self::connect_channels(cfg, &[channel]).await
+    }
+
+    async fn connect_channels(cfg: &DatabaseConfig, channels: &[&'static str]) -> Result<Self> {
         let (client, mut connection) = postgres_config(cfg).connect(tls_connector(cfg)?).await?;
         let (sent, events) = tokio::sync::mpsc::unbounded_channel();
+        let observed_channels = channels.to_vec();
         let reader = tokio::spawn(async move {
             while let Some(message) = std::future::poll_fn(|cx| connection.poll_message(cx)).await {
                 let event = match message {
                     Ok(tokio_postgres::AsyncMessage::Notification(notification))
-                        if notification.channel() == channel =>
+                        if observed_channels.contains(&notification.channel()) =>
                     {
                         Ok(())
                     }
@@ -177,17 +182,21 @@ impl ReviewQueueSubscription {
                     return;
                 }
             }
-            let _ = sent.send(Err(anyhow::anyhow!("{channel} listener disconnected")));
+            let _ = sent.send(Err(anyhow::anyhow!(
+                "owned database listener disconnected: {observed_channels:?}"
+            )));
         });
         let subscription = Self {
             client,
             events,
             reader,
         };
-        subscription
-            .client
-            .batch_execute(&format!("LISTEN {channel}"))
-            .await?;
+        for channel in channels {
+            subscription
+                .client
+                .batch_execute(&format!("LISTEN {channel}"))
+                .await?;
+        }
         Ok(subscription)
     }
 
@@ -197,6 +206,30 @@ impl ReviewQueueSubscription {
             .recv()
             .await
             .ok_or_else(|| anyhow::anyhow!("review queue listener stopped"))?
+    }
+}
+
+/// Review preparation owns both its source revision and its embedding owner.
+/// This is separate from the new-review queue: acknowledgement cannot wake
+/// the watcher into repeatedly reviewing the work it just completed.
+pub(crate) struct ReviewPreparationSubscription(ReviewQueueSubscription);
+
+impl ReviewPreparationSubscription {
+    pub(crate) async fn connect(cfg: &DatabaseConfig) -> Result<Self> {
+        Ok(Self(
+            ReviewQueueSubscription::connect_channels(
+                cfg,
+                &[
+                    "mimir_review_state_changed",
+                    "mimir_embedding_owners_changed",
+                ],
+            )
+            .await?,
+        ))
+    }
+
+    pub(crate) async fn changed(&mut self) -> Result<()> {
+        self.0.changed().await
     }
 }
 

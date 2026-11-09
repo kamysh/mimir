@@ -10,6 +10,8 @@ mod prepared_belief;
 pub(crate) use prepared_belief::BeliefPublicationState;
 mod prepared_document;
 pub(crate) use prepared_document::{document_arguments, DocumentDraft, DocumentPreparation};
+mod review_operation;
+pub(crate) use review_operation::ReviewPublicationState;
 mod project_deletion;
 mod reservations;
 mod retirement;
