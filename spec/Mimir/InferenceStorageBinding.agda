@@ -13,6 +13,7 @@ open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Bool using (Bool; true; false; not)
 open import Relation.Nullary using (yes; no; does)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
+open import Relation.Binary.PropositionalEquality using (sym; subst)
 open import Data.List.Relation.Binary.Permutation.Propositional using (_↭_)
 import Data.List.Relation.Unary.Any as Any
 open import Data.Empty using (⊥)
@@ -29,6 +30,8 @@ import Mimir.ReviewSchema as Review
 import Mimir.ReviewEdges as Edges
 import Mimir.GraphNumerics as Numeric
 import Mimir.RetrievalRanking as Ranking
+import Mimir.Recovery as Recovery
+import Data.List.Relation.Binary.Permutation.Propositional as Permutation
 
 -- Numerical intent is derived from the request and the complete initial
 -- world. It is independent of pass counts and of the solver's chosen iterate.
@@ -168,6 +171,7 @@ module NumericalOutcome (databaseSum : List Float → Float) where
     calculated : List (ℕ × Float) → Result
     needsDecision : P.State → List P.State → Result
     invalidCalculation : P.State → Result
+    rejectedReport : P.CalculationReport → Result
 
   PreparedGoal : Context → Store.World → Store.World → Result → Set
   PreparedGoal selected before after (unavailable issue) = ⊥
@@ -178,6 +182,10 @@ module NumericalOutcome (databaseSum : List Float → Float) where
   PreparedGoal selected before after (invalidCalculation counts) =
     after ≡ before × Σ (List P.Edge) (λ incoming →
       incoming ↭ Context.edges selected × Cycle.Invalid selected incoming counts)
+  PreparedGoal selected before after (rejectedReport report) =
+    after ≡ before × A.check report ≡ A.rejected
+    where module A = P.Assess (Context.seed selected) (Context.external selected)
+            (Context.edges selected) (Context.targets selected)
 
   -- The request and initial store select the requirement. There is no goal
   -- field for an operation to replace with a weaker condition. A publication
@@ -191,6 +199,113 @@ module NumericalOutcome (databaseSum : List Float → Float) where
   decisionCannotChangeStoredData : ∀ selected before after repeated visited →
     PreparedGoal selected before after (needsDecision repeated visited) → after ≡ before
   decisionCannotChangeStoredData selected before after repeated visited (unchanged , seen) = unchanged
+
+-- Querying a counterfactual never publishes its projected posteriors. The
+-- raw calculator is untrusted: complete answers owe every posterior equation,
+-- while a rejected report or actual cycle repetition returns its evidence.
+module InterventionRecovery (databaseSum : List Float → Float) (calculator : P.Calculator) where
+  module N = NumericalOutcome databaseSum
+
+  record Input : Set where
+    constructor input
+    field identity : ℕ; value : Float
+
+  request : Input → N.Request
+  request query = N.intervention (Input.identity query) (Input.value query)
+
+  selectedIsReadOnly : ∀ seed edges selected before chosen →
+    N.prepareSelected true seed edges selected before ≡ inj₂ chosen →
+    N.Context.readOnly chosen ≡ true
+  selectedIsReadOnly seed edges selected before chosen observed with
+    I.prepare (concatMap Review.Review.feedbacks (S.activeReviews before))
+      (S.groundTotals databaseSum before) selected
+    | Recompute.prepareEdges (map Graph.BeliefValues.identity selected) edges
+  ... | nothing | _ with observed
+  ...   | ()
+  selectedIsReadOnly seed edges selected before chosen observed | just nodes | nothing with observed
+  ... | ()
+  selectedIsReadOnly seed edges selected before ._ refl | just nodes | just incoming = refl
+
+  preparedIsReadOnly : ∀ query before selected →
+    N.prepare (request query) before ≡ inj₂ selected → N.Context.readOnly selected ≡ true
+  preparedIsReadOnly query before selected observed with Numeric.probability (Input.value query)
+  ... | false with observed
+  ...   | ()
+  preparedIsReadOnly query before selected observed | true with Ranking.lookup (Input.identity query) (Store.beliefs before)
+  ... | nothing with observed
+  ...   | ()
+  preparedIsReadOnly query before selected observed | true | just belief =
+    selectedIsReadOnly (just (identity , Input.value query)) incoming targets before selected observed
+    where
+    identity = Input.identity query
+    incoming = N.selectEdges true identity (S.edges before)
+    reached = Recompute.closureScoped nothing (Store.beliefs before) incoming (identity ∷ [])
+    targets = filterᵇ (λ b → not (does (identity ≟ Graph.BeliefValues.identity b)))
+      (Recompute.selected reached (Store.beliefs before))
+
+  fromReport : N.Context → P.CalculationReport → N.Result
+  fromReport selected report = finish (A.check report)
+    where
+    module A = P.Assess (N.Context.seed selected) (N.Context.external selected)
+      (N.Context.edges selected) (N.Context.targets selected)
+    finish : A.Verdict → N.Result
+    finish A.rejected = N.rejectedReport report
+    finish checked@(A.accepted final valid shape complete) = N.calculated (Numeric.project (A.writes checked))
+    finish (A.repeated final visited seen incomplete steps) = N.needsDecision final visited
+
+  report : N.Context → P.CalculationReport
+  report selected = calculator (N.Context.seed selected) (N.Context.external selected)
+    (N.Context.edges selected) (N.Context.targets selected)
+
+  answer : Input → Store.World → N.Result
+  answer query before with N.prepare (request query) before
+  ... | inj₁ issue = N.unavailable issue
+  ... | inj₂ selected = fromReport selected (report selected)
+
+  reportMeetsGoal : ∀ selected before → N.Context.readOnly selected ≡ true → ∀ raw →
+    N.PreparedGoal selected before before (fromReport selected raw)
+  reportMeetsGoal selected before readOnly raw with A.check raw in checked
+    where module A = P.Assess (N.Context.seed selected) (N.Context.external selected)
+            (N.Context.edges selected) (N.Context.targets selected)
+  ... | P.Assess.rejected = refl , checked
+  ... | P.Assess.accepted final valid shape complete rewrite readOnly =
+    N.Context.edges selected , Permutation.refl , final , valid , shape , complete , refl , refl
+  ... | P.Assess.repeated final visited seen incomplete steps =
+    refl , N.Context.edges selected , Permutation.refl , seen , incomplete , steps
+
+  answerMeetsGoal : ∀ query before → N.Goal (request query) before before (answer query before)
+  answerMeetsGoal query before with N.prepare (request query) before in prepared
+  ... | inj₁ issue = refl , refl
+  ... | inj₂ selected = reportMeetsGoal selected before (preparedIsReadOnly query before selected prepared) (report selected)
+
+  module QueryRead = Recovery.ReadOnly answer
+  module R = QueryRead.Checked
+
+  Goal : Input → Store.World → Store.World → N.Result → Set
+  Goal query before after result = N.Goal (request query) before after result
+
+  completedMeetsGoal : ∀ query before after result →
+    R.X.Completed (R.script query) before after result → Goal query before after result
+  completedMeetsGoal query before after result completion
+    with R.completedMeetsIntent query before after result completion
+  ... | refl = answerMeetsGoal query before
+
+  completedPreservesWholeWorld : ∀ query before after result →
+    R.X.Completed (R.script query) before after result → after ≡ before
+  completedPreservesWholeWorld query before after result completion =
+    cong proj₁ (R.completedMeetsIntent query before after result completion)
+
+  operation : Recovery.RecoverableFor Store.World Input N.Result Goal
+  operation = record
+    { Effect = R.Effect; Reply = R.Reply; script = R.script; Atomic = R.Atomic
+    ; progress = R.progress
+    ; converges = λ query initial interrupted final result interruption completion →
+        subst (λ before → Goal query before final result)
+          (QueryRead.interruptedPreservesAllState query initial interrupted interruption)
+          (completedMeetsGoal query interrupted final result completion)
+    }
+
+  module Run = Recovery.CheckedFor operation
 
 module Bound (database : ℕ) (calculator : P.Calculator) (sum : List Float → Float) (reads : Committed.Contract Store.World) where
   private
