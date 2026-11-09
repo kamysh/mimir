@@ -59,6 +59,153 @@ pub fn beta_mean(alpha: f64, beta: f64) -> f64 {
     }
 }
 
+/// A concrete invalid value read from an identified stored belief. This is
+/// diagnostic evidence, not permission to repair data or claim that a larger
+/// operation made no changes. The owner must establish that separately.
+#[derive(Debug)]
+pub struct StoredBeliefIssue {
+    belief_id: Uuid,
+    field: &'static str,
+    issue: crate::interaction::CorrectionItem,
+}
+impl StoredBeliefIssue {
+    pub fn belief_id(&self) -> Uuid {
+        self.belief_id
+    }
+    pub fn field(&self) -> &'static str {
+        self.field
+    }
+    pub fn issue(&self) -> &crate::interaction::CorrectionItem {
+        &self.issue
+    }
+    fn new(belief_id: Uuid, field: &'static str, detail: String) -> Self {
+        use crate::{
+            interaction::{CorrectionItem, Location},
+            validation::{Code, Fault, Segment},
+        };
+        let issue=CorrectionItem::new(Location::Configuration,
+            Fault {path:vec![Segment::Key("database".into()),Segment::Key("beliefs".into()),
+                Segment::Key(belief_id.to_string()),Segment::Key(field.into())],code:Code::InvalidNumber,
+                message:format!("Stored belief {belief_id}, field {field}: {detail}")},
+            "Finite nonnegative current and original evidence counts, with finite pair totals; finite probability and confidence between zero and one. Zero evidence is allowed.".into(),
+            "Show the identified belief, field and stored value to the user and ask for the authoritative correction. Keep the original operation token and read its recorded outcome before retrying. Do not clamp the value, replace present malformed counts with a cached probability, guess evidence, or delete and recreate the belief to bypass the problem. No automatic data repair is authorized.".into())
+            .expect("stored evidence diagnostics identify their source and repair");
+        Self {
+            belief_id,
+            field,
+            issue,
+        }
+    }
+}
+impl std::fmt::Display for StoredBeliefIssue {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            out,
+            "{} {}",
+            self.issue.fault().message,
+            self.issue.suggested_correction()
+        )
+    }
+}
+impl std::error::Error for StoredBeliefIssue {}
+
+fn pair_problem(
+    first_name: &'static str,
+    first: f64,
+    second_name: &'static str,
+    second: f64,
+) -> Option<(&'static str, String)> {
+    for (name, value) in [(first_name, first), (second_name, second)] {
+        if !value.is_finite() || value < 0.0 {
+            return Some((
+                name,
+                format!("{value} is not a finite nonnegative evidence count."),
+            ));
+        }
+    }
+    if !(first + second).is_finite() {
+        return Some((
+            first_name,
+            format!("The total of {first_name}={first} and {second_name}={second} is not finite."),
+        ));
+    }
+    None
+}
+fn stored_pair(
+    id: Uuid,
+    first_name: &'static str,
+    first: f64,
+    second_name: &'static str,
+    second: f64,
+) -> Result<()> {
+    if let Some((field, detail)) = pair_problem(first_name, first, second_name, second) {
+        return Err(StoredBeliefIssue::new(id, field, detail).into());
+    }
+    Ok(())
+}
+pub(crate) fn stored_counter(
+    id: Uuid,
+    name: &'static str,
+    text: Option<&str>,
+    fallback: f64,
+) -> Result<f64> {
+    let Some(text) = text else {
+        return Ok(fallback);
+    };
+    let value=text.parse::<f64>().map_err(|_| StoredBeliefIssue::new(id,name,
+        format!("{text:?} is not a number. A present malformed count cannot use the legacy fallback.")))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(StoredBeliefIssue::new(
+            id,
+            name,
+            format!("{value} is not a finite nonnegative evidence count."),
+        )
+        .into());
+    }
+    Ok(value)
+}
+pub(crate) fn stored_probability(id: Uuid, name: &'static str, text: &str) -> Result<f64> {
+    let value = text
+        .parse::<f64>()
+        .map_err(|_| StoredBeliefIssue::new(id, name, format!("{text:?} is not a number.")))?;
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(StoredBeliefIssue::new(
+            id,
+            name,
+            format!("{value} is not a finite probability between zero and one."),
+        )
+        .into());
+    }
+    Ok(value)
+}
+
+/// Proposed writes are request/calculation refusals, not evidence that the
+/// stored graph is corrupt. They share the exact count rule with reconstruction.
+pub(crate) fn admit_count_write(
+    id: Uuid,
+    first_name: &'static str,
+    first: f64,
+    second_name: &'static str,
+    second: f64,
+) -> Result<()> {
+    if let Some((field, detail)) = pair_problem(first_name, first, second_name, second) {
+        return Err(crate::validation::Refusal::invalid(crate::validation::Code::InvalidNumber,
+            vec![crate::validation::Segment::Key("beliefs".into()),crate::validation::Segment::Key(id.to_string()),
+                crate::validation::Segment::Key(field.into())],
+            format!("The proposed evidence for belief {id} is invalid: {detail} Correct the named values; do not clamp them or invent a replacement. Zero evidence remains allowed.")).into());
+    }
+    Ok(())
+}
+pub(crate) fn admit_probability_write(id: Uuid, name: &'static str, value: f64) -> Result<()> {
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(crate::validation::Refusal::invalid(crate::validation::Code::InvalidNumber,
+            vec![crate::validation::Segment::Key("beliefs".into()),crate::validation::Segment::Key(id.to_string()),
+                crate::validation::Segment::Key(name.into())],
+            format!("The proposed {name}={value} for belief {id} must be finite and between zero and one. Correct the value; do not clamp it or guess a replacement.")).into());
+    }
+    Ok(())
+}
+
 /// Recover (mean, confidence) from a Beta (α, β): mean = beta_mean;
 /// confidence = (κ − KAPPA_MIN)/(KAPPA_MAX − KAPPA_MIN), clamped to [0,1].
 pub(crate) fn beta_to_pc(alpha: f64, beta: f64) -> (f64, f64) {
@@ -199,6 +346,8 @@ impl Belief {
         memory_type: MemoryType,
         project: Option<String>,
     ) -> Result<Self> {
+        stored_pair(id, "alpha", alpha, "beta", beta)?;
+        stored_pair(id, "alpha0", alpha0, "beta0", beta0)?;
         let (mean, conf) = beta_to_pc(alpha, beta);
         Ok(Self {
             id,

@@ -42,6 +42,21 @@ impl RegisteredOperation {
             }
         }
         let result = call(self.handler, service, input).await;
+        // Read-only handlers cannot have changed business data. Sweep also
+        // acknowledges rollback before exposing a stored-value diagnostic;
+        // an unacknowledged rollback deliberately strips that typed cause.
+        // Do not apply this conversion to larger or partially committed work.
+        if self.committed_boundaries().is_empty()
+            || self.handler == Operation::Graph(GraphOperation::SweepExpiredDefeated)
+        {
+            if let Err(error) = &result {
+                if let Some(issue) = error.downcast_ref::<mimir_core::graph::StoredBeliefIssue>() {
+                    let correction =
+                        mimir_core::interaction::NeedsInput::new(issue.issue().clone(), vec![])?;
+                    return Ok(mimir_json::to_value(correction)?);
+                }
+            }
+        }
         if self.handler == Operation::Graph(GraphOperation::RecordDefeat) {
             if let Err(error) = &result {
                 if let Some(decision) =
