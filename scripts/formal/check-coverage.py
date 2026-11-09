@@ -125,7 +125,7 @@ def check():
     assert native_struct_fields(read('crates/core/src/store/operation_plans.rs'), 'StoredPlan') == formal_field_names(controls, 'fieldNames'), 'operation-control plan fields disagree with native storage'
     capture_source = read('crates/core/src/store/backfill.rs')
     assert native_struct_fields(capture_source, 'Capture') == formal_field_names(controls, 'captureFieldNames'), 'captured-selection fields disagree with native storage'
-    assert native_struct_fields(capture_source, 'Source') == formal_field_names(controls, 'sourceFieldNames'), 'captured-source fields disagree with native storage'
+    assert native_struct_fields(capture_source, 'BackfillSource') == formal_field_names(controls, 'sourceFieldNames'), 'captured-source fields disagree with native storage'
 
     main = 'crates/cli/src/main.rs'
     commands = [kebab(name) for name in enum_variants(main, 'Command')
@@ -184,7 +184,7 @@ def check():
         r'^source Schema\.(\w+) = toList (".*")$', read('spec/Mimir/MigrationScriptBinding.agda'), re.M)}
     migration_keys = ['initial', 'searchPath', 'embeddingTable', 'evidenceEdges',
                       'betaBeliefs', 'learning', 'candidates', 'assessment', 'owners', 'allocation',
-                      'reviewQueueNotifications', 'operationReservations', 'operationBindings', 'operationStepReplies', 'operationPlans', 'operationRequestKeys', 'candidateKeyContent', 'embeddingOwners', 'operationCancellations', 'decayAccounting']
+                      'reviewQueueNotifications', 'operationReservations', 'operationBindings', 'operationStepReplies', 'operationPlans', 'operationRequestKeys', 'candidateKeyContent', 'embeddingOwners', 'operationCancellations', 'decayAccounting', 'backfillChangeEvents']
     sql_files = sorted((ROOT / 'crates/core/migrations').glob('*.sql'))
     assert len(sql_files) == len(migration_keys) == len(bound_sources)
     for path, key in zip(sql_files, migration_keys):

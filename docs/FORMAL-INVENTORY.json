@@ -18110,6 +18110,55 @@
         "spec/Mimir/MigrationScriptBinding.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
+    },
+    {
+      "path": "crates/core/src/backfill_service.rs",
+      "definitions": [],
+      "status": "partial-147-whole-operation-recovery-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/BackfillRecovery.agda",
+        "spec/Mimir/EmbeddingLifecycle.agda"
+      ],
+      "proof_boundary_category": "database_effects",
+      "specification_status": "item-policy-and-admission-checked-whole-operation-certificate-open"
+    },
+    {
+      "path": "crates/core/src/store/backfill.rs",
+      "definitions": [],
+      "status": "partial-147-whole-operation-recovery-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/BackfillRecovery.agda",
+        "spec/Mimir/OperationControls.agda"
+      ],
+      "proof_boundary_category": "database_effects",
+      "specification_status": "item-policy-and-admission-checked-whole-operation-certificate-open"
+    },
+    {
+      "path": "crates/core/src/backfill_service_tests.rs",
+      "definitions": [],
+      "status": "partial-147-whole-operation-recovery-open",
+      "classification": "verification-or-example-artifact"
+    },
+    {
+      "path": "crates/core/src/store/backfill_tests.rs",
+      "definitions": [],
+      "status": "partial-147-whole-operation-recovery-open",
+      "classification": "verification-or-example-artifact"
+    },
+    {
+      "path": "crates/core/migrations/022_backfill_change_events.sql",
+      "definitions": [],
+      "status": "partial-147-whole-operation-recovery-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/Migrations.agda",
+        "spec/Mimir/MigrationSchema.agda",
+        "spec/Mimir/MigrationScriptBinding.agda"
+      ],
+      "proof_boundary_category": "database_effects",
+      "specification_status": "item-policy-and-admission-checked-whole-operation-certificate-open"
     }
   ],
   "dependency_contracts": [
@@ -18303,7 +18352,7 @@
         "formal_status": "One external-interface postulate outside the safe spec import graph; the Rust adapter correspondence remains open.",
         "approval": "User selected Approve for the PostgreSQL transaction-atomicity question on 2026-10-30.",
         "module_file": "assumptions/Mimir/Assumptions/PostgreSQL.agda",
-        "declaration": "atomicTransactions : (State : Set) \u2192 Mimir.DatabaseTransaction.Contract State",
+        "declaration": "atomicTransactions : (State : Set) → Mimir.DatabaseTransaction.Contract State",
         "isolation_audit": "/tmp/mimir-assumption-isolation-audit-eejzpx6r.json",
         "verification": "/tmp/mimir-agda-approved-postgresql-vetBrZBn.log and .exit",
         "verification_limit": "Checks the declaration and imports; PostgreSQL behavior is assumed, not proved."

@@ -14,7 +14,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 
 data Migration : Set where
   initial searchPath beliefEmbeddings evidenceEdges betaBeliefs learningLedger
-    reviewCandidates assessments itemOwners postgresItemAllocation reviewQueueNotifications operationReservations operationBindings operationStepReplies operationPlans operationRequestKeys candidateKeyContent embeddingOwners operationCancellations decayAccounting : Migration
+    reviewCandidates assessments itemOwners postgresItemAllocation reviewQueueNotifications operationReservations operationBindings operationStepReplies operationPlans operationRequestKeys candidateKeyContent embeddingOwners operationCancellations decayAccounting backfillChangeEvents : Migration
 
 name : Migration → String
 name initial = "initial"
@@ -37,6 +37,7 @@ name candidateKeyContent = "candidate-key-content"
 name embeddingOwners = "embedding-publication-owners"
 name operationCancellations = "operation-cancellations"
 name decayAccounting = "decay-accounting"
+name backfillChangeEvents = "backfill-change-events"
 
 predecessor : Migration → Maybe Migration
 predecessor initial = nothing
@@ -59,11 +60,12 @@ predecessor candidateKeyContent = just operationRequestKeys
 predecessor embeddingOwners = just candidateKeyContent
 predecessor operationCancellations = just embeddingOwners
 predecessor decayAccounting = just operationCancellations
+predecessor backfillChangeEvents = just decayAccounting
 
 manifest : List Migration
 manifest = initial ∷ searchPath ∷ beliefEmbeddings ∷ evidenceEdges ∷
   betaBeliefs ∷ learningLedger ∷ reviewCandidates ∷ assessments ∷ itemOwners ∷ postgresItemAllocation ∷
-  reviewQueueNotifications ∷ operationReservations ∷ operationBindings ∷ operationStepReplies ∷ operationPlans ∷ operationRequestKeys ∷ candidateKeyContent ∷ embeddingOwners ∷ operationCancellations ∷ decayAccounting ∷ []
+  reviewQueueNotifications ∷ operationReservations ∷ operationBindings ∷ operationStepReplies ∷ operationPlans ∷ operationRequestKeys ∷ candidateKeyContent ∷ embeddingOwners ∷ operationCancellations ∷ decayAccounting ∷ backfillChangeEvents ∷ []
 
 -- The executable lifecycle is MigrationDriver. The former untyped state
 -- table was removed because it conflated queued rollback with acknowledgement

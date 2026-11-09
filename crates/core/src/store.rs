@@ -1,4 +1,5 @@
 mod backfill;
+pub(crate) use backfill::{BackfillSource, BackfillState};
 mod cancellations;
 mod conformance;
 mod direct_graph;
@@ -2125,7 +2126,7 @@ $$) AS (ok ag_catalog.agtype)"#
         Ok(())
     }
 
-    async fn insert_belief_embedding_on(
+    pub(super) async fn insert_belief_embedding_on(
         &self,
         client: &Client,
         belief_id: Uuid,

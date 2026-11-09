@@ -134,6 +134,7 @@ async fn original_capture_survives_new_records_vectors_and_reconnect() -> Result
         .read_operation_step(token, super::super::operation_plans::RESULT_KEY)
         .await?
         .is_none());
+    reopened.delete_project(&project).await?;
     Ok(())
 }
 

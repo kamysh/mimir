@@ -199,6 +199,12 @@ pub struct RegisteredStep {
     position: usize,
 }
 impl OperationPlan {
+    pub(crate) fn captured(&self) -> Option<&Value> {
+        self.inner.stored.capture.as_ref()
+    }
+    pub(crate) fn original_request(&self) -> &OperationBindingRequest {
+        &self.inner.binding.request
+    }
     pub fn operation_token(&self) -> Uuid {
         self.inner.binding.operation_token
     }
@@ -212,6 +218,11 @@ impl OperationPlan {
     }
 }
 impl RegisteredStep {
+    pub(super) fn plan(&self) -> OperationPlan {
+        OperationPlan {
+            inner: self.inner.clone(),
+        }
+    }
     pub(super) fn is_final(&self) -> bool {
         self.position + 1 == self.inner.stored.steps.len()
     }
@@ -618,6 +629,20 @@ impl AgeStore {
         plan: &OperationPlan,
         reply: Value,
     ) -> Result<CompletionDecision> {
+        self.complete_operation_checked(plan, move |_| Box::pin(async move { Ok(reply) }))
+            .await
+    }
+
+    pub(super) async fn complete_operation_checked<F>(
+        &self,
+        plan: &OperationPlan,
+        verify: F,
+    ) -> Result<CompletionDecision>
+    where
+        F: for<'a, 'client> FnOnce(
+            &'a Transaction<'client>,
+        ) -> super::operation_steps::StepWork<'a>,
+    {
         let mut client = self.client.lock().await;
         let tx = super::learning_transaction(&mut client).await?;
         let token = plan.operation_token();
@@ -654,6 +679,15 @@ impl AgeStore {
                     tx.rollback().await?;
                     return Ok(CompletionDecision::FinalStepRequired(last));
                 }
+                let reply = match verify(&tx).await {
+                    Ok(reply) => reply,
+                    Err(original) => {
+                        if let Err(rollback) = tx.rollback().await {
+                            return Err(anyhow!("Completion check failed but rollback could not be confirmed: {rollback:#}. Keep token {token} and read its outcome. Original cause: {original:#}"));
+                        }
+                        return Err(original);
+                    }
+                };
                 let encoded = serde_json::to_string(&reply)?;
                 let row=tx.query_one("INSERT INTO mimir_operation_step_replies (operation_token,step,reply) VALUES ($1,$2,$3::text::jsonb) RETURNING reply::text",&[&token,&RESULT_KEY,&encoded]).await?;
                 serde_json::from_str(row.try_get::<_, &str>(0)?)?
