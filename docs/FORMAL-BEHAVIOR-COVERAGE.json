@@ -1683,7 +1683,20 @@
         "spec/Mimir/CLI.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
-      "remaining": "See operational repair verification receipt; no machine-checked Rust refinement claim."
+      "remaining": "Mandatory CLI configuration lifecycle routing remains #148 and dispatcher work. See docs/CONFIGURATION-UPGRADE-RECOVERY.md; no machine-checked Rust refinement claim.",
+      "recovery_contract": {
+        "operation": "Mimir.ConfigurationUpgrade.Document.Replacement.recoverable",
+        "intent": "Pure document upgrade; preserve unrelated payload and complete frame; retain explicit logging directory on retry.",
+        "laws": [
+          "upgradedReadback",
+          "requestedReadback",
+          "normalizeStable",
+          "framePreserved",
+          "interruptedInvariant",
+          "completedObservation"
+        ],
+        "boundary": "Complete-file read/preparation/replacement/sync certificate; mandatory CLI lifecycle dispatch and full Rust correspondence remain unfinished."
+      }
     },
     {
       "name": "judge diagnose",
