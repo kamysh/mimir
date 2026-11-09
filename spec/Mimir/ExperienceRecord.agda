@@ -83,7 +83,7 @@ module WithCalculator (calculator : Posterior.Calculator) where
   prepare before e expected now old with Owners.prepare (Experience.identity e)
     (Publication.World.owners (Store.World.publication before)) (Experience.items e)
   ... | inj₁ failure = rejected (invalid failure)
-  ... | inj₂ (owners , ownership) with Recompute.run calculator (Experience.project e)
+  ... | inj₂ (owners , ownership) with Recompute.run now calculator (Experience.project e)
     (Numerical.oldTargets (Ledger.activeApplied
       (Ledger.World.cells priorLedger (Experience.identity e))
       (Ledger.World.histories priorLedger (Experience.identity e))))

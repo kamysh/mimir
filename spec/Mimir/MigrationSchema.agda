@@ -19,7 +19,7 @@ import Mimir.ItemOwners as Owners
 import Mimir.LearningStore as Learning
 import Mimir.DatabaseTransaction as Database
 open import Mimir.Migrations public
-  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys; candidateKeyContent; embeddingOwners; operationCancellations)
+  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys; candidateKeyContent; embeddingOwners; operationCancellations; decayAccounting)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation;
@@ -178,6 +178,9 @@ data DDL : Set where
   dropCheckConstraint : String → String → DDL
   installReviewQueueNotifier installEmbeddingOwnerNotifier installImmutableOperationBindings installImmutableStepReplies installImmutableOperationPlans installImmutableRequestKeys : DDL
   installOperationCancellationGuards : DDL
+  -- Fill this absent graph property at one observed PostgreSQL time. Existing
+  -- values and every count/probability/prior remain untouched.
+  initializeMissingBeliefTimestamp : String → Default → DDL
 
 kappa alpha beta : Expr
 kappa = add (number "2.0" ∷ multiply (columnValue "confidence" ∷ number "198.0" ∷ []) ∷ [])
@@ -217,6 +220,7 @@ body operationPlans = installImmutableOperationPlans ∷ []
 body operationRequestKeys = create requestKeyTable ∷ installImmutableRequestKeys ∷ []
 body embeddingOwners = create embeddingOwnerTable ∷ installEmbeddingOwnerNotifier ∷ []
 body operationCancellations = create cancellationTable ∷ installOperationCancellationGuards ∷ []
+body decayAccounting = initializeMissingBeliefTimestamp "decay_accounted_at" now ∷ []
 body candidateKeyContent =
   dropCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_check" ∷
   addCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_nonempty"

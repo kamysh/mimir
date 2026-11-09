@@ -28,7 +28,7 @@ record BeliefValues : Set where
     content : Text
     project : Maybe Text
     memory : Memory
-    created activated : ℤ
+    created activated decayAccountedAt : ℤ
     probability confidence alpha beta alpha0 beta0 : Float
 
 record PatternValues : Set where
@@ -55,7 +55,7 @@ record Creation : Set where
 
 value : Creation → Node
 value (creation experience identity (belief name content memory) project timestamp) =
-  beliefNode (beliefValues identity content (just project) memory timestamp timestamp 0.5 0.0 1.0 1.0 1.0 1.0)
+  beliefNode (beliefValues identity content (just project) memory timestamp timestamp timestamp 0.5 0.0 1.0 1.0 1.0 1.0)
 value (creation experience identity (patternCandidate name situation approach) project timestamp) =
   patternNode (patternValues identity situation approach (just project) timestamp 0 0.5)
 

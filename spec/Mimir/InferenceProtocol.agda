@@ -56,7 +56,7 @@ data Effect : Set where
   clock : Effect
   hashIteration : List ℕ → Effect
   calculatePosterior : P.Seed → P.External → List P.Edge → List P.Node → Effect
-  persistBeta : P.State → Effect
+  persistBeta : ℤ → P.State → Effect
   deleteBelief : ℕ → Effect -- GraphDeletion.Operation, including its transaction
 
 Reply : Effect → Set
@@ -76,7 +76,7 @@ Reply (defeatTimes project) = Text ⊎ List N.Defeat
 Reply clock = ℤ
 Reply (hashIteration ids) = Σ (List ℕ) (λ order → order ↭ ids)
 Reply (calculatePosterior seed external edges nodes) = P.CalculationReport
-Reply (persistBeta writes) = Text ⊎ DB.Receipt
+Reply (persistBeta publicationTime writes) = Text ⊎ DB.Receipt
 Reply (deleteBelief id) = Text ⊎ Bool
 
 module E = Effects.Protocol Effect Reply
@@ -122,14 +122,17 @@ prepare feedback ground (b ∷ bs) with L.feedbackMass (G.BeliefValues.identity 
     (G.BeliefValues.beta0 b + P.Beta.negative mass))
   (P.beta (G.BeliefValues.alpha b) (G.BeliefValues.beta b)) ∷ rest)
 
-persist : P.State → Result → Script Result
-persist writes success with L.validWrites writes
+persistAt : ℤ → P.State → Result → Script Result
+persistAt publicationTime writes success with L.validWrites writes
 ... | false = done invalidNumericWrite
-... | true = ask (persistBeta writes) (λ
+... | true = ask (persistBeta publicationTime writes) (λ
   { (inj₁ error) → done (failed error)
   ; (inj₂ DB.committed) → done success
   ; (inj₂ DB.aborted) → done publicationAborted
   ; (inj₂ DB.acknowledgementLost) → done publicationUncertain })
+
+persist : P.State → Result → Script Result
+persist writes success = ask clock (λ publicationTime → persistAt publicationTime writes success)
 
 module Calculation (seed : P.Seed) (external : P.External)
   (edges : List P.Edge) (nodes : List P.Node) where
@@ -207,12 +210,12 @@ start (intervention id value) with N.probability value
   ; (inj₂ (tx , first , just b)) → projectFrom tx first id value })
   where open import Relation.Binary.PropositionalEquality using (refl)
 start (decay project factor) = read (listBeliefs project) refl (λ beliefs →
-  read groundingMasses refl (λ ground → ask clock (λ now → decide (N.decay now factor ground beliefs))))
+  read groundingMasses refl (λ ground → ask clock (λ now → decide beliefs now (N.decay now factor ground beliefs))))
   where
   open import Relation.Binary.PropositionalEquality using (refl)
-  decide : Maybe P.State → Script Result
-  decide nothing = done invalidDecay
-  decide (just writes) = persist writes (changed (length writes))
+  decide : List G.BeliefValues → ℤ → Maybe P.State → Script Result
+  decide beliefs now nothing = done invalidDecay
+  decide beliefs now (just writes) = persistAt now writes (changed (N.changedCount beliefs writes))
 start (contradictions project) = read (openContradictions project) refl decide
   where
   open import Relation.Binary.PropositionalEquality using (refl)

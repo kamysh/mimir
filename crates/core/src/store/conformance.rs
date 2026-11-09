@@ -34,9 +34,9 @@ impl AgeStore {
                 &["SUPPORTS", "CAUSES", "DEFEATS"][..]
             };
             let arms = labels.iter().map(|label| format!(
-                "MATCH (s:Belief)-[:{label}]->(n:Belief) WHERE s.id IN [{ids}] RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project"
+                "MATCH (s:Belief)-[:{label}]->(n:Belief) WHERE s.id IN [{ids}] RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.decay_accounted_at,n.memory_type,n.project"
             )).collect::<Vec<_>>().join(" UNION ");
-            let sql = format!("SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text FROM ag_catalog.cypher('{g}', $$ {arms} $$) {BELIEF_RETURN_COLUMNS}");
+            let sql = format!("SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,decay_accounted_at::text,memory_type::text,project::text FROM ag_catalog.cypher('{g}', $$ {arms} $$) {BELIEF_RETURN_COLUMNS}");
             frontier.clear();
             for row in client.query(&sql, &[]).await? {
                 let belief = belief_from_row(&row)?;
@@ -102,6 +102,21 @@ impl AgeStore {
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
+        let publication_time = Self::posterior_time_on(tx.client()).await?;
+        let changed = self
+            .decay_in_at(&tx, factor, project, publication_time)
+            .await?;
+        tx.commit().await?;
+        Ok(changed)
+    }
+
+    async fn decay_in_at(
+        &self,
+        tx: &Transaction<'_>,
+        factor: f64,
+        project: Option<&str>,
+        publication_time: chrono::DateTime<chrono::Utc>,
+    ) -> Result<usize> {
         let beliefs = match project {
             Some(project) => {
                 self.list_beliefs_by_project_on(tx.client(), project)
@@ -112,14 +127,80 @@ impl AgeStore {
         let grounding = self.get_grounding_mass_all_on(tx.client()).await?;
         let updates = crate::inference::InferenceEngine::new().decay_all(
             &beliefs,
-            chrono::Utc::now(),
+            publication_time,
             factor,
             &grounding,
         )?;
-        let writes: Vec<_> = updates.into_iter().map(|(id, (a, b))| (id, a, b)).collect();
-        self.update_beliefs_beta_on(tx.client(), &writes).await?;
-        tx.commit().await?;
-        Ok(writes.len())
+        let changed = updates.len();
+        let updates: std::collections::HashMap<_, _> = updates.into_iter().collect();
+        let writes: Vec<_> = beliefs
+            .iter()
+            .filter(|belief| belief.memory_type == crate::graph::MemoryType::Fact)
+            .map(|belief| {
+                let (alpha, beta) = updates
+                    .get(&belief.id)
+                    .copied()
+                    .unwrap_or((belief.alpha, belief.beta));
+                (belief.id, alpha, beta)
+            })
+            .collect();
+        self.update_beliefs_beta_at_on(tx.client(), &writes, publication_time)
+            .await?;
+        Ok(changed)
+    }
+
+    pub async fn decay_operation(
+        &self,
+        step: &super::RegisteredStep,
+    ) -> Result<super::StepDecision> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Arguments {
+            #[serde(default = "default_factor")]
+            decay_factor: f64,
+            #[serde(default)]
+            project: Option<String>,
+        }
+        fn default_factor() -> f64 {
+            0.99
+        }
+        fn original(request: &super::OperationBindingRequest) -> Result<Arguments> {
+            anyhow::ensure!(request.operation()=="decay_all" && request.settings().as_object().is_some_and(|settings|settings.is_empty()),
+                "Use the original decay_all binding with empty settings; read its saved outcome before continuing");
+            let args:Arguments=serde_json::from_value(request.arguments().clone()).context("Correct decay_all arguments: supply only decay_factor and project with their declared types")?;
+            anyhow::ensure!(args.decay_factor.is_finite() && (0.0..=1.0).contains(&args.decay_factor),
+                "decay_factor must be finite and between 0 and 1 inclusive; correct it before writing");
+            Ok(args)
+        }
+        anyhow::ensure!(
+            step.description().site == crate::operation_catalogue::CommitSite::Decay.name(),
+            "Use the registered decay_all step; no belief counts were changed"
+        );
+        original(step.expected())?;
+        let token = step.token();
+        let owner = AgeStore {
+            client: self.client.clone(),
+            graph_name: self.graph_name.clone(),
+        };
+        self.commit_final_operation_step(step, move |tx, binding| {
+            Box::pin(async move {
+                let request = original(binding)?;
+                tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+                    .await?;
+                let publication_time = Self::reserved_publication_time(tx, token).await?;
+                let changed = owner
+                    .decay_in_at(
+                        tx,
+                        request.decay_factor,
+                        request.project.as_deref(),
+                        publication_time,
+                    )
+                    .await?;
+                let reply = serde_json::json!({"decayed":changed});
+                Ok((reply.clone(), reply))
+            })
+        })
+        .await
     }
 
     pub(super) async fn ensure_candidate_identity_free(

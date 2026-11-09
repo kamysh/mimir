@@ -96,35 +96,37 @@ module Decode (libraries : Libraries) where
   ... | no invalid = inj₁ invalidStoredEvidence
   ... | yes valid = inj₂ (decodedBelief value valid)
 
-  reconstructChecked : ℕ → Text → Float → Float → ℤ → ℤ → Row → Error ⊎ DecodedBelief
-  reconstructChecked id content probability confidence created activated row
+  reconstructChecked : ℕ → Text → Float → Float → ℤ → ℤ → ℤ → Row → Error ⊎ DecodedBelief
+  reconstructChecked id content probability confidence created activated accounted row
     with Numeric.probability probability ∧ Numeric.probability confidence
   ... | false = inj₁ invalidDerivedProbability
   ... | true = counter (toList "alpha0") (Beta.Beta.alpha prior) row >>= λ a₀ →
     counter (toList "beta0") (Beta.Beta.negative prior) row >>= λ b₀ →
     counter (toList "alpha") a₀ row >>= λ a → counter (toList "beta") b₀ row >>= λ b →
     inspectBelief (Graph.beliefValues id content (row (toList "project")) (memory (row (toList "memory_type")))
-      created activated (Beta.mean (Beta.beta a b)) (Beta.confidence (Beta.beta a b)) a b a₀ b₀)
+      created activated accounted (Beta.mean (Beta.beta a b)) (Beta.confidence (Beta.beta a b)) a b a₀ b₀)
     where prior = Beta.prior probability confidence
 
   forgetProof : Error ⊎ DecodedBelief → Error ⊎ Graph.BeliefValues
   forgetProof (inj₁ error) = inj₁ error
   forgetProof (inj₂ checked) = inj₂ (DecodedBelief.value checked)
 
-  reconstruct : ℕ → Text → Float → Float → ℤ → ℤ → Row → Error ⊎ Graph.BeliefValues
-  reconstruct id content probability confidence created activated row = forgetProof
-    (reconstructChecked id content probability confidence created activated row)
+  reconstruct : ℕ → Text → Float → Float → ℤ → ℤ → ℤ → Row → Error ⊎ Graph.BeliefValues
+  reconstruct id content probability confidence created activated accounted row = forgetProof
+    (reconstructChecked id content probability confidence created activated accounted row)
 
   beliefChecked : Row → Error ⊎ DecodedBelief
   beliefChecked row = column (toList "id") row >>= λ idText → column (toList "content") row >>= λ content →
     column (toList "probability") row >>= λ probabilityText → column (toList "confidence") row >>= λ confidenceText →
     column (toList "created_at") row >>= λ createdText → column (toList "last_activated_at") row >>= λ activatedText →
+    column (toList "decay_accounted_at") row >>= λ accountedText →
     parse (toList "id") uuid idText >>= λ id →
     parse (toList "probability") (Libraries.float libraries) probabilityText >>= λ probability →
     parse (toList "confidence") (Libraries.float libraries) confidenceText >>= λ confidence →
     parse (toList "created_at") (Libraries.rfc3339UTCNanoseconds libraries) createdText >>= λ created →
     parse (toList "last_activated_at") (Libraries.rfc3339UTCNanoseconds libraries) activatedText >>= λ activated →
-    reconstructChecked id content probability confidence created activated row
+    parse (toList "decay_accounted_at") (Libraries.rfc3339UTCNanoseconds libraries) accountedText >>= λ accounted →
+    reconstructChecked id content probability confidence created activated accounted row
 
   belief : Row → Error ⊎ Graph.BeliefValues
   belief row = forgetProof (beliefChecked row)

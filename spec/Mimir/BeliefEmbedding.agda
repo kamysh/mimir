@@ -10,6 +10,7 @@ open import Data.List using (List; []; _∷_; _++_; map; filterᵇ)
 import Data.List.Properties as Lists
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; suc; _≟_)
+open import Data.Integer using (ℤ)
 import Data.Maybe.Properties as Maybes
 open import Data.Product using (_×_; _,_)
 open import Data.String using (toList)
@@ -164,8 +165,8 @@ retainedBackfillKeepsItsJob belief before state present rewrite present = refl
 -- and every prepared supporting passage. Rechecking cannot silently discard
 -- a passage selected during preparation. Numerical effects reuse the existing
 -- whole-world grounding meaning, inside this same publication transaction.
-module Atomic (database : ℕ) (calculator : Posterior.Calculator) where
-  module P = Publication.Operation database calculator
+module Atomic (database : ℕ) (calculator : Posterior.Calculator) (publicationTime : ℤ) where
+  module P = Publication.Operation database calculator publicationTime
   module T = Transaction.Over Store.World G.BeliefValues Publication.Failure database 671942183
   paired : G.BeliefValues → Maybe Origin.Provenance → Prepared → Store.World → Store.World
   paired belief origin value before = record inserted

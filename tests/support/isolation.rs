@@ -84,6 +84,7 @@ async fn seed_belief_record(
     belief.id = identity.get(0);
     belief.created_at = identity.get(1);
     belief.last_activated_at = belief.created_at;
+    belief.decay_accounted_at = belief.created_at;
     let store = mimir_core::store::AgeStore::new(client, database.dbname)?;
     store
         .insert_belief_with_provenance(&belief, provenance)

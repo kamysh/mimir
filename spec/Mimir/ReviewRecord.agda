@@ -52,7 +52,7 @@ module WithCalculator (calculator : Posterior.Calculator) where
     (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes (Store.World.publication before)))) where
 
     module N = Numerical.For calculator (Store.World.publication before) (Observation.Snapshot.experience old)
-      requested clock unique expected (Store.identities before) (Store.World.grounding before)
+      requested clock now unique expected (Store.identities before) (Store.World.grounding before)
 
     convert : N.Decision → Decision
     convert (N.refused failure) = rejected (invalid failure)

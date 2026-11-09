@@ -21,7 +21,7 @@ import Mimir.EvidenceValidity as Evidence
 
 newBelief : ℕ → ℤ → Text → Float → Float → Maybe Text → C.Memory → Maybe G.BeliefValues
 newBelief id now content probability confidence project memory = Evidence.admit
-  (G.beliefValues id content project memory now now probability confidence
+  (G.beliefValues id content project memory now now now probability confidence
     (P.Beta.alpha prior) (P.Beta.negative prior) (P.Beta.alpha prior) (P.Beta.negative prior))
   where prior = P.prior probability confidence
 

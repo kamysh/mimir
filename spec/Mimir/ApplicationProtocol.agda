@@ -62,9 +62,9 @@ record Environment : Set₁ where
 
 module Run (environment : Environment) where
   open Environment environment
-  module Delete = Deletion.Operation database calculator
+  module Delete = Deletion.Operation database calculator now
   module Forget = Project.Operation database
-  module Grounding = Ground.Operation database calculator
+  module Grounding = Ground.Operation database calculator now
   module Document = Documents.Operations database dimension
   module Learn (q : Learning.Request) = Learning.Protocol database q candidateClock now candidateIdentity calculator
   module Retrieve = Retrieval.Run f32 unicode

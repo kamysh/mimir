@@ -689,6 +689,7 @@ async fn linked_preparation() -> Result<(MimirService, String, Uuid, PreparedBel
     belief.id = owner.get(0);
     belief.created_at = owner.get(1);
     belief.last_activated_at = belief.created_at;
+    belief.decay_accounted_at = belief.created_at;
     let prepared = PreparedBelief {
         belief,
         provenance: Some(IndependentProvenance {

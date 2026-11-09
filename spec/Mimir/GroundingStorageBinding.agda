@@ -7,6 +7,7 @@ open import Data.Float.Base using (Float; _-_)
 open import Data.List using (List; []; _∷_; map)
 open import Data.Maybe using (nothing)
 open import Data.Nat using (ℕ)
+open import Data.Integer using (ℤ)
 open import Data.Product using (_×_; _,_; proj₁; proj₂; Σ)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.Unit using (tt)
@@ -20,10 +21,10 @@ import Mimir.RetrievalRanking as Ranking
 import Mimir.DatabaseReadCommitted as Committed
 open import Mimir.Text using (Text)
 
-module Bound (database : ℕ) (calculator : Posterior.Calculator) (ops : Reads.VectorOperations) (reads : Committed.Contract Store.World) where
+module Bound (database : ℕ) (calculator : Posterior.Calculator) (ops : Reads.VectorOperations) (reads : Committed.Contract Store.World) (publicationTime : ℤ) where
   private
     module R = Reads.Vectors ops
-    module S = Semantics.Bound database calculator
+    module S = Semantics.Bound database calculator publicationTime
     module C = Committed.Contract reads
 
   similarity : Store.Vector → ℕ × Store.Vector → ℕ × Float
