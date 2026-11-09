@@ -449,7 +449,9 @@ old blocking hooks to satisfy checks copied from a historical guide.
   files. Skip the step.
 - **Do not invent API keys** for `voyage`/`openai` embedding
   backends. Ask the user, or default `EMBEDDING_BACKEND=local`, or
-  omit `[embeddings]` entirely if document search is not needed.
+  omit `[embeddings]` only for operations that do not need embeddings, such as
+  reading existing beliefs. New belief publication requires embedding and an
+  explicitly cited indexed document.
 - **Do not overwrite existing config files** (`~/.config/mimir/config.toml`)
   without reading them first. An existing config may have valid settings — check
   before clobbering. See Step 4.
