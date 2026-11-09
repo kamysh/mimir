@@ -982,6 +982,11 @@ $$) {BELIEF_RETURN_COLUMNS}"#
     }
 
     async fn count_vertices(&self, label: VertexLabel) -> Result<usize> {
+        let client = self.client.lock().await;
+        self.count_vertices_on(&client, label).await
+    }
+
+    async fn count_vertices_on(&self, client: &Client, label: VertexLabel) -> Result<usize> {
         let g = &self.graph_name;
         let label = label.label();
         let sql = format!(
@@ -991,7 +996,6 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN count(*) AS n
 $$) AS (n ag_catalog.agtype)"#
         );
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(0);
@@ -1004,14 +1008,30 @@ $$) AS (n ag_catalog.agtype)"#
     /// CONTRADICTS edges are stored bidirectionally, so the returned value is
     /// the raw directed-edge count (logical pairs × 2).
     pub async fn count_edges(&self) -> Result<(usize, usize, usize, usize)> {
-        let supports = self.count_edges_by_label(EdgeLabel::Supports).await?;
-        let defeats = self.count_edges_by_label(EdgeLabel::Defeats).await?;
-        let causes = self.count_edges_by_label(EdgeLabel::Causes).await?;
-        let contradicts = self.count_edges_by_label(EdgeLabel::Contradicts).await?;
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let counts = self.count_edges_on(tx.client()).await?;
+        tx.commit().await?;
+        Ok(counts)
+    }
+
+    async fn count_edges_on(&self, client: &Client) -> Result<(usize, usize, usize, usize)> {
+        let supports = self
+            .count_edges_by_label_on(client, EdgeLabel::Supports)
+            .await?;
+        let defeats = self
+            .count_edges_by_label_on(client, EdgeLabel::Defeats)
+            .await?;
+        let causes = self
+            .count_edges_by_label_on(client, EdgeLabel::Causes)
+            .await?;
+        let contradicts = self
+            .count_edges_by_label_on(client, EdgeLabel::Contradicts)
+            .await?;
         Ok((supports, defeats, causes, contradicts))
     }
 
-    async fn count_edges_by_label(&self, label: EdgeLabel) -> Result<usize> {
+    async fn count_edges_by_label_on(&self, client: &Client, label: EdgeLabel) -> Result<usize> {
         let g = &self.graph_name;
         let label = label.label();
         let sql = format!(
@@ -1021,13 +1041,42 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN count(*) AS n
 $$) AS (n ag_catalog.agtype)"#
         );
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(0);
         }
         let s: &str = rows[0].get("n");
         Ok(s.parse()?)
+    }
+
+    pub(crate) async fn stats_snapshot(&self) -> Result<crate::MimirStats> {
+        self.stats_after_beliefs(|| async { Ok(()) }).await
+    }
+
+    async fn stats_after_beliefs<F, W>(&self, after_beliefs: F) -> Result<crate::MimirStats>
+    where
+        F: FnOnce() -> W,
+        W: std::future::Future<Output = Result<()>>,
+    {
+        let mut client = self.client.lock().await;
+        let tx = snapshot_transaction(&mut client).await?;
+        let beliefs = self
+            .count_vertices_on(tx.client(), VertexLabel::Belief)
+            .await?;
+        after_beliefs().await?;
+        let patterns = self
+            .count_vertices_on(tx.client(), VertexLabel::Pattern)
+            .await?;
+        let (supports, defeats, causes, contradicts) = self.count_edges_on(tx.client()).await?;
+        tx.commit().await?;
+        Ok(crate::MimirStats {
+            beliefs,
+            patterns,
+            supports,
+            defeats,
+            causes,
+            contradicts,
+        })
     }
 
     /// Returns every (defeater_id, defeated_id, defeater_created_at) triple for
@@ -1515,7 +1564,7 @@ $$) AS (from_id ag_catalog.agtype, to_id ag_catalog.agtype)"#
             .await
     }
 
-    async fn contradictions_after_pairs<F, W>(
+    pub(crate) async fn contradictions_after_pairs<F, W>(
         &self,
         project: Option<&str>,
         after_pairs: F,
@@ -2794,6 +2843,202 @@ mod snapshot_read_tests {
             email: None,
             retirement: None,
         }
+    }
+
+    fn statistics_values(value: &crate::MimirStats) -> [usize; 6] {
+        [
+            value.beliefs,
+            value.patterns,
+            value.supports,
+            value.defeats,
+            value.causes,
+            value.contradicts,
+        ]
+    }
+
+    #[tokio::test]
+    async fn cli_statistics_preserve_one_view_across_committed_project_deletion() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let id: Uuid = setup
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("cli-statistics-view-{id}");
+        let foreign_project = format!("{project}-unrelated");
+        let checked = async {
+            let a = snapshot_test_isolation::seed_belief_in_project("statistics first", 0.8, 0.1, &project, MemoryType::Fact).await?;
+            let b = snapshot_test_isolation::seed_belief_in_project("statistics second", 0.7, 0.1, &project, MemoryType::Fact).await?;
+            let untouched = snapshot_test_isolation::seed_belief_in_project("statistics unrelated", 0.6, 0.1, &foreign_project, MemoryType::Fact).await?;
+            let preserved = serde_json::to_value(writer.get_belief(untouched.id).await?)?;
+            writer.store.create_pattern("counted situation", "counted approach", 0.5, Some(&project)).await?;
+            for edge in [EdgeType::Supports, EdgeType::Defeats, EdgeType::Causes, EdgeType::Contradicts] {
+                if edge == EdgeType::Contradicts {
+                    writer.store.insert_contradicts(a.id, b.id, Probability::new(0.5)?).await?;
+                } else {
+                    writer.store.insert_edge(&Edge::new(a.id, b.id, edge, 0.5)?).await?;
+                }
+            }
+            let before = statistics_values(&reader.stats().await?);
+            let Err(error) = reader.store.stats_after_beliefs(|| async {
+                anyhow::bail!("controlled statistics interruption")
+            }).await else { anyhow::bail!("statistics interruption unexpectedly succeeded") };
+            anyhow::ensure!(error.to_string().contains("controlled statistics interruption"));
+            anyhow::ensure!(statistics_values(&reader.stats().await?) == before, "interruption must release the read transaction without changing counts");
+            let during = reader.store.stats_after_beliefs(|| async {
+                writer.delete_project(&project).await?;
+                Ok(())
+            }).await?;
+            anyhow::ensure!(statistics_values(&during) == before, "all six counts must retain the original view after another connection commits deletion");
+            anyhow::ensure!(statistics_values(&reader.stats().await?) != before, "the next command must observe that deletion");
+            anyhow::ensure!(serde_json::to_value(writer.get_belief(untouched.id).await?)? == preserved, "statistics must preserve unrelated beliefs");
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let cleanup = writer.delete_project(&project).await;
+        let foreign_cleanup = writer.delete_project(&foreign_project).await;
+        checked?;
+        cleanup?;
+        foreign_cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_contradiction_details_retain_original_endpoint_text_after_delete() -> Result<()> {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let id: Uuid = setup
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("cli-contradiction-details-{id}");
+        let checked = async {
+            let a = snapshot_test_isolation::seed_belief_in_project(
+                "complete first λ endpoint",
+                0.8,
+                0.1,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
+            let b = snapshot_test_isolation::seed_belief_in_project(
+                "complete second endpoint",
+                0.7,
+                0.1,
+                &project,
+                MemoryType::Fact,
+            )
+            .await?;
+            writer
+                .add_edge(a.id, b.id, EdgeType::Contradicts, 1.0)
+                .await?;
+            let before = reader
+                .get_contradictions_with_beliefs(Some(&project))
+                .await?;
+            let stored_a = serde_json::to_value(writer.get_belief(a.id).await?)?;
+            let stored_b = serde_json::to_value(writer.get_belief(b.id).await?)?;
+            let error = reader
+                .contradictions_with_beliefs_after_pairs(Some(&project), || async {
+                    anyhow::bail!("controlled CLI contradiction interruption")
+                })
+                .await
+                .unwrap_err();
+            anyhow::ensure!(error
+                .to_string()
+                .contains("controlled CLI contradiction interruption"));
+            anyhow::ensure!(reader.get_contradictions(Some(&project)).await? == before.0);
+            let (pairs, beliefs) = reader
+                .contradictions_with_beliefs_after_pairs(Some(&project), || async {
+                    anyhow::ensure!(writer.delete_belief(a.id).await?);
+                    Ok(())
+                })
+                .await?;
+            anyhow::ensure!(
+                pairs == before.0 && pairs.contains(&(a.id, b.id)),
+                "the original active pairs must survive for this response"
+            );
+            let actual_a = beliefs
+                .iter()
+                .find(|belief| belief.id == a.id)
+                .expect("original first endpoint");
+            let actual_b = beliefs
+                .iter()
+                .find(|belief| belief.id == b.id)
+                .expect("original second endpoint");
+            anyhow::ensure!(
+                serde_json::to_value(Some(actual_a))? == stored_a
+                    && serde_json::to_value(Some(actual_b))? == stored_b,
+                "CLI labels must use the same physical records as pair selection"
+            );
+            anyhow::ensure!(
+                !reader
+                    .get_contradictions(Some(&project))
+                    .await?
+                    .iter()
+                    .any(|(from, to)| *from == a.id || *to == a.id),
+                "the next request must observe the deleted endpoint"
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let cleanup = writer.delete_project(&project).await;
+        checked?;
+        cleanup?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_intervention_details_preserve_calculation_view_and_physical_beliefs() -> Result<()>
+    {
+        let cfg = config();
+        let writer = MimirService::connect(&cfg).await?;
+        let reader = MimirService::connect(&cfg).await?;
+        let setup = db::connect(&cfg.database).await?;
+        let id: Uuid = setup
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("cli-intervention-details-{id}");
+        let foreign_project = format!("{project}-unrelated");
+        let checked = async {
+            let seed = snapshot_test_isolation::seed_belief_in_project("CLI intervention seed", 0.6, 0.1, &project, MemoryType::Fact).await?;
+            let child = snapshot_test_isolation::seed_belief_in_project("complete projected λ content", 0.5, 0.1, &project, MemoryType::Fact).await?;
+            let untouched = snapshot_test_isolation::seed_belief_in_project("CLI intervention unrelated", 0.4, 0.1, &foreign_project, MemoryType::Fact).await?;
+            writer.add_edge(seed.id, child.id, EdgeType::Causes, 0.8).await?;
+            let chunk_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+            let chunk = DocumentChunk::with_id(chunk_id, format!("/{project}/support.md"), vec![], "support for this projected belief".into(), None, Some(project.clone()));
+            writer.store.insert_document_chunk(&chunk).await?;
+            writer.store.insert_evidence(chunk.id, child.id, Probability::new(0.4)?).await?;
+            let preserved = serde_json::to_value(writer.get_belief(untouched.id).await?)?;
+            let stored_child = serde_json::to_value(writer.get_belief(child.id).await?)?;
+            let before = reader.query_intervention_with_beliefs(seed.id, 1.0).await?;
+            anyhow::ensure!(before.0.len() == 1 && before.0[0].0 == child.id);
+            anyhow::ensure!(serde_json::to_value(reader.query_intervention(seed.id, 1.0).await?)? == serde_json::to_value(&before.0)?, "existing MCP/library result shape and calculation must stay unchanged");
+            anyhow::ensure!(serde_json::to_value(writer.get_belief(child.id).await?)? == stored_child, "a projection must not publish numerical overlays");
+            let error = reader.intervention_snapshot_after_target(seed.id, 1.0, true, || async {
+                anyhow::bail!("controlled CLI intervention interruption")
+            }).await.unwrap_err();
+            anyhow::ensure!(error.to_string().contains("controlled CLI intervention interruption"));
+            let (updates, beliefs) = reader.intervention_snapshot_after_target(seed.id, 1.0, true, || async {
+                writer.delete_project(&project).await?;
+                Ok(())
+            }).await?;
+            anyhow::ensure!(serde_json::to_value(updates)? == serde_json::to_value(before.0)?, "projection and details must retain the target's original view");
+            let original = beliefs.iter().find(|belief| belief.id == child.id).expect("original descendant");
+            anyhow::ensure!(serde_json::to_value(Some(original))? == stored_child, "returned details must be physical records, not temporary beta overlays or later lookups");
+            anyhow::ensure!(reader.query_intervention_with_beliefs(seed.id, 1.0).await.unwrap_err().to_string().contains("not found"), "the next request must see deletion and explain the missing target");
+            anyhow::ensure!(serde_json::to_value(writer.get_belief(untouched.id).await?)? == preserved);
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        let cleanup = writer.delete_project(&project).await;
+        let foreign_cleanup = writer.delete_project(&foreign_project).await;
+        checked?;
+        cleanup?;
+        foreign_cleanup?;
+        Ok(())
     }
 
     #[tokio::test]
