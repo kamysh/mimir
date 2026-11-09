@@ -97,11 +97,20 @@ impl Experience {
                         .all(|(s, e)| s.source_ref == *e)),
             "source evidence indices must correspond to source references"
         );
-        ensure!(!self.project.trim().is_empty(), "project must be explicit");
-        ensure!(
-            !self.context.trim().is_empty() && !self.action.trim().is_empty(),
-            "context and action are required"
-        );
+        for (field, text) in [
+            ("project", &self.project),
+            ("context", &self.context),
+            ("action", &self.action),
+        ] {
+            if text.trim().is_empty() {
+                return Err(crate::validation::Refusal::invalid(
+                    crate::validation::Code::EmptyText,
+                    vec![crate::validation::Segment::Key(field.into())],
+                    format!("Experience {field} must contain nonblank text."),
+                )
+                .into());
+            }
+        }
         ensure!(
             self.outcome == Outcome::Unknown || self.evidence.iter().any(|e| !e.trim().is_empty()),
             "a known outcome requires evidence"
@@ -490,6 +499,13 @@ impl crate::MimirService {
         self.store
             .record_experience(experience, expected_revision)
             .await
+    }
+
+    pub async fn record_experience_operation(
+        &self,
+        step: &crate::store::RegisteredStep,
+    ) -> Result<crate::store::StepDecision> {
+        self.store.record_experience_operation(step).await
     }
     pub async fn review_experience(
         &self,

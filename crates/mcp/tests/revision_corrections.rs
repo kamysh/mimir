@@ -88,6 +88,70 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
 }
 
 #[tokio::test]
+async fn blank_source_fields_offer_precise_corrections_and_keep_the_mcp_connection_usable(
+) -> Result<()> {
+    let service = test_service().await?;
+    let id = fixture_identity().await?;
+    let project = format!("source-fields-{id}");
+    let source = json!({"id":id,"project":project,"context":"observed request","action":"keep the same incident",
+        "outcome":"unknown","source":"agent_report","evidence":[]});
+    let mut client = Client::start(id)?;
+    let checked = async {
+        for field in ["project", "context", "action"] {
+            let mut invalid = source.clone();
+            invalid[field] = json!(" \t\n");
+            let correction: NeedsInput = serde_json::from_value(
+                client
+                    .call(
+                        "record_experience",
+                        json!({"experience":invalid,"expected_revision":0}),
+                    )
+                    .await?,
+            )?;
+            let issue = &correction.issues()[0];
+            ensure!(issue.fault().code == Code::EmptyText);
+            ensure!(
+                issue.fault().path
+                    == vec![
+                        Segment::Key("experience".into()),
+                        Segment::Key(field.into())
+                    ]
+            );
+            ensure!(
+                issue.suggested_correction().contains("same incident ID")
+                    || issue
+                        .suggested_correction()
+                        .contains("incident ID on retry")
+            );
+            ensure!(service.get_experience(id).await?.is_none());
+        }
+        let stored = client
+            .call(
+                "record_experience",
+                json!({"experience":source,"expected_revision":0}),
+            )
+            .await?;
+        ensure!(stored["experience"]["id"] == json!(id) && stored["revision"] == json!(1));
+        ensure!(
+            client
+                .call(
+                    "record_experience",
+                    json!({"experience":source,"expected_revision":0})
+                )
+                .await?
+                == stored
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    checked?;
+    ensure!(stopped.success());
+    Ok(())
+}
+
+#[tokio::test]
 async fn missing_propagation_source_offers_readback_and_accepts_a_corrected_request() -> Result<()>
 {
     use mimir_core::graph::MemoryType;

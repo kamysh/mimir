@@ -187,6 +187,44 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    /// Only call around the pure source validator, before business work.
+    pub(crate) fn source_input(error: anyhow::Error) -> anyhow::Error {
+        if error.is::<Self>() {
+            return error;
+        }
+        let mut fault = match error.downcast::<crate::validation::Refusal>() {
+            Ok(refusal) => refusal.fault,
+            Err(error) => Fault {
+                path: vec![],
+                code: Code::MalformedInput,
+                message: error.to_string(),
+            },
+        };
+        if !matches!(fault.path.first(), Some(Segment::Key(key)) if key == "experience" || key == "expected_revision")
+        {
+            fault.path.insert(0, Segment::Key("experience".into()));
+        }
+        let issue = CorrectionItem::new(Location::Arguments, fault,
+            "The same stable incident ID, a nonblank project, context and action, and source/evidence fields describing the actual observation. Corrections retain the original project and source records.".into(),
+            "Correct the indicated source fields using the observed incident and the advertised schema. Read get_experience and experience_history for an existing incident, and use its returned revision. If the intended source, actor or outcome is unknown, ask the user. Do not invent evidence, change the incident ID on retry or silently overwrite a newer revision.".into())
+            .expect("source input correction gives its domain and repair");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("explained source input"),
+        }
+        .into()
+    }
+
+    /// Called only for a known refusal after confirmed rollback or before work.
+    pub(crate) fn bound_source_repair(error: anyhow::Error) -> anyhow::Error {
+        let mut correction = match error.downcast::<Self>() {
+            Ok(correction) => correction,
+            Err(error) => return error,
+        };
+        for issue in &mut correction.correction.0.issues {
+            issue.suggested_correction.push_str(" Read the original operation binding and saved outcome. If the bound arguments are wrong, ask the user whether to cancel this pending operation and reserve corrected work. Do not rewrite the binding, automatically cancel, or create another incident to bypass this refusal. Keep the original token for outcome readback.");
+        }
+        correction.into()
+    }
     pub(crate) fn bound_graph_request(
         field: &str,
         code: Code,

@@ -45,7 +45,7 @@ pub fn tools() -> Vec<Value> {
         json!({"name":"record_experience","description":"Record one observed action and outcome for incremental LLM review. Use a stable UUID for the same incident, expected_revision=0 to create, or the returned revision to correct it. Do not also insert a standalone conclusion from this same incident; review-owned candidates avoid that duplicate prior. Exact retries do not duplicate evidence. ToolResult/UserFeedback are caller-reported provenance, not server verification. A correction invalidates the old review and retracts its effects atomically.","inputSchema":{"type":"object","properties":{
             "expected_revision":{"type":"integer","minimum":0},
             "experience":{"type":"object","additionalProperties":false,"properties":{
-                "id":uuid,"project":{"type":"string"},"context":{"type":"string"},"action":{"type":"string"},
+                "id":uuid,"project":{"type":"string","minLength":1,"description":"Nonblank original project; a correction cannot move the incident."},"context":{"type":"string","minLength":1,"description":"Nonblank observed context."},"action":{"type":"string","minLength":1,"description":"Nonblank observed action."},
                 "outcome":{"enum":["success","failure","unknown"]},"source":{"enum":["tool_result","user_feedback","agent_report"]},
                 "evidence":{"type":"array","items":{"type":"string"}},
                 "belief_ids":{"type":"array","items":uuid},"pattern_id":{"type":["string","null"],"format":"uuid"},"learning_items":{"type":"array","items":item},"source_records":{"type":"array","items":source}},
