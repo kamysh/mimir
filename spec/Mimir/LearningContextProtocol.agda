@@ -35,6 +35,7 @@ record Request : Set where
 record Output : Set where
   constructor output
   field beliefs : List G.BeliefValues; patterns : List Patterns.Result; assessments : Context.Assessments
+        retrieval : Retrieval.Coverage
 
 validAssessments : List (Context.Key × Evaluation.Result) → Bool
 validAssessments [] = true
@@ -49,7 +50,7 @@ validAssessments ((_ , Evaluation.scored (Scores.accepted acceptedScores)) ∷ r
 module Assembly (unicode : R.Unicode) (textBefore : Text → Text → Bool) where
   record Input : Set where
     constructor selected
-    field request : Request; beliefIDs : List ℕ
+    field request : Request; beliefIDs : List ℕ; semantic : Retrieval.Semantic
 
   selectedBeliefs : Input → App.World → List G.BeliefValues
   selectedBeliefs input state = R.materialize (Input.beliefIDs input)
@@ -72,6 +73,7 @@ module Assembly (unicode : R.Unicode) (textBefore : Text → Text → Bool) wher
   assemble input state = output beliefs (procedures input state)
     (Context.assessmentPage textBefore (Request.project (Input.request input))
       (map G.BeliefValues.identity beliefs) (App.learningView state))
+    (Retrieval.coverage (Request.context (Input.request input)) (Input.semantic input))
     where beliefs = selectedBeliefs input state
 
   data Result : Set where
@@ -182,12 +184,12 @@ data State : Set where
   opening : Request → State
   owned closing : ℕ → State → State
   retrieving : Request → Retrieval.State → State
-  listPatterns : Request → List G.BeliefValues → State
-  countPattern : Request → List G.BeliefValues → List G.PatternValues →
+  listPatterns : Request → Retrieval.Report → State
+  countPattern : Request → Retrieval.Report → List G.PatternValues →
     List (ℕ × Patterns.Result) → ℕ → G.PatternValues → State
-  patternOrigin : Request → List G.BeliefValues → List G.PatternValues →
+  patternOrigin : Request → Retrieval.Report → List G.PatternValues →
     List (ℕ × Patterns.Result) → ℕ → Patterns.Result → State
-  assessmentGroups : Request → List G.BeliefValues → List Patterns.Result → State
+  assessmentGroups : Request → Retrieval.Report → List Patterns.Result → State
   invalidInput invalidAssessment : State
   failed : Text → State
   finished : Output → State
@@ -226,16 +228,16 @@ module Run (ops : R.F32) (unicode : R.Unicode) (textBefore : Text → Text → B
   afterRetrieval request (Retrieval.failed error) = failed error
   afterRetrieval request phase = retrieving request phase
 
-  nextPattern : Request → List G.BeliefValues → List G.PatternValues → List (ℕ × Patterns.Result) → State
+  nextPattern : Request → Retrieval.Report → List G.PatternValues → List (ℕ × Patterns.Result) → State
   nextPattern request beliefs [] ranked = assessmentGroups request beliefs (Context.rank (Request.limit request) ranked)
   nextPattern request beliefs (p ∷ remaining) ranked with Context.tokenOverlap unicode (Request.context request) p
   ... | zero = nextPattern request beliefs remaining ranked
   ... | suc hits = countPattern request beliefs remaining ranked (suc hits) p
 
-  finishAssessments : Request → List G.BeliefValues → List Patterns.Result → Context.Assessments → State
+  finishAssessments : Request → Retrieval.Report → List Patterns.Result → Context.Assessments → State
   finishAssessments request beliefs patterns assessmentValues with validAssessments (Context.Assessments.values assessmentValues)
   ... | false = invalidAssessment
-  ... | true = finished (output beliefs patterns assessmentValues)
+  ... | true = finished (output (Retrieval.Report.beliefs beliefs) patterns assessmentValues (Retrieval.Report.retrieval beliefs))
 
   advance : (state : State) → Reply state → State
   advance (opening request) (inj₁ error) = failed error
@@ -258,7 +260,7 @@ module Run (ops : R.F32) (unicode : R.Unicode) (textBefore : Text → Text → B
       (G.PatternValues.identity (Patterns.Result.patternValue p)) observed }) ∷ []))
   advance (assessmentGroups request beliefs patterns) (inj₁ error) = failed error
   advance (assessmentGroups request beliefs patterns) (inj₂ observed) = finishAssessments request beliefs patterns
-    (Context.assessmentPage textBefore (Request.project request) (map G.BeliefValues.identity beliefs) observed)
+    (Context.assessmentPage textBefore (Request.project request) (map G.BeliefValues.identity (Retrieval.Report.beliefs beliefs)) observed)
   advance invalidInput reply = invalidInput
   advance invalidAssessment reply = invalidAssessment
   advance (failed error) reply = failed error

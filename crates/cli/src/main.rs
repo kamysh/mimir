@@ -631,6 +631,11 @@ async fn cmd_query(
         let grounded = svc
             .query_relevant_grounded(text, limit, None, project)
             .await?;
+        println!("Search context: {}", grounded.retrieval.context);
+        println!("{}", grounded.retrieval.message);
+        println!("{}", grounded.retrieval.coverage);
+        println!("Next step: {}", grounded.retrieval.next_step);
+        let grounded = grounded.beliefs;
         if grounded.is_empty() {
             println!("(no results)");
             return Ok(());
@@ -666,6 +671,11 @@ async fn cmd_query(
     let beliefs = svc
         .query_relevant(text, limit, project, prefer_type)
         .await?;
+    println!("Search context: {}", beliefs.retrieval.context);
+    println!("{}", beliefs.retrieval.message);
+    println!("{}", beliefs.retrieval.coverage);
+    println!("Next step: {}", beliefs.retrieval.next_step);
+    let beliefs = beliefs.beliefs;
     if beliefs.is_empty() {
         println!("(no results)");
         return Ok(());
@@ -1218,6 +1228,11 @@ async fn cmd_hook_prompt() -> Result<()> {
     let beliefs = svc
         .query_relevant(&prompt, None, project.as_deref(), None)
         .await?;
+    println!("Search context: {}", beliefs.retrieval.context);
+    println!("{}", beliefs.retrieval.message);
+    println!("{}", beliefs.retrieval.coverage);
+    println!("Next step: {}", beliefs.retrieval.next_step);
+    let beliefs = beliefs.beliefs;
     if beliefs.is_empty() {
         return Ok(());
     }
@@ -1266,11 +1281,17 @@ async fn cmd_hook_pretooluse() -> Result<()> {
     let beliefs = svc
         .query_relevant(query_raw, None, project.as_deref(), None)
         .await?;
-    if beliefs.is_empty() {
-        return Ok(());
+    let mut lines = format!(
+        "Search context: {}\n{}\n{}\nNext step: {}\n",
+        beliefs.retrieval.context,
+        beliefs.retrieval.message,
+        beliefs.retrieval.coverage,
+        beliefs.retrieval.next_step
+    );
+    let beliefs = beliefs.beliefs;
+    if !beliefs.is_empty() {
+        lines.push_str("Prior knowledge relevant to this action — apply directly:\n");
     }
-
-    let mut lines = String::from("Prior knowledge relevant to this action — apply directly:\n");
     for b in &beliefs {
         let proj = b
             .project

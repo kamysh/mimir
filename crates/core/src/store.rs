@@ -2500,11 +2500,13 @@ mod snapshot_read_tests {
                 }
                 let all = reader
                     .query_relevant(&term, None, Some(&project), None)
-                    .await?;
+                    .await?
+                    .beliefs;
                 anyhow::ensure!(all.iter().map(|value| value.id).collect::<Vec<_>>() == ids[..2]);
                 let selected = reader
                     .query_relevant(&term, std::num::NonZeroUsize::new(1), Some(&project), None)
-                    .await?;
+                    .await?
+                    .beliefs;
                 anyhow::ensure!(
                     selected.len() == 1 && selected[0].id == ids[0],
                     "equal matches must select the lower UUID"
@@ -2512,7 +2514,8 @@ mod snapshot_read_tests {
                 writer.store.insert_belief(&beliefs[2]).await?;
                 let selected = reader
                     .query_relevant(&term, std::num::NonZeroUsize::new(1), Some(&project), None)
-                    .await?;
+                    .await?
+                    .beliefs;
                 anyhow::ensure!(
                     selected.len() == 1 && selected[0].id == ids[2],
                     "UUID must not override the existing probability key"
@@ -2654,7 +2657,8 @@ mod snapshot_read_tests {
             }
             let all = reader
                 .query_relevant_grounded(&term, None, None, Some(&project))
-                .await?;
+                .await?
+                .beliefs;
             anyhow::ensure!(
                 all.len() == 1
                     && all[0]
@@ -2671,7 +2675,8 @@ mod snapshot_read_tests {
                     std::num::NonZeroUsize::new(1),
                     Some(&project),
                 )
-                .await?;
+                .await?
+                .beliefs;
             anyhow::ensure!(
                 selected[0].evidence.len() == 1 && selected[0].evidence[0].chunk_id == ids[0]
             );
@@ -2692,7 +2697,8 @@ mod snapshot_read_tests {
                     std::num::NonZeroUsize::new(1),
                     Some(&project),
                 )
-                .await?;
+                .await?
+                .beliefs;
             anyhow::ensure!(
                 selected[0].evidence.len() == 1 && selected[0].evidence[0].chunk_id == ids[2],
                 "UUID must not override a stronger passage"
@@ -2991,12 +2997,12 @@ mod snapshot_read_tests {
                     writer.store.insert_document_chunk(&chunk).await?;
                     writer.add_evidence(seed.id, chunk_id, 0.8).await?;
                     let before = if grounded {
-                        let values = reader.query_relevant_grounded(&term, None, None, scope).await?;
+                        let values = reader.query_relevant_grounded(&term, None, None, scope).await?.beliefs;
                         anyhow::ensure!(values.len() == 2 && values.iter().any(|v| v.belief.id == descendant.id), "must include graph expansion");
                         anyhow::ensure!(values.iter().find(|v| v.belief.id == seed.id).unwrap().evidence.len() == 1, "must include the supporting passage");
                         grounded_value(values)
                     } else {
-                        let values = reader.query_relevant(&term, None, scope, Some(MemoryType::Fact)).await?;
+                        let values = reader.query_relevant(&term, None, scope, Some(MemoryType::Fact)).await?.beliefs;
                         anyhow::ensure!(values.len() == 2 && values.iter().any(|v| v.id == descendant.id), "must include graph expansion");
                         serde_json::to_value(values)?
                     };
@@ -3008,15 +3014,15 @@ mod snapshot_read_tests {
                         grounded_value(reader.grounded_after_overlay(&term, None, None, scope, || async {
                             writer.delete_project(&project).await?;
                             Ok(())
-                        }).await?)
+                        }).await?.beliefs)
                     } else {
                         serde_json::to_value(reader.relevant_after_overlay(&term, None, scope, Some(MemoryType::Fact), || async {
                             writer.delete_project(&project).await?;
                             Ok(())
-                        }).await?)?
+                        }).await?.beliefs)?
                     };
                     anyhow::ensure!(during == before, "the complete retrieval must retain its original view: scoped={scoped}; grounded={grounded}; before={before}; during={during}");
-                    anyhow::ensure!(reader.query_relevant_grounded(&term, None, None, scope).await?.is_empty(), "the next request must see the deletion and reuse the released connection");
+                    anyhow::ensure!(reader.query_relevant_grounded(&term, None, None, scope).await?.beliefs.is_empty(), "the next request must see the deletion and reuse the released connection");
                     Ok::<_, anyhow::Error>(())
                 }.await;
                 let cleanup = writer.delete_project(&project).await;

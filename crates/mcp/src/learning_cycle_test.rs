@@ -11,6 +11,92 @@ use serde_json::json;
 use uuid::Uuid;
 
 #[tokio::test]
+async fn retrieval_reports_explain_keyword_coverage_in_all_mcp_response_shapes() -> Result<()> {
+    use mimir_core::{db, graph::Belief, store::AgeStore};
+    let cfg = Config {
+        database: isolation::fixture().database_config(),
+        embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: None,
+    };
+    let service = MimirService::connect(&cfg).await?;
+    let store = AgeStore::new(
+        db::connect(&cfg.database).await?,
+        cfg.database.dbname.clone(),
+    )?;
+    let audit = db::connect(&cfg.database).await?;
+    let id: Uuid = audit
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let project = format!("mcp-retrieval-report-{id}");
+    let query = "E0412_literal_identifier";
+    let mut belief = Belief::new_in_project(query.into(), 0.7, 0.5, project.clone())?;
+    belief.id = id;
+    store.insert_belief(&belief).await?;
+    let checked = async {
+        for (tool, evidence) in [
+            ("query_relevant", false),
+            ("query_relevant", true),
+            ("query_learning_context", false),
+        ] {
+            let mut args = json!({"context":query,"project":project});
+            if tool == "query_relevant" {
+                args["include_evidence"] = json!(evidence);
+            }
+            let response = handle_tool_call(&service, tool, &args).await?;
+            ensure!(response.is_object(), "missing report object");
+            ensure!(
+                response["beliefs"]
+                    .as_array()
+                    .is_some_and(|rows| rows.len() == 1 && rows[0]["id"] == id.to_string()),
+                "beliefs missing from report"
+            );
+            ensure!(
+                response["retrieval"]["context"] == query,
+                "affected context missing"
+            );
+            ensure!(
+                response["retrieval"]["semantic_search"]["status"] == "unavailable",
+                "silent semantic fallback"
+            );
+            ensure!(
+                response["retrieval"]["semantic_search"]["reason"] == "not_configured",
+                "actual cause missing"
+            );
+            ensure!(
+                response["retrieval"]["matching_performed"] == "keyword",
+                "actual matching missing"
+            );
+            ensure!(
+                response["retrieval"]["message"].as_str().is_some_and(
+                    |message| message.contains("semantic similarity was not evaluated")
+                ),
+                "interpretation missing"
+            );
+            ensure!(
+                response["retrieval"]["next_step"]
+                    .as_str()
+                    .is_some_and(|step| step.contains("literal matching")),
+                "next step missing"
+            );
+            if evidence {
+                ensure!(
+                    response["beliefs"][0]["evidence"].is_array(),
+                    "grounding shape lost"
+                );
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    service.delete_project(&project).await?;
+    checked
+}
+
+#[tokio::test]
 async fn pending_selection_has_no_default_and_invalid_counts_request_correction() -> Result<()> {
     use mimir_core::learning::{Experience, ObservationSource, Outcome};
     let service = MimirService::connect(&Config {

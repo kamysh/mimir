@@ -87,8 +87,8 @@ module Run (environment : Environment) where
     grounded : Grounding.T.Outcome → Result
     invalidGrounding : Result
     evidenceResult : Text ⊎ List Evidence.Reference → Result
-    relevantResult : List Graph.BeliefValues → Result
-    groundedResult : Text ⊎ List Evidence.Grounded → Result
+    relevantResult : Retrieval.Report → Result
+    groundedResult : Retrieval.Coverage → Text ⊎ List Evidence.Grounded → Result
     documentResult : Document.Result → Result
     documentQueryResult : DocumentQuery.Result → Result
     learned : (q : Learning.Request) → Learn.Outcome q → Result
@@ -107,7 +107,7 @@ module Run (environment : Environment) where
     inferenceState : Inference.E.Script Inference.Result → State
     groundState : Grounding.T.E.Script Grounding.T.Outcome → State
     evidenceState : Evidence.E.Script (Text ⊎ List Evidence.Reference) → State
-    groundedState : Evidence.E.Script (Text ⊎ List Evidence.Grounded) → State
+    groundedState : Retrieval.Coverage → Evidence.E.Script (Text ⊎ List Evidence.Grounded) → State
     documentState : Document.E.Script Document.Result → State
     documentQueryState : DocumentQuery.E.Script DocumentQuery.Result → State
     learningState : (q : Learning.Request) → Learn.E.Script q (Learn.Outcome q) → State
@@ -149,9 +149,9 @@ module Run (environment : Environment) where
     complete : Result → Next
     perform : (effect : Effect) → (Reply effect → State) → Next
 
-  groundedNext : Evidence.E.Script (Text ⊎ List Evidence.Grounded) → Next
-  groundedNext (Evidence.E.done result) = complete (groundedResult result)
-  groundedNext (Evidence.E.ask e k) = perform (evidenceEffect e) (λ r → groundedState (k r))
+  groundedNext : Retrieval.Coverage → Evidence.E.Script (Text ⊎ List Evidence.Grounded) → Next
+  groundedNext observedCoverage (Evidence.E.done result) = complete (groundedResult observedCoverage result)
+  groundedNext observedCoverage (Evidence.E.ask e k) = perform (evidenceEffect e) (λ r → groundedState observedCoverage (k r))
 
   next : State → Next
   next (finished result) = complete result
@@ -169,8 +169,8 @@ module Run (environment : Environment) where
   next (groundState (Grounding.T.E.ask e k)) = perform (groundEffect e) (λ r → groundState (k r))
   next (evidenceState (Evidence.E.done result)) = complete (evidenceResult result)
   next (evidenceState (Evidence.E.ask e k)) = perform (evidenceEffect e) (λ r → evidenceState (k r))
-  next (groundedState (Evidence.E.done result)) = complete (groundedResult result)
-  next (groundedState (Evidence.E.ask e k)) = perform (evidenceEffect e) (λ r → groundedState (k r))
+  next (groundedState observedCoverage (Evidence.E.done result)) = complete (groundedResult observedCoverage result)
+  next (groundedState observedCoverage (Evidence.E.ask e k)) = perform (evidenceEffect e) (λ r → groundedState observedCoverage (k r))
   next (documentState (Document.E.done result)) = complete (documentResult result)
   next (documentState (Document.E.ask e k)) = perform (documentEffect e) (λ r → documentState (k r))
   next (documentQueryState (DocumentQuery.E.done result)) = complete (documentQueryResult result)
@@ -180,7 +180,8 @@ module Run (environment : Environment) where
   next (queryState (Query.E.done result)) = complete (learningQueryResult result)
   next (queryState (Query.E.ask e k)) = perform (queryEffect e) (λ r → queryState (k r))
   next (retrievalState false per (Retrieval.finished result)) = complete (relevantResult result)
-  next (retrievalState true per (Retrieval.finished result)) = groundedNext (Evidence.many per result)
+  next (retrievalState true per (Retrieval.finished result)) = groundedNext (Retrieval.Report.retrieval result)
+    (Evidence.many per (Retrieval.Report.beliefs result))
   next (retrievalState include per (Retrieval.failed error)) = complete (failed error)
   next (retrievalState include per s@(Retrieval.overlay _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))
   next (retrievalState include per s@(Retrieval.beliefs _ _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))

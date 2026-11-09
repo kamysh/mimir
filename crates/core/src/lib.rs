@@ -10,6 +10,7 @@ pub mod learning;
 pub mod learning_sources;
 pub mod operation_catalogue;
 mod password;
+pub mod retrieval;
 pub mod store;
 mod tls;
 pub mod validation;
@@ -22,6 +23,7 @@ use documents::{parse_markdown, QueryResult};
 use embed::{make_backend, OwnedEmbeddingBackend};
 use graph::{Belief, EdgeType, MemoryType, Pattern, Probability};
 use inference::InferenceEngine;
+use retrieval::{RetrievalCoverage, RetrievalReport, SemanticObservation};
 use store::AgeStore;
 
 /// Weighted Reciprocal Rank Fusion. Each ranked list contributes
@@ -739,7 +741,7 @@ impl MimirService {
         limit: Selection,
         project: Option<&str>,
         prefer_type: Option<MemoryType>,
-    ) -> Result<Vec<Belief>> {
+    ) -> Result<RetrievalReport<Belief>> {
         self.relevant_after_overlay(query, limit, project, prefer_type, || async { Ok(()) })
             .await
     }
@@ -751,7 +753,7 @@ impl MimirService {
         project: Option<&str>,
         prefer_type: Option<MemoryType>,
         after_overlay: F,
-    ) -> Result<Vec<Belief>>
+    ) -> Result<RetrievalReport<Belief>>
     where
         F: FnOnce() -> W,
         W: std::future::Future<Output = Result<()>>,
@@ -780,7 +782,7 @@ impl MimirService {
         project: Option<&str>,
         prefer_type: Option<MemoryType>,
         after_overlay: F,
-    ) -> Result<Vec<Belief>>
+    ) -> Result<RetrievalReport<Belief>>
     where
         F: FnOnce() -> W,
         W: std::future::Future<Output = Result<()>>,
@@ -797,7 +799,13 @@ impl MimirService {
         .filter(|b| b.memory_type != MemoryType::Working && !superseded.contains(&b.id))
         .collect();
         if all.is_empty() {
-            return Ok(vec![]);
+            return Ok(RetrievalReport {
+                beliefs: vec![],
+                retrieval: RetrievalCoverage::observed(
+                    query,
+                    SemanticObservation::NoEligibleBeliefs,
+                ),
+            });
         }
 
         // ── Token list: beliefs whose lowercased content contains at least one
@@ -841,39 +849,57 @@ impl MimirService {
         };
 
         // ── Vector list: all eligible vectors participate in fusion.
-        //    Only the caller's final selection cuts the returned ranking. If the embedder itself fails (model unavailable,
-        //    network error, etc.) we degrade to token-only with a warning
-        //    rather than failing the whole query — partial recall beats none.
-        let vector_ranked: Vec<Uuid> = if let Some(embedder) = &self.embeddings {
-            match embedder.embed(&[query.to_string()]).await {
-                Ok(mut vecs) => match vecs.pop() {
-                    Some(qv) => match project {
-                        Some(_) => {
-                            let ids: Vec<Uuid> = all.iter().map(|b| b.id).collect();
-                            self.store
-                                .query_beliefs_by_vector_filtered_on(client, &qv, None, &ids)
-                                .await?
-                        }
-                        None => {
-                            self.store
-                                .query_beliefs_by_vector_on(client, &qv, None)
-                                .await?
-                        }
-                    },
-                    None => Vec::new(),
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "embedder failed for query — falling back to token-only retrieval. \
-                         Verify [embeddings] config and that the model is reachable."
-                    );
-                    Vec::new()
+        // Only the caller's final selection cuts the returned ranking. Every
+        // unavailable semantic leg remains visible in the returned report.
+        let (vector_ranked, semantic): (Vec<Uuid>, SemanticObservation) =
+            if let Some(embedder) = &self.embeddings {
+                match embedder.embed(&[query.to_string()]).await {
+                    Ok(mut vecs)
+                        if vecs.len() == 1
+                            && !vecs[0].is_empty()
+                            && vecs[0].iter().all(|value| value.is_finite()) =>
+                    {
+                        let qv = vecs
+                            .pop()
+                            .expect("the exact one-query response was checked");
+                        let ranked = match project {
+                            Some(_) => {
+                                let ids: Vec<Uuid> = all.iter().map(|b| b.id).collect();
+                                self.store
+                                    .query_beliefs_by_vector_filtered_on(client, &qv, None, &ids)
+                                    .await?
+                            }
+                            None => {
+                                self.store
+                                    .query_beliefs_by_vector_on(client, &qv, None)
+                                    .await?
+                            }
+                        };
+                        (ranked, SemanticObservation::Evaluated)
+                    }
+                    Ok(vecs) => {
+                        let cause = if vecs.is_empty() {
+                            "The backend returned no query embedding."
+                        } else if vecs.len() != 1 {
+                            "The backend returned multiple embeddings for one submitted context."
+                        } else if vecs[0].is_empty() {
+                            "The query embedding is empty."
+                        } else {
+                            "The query embedding contains a non-finite value."
+                        };
+                        (
+                            Vec::new(),
+                            SemanticObservation::UnusableQueryVector(cause.into()),
+                        )
+                    }
+                    Err(error) => (
+                        Vec::new(),
+                        SemanticObservation::EmbeddingFailed(format!("{error:#}")),
+                    ),
                 }
-            }
-        } else {
-            Vec::new()
-        };
+            } else {
+                (Vec::new(), SemanticObservation::Unconfigured)
+            };
 
         // ── Candidate seed set: the deduplicated union of the token and vector
         //    lists (final order is decided later by weighted RRF, so only
@@ -887,7 +913,10 @@ impl MimirService {
             .filter(|id| seen.insert(*id))
             .collect();
         if seed_ids.is_empty() {
-            return Ok(vec![]);
+            return Ok(RetrievalReport {
+                beliefs: vec![],
+                retrieval: RetrievalCoverage::observed(query, semantic),
+            });
         }
 
         // ── Materialise the candidate beliefs from the already-loaded list.
@@ -1031,7 +1060,10 @@ impl MimirService {
         if let Some(count) = limit {
             matched.truncate(count.get());
         }
-        Ok(matched)
+        Ok(RetrievalReport {
+            beliefs: matched,
+            retrieval: RetrievalCoverage::observed(query, semantic),
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -1159,15 +1191,15 @@ impl MimirService {
     }
 
     /// `query_relevant`, enriched with the top-k grounding passages per belief.
-    /// `query_relevant` itself is unchanged (backward compatible); this is purely
-    /// additive. Omitted passage selection returns all supporting passages.
+    /// The same retrieval report accompanies the supporting passages.
+    /// Omitted passage selection returns all supporting passages.
     pub async fn query_relevant_grounded(
         &self,
         query: &str,
         limit: Selection,
         evidence_per_belief: Selection,
         project: Option<&str>,
-    ) -> Result<Vec<GroundedBelief>> {
+    ) -> Result<RetrievalReport<GroundedBelief>> {
         self.grounded_after_overlay(query, limit, evidence_per_belief, project, || async {
             Ok(())
         })
@@ -1181,7 +1213,7 @@ impl MimirService {
         evidence_per_belief: Selection,
         project: Option<&str>,
         after_overlay: F,
-    ) -> Result<Vec<GroundedBelief>>
+    ) -> Result<RetrievalReport<GroundedBelief>>
     where
         F: FnOnce() -> W,
         W: std::future::Future<Output = Result<()>>,
@@ -1210,16 +1242,20 @@ impl MimirService {
         evidence_per_belief: Selection,
         project: Option<&str>,
         after_overlay: F,
-    ) -> Result<Vec<GroundedBelief>>
+    ) -> Result<RetrievalReport<GroundedBelief>>
     where
         F: FnOnce() -> W,
         W: std::future::Future<Output = Result<()>>,
     {
-        let beliefs = self
+        let report = self
             .relevant_on(client, query, limit, project, None, after_overlay)
             .await?;
+        let beliefs = report.beliefs;
         if beliefs.is_empty() {
-            return Ok(vec![]);
+            return Ok(RetrievalReport {
+                beliefs: vec![],
+                retrieval: report.retrieval,
+            });
         }
         let ids: Vec<Uuid> = beliefs.iter().map(|b| b.id).collect();
         let ev = self.store.get_evidence_for_beliefs_on(client, &ids).await?;
@@ -1280,7 +1316,10 @@ impl MimirService {
                 evidence: refs,
             });
         }
-        Ok(out)
+        Ok(RetrievalReport {
+            beliefs: out,
+            retrieval: report.retrieval,
+        })
     }
 
     /// Reserve operation metadata without executing a business handler.

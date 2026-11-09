@@ -454,6 +454,7 @@ pub struct LearningContext {
     pub patterns: Vec<PatternResult>,
     pub assessments: Vec<serde_json::Value>,
     pub assessments_truncated: bool,
+    pub retrieval: crate::retrieval::RetrievalCoverage,
 }
 
 impl crate::MimirService {
@@ -598,11 +599,12 @@ impl crate::MimirService {
         ensure!(!project.trim().is_empty(), "project must be explicit");
         let mut client = self.store.snapshot_connection().await;
         let tx = crate::store::snapshot_transaction(&mut client).await?;
-        let beliefs = self
+        let report = self
             .relevant_on(tx.client(), context, limit, Some(project), None, || async {
                 Ok(())
             })
             .await?;
+        let beliefs = report.beliefs;
         after_beliefs().await?;
         let terms: std::collections::HashSet<_> = context
             .split(|c: char| !c.is_alphanumeric())
@@ -654,6 +656,7 @@ impl crate::MimirService {
             patterns: ranked.into_iter().map(|(_, p)| p).collect(),
             assessments,
             assessments_truncated,
+            retrieval: report.retrieval,
         };
         tx.commit().await?;
         Ok(result)

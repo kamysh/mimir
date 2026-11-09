@@ -1800,7 +1800,26 @@ fn injection(task: &Task, arm: &str, cfg: &Value) -> Result<(Option<String>, Opt
                 json!({"context":query,"limit":25,"include_evidence":true,"evidence_per_belief":2}),
             )?;
             let _ = server.kill();
-            let beliefs = response.as_array().cloned().unwrap_or_default();
+            let beliefs = response["beliefs"]
+                .as_array()
+                .cloned()
+                .context("belief search report is missing its beliefs array")?;
+            let retrieval = &response["retrieval"];
+            let notice = format!(
+                "Search context: {}\n{}\n{}\nNext step: {}",
+                retrieval["context"]
+                    .as_str()
+                    .context("retrieval context missing")?,
+                retrieval["message"]
+                    .as_str()
+                    .context("retrieval message missing")?,
+                retrieval["coverage"]
+                    .as_str()
+                    .context("retrieval coverage missing")?,
+                retrieval["next_step"]
+                    .as_str()
+                    .context("retrieval next step missing")?
+            );
             let project = task.belief["project"].as_str();
             let scoped: Vec<&Value> = beliefs
                 .iter()
@@ -1817,10 +1836,10 @@ fn injection(task: &Task, arm: &str, cfg: &Value) -> Result<(Option<String>, Opt
                 .copied()
                 .or_else(|| pool.first().copied())
             else {
-                return Ok((None, Some(false)));
+                return Ok((Some(notice), Some(false)));
             };
             let mut s = format!(
-                "Project knowledge you should rely on:\n{}",
+                "{notice}\nProject knowledge you should rely on:\n{}",
                 best["content"].as_str().unwrap_or("")
             );
             if let Some(evidence) = best["evidence"].as_array() {
