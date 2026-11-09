@@ -80,16 +80,15 @@ async fn vector_leg_ranking() {
             Some(i) => println!("target rank = {} / {}", i + 1, ranked.len()),
             None => println!("target NOT in vector results ({} returned)", ranked.len()),
         }
-        println!("top 10 by cosine:");
-        for (i, id) in ranked.iter().take(10).enumerate() {
+        println!("all ranked beliefs by cosine:");
+        for (i, id) in ranked.iter().enumerate() {
             if let Some(b) = all.iter().find(|b| b.id == *id) {
                 let mark = if b.id == target.id { " <== TARGET" } else { "" };
-                let c: String = b.content.chars().take(80).collect();
                 println!(
                     "  {:>2}. p={:.2} {}{}",
                     i + 1,
                     b.probability.value(),
-                    c,
+                    b.content,
                     mark
                 );
             }
@@ -140,12 +139,11 @@ async fn full_query_relevant_ranking() {
             } else {
                 ""
             };
-            let c: String = b.content.chars().take(80).collect();
             println!(
                 "  {:>2}. p={:.2} {}{}",
                 i + 1,
                 b.probability.value(),
-                c,
+                b.content,
                 mark
             );
         }

@@ -624,7 +624,7 @@ mod complete_input_tests {
             stream.get_mut().shutdown().await?;
             Ok::<_, anyhow::Error>(())
         });
-        let response = reqwest::Client::new()
+        let response = hosted_http_client()?
             .get(format!("http://{address}/"))
             .send()
             .await?;
