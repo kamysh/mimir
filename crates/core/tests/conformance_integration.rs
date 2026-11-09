@@ -7,11 +7,11 @@ use mimir_core::{
     config::Config,
     db,
     documents::DocumentChunk,
-    graph::{Belief, Edge, EdgeType, EVIDENCE_UNIT},
+    graph::{Belief, Edge, EdgeType, MemoryType},
     store::AgeStore,
     MimirService,
 };
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::collections::HashSet;
 use uuid::Uuid;
 
 fn config() -> Config {
@@ -163,59 +163,6 @@ async fn replacement_rejects_bad_preparation_and_rolls_back_late_vector_failure(
 }
 
 #[tokio::test]
-async fn propagation_waits_for_learning_lock_before_reading_seed() {
-    let cfg = config();
-    let service = Arc::new(MimirService::connect(&cfg).await.unwrap());
-    let store = AgeStore::new(
-        db::connect(&cfg.database).await.unwrap(),
-        cfg.database.dbname.clone(),
-    )
-    .unwrap();
-    let project = format!("lock-fixture-{}", Uuid::new_v4());
-    let seed = Belief::new_in_project("seed".into(), 0.1, 0.0, project.clone()).unwrap();
-    let target = Belief::new_in_project("target".into(), 0.5, 0.0, project.clone()).unwrap();
-    store.insert_belief(&seed).await.unwrap();
-    store.insert_belief(&target).await.unwrap();
-    store
-        .insert_edge(&Edge::new(seed.id, target.id, EdgeType::Supports, 1.0).unwrap())
-        .await
-        .unwrap();
-    let mut owner = db::connect(&cfg.database).await.unwrap();
-    let tx = owner.transaction().await.unwrap();
-    tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-        .await
-        .unwrap();
-    let worker = service.clone();
-    let seed_id = seed.id;
-    let pending = tokio::spawn(async move { worker.propagate_from(seed_id).await });
-    // Wait for observed lock contention, not an assumed scheduling delay.
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let waiting: bool = tx.query_one("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=671942183 AND NOT granted)", &[]).await.unwrap().get(0);
-            if waiting { break; }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }).await.unwrap();
-    let g = &cfg.database.dbname;
-    tx.query(&format!("SELECT * FROM ag_catalog.cypher('{g}', $$ MATCH (b:Belief {{id:'{seed_id}'}}) SET b.alpha=9.0,b.beta=1.0,b.probability=0.9 RETURN b.id $$) AS (id ag_catalog.agtype)"), &[]).await.unwrap();
-    tx.commit().await.unwrap();
-    let result = pending.await.unwrap().unwrap();
-    let actual = result
-        .iter()
-        .find(|(id, _)| *id == target.id)
-        .unwrap()
-        .1
-        .value();
-    let expected = (target.alpha0 + 0.9 * EVIDENCE_UNIT)
-        / (target.alpha0 + target.beta0 + 0.9 * EVIDENCE_UNIT);
-    assert!(
-        (actual - expected).abs() < 1e-10,
-        "actual={actual}, expected={expected}"
-    );
-    store.delete_project(&project).await.unwrap();
-}
-
-#[tokio::test]
 async fn stored_defeat_survives_a_later_propagation_failure() {
     let cfg = config();
     let service = MimirService::connect(&cfg).await.unwrap();
@@ -225,23 +172,27 @@ async fn stored_defeat_survives_a_later_propagation_failure() {
     )
     .unwrap();
     let project = format!("edge-prefix-{}", Uuid::new_v4());
-    let seed = Belief::new_in_project("seed".into(), 0.8, 0.0, project.clone()).unwrap();
-    let target = Belief::new_in_project("target".into(), 0.5, 0.0, project.clone()).unwrap();
-    store.insert_belief(&seed).await.unwrap();
-    store.insert_belief(&target).await.unwrap();
-    let observer = db::connect(&cfg.database).await.unwrap();
-    let g = &cfg.database.dbname;
-    let id = target.id;
-    // StoreRows requires probability to parse; unlike the legacy optional
-    // alpha0 field, it has no fallback which could mask this injected error.
-    observer.query(&format!("SELECT * FROM ag_catalog.cypher('{g}', $$ MATCH (b:Belief {{id:'{id}'}}) SET b.probability='invalid fixture numeric input' RETURN b.id $$) AS (id ag_catalog.agtype)"), &[]).await.unwrap();
-    assert!(service
-        .add_edge(seed.id, target.id, EdgeType::Defeats, 0.2)
-        .await
-        .is_err());
-    let edges = store.get_edges_among(&[seed.id, target.id]).await.unwrap();
-    assert!(edges.iter().any(|(from, to, kind, _)| *from == seed.id
-        && *to == target.id
-        && *kind == EdgeType::Defeats));
-    store.delete_project(&project).await.unwrap();
+    let result: anyhow::Result<()> = async {
+        let seed = isolation::seed_belief_in_project("seed", 0.8, 0.0, &project, MemoryType::Fact).await?;
+        let target = isolation::seed_belief_in_project("target", 0.5, 0.0, &project, MemoryType::Fact).await?;
+        let downstream = isolation::seed_belief_in_project("downstream", 0.5, 0.0, &project, MemoryType::Fact).await?;
+        store.insert_edge(&Edge::new(target.id, downstream.id, EdgeType::Supports, 0.2)?).await?;
+        let target_before = serde_json::to_value(store.get_belief(target.id).await?)?;
+        let observer = db::connect(&cfg.database).await?;
+        let g = &cfg.database.dbname;
+        let id = downstream.id;
+        // Keep the new edge's endpoints valid so admission succeeds. Corrupt a
+        // later descendant to exercise propagation after the edge commits.
+        observer.query(&format!("SELECT * FROM ag_catalog.cypher('{g}', $$ MATCH (b:Belief {{id:'{id}'}}) SET b.probability='invalid fixture numeric input' RETURN b.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
+        anyhow::ensure!(service.add_edge(seed.id, target.id, EdgeType::Defeats, 0.2).await.is_err(), "corrupt descendant must refuse propagation");
+        let edges = store.get_edges_among(&[seed.id, target.id]).await?;
+        anyhow::ensure!(edges.len() == 1, "expected exactly the committed defeat edge: {edges:?}");
+        let (from, to, kind, weight) = edges[0];
+        anyhow::ensure!(from == seed.id && to == target.id && kind == EdgeType::Defeats && weight.value() == 0.2, "stored defeat edge changed: {edges:?}");
+        anyhow::ensure!(serde_json::to_value(store.get_belief(target.id).await?)? == target_before, "failed propagation changed the target belief");
+        Ok(())
+    }.await;
+    let cleanup = store.delete_project(&project).await;
+    result.unwrap();
+    cleanup.unwrap();
 }

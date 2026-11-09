@@ -218,6 +218,9 @@ fn validate_document_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context;
+    use std::future::poll_fn;
+    use tokio_postgres::{AsyncMessage, NoTls};
     #[allow(dead_code)] // Test-only adapter for the shared integration guard.
     mod isolation {
         use crate as mimir_core;
@@ -225,6 +228,123 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/support/isolation.rs"
         ));
+    }
+
+    #[tokio::test]
+    async fn propagation_waits_for_learning_lock_before_reading_seed() -> Result<()> {
+        let cfg = isolation::fixture().database_config();
+        crate::db::migrate(&cfg).await?;
+        let mut owner = crate::db::connect(&cfg).await?;
+        let identity: Uuid = owner
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let schema = format!("mimir_lock_{}", identity.simple());
+        let notice = format!("mimir lock entry {identity}");
+        let project = format!("lock-fixture-{identity}");
+        let seed =
+            isolation::seed_belief_in_project("seed", 0.1, 0.0, &project, MemoryType::Fact).await?;
+        let target =
+            isolation::seed_belief_in_project("target", 0.5, 0.0, &project, MemoryType::Fact)
+                .await?;
+        let store = AgeStore::new(crate::db::connect(&cfg).await?, cfg.dbname.clone())?;
+        store
+            .insert_edge(&Edge::new(seed.id, target.id, EdgeType::Supports, 1.0)?)
+            .await?;
+
+        // Only this test connection resolves the wrapper. The actual database
+        // lock is still taken, and all application statements remain unchanged.
+        owner.batch_execute(&format!("CREATE SCHEMA {schema}; CREATE FUNCTION {schema}.pg_advisory_xact_lock(lock_key bigint) RETURNS void LANGUAGE plpgsql AS $$ BEGIN RAISE NOTICE '{notice}'; PERFORM pg_catalog.pg_advisory_xact_lock(lock_key); END $$")).await?;
+        let mut pg = tokio_postgres::Config::new();
+        pg.host(&cfg.host)
+            .port(cfg.port)
+            .dbname(&cfg.dbname)
+            .user(&cfg.user);
+        pg.options(format!(
+            "-c search_path={schema},pg_catalog,public,ag_catalog"
+        ));
+        if let Some(password) = crate::password::resolve(
+            cfg.password.as_deref(),
+            cfg.pgpassfile.as_deref(),
+            &cfg.host,
+            cfg.port,
+            &cfg.dbname,
+            &cfg.user,
+        ) {
+            pg.password(password);
+        }
+        let (client, mut connection) = pg.connect(NoTls).await?;
+        let (entered, mut observed) =
+            tokio::sync::oneshot::channel::<std::result::Result<(), String>>();
+        let driver = tokio::spawn(async move {
+            let mut entered = Some(entered);
+            while let Some(message) = poll_fn(|cx| connection.poll_message(cx)).await {
+                match message {
+                    Ok(AsyncMessage::Notice(message)) if message.message() == notice => {
+                        if let Some(entered) = entered.take() {
+                            let _ = entered.send(Ok(()));
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(entered) = entered.take() {
+                            let _ = entered.send(Err(error.to_string()));
+                        }
+                        return Err(error);
+                    }
+                    _ => {}
+                }
+            }
+            Ok::<_, tokio_postgres::Error>(())
+        });
+        let selected: String = client.query_one("SELECT n.nspname FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.oid=to_regprocedure('pg_advisory_xact_lock(bigint)')", &[]).await?.get(0);
+        ensure!(
+            selected == schema,
+            "test connection did not select its own lock observer"
+        );
+        let propagator = Arc::new(AgeStore::new(client, cfg.dbname.clone())?);
+        let mut pending = None;
+        let outcome: Result<()> = async {
+            let tx = owner.transaction().await?;
+            tx.query("SELECT pg_advisory_xact_lock(671942183)", &[]).await?;
+            let worker = propagator.clone();
+            let seed_id = seed.id;
+            pending = Some(tokio::spawn(async move { worker.propagate_locked(seed_id).await }));
+            let premature = tokio::select! {
+                entry = &mut observed => {
+                    entry.context("lock-entry observer ended")?.map_err(anyhow::Error::msg)?;
+                    None
+                }
+                completion = pending.as_mut().unwrap() => Some(completion),
+            };
+            if let Some(completion) = premature {
+                pending.take();
+                anyhow::bail!("propagation completed before entering the learning lock: {completion:?}");
+            }
+            let graph = &cfg.dbname;
+            tx.query(&format!("SELECT * FROM ag_catalog.cypher('{graph}', $$ MATCH (b:Belief {{id:'{seed_id}'}}) SET b.alpha=9.0,b.beta=1.0,b.probability=0.9 RETURN b.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
+            tx.commit().await?;
+            let values = pending.take().unwrap().await??;
+            let actual = values.iter().find(|(id, _)| *id == target.id).context("target posterior missing")?.1.value();
+            let expected = (target.alpha0 + 0.9 * crate::graph::EVIDENCE_UNIT) /
+                (target.alpha0 + target.beta0 + 0.9 * crate::graph::EVIDENCE_UNIT);
+            ensure!((actual - expected).abs() < 1e-10, "actual={actual}, expected={expected}");
+            Ok(())
+        }.await;
+        if let Some(pending) = pending {
+            pending.abort();
+            let _ = pending.await;
+        }
+        drop(propagator);
+        let driven = driver.await;
+        let schema_removed = owner
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await;
+        let project_removed = store.delete_project(&project).await;
+        outcome?;
+        driven??;
+        schema_removed?;
+        project_removed?;
+        Ok(())
     }
 
     #[test]

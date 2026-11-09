@@ -84,3 +84,19 @@ replaces forty process-state checks separated by twenty-five-millisecond
 sleeps. Parallel checks select their own endpoints without changing a global
 environment variable. Normal shutdown, rejected startup capabilities and large
 transport frames keep their existing assertions.
+
+The API mocks accept their expected requests without a thirty-second deadline.
+Their tasks remain owned and joined by each check. An explicit cancellation
+check joins a blocked accept and then binds the released address again.
+
+The propagation lock-order check uses a private database schema visible only
+to its own connection. A wrapper reports entry into the real advisory lock
+through a PostgreSQL notice. The owner then changes the seed and releases the
+lock; the posterior must use that new seed. This replaces the five-second
+allowance and ten-millisecond lock polling while retaining the lock-before-read
+assertion. The check removes its schema and project after completion.
+
+The later-propagation-error fixture keeps edge endpoints valid and corrupts
+a downstream belief instead. Corrupting an endpoint is rejected before an edge
+can be committed and does not exercise this case. The check requires the exact
+committed edge to survive and the target belief to remain unchanged.

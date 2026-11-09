@@ -594,11 +594,7 @@ mod tests {
         let task = tokio::spawn(async move {
             let mut captured = Vec::new();
             for (status, body) in replies {
-                let (mut socket, _) =
-                    tokio::time::timeout(std::time::Duration::from_secs(30), listener.accept())
-                        .await
-                        .expect("API fixture did not receive its expected request")
-                        .unwrap();
+                let (mut socket, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0u8; 4096];
                 let boundary = loop {
@@ -657,6 +653,22 @@ mod tests {
             command: None,
             args: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn cancelling_mock_accept_joins_and_releases_its_listener() {
+        let (url, server) = fixture(vec![(200, json!({}))]).await;
+        let address = url::Url::parse(&url).unwrap();
+        server.abort();
+        assert!(server
+            .await
+            .err()
+            .expect("mock accept kept running")
+            .is_cancelled());
+        let listener = TcpListener::bind((address.host_str().unwrap(), address.port().unwrap()))
+            .await
+            .unwrap();
+        drop(listener);
     }
 
     fn selected() -> ExperienceState {
