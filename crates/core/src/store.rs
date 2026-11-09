@@ -653,6 +653,13 @@ $$) AS (ok ag_catalog.agtype)"#
         )
         .await?;
         self.recompute_learning(&tx, None, affected).await?;
+        // Delivered only with the deletion commit. Backfill listeners recheck
+        // their own belief; this hint must not cancel unrelated requests.
+        tx.query(
+            "SELECT pg_notify('mimir_embedding_owners_changed', '')",
+            &[],
+        )
+        .await?;
         tx.commit().await?;
         Ok(true)
     }

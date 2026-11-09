@@ -31,6 +31,146 @@ impl EmbeddingProvider for FixedProvider {
 }
 
 #[tokio::test]
+async fn deleted_backfill_target_does_not_start_embedding() -> Result<()> {
+    struct CountCalls(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl EmbeddingProvider for CountCalls {
+        fn embed<'a>(&'a self, _: &'a [String], _: EmbeddingCancellation) -> EmbedFuture<'a> {
+            Box::pin(async move {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(vec![vector(0)])
+            })
+        }
+    }
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (mut service, project) = service(None).await?;
+    let belief = isolation::seed_belief_in_project(
+        "deleted before backfill starts",
+        0.7,
+        0.5,
+        &project,
+        MemoryType::Fact,
+    )
+    .await?;
+    service.delete_belief(belief.id).await?;
+    service.embeddings = Some(OwnedEmbeddingBackend::for_test(Box::new(CountCalls(
+        calls.clone(),
+    ))));
+    let result = service.embed_and_store_belief(&belief).await;
+    let observed = calls.load(std::sync::atomic::Ordering::SeqCst);
+    service.delete_project(&project).await?;
+    assert!(result
+        .unwrap_err()
+        .is::<crate::store::BeliefEmbeddingTargetMissing>());
+    assert_eq!(observed, 0, "deleted work must not start a backend call");
+    Ok(())
+}
+
+#[tokio::test]
+async fn backfill_revocation_terminates_only_its_blocked_worker() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    for delete_project in [false, true] {
+        let (seed, project) = service(None).await?;
+        let other_project = format!("{project}-other");
+        let target = isolation::seed_belief_in_project(
+            "backfill target",
+            0.7,
+            0.5,
+            &project,
+            MemoryType::Fact,
+        )
+        .await?;
+        let survivor = isolation::seed_belief_in_project(
+            "independent backfill target",
+            0.7,
+            0.5,
+            &other_project,
+            MemoryType::Fact,
+        )
+        .await?;
+        let directory = std::env::temp_dir().join(&project);
+        std::fs::create_dir(&directory)?;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+        let socket = directory.join("ready.sock");
+        let listener = tokio::net::UnixListener::bind(&socket)?;
+        let program = directory.join("blocked-worker.py");
+        std::fs::write(&program, format!(
+            "#!/usr/bin/env python3\nimport sys,json,socket,os\njson.loads(sys.stdin.readline())\nprint(json.dumps({{'status':'started','version':1}}),flush=True)\ns=socket.socket(socket.AF_UNIX)\ns.connect({:?})\ns.sendall((str(os.getpid())+'\\n').encode())\ns.recv(1)\nv=[0.0]*768\nv[9]=1.0\nprint(json.dumps({{'status':'complete','vectors':[v]}}),flush=True)\nsys.stdin.read()\n", socket.to_str().unwrap()))?;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
+        let cfg = Config {
+            database: isolation::fixture().database_config(),
+            embeddings: Some(EmbeddingsConfig {
+                backend: EmbeddingBackend::Local,
+                model: String::new(),
+                api_key: None,
+                batch_size: 0,
+                cache_dir: Some(directory.join("model-cache").display().to_string()),
+            }),
+            llm: None,
+            judge: None,
+            email: None,
+            retirement: None,
+        };
+        let first =
+            std::sync::Arc::new(MimirService::connect_with_worker(&cfg, program.clone()).await?);
+        let second = std::sync::Arc::new(MimirService::connect_with_worker(&cfg, program).await?);
+        let first_task = {
+            let owner = first.clone();
+            let target = target.clone();
+            tokio::spawn(async move { owner.embed_and_store_belief(&target).await })
+        };
+        let (first_socket, _) = listener.accept().await?;
+        let mut first_socket = BufReader::new(first_socket);
+        let mut first_pid = String::new();
+        first_socket.read_line(&mut first_pid).await?;
+        let second_task = {
+            let owner = second.clone();
+            let survivor = survivor.clone();
+            tokio::spawn(async move { owner.embed_and_store_belief(&survivor).await })
+        };
+        let (second_socket, _) = listener.accept().await?;
+        let mut second_socket = BufReader::new(second_socket);
+        let mut second_pid = String::new();
+        second_socket.read_line(&mut second_pid).await?;
+        if delete_project {
+            assert_eq!(seed.delete_project(&project).await?, 1);
+        } else {
+            assert!(seed.delete_belief(target.id).await?);
+        }
+        let stopped = first_task.await?;
+        let mut byte = [0];
+        assert_eq!(
+            first_socket.read(&mut byte).await?,
+            0,
+            "cancelled worker is still running"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            assert!(!std::path::Path::new(&format!("/proc/{}", first_pid.trim())).exists());
+            assert!(std::path::Path::new(&format!("/proc/{}", second_pid.trim())).exists());
+        }
+        second_socket.write_all(b"x").await?;
+        let completed = second_task.await?;
+        let embedded = seed.list_embedded_belief_ids().await?;
+        seed.delete_project(&project).await?;
+        seed.delete_project(&other_project).await?;
+        drop(first);
+        drop(second);
+        std::fs::remove_dir_all(directory)?;
+        assert!(stopped
+            .unwrap_err()
+            .is::<crate::store::BeliefEmbeddingTargetMissing>());
+        completed?;
+        assert!(!embedded.contains(&target.id));
+        assert!(
+            embedded.contains(&survivor.id),
+            "unrelated backfill was cancelled"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn project_revocation_terminates_only_its_blocked_worker() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};

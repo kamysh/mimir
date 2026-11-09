@@ -48,6 +48,13 @@ requests that remain connected still run in arrival order.
 Disconnect does not undo changes already committed to the database. Read back
 the affected work before retrying a write whose response was lost.
 
+`mimir reembed` also watches its current belief while embedding. Deleting that
+belief or its project stops the unfinished embedding call and reaps its local
+worker. The command identifies the missing belief and asks for a user decision
+before resuming; it does not recreate the belief. Other beliefs' workers keep
+running, and the final vector write still checks its target in the same
+transaction as the write.
+
 ## When a review fails
 
 Run this on the computer named in the email:

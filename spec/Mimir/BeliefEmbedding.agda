@@ -140,6 +140,25 @@ retainedOwnerKeepsItsJob : ∀ belief before state →
   checkedOwnership belief before state ≡ state
 retainedOwnerKeepsItsJob belief before state present rewrite present = refl
 
+-- Backfill belongs to an existing belief, rather than a reservation for a new
+-- one. A database hint must recheck this exact target before cancelling.
+ownsBackfill : G.BeliefValues → Store.World → Bool
+ownsBackfill belief before = Ranking.member (G.BeliefValues.identity belief)
+  (map G.BeliefValues.identity (Store.beliefs before))
+
+checkedBackfillOwnership : G.BeliefValues → Store.World → Lifecycle.Ownership.State → Lifecycle.Ownership.State
+checkedBackfillOwnership belief before state with ownsBackfill belief before
+... | true = state
+... | false = Lifecycle.Ownership.stop state
+
+missingBackfillStopsItsJob : ∀ belief before state → ownsBackfill belief before ≡ false →
+  checkedBackfillOwnership belief before state ≡ Lifecycle.Ownership.stop state
+missingBackfillStopsItsJob belief before state missing rewrite missing = refl
+
+retainedBackfillKeepsItsJob : ∀ belief before state → ownsBackfill belief before ≡ true →
+  checkedBackfillOwnership belief before state ≡ state
+retainedBackfillKeepsItsJob belief before state present rewrite present = refl
+
 -- User-visible intent: one complete new belief, its provenance, its vector,
 -- and every prepared supporting passage. Rechecking cannot silently discard
 -- a passage selected during preparation. Numerical effects reuse the existing
@@ -188,7 +207,7 @@ missingBackend = preparationDecision Correction.configuration (Validation.key "e
   (toList "Embedding is not configured; no belief was stored.")
 
 data Effect : Set where
-  embed : Text → Effect
+  backfillEmbedding : G.BeliefValues → Effect
   prepareEmbedding : G.BeliefValues → Effect
   upsert : ℕ → Store.Vector → Effect
   listBeliefs embeddedIDs : Effect
@@ -197,7 +216,7 @@ data Effect : Set where
   publishPrepared : G.BeliefValues → Maybe Origin.Provenance → Prepared → Effect
 
 Reply : Effect → Set
-Reply (embed content) = Text ⊎ List Store.Vector
+Reply (backfillEmbedding belief) = Text ⊎ List Store.Vector
 Reply (prepareEmbedding belief) = Text ⊎ List Store.Vector
 Reply (upsert id vector) = Text ⊎ ⊤
 Reply listBeliefs = Text ⊎ List G.BeliefValues
@@ -228,7 +247,7 @@ afterEmbed b (inj₂ vectors) with Retrieval.last vectors
 
 embedBelief : Bool → G.BeliefValues → Script Result
 embedBelief false b = done (inj₂ tt)
-embedBelief true b = ask (embed (G.BeliefValues.content b)) (afterEmbed b)
+embedBelief true b = ask (backfillEmbedding b) (afterEmbed b)
 
 afterPublication : Text ⊎ (Correction.Claim ⊎ G.BeliefValues) → Script InsertionResult
 afterPublication (inj₁ error) = done (inj₁ (nativeFailure error))

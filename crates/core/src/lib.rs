@@ -350,14 +350,44 @@ impl MimirService {
     /// embedding and indexed grounding before one atomic publication.
     pub async fn embed_and_store_belief(&self, belief: &Belief) -> Result<()> {
         if let Some(embedder) = &self.embeddings {
-            let mut vecs = embedder
-                .embed(std::slice::from_ref(&belief.content))
-                .await?;
+            let mut vecs = self.embed_existing_belief(embedder, belief).await?;
             if let Some(v) = vecs.pop() {
                 self.store.insert_belief_embedding(belief.id, &v).await?;
             }
         }
         Ok(())
+    }
+
+    async fn embed_existing_belief(
+        &self,
+        embedder: &OwnedEmbeddingBackend,
+        belief: &Belief,
+    ) -> Result<Vec<Vec<f32>>> {
+        // The subscription precedes the first target read: deletion either
+        // appears in that read or leaves a notification for this exact job.
+        let mut changes = db::EmbeddingOwnerSubscription::connect(&self.database).await?;
+        if self.store.get_belief(belief.id).await?.is_none() {
+            return Err(store::BeliefEmbeddingTargetMissing {
+                belief_id: belief.id,
+            }
+            .into());
+        }
+        let job = embedder.embed(std::slice::from_ref(&belief.content));
+        tokio::pin!(job);
+        loop {
+            tokio::select! {
+                biased;
+                change = changes.changed() => {
+                    // A disconnected monitor cannot establish continued
+                    // ownership; returning drops this call's provider future.
+                    change?;
+                    if self.store.get_belief(belief.id).await?.is_none() {
+                        return Err(store::BeliefEmbeddingTargetMissing { belief_id: belief.id }.into());
+                    }
+                }
+                result = &mut job => return result,
+            }
+        }
     }
 
     /// Auto-ground newly loaded chunks against existing beliefs.

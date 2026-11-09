@@ -12,7 +12,7 @@ open import Data.Nat using (ℕ)
 open import Data.Product using (_,_; proj₁)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (tt)
-open import Relation.Binary.PropositionalEquality using (_≡_)
+open import Relation.Binary.PropositionalEquality using (_≡_; trans; sym)
 open import Data.Bool using (true; false)
 open import Data.Empty using (⊥)
 open import Mimir.Text using (Text)
@@ -74,9 +74,30 @@ module Bound (database maximumIndex : ℕ) (float : Ranking.F32)
         (Relation.Binary.PropositionalEquality.sym (Active.present active)) missing
     ... | ()
 
+    record BackfillActive (belief : G.BeliefValues) (read : SubscribedRead) : Set where
+      field present : B.ownsBackfill belief (R.snapshot (SubscribedRead.observation read)) ≡ true
+
+    missingBackfillCannotStart : ∀ belief read →
+      B.ownsBackfill belief (R.snapshot (SubscribedRead.observation read)) ≡ false →
+      BackfillActive belief read → ⊥
+    missingBackfillCannotStart belief read missing active
+      with trans (sym (BackfillActive.present active)) missing
+    ... | ()
+
     data Receipt : Backend.CacheState → (effect : B.Effect) → B.Reply effect → Backend.CacheState → Set where
-      embedded : ∀ before text after reply → E.Call configured before (text ∷ []) after reply →
-        Receipt before (B.embed text) (result reply) after
+      embedded : ∀ before belief read after reply → BackfillActive belief read →
+        E.Call configured before (G.BeliefValues.content belief ∷ []) after reply →
+        Receipt before (B.backfillEmbedding belief) (result reply) after
+      backfillRevoked : ∀ before belief read stopped observation reply → BackfillActive belief read →
+        B.ownsBackfill belief (R.snapshot observation) ≡ false →
+        E.Call configured before (G.BeliefValues.content belief ∷ []) stopped (inj₁ E.cancelled) →
+        Receipt before (B.backfillEmbedding belief) (inj₁ reply) stopped
+      backfillMissing : ∀ cache belief read reply →
+        B.ownsBackfill belief (R.snapshot (SubscribedRead.observation read)) ≡ false →
+        Receipt cache (B.backfillEmbedding belief) (inj₁ reply) cache
+      backfillSubscriptionFailed : ∀ cache belief events error →
+        B.OwnerSubscription.E.Runs (B.OwnerSubscription.start database) events (inj₁ error) →
+        Receipt cache (B.backfillEmbedding belief) (inj₁ error) cache
       preparedEmbedding : ∀ before belief read after reply → Active belief read →
         E.Call configured before (G.BeliefValues.content belief ∷ []) after reply →
         Receipt before (B.prepareEmbedding belief) (result reply) after
