@@ -59,10 +59,13 @@ import Mimir.Effects
 import Mimir.Recovery
 import Mimir.OperationControls
 import Mimir.RecoverableStoreStep
+import Mimir.RecoverableStoreSequence
 import Mimir.RegisteredStoreAdmission
 import Mimir.BeliefDeletionRecovery
 import Mimir.DecayRecovery
 import Mimir.GroundingRecovery
+import Mimir.DefeatRecovery
+import Mimir.PropagationRecovery
 import Mimir.AtomicFile
 import Mimir.CharacterRules
 import Mimir.OAuthCache

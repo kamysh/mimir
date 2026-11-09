@@ -64,6 +64,19 @@ impl EdgeCommittedDecision {
         response["message"] = serde_json::json!("The defeat edge was committed before propagation requested a user decision. The edge remains stored; no posterior update was published. Open the user dialog using the repeated values. Do not report this operation as complete or claim that nothing changed.");
         Self { response }
     }
+    pub(crate) fn for_operation(
+        token: Uuid,
+        from: Uuid,
+        to: Uuid,
+        weight: f64,
+        decision: &NumericalDecision,
+    ) -> Self {
+        let mut pending = Self::new(from, to, weight, decision);
+        pending.response["operation_token"] = serde_json::json!(token);
+        pending.response["operation_status"] = serde_json::json!("pending");
+        pending.response["message"]=serde_json::json!("The original defeat step has a saved receipt. Propagation still requires a user decision, and no completion answer was saved. Open the dialog with the repeated values, keep this operation token, and read its saved outcome before resuming. Do not insert the edge again or report full completion.");
+        pending
+    }
     pub fn response(&self) -> &serde_json::Value {
         &self.response
     }

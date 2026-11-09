@@ -12,7 +12,7 @@ open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; suc; _≟_)
 open import Data.Integer using (ℤ)
 import Data.Maybe.Properties as Maybes
-open import Data.Product using (_×_; _,_)
+open import Data.Product using (Σ; _×_; _,_)
 open import Data.String using (toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
@@ -237,18 +237,33 @@ data Failure : Set where
 Result = Failure ⊎ ⊤
 InsertionResult = Failure ⊎ G.BeliefValues
 
+backfillDecision : Validation.Code → Text → Correction.Claim
+backfillDecision code reason = Correction.claim
+  (Correction.item Correction.configuration (Validation.problem (Validation.key "embeddings" ∷ []) code reason)
+    (toList "Exactly one complete, finite, nonzero embedding for this stored belief before reporting it embedded.")
+    (toList "Open a dialog with the user to repair the configured embedding backend or cancel. Do not silently shorten the content, change the model, or count this belief as embedded.")) []
+
+missingBackfillBackend invalidBackfillShape invalidBackfillVector : Correction.Claim
+missingBackfillBackend = backfillDecision Validation.missingEvidence
+  (toList "Embedding is not configured; this belief's vector was not written.")
+invalidBackfillShape = backfillDecision Validation.malformedInput
+  (toList "The backend must return exactly one vector for this belief; its vector was not written.")
+invalidBackfillVector = backfillDecision Validation.invalidNumber
+  (toList "The backend returned an empty, nonfinite, or zero vector; this belief's vector was not written.")
+
 afterUpsert : Text ⊎ ⊤ → Script Result
 afterUpsert (inj₁ error) = done (inj₁ (nativeFailure error))
 afterUpsert (inj₂ tt) = done (inj₂ tt)
 
 afterEmbed : G.BeliefValues → Text ⊎ List Store.Vector → Script Result
 afterEmbed b (inj₁ error) = done (inj₁ (nativeFailure error))
-afterEmbed b (inj₂ vectors) with Retrieval.last vectors
-... | nothing = done (inj₂ tt)
-... | just vector = ask (upsert (G.BeliefValues.identity b) vector) afterUpsert
+afterEmbed b (inj₂ (vector ∷ [])) with usableVector vector
+... | false = done (inj₁ (needsUserDecision invalidBackfillVector))
+... | true = ask (upsert (G.BeliefValues.identity b) vector) afterUpsert
+afterEmbed b (inj₂ _) = done (inj₁ (needsUserDecision invalidBackfillShape))
 
 embedBelief : Bool → G.BeliefValues → Script Result
-embedBelief false b = done (inj₂ tt)
+embedBelief false b = done (inj₁ (needsUserDecision missingBackfillBackend))
 embedBelief true b = ask (backfillEmbedding b) (afterEmbed b)
 
 afterPublication : Text ⊎ (Correction.Claim ⊎ G.BeliefValues) → Script InsertionResult
@@ -319,10 +334,34 @@ reembed : Bool → Script Backfill
 reembed false = done disabled
 reembed true = ask listBeliefs afterList
 
-disabledEmbeddingHasNoEffects : ∀ b → embedBelief false b ≡ done (inj₂ tt)
+disabledEmbeddingHasNoEffects : ∀ b → embedBelief false b ≡ done (inj₁ (needsUserDecision missingBackfillBackend))
 disabledEmbeddingHasNoEffects b = refl
 
--- The count is acknowledged embed calls, not proof of vector creation. An
--- empty backend result is a successful no-op in the present service contract.
-emptyEmbeddingHasNoWrite : ∀ b → afterEmbed b (inj₂ []) ≡ done (inj₂ tt)
-emptyEmbeddingHasNoWrite b = refl
+-- An empty response cannot flow to the successful branch that increments the
+-- embedded count. Disabled embedding is likewise a request for user input.
+emptyEmbeddingRequestsCorrection : ∀ b → afterEmbed b (inj₂ []) ≡
+  done (inj₁ (needsUserDecision invalidBackfillShape))
+emptyEmbeddingRequestsCorrection b = refl
+
+afterEmbedSuccess : ∀ belief raw events → E.Runs (afterEmbed belief raw) events (inj₂ tt) →
+  Σ Store.Vector (λ vector → raw ≡ inj₂ (vector ∷ []) × usableVector vector ≡ true ×
+    events ≡ ((upsert (G.BeliefValues.identity belief) vector , inj₂ tt) ∷ []))
+afterEmbedSuccess belief (inj₁ error) events ()
+afterEmbedSuccess belief (inj₂ []) events ()
+afterEmbedSuccess belief (inj₂ (vector ∷ [])) events execution with usableVector vector in valid
+... | false with execution
+... | ()
+afterEmbedSuccess belief (inj₂ (vector ∷ [])) ._ (E.replied _ _ (inj₁ error) ()) | true
+afterEmbedSuccess belief (inj₂ (vector ∷ [])) ._ (E.replied _ _ (inj₂ tt) (E.returned _)) | true =
+  vector , refl , valid , refl
+afterEmbedSuccess belief (inj₂ (first ∷ second ∷ rest)) events ()
+
+successfulBackfillHasAcknowledgedVector : ∀ enabled belief events →
+  E.Runs (embedBelief enabled belief) events (inj₂ tt) →
+  Σ Store.Vector (λ vector → usableVector vector ≡ true × events ≡
+    ((backfillEmbedding belief , inj₂ (vector ∷ [])) ∷
+      (upsert (G.BeliefValues.identity belief) vector , inj₂ tt) ∷ []))
+successfulBackfillHasAcknowledgedVector false belief events ()
+successfulBackfillHasAcknowledgedVector true belief ._ (E.replied _ _ reply execution)
+  with afterEmbedSuccess belief reply _ execution
+... | vector , refl , valid , refl = vector , valid , refl

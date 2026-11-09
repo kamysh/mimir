@@ -1,5 +1,22 @@
 //! Transaction boundaries and closure required by the checked application contracts.
 use super::*;
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DefeatArguments {
+    from_id: Uuid,
+    to_id: Uuid,
+    weight: f64,
+}
+
+fn defeat_arguments(request: &OperationBindingRequest) -> Result<DefeatArguments> {
+    anyhow::ensure!(request.operation()=="record_defeat" && request.settings().as_object().is_some_and(|v|v.is_empty()),
+        "Use the original record_defeat request with empty settings; read its binding and outcome before continuing");
+    let args:DefeatArguments=serde_json::from_value(request.arguments().clone())
+        .context("record_defeat requires from_id and to_id UUIDs and a numeric weight in [0,1], with no other fields")?;
+    Probability::new(args.weight)?;
+    Ok(args)
+}
 use anyhow::ensure;
 use std::collections::{BTreeMap, HashSet};
 use tokio_postgres::Transaction;
@@ -54,10 +71,22 @@ impl AgeStore {
         tx: &Transaction<'_>,
         seed_id: Uuid,
     ) -> Result<Vec<(Uuid, Probability)>> {
+        self.propagate_in_at(tx, seed_id, None).await
+    }
+
+    async fn propagate_in_at(
+        &self,
+        tx: &Transaction<'_>,
+        seed_id: Uuid,
+        publication_time: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<(Uuid, Probability)>> {
         let seed = self
             .get_belief_on(tx.client(), seed_id)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("belief {seed_id} not found"))?;
+            .ok_or_else(|| crate::interaction::RequestCorrection::missing_reference(
+                "id", format!("The source belief {seed_id} is not stored in Mimir."),
+                "Use list_beliefs or query_relevant to find the intended source. If its identity is unknown, ask the user; do not invent an identifier.",
+            ))?;
         let mut downstream = self.downstream_on(tx.client(), seed_id, false).await?;
         let (learning_mass, _) = learning::overlay(&Self::active_reviews(tx).await?);
         let grounding = self.get_grounding_mass_all_on(tx.client()).await?;
@@ -80,7 +109,12 @@ impl AgeStore {
             &external,
         )?;
         let writes: Vec<_> = updates.iter().map(|&(id, (a, b))| (id, a, b)).collect();
-        self.update_beliefs_beta_on(tx.client(), &writes).await?;
+        let publication_time = match publication_time {
+            Some(time) => time,
+            None => Self::posterior_time_on(tx.client()).await?,
+        };
+        self.update_beliefs_beta_at_on(tx.client(), &writes, publication_time)
+            .await?;
         updates
             .into_iter()
             .map(|(id, (a, b))| Ok((id, Probability::new(crate::graph::beta_mean(a, b))?)))
@@ -95,6 +129,137 @@ impl AgeStore {
         let result = self.propagate_in(&tx, seed_id).await?;
         tx.commit().await?;
         Ok(result)
+    }
+
+    /// The final propagation and its original answer share their transaction.
+    pub async fn propagate_operation(&self, step: &RegisteredStep) -> Result<StepDecision> {
+        fn source(request: &OperationBindingRequest) -> Result<Uuid> {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Arguments {
+                id: Uuid,
+            }
+            anyhow::ensure!(request.operation()=="propagate_from" && request.settings().as_object().is_some_and(|v|v.is_empty()),
+                "Use the original propagate_from request with empty settings; read its binding and outcome before continuing");
+            let args: Arguments = serde_json::from_value(request.arguments().clone()).context(
+                "propagate_from requires exactly one id field containing the source UUID",
+            )?;
+            Ok(args.id)
+        }
+        source(step.expected())?;
+        anyhow::ensure!(
+            step.description().site == crate::operation_catalogue::CommitSite::Propagation.name(),
+            "Use the registered propagation step; no posterior was changed"
+        );
+        let token = step.token();
+        let owner = AgeStore {
+            client: self.client.clone(),
+            graph_name: self.graph_name.clone(),
+        };
+        self.commit_final_operation_step(step, move |tx, request| {
+            Box::pin(async move {
+                tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+                    .await?;
+                let time = Self::reserved_publication_time(tx, token).await?;
+                let updates = owner
+                    .propagate_in_at(tx, source(request)?, Some(time))
+                    .await?;
+                let answer = serde_json::Value::Array(
+                    updates
+                        .into_iter()
+                        .map(|(id, p)| serde_json::json!({"id":id,"new_probability":p.value()}))
+                        .collect(),
+                );
+                Ok((answer.clone(), answer))
+            })
+        })
+        .await
+    }
+
+    /// The first defeat phase saves only its own receipt, never completion.
+    pub async fn commit_defeat_step(&self, step: &RegisteredStep) -> Result<StepDecision> {
+        let edge = defeat_arguments(step.expected())?;
+        anyhow::ensure!(
+            step.description().site
+                == crate::operation_catalogue::CommitSite::EdgePublication.name(),
+            "Use the original defeat-writing step; no edge was changed"
+        );
+        let owner = AgeStore {
+            client: self.client.clone(),
+            graph_name: self.graph_name.clone(),
+        };
+        self.commit_operation_step(step, move |tx, request| {
+            Box::pin(async move {
+                let stored = defeat_arguments(request)?;
+                anyhow::ensure!(
+                    stored.from_id == edge.from_id
+                        && stored.to_id == edge.to_id
+                        && stored.weight == edge.weight,
+                    "The original defeat arguments changed; read the saved binding and outcome"
+                );
+                tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+                    .await?;
+                owner
+                    .insert_edge_on(
+                        tx.client(),
+                        &Edge::new(
+                            stored.from_id,
+                            stored.to_id,
+                            EdgeType::Defeats,
+                            stored.weight,
+                        )?,
+                    )
+                    .await?;
+                Ok(serde_json::json!({"ok":true}))
+            })
+        })
+        .await
+    }
+
+    /// Resume the complete original plan; a durable first phase is replayed.
+    pub async fn record_defeat_operation(&self, plan: &OperationPlan) -> Result<StepDecision> {
+        let steps = plan.steps();
+        let [first, final_step] = steps.as_slice() else {
+            anyhow::bail!("The defeat requires its original two-step plan; read its saved plan and outcome before writing");
+        };
+        let original = defeat_arguments(first.expected())?;
+        defeat_arguments(final_step.expected())?;
+        anyhow::ensure!(
+            first.description().site
+                == crate::operation_catalogue::CommitSite::EdgePublication.name()
+                && final_step.description().site
+                    == crate::operation_catalogue::CommitSite::Propagation.name(),
+            "The defeat plan must write its edge before propagating; no work was performed"
+        );
+        match self.commit_defeat_step(first).await? {
+            StepDecision::Done(_) => {}
+            pending => return Ok(pending),
+        }
+        let token = plan.operation_token();
+        let owner = AgeStore {
+            client: self.client.clone(),
+            graph_name: self.graph_name.clone(),
+        };
+        let result = self
+            .commit_final_operation_step(final_step, move |tx, request| {
+                Box::pin(async move {
+                    let args = defeat_arguments(request)?;
+                    tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+                        .await?;
+                    let time = Self::reserved_publication_time(tx, token).await?;
+                    owner.propagate_in_at(tx, args.from_id, Some(time)).await?;
+                    let answer = serde_json::json!({"ok":true});
+                    Ok((answer.clone(), answer))
+                })
+            })
+            .await;
+        match result {
+            Err(error) if error.downcast_ref::<crate::inference::NumericalDecision>().is_some()=>{
+                let decision=error.downcast_ref::<crate::inference::NumericalDecision>().unwrap();
+                Err(crate::inference::EdgeCommittedDecision::for_operation(token,original.from_id,original.to_id,original.weight,decision).into())
+            },
+            other=>other.context(format!("The defeat step for operation {token} has a saved receipt. Read this token's saved steps and final outcome before resuming; do not insert the edge again or report full completion.")),
+        }
     }
 
     pub(crate) async fn decay_locked(&self, factor: f64, project: Option<&str>) -> Result<usize> {

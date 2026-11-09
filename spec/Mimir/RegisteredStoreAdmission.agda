@@ -48,22 +48,62 @@ reservation token (row ∷ rest) with token ≟ℕ Store.ReservationRow.token ro
 ... | no _ = reservation token rest
 
 -- Settings and business arguments are decoded by the concrete operation;
--- this shared layer only admits its one registered final statement boundary.
-resolve : Descriptor → ℕ → Step.Registration →
-  Validation.Fault ⊎ (Store.ReservationRow × Store.BindingRow)
-resolve registered token (reservations , requestKeys , bindings , plans) with reservation token reservations
+-- this shared layer resolves the original request and its durable plan.
+originalPlan : Text → ℕ → Step.Registration →
+  Validation.Fault ⊎ (Store.ReservationRow × Store.BindingRow × Wire.Value)
+originalPlan operation token (reservations , requestKeys , bindings , plans) with reservation token reservations
 ... | nothing = inj₁ (Validation.fault (Validation.key "operation_token" ∷ []) Validation.missingReference
   "Unknown operation token. Reserve the original request with its stable request_key, or read its reservation reply if it was lost. Do not invent a token.")
 ... | just reserved with Project.Registered.binding token bindings
 ... | nothing = inj₁ (Validation.fault (Validation.key "operation_token" ∷ []) Validation.missingReference
   "This token has no bound request. Bind its original arguments and settings before execution; read the original outcome if a reply was lost.")
-... | just original with does (Store.BindingRow.operation original ≟Text Descriptor.operation registered)
+... | just original with does (Store.BindingRow.operation original ≟Text operation)
 ... | false = inj₁ (Validation.fault (Validation.key "operation_token" ∷ []) Validation.wrongIdentity
   "This token belongs to a different operation. Read its original binding and saved outcome. Keep the original request; ask the user before starting distinct work.")
 ... | true with Project.Registered.plan token plans
 ... | nothing = inj₁ (Validation.fault (Validation.key "plan" ∷ []) Validation.missingField
-  "This operation has no saved plan. Prepare its registered final-step plan before execution; retain the original token and request.")
-... | just saved with Plan.matches registered saved
+  "This operation has no saved plan. Prepare its original operation plan before execution; retain the original token and request.")
+... | just saved = inj₂ (reserved , original , saved)
+
+planMismatch : Validation.Fault
+planMismatch = Validation.fault (Validation.key "plan" ∷ []) Validation.wrongIdentity
+  "The saved plan does not match the registered statement boundaries. Read the original plan and outcome and ask the user to resolve the mismatch. Do not repeat changes or invent an answer."
+
+resolve : Descriptor → ℕ → Step.Registration →
+  Validation.Fault ⊎ (Store.ReservationRow × Store.BindingRow)
+resolve registered token registration with originalPlan (Descriptor.operation registered) token registration
+... | inj₁ fault = inj₁ fault
+... | inj₂ (reserved , original , saved) with Plan.matches registered saved
 ... | false = inj₁ (Validation.fault (Validation.key "plan" ∷ []) Validation.wrongIdentity
   "The saved plan does not match the registered final step. Read the original plan and outcome and ask the user to resolve the mismatch. Do not repeat changes or invent an answer.")
+... | true = inj₂ (reserved , original)
+
+-- A defeat has two independently durable boundaries. Its complete original
+-- plan is checked before either boundary or a saved answer can be used.
+record PairDescriptor : Set where
+  constructor pairDescriptor
+  field operation firstSite firstKey secondSite secondKey : Text
+
+module PairPlan (registered : PairDescriptor) where
+  open PairDescriptor registered
+  open Project.Registered using (fields; fieldText)
+  module First = Plan (descriptor operation firstSite firstKey)
+  module Second = Plan (descriptor operation secondSite secondKey)
+
+  pair : (Wire.Value → Bool) → (Wire.Value → Bool) → Maybe Wire.Value → Bool
+  pair first second (just (Wire.array (a ∷ b ∷ []))) = first a ∧ second b
+  pair first second _ = false
+
+  matches : Wire.Value → Bool
+  matches = fields (toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ []) λ view →
+    fieldText operation (view (toList "operation")) ∧
+      pair First.shapeMatches Second.shapeMatches (view (toList "shape")) ∧
+      pair First.stepMatches Second.stepMatches (view (toList "steps"))
+
+resolvePair : PairDescriptor → ℕ → Step.Registration →
+  Validation.Fault ⊎ (Store.ReservationRow × Store.BindingRow)
+resolvePair registered token registration with originalPlan (PairDescriptor.operation registered) token registration
+... | inj₁ fault = inj₁ fault
+... | inj₂ (reserved , original , saved) with PairPlan.matches registered saved
+... | false = inj₁ planMismatch
 ... | true = inj₂ (reserved , original)
