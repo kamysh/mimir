@@ -2,6 +2,9 @@
 -- Every database path uses this credential/TLS preparation. Environment,
 -- filesystem, certificate parsing and transport are explicit dependencies;
 -- Mimir's precedence, certificate policy and startup ordering are concrete.
+-- Transport I/O is external: its Rust interpreter disables driver-selected
+-- idle connection probes and supplies no query deadline. This module does not
+-- model TCP timers; shared driver settings and real connections are tested.
 module Mimir.ConnectionProtocol where
 
 open import Data.Bool using (Bool; true; false; _∧_; not)

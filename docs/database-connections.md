@@ -4,6 +4,16 @@ This contract governs every database connection made by Mimir: normal queries,
 startup migrations, background tasks, and (where present) listeners, advisory
 locks, preparation and cancellation.
 
+## Connection lifetime
+
+Mimir disables the driver's automatic idle connection probes. The driver
+otherwise selects a two-hour idle period before probing, which is a liveness
+policy rather than a query deadline. Mimir does not choose a connection or
+query deadline or replace that policy with another timer. The shared settings
+apply to ordinary connections and notification listeners. Server closure and
+network errors remain reported, and callers retain their existing cancellation
+paths. This does not change operating-system or server configuration.
+
 ## Credentials
 
 - `database.password` is optional. A configured value wins, including an empty
@@ -79,7 +89,7 @@ python3 tests/database-connections.py target/debug/examples/connection_probe
 
 This requires Docker and OpenSSL. It uses uniquely named disposable postgres-ai
 containers, generated test certificates and isolated config files. Complete logs
-remain in the printed `/var/tmp` artifact directory; containers are removed.
+remain in the printed `/tmp` artifact directory; containers are removed.
 
 ## Proof and test boundary
 
@@ -99,3 +109,5 @@ CA-only hostname independence and uniform policy across abstract connection
 paths. These are policy laws, not a proof of the Rust implementation or TLS
 library. Runtime tests must verify credential parsing, source precedence,
 diagnostic redaction, real TLS/authentication, and every connection path.
+The connection model leaves transport I/O external; driver settings are checked
+separately, including disabled idle probing. It is not a TCP timer proof.

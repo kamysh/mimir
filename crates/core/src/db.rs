@@ -97,6 +97,9 @@ fn postgres_config(cfg: &DatabaseConfig) -> tokio_postgres::Config {
     pg_cfg.port(cfg.port);
     pg_cfg.dbname(&cfg.dbname);
     pg_cfg.user(&cfg.user);
+    // The driver otherwise schedules idle liveness probes after two hours.
+    // Connection lifetime belongs to the caller, without a replacement timer.
+    pg_cfg.keepalives(false);
     pg_cfg.options(format!("-c search_path={SEARCH_PATH}"));
     if let Some(pw) = crate::password::resolve(
         cfg.password.as_deref(),
@@ -216,5 +219,31 @@ impl EmbeddingOwnerSubscription {
 impl Drop for ReviewQueueSubscription {
     fn drop(&mut self) {
         self.reader.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_connections_disable_idle_probes_without_choosing_deadlines() {
+        let mut cfg: DatabaseConfig = toml::from_str(
+            "host='fixture.invalid'\nport=1\ndbname='fixture'\nuser='fixture'\npassword='fixture-only'\n",
+        )
+        .unwrap();
+        for mode in [
+            SslMode::Disable,
+            SslMode::Prefer,
+            SslMode::Require,
+            SslMode::VerifyCa,
+            SslMode::VerifyFull,
+        ] {
+            cfg.ssl_mode = mode;
+            let parameters = postgres_config(&cfg);
+            assert!(!parameters.get_keepalives());
+            assert!(parameters.get_connect_timeout().is_none());
+            assert!(parameters.get_tcp_user_timeout().is_none());
+        }
     }
 }

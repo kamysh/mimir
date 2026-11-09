@@ -561,6 +561,7 @@ mod tests {
         // lock is still taken, and all application statements remain unchanged.
         owner.batch_execute(&format!("CREATE SCHEMA {schema}; CREATE FUNCTION {schema}.pg_advisory_xact_lock(lock_key bigint) RETURNS void LANGUAGE plpgsql AS $$ BEGIN RAISE NOTICE '{notice}'; PERFORM pg_catalog.pg_advisory_xact_lock(lock_key); END $$")).await?;
         let mut pg = tokio_postgres::Config::new();
+        pg.keepalives(false);
         pg.host(&cfg.host)
             .port(cfg.port)
             .dbname(&cfg.dbname)

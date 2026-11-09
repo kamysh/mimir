@@ -248,6 +248,7 @@ async fn pending_queue_notifications_follow_commit_and_contain_no_source() {
     // credential resolution, installed configuration, or external account.
     let password = password_file.trim_end().rsplit(':').next().unwrap();
     let mut pg = tokio_postgres::Config::new();
+    pg.keepalives(false);
     pg.host(&cfg.host)
         .port(cfg.port)
         .user(&cfg.user)
