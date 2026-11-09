@@ -694,10 +694,13 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/DocumentRemovalRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
       "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85\u2013#86, including server-owned path preparation. The concrete registered operation removes chunks/vectors/evidence with complete surviving-belief updates and original saved count, retaining unrelated data and replaying without clearing a later replacement. Rust correspondence is tested rather than extracted."
     },
     {
       "name": "get_learning_review",

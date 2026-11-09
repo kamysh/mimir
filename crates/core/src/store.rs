@@ -1840,6 +1840,15 @@ $$) AS (ok ag_catalog.agtype)"#
         tx: &tokio_postgres::Transaction<'_>,
         ids: &[Uuid],
     ) -> Result<()> {
+        self.delete_document_chunks_in_at(tx, ids, None).await
+    }
+
+    async fn delete_document_chunks_in_at(
+        &self,
+        tx: &tokio_postgres::Transaction<'_>,
+        ids: &[Uuid],
+        publication_time: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
@@ -1862,7 +1871,12 @@ $$) AS (ok ag_catalog.agtype)"#
             .map(|row| Uuid::parse_str(row.get::<_, &str>(0)))
             .collect::<std::result::Result<_, _>>()?;
         tx.query(&sql, &[]).await?;
-        self.recompute_learning(tx, None, affected).await?;
+        let publication_time = match publication_time {
+            Some(time) => time,
+            None => Self::posterior_time_on(tx.client()).await?,
+        };
+        self.recompute_learning_at(tx, None, affected, publication_time)
+            .await?;
         Ok(())
     }
 

@@ -260,13 +260,72 @@ impl AgeStore {
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
+        let cleared = self.clear_document_in(&tx, path, None).await?;
+        tx.commit().await?;
+        Ok(cleared)
+    }
+
+    async fn clear_document_in(
+        &self,
+        tx: &Transaction<'_>,
+        path: &str,
+        publication_time: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<usize> {
         let old = self
             .get_chunk_ids_for_document_on(tx.client(), path)
             .await?;
-        self.delete_document_chunks_in(&tx, &old).await?;
+        self.delete_document_chunks_in_at(tx, &old, publication_time)
+            .await?;
         self.delete_chunk_embeddings_on(tx.client(), &old).await?;
-        tx.commit().await?;
         Ok(old.len())
+    }
+
+    /// Publish complete removal with its original count and posterior changes.
+    /// Path normalization was captured before binding; retries reuse it.
+    pub async fn clear_document_operation(&self, step: &RegisteredStep) -> Result<StepDecision> {
+        fn path(request: &OperationBindingRequest) -> Result<String> {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Arguments {
+                path: String,
+            }
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Prepared {
+                resolved_path: String,
+            }
+            anyhow::ensure!(request.operation()=="clear_document",
+                "Use the original clear_document request and its saved path preparation; no document was changed");
+            let original:Arguments=serde_json::from_value(request.arguments().clone())
+                .context("clear_document requires exactly one string path field. Read the saved binding and outcome. Ask the user whether to cancel this unfinished token and reserve corrected work; do not replace its bound arguments")?;
+            let prepared:Prepared=serde_json::from_value(request.settings().clone())
+                .context("The server's original resolved_path preparation is required. Read the saved binding and outcome. Ask the user whether to cancel this unfinished token and reserve corrected work with server path preparation; do not guess a path or change this token's settings")?;
+            let _ = original.path;
+            Ok(prepared.resolved_path)
+        }
+        path(step.expected())?;
+        anyhow::ensure!(
+            step.description().site
+                == crate::operation_catalogue::CommitSite::DocumentDeletion.name(),
+            "Use the registered document-removal step; no document was changed"
+        );
+        let token = step.token();
+        let owner = AgeStore {
+            client: self.client.clone(),
+            graph_name: self.graph_name.clone(),
+        };
+        self.commit_final_operation_step(step, move |tx, request| {
+            Box::pin(async move {
+                let path = path(request)?;
+                tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+                    .await?;
+                let time = Self::reserved_publication_time(tx, token).await?;
+                let count = owner.clear_document_in(tx, &path, Some(time)).await?;
+                let answer = serde_json::json!({"cleared":count});
+                Ok((answer.clone(), answer))
+            })
+        })
+        .await
     }
 }
 

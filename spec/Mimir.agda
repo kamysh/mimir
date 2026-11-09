@@ -62,6 +62,7 @@ import Mimir.RegisteredStoreAdmission
 import Mimir.BeliefDeletionRecovery
 import Mimir.DecayRecovery
 import Mimir.GroundingRecovery
+import Mimir.DocumentRemovalRecovery
 import Mimir.AtomicFile
 import Mimir.CharacterRules
 import Mimir.OAuthCache
