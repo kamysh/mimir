@@ -490,3 +490,6 @@ import Mimir.JudgeSignal
 import Mimir.JudgeOwnedWork
 import Mimir.JudgeSignalBinding
 import Mimir.JudgeCommandExecution
+
+import Mimir.PreparedRetrieval
+import Mimir.TraversalCompleteness

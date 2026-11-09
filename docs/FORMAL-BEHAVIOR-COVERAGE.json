@@ -459,7 +459,7 @@
       "source": "crates/mcp/src/main.rs:647",
       "step": 3,
       "group": "retrieval",
-      "interface_evidence": "context; limit default 10; optional project/prefer_type; include_evidence false; evidence_per_belief 3",
+      "interface_evidence": "context; omitted selection includes all matches; supplied counts are positive; optional project/prefer_type; include_evidence; response contains beliefs and explicit retrieval coverage",
       "existing_modules": [
         "spec/Mimir/Graph.agda",
         "spec/Mimir/Evidence.agda",
@@ -478,9 +478,10 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/PreparedRetrieval.agda"
       ],
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "remaining": "Prepared default-preference intent is concrete. Public preparation/receipt coupling, memory-type preference recovery and Rust correspondence remain open.",
       "baseline_gap": "Executable candidate selection, weighted RRF (k=60), memory preference, deterministic ordering/limits, project scope and evidence joins; comments and percentage sorting are insufficient."
     },
     {
@@ -1062,7 +1063,7 @@
       "source": "crates/mcp/src/learning.rs:166",
       "step": 3,
       "group": "context",
-      "interface_evidence": "context,project; limit default 5; service requires 1..20",
+      "interface_evidence": "required context and project; omitted selection includes all matches; supplied counts are positive without a Mimir ceiling; response includes retrieval coverage",
       "existing_modules": [
         "spec/Mimir/Graph.agda",
         "spec/Mimir/AssessmentSelection.agda",
@@ -1083,9 +1084,10 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/PreparedRetrieval.agda"
       ],
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "remaining": "Prepared complete context intent is concrete. Public preparation/receipt coupling and Rust correspondence remain open.",
       "baseline_gap": "Pattern statistics and provenance defined; ranking and belief/assessment assembly compose in step 3."
     }
   ],
