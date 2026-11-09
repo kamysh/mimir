@@ -234,7 +234,10 @@ Run `mimir config check` again, then restart your existing application process.
 No service definitions need changing. The judge selects all currently eligible
 work in its project scope. `judge.batch_size` is retired: run
 `mimir config upgrade`, then `mimir config check`, for a configuration that still
-contains it. A separately configured embedding batch setting is preserved.
+contains it. `embeddings.batch_size` and the `mimir init batch_size=...` argument
+are retired too. Upgrading an existing configuration removes the retired setting
+and preserves unrelated embedding settings and comments. Omit `batch_size` from
+new `mimir init` calls. See [complete embedding requests](../docs/COMPLETE-EMBEDDING-REQUESTS.md).
 An explicit pending-query result count must be positive; omission returns all
 matches. See [judge selection](../docs/JUDGE-SELECTION.md).
 
@@ -268,6 +271,12 @@ limits. Anthropic Messages requires `max_tokens`: Mimir obtains the configured
 model’s actual capacity from `GET /v1/models/{model_id}` and caches it for that
 adapter. Missing or invalid capacity metadata is an explicit provider error.
 Choose a model that supports function tools.
+
+The approved model constraints and the reasons for them are recorded in
+[external model constraints](../docs/EXTERNAL-MODEL-CONSTRAINTS.md). The static
+startup reminder has a separate [external client constraint](../docs/EXTERNAL-CLIENT-CONSTRAINTS.md).
+Those approvals do not authorize another work deadline or quota. Remaining
+restriction findings are tracked in [#160](https://github.com/kamysh/mimir/issues/160).
 
 | `llm.provider` | Default API base | Protocol and local verification | Live account |
 | --- | --- | --- | --- |

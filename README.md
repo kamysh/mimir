@@ -299,8 +299,8 @@ the judge requires learning contract 3. See the
 
 Restart the existing
 judge process and reconnect MCP clients so they use the updated executable.
-See [operations and troubleshooting](docs/operations.md) for log limits and
-`mimir judge diagnose`, the plain-English failure report.
+See [operations and troubleshooting](docs/operations.md) for complete logs,
+private diagnostics and `mimir judge diagnose`, the plain-English failure report.
 
 ### Step 4: Configure mimir
 
