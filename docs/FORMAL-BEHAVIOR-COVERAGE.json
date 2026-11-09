@@ -1949,5 +1949,5 @@
   "updated_at": "2026-10-31T03:50:09.149598+00:00",
   "completed_utc": "2026-10-31T03:59:41.624081+00:00",
   "operational_update_checked_at": "2026-10-31T20:24:20.743313+00:00",
-  "library_boundary": "Standard JSON/UTF-8/UUID/numeric parsing, formatting and hashing are supplied operations. Their implementations are outside the application specification. See FORMAL-VALUE-AUDIT.md."
+  "library_boundary": "Standard JSON/UTF-8/UUID/numeric parsing, formatting and hashing are supplied operations. Their implementations are outside the application specification. See FORMAL-VALUE-AUDIT.md. JSON input/output adapters in crates/json preserve that syntax boundary while protecting deep-value copying, formatting and cleanup; native checks cover those lifetimes. See JSON-INPUTS.md. The separate TOML parser guard remains part of issue160."
 }
