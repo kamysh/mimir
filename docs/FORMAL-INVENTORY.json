@@ -9948,6 +9948,19 @@
             "spec/Mimir/PublicRequest.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "delete_belief_operation",
+          "line": 442,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/BeliefDeletionRecovery.agda",
+            "spec/Mimir/RecoverableStoreStep.agda",
+            "spec/Mimir/RegisteredStoreAdmission.agda"
+          ],
+          "mapping_boundary": "Independent complete-world deletion and posterior goal plus isolated native checks; not a compiled Rust refinement theorem."
         }
       ],
       "status": "unmapped",
@@ -9967,7 +9980,10 @@
         "spec/Mimir/DocumentQuery.agda",
         "spec/Mimir/EvidenceRead.agda",
         "spec/Mimir/GroundingProtocol.agda",
-        "spec/Mimir/BeliefEmbedding.agda"
+        "spec/Mimir/BeliefEmbedding.agda",
+        "spec/Mimir/BeliefDeletionRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -12122,6 +12138,32 @@
             "spec/Mimir/PublicRequest.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "delete_belief_operation",
+          "line": 675,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/BeliefDeletionRecovery.agda",
+            "spec/Mimir/RecoverableStoreStep.agda",
+            "spec/Mimir/RegisteredStoreAdmission.agda"
+          ],
+          "mapping_boundary": "Independent complete-world deletion and posterior goal plus isolated native checks; not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "delete_belief_in",
+          "line": 631,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/BeliefDeletionRecovery.agda",
+            "spec/Mimir/RecoverableStoreStep.agda",
+            "spec/Mimir/RegisteredStoreAdmission.agda"
+          ],
+          "mapping_boundary": "Independent complete-world deletion and posterior goal plus isolated native checks; not a compiled Rust refinement theorem."
         }
       ],
       "status": "unmapped",
@@ -12136,7 +12178,10 @@
         "spec/Mimir/GraphRecords.agda",
         "spec/Mimir/GraphPaths.agda",
         "spec/Mimir/DocumentPublication.agda",
-        "spec/Mimir/GroundingPublication.agda"
+        "spec/Mimir/GroundingPublication.agda",
+        "spec/Mimir/BeliefDeletionRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -17803,6 +17848,98 @@
         "spec/Mimir/MigrationSchema.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
+    },
+    {
+      "path": "crates/core/tests/atomic_belief_deletion.rs",
+      "definitions": [
+        {
+          "kind": "fn",
+          "name": "identity",
+          "line": 30,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "setup",
+          "line": 38,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "belief",
+          "line": 45,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "admitted",
+          "line": 58,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "completed_reply",
+          "line": 80,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "retry_after_reconnect_keeps_original_true_and_unrelated_records",
+          "line": 90,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "saved_false_does_not_delete_a_belief_created_after_completion",
+          "line": 164,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "rejected_final_result_rolls_back_deletion_retirement_and_step_answer",
+          "line": 185,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "another_registered_operation_cannot_enter_belief_deletion",
+          "line": 284,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "explicit_cancellation_preserves_belief_and_saves_no_completion",
+          "line": 312,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "malformed_original_arguments_receive_correction_before_any_deletion",
+          "line": 343,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "repeated_numerical_states_restore_deletion_edges_vector_and_pending_token",
+          "line": 372,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        }
+      ],
+      "status": "unmapped",
+      "proof_boundary_category": "verification_artifact",
+      "classification": "verification-or-example-artifact"
     }
   ],
   "dependency_contracts": [
@@ -17996,7 +18133,7 @@
         "formal_status": "One external-interface postulate outside the safe spec import graph; the Rust adapter correspondence remains open.",
         "approval": "User selected Approve for the PostgreSQL transaction-atomicity question on 2026-10-30.",
         "module_file": "assumptions/Mimir/Assumptions/PostgreSQL.agda",
-        "declaration": "atomicTransactions : (State : Set) → Mimir.DatabaseTransaction.Contract State",
+        "declaration": "atomicTransactions : (State : Set) \u2192 Mimir.DatabaseTransaction.Contract State",
         "isolation_audit": "/tmp/mimir-assumption-isolation-audit-eejzpx6r.json",
         "verification": "/tmp/mimir-agda-approved-postgresql-vetBrZBn.log and .exit",
         "verification_limit": "Checks the declaration and imports; PostgreSQL behavior is assumed, not proved."
