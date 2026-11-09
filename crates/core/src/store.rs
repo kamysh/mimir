@@ -2143,12 +2143,98 @@ $$) {CHUNK_RETURN_COLUMNS}"#
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        self.insert_grounding_on(tx.client(), chunk_id, belief_id, weight)
-            .await?;
-        self.recompute_learning(&tx, None, [belief_id].into())
+        self.insert_evidence_in(&tx, chunk_id, belief_id, weight)
             .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    async fn insert_evidence_in(
+        &self,
+        tx: &Transaction<'_>,
+        chunk_id: Uuid,
+        belief_id: Uuid,
+        weight: Probability,
+    ) -> Result<()> {
+        self.insert_grounding_on(tx.client(), chunk_id, belief_id, weight)
+            .await?;
+        self.recompute_learning(tx, None, [belief_id].into())
+            .await?;
+        Ok(())
+    }
+
+    /// Publish the original bound evidence change and both saved answers.
+    pub async fn change_evidence_operation(&self, step: &RegisteredStep) -> Result<StepDecision> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Add {
+            chunk_id: Uuid,
+            belief_id: Uuid,
+            #[serde(default = "default_weight")]
+            weight: f64,
+        }
+        fn default_weight() -> f64 {
+            1.0
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Remove {
+            chunk_id: Uuid,
+            belief_id: Uuid,
+        }
+        enum Change {
+            Add(Add, Probability),
+            Remove(Remove),
+        }
+        fn original(request: &OperationBindingRequest) -> Result<Change> {
+            anyhow::ensure!(request.settings().as_object().is_some_and(|s| s.is_empty()),
+                "Evidence changes have no per-request settings; read the original binding and outcome before continuing");
+            match request.operation() {
+                "add_evidence" => {
+                    let args: Add = serde_json::from_value(request.arguments().clone())
+                        .context("add_evidence requires chunk_id and belief_id UUIDs, and an optional numeric weight in [0,1]; correct the original request before writing")?;
+                    let weight = Probability::new(args.weight)?;
+                    Ok(Change::Add(args, weight))
+                }
+                "delete_evidence" => Ok(Change::Remove(serde_json::from_value(request.arguments().clone())
+                    .context("delete_evidence requires exactly chunk_id and belief_id UUIDs; correct the original request before writing")?)),
+                _ => anyhow::bail!("Use the original registered evidence operation; no evidence was changed"),
+            }
+        }
+        let expected = original(step.expected())?;
+        let site = match expected {
+            Change::Add(..) => crate::operation_catalogue::CommitSite::EvidencePublication,
+            Change::Remove(..) => crate::operation_catalogue::CommitSite::EvidenceRemoval,
+        };
+        anyhow::ensure!(
+            step.description().site == site.name(),
+            "Use the registered evidence step; no evidence was changed"
+        );
+        let owner = AgeStore {
+            client: self.client.clone(),
+            graph_name: self.graph_name.clone(),
+        };
+        self.commit_final_operation_step(step, move |tx, binding| {
+            Box::pin(async move {
+                tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+                    .await?;
+                match original(binding)? {
+                    Change::Add(args, weight) => {
+                        owner
+                            .insert_evidence_in(tx, args.chunk_id, args.belief_id, weight)
+                            .await?
+                    }
+                    Change::Remove(args) => {
+                        owner
+                            .delete_evidence_in(tx, args.chunk_id, args.belief_id)
+                            .await?
+                    }
+                }
+                let reply = serde_json::json!({"ok":true});
+                Ok((reply.clone(), reply))
+            })
+        })
+        .await
     }
 
     async fn insert_grounding_on(
@@ -2200,7 +2286,7 @@ $$) AS (weight ag_catalog.agtype)"#
         if self.get_belief_on(client, id).await?.is_none() {
             return Err(crate::interaction::RequestCorrection::missing_reference(
                 field, format!("The requested belief {id} was not found in Mimir."),
-                "Use list_beliefs or query_relevant_beliefs to find the intended stored belief, then retry with its ID. If the intended record is unknown, ask the user. Do not invent an identifier.",
+                "Use list_beliefs or query_relevant to find the intended stored belief, then retry with its ID. If the intended record is unknown, ask the user. Do not invent an identifier.",
             ).into());
         }
         Ok(())
@@ -2330,6 +2416,21 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
     /// Remove a specific GROUNDS edge. (Edges are also GC'd automatically by the
     /// DETACH DELETE on either endpoint; this is for explicit unlink.)
     pub async fn delete_evidence(&self, chunk_id: Uuid, belief_id: Uuid) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.delete_evidence_in(&tx, chunk_id, belief_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn delete_evidence_in(
+        &self,
+        tx: &Transaction<'_>,
+        chunk_id: Uuid,
+        belief_id: Uuid,
+    ) -> Result<()> {
         let g = &self.graph_name;
         let c = chunk_id.to_string();
         let b = belief_id.to_string();
@@ -2339,14 +2440,9 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
   DELETE r
 $$) AS (v ag_catalog.agtype)"#
         );
-        let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
         tx.execute(&sql, &[]).await?;
-        self.recompute_learning(&tx, None, [belief_id].into())
+        self.recompute_learning(tx, None, [belief_id].into())
             .await?;
-        tx.commit().await?;
         Ok(())
     }
 

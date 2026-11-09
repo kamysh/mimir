@@ -69,3 +69,24 @@ Isolated database checks change a real record before requesting rollback,
 verify that the record and pending status survive, and verify cleanup before
 return. A second check terminates only its own disposable database connection
 and verifies the readback response when rollback acknowledgement is lost.
+
+## Registered evidence changes
+
+Adding evidence saves exactly one requested contribution, all affected
+posterior updates and the original `ok` answer in the same transaction.
+A retry of that operation returns its saved answer without another
+contribution. An explicitly separate addition remains a separate contribution.
+Removal deletes all contributions for the selected passage and belief,
+recomputes affected beliefs and saves its answer together. Retrying a completed
+removal cannot delete evidence added by a later operation.
+
+`GroundingRecovery` defines the requested evidence change directly on the
+complete initial world. Every resulting posterior must satisfy its equation;
+unrelated data survives in the whole-world equality. Missing passages,
+missing beliefs and invalid weights identify the request field and explain
+how to find or supply the intended value. A numerical user decision preserves
+the original world and leaves the operation pending without a completion answer.
+
+The existing library removal is registered internally; it does not become a
+new MCP tool. Public token handling and mandatory dispatcher wiring remain
+their existing issues. These registered storage writers are their prerequisites.
