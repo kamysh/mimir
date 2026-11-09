@@ -7,15 +7,15 @@ open import Data.Bool using (Bool; true; false; _∧_; _∨_; not)
 open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Integer using (ℤ)
 open import Data.List using (List; []; _∷_; _++_; map; filterᵇ; length)
-open import Data.List.Relation.Unary.All using (All; []; _∷_)
+open import Data.List.Relation.Unary.All using (All; []; _∷_; all?)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_; _<?_; suc)
+open import Data.Nat using (ℕ; _≟_; _<?_; zero; suc)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.String using (String; toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; sym; trans; subst)
-open import Relation.Nullary using (¬_; yes; no; does)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; sym; trans; subst)
+open import Relation.Nullary using (Dec; ¬_; yes; no; does)
 open import Mimir.Text using (Text; Nonblank)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.ApplicationStore as Store
@@ -651,6 +651,318 @@ module Plan where
     selected : captureMatches library plan ≡ true → stepsEqual (pendingSteps library rows) (Saved.steps plan) ≡ true
     selected observed rewrite isBackfill | captured | decoded =
       andRight (captureOrdered rows) (stepsEqual (pendingSteps library rows) (Saved.steps plan)) observed
+
+-- This is application-owned admission of the actual saved rows. Payload
+-- decoding is supplied by the concrete handler; the shared raw readback uses
+-- identity and therefore never interprets historical owner/result payloads.
+alongObservation : ∀ {A B : Set} (original : A) (branch : (actual : A) → original ≡ actual → B)
+  actual observed → branch original refl ≡ branch actual observed
+alongObservation original branch .original refl = refl
+
+differentSummands : ∀ {A B : Set} {first : A} {second : B} → inj₂ second ≡ inj₁ first → ⊥
+differentSummands ()
+
+journalMismatch : Validation.Fault
+journalMismatch = Validation.fault (Validation.key "operation_token" ∷ []) Validation.wrongIdentity
+  "The saved answers are not a complete prefix of the original operation plan. Read its original binding, plan and answers, then open the user dialog. Do not skip a step, invent a receipt or repeat completed work."
+
+data Addressing : List Plan.Step → Set where
+  empty : Addressing []
+  more : ∀ {first rest} → All (λ later → Plan.Step.id first ≢ Plan.Step.id later) rest →
+    Addressing rest → Addressing (first ∷ rest)
+
+different? : ∀ first second → Dec (first ≢ second)
+different? first second with first ≟Text second
+... | yes same = no (λ different → different same)
+... | no different = yes different
+
+addressing? : (steps : List Plan.Step) → Dec (Addressing steps)
+addressing? [] = yes empty
+addressing? (first ∷ rest) with all? (λ later → different? (Plan.Step.id first) (Plan.Step.id later)) rest
+... | no duplicate = no (λ { (more distinct _) → duplicate distinct })
+... | yes distinct with addressing? rest
+... | no duplicate = no (λ { (more _ addresses) → duplicate addresses })
+... | yes addresses = yes (more distinct addresses)
+
+module PrefixJournal (Payload : Set) (readPayload : Wire.Value → Validation.Fault ⊎ Payload) where
+  publication : ℕ → Text → Payload → Wire.Value → Store.World → Store.World
+  publication token key value raw before = Store.saveAnswer before token key raw
+
+  publicationReadable : ∀ token key value raw before → Store.lookupSaved before token key ≡ nothing →
+    Store.lookupSaved (publication token key value raw before) token key ≡ just raw
+  publicationReadable token key value raw before absent rewrite absent = Store.headReplyReadable token key raw _
+
+  publicationKeepsOldAnswer : ∀ token key value raw before queried address original →
+    Store.lookupSaved before queried address ≡ just original →
+    Store.lookupSaved (publication token key value raw before) queried address ≡ just original
+  publicationKeepsOldAnswer token key value raw before queried address original known
+    with Store.replyKey? queried address (Store.savedReplyRow token key raw)
+  ... | no different = trans (Store.otherSavedAnswerPreserved before token key raw queried address different) known
+  ... | yes (refl , refl) rewrite known = known
+
+  missing? : ∀ token before declared → Dec (Store.lookupSaved before token (Plan.Step.id declared) ≡ nothing)
+  missing? token before declared with Store.lookupSaved before token (Plan.Step.id declared)
+  ... | nothing = yes refl
+  ... | just _ = no (λ ())
+
+  data Prefix (token : ℕ) (before : Store.World) : List Plan.Step → Set where
+    waiting : ∀ {steps} → All (λ step → Store.lookupSaved before token (Plan.Step.id step) ≡ nothing) steps →
+      Prefix token before steps
+    saved : ∀ {first rest} → (raw : Wire.Value) (value : Payload) →
+      Store.lookupSaved before token (Plan.Step.id first) ≡ just raw →
+      readPayload raw ≡ inj₂ value → Prefix token before rest → Prefix token before (first ∷ rest)
+
+  count : ∀ {token before steps} → Prefix token before steps → ℕ
+  count (waiting _) = 0
+  count (saved _ _ _ _ rest) = suc (count rest)
+
+  allocations : ∀ {token before steps} → Prefix token before steps → List (Maybe Text × Payload)
+  allocations (waiting _) = []
+  allocations (saved {first} raw value known decoded rest) = (Plan.Step.key first , value) ∷ allocations rest
+
+  read : ∀ token before steps → Validation.Fault ⊎ Prefix token before steps
+  afterLookup : ∀ token before first rest observed → Store.lookupSaved before token (Plan.Step.id first) ≡ observed →
+    Validation.Fault ⊎ Prefix token before (first ∷ rest)
+  afterDecode : ∀ token before first rest raw → Store.lookupSaved before token (Plan.Step.id first) ≡ just raw →
+    (observed : Validation.Fault ⊎ Payload) → readPayload raw ≡ observed → Validation.Fault ⊎ Prefix token before (first ∷ rest)
+  afterMissing : ∀ token before steps → Dec (All (λ step → Store.lookupSaved before token (Plan.Step.id step) ≡ nothing) steps) →
+    Validation.Fault ⊎ Prefix token before steps
+  afterRest : ∀ token before first rest raw value → Store.lookupSaved before token (Plan.Step.id first) ≡ just raw →
+    readPayload raw ≡ inj₂ value → Validation.Fault ⊎ Prefix token before rest → Validation.Fault ⊎ Prefix token before (first ∷ rest)
+  read token before [] = inj₂ (waiting [])
+  read token before (first ∷ rest) = afterLookup token before first rest (Store.lookupSaved before token (Plan.Step.id first)) refl
+  afterLookup token before first rest nothing found = afterMissing token before (first ∷ rest) (all? (missing? token before) (first ∷ rest))
+  afterLookup token before first rest (just raw) found = afterDecode token before first rest raw found (readPayload raw) refl
+  afterMissing token before steps (no _) = inj₁ journalMismatch
+  afterMissing token before steps (yes absent) = inj₂ (waiting absent)
+  afterDecode token before first rest raw found (inj₁ fault) decoded = inj₁ fault
+  afterDecode token before first rest raw found (inj₂ value) decoded = afterRest token before first rest raw value found decoded (read token before rest)
+  afterRest token before first rest raw value found decoded (inj₁ fault) = inj₁ fault
+  afterRest token before first rest raw value found decoded (inj₂ later) = inj₂ (saved raw value found decoded later)
+
+  readAlong : ∀ token before first rest observed known → read token before (first ∷ rest) ≡ afterLookup token before first rest observed known
+  readAlong token before first rest observed known = alongObservation _ (afterLookup token before first rest) observed known
+
+  decodeAlong : ∀ token before first rest raw known observed decoded →
+    afterLookup token before first rest (just raw) known ≡ afterDecode token before first rest raw known observed decoded
+  decodeAlong token before first rest raw known observed decoded = alongObservation _ (afterDecode token before first rest raw known) observed decoded
+
+  tokenRows : ℕ → Store.World → List Store.SavedReplyRow
+  tokenRows token before = filterᵇ (λ row → does (token ≟ Store.SavedReplyRow.token row))
+    (Store.OperationTables.savedReplies (Store.World.operations before))
+
+  record Complete (token : ℕ) (before : Store.World) (steps : List Plan.Step) : Set where
+    constructor complete
+    field prefix : Prefix token before steps
+          exactRows : length (tokenRows token before) ≡ count prefix
+
+  check : ∀ token before steps → Validation.Fault ⊎ Complete token before steps
+  check token before steps with read token before steps
+  ... | inj₁ fault = inj₁ fault
+  ... | inj₂ prefix with length (tokenRows token before) ≟ count prefix
+  ... | no _ = inj₁ journalMismatch
+  ... | yes exact = inj₂ (complete prefix exact)
+
+  changedLookup : ∀ token declared value raw before queried → Plan.Step.id declared ≢ Plan.Step.id queried →
+    Store.lookupSaved (publication token (Plan.Step.id declared) value raw before) token (Plan.Step.id queried) ≡
+      Store.lookupSaved before token (Plan.Step.id queried)
+  changedLookup token declared value raw before queried distinct =
+    Store.otherSavedAnswerPreserved
+      before
+      token (Plan.Step.id declared) raw token (Plan.Step.id queried) (λ same → distinct (sym (proj₂ same)))
+
+  missingSurvives : ∀ token declared value raw before rest →
+    All (λ later → Plan.Step.id declared ≢ Plan.Step.id later) rest →
+    All (λ later → Store.lookupSaved before token (Plan.Step.id later) ≡ nothing) rest →
+    All (λ later → Store.lookupSaved (publication token (Plan.Step.id declared) value raw before)
+      token (Plan.Step.id later) ≡ nothing) rest
+  missingSurvives token declared value raw before [] [] [] = []
+  missingSurvives token declared value raw before (later ∷ rest) (different ∷ distinct) (absent ∷ missing) =
+    trans (changedLookup token declared value raw before later different) absent ∷
+      missingSurvives token declared value raw before rest distinct missing
+
+  -- Saving the next declared answer extends precisely the admitted prefix.
+  extendWaiting : ∀ token before first rest value raw →
+    Store.lookupSaved before token (Plan.Step.id first) ≡ nothing →
+    readPayload raw ≡ inj₂ value →
+    All (λ later → Plan.Step.id first ≢ Plan.Step.id later) rest →
+    All (λ later → Store.lookupSaved before token (Plan.Step.id later) ≡ nothing) rest →
+    Prefix token (publication token (Plan.Step.id first) value raw before) (first ∷ rest)
+  extendWaiting token before first rest value raw absent decoded distinct missing = saved raw value
+    (publicationReadable token (Plan.Step.id first) value raw before absent) decoded
+    (waiting (missingSurvives token first value raw before rest distinct missing))
+
+  next : ∀ {token before steps} → Prefix token before steps → Maybe Plan.Step
+  next (waiting {[]} []) = nothing
+  next (waiting {first ∷ rest} _) = just first
+  next (saved _ _ _ _ rest) = next rest
+
+  nextAbsent : ∀ {token before steps} (prefix : Prefix token before steps) first →
+    next prefix ≡ just first → Store.lookupSaved before token (Plan.Step.id first) ≡ nothing
+  nextAbsent (waiting {[]} []) first ()
+  nextAbsent (waiting {first ∷ rest} (absent ∷ _)) .first refl = absent
+  nextAbsent (saved _ _ _ _ rest) first selected = nextAbsent rest first selected
+
+  sameNext : ∀ {token before steps} (first second : Prefix token before steps) → next first ≡ next second
+  sameNext (waiting {[]} []) (waiting []) = refl
+  sameNext (waiting {declared ∷ rest} _) (waiting _) = refl
+  sameNext (waiting (absent ∷ _)) (saved _ _ known _ _) with trans (sym absent) known
+  ... | ()
+  sameNext (saved _ _ known _ _) (waiting (absent ∷ _)) with trans (sym absent) known
+  ... | ()
+  sameNext (saved _ _ _ _ earlier) (saved _ _ _ _ later) = sameNext earlier later
+
+  sameCount : ∀ {token before steps} (first second : Prefix token before steps) → count first ≡ count second
+  sameCount (waiting {[]} []) (waiting []) = refl
+  sameCount (waiting {declared ∷ rest} _) (waiting _) = refl
+  sameCount (waiting (absent ∷ _)) (saved _ _ known _ _) with trans (sym absent) known
+  ... | ()
+  sameCount (saved _ _ known _ _) (waiting (absent ∷ _)) with trans (sym absent) known
+  ... | ()
+  sameCount (saved _ _ _ _ earlier) (saved _ _ _ _ later) = cong suc (sameCount earlier later)
+
+  readCannotFail : ∀ token before steps (prefix : Prefix token before steps) fault →
+    read token before steps ≡ inj₁ fault → ⊥
+  readCannotFail token before [] (waiting []) fault ()
+  readCannotFail token before (first ∷ rest) (waiting missing@(absent ∷ _)) fault failed
+    with all? (missing? token before) (first ∷ rest) in inspected
+  ... | no gap = gap missing
+  ... | yes returned = differentSummands (trans (sym (trans
+    (readAlong token before first rest nothing absent)
+    (cong (afterMissing token before (first ∷ rest)) inspected))) failed)
+  readCannotFail token before (first ∷ rest) (saved raw value known decoded later) fault failed
+    with read token before rest in observed
+  ... | inj₁ diagnosticFault = readCannotFail token before rest later diagnosticFault observed
+  ... | inj₂ _ = differentSummands (trans
+    (sym (trans (readAlong token before first rest (just raw) known)
+      (trans (decodeAlong token before first rest raw known (inj₂ value) decoded)
+        (cong (afterRest token before first rest raw value known decoded) observed)))) failed)
+
+  checkCannotFail : ∀ token before steps (journal : Complete token before steps) fault →
+    check token before steps ≡ inj₁ fault → ⊥
+  checkCannotFail token before steps (complete prefix exact) fault failed
+    with read token before steps in observed
+  ... | inj₁ diagnosticFault = readCannotFail token before steps prefix diagnosticFault observed
+  ... | inj₂ actual with length (tokenRows token before) ≟ count actual
+  ... | no incorrect = incorrect (trans exact (sameCount prefix actual))
+  ... | yes _ with failed
+  ... | ()
+
+  -- A loop cursor records that every preceding declaration already has its
+  -- saved answer. It never authorizes jumping over an absent predecessor.
+  data Cursor (token : ℕ) (before : Store.World) : List Plan.Step → List Plan.Step → Set where
+    here : ∀ remaining → Cursor token before remaining remaining
+    passed : ∀ first rest remaining raw → Store.lookupSaved before token (Plan.Step.id first) ≡ just raw →
+      Cursor token before rest remaining → Cursor token before (first ∷ rest) remaining
+
+  cursorNext : ∀ token before full first rest → (prefix : Prefix token before full) →
+    Cursor token before full (first ∷ rest) → Store.lookupSaved before token (Plan.Step.id first) ≡ nothing →
+    next prefix ≡ just first
+  cursorNext token before .(first ∷ rest) first rest (waiting (_ ∷ _)) (here _) absent = refl
+  cursorNext token before .(first ∷ rest) first rest (saved _ _ known _ _) (here _) absent
+    with trans (sym absent) known
+  ... | ()
+  cursorNext token before .(previous ∷ prior) first rest (waiting (missing ∷ _))
+    (passed previous prior .(first ∷ rest) raw known cursor) absent with trans (sym missing) known
+  ... | ()
+  cursorNext token before .(previous ∷ prior) first rest (saved _ _ _ _ prefix)
+    (passed previous prior .(first ∷ rest) raw known cursor) absent = cursorNext token before prior first rest prefix cursor absent
+
+  cursorDecoded : ∀ token before full first rest raw → Prefix token before full →
+    Cursor token before full (first ∷ rest) → Store.lookupSaved before token (Plan.Step.id first) ≡ just raw →
+    Σ Payload (λ value → readPayload raw ≡ inj₂ value)
+  cursorDecoded token before .(first ∷ rest) first rest raw (waiting (missing ∷ _)) (here _) known
+    with trans (sym missing) known
+  ... | ()
+  cursorDecoded token before .(first ∷ rest) first rest raw (saved savedRaw value savedKnown decoded _) (here _) known
+    with trans (sym savedKnown) known
+  ... | refl = value , decoded
+  cursorDecoded token before .(previous ∷ prior) first rest raw (waiting (missing ∷ _))
+    (passed previous prior .(first ∷ rest) old original cursor) known with trans (sym missing) original
+  ... | ()
+  cursorDecoded token before .(previous ∷ prior) first rest raw (saved _ _ _ _ prefix)
+    (passed previous prior .(first ∷ rest) old original cursor) known = cursorDecoded token before prior first rest raw prefix cursor known
+
+  transportCursor : ∀ token before after full remaining →
+    (∀ key raw → Store.lookupSaved before token key ≡ just raw → Store.lookupSaved after token key ≡ just raw) →
+    Cursor token before full remaining → Cursor token after full remaining
+  transportCursor token before after full .full kept (here .full) = here full
+  transportCursor token before after .(first ∷ rest) remaining kept (passed first rest .remaining raw known cursor) =
+    passed first rest remaining raw (kept (Plan.Step.id first) raw known)
+      (transportCursor token before after rest remaining kept cursor)
+
+  advanceCursor : ∀ token before full first rest raw →
+    Cursor token before full (first ∷ rest) → Store.lookupSaved before token (Plan.Step.id first) ≡ just raw →
+    Cursor token before full rest
+  advanceCursor token before .(first ∷ rest) first rest raw (here _) known = passed first rest rest raw known (here rest)
+  advanceCursor token before .(previous ∷ prior) first rest raw
+    (passed previous prior .(first ∷ rest) originalValue original cursor) known =
+    passed previous prior rest originalValue original (advanceCursor token before prior first rest raw cursor known)
+
+  extend : ∀ token before steps (prefix : Prefix token before steps) first value raw →
+    Addressing steps → next prefix ≡ just first → readPayload raw ≡ inj₂ value →
+    Σ (Prefix token (publication token (Plan.Step.id first) value raw before) steps)
+      (λ advanced → count advanced ≡ suc (count prefix))
+  extend token before [] (waiting []) first value raw empty () decoded
+  extend token before (first ∷ rest) (waiting (absent ∷ missing)) .first value raw
+    (more distinct addresses) refl decoded =
+      extendWaiting token before first rest value raw absent decoded distinct missing , refl
+  extend token before (previous ∷ rest) (saved original earlier known represented prefix) first value raw
+    (more distinct addresses) selected decoded
+    with extend token before rest prefix first value raw addresses selected decoded
+  ... | advanced , grew = saved original earlier
+      (publicationKeepsOldAnswer token (Plan.Step.id first) value raw before token (Plan.Step.id previous) original known)
+      represented advanced , cong suc grew
+
+  sameToken : ∀ queried → does (queried ≟ queried) ≡ true
+  sameToken zero = refl
+  sameToken (suc queried) = sameToken queried
+
+  publicationCount : ∀ token before first value raw →
+    Store.lookupSaved before token (Plan.Step.id first) ≡ nothing →
+    length (tokenRows token (publication token (Plan.Step.id first) value raw before)) ≡
+      suc (length (tokenRows token before))
+  publicationCount token before first value raw absent rewrite absent | sameToken token = refl
+
+  extendComplete : ∀ token before steps (journal : Complete token before steps) first value raw →
+    Addressing steps → next (Complete.prefix journal) ≡ just first → readPayload raw ≡ inj₂ value →
+    Complete token (publication token (Plan.Step.id first) value raw before) steps
+  extendComplete token before steps (complete prefix exact) first value raw addresses selected decoded
+    with extend token before steps prefix first value raw addresses selected decoded
+  ... | advanced , grew = complete advanced (trans
+    (publicationCount token before first value raw (nextAbsent prefix first selected))
+    (trans (cong suc exact) (sym grew)))
+
+  moveMissing : ∀ token before after steps →
+    (∀ key → Store.lookupSaved after token key ≡ Store.lookupSaved before token key) →
+    All (λ declared → Store.lookupSaved before token (Plan.Step.id declared) ≡ nothing) steps →
+    All (λ declared → Store.lookupSaved after token (Plan.Step.id declared) ≡ nothing) steps
+  moveMissing token before after [] same [] = []
+  moveMissing token before after (first ∷ rest) same (known ∷ missing) =
+    trans (same (Plan.Step.id first)) known ∷ moveMissing token before after rest same missing
+
+  relocatePrefix : ∀ token before after steps →
+    (∀ key → Store.lookupSaved after token key ≡ Store.lookupSaved before token key) →
+    (original : Prefix token before steps) → Σ (Prefix token after steps)
+      (λ moved → count moved ≡ count original × next moved ≡ next original)
+  relocatePrefix token before after [] same (waiting []) = waiting [] , refl , refl
+  relocatePrefix token before after (first ∷ rest) same (waiting missing) =
+    waiting (moveMissing token before after (first ∷ rest) same missing) , refl , refl
+  relocatePrefix token before after (first ∷ rest) same (saved raw value known decoded prefix)
+    with relocatePrefix token before after rest same prefix
+  ... | moved , sameCount , sameNext = saved raw value (trans (same (Plan.Step.id first)) known) decoded moved , cong suc sameCount , sameNext
+
+  relocateComplete : ∀ token before after steps → Store.World.operations after ≡ Store.World.operations before →
+    (journal : Complete token before steps) → Σ (Complete token after steps)
+      (λ moved → next (Complete.prefix moved) ≡ next (Complete.prefix journal))
+  relocateComplete token before after steps same (complete prefix exact)
+    with relocatePrefix token before after steps
+      (λ key → cong (λ tables → Store.lookupReply token key (Store.OperationTables.savedReplies tables)) same) prefix
+  ... | moved , sameCount , sameNext = complete moved
+    (trans (cong (λ tables → length (filterᵇ (λ row → does (token ≟ Store.SavedReplyRow.token row))
+      (Store.OperationTables.savedReplies tables))) same) (trans exact (sym sameCount))) , sameNext
+
+module OpaqueJournal = PrefixJournal Wire.Value inj₂
 
 module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   data Problem : Set where
