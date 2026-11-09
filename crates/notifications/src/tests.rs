@@ -143,12 +143,21 @@ async fn read_line<S: AsyncRead + Unpin>(stream: &mut S) -> Option<String> {
             return None;
         }
         bytes.push(one[0]);
-        assert!(bytes.len() < 65536, "oversized SMTP fixture line");
         if one[0] == b'\n' {
             break;
         }
     }
     Some(String::from_utf8(bytes).unwrap())
+}
+
+#[tokio::test]
+async fn fixture_line_keeps_complete_text_beyond_the_previous_ceiling() {
+    let expected = "x".repeat(65_536) + "\n";
+    let input = expected.clone() + "next\n";
+    let mut stream = std::io::Cursor::new(input.into_bytes());
+    assert_eq!(read_line(&mut stream).await, Some(expected));
+    assert_eq!(read_line(&mut stream).await.as_deref(), Some("next\n"));
+    assert_eq!(read_line(&mut stream).await, None);
 }
 
 async fn write_line<S: AsyncWrite + Unpin>(stream: &mut S, line: &str) {
