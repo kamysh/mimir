@@ -1,8 +1,9 @@
 {-# OPTIONS --safe #-}
 -- One database-backed frontier expansion in recompute_learning. The adapter
 -- must provide the actual graph snapshot. Initial roots may include retired
--- targets; only live target beliefs are discovered by following edges. Full
--- traversal termination and the posterior write plan are separate obligations.
+-- targets; only live target beliefs are discovered by following edges.
+-- TraversalCompleteness proves the finite expansion reaches every allowed
+-- connection. The posterior write plan is a separate obligation.
 module Mimir.ReviewRecomputeTraversal where
 
 open import Data.Empty using (⊥)
@@ -15,7 +16,7 @@ open import Data.List.Relation.Unary.All using (All)
 import Data.List.Relation.Unary.All as All
 import Data.List.Relation.Unary.All.Properties as AllProperties
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Data.Nat using (ℕ; zero; suc; _≟_)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
@@ -81,6 +82,14 @@ module For (project : Maybe Text) (beliefs : List Targets.Belief) (edges : List 
 
   advance : State → State
   advance before = state (next before ++ State.visited before) (next before)
+
+  -- The same finite expansion used by closureScoped, exposed so its
+  -- exhaustion can be established rather than assumed at the call site.
+  expand : ℕ → State → State
+  expand zero current = current
+  expand (suc fuel) current with State.frontier current
+  ... | [] = current
+  ... | _ ∷ _ = expand fuel (advance current)
 
   destinationsOwned : ∀ frontier → All Owned (destinations frontier)
   destinationsOwned frontier = AllProperties.map⁺

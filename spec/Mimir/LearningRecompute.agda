@@ -37,14 +37,9 @@ target b = Targets.belief (Graph.BeliefValues.identity b)
 -- frontier expansions. Include one extra expansion for retired initial roots.
 closureScoped : Maybe Text → List Graph.BeliefValues → List Edges.Edge → List ℕ → List ℕ
 closureScoped project nodes edges roots = Traversal.State.visited
-  (expand (suc (length nodes)) (Traversal.state roots roots))
+  (T.expand (suc (length nodes)) (Traversal.state roots roots))
   where
   module T = Traversal.For project (map target nodes) edges
-  expand : ℕ → Traversal.State → Traversal.State
-  expand zero current = current
-  expand (suc fuel) current with Traversal.State.frontier current
-  ... | [] = current
-  ... | _ ∷ _ = expand fuel (T.advance current)
 
 closure : Text → List Graph.BeliefValues → List Edges.Edge → List ℕ → List ℕ
 closure project = closureScoped (just project)
