@@ -96,6 +96,8 @@ publication : ℕ → Text → Allocation → Wire.Value → Store.World → Sto
 publication token step value raw before = Store.saveAnswer
   (record before { embeddingOwners = owner token value ∷ Store.World.embeddingOwners before }) token step raw
 
+ownerPublication = publication
+
 publicationKeepsProtected : ∀ token step value raw before →
   protected (publication token step value raw before) ≡ protected before
 publicationKeepsProtected token step value raw before
@@ -143,265 +145,27 @@ malformedJournal = Validation.fault (Validation.key "operation_token" ∷ []) Va
 changedSettings = Validation.fault (Validation.key "settings" ∷ []) Validation.wrongIdentity
   "The current embedding model differs from this unfinished review's original model. Read its original binding and open the user dialog. Do not switch models, replace the token or invent preparation identities."
 
-data Addressing : List Controls.Plan.Step → Set where
-  empty : Addressing []
-  more : ∀ {first rest} → All (λ later → Controls.Plan.Step.id first ≢ Controls.Plan.Step.id later) rest →
-    Addressing rest → Addressing (first ∷ rest)
-
-different? : ∀ first second → Dec (first ≢ second)
-different? first second with first ≟Text second
-... | yes same = no (λ different → different same)
-... | no different = yes different
-
-addressing? : (steps : List Controls.Plan.Step) → Dec (Addressing steps)
-addressing? [] = yes empty
-addressing? (first ∷ rest) with all? (λ later → different? (Controls.Plan.Step.id first) (Controls.Plan.Step.id later)) rest
-... | no duplicate = no (λ { (more distinct _) → duplicate distinct })
-... | yes distinct with addressing? rest
-... | no duplicate = no (λ { (more _ addresses) → duplicate addresses })
-... | yes addresses = yes (more distinct addresses)
+open Controls using (Addressing; empty; more; addressing?)
 
 -- Check the complete journal, not just the next requested answer. A saved
 -- answer after an absent earlier step is a gap; an extra/duplicate row is
 -- rejected by the separate exact row count. No row is dropped or repaired.
 module Journal (format : Encoding.Formatting) (codec : AllocationEncoding.Codec format) where
-  module Plan = Controls.Plan
   module Saved = AllocationEncoding.Saved format codec
+  module Shared = Controls.PrefixJournal Allocation Saved.read
+  open Shared public hiding (extendComplete)
 
-  missing? : ∀ token before declared → Dec (Store.lookupSaved before token (Plan.Step.id declared) ≡ nothing)
-  missing? token before declared with Store.lookupSaved before token (Plan.Step.id declared)
-  ... | nothing = yes refl
-  ... | just _ = no (λ ())
-
-  data Prefix (token : ℕ) (before : Store.World) : List Plan.Step → Set where
-    waiting : ∀ {steps} → All (λ step → Store.lookupSaved before token (Plan.Step.id step) ≡ nothing) steps →
-      Prefix token before steps
-    saved : ∀ {first rest} → (raw : Wire.Value) (value : Allocation) →
-      Store.lookupSaved before token (Plan.Step.id first) ≡ just raw →
-      Saved.read raw ≡ inj₂ value → Prefix token before rest → Prefix token before (first ∷ rest)
-
-  count : ∀ {token before steps} → Prefix token before steps → ℕ
-  count (waiting _) = 0
-  count (saved _ _ _ _ rest) = suc (count rest)
-
-  allocations : ∀ {token before steps} → Prefix token before steps → List (Maybe Text × Allocation)
-  allocations (waiting _) = []
-  allocations (saved {first} raw value known decoded rest) = (Plan.Step.key first , value) ∷ allocations rest
-
-  read : ∀ token before steps → Validation.Fault ⊎ Prefix token before steps
-  afterLookup : ∀ token before first rest observed → Store.lookupSaved before token (Plan.Step.id first) ≡ observed →
-    Validation.Fault ⊎ Prefix token before (first ∷ rest)
-  afterDecode : ∀ token before first rest raw → Store.lookupSaved before token (Plan.Step.id first) ≡ just raw →
-    (observed : Validation.Fault ⊎ Allocation) → Saved.read raw ≡ observed → Validation.Fault ⊎ Prefix token before (first ∷ rest)
-  afterMissing : ∀ token before steps → Dec (All (λ step → Store.lookupSaved before token (Plan.Step.id step) ≡ nothing) steps) →
-    Validation.Fault ⊎ Prefix token before steps
-  afterRest : ∀ token before first rest raw value → Store.lookupSaved before token (Plan.Step.id first) ≡ just raw →
-    Saved.read raw ≡ inj₂ value → Validation.Fault ⊎ Prefix token before rest → Validation.Fault ⊎ Prefix token before (first ∷ rest)
-  read token before [] = inj₂ (waiting [])
-  read token before (first ∷ rest) = afterLookup token before first rest (Store.lookupSaved before token (Plan.Step.id first)) refl
-  afterLookup token before first rest nothing found = afterMissing token before (first ∷ rest) (all? (missing? token before) (first ∷ rest))
-  afterLookup token before first rest (just raw) found = afterDecode token before first rest raw found (Saved.read raw) refl
-  afterMissing token before steps (no _) = inj₁ malformedJournal
-  afterMissing token before steps (yes absent) = inj₂ (waiting absent)
-  afterDecode token before first rest raw found (inj₁ fault) decoded = inj₁ fault
-  afterDecode token before first rest raw found (inj₂ value) decoded = afterRest token before first rest raw value found decoded (read token before rest)
-  afterRest token before first rest raw value found decoded (inj₁ fault) = inj₁ fault
-  afterRest token before first rest raw value found decoded (inj₂ later) = inj₂ (saved raw value found decoded later)
-
-  readAlong : ∀ token before first rest observed known → read token before (first ∷ rest) ≡ afterLookup token before first rest observed known
-  readAlong token before first rest observed known = alongObservation _ (afterLookup token before first rest) observed known
-
-  decodeAlong : ∀ token before first rest raw known observed decoded →
-    afterLookup token before first rest (just raw) known ≡ afterDecode token before first rest raw known observed decoded
-  decodeAlong token before first rest raw known observed decoded = alongObservation _ (afterDecode token before first rest raw known) observed decoded
-
-  tokenRows : ℕ → Store.World → List Store.SavedReplyRow
-  tokenRows token before = filterᵇ (λ row → does (token ≟ Store.SavedReplyRow.token row))
-    (Store.OperationTables.savedReplies (Store.World.operations before))
-
-  record Complete (token : ℕ) (before : Store.World) (steps : List Plan.Step) : Set where
-    constructor complete
-    field prefix : Prefix token before steps
-          exactRows : length (tokenRows token before) ≡ count prefix
-
-  check : ∀ token before steps → Validation.Fault ⊎ Complete token before steps
-  check token before steps with read token before steps
-  ... | inj₁ fault = inj₁ fault
-  ... | inj₂ prefix with length (tokenRows token before) ≟ count prefix
-  ... | no _ = inj₁ malformedJournal
-  ... | yes exact = inj₂ (complete prefix exact)
-
-  changedLookup : ∀ token declared value raw before queried → Plan.Step.id declared ≢ Plan.Step.id queried →
-    Store.lookupSaved (publication token (Plan.Step.id declared) value raw before) token (Plan.Step.id queried) ≡
-      Store.lookupSaved before token (Plan.Step.id queried)
-  changedLookup token declared value raw before queried distinct =
-    Store.otherSavedAnswerPreserved
-      (record before { embeddingOwners = owner token value ∷ Store.World.embeddingOwners before })
-      token (Plan.Step.id declared) raw token (Plan.Step.id queried) (λ same → distinct (sym (proj₂ same)))
-
-  missingSurvives : ∀ token declared value raw before rest →
-    All (λ later → Plan.Step.id declared ≢ Plan.Step.id later) rest →
-    All (λ later → Store.lookupSaved before token (Plan.Step.id later) ≡ nothing) rest →
-    All (λ later → Store.lookupSaved (publication token (Plan.Step.id declared) value raw before)
-      token (Plan.Step.id later) ≡ nothing) rest
-  missingSurvives token declared value raw before [] [] [] = []
-  missingSurvives token declared value raw before (later ∷ rest) (different ∷ distinct) (absent ∷ missing) =
-    trans (changedLookup token declared value raw before later different) absent ∷
-      missingSurvives token declared value raw before rest distinct missing
-
-  -- The next owner extends precisely the original prefix. Its answer is
-  -- saved with the actual PostgreSQL row, so losing the acknowledgement
-  -- cannot produce an owner without the corresponding readable answer.
-  extendWaiting : ∀ token before first rest value raw →
-    Store.lookupSaved before token (Plan.Step.id first) ≡ nothing →
-    Saved.read raw ≡ inj₂ value →
-    All (λ later → Plan.Step.id first ≢ Plan.Step.id later) rest →
-    All (λ later → Store.lookupSaved before token (Plan.Step.id later) ≡ nothing) rest →
-    Prefix token (publication token (Plan.Step.id first) value raw before) (first ∷ rest)
-  extendWaiting token before first rest value raw absent decoded distinct missing = saved raw value
-    (publicationReadable token (Plan.Step.id first) value raw before absent) decoded
-    (waiting (missingSurvives token first value raw before rest distinct missing))
-
-  next : ∀ {token before steps} → Prefix token before steps → Maybe Plan.Step
-  next (waiting {[]} []) = nothing
-  next (waiting {first ∷ rest} _) = just first
-  next (saved _ _ _ _ rest) = next rest
-
-  nextAbsent : ∀ {token before steps} (prefix : Prefix token before steps) first →
-    next prefix ≡ just first → Store.lookupSaved before token (Plan.Step.id first) ≡ nothing
-  nextAbsent (waiting {[]} []) first ()
-  nextAbsent (waiting {first ∷ rest} (absent ∷ _)) .first refl = absent
-  nextAbsent (saved _ _ _ _ rest) first selected = nextAbsent rest first selected
-
-  sameNext : ∀ {token before steps} (first second : Prefix token before steps) → next first ≡ next second
-  sameNext (waiting {[]} []) (waiting []) = refl
-  sameNext (waiting {declared ∷ rest} _) (waiting _) = refl
-  sameNext (waiting (absent ∷ _)) (saved _ _ known _ _) with trans (sym absent) known
-  ... | ()
-  sameNext (saved _ _ known _ _) (waiting (absent ∷ _)) with trans (sym absent) known
-  ... | ()
-  sameNext (saved _ _ _ _ earlier) (saved _ _ _ _ later) = sameNext earlier later
-
-  sameCount : ∀ {token before steps} (first second : Prefix token before steps) → count first ≡ count second
-  sameCount (waiting {[]} []) (waiting []) = refl
-  sameCount (waiting {declared ∷ rest} _) (waiting _) = refl
-  sameCount (waiting (absent ∷ _)) (saved _ _ known _ _) with trans (sym absent) known
-  ... | ()
-  sameCount (saved _ _ known _ _) (waiting (absent ∷ _)) with trans (sym absent) known
-  ... | ()
-  sameCount (saved _ _ _ _ earlier) (saved _ _ _ _ later) = cong suc (sameCount earlier later)
-
-  readCannotFail : ∀ token before steps (prefix : Prefix token before steps) fault →
-    read token before steps ≡ inj₁ fault → ⊥
-  readCannotFail token before [] (waiting []) fault ()
-  readCannotFail token before (first ∷ rest) (waiting missing@(absent ∷ _)) fault failed
-    with all? (missing? token before) (first ∷ rest) in inspected
-  ... | no gap = gap missing
-  ... | yes returned = differentSummands (trans (sym (trans
-    (readAlong token before first rest nothing absent)
-    (cong (afterMissing token before (first ∷ rest)) inspected))) failed)
-  readCannotFail token before (first ∷ rest) (saved raw value known decoded later) fault failed
-    with read token before rest in observed
-  ... | inj₁ diagnosticFault = readCannotFail token before rest later diagnosticFault observed
-  ... | inj₂ _ = differentSummands (trans
-    (sym (trans (readAlong token before first rest (just raw) known)
-      (trans (decodeAlong token before first rest raw known (inj₂ value) decoded)
-        (cong (afterRest token before first rest raw value known decoded) observed)))) failed)
-
-  checkCannotFail : ∀ token before steps (journal : Complete token before steps) fault →
-    check token before steps ≡ inj₁ fault → ⊥
-  checkCannotFail token before steps (complete prefix exact) fault failed
-    with read token before steps in observed
-  ... | inj₁ diagnosticFault = readCannotFail token before steps prefix diagnosticFault observed
-  ... | inj₂ actual with length (tokenRows token before) ≟ count actual
-  ... | no incorrect = incorrect (trans exact (sameCount prefix actual))
-  ... | yes _ with failed
-  ... | ()
-
-  -- A loop cursor records that every preceding declaration already has its
-  -- saved answer. It never authorizes jumping over an absent predecessor.
-  data Cursor (token : ℕ) (before : Store.World) : List Plan.Step → List Plan.Step → Set where
-    here : ∀ remaining → Cursor token before remaining remaining
-    passed : ∀ first rest remaining raw → Store.lookupSaved before token (Plan.Step.id first) ≡ just raw →
-      Cursor token before rest remaining → Cursor token before (first ∷ rest) remaining
-
-  cursorNext : ∀ token before full first rest → (prefix : Prefix token before full) →
-    Cursor token before full (first ∷ rest) → Store.lookupSaved before token (Plan.Step.id first) ≡ nothing →
-    next prefix ≡ just first
-  cursorNext token before .(first ∷ rest) first rest (waiting (_ ∷ _)) (here _) absent = refl
-  cursorNext token before .(first ∷ rest) first rest (saved _ _ known _ _) (here _) absent
-    with trans (sym absent) known
-  ... | ()
-  cursorNext token before .(previous ∷ prior) first rest (waiting (missing ∷ _))
-    (passed previous prior .(first ∷ rest) raw known cursor) absent with trans (sym missing) known
-  ... | ()
-  cursorNext token before .(previous ∷ prior) first rest (saved _ _ _ _ prefix)
-    (passed previous prior .(first ∷ rest) raw known cursor) absent = cursorNext token before prior first rest prefix cursor absent
-
-  cursorDecoded : ∀ token before full first rest raw → Prefix token before full →
-    Cursor token before full (first ∷ rest) → Store.lookupSaved before token (Plan.Step.id first) ≡ just raw →
-    Σ Allocation (λ value → Saved.read raw ≡ inj₂ value)
-  cursorDecoded token before .(first ∷ rest) first rest raw (waiting (missing ∷ _)) (here _) known
-    with trans (sym missing) known
-  ... | ()
-  cursorDecoded token before .(first ∷ rest) first rest raw (saved savedRaw value savedKnown decoded _) (here _) known
-    with trans (sym savedKnown) known
-  ... | refl = value , decoded
-  cursorDecoded token before .(previous ∷ prior) first rest raw (waiting (missing ∷ _))
-    (passed previous prior .(first ∷ rest) old original cursor) known with trans (sym missing) original
-  ... | ()
-  cursorDecoded token before .(previous ∷ prior) first rest raw (saved _ _ _ _ prefix)
-    (passed previous prior .(first ∷ rest) old original cursor) known = cursorDecoded token before prior first rest raw prefix cursor known
-
-  transportCursor : ∀ token before after full remaining →
-    (∀ key raw → Store.lookupSaved before token key ≡ just raw → Store.lookupSaved after token key ≡ just raw) →
-    Cursor token before full remaining → Cursor token after full remaining
-  transportCursor token before after full .full kept (here .full) = here full
-  transportCursor token before after .(first ∷ rest) remaining kept (passed first rest .remaining raw known cursor) =
-    passed first rest remaining raw (kept (Plan.Step.id first) raw known)
-      (transportCursor token before after rest remaining kept cursor)
-
-  advanceCursor : ∀ token before full first rest raw →
-    Cursor token before full (first ∷ rest) → Store.lookupSaved before token (Plan.Step.id first) ≡ just raw →
-    Cursor token before full rest
-  advanceCursor token before .(first ∷ rest) first rest raw (here _) known = passed first rest rest raw known (here rest)
-  advanceCursor token before .(previous ∷ prior) first rest raw
-    (passed previous prior .(first ∷ rest) originalValue original cursor) known =
-    passed previous prior rest originalValue original (advanceCursor token before prior first rest raw cursor known)
-
-  extend : ∀ token before steps (prefix : Prefix token before steps) first value raw →
-    Addressing steps → next prefix ≡ just first → Saved.read raw ≡ inj₂ value →
-    Σ (Prefix token (publication token (Plan.Step.id first) value raw before) steps)
-      (λ advanced → count advanced ≡ suc (count prefix))
-  extend token before [] (waiting []) first value raw empty () decoded
-  extend token before (first ∷ rest) (waiting (absent ∷ missing)) .first value raw
-    (more distinct addresses) refl decoded =
-      extendWaiting token before first rest value raw absent decoded distinct missing , refl
-  extend token before (previous ∷ rest) (saved original earlier known represented prefix) first value raw
-    (more distinct addresses) selected decoded
-    with extend token before rest prefix first value raw addresses selected decoded
-  ... | advanced , grew = saved original earlier
-      (publicationKeepsOldAnswer token (Plan.Step.id first) value raw before token (Plan.Step.id previous) original known)
-      represented advanced , cong suc grew
-
-  sameToken : ∀ queried → does (queried ≟ queried) ≡ true
-  sameToken zero = refl
-  sameToken (suc queried) = sameToken queried
-
-  publicationCount : ∀ token before first value raw →
-    Store.lookupSaved before token (Plan.Step.id first) ≡ nothing →
-    length (tokenRows token (publication token (Plan.Step.id first) value raw before)) ≡
-      suc (length (tokenRows token before))
-  publicationCount token before first value raw absent rewrite absent | sameToken token = refl
-
+  -- The handler's owner row and answer are one physical transaction. The
+  -- shared prefix law applies after the metadata-only owner insertion.
   extendComplete : ∀ token before steps (journal : Complete token before steps) first value raw →
     Addressing steps → next (Complete.prefix journal) ≡ just first → Saved.read raw ≡ inj₂ value →
-    Complete token (publication token (Plan.Step.id first) value raw before) steps
-  extendComplete token before steps (complete prefix exact) first value raw addresses selected decoded
-    with extend token before steps prefix first value raw addresses selected decoded
-  ... | advanced , grew = complete advanced (trans
-    (publicationCount token before first value raw (nextAbsent prefix first selected))
-    (trans (cong suc exact) (sym grew)))
+    Complete token (ownerPublication token (Controls.Plan.Step.id first) value raw before) steps
+  extendComplete token before steps journal first value raw addresses selected decoded
+    with Shared.relocateComplete token before
+      (record before { embeddingOwners = owner token value ∷ Store.World.embeddingOwners before }) steps refl journal
+  ... | relocated , unchanged = Shared.extendComplete token
+    (record before { embeddingOwners = owner token value ∷ Store.World.embeddingOwners before }) steps relocated first value raw
+    addresses (trans unchanged selected) decoded
 
 -- Actual source lookup is repeated under the writer lock at each fresh owner
 -- insertion. Its project is read from that same current source row.
@@ -692,6 +456,72 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
   ... | ()
   executeDone observed token candidateKey before raw confirmed | inj₂ (requested , _) | nothing | inj₂ journal | yes _ =
     admittedDone observed token candidateKey requested before journal raw confirmed
+
+  data OwnerPause (token : ℕ) (requested : Review.Request) (observed : AllocationObservation) (before : Store.World) :
+    Step.Result Validation.Fault → Set where
+    cancellationObserved : ∀ receipt → Store.lookupCancellation before token ≡ just receipt → OwnerPause token requested observed before (Step.cancelled receipt)
+    sourceRefused : ∀ fault → sourceProject requested before ≡ inj₁ fault → OwnerPause token requested observed before (Step.needsInput fault)
+    allocationUnavailable : ∀ fault → observed ≡ unavailable fault → OwnerPause token requested observed before (Step.needsInput fault)
+    projectRefused : ∀ receipt project → observed ≡ allocated receipt → sourceProject requested before ≡ inj₂ project →
+      Allocation.project (AllocationReceipt.value receipt) ≢ project → OwnerPause token requested observed before (Step.needsInput wrongProject)
+
+  data OwnerLegal (token : ℕ) (requested : Review.Request) (candidateKey : Text) (observed : AllocationObservation) (before : Store.World) :
+    Store.World → Step.Result Validation.Fault → Set where
+    readable : ∀ raw value after → Store.lookupSaved after token (Plan.Step.id (declared candidateKey)) ≡ just raw →
+      Saved.read raw ≡ inj₂ value → OwnerLegal token requested candidateKey observed before after (Step.done raw)
+    paused : ∀ reply → OwnerPause token requested observed before reply → OwnerLegal token requested candidateKey observed before before reply
+
+  freshLegal : ∀ observed token candidateKey requested before →
+    Store.lookupSaved before token (Plan.Step.id (declared candidateKey)) ≡ nothing →
+    OwnerLegal token requested candidateKey observed before (proj₁ (fresh observed token candidateKey requested before))
+      (proj₂ (fresh observed token candidateKey requested before))
+  freshLegal observed token candidateKey requested before absent with sourceProject requested before in source
+  ... | inj₁ fault = paused _ (sourceRefused fault source)
+  ... | inj₂ project with observed
+  ... | unavailable fault = paused _ (allocationUnavailable fault refl)
+  ... | allocated receipt with Allocation.project (AllocationReceipt.value receipt) ≟Text project
+  ... | no different = paused _ (projectRefused receipt project refl source different)
+  ... | yes _ = readable _ _ _
+    (publicationReadable token (Plan.Step.id (declared candidateKey)) (AllocationReceipt.value receipt)
+      (Enc.answer (AllocationReceipt.value receipt)) before absent) (AllocationReceipt.decoded receipt)
+
+  justStepSame : ∀ {first second : Plan.Step} → just first ≡ just second → first ≡ second
+  justStepSame refl = refl
+
+  admittedLegal : ∀ observed token candidateKey requested before journal rest →
+    J.Cursor token before (Final.ownerSteps (Input.Review.candidates (Review.Request.original requested))) (declared candidateKey ∷ rest) →
+    OwnerLegal token requested candidateKey observed before
+      (proj₁ (admittedOwner observed token candidateKey requested before journal))
+      (proj₂ (admittedOwner observed token candidateKey requested before journal))
+  admittedLegal observed token candidateKey requested before journal rest cursor
+    with Store.lookupSaved before token (Plan.Step.id (declared candidateKey)) in saved
+  ... | just raw with J.cursorDecoded token before _ (declared candidateKey) rest raw (J.Complete.prefix journal) cursor saved
+  ... | value , decoded = readable raw value before saved decoded
+  admittedLegal observed token candidateKey requested before journal rest cursor | nothing
+    with J.next (J.Complete.prefix journal) in selected
+  ... | nothing with trans (sym selected) (J.cursorNext token before _ _ rest (J.Complete.prefix journal) cursor saved)
+  ... | ()
+  admittedLegal observed token candidateKey requested before journal rest cursor | nothing | just next
+    with Plan.Step.id next ≟Text Plan.Step.id (declared candidateKey)
+  ... | no wrong = ⊥-elim (wrong (cong Plan.Step.id (justStepSame
+    (trans (sym selected) (J.cursorNext token before _ _ rest (J.Complete.prefix journal) cursor saved)))))
+  ... | yes _ = freshLegal observed token candidateKey requested before saved
+
+  executeLegal : ∀ observed token candidateKey requested time before →
+    Final.original token (Step.registration before) ≡ inj₂ (requested , time) →
+    J.Complete token before (Final.ownerSteps (Input.Review.candidates (Review.Request.original requested))) →
+    Addressing (Final.ownerSteps (Input.Review.candidates (Review.Request.original requested))) →
+    (rest : List Plan.Step) → J.Cursor token before (Final.ownerSteps (Input.Review.candidates (Review.Request.original requested))) (declared candidateKey ∷ rest) →
+    OwnerLegal token requested candidateKey observed before (proj₁ (execute observed token candidateKey before))
+      (proj₂ (execute observed token candidateKey before))
+  executeLegal observed token candidateKey requested time before original initial addresses rest cursor rewrite original
+    with Store.lookupCancellation before token in cancellation
+  ... | just receipt = paused _ (cancellationObserved receipt cancellation)
+  ... | nothing with J.check token before (Final.ownerSteps (Input.Review.candidates (Review.Request.original requested))) in checked
+  ... | inj₁ fault = ⊥-elim (J.checkCannotFail token before _ initial fault checked)
+  ... | inj₂ journal with addressing? (Final.ownerSteps (Input.Review.candidates (Review.Request.original requested)))
+  ... | no incorrect = ⊥-elim (incorrect addresses)
+  ... | yes _ = admittedLegal observed token candidateKey requested before journal rest cursor
 
   data Recorded (token : ℕ) (before : Store.World) : List (Text × Store.EmbeddingOwnerRow) → Set where
     noOwners : Recorded token before []
