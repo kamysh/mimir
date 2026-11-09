@@ -65,6 +65,8 @@ import Mimir.RegisteredStoreAdmission
 import Mimir.BeliefDeletionRecovery
 import Mimir.DirectGraphRecovery
 import Mimir.PatternPublicationRecovery
+import Mimir.IndependentBeliefRecovery
+import Mimir.IndependentPublicationRecovery
 import Mimir.ExperienceSourceIntent
 import Mimir.ExperienceSourceRecovery
 import Mimir.DecayRecovery

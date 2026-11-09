@@ -1,6 +1,7 @@
 {-# OPTIONS --safe #-}
--- Independent publication owes every required component and the resulting
--- posterior. Provider observations are receipts, never caller assertions.
+-- Independent publication requires its embedding and explicit source record.
+-- Source references do not alter probabilities. Provider observations are
+-- receipts, never caller assertions.
 module Mimir.IndependentBeliefRecovery where
 
 open import Data.Bool using (Bool; true; false; _∧_; _∨_; not)
@@ -50,6 +51,7 @@ record Request : Set where
     project : Maybe Text
     memory : Memory.Memory
     provenance : Origin.Provenance
+    grounding : List Embedding.Citation
 
 -- This value is returned by PostgreSQL allocation/readback. It is not an
 -- identifier or timestamp selected by an MCP caller.
@@ -107,115 +109,65 @@ module Owner (format : Encoding.Formatting) where
 module Business (format : Encoding.Formatting)
   (databaseSum : List Float → Float) (calculator : P.Calculator) where
   module Encode = Encoding.Encode format
-  module G = Ground.Business databaseSum calculator
-  module N = Inference.NumericalOutcome databaseSum
 
   data Diagnostic : Set where
     requestFault : Validation.Fault → Diagnostic
     preparation : Embedding.Correction.Claim → Diagnostic
-    numerical : G.Diagnostic → Diagnostic
 
   Outcome = Diagnostic ⊎ (Store.World × Wire.Value)
 
   revalidation : Diagnostic
   revalidation = preparation (Embedding.preparationDecision Embedding.Correction.arguments
-    (Validation.key "content" ∷ [])
-    (toList "Publication no longer has its original owner, complete vector and unchanged indexed support. Read the original operation outcome and the supporting document before deciding how to proceed. No belief was stored."))
+    (Validation.key "grounding" ∷ [])
+    (toList "Publication requires the original owner, complete embedding and unchanged explicitly cited indexed passages. Read the original outcome and sources, then open the user dialog before changing the request. No belief was stored."))
 
-  updated : ℤ → P.State → Graph.BeliefValues → Graph.BeliefValues
-  updated publicationTime changes belief with P.lookup (Graph.BeliefValues.identity belief) changes
-  ... | nothing = belief
-  ... | just counts = Evidence.accounted publicationTime (Evidence.updated belief counts)
+  paired : ℤ → Graph.BeliefValues → Maybe Origin.Provenance → Embedding.Prepared → Store.World → Store.World
+  paired publicationTime = Embedding.Atomic.paired 0 calculator publicationTime
 
-  module Selected (publicationTime : ℤ) (belief : Graph.BeliefValues) (selected : N.Context) where
-    open N.Context selected
-    module A = P.Assess seed external edges targets
+  complete : Graph.BeliefValues → Embedding.Prepared → Store.World → Bool
+  complete belief value before with Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs before)
+  ... | just _ = false
+  ... | nothing = Embedding.preparationCurrent belief (Embedding.supports value) before ∧
+    Embedding.usableVector (Embedding.Prepared.vector value)
 
-    Goal : Store.World → Outcome → Set
-    Goal before (inj₁ (numerical diagnostic)) = G.Selected.DiagnosticGoal publicationTime selected diagnostic
-    Goal before (inj₁ _) = ⊥
-    Goal before (inj₂ (after , reply)) = Σ P.State (λ counts →
-      P.ValidState counts ×
-      map proj₁ counts ≡ map P.Node.identity (N.ordered selected) ×
-      P.PosteriorGoal seed external edges (N.ordered selected) counts ×
-      after ≡ N.proposed publicationTime selected before counts ×
-      reply ≡ Encode.belief (updated publicationTime (N.writes selected counts) belief))
+  -- Native readback derives its displayed probability/confidence from the
+  -- unchanged stored counts. This reuses existing application arithmetic;
+  -- no approximation, comparison threshold or formatter is introduced.
+  readback : Graph.BeliefValues → Graph.BeliefValues
+  readback = Embedding.readback
 
-    report = calculator seed external edges targets
-
-    checked : ∀ before → Σ Outcome (Goal before)
-    checked before with A.check report in assessed
-    ... | A.rejected = inj₁ (numerical (G.rejectedReport report)) , assessed
-    ... | A.repeated final visited seen incomplete runs =
-      inj₁ (numerical (G.repeated final visited)) , seen , incomplete , runs
-    ... | A.accepted counts valid shape complete =
-      inj₂ (N.proposed publicationTime selected before counts ,
-        Encode.belief (updated publicationTime (N.writes selected counts) belief)) ,
-      counts , valid , shape , complete , refl , refl
-
-    keepsJournal : ∀ before after reply → Goal before (inj₂ (after , reply)) →
-      Store.World.operations after ≡ Store.World.operations before
-    keepsJournal before after reply (counts , valid , shape , complete , framed , answered) =
-      G.Selected.publicationKeepsJournal publicationTime selected before after Ground.answer
-        (Numeric.project (N.writes selected counts) ,
-          (edges , Perm.↭-refl , counts , valid , shape , complete , framed , refl) , refl)
-
-  -- Pairing is a complete desired store change: the exact belief/provenance,
-  -- its complete vector, all validated support, and consumption of its owner.
-  paired : ℤ → Graph.BeliefValues → Origin.Provenance → Embedding.Prepared → Store.World → Store.World
-  paired publicationTime belief origin value = Embedding.Atomic.paired 0 calculator publicationTime belief (just origin) value
-
-  Goal : ℤ → Graph.BeliefValues → Origin.Provenance → Embedding.Prepared → Store.World → Outcome → Set
-  Goal publicationTime belief origin value before outcome
-    with Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs before)
-  ... | just _ = outcome ≡ inj₁ revalidation
-  ... | nothing with Embedding.ownsPreparation belief (Store.World.embeddingOwners before) ∧
-    Embedding.usableVector (Embedding.Prepared.vector value) ∧
-    Embedding.allSupportCurrent belief before (Embedding.supports value)
-  ... | false = outcome ≡ inj₁ revalidation
-  ... | true with N.prepare (N.recompute (Graph.BeliefValues.identity belief ∷ []))
-    (paired publicationTime belief origin value before)
-  ... | inj₁ issue = outcome ≡ inj₁ (numerical (G.preparation issue))
-  ... | inj₂ selected = Selected.Goal publicationTime belief selected
-    (paired publicationTime belief origin value before) outcome
+  -- This goal fixes the complete business state and original public result.
+  -- A source reference adds no GROUNDS weight and recomputes no posterior.
+  Goal : ℤ → Graph.BeliefValues → Maybe Origin.Provenance → Embedding.Prepared → Store.World → Outcome → Set
+  Goal publicationTime belief origin value before (inj₁ diagnostic) =
+    complete belief value before ≡ false × diagnostic ≡ revalidation
+  Goal publicationTime belief origin value before (inj₂ (after , reply)) =
+    complete belief value before ≡ true ×
+    after ≡ paired publicationTime belief origin value before × reply ≡ Encode.belief (readback belief)
 
   checked : ∀ publicationTime belief origin value before →
     Σ Outcome (Goal publicationTime belief origin value before)
-  checked publicationTime belief origin value before
-    with Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs before)
-  ... | just _ = inj₁ revalidation , refl
-  ... | nothing with Embedding.ownsPreparation belief (Store.World.embeddingOwners before) ∧
-    Embedding.usableVector (Embedding.Prepared.vector value) ∧
-    Embedding.allSupportCurrent belief before (Embedding.supports value)
-  ... | false = inj₁ revalidation , refl
-  ... | true with N.prepare (N.recompute (Graph.BeliefValues.identity belief ∷ []))
-    (paired publicationTime belief origin value before)
-  ... | inj₁ issue = inj₁ (numerical (G.preparation issue)) , refl
-  ... | inj₂ selected = Selected.checked publicationTime belief selected
-    (paired publicationTime belief origin value before)
+  checked publicationTime belief origin value before with complete belief value before in accepted
+  ... | false = inj₁ revalidation , accepted , refl
+  ... | true = inj₂ (paired publicationTime belief origin value before , Encode.belief (readback belief)) , accepted , refl , refl
 
   journalUnchanged : ∀ publicationTime belief origin value before after reply →
     proj₁ (checked publicationTime belief origin value before) ≡ inj₂ (after , reply) →
     Store.World.operations after ≡ Store.World.operations before
   journalUnchanged publicationTime belief origin value before after reply accepted
-    with Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs before)
-  ... | just _ with accepted
-  ... | ()
-  journalUnchanged publicationTime belief origin value before after reply accepted | nothing
-    with Embedding.ownsPreparation belief (Store.World.embeddingOwners before) ∧
-      Embedding.usableVector (Embedding.Prepared.vector value) ∧
-      Embedding.allSupportCurrent belief before (Embedding.supports value)
-  ... | false with accepted
-  ... | ()
-  journalUnchanged publicationTime belief origin value before after reply accepted | nothing | true
-    with N.prepare (N.recompute (Graph.BeliefValues.identity belief ∷ []))
-      (paired publicationTime belief origin value before)
-  ... | inj₁ issue with accepted
-  ... | ()
-  journalUnchanged publicationTime belief origin value before after reply accepted | nothing | true | inj₂ selected =
-    Selected.keepsJournal publicationTime belief selected (paired publicationTime belief origin value before) after reply
-      (subst (Selected.Goal publicationTime belief selected (paired publicationTime belief origin value before))
-        accepted (proj₂ (Selected.checked publicationTime belief selected (paired publicationTime belief origin value before))))
+    with subst (Goal publicationTime belief origin value before) accepted
+      (proj₂ (checked publicationTime belief origin value before))
+  ... | valid , refl , sameReply = frame publicationTime belief origin value before
+    where
+    frame : ∀ publicationTime belief origin value before →
+      Store.World.operations (paired publicationTime belief origin value before) ≡ Store.World.operations before
+    frame publicationTime belief nothing value before = refl
+    frame publicationTime belief (just origin) value before = refl
+
+  weightedEvidenceIsUnchanged : ∀ publicationTime belief origin value before →
+    Store.World.grounds (paired publicationTime belief origin value before) ≡ Store.World.grounds before
+  weightedEvidenceIsUnchanged publicationTime belief nothing value before = refl
+  weightedEvidenceIsUnchanged publicationTime belief (just origin) value before = refl
 
 ownerKey publicationKey : ℕ → Text
 ownerKey _ = toList "[\"store.reserve_belief_preparation\",null]"
@@ -254,11 +206,8 @@ module ProviderSettings where
   admitted : Wire.Value → Bool
   admitted = fields (toList "embeddings" ∷ []) λ view → provider (view (toList "embeddings"))
 
--- The allocator parameter is the actual successful PostgreSQL allocation
--- receipt. It is never a field of the agent request or an expected result.
-module OwnerPhase (format : Encoding.Formatting) (conversion : Conversion.Contract)
-  (databaseSum : List Float → Float) (calculator : P.Calculator)
-  (allocation : ℕ → Request → Allocation) where
+module Binding (format : Encoding.Formatting) (conversion : Conversion.Contract)
+  (databaseSum : List Float → Float) (calculator : P.Calculator) where
   module O = Owner format
   module B = Business format databaseSum calculator
   module D = Public.Decode conversion
@@ -272,12 +221,22 @@ module OwnerPhase (format : Encoding.Formatting) (conversion : Conversion.Contra
   mismatch = Validation.fault (Validation.key "operation_token" ∷ []) Validation.wrongIdentity
     "Read the original belief request and its server-selected embedding settings. Retain the original token and plan; do not invent a provider, identity or replacement request."
 
-  decode : Wire.Value → Validation.Fault ⊎ Request
-  decode raw with D.readTool Tools.insertBelief raw
+  decodePublic : Wire.Value → Validation.Fault ⊎ Request
+  decodePublic raw with D.readTool Tools.insertBelief raw
   ... | inj₁ fault = inj₁ fault
-  ... | inj₂ (Public.mutation (Mutation.belief content probability confidence project memory (just origin))) =
-    inj₂ (request content probability confidence project memory origin)
+  ... | inj₂ (Public.mutation (Mutation.belief content probability confidence project memory (just origin) cited)) =
+    inj₂ (request content probability confidence project memory origin cited)
   ... | inj₂ _ = inj₁ mismatch
+
+  -- Stored declarations can predate the citation field. Decoding their
+  -- absent field as [] preserves completed replay, while new publication's
+  -- preparation still refuses empty citations. Public admission remains
+  -- strict and requires the field; no stored declaration is rewritten.
+  decode : Wire.Value → Validation.Fault ⊎ Request
+  decode raw@(Wire.object fields) with Wire.Object.normalize fields (toList "grounding")
+  ... | nothing = decodePublic (Wire.object ((toList "grounding" , Wire.array []) ∷ fields))
+  ... | just _ = decodePublic raw
+  decode raw = decodePublic raw
 
   original : ℕ → Step.Registration → Validation.Fault ⊎ Request
   original token registration with Admission.resolvePair descriptor token registration
@@ -291,11 +250,22 @@ module OwnerPhase (format : Encoding.Formatting) (conversion : Conversion.Contra
   ... | inj₁ fault = just (B.requestFault fault)
   ... | inj₂ _ = nothing
 
+-- Allocation is the metadata in this particular PostgreSQL reply. Admission
+-- is independent of that observation and cannot select a new identity.
+module OwnerPhase (format : Encoding.Formatting) (conversion : Conversion.Contract)
+  (databaseSum : List Float → Float) (calculator : P.Calculator)
+  (allocation : Allocation) where
+  open Binding format conversion databaseSum calculator public
+
   decide : ℕ → Store.World → B.Outcome
   decide token before with original token (Step.registration before)
   ... | inj₁ fault = inj₁ (B.requestFault fault)
   ... | inj₂ requested = inj₂
-    (O.intended token requested (allocation token requested) before , O.answer (allocation token requested))
+    (O.intended token requested allocation before , O.answer allocation)
+
+  decidesBound : ∀ token before requested → original token (Step.registration before) ≡ inj₂ requested →
+    decide token before ≡ inj₂ (O.intended token requested allocation before , O.answer allocation)
+  decidesBound token before requested bound rewrite bound = refl
 
   keepsJournal : ∀ token before changed reply → decide token before ≡ inj₂ (changed , reply) →
     Store.World.operations changed ≡ Store.World.operations before
@@ -312,9 +282,9 @@ module OwnerPhase (format : Encoding.Formatting) (conversion : Conversion.Contra
   FreshGoal token before after reply with original token (Step.registration before)
   ... | inj₁ fault = after ≡ before × reply ≡ Step.needsInput (B.requestFault fault)
   ... | inj₂ requested =
-    after ≡ Saved.Base.firstPublication token (O.intended token requested (allocation token requested) before)
-      (O.answer (allocation token requested)) ×
-    reply ≡ Step.done (O.answer (allocation token requested))
+    after ≡ Saved.Base.firstPublication token (O.intended token requested allocation before)
+      (O.answer allocation) ×
+    reply ≡ Step.done (O.answer allocation)
 
   freshMeaning : ∀ token before → FreshGoal token before
     (proj₁ (Saved.fresh token before)) (proj₂ (Saved.fresh token before))
@@ -354,47 +324,3 @@ module OwnerPhase (format : Encoding.Formatting) (conversion : Conversion.Contra
   ... | nothing | just _ | nothing = refl , refl
   ... | nothing | just _ | just _ = refl , refl
   ... | nothing | nothing | nothing = freshMeaning token before
-
-  module Atomic = Step.AtomicStep ℕ B.Diagnostic Saved.execute Saved.stable Saved.expectedPhysical
-  module Certified = Atomic.Certified Goal meaning
-  ownerPhase = Certified.operation
-
--- A retry may obtain another actual packet before publication. Once one
--- packet was committed, every later preparation choice is irrelevant: the
--- complete stored world and original answer are retained before preparation.
-module PacketReplay (Input Diagnostic : Set)
-  (token : Input → ℕ) (key : Input → Text)
-  (distinct : ∀ input → key input ≡ Step.resultKey → ⊥)
-  (admit : Input → Step.Registration → Maybe Diagnostic)
-  (firstAttempt laterAttempt : Input → Store.World → Diagnostic ⊎ (Store.World × Wire.Value))
-  (firstJournal : ∀ input before after reply → firstAttempt input before ≡ inj₂ (after , reply) →
-    Store.World.operations after ≡ Store.World.operations before)
-  (laterJournal : ∀ input before after reply → laterAttempt input before ≡ inj₂ (after , reply) →
-    Store.World.operations after ≡ Store.World.operations before) where
-
-  module First = Step.Admitted Input Diagnostic token key distinct firstAttempt firstJournal admit
-  module Later = Step.Admitted Input Diagnostic token key distinct laterAttempt laterJournal admit
-
-  knownReplay : ∀ input before saved final →
-    admit input (Step.registration before) ≡ nothing →
-    Store.lookupCancellation before (token input) ≡ nothing →
-    Store.lookupSaved before (token input) (key input) ≡ just saved →
-    Store.lookupSaved before (token input) Step.resultKey ≡ just final →
-    Later.execute input before ≡ (before , Step.done saved)
-  knownReplay input before saved final admitted active step result
-    rewrite admitted | active | step | result = refl
-
-  publishedPacketIsFixed : ∀ input before after reply →
-    admit input (Step.registration before) ≡ nothing →
-    Store.lookupCancellation before (token input) ≡ nothing →
-    Store.lookupSaved before (token input) (key input) ≡ nothing →
-    Store.lookupSaved before (token input) Step.resultKey ≡ nothing →
-    firstAttempt input before ≡ inj₂ (after , reply) →
-    Later.execute input (First.Kernel.publication input after reply) ≡
-      (First.Kernel.publication input after reply , Step.done reply)
-  publishedPacketIsFixed input before after reply admitted active step result accepted =
-    knownReplay input (First.Kernel.publication input after reply) reply reply
-      (trans (cong (admit input) (First.Kernel.publicationKeepsRegistration input before after reply accepted)) admitted)
-      (trans (First.Kernel.publicationKeepsCancellation input before after reply accepted) active)
-      (First.Kernel.publishedStepReadable input before after reply accepted step)
-      (First.Kernel.publishedResultReadable input before after reply accepted result)

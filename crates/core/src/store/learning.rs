@@ -640,7 +640,13 @@ impl AgeStore {
                             && value.belief.project.as_deref() == Some(project),
                         "prepared candidate declaration or project changed"
                     );
-                    if *grounding != value.support.iter().map(|passage|passage.citation.clone()).collect::<Vec<_>>() {
+                    if *grounding
+                        != value
+                            .support
+                            .iter()
+                            .map(|passage| passage.citation.clone())
+                            .collect::<Vec<_>>()
+                    {
                         return Err(crate::preparation::PreparationRequired::new(
                             crate::interaction::Location::Arguments,
                             vec![crate::validation::Segment::Key("review".into()),crate::validation::Segment::Key("candidates".into()),crate::validation::Segment::Index(index),crate::validation::Segment::Key("grounding".into())],

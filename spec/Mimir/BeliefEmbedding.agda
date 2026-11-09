@@ -34,6 +34,7 @@ import Mimir.GraphNumerics as Numeric
 import Mimir.GraphWrites as Writes
 import Mimir.GroundingPublication as Publication
 import Mimir.PosteriorComputation as Posterior
+import Mimir.EvidenceValidity as Evidence
 import Mimir.LearningTransaction as Transaction
 open import Mimir.SourceReview using (_≟Text_)
 open import Relation.Nullary using (does)
@@ -139,6 +140,9 @@ nonzeroVector (value ∷ rest) = (value <ᵇ 0.0) ∨ (0.0 <ᵇ value) ∨ nonze
 
 usableVector : Store.Vector → Bool
 usableVector vector = finiteVector vector ∧ nonzeroVector vector
+
+readback : G.BeliefValues → G.BeliefValues
+readback belief = Evidence.updated belief (Posterior.beta (G.BeliefValues.alpha belief) (G.BeliefValues.beta belief))
 
 sameChunk : Documents.Chunk → Documents.Chunk → Bool
 sameChunk first second =
@@ -277,7 +281,7 @@ module Atomic (database : ℕ) (calculator : Posterior.Calculator) (publicationT
   ... | nothing with ownsPreparation belief (Store.World.embeddingOwners before) ∧
     usableVector (Prepared.vector value) ∧ allSupportCurrent belief before (supports value)
   ...   | false = T.reject Publication.missingEndpoint
-  ...   | true = T.replace (paired belief origin value before) belief
+  ...   | true = T.replace (paired belief origin value before) (readback belief)
 
   module Run (belief : G.BeliefValues) (origin : Maybe Origin.Provenance) (value : Prepared) where
     module Execution = T.Plan (intended belief origin value)

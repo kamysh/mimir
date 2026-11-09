@@ -36,6 +36,8 @@ For each experience:
    establish support. Mimir must prepare the embedding and validate the citation
    before committing any part of the review. Missing or unclear support requires
    the returned user dialog, never an invented citation or a silent omission.
+   Citations record sources without changing probability; do not add a citation
+   weight. The review's separate assessments retain their existing meaning.
 5. Submit `review_experience` with the exact pinned `experience_revision` and
    `expected_review_revision`. Its feedback, graph links, and
    `superseded_beliefs` replace the previous review's entire contribution. Do

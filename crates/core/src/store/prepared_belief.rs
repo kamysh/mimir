@@ -61,6 +61,13 @@ enum ProviderIdentity {
 }
 
 fn original_arguments(request: &OperationBindingRequest) -> Result<BeliefArguments> {
+    decode_original_arguments(request).map_err(|error| PreparationRequired::bound_request(
+        Code::MalformedInput,
+        format!("The original bound belief request cannot be prepared: {error:#}. No belief was stored.")
+    ).into())
+}
+
+fn decode_original_arguments(request: &OperationBindingRequest) -> Result<BeliefArguments> {
     anyhow::ensure!(request.operation() == "insert_belief",
         "Use the original insert_belief operation; read its saved binding and outcome before continuing");
     let settings: ProviderSettings = mimir_json::decode_ref(request.settings())
@@ -145,7 +152,7 @@ impl AgeStore {
         if citations.is_empty() {
             return Err(PreparationRequired::new(Location::Arguments,
                 vec![Segment::Key("grounding".into())], Code::MissingEvidence,
-                "Supply at least one indexed-document citation with chunk_id, document_path, an exact quotation and an explanation of why it supports the belief. If no clear support is available, open the user dialog before publication. No belief was stored.".into()).into());
+                "Supply at least one citation to an indexed document, with chunk_id, document_path, an exact quotation and an explanation of why it supports the belief. If no clear support is available, open the user dialog before publication. No belief was stored.".into()).into());
         }
         for (index, citation) in citations.iter().enumerate() {
             citation.validate_fields(index)?;
@@ -249,7 +256,7 @@ impl AgeStore {
         let token = plan.operation_token();
         match self.read_operation_outcome(token,Some(first.expected())).await? {
             OperationOutcome::Completed { outcome,.. }=>return Ok(BeliefPublicationState::Resolved(
-                StepDecision::Done(StepReceipt { operation_token:token,step:final_step.id().to_owned(),reply:outcome.reply().clone() }))),
+                StepDecision::Done(StepReceipt { operation_token:token,step:final_step.id().to_owned(),reply:mimir_json::Document::new(mimir_json::clone_value(outcome.reply())) }))),
             OperationOutcome::Cancelled { cancellation,.. }=>return Ok(BeliefPublicationState::Resolved(StepDecision::Cancelled(cancellation))),
             OperationOutcome::ChangedRequest(binding)=>return Ok(BeliefPublicationState::Resolved(StepDecision::ChangedRequest(binding))),
             OperationOutcome::NeedsRecovery { reason,.. }=>return Ok(BeliefPublicationState::Resolved(StepDecision::NeedsRecovery(reason))),
@@ -298,20 +305,39 @@ impl AgeStore {
         Ok(())
     }
 
-    pub(crate) async fn preparation_is_current(&self, belief: &Belief, support: &[ValidatedSupport]) -> Result<bool> {
+    pub(crate) async fn preparation_is_current(
+        &self,
+        belief: &Belief,
+        support: &[ValidatedSupport],
+    ) -> Result<bool> {
         let mut client = self.client.lock().await;
         let tx = snapshot_transaction(&mut client).await?;
         let owner:bool = tx.query_one(
             "SELECT EXISTS(SELECT 1 FROM mimir_embedding_owners WHERE owner_token=$1 AND project IS NOT DISTINCT FROM $2)",
             &[&belief.id, &belief.project],
         ).await?.get(0);
-        if !owner || support.is_empty() { return Ok(false); }
+        if !owner || support.is_empty() {
+            return Ok(false);
+        }
         for passage in support {
-            if self.get_chunk_by_id_on(tx.client(), passage.chunk.id).await?.as_ref() != Some(&passage.chunk) {
+            if self
+                .get_chunk_by_id_on(tx.client(), passage.chunk.id)
+                .await?
+                .as_ref()
+                != Some(&passage.chunk)
+            {
                 return Ok(false);
             }
-            let indexed:bool=tx.query_one("SELECT EXISTS(SELECT 1 FROM public.chunk_embeddings WHERE chunk_id=$1)", &[&passage.chunk.id]).await?.get(0);
-            if !indexed { return Ok(false); }
+            let indexed: bool = tx
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM public.chunk_embeddings WHERE chunk_id=$1)",
+                    &[&passage.chunk.id],
+                )
+                .await?
+                .get(0);
+            if !indexed {
+                return Ok(false);
+            }
         }
         tx.commit().await?;
         Ok(true)
@@ -374,7 +400,9 @@ impl AgeStore {
             owner.lock_preparation_operations(tx, &[prepared.belief.id]).await?;
             tx.query("SELECT pg_advisory_xact_lock(671942183)", &[]).await?;
             owner.insert_prepared_belief_on(tx, &prepared).await?;
-            let reply = mimir_json::to_value(&prepared.belief)?;
+            let published = owner.get_belief_on(tx.client(), prepared.belief.id).await?
+                .context("The complete published belief must be readable before saving its original answer")?;
+            let reply = mimir_json::to_value(&published)?;
             Ok((reply.clone(), reply))
         })).await
     }

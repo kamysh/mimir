@@ -111,6 +111,17 @@ pub struct PreparationRequired {
 }
 
 impl PreparationRequired {
+    pub(crate) fn bound_request(code: Code, message: String) -> Self {
+        let item=CorrectionItem::new(Location::Request,
+            Fault {path:vec![Segment::Key("operation_token".into())],code,message},
+            "The original immutable belief request, with its declared fields and server-selected settings.".into(),
+            "Read this token's saved binding and outcome. If its arguments are wrong, ask the user to explicitly cancel unfinished work before reserving a corrected request. Do not rewrite a bound request, silently cancel it, or invent a replacement token.".into())
+            .expect("bound-request guidance names the original record and the authorized correction path");
+        Self {
+            correction: NeedsInput::new(item, vec![]).expect("one explained bound-request issue"),
+        }
+    }
+
     pub(crate) fn backfill(code: Code, message: String) -> Self {
         let item=CorrectionItem::new(Location::Configuration,
             Fault {path:vec![Segment::Key("embeddings".into())],code,message},

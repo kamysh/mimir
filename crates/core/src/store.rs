@@ -1981,7 +1981,11 @@ $$) AS (ok ag_catalog.agtype)"#
             .await?;
         // AGE graph writes bypass PostgreSQL row triggers. This actual writer
         // wakes each owner to recheck its own cited indexed passages.
-        tx.query("SELECT pg_notify('mimir_embedding_owners_changed', '')", &[]).await?;
+        tx.query(
+            "SELECT pg_notify('mimir_embedding_owners_changed', '')",
+            &[],
+        )
+        .await?;
         Ok(())
     }
 
@@ -2009,7 +2013,12 @@ $$) AS (ok ag_catalog.agtype)"#
                 &[&ids],
             )
             .await?;
-        client.query("SELECT pg_notify('mimir_embedding_owners_changed', '')", &[]).await?;
+        client
+            .query(
+                "SELECT pg_notify('mimir_embedding_owners_changed', '')",
+                &[],
+            )
+            .await?;
         Ok(())
     }
 

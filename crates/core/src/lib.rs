@@ -381,7 +381,10 @@ impl MimirService {
             .await
             .map_err(|error| stopped(format!("cannot observe ownership changes: {error:#}")))?;
         if !self.store.preparation_is_current(belief, support).await? {
-            return Err(stopped("publication ownership was revoked or a cited indexed passage changed".into()).into());
+            return Err(stopped(
+                "publication ownership was revoked or a cited indexed passage changed".into(),
+            )
+            .into());
         }
         let job = embedder.embed(std::slice::from_ref(&belief.content));
         tokio::pin!(job);

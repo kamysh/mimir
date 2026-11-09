@@ -12,7 +12,7 @@
       "source": "crates/mcp/src/main.rs:408",
       "step": 3,
       "group": "creation",
-      "interface_evidence": "provenance, content, probability, confidence required; memory_type defaults; optional project",
+      "interface_evidence": "Required complete content, probability, confidence, independent provenance and indexed-document citations (chunk_id, document_path, exact quotation and support explanation); optional project and memory_type.",
       "existing_modules": [
         "spec/Mimir/CandidateGraph.agda",
         "spec/Mimir/CandidateRegistry.agda",
@@ -34,9 +34,12 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/IndependentBeliefRecovery.agda",
+        "spec/Mimir/IndependentPublicationRecovery.agda",
+        "spec/Mimir/RecoverableStoreSequence.agda"
       ],
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "remaining": "Mandatory public dispatcher and token-interface integration remain #74/#76 and #85–#86. The concrete operation fixes the complete source-only publication and original result, with PostgreSQL allocation and observed preparation receipts; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/explicit indexed support success and failure sequences."
     },
     {
@@ -67,7 +70,7 @@
         "spec/Mimir/RecoverableStoreStep.agda",
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered storage deletion has a whole-world posterior goal and isolated database checks; this is not a compiled Rust refinement theorem.",
+      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85–#86. Registered storage deletion has a whole-world posterior goal and isolated database checks; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
     },
     {
@@ -158,7 +161,7 @@
         "spec/Mimir/RecoverableStoreStep.agda",
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
+      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85–#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/explicit indexed support success and failure sequences."
     },
     {
@@ -191,7 +194,7 @@
         "spec/Mimir/RecoverableStoreStep.agda",
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
+      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85–#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
     },
     {
@@ -224,7 +227,7 @@
         "spec/Mimir/RecoverableStoreStep.agda",
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
+      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85–#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
     },
     {
@@ -258,7 +261,7 @@
         "spec/Mimir/RegisteredStoreAdmission.agda",
         "spec/Mimir/RecoverableStoreSequence.agda"
       ],
-      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85\u2013#86. The concrete registered operation keeps the independently committed defeat prefix, resumes complete propagation, and saves completion only with all posterior updates; Rust correspondence is tested, not an extracted refinement theorem.",
+      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85–#86. The concrete registered operation keeps the independently committed defeat prefix, resumes complete propagation, and saves completion only with all posterior updates; Rust correspondence is tested, not an extracted refinement theorem.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
     },
     {
@@ -291,7 +294,7 @@
         "spec/Mimir/RecoverableStoreStep.agda",
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
+      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85–#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
     },
     {
@@ -439,7 +442,7 @@
         "spec/Mimir/RegisteredStoreAdmission.agda",
         "spec/Mimir/EvidenceValidity.agda"
       ],
-      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered storage decay has an original-time whole-world goal and isolated database checks; this is not a compiled Rust refinement theorem.",
+      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85–#86. Registered storage decay has an original-time whole-world goal and isolated database checks; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
     },
     {
@@ -594,7 +597,7 @@
         "spec/Mimir/RecoverableStoreStep.agda",
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85\u2013#86. The concrete registered operation specifies complete numerical consequences and the actual original changed-probability list, with same-token readback and replay. Rust correspondence is tested, not an extracted refinement theorem.",
+      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85–#86. The concrete registered operation specifies complete numerical consequences and the actual original changed-probability list, with same-token readback and replay. Rust correspondence is tested, not an extracted refinement theorem.",
       "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
     },
     {
@@ -721,7 +724,7 @@
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
       "baseline_gap": "Compose path read/chunk/embed/paired replacement without automatic support assertions protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
-      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85\u2013#86, including server-owned path preparation. The concrete registered operation removes chunks/vectors/evidence with complete surviving-belief updates and original saved count, retaining unrelated data and replaying without clearing a later replacement. Rust correspondence is tested rather than extracted."
+      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85–#86, including server-owned path preparation. The concrete registered operation removes chunks/vectors/evidence with complete surviving-belief updates and original saved count, retaining unrelated data and replaying without clearing a later replacement. Rust correspondence is tested rather than extracted."
     },
     {
       "name": "get_learning_review",
@@ -1820,7 +1823,7 @@
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
     },
     {
-      "name": "Embedding backend and automatic grounding",
+      "name": "Embedding backend and explicit source validation",
       "step": 5,
       "existing_modules": [
         "spec/Mimir/EmbeddingBatch.agda",
@@ -1919,7 +1922,7 @@
       ]
     },
     {
-      "name": "physical vector writes, automatic grounding and reembedding",
+      "name": "physical vector writes, source references and reembedding",
       "modules": [
         "spec/Mimir/BeliefEmbeddingStorage.agda",
         "spec/Mimir/EmbeddingService.agda",

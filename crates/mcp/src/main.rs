@@ -65,6 +65,7 @@ impl Serialize for AgentJson<'_> {
                     "created_at",
                     "last_activated_at",
                     "evidence",
+                    "sources",
                 ];
                 const POSTERIOR_FIELDS: &[&str] = &["alpha", "beta", "alpha0", "beta0"];
                 let is_belief = fields.contains_key("content")
@@ -108,7 +109,7 @@ fn tools_list() -> Value {
     let mut tools = json!([
         {
             "name": "insert_belief",
-            "description": "Store a belief from an explicit user instruction or document independent of a queued incident. Provenance is required. Before storing anything, Mimir requires a complete embedding and a supporting passage from an indexed, project-compatible document. If either prerequisite is unavailable, the normal result is needs_input: open a dialog with the user using its explanation and suggested correction. Do not invent evidence, shorten the source, or change the model automatically. Incident-derived conclusions must use record_experience and review_experience candidates; a standalone prior plus review feedback would count one incident twice.",
+            "description": "Store a belief from an explicit user instruction or document independent of a queued incident. Provenance is required. Supply grounding citations with the actual indexed chunk ID, exact document path and quotation, and your explanation of support. Before storing anything, Mimir requires a complete embedding and validates these citations against project-compatible indexed documents. Citations record sources without changing probability; similarity only ranks suggestions, and citation weights are not accepted. If either prerequisite is unavailable, the normal result is needs_input: open a dialog with the user using its explanation and suggested correction. Do not invent evidence, shorten the source, or change the model automatically. Incident-derived conclusions must use record_experience and review_experience candidates; a standalone prior plus review feedback would count one incident twice.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,

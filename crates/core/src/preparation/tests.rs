@@ -23,41 +23,82 @@ async fn changing_a_cited_document_stops_the_owned_embedding_before_publication(
     use tokio::sync::oneshot;
     struct Stop(Option<oneshot::Sender<()>>);
     impl Drop for Stop {
-        fn drop(&mut self) { if let Some(sender)=self.0.take() { let _=sender.send(()); } }
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
     }
-    struct Blocked { started:Mutex<Option<oneshot::Sender<()>>>, dropped:Mutex<Option<oneshot::Sender<()>>> }
+    struct Blocked {
+        started: Mutex<Option<oneshot::Sender<()>>>,
+        dropped: Mutex<Option<oneshot::Sender<()>>>,
+    }
     impl EmbeddingProvider for Blocked {
         fn embed<'a>(&'a self, _: &'a [String], _: EmbeddingCancellation) -> EmbedFuture<'a> {
             Box::pin(async move {
-                let _stopped=Stop(self.dropped.lock().unwrap().take());
-                self.started.lock().unwrap().take().unwrap().send(()).unwrap();
+                let _stopped = Stop(self.dropped.lock().unwrap().take());
+                self.started
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .unwrap();
                 std::future::pending().await
             })
         }
     }
-    for replace in [false,true] {
-        let (mut owned, project)=service(None).await?;
-        let chunk=passage(&owned,Some(&project),0,"source revoked during computation").await?;
-        let cited=citation(&chunk);
-        let (started,begin)=oneshot::channel();let (dropped,stopped)=oneshot::channel();
-        owned.embeddings=Some(OwnedEmbeddingBackend::for_test(Box::new(Blocked {
-            started:Mutex::new(Some(started)),dropped:Mutex::new(Some(dropped))
+    for replace in [false, true] {
+        let (mut owned, project) = service(None).await?;
+        let chunk = passage(
+            &owned,
+            Some(&project),
+            0,
+            "source revoked during computation",
+        )
+        .await?;
+        let cited = citation(&chunk);
+        let (started, begin) = oneshot::channel();
+        let (dropped, stopped) = oneshot::channel();
+        owned.embeddings = Some(OwnedEmbeddingBackend::for_test(Box::new(Blocked {
+            started: Mutex::new(Some(started)),
+            dropped: Mutex::new(Some(dropped)),
         })));
-        let request_project=project.clone();
-        let job=tokio::spawn(async move {
-            owned.prepare_belief("source-bound computation",0.7,0.5,Some(&request_project),MemoryType::Fact,None,&[cited]).await
+        let request_project = project.clone();
+        let job = tokio::spawn(async move {
+            owned
+                .prepare_belief(
+                    "source-bound computation",
+                    0.7,
+                    0.5,
+                    Some(&request_project),
+                    MemoryType::Fact,
+                    None,
+                    &[cited],
+                )
+                .await
         });
         begin.await?;
-        let (writer,_)=service(None).await?;
+        let (writer, _) = service(None).await?;
         if replace {
-            let replacement=DocumentChunk { content:"The original supporting passage was replaced.".into(),..chunk.clone() };
-            writer.store.replace_document(&chunk.document_path,&[replacement],&[vector(1)]).await?;
+            let replacement = DocumentChunk {
+                content: "The original supporting passage was replaced.".into(),
+                ..chunk.clone()
+            };
+            writer
+                .store
+                .replace_document(&chunk.document_path, &[replacement], &[vector(1)])
+                .await?;
         } else {
             writer.clear_document(&chunk.document_path).await?;
         }
         stopped.await?;
-        let error=job.await?.unwrap_err();
-        assert!(error.downcast_ref::<PreparationRequired>().unwrap().to_string().contains("cited indexed passage changed"));
+        let error = job.await?.unwrap_err();
+        assert!(error
+            .downcast_ref::<PreparationRequired>()
+            .unwrap()
+            .to_string()
+            .contains("cited indexed passage changed"));
         assert!(writer.list_beliefs(Some(&project)).await?.is_empty());
         writer.delete_project(&project).await?;
     }
@@ -383,6 +424,63 @@ async fn belief_operation_plan(
 }
 
 #[tokio::test]
+async fn malformed_bound_belief_requests_explain_recovery_without_reserving_an_owner() -> Result<()>
+{
+    let (service, project) = service(None).await?;
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    let key: Uuid = client
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let token = service
+        .reserve_operation(&key.to_string())
+        .await?
+        .operation_token;
+    let request = crate::store::OperationBindingRequest::new(
+        "insert_belief".into(),
+        json!({"content":"incomplete immutable request","project":project}),
+        service.embedding_operation_settings(),
+    )?;
+    service.bind_operation_request(token, &request).await?;
+    let crate::store::PlanDecision::Ready(plan) = service
+        .prepare_operation(token, &request, |_, _| Box::pin(async { Ok(vec![]) }))
+        .await?
+    else {
+        anyhow::bail!("original plan was not retained")
+    };
+    let error = service.publish_belief_operation(&plan).await.unwrap_err();
+    let required = error.downcast_ref::<PreparationRequired>().unwrap();
+    let issue = &required.correction().issues()[0];
+    assert_eq!(
+        issue.fault().path,
+        vec![crate::validation::Segment::Key("operation_token".into())]
+    );
+    assert!(issue.fault().message.contains("original"));
+    assert!(issue.suggested_correction().contains("cancel"));
+    assert!(issue.suggested_correction().contains("user"));
+    assert!(service
+        .read_operation_step(token, plan.steps()[0].id())
+        .await?
+        .is_none());
+    assert!(service
+        .read_operation_step(token, "@operation-result")
+        .await?
+        .is_none());
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM mimir_embedding_owners WHERE operation_token=$1",
+                &[&token]
+            )
+            .await?
+            .get::<_, i64>(0),
+        0
+    );
+    assert!(service.list_beliefs(Some(&project)).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn registered_citation_publication_replays_original_answer_without_embedding() -> Result<()> {
     let (mut service, project) = service(Some(Ok(vec![vector(2)]))).await?;
     let source = passage(&service, Some(&project), 29, "source-only exact citation").await?;
@@ -392,7 +490,10 @@ async fn registered_citation_publication_replays_original_answer_without_embeddi
         anyhow::bail!("complete publication did not return its saved result")
     };
     let belief: crate::graph::Belief = mimir_json::from_value(first.reply.clone())?;
-    assert_eq!(belief.probability.value(), 0.7);
+    assert_eq!(
+        mimir_json::to_value(&belief)?,
+        mimir_json::to_value(service.get_belief(belief.id).await?.unwrap())?
+    );
     assert_eq!(belief.confidence.value(), 0.5);
     assert_eq!(
         (belief.alpha, belief.beta),

@@ -64,6 +64,8 @@ to find a passage, then supply its actual `chunk_id`, exact `document_path`, an
 exact `quotation`, and your `explanation` of why those words support the claim.
 A similar passage is only a suggestion; its score does not establish support.
 Your explanation remains your assertion, not Mimir's verification of truth.
+These citations record the source without changing probability. Do not supply a
+citation weight; weighted evidence is a separate operation.
 Indexing a document does not automatically assert support for existing beliefs.
 If the source is unavailable or support is unclear, use the returned correction
 to open a dialog before publication. Do not invent a citation or leave out

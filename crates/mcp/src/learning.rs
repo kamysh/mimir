@@ -4,7 +4,7 @@ use mimir_core::MimirService;
 use serde_json::{json, Value};
 
 pub(super) fn indexed_support_schema() -> Value {
-    json!({"type":"array","description":"For each supporting indexed passage, copy its actual chunk ID, document path and exact quotation, and explain why those words support this belief. Similarity is only a way to find suggestions; it is not evidence of support. If support is missing or unclear, open the user dialog before publication.","items":{
+    json!({"type":"array","description":"For each supporting indexed passage, copy its actual chunk ID, document path and exact quotation, and explain why those words support this belief. These citations record sources without changing probability; do not supply a weight. Similarity only ranks suggestions and does not establish support. If support is missing or unclear, open the user dialog before publication.","items":{
         "type":"object","additionalProperties":false,"properties":{
             "chunk_id":{"type":"string","format":"uuid","description":"Actual chunk ID returned by query_document; never invent an ID."},
             "document_path":{"type":"string","description":"Exact indexed document path returned with that chunk; nonblank."},
