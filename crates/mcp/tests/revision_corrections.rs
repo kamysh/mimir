@@ -88,6 +88,45 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
 }
 
 #[tokio::test]
+async fn missing_propagation_source_offers_readback_and_accepts_a_corrected_request() -> Result<()>
+{
+    use mimir_core::graph::MemoryType;
+    let id = fixture_identity().await?;
+    let project = format!("propagation-correction-{id}");
+    let source =
+        isolation::seed_belief_in_project("known source", 0.6, 0.1, &project, MemoryType::Fact)
+            .await?;
+    let service = test_service().await?;
+    let mut client = Client::start(id)?;
+    let checked = async {
+        let before = serde_json::to_value(service.get_belief(source.id).await?)?;
+        let response = client.call("propagate_from", json!({"id":id})).await?;
+        let correction: NeedsInput = serde_json::from_value(response)?;
+        ensure!(correction.issues()[0].fault().path == vec![Segment::Key("id".into())]);
+        ensure!(correction.issues()[0]
+            .suggested_correction()
+            .contains("list_beliefs"));
+        ensure!(correction.issues()[0]
+            .suggested_correction()
+            .contains("ask the user"));
+        let valid = client
+            .call("propagate_from", json!({"id":source.id}))
+            .await?;
+        ensure!(valid.is_array());
+        ensure!(serde_json::to_value(service.get_belief(source.id).await?)? == before);
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    let cleanup = service.delete_project(&project).await;
+    checked?;
+    ensure!(stopped.success());
+    cleanup?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn blank_learning_context_project_offers_correction_and_keeps_connection_usable() -> Result<()>
 {
     let id = fixture_identity().await?;

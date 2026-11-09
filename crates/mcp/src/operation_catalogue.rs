@@ -85,6 +85,7 @@ impl RegisteredOperation {
                     | GraphOperation::AddEvidence
                     | GraphOperation::QueryIntervention
                     | GraphOperation::QueryDocument
+                    | GraphOperation::PropagateFrom
             ) | Operation::Learning(
                 LearningOperation::RecordExperience
                     | LearningOperation::ReviewExperience

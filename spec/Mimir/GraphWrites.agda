@@ -68,6 +68,24 @@ insertEdge from to relation weight w with Numeric.number weight
 ...     | just _ | nothing = missingEndpoint
 ...     | just _ | just _ = applied (addEdges (directEdges from to relation weight) w)
 
+insertEdgeKeepsJournal : ∀ from to relation weight before after →
+  insertEdge from to relation weight before ≡ applied after →
+  Store.World.operations after ≡ Store.World.operations before
+insertEdgeKeepsJournal from to relation weight before after accepted with Numeric.number weight
+... | nothing with accepted
+... | ()
+insertEdgeKeepsJournal from to relation weight before after accepted | just value with N.probability value
+... | false with accepted
+... | ()
+insertEdgeKeepsJournal from to relation weight before after accepted | just value | true
+  with Ranking.lookup from (Store.beliefs before) | Ranking.lookup to (Store.beliefs before)
+... | nothing | _ with accepted
+... | ()
+insertEdgeKeepsJournal from to relation weight before after accepted | just value | true | just _ | nothing with accepted
+... | ()
+insertEdgeKeepsJournal from to relation weight before after accepted | just value | true | just _ | just _ with accepted
+... | refl = refl
+
 tagged : Text → Maybe Text → Bool
 tagged project nothing = false
 tagged project (just actual) = does (project ≟Text actual)

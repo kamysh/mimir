@@ -254,9 +254,13 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/DefeatRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda",
+        "spec/Mimir/RecoverableStoreSequence.agda"
       ],
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85\u2013#86. The concrete registered operation keeps the independently committed defeat prefix, resumes complete propagation, and saves completion only with all posterior updates; Rust correspondence is tested, not an extracted refinement theorem.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
     },
     {
@@ -587,9 +591,12 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/PropagationRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85\u2013#86. The concrete registered operation specifies complete numerical consequences and the actual original changed-probability list, with same-token readback and replay. Rust correspondence is tested, not an extracted refinement theorem.",
       "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
     },
     {
