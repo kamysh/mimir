@@ -82,12 +82,11 @@ class IsolationTests(unittest.TestCase):
         binary = Path(self.data["mimir"])
         binary.parent.mkdir(parents=True)
         binary.write_text('#!' + sys.executable + '\n' +
-            'import os,signal,sys,time\nfrom pathlib import Path\n' +
+            'import os,signal,sys\nfrom pathlib import Path\n' +
             'signal.signal(signal.SIGTERM, lambda *_: exit(0))\n' +
-            'time.sleep(0.3)\n' +
             'Path(os.environ["MIMIR_JUDGE_FIXTURE_READY_FILE"]).write_text("ready")\n' +
-            'time.sleep(0.1)\nprint("fixture waiting", file=sys.stderr, flush=True)\n' +
-            'time.sleep(30)\n')
+            'print("fixture waiting", file=sys.stderr, flush=True)\n' +
+            'signal.pause()\n')
         binary.chmod(0o700)
         ready = self.root / "child.ready"
         report = self.root / "cancel.json"
@@ -99,6 +98,136 @@ class IsolationTests(unittest.TestCase):
         self.assertEqual(report.read_bytes(), b"")
         self.assertEqual(report.with_suffix(".exit").read_text(), "0\n")
         self.assertIn("fixture waiting", report.with_suffix(".stderr").read_text())
+
+    def cancellation_binary(self, source):
+        binary = Path(self.data["mimir"])
+        binary.parent.mkdir(parents=True)
+        binary.write_text('#!' + sys.executable + '\n' + source)
+        binary.chmod(0o700)
+        return binary
+
+    def cancellation_args(self, binary, name="event-cancel"):
+        return SimpleNamespace(argv=[str(binary)], ready=self.root/(name+".ready"),
+                               report=self.root/(name+".out"), stderr_ready=None)
+
+    def test_cancellation_observes_network_readiness_and_keeps_complete_shutdown_output(self):
+        binary = self.cancellation_binary(
+            'import os,signal,socket,sys\nfrom pathlib import Path\n'
+            'def stopped(*_):\n'
+            '    print("after-ready", flush=True)\n'
+            '    sys.stderr.write("x"*70000+"complete-shutdown\\n"); sys.stderr.flush()\n'
+            '    sys.exit(0)\n'
+            'signal.signal(signal.SIGTERM, stopped)\n'
+            'Path(os.environ["MIMIR_JUDGE_FIXTURE_READY_FILE"]).write_text("ready")\n'
+            'host,port=os.environ["MIMIR_JUDGE_FIXTURE_READY_ADDR"].split(":")\n'
+            'with socket.create_connection((host,int(port))) as event: event.sendall(b"ready\\n")\n'
+            'signal.pause()\n')
+        args = self.cancellation_args(binary)
+        with patch.dict(os.environ, self.env, clear=True):
+            fixture.cancel(self.data, args)
+        self.assertEqual(args.report.read_text(), "after-ready\n")
+        self.assertEqual(args.report.with_suffix(".stderr").read_text(), "x"*70000+"complete-shutdown\n")
+        self.assertEqual(args.report.with_suffix(".exit").read_text(), "0\n")
+
+    def test_premature_fixture_exit_is_reported_without_readiness_polling(self):
+        binary = self.cancellation_binary('import sys\nprint("not ready",file=sys.stderr)\nsys.exit(7)\n')
+        args = self.cancellation_args(binary)
+        with patch.dict(os.environ, self.env, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "before fixture readiness"):
+                fixture.cancel(self.data, args)
+        self.assertEqual(args.report.with_suffix(".stderr").read_text(), "not ready\n")
+        self.assertEqual(args.report.with_suffix(".exit").read_text(), "7\n")
+
+    def test_readiness_event_requires_its_owned_evidence_file(self):
+        binary = self.cancellation_binary(
+            'import os,signal,socket,sys\n'
+            'signal.signal(signal.SIGTERM,lambda *_:sys.exit(0))\n'
+            'host,port=os.environ["MIMIR_JUDGE_FIXTURE_READY_ADDR"].split(":")\n'
+            'with socket.create_connection((host,int(port))) as event: event.sendall(b"ready\\n")\n'
+            'signal.pause()\n')
+        args = self.cancellation_args(binary)
+        with patch.dict(os.environ, self.env, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "no owned evidence file"):
+                fixture.cancel(self.data, args)
+        self.assertEqual(args.report.with_suffix(".exit").read_text(), "0\n")
+
+    def test_invalid_readiness_event_is_diagnostic_and_reaps_the_fixture(self):
+        binary = self.cancellation_binary(
+            'import os,signal,socket,sys\n'
+            'signal.signal(signal.SIGTERM,lambda *_:sys.exit(0))\n'
+            'host,port=os.environ["MIMIR_JUDGE_FIXTURE_READY_ADDR"].split(":")\n'
+            'with socket.create_connection((host,int(port))) as event: event.sendall(b"wrong\\n")\n'
+            'signal.pause()\n')
+        args = self.cancellation_args(binary)
+        with patch.dict(os.environ, self.env, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "invalid readiness event"):
+                fixture.cancel(self.data, args)
+        self.assertEqual(args.report.with_suffix(".exit").read_text(), "0\n")
+
+    def rpc_fixture(self, source):
+        binary = Path(self.data["mcp"])
+        binary.parent.mkdir(parents=True)
+        binary.write_text('#!' + sys.executable + '\n' + source)
+        binary.chmod(0o700)
+        request = self.root/"call.request"
+        request.write_text(json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/list"})+"\n")
+        return SimpleNamespace(config=self.root/"config.toml", request=request, report=self.root/"call")
+
+    def test_rpc_keeps_stdin_open_until_reply_and_preserves_complete_output(self):
+        args = self.rpc_fixture(
+            'import json,os,sys\nfrom pathlib import Path\n'
+            'request=json.loads(sys.stdin.readline())\n'
+            'os.set_blocking(0,False)\n'
+            'try:\n'
+            '    early=os.read(0,1)\n'
+            'except BlockingIOError:\n'
+            '    early=None\n'
+            'os.set_blocking(0,True)\n'
+            'if early is not None: sys.exit(7)\n'
+            'Path(os.environ["MIMIR_TEST_ROOT"],"stdin-open").write_text("yes")\n'
+            'print(json.dumps({"jsonrpc":"2.0","id":request["id"],"result":"z"*70000}),flush=True)\n'
+            'sys.stdin.read()\n'
+            'sys.stderr.write("shutdown:"+"e"*70000);sys.stderr.flush()\n')
+        with patch.dict(os.environ, self.env, clear=True):
+            fixture.rpc(self.data,args)
+        self.assertEqual((self.root/"stdin-open").read_text(),"yes")
+        response=json.loads(args.report.with_suffix(".stdout").read_text())
+        self.assertEqual(response["result"],"z"*70000)
+        self.assertEqual(args.report.with_suffix(".stderr").read_text(),"shutdown:"+"e"*70000)
+        self.assertEqual(args.report.with_suffix(".exit").read_text(),"0\n")
+
+    def test_rpc_reports_mismatched_reply_and_waits_for_stdin_cleanup(self):
+        args=self.rpc_fixture('import json,sys\nsys.stdin.readline()\nprint(json.dumps({"jsonrpc":"2.0","id":9,"result":{}}),flush=True)\nsys.stdin.read()\n')
+        with patch.dict(os.environ,self.env,clear=True):
+            with self.assertRaisesRegex(RuntimeError,"different request id"):
+                fixture.rpc(self.data,args)
+        self.assertEqual(args.report.with_suffix(".exit").read_text(),"0\n")
+
+    def test_rpc_refuses_another_database_before_starting_mcp(self):
+        args=self.rpc_fixture('from pathlib import Path\nPath("must-not-run").write_text("started")\n')
+        args.config=self.root/"foreign.toml"
+        args.config.write_text(self.config.replace('43217','5450'))
+        with patch.dict(os.environ,self.env,clear=True):
+            with self.assertRaisesRegex(ValueError,"differs from the isolated database"):
+                fixture.rpc(self.data,args)
+        self.assertFalse(args.report.with_suffix(".stdout").exists())
+
+    def test_rpc_explains_missing_request_id_before_starting_mcp(self):
+        args=self.rpc_fixture('raise RuntimeError("must not start")\n')
+        args.request.write_text(json.dumps({"jsonrpc":"2.0","method":"tools/list"}))
+        with patch.dict(os.environ,self.env,clear=True):
+            with self.assertRaisesRegex(ValueError,"request with an id"):
+                fixture.rpc(self.data,args)
+        self.assertFalse(args.report.with_suffix(".stdout").exists())
+
+    def test_rpc_preserves_server_parse_diagnostic_for_malformed_frame(self):
+        args=self.rpc_fixture('import json,sys\nsys.stdin.readline()\nprint(json.dumps({"jsonrpc":"2.0","id":None,"error":{"code":-32700,"message":"malformed JSON"}}),flush=True)\nsys.stdin.read()\n')
+        args.request.write_text('{broken JSON\n')
+        with patch.dict(os.environ,self.env,clear=True):
+            fixture.rpc(self.data,args)
+        response=json.loads(args.report.with_suffix(".stdout").read_text())
+        self.assertEqual(response["error"]["code"],-32700)
+        self.assertIsNone(response["id"])
 
     def test_connection_and_config_overrides_are_refused(self):
         for key, value in {"MIMIR_HOST": "deployment", "MIMIR_PORT": "5450",

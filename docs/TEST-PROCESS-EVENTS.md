@@ -47,3 +47,24 @@ The connection-guard listener waits for socket events. Its owner sends an
 explicit stop event, the listener records any queued connection attempts, and
 the owner joins the completed thread. No accept timeout or join allowance
 decides whether the isolation check passed.
+
+The Python cancellation helper also observes readiness directly. A blocked
+standalone fake model writes its evidence and sends a local readiness event.
+For a paused watcher, the helper reads the expected stderr message and checks
+the already-written state evidence. Premature process exit, malformed events
+and missing evidence are reported directly. The helper owns its listener,
+stderr capture and process-wait tasks and finishes them before returning.
+The fake model and its descendant block without a sleep duration.
+
+The adapter fixture keeps MCP stdin open while awaiting the response to its
+request. Closing stdin immediately after writing would cancel the request under
+the server's existing disconnect behavior. Once the response with the expected
+request ID arrives, the helper closes stdin, drains remaining output and awaits
+the MCP process. It checks the selected configuration against the disposable
+database contract and stores complete stdout, stderr and actual exit status.
+
+`tests/judge-adapters.sh --cancellation-only` selects the stalled model,
+descendant and paused-watcher checks through the maintained entrypoint. The
+watcher check expects explicit retry rather than removed interval flags or an
+invented backoff. The separate generic-command and forced-shutdown grace
+periods remain unfinished under #116; readiness changes do not approve them.
