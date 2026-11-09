@@ -22,6 +22,7 @@ import Mimir.SourceReview as Coverage
 import Mimir.ExperienceSchema as X
 import Mimir.ReviewSchema as R
 import Mimir.LearningSchema as L
+import Mimir.LearningCandidates as Memory
 import Mimir.NumericValidation as N
 import Mimir.ReviewObservation as Observation
 import Mimir.BeliefExplanation as Explain
@@ -63,6 +64,13 @@ relationText R.defeats = toList "Defeats"
 relationText R.causes = toList "Causes"
 relationText R.contradicts = toList "Contradicts"
 
+-- Belief responses use the existing native enum serialization. Input and
+-- candidate schemas retain their separate lowercase memory spellings.
+beliefMemoryText : Memory.Memory → Text
+beliefMemoryText Memory.fact = toList "Fact"
+beliefMemoryText Memory.experiential = toList "Experiential"
+beliefMemoryText Memory.working = toList "Working"
+
 verdictText : R.Verdict → Text
 verdictText R.support = toList "support"
 verdictText R.defeat = toList "defeat"
@@ -99,7 +107,7 @@ module Encode (format : Formatting) where
     ("alpha0" , real (G.BeliefValues.alpha0 b)) ∷ ("beta0" , real (G.BeliefValues.beta0 b)) ∷
     ("created_at" , timestamp (G.BeliefValues.created b)) ∷ ("last_activated_at" , timestamp (G.BeliefValues.activated b)) ∷
     ("decay_accounted_at" , timestamp (G.BeliefValues.decayAccountedAt b)) ∷
-    ("memory_type" , V.string (Candidate.memoryText (G.BeliefValues.memory b))) ∷
+    ("memory_type" , V.string (beliefMemoryText (G.BeliefValues.memory b))) ∷
     projectField (G.BeliefValues.project b))
     where
     projectField : Maybe Text → List (String × V.Value)

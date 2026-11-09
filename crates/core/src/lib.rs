@@ -116,6 +116,7 @@ pub struct MimirService {
     database: config::DatabaseConfig,
     inference: InferenceEngine,
     embeddings: Option<OwnedEmbeddingBackend>,
+    embedding_operation_settings: serde_json::Value,
     retirement: Option<toml::Value>,
 }
 
@@ -146,8 +147,15 @@ impl MimirService {
             database: cfg.database.clone(),
             inference: InferenceEngine::new(),
             embeddings,
+            embedding_operation_settings: preparation::operation_settings(cfg.embeddings.as_ref()),
             retirement: cfg.retirement.clone(),
         })
+    }
+
+    /// Capture the actual provider identity for a new operation binding.
+    /// This does not expose credentials or select another provider.
+    pub fn embedding_operation_settings(&self) -> serde_json::Value {
+        self.embedding_operation_settings.clone()
     }
 
     /// Read the captured user policy without accessing business records.
@@ -348,17 +356,30 @@ impl MimirService {
     }
 
     /// Embed a belief's content and upsert the vector into `belief_embeddings`
-    /// when an embedding backend is configured. No-op when `[embeddings]` is
-    /// absent (the vector half of `query_relevant` simply degrades to empty).
+    /// when an embedding backend is configured. Missing configuration or an
+    /// incomplete/unusable backend result requests a user decision before writing.
     /// Backfills existing beliefs. New belief insertion instead requires both
     /// embedding and indexed grounding before one atomic publication.
     pub async fn embed_and_store_belief(&self, belief: &Belief) -> Result<()> {
-        if let Some(embedder) = &self.embeddings {
-            let mut vecs = self.embed_existing_belief(embedder, belief).await?;
-            if let Some(v) = vecs.pop() {
-                self.store.insert_belief_embedding(belief.id, &v).await?;
-            }
+        let Some(embedder) = &self.embeddings else {
+            return Err(preparation::PreparationRequired::backfill(
+                validation::Code::MissingEvidence,
+                "Embedding is not configured; this belief's vector was not written.".into(),
+            )
+            .into());
+        };
+        let vectors = self.embed_existing_belief(embedder, belief, None).await?;
+        let [vector] = vectors.as_slice() else {
+            return Err(preparation::PreparationRequired::backfill(validation::Code::MalformedInput,
+                format!("The backend must return exactly one vector for this belief, but returned {}; its vector was not written.",vectors.len())).into());
+        };
+        if !preparation::usable_vector(vector) {
+            return Err(preparation::PreparationRequired::backfill(validation::Code::InvalidNumber,
+                "The backend returned an empty, nonfinite, or zero vector; this belief's vector was not written.".into()).into());
         }
+        self.store
+            .insert_belief_embedding(belief.id, vector)
+            .await?;
         Ok(())
     }
 
@@ -366,10 +387,12 @@ impl MimirService {
         &self,
         embedder: &OwnedEmbeddingBackend,
         belief: &Belief,
+        operation_token: Option<Uuid>,
     ) -> Result<Vec<Vec<f32>>> {
         // The subscription precedes the first target read: deletion either
         // appears in that read or leaves a notification for this exact job.
         let mut changes = db::EmbeddingOwnerSubscription::connect(&self.database).await?;
+        self.check_backfill_cancellation(operation_token).await?;
         if self.store.get_belief(belief.id).await?.is_none() {
             return Err(store::BeliefEmbeddingTargetMissing {
                 belief_id: belief.id,
@@ -385,6 +408,7 @@ impl MimirService {
                     // A disconnected monitor cannot establish continued
                     // ownership; returning drops this call's provider future.
                     change?;
+                    self.check_backfill_cancellation(operation_token).await?;
                     if self.store.get_belief(belief.id).await?.is_none() {
                         return Err(store::BeliefEmbeddingTargetMissing { belief_id: belief.id }.into());
                     }
@@ -392,6 +416,23 @@ impl MimirService {
                 result = &mut job => return result,
             }
         }
+    }
+
+    async fn check_backfill_cancellation(&self, token: Option<Uuid>) -> Result<()> {
+        if let Some(token) = token {
+            if self
+                .store
+                .read_operation_cancellation(token)
+                .await?
+                .is_some()
+            {
+                return Err(preparation::PreparationRequired::backfill(
+                    validation::Code::MissingReference,
+                    format!("Backfill operation {token} was explicitly cancelled. Its owned embedding stopped; no result from this job may be published. Read the original saved answers and discuss any new work with the user."),
+                ).into());
+            }
+        }
+        Ok(())
     }
 
     /// Auto-ground newly loaded chunks against existing beliefs.
@@ -1541,6 +1582,42 @@ impl MimirService {
         ) -> store::SelectionWork<'a>,
     {
         self.store.prepare_operation(token, expected, select).await
+    }
+
+    /// Freeze the server's original source selection and semantic model
+    /// identity. Retrying this token reads that plan without selecting again.
+    pub async fn prepare_reembed_operation(&self, token: Uuid) -> Result<store::PlanDecision> {
+        let request = match self.store.read_operation_binding(token).await? {
+            Some(original) => original.request,
+            None => store::OperationBindingRequest::new(
+                "reembed".into(),
+                serde_json::json!({}),
+                self.embedding_operation_settings(),
+            )?,
+        };
+        if request.operation() != "reembed" || request.arguments() != &serde_json::json!({}) {
+            return Ok(store::PlanDecision::NeedsRecovery(
+                "This token belongs to a different original request. Read its binding and saved outcome; do not select new work under it.".into()));
+        }
+        if let Err(cause) = preparation::validate_operation_settings(request.settings()) {
+            return Ok(store::PlanDecision::NeedsRecovery(format!(
+                "The original embedding settings cannot be used: {cause:#}. Read this token's original binding and saved outcome, and open a dialog with the user to resolve the settings. Do not select new work, replace its model, or invent a completion answer."
+            )));
+        }
+        match self.store.bind_operation_request(token, &request).await? {
+            store::OperationBindingDecision::Bound(_) => {
+                self.store.prepare_reembed_plan(token, &request).await
+            }
+            store::OperationBindingDecision::ChangedRequest(original) => {
+                Ok(store::PlanDecision::ChangedRequest(original))
+            }
+            store::OperationBindingDecision::UnknownToken => {
+                Ok(store::PlanDecision::UnknownBinding)
+            }
+            store::OperationBindingDecision::Cancelled(receipt) => {
+                Ok(store::PlanDecision::Cancelled(receipt))
+            }
+        }
     }
 
     pub async fn complete_operation(

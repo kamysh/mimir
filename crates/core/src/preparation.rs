@@ -1,11 +1,70 @@
 //! Preparation precedes every business write. Governed by BeliefEmbedding.agda.
 use crate::{
+    config::{EmbeddingBackend, EmbeddingsConfig},
     documents::DocumentChunk,
     graph::{Belief, Probability},
     interaction::{CorrectionItem, Location, NeedsInput},
     learning::IndependentProvenance,
     validation::{Code, Fault, Segment},
 };
+
+/// Semantic provider choices for the immutable operation binding. Credentials,
+/// cache location and execution batching are deliberately absent.
+pub(crate) fn operation_settings(configured: Option<&EmbeddingsConfig>) -> serde_json::Value {
+    let identity = configured.map(|settings| match settings.backend {
+        EmbeddingBackend::Local => serde_json::json!({
+            "backend":"local", "model":crate::embed::HF_MODEL_ID
+        }),
+        EmbeddingBackend::Voyage => serde_json::json!({
+            "backend":"voyage", "model":settings.model,
+            "input_type":"document", "truncation":false
+        }),
+        EmbeddingBackend::OpenAi => serde_json::json!({
+            "backend":"openai", "model":settings.model
+        }),
+    });
+    serde_json::json!({"embeddings":identity})
+}
+
+/// Validate only the captured semantic identity; never accept credentials or
+/// infer a replacement model from the current configuration.
+pub(crate) fn validate_operation_settings(value: &serde_json::Value) -> anyhow::Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Settings {
+        embeddings: serde_json::Value,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "backend", rename_all = "lowercase", deny_unknown_fields)]
+    enum Identity {
+        Local {
+            model: String,
+        },
+        Voyage {
+            model: String,
+            input_type: String,
+            truncation: bool,
+        },
+        #[serde(rename = "openai")]
+        OpenAi {
+            model: String,
+        },
+    }
+    let settings: Settings = serde_json::from_value(value.clone())?;
+    if !settings.embeddings.is_null() {
+        match serde_json::from_value::<Identity>(settings.embeddings)? {
+            Identity::Local { model } => anyhow::ensure!(model == crate::embed::HF_MODEL_ID,
+                "Retain the actual configured local BGE model; read the original binding before choosing a different model"),
+            Identity::Voyage { model, input_type, truncation } => {
+                anyhow::ensure!(input_type == "document" && !truncation,
+                    "Retain Voyage document input without truncation from the original binding");
+                let _ = model;
+            }
+            Identity::OpenAi { model } => { let _ = model; }
+        }
+    }
+    Ok(())
+}
 
 /// Only preparation or a pre-write check may produce this outcome. A database
 /// error after publication was attempted must retain its uncertain outcome.
@@ -15,6 +74,17 @@ pub struct PreparationRequired {
 }
 
 impl PreparationRequired {
+    pub(crate) fn backfill(code: Code, message: String) -> Self {
+        let item=CorrectionItem::new(Location::Configuration,
+            Fault {path:vec![Segment::Key("embeddings".into())],code,message},
+            "Exactly one complete, finite, nonzero embedding for this stored belief before reporting it embedded.".into(),
+            "Open a dialog with the user to repair the configured embedding backend or cancel. Do not silently shorten the content, change the model, or count this belief as embedded.".into())
+            .expect("compiled backfill guidance contains the problem and repair path");
+        Self {
+            correction: NeedsInput::new(item, vec![]).expect("one explained backfill issue"),
+        }
+    }
+
     pub(crate) fn new(location: Location, path: Vec<Segment>, code: Code, message: String) -> Self {
         let item = CorrectionItem::new(location, Fault { path, code, message },
             "A complete embedding and a supporting passage from an indexed, project-compatible document before this belief is stored.".into(),

@@ -17,6 +17,140 @@ use std::sync::Mutex;
 use uuid::Uuid;
 
 struct FixedProvider(Mutex<Option<Result<Vec<Vec<f32>>>>>);
+
+#[test]
+fn operation_provider_identity_survives_credentials_and_execution_changes() {
+    let mut configured = EmbeddingsConfig {
+        backend: EmbeddingBackend::Voyage,
+        model: "same-model".into(),
+        api_key: Some("first-private-key".into()),
+        batch_size: 0,
+        cache_dir: None,
+    };
+    let original = operation_settings(Some(&configured));
+    validate_operation_settings(&original).unwrap();
+    for invalid in [
+        json!({}),
+        json!({"embeddings":null,"api_key":"secret"}),
+        json!({"embeddings":{"backend":"voyage","model":"m","input_type":"document","truncation":true}}),
+        json!({"embeddings":{"backend":"local","model":"unselected"}}),
+    ] {
+        assert!(validate_operation_settings(&invalid).is_err());
+    }
+    configured.api_key = Some("rotated-private-key".into());
+    configured.cache_dir = Some("/different/execution-cache".into());
+    configured.batch_size = 17;
+    assert_eq!(original, operation_settings(Some(&configured)));
+    assert!(!original.to_string().contains("private-key"));
+    configured.model = "different-model".into();
+    assert_ne!(original, operation_settings(Some(&configured)));
+    configured.backend = EmbeddingBackend::Local;
+    let local = operation_settings(Some(&configured));
+    configured.model = "ignored-by-the-local-provider".into();
+    assert_eq!(local, operation_settings(Some(&configured)));
+}
+
+#[tokio::test]
+async fn token_cancellation_stops_owned_backfill_without_an_owner_row() -> Result<()> {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use tokio::sync::oneshot;
+    struct DropSignal(Option<oneshot::Sender<()>>);
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    struct Blocked {
+        started: Mutex<Option<oneshot::Sender<()>>>,
+        dropped: Mutex<Option<oneshot::Sender<()>>>,
+        calls: Arc<AtomicUsize>,
+    }
+    impl EmbeddingProvider for Blocked {
+        fn embed<'a>(&'a self, _: &'a [String], _: EmbeddingCancellation) -> EmbedFuture<'a> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let _drop = DropSignal(self.dropped.lock().unwrap().take());
+                self.started
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(())
+                    .unwrap();
+                std::future::pending().await
+            })
+        }
+    }
+    let (service, project) = service(None).await?;
+    let belief = isolation::seed_belief_in_project(
+        "existing backfill target explicitly cancelled",
+        0.7,
+        0.5,
+        &project,
+        MemoryType::Fact,
+    )
+    .await?;
+    let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+    let cfg = isolation::fixture().database_config();
+    let client = db::connect(&cfg).await?;
+    let key: String = client
+        .query_one("SELECT gen_random_uuid()::text", &[])
+        .await?
+        .get(0);
+    let token = service.reserve_operation(&key).await?.operation_token;
+    let (started_tx, started_rx) = oneshot::channel();
+    let (dropped_tx, dropped_rx) = oneshot::channel();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(OwnedEmbeddingBackend::for_test(Box::new(Blocked {
+        started: Mutex::new(Some(started_tx)),
+        dropped: Mutex::new(Some(dropped_tx)),
+        calls: calls.clone(),
+    })));
+    let owner = Arc::new(service);
+    let task = {
+        let owner = owner.clone();
+        let provider = provider.clone();
+        let belief = belief.clone();
+        tokio::spawn(async move {
+            owner
+                .embed_existing_belief(&provider, &belief, Some(token))
+                .await
+        })
+    };
+    started_rx.await?;
+    assert!(matches!(
+        owner.record_operation_cancellation(token).await?,
+        crate::store::CancellationDecision::Recorded(_)
+    ));
+    let error = task.await?.unwrap_err();
+    assert!(error
+        .downcast_ref::<PreparationRequired>()
+        .unwrap()
+        .to_string()
+        .contains("explicitly cancelled"));
+    dropped_rx.await?;
+    assert!(owner
+        .embed_existing_belief(&provider, &belief, Some(token))
+        .await
+        .is_err());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a cancelled token cannot start another provider job"
+    );
+    assert_eq!(
+        serde_json::to_value(owner.get_belief(belief.id).await?)?,
+        before
+    );
+    assert!(!owner.list_embedded_belief_ids().await?.contains(&belief.id));
+    Ok(())
+}
+
 impl EmbeddingProvider for FixedProvider {
     fn embed<'a>(
         &'a self,
@@ -183,6 +317,138 @@ async fn document_query_with_no_scoped_matches_completes_with_an_empty_result() 
         .await?;
     assert!(found.is_empty());
     service.delete_project(&project).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn backfill_missing_backend_and_invalid_vectors_preserve_the_stored_belief() -> Result<()> {
+    use crate::validation::{Code, Segment};
+
+    for (response, expected_code) in [
+        (None, Code::MissingEvidence),
+        (Some(Ok(vec![])), Code::MalformedInput),
+        (Some(Ok(vec![vector(0), vector(1)])), Code::MalformedInput),
+        (Some(Ok(vec![vec![]])), Code::InvalidNumber),
+        (Some(Ok(vec![vec![0.0; 768]])), Code::InvalidNumber),
+        (Some(Ok(vec![vec![f32::NAN; 768]])), Code::InvalidNumber),
+        (
+            Some(Ok(vec![vec![f32::INFINITY; 768]])),
+            Code::InvalidNumber,
+        ),
+    ] {
+        let (service, project) = service(response).await?;
+        let belief = isolation::seed_belief_in_project(
+            "existing belief waiting for its embedding",
+            0.7,
+            0.5,
+            &project,
+            MemoryType::Fact,
+        )
+        .await?;
+        let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+        let result = service.embed_and_store_belief(&belief).await;
+        let after = serde_json::to_value(service.get_belief(belief.id).await?)?;
+        let client = db::connect(&isolation::fixture().database_config()).await?;
+        let count: i64 = client
+            .query_one(
+                "SELECT count(*) FROM public.belief_embeddings WHERE belief_id=$1",
+                &[&belief.id],
+            )
+            .await?
+            .get(0);
+        service.delete_project(&project).await?;
+
+        let error = result.expect_err("absent or unusable embeddings cannot report success");
+        let required = error
+            .downcast_ref::<PreparationRequired>()
+            .expect("a pre-write embedding problem must offer a typed user decision");
+        let issue = &required.correction().issues()[0];
+        assert_eq!(issue.fault().code, expected_code);
+        assert_eq!(issue.fault().path, vec![Segment::Key("embeddings".into())]);
+        assert!(issue.suggested_correction().contains("user"));
+        assert!(issue.suggested_correction().contains("cancel"));
+        assert!(issue.suggested_correction().contains("Do not"));
+        assert_eq!(count, 0, "a rejected result must not create a vector");
+        assert_eq!(after, before, "backfill must preserve the stored belief");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn backfill_success_means_the_requested_vector_was_stored() -> Result<()> {
+    let expected = vector(3);
+    let (service, project) = service(Some(Ok(vec![expected.clone()]))).await?;
+    let belief = isolation::seed_belief_in_project(
+        "existing belief with a usable backfill result",
+        0.7,
+        0.5,
+        &project,
+        MemoryType::Fact,
+    )
+    .await?;
+    let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+    let result = service.embed_and_store_belief(&belief).await;
+    let after = serde_json::to_value(service.get_belief(belief.id).await?)?;
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    let stored = client
+        .query_opt(
+            "SELECT embedding FROM public.belief_embeddings WHERE belief_id=$1",
+            &[&belief.id],
+        )
+        .await?
+        .map(|row| row.get::<_, pgvector::Vector>(0).to_vec());
+    service.delete_project(&project).await?;
+
+    result?;
+    assert_eq!(stored, Some(expected));
+    assert_eq!(after, before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn backfill_provider_failure_neither_claims_success_nor_replaces_a_vector() -> Result<()> {
+    for previous in [None, Some(vector(5))] {
+        let (service, project) = service(Some(Err(anyhow::anyhow!(
+            "controlled backfill provider failure: keep the complete cause"
+        ))))
+        .await?;
+        let belief = isolation::seed_belief_in_project(
+            "existing belief whose provider fails",
+            0.7,
+            0.5,
+            &project,
+            MemoryType::Fact,
+        )
+        .await?;
+        if let Some(vector) = &previous {
+            service
+                .store
+                .insert_belief_embedding(belief.id, vector)
+                .await?;
+        }
+        let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+        let result = service.embed_and_store_belief(&belief).await;
+        let after = serde_json::to_value(service.get_belief(belief.id).await?)?;
+        let client = db::connect(&isolation::fixture().database_config()).await?;
+        let stored = client
+            .query_opt(
+                "SELECT embedding FROM public.belief_embeddings WHERE belief_id=$1",
+                &[&belief.id],
+            )
+            .await?
+            .map(|row| row.get::<_, pgvector::Vector>(0).to_vec());
+        service.delete_project(&project).await?;
+
+        let error = result.expect_err("provider failure cannot report a completed backfill");
+        assert!(error
+            .to_string()
+            .contains("controlled backfill provider failure: keep the complete cause"));
+        assert_eq!(
+            stored, previous,
+            "failed work must preserve the prior vector"
+        );
+        assert_eq!(after, before);
+    }
     Ok(())
 }
 

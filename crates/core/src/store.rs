@@ -1,3 +1,4 @@
+mod backfill;
 mod cancellations;
 mod conformance;
 mod direct_graph;
@@ -26,7 +27,7 @@ pub use reservations::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio_postgres::{Client, Row, Transaction};
+use tokio_postgres::{Client, GenericClient, Row, Transaction};
 use uuid::Uuid;
 
 use crate::documents::DocumentChunk;
@@ -896,10 +897,13 @@ $$) AS (id ag_catalog.agtype)"#
 
     pub async fn list_beliefs(&self) -> Result<Vec<Belief>> {
         let client = self.client.lock().await;
-        self.list_beliefs_on(&client).await
+        self.list_beliefs_on(&*client).await
     }
 
-    pub(crate) async fn list_beliefs_on(&self, client: &Client) -> Result<Vec<Belief>> {
+    pub(crate) async fn list_beliefs_on<C: GenericClient + Sync>(
+        &self,
+        client: &C,
+    ) -> Result<Vec<Belief>> {
         let g = &self.graph_name;
         let sql = format!(
             r#"SELECT

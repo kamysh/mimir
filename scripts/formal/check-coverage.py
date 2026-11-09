@@ -59,6 +59,55 @@ def embedded_sql_body(source):
     raise ValueError('Unterminated migration header')
 
 
+def native_registered_operations(source):
+    """Read the maintained closed catalogue, including non-MCP operations."""
+    sites = dict(re.findall(r'Self::(\w+)\s*=>\s*"(store\.[^"]+)"', source))
+
+    def boundaries(body):
+        calls = re.findall(r'(once|repeated)\((\w+)\)', body)
+        remainder = re.sub(r'(once|repeated)\(\w+\)', '', body)
+        assert not remainder.strip(' ,\t\r\n'), ('unsupported boundary declaration', body)
+        return [(sites[site], mode == 'repeated') for mode, site in calls]
+
+    entries = re.findall(r'^\s*\w+\s*=>\s*"([a-z_]+)"\s*\[([^\n]*)\]', source, re.M)
+    operations = {name: boundaries(body) for name, body in entries}
+    assert operations and len(operations) == len(entries), 'missing or repeated operation declarations'
+    private = source.split('impl RegisteredOperation {', 1)[1]
+    names = dict(re.findall(r'Self::(\w+)\s*=>\s*"([a-z_]+)"', private))
+    named = private.split('pub fn named', 1)[1].split('pub fn name(', 1)[0]
+    assert set(re.findall(r'"([a-z_]+)"', named)) == set(names.values()), 'unmodelled named internal operation'
+    for variant, name in names.items():
+        match = re.search(r'Self::' + variant + r'\s*=>\s*\{\s*const PLAN:[^=]+=\s*&\[([^\]]*)\]', private)
+        assert match, ('unsupported internal boundary declaration', variant)
+        assert name not in operations, ('duplicate registered operation', name)
+        operations[name] = boundaries(match.group(1))
+    return operations
+
+
+def formal_control_operations(source):
+    body = source.split('  registered =', 1)[1].split('  lookup :', 1)[0]
+    entries = re.findall(r'^\s*entry "([a-z_]+)" ([^\n]+)', body, re.M)
+    operations = {}
+    for name, declaration in entries:
+        assert name not in operations, ('duplicate formal registered operation', name)
+        assert re.fullmatch(r'(?:\[\]|\((?:(?:once|repeated) "[^"]+" ∷ )+\[\]\)) ∷', declaration), ('unsupported formal boundary declaration', name)
+        operations[name] = [(site, mode == 'repeated') for mode, site in re.findall(r'(once|repeated) "([^"]+)"', declaration)]
+    assert operations, 'missing concrete control catalogue'
+    return operations
+
+
+def native_struct_fields(source, name):
+    body = re.search(r'\bstruct ' + re.escape(name) + r'\s*\{([^}]+)\}', source, re.S)
+    assert body, ('missing native stored schema', name)
+    return set(re.findall(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(\w+)\s*:', body.group(1), re.M))
+
+
+def formal_field_names(source, name):
+    body = re.search(r'^  ' + re.escape(name) + r' =([^\n]*(?:\n    [^\n]+)*)', source, re.M)
+    assert body, ('missing formal stored schema', name)
+    return set(re.findall(r'toList "([a-z_]+)"', body.group(1)))
+
+
 def check():
     coverage = json.loads(read('docs/FORMAL-BEHAVIOR-COVERAGE.json'))
     inventory = json.loads(read('docs/FORMAL-INVENTORY.json'))
@@ -69,6 +118,14 @@ def check():
     operation_names = [item['name'] for item in coverage['mcp']]
     assert len(operation_names) == len(set(operation_names)) == 34
     assert set(operation_names) == set(formal_names) == set(advertised)
+
+    controls = read('spec/Mimir/OperationControls.agda')
+    native_catalogue = read('crates/core/src/operation_catalogue.rs')
+    assert native_registered_operations(native_catalogue) == formal_control_operations(controls), 'operation-control plan catalogue disagrees with native registration'
+    assert native_struct_fields(read('crates/core/src/store/operation_plans.rs'), 'StoredPlan') == formal_field_names(controls, 'fieldNames'), 'operation-control plan fields disagree with native storage'
+    capture_source = read('crates/core/src/store/backfill.rs')
+    assert native_struct_fields(capture_source, 'Capture') == formal_field_names(controls, 'captureFieldNames'), 'captured-selection fields disagree with native storage'
+    assert native_struct_fields(capture_source, 'Source') == formal_field_names(controls, 'sourceFieldNames'), 'captured-source fields disagree with native storage'
 
     main = 'crates/cli/src/main.rs'
     commands = [kebab(name) for name in enum_variants(main, 'Command')

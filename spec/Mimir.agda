@@ -57,6 +57,8 @@ import Mimir.SignedMachine
 
 import Mimir.Effects
 import Mimir.Recovery
+import Mimir.OperationControls
+import Mimir.BackfillRecovery
 import Mimir.RecoverableStoreStep
 import Mimir.RecoverableStoreSequence
 import Mimir.RegisteredStoreAdmission

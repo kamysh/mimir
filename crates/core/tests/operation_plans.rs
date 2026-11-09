@@ -41,6 +41,65 @@ async fn bound(name: &str) -> Result<(MimirService, OperationBindingRequest, uui
 }
 
 #[tokio::test]
+async fn a_different_operations_plan_cannot_be_read_or_prepared_as_this_operation() -> Result<()> {
+    let (service, request, token) = bound("get_belief").await?;
+    let answer = json!({"original_read_result": true});
+    let client = db::connect(&config().database).await?;
+    // Model one pre-existing inconsistent journal with initial owned rows.
+    // Plans remain immutable: neither setup nor checks disable that protection.
+    let changed = json!({"operation":"list_beliefs","shape":[],"steps":[]}).to_string();
+    assert_eq!(
+        client
+            .execute(
+                "INSERT INTO mimir_operation_plans(operation_token,plan) VALUES($1,$2::text::jsonb)",
+                &[&token, &changed],
+            )
+            .await?,
+        1
+    );
+    client.execute(
+        "INSERT INTO mimir_operation_step_replies(operation_token,step,reply) VALUES($1,'@operation-result',$2::text::jsonb)",
+        &[&token, &answer.to_string()],
+    ).await?;
+    async fn journal(client: &tokio_postgres::Client, token: uuid::Uuid) -> Result<String> {
+        Ok(client.query_one(
+            "SELECT jsonb_build_object('reservation',(SELECT to_jsonb(r) FROM mimir_operation_reservations r WHERE operation_token=$1),'request_keys',(SELECT jsonb_agg(to_jsonb(k) ORDER BY request_key) FROM mimir_operation_request_keys k WHERE operation_token=$1),'binding',(SELECT to_jsonb(b) FROM mimir_operation_bindings b WHERE operation_token=$1),'plan',(SELECT to_jsonb(p) FROM mimir_operation_plans p WHERE operation_token=$1),'replies',(SELECT jsonb_agg(to_jsonb(s) ORDER BY step) FROM mimir_operation_step_replies s WHERE operation_token=$1),'cancellation',(SELECT to_jsonb(c) FROM mimir_operation_cancellations c WHERE operation_token=$1))::text",
+            &[&token],
+        ).await?.get(0))
+    }
+    let before = journal(&client, token).await?;
+    let observed = service.read_operation_outcome(token, None).await?;
+    let prepared = service
+        .prepare_operation(token, &request, |_, _| {
+            Box::pin(async { panic!("an existing inconsistent plan must never run selection") })
+        })
+        .await?;
+    let after = journal(&client, token).await?;
+    let OperationOutcome::NeedsRecovery { binding, reason } = observed else {
+        panic!("a different operation's plan was accepted as a completed original")
+    };
+    assert_eq!(binding.request, request);
+    assert!(!reason.is_empty());
+    let PlanDecision::NeedsRecovery(reason) = prepared else {
+        panic!("a different operation's saved plan was prepared for execution")
+    };
+    assert!(!reason.is_empty());
+    assert_eq!(
+        after, before,
+        "inspection must preserve the complete journal"
+    );
+    assert_eq!(
+        service
+            .read_operation_step(token, "@operation-result")
+            .await?
+            .expect("the original saved answer must remain inspectable")
+            .reply,
+        answer
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn wrong_order_never_runs_work_and_completion_requires_all_steps() -> Result<()> {
     let (service, request, token) = bound("record_defeat").await?;
     let PlanDecision::Ready(plan) = service
