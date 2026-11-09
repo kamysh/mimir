@@ -1,10 +1,49 @@
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
 use crate::graph::{Belief, EdgeType, MemoryType, Probability};
 
 pub struct InferenceEngine;
+
+/// Resolve every active parent before its child. None means a cycle remains,
+/// not that a depth or work quota was reached. Seed and external parents are
+/// absent from `order` and already have their fixed input values.
+fn dependency_order(
+    order: &[Uuid],
+    incoming: &HashMap<Uuid, Vec<(EdgeType, f64, Uuid)>>,
+) -> Option<Vec<Uuid>> {
+    let mut dependencies: HashMap<Uuid, usize> = order.iter().map(|id| (*id, 0)).collect();
+    let mut followers: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+    for target in order {
+        if let Some(edges) = incoming.get(target) {
+            for &(relation, _, source) in edges {
+                if relation != EdgeType::Contradicts && dependencies.contains_key(&source) {
+                    *dependencies.get_mut(target).unwrap() += 1;
+                    followers.entry(source).or_default().push(*target);
+                }
+            }
+        }
+    }
+    let mut ready: BTreeSet<Uuid> = dependencies
+        .iter()
+        .filter_map(|(id, count)| (*count == 0).then_some(*id))
+        .collect();
+    let mut resolved = Vec::with_capacity(order.len());
+    while let Some(parent) = ready.pop_first() {
+        resolved.push(parent);
+        if let Some(children) = followers.get(&parent) {
+            for child in children {
+                let remaining = dependencies.get_mut(child).unwrap();
+                *remaining -= 1;
+                if *remaining == 0 {
+                    ready.insert(*child);
+                }
+            }
+        }
+    }
+    (resolved.len() == order.len()).then_some(resolved)
+}
 
 impl InferenceEngine {
     pub fn new() -> Self {
@@ -161,8 +200,9 @@ impl InferenceEngine {
     /// `external_means`. Because the accumulation is a SUM it is order-independent
     /// (spec: `Mimir.Beta.accumulate-↭`), and because the posterior is re-derived
     /// from the prior (never folded into a mutated scalar) propagation is
-    /// idempotent. Iterated to a fixpoint, bounded by MAX_ITERS. Pure; never
-    /// writes to the store. Returns the new posterior `(α, β)` per changed node.
+    /// idempotent. Acyclic graphs are completed in dependency order. Cyclic
+    /// completion still uses the existing policy pending #114/#115. Pure;
+    /// never writes to the store. Returns the full posterior per changed node.
     fn propagate_core(
         &self,
         seed_id: Uuid,
@@ -235,67 +275,73 @@ impl InferenceEngine {
             .collect();
         order.sort();
 
-        // Fixpoint: each node re-derives (α,β) from its FIXED prior plus the
-        // summed per-parent evidence, reading current parent means. Sum ⇒
-        // order-independent (spec accumulate-↭); re-derived from prior ⇒
-        // idempotent (spec recompute-idempotent). DAG: one sweep exact; cycles
-        // converge. Change-detection uses a RELATIVE epsilon (scaled by strength)
-        // so a real fractional move is caught even at high κ.
-        let mut converged = false;
-        for _ in 0..MAX_ITERS {
-            let mut max_rel_delta = 0.0_f64;
-            for &v in &order {
-                let (a0, b0) = prior[&v];
-                let mut alpha = a0;
-                let mut beta = b0;
-                if let Some(edges_in) = incoming.get(&v) {
-                    for &(etype, w, src) in edges_in {
-                        // `src` was admitted only when parent_mean is Some.
-                        let mu = parent_mean(&state, &src).unwrap_or(0.5);
-                        let delta = w * mu * crate::graph::EVIDENCE_UNIT;
-                        match etype {
-                            EdgeType::Supports | EdgeType::Causes => alpha += delta,
-                            EdgeType::Defeats => beta += delta,
-                            EdgeType::Contradicts => {} // skipped during propagation
-                        }
+        // Keep incoming evidence order and the fixed priors identical in both
+        // paths. A dependency order completes every acyclic target, including
+        // arbitrarily deep paths whose UUID order visits children first.
+        let posterior = |v: Uuid, state: &HashMap<Uuid, (f64, f64)>| {
+            let (a0, b0) = prior[&v];
+            let mut alpha = a0;
+            let mut beta = b0;
+            if let Some(edges_in) = incoming.get(&v) {
+                for &(etype, w, src) in edges_in {
+                    // `src` was admitted only when parent_mean is Some.
+                    let mu = parent_mean(state, &src).unwrap_or(0.5);
+                    let delta = w * mu * crate::graph::EVIDENCE_UNIT;
+                    match etype {
+                        EdgeType::Supports | EdgeType::Causes => alpha += delta,
+                        EdgeType::Defeats => beta += delta,
+                        EdgeType::Contradicts => {} // skipped during propagation
                     }
                 }
-                let (oa, ob) = state[&v];
-                let old_m = crate::graph::beta_mean(oa, ob);
-                let new_m = crate::graph::beta_mean(alpha, beta);
-                // Relative to the mean's [0,1] scale; the mean already normalizes
-                // strength, so its delta is the right convergence signal.
-                let d = (new_m - old_m).abs();
-                if d > max_rel_delta {
-                    max_rel_delta = d;
+            }
+            (alpha, beta)
+        };
+        if let Some(ordered) = dependency_order(&order, &incoming) {
+            for v in ordered {
+                let value = posterior(v, &state);
+                state.insert(v, value);
+            }
+        } else {
+            // The remaining cyclic policy is tracked by #114/#115. It cannot
+            // limit the dependency-order path above.
+            let mut converged = false;
+            for _ in 0..MAX_ITERS {
+                let mut max_rel_delta = 0.0_f64;
+                for &v in &order {
+                    let (alpha, beta) = posterior(v, &state);
+                    let (oa, ob) = state[&v];
+                    let old_m = crate::graph::beta_mean(oa, ob);
+                    let new_m = crate::graph::beta_mean(alpha, beta);
+                    // Relative to the mean's [0,1] scale; the mean already normalizes
+                    // strength, so its delta is the right convergence signal.
+                    let d = (new_m - old_m).abs();
+                    if d > max_rel_delta {
+                        max_rel_delta = d;
+                    }
+                    state.insert(v, (alpha, beta));
                 }
-                state.insert(v, (alpha, beta));
+                if max_rel_delta < EPS {
+                    converged = true;
+                    break;
+                }
             }
-            if max_rel_delta < EPS {
-                converged = true;
-                break;
+            if !converged {
+                tracing::warn!(
+                    subgraph_size = order.len(),
+                    "cyclic propagate_core hit MAX_ITERS without converging; returning current values"
+                );
             }
-        }
-        if !converged {
-            tracing::warn!(
-                subgraph_size = order.len(),
-                "propagate_core hit MAX_ITERS without converging; returning current values"
-            );
         }
 
         // Report only nodes whose posterior (α,β) actually moved from base
         // (seed excluded); return the DURABLE (α,β) the caller persists. We
-        // compare the FULL (α,β), not just the mean, so a change that shifts
-        // strength/confidence without moving the mean (balanced support+defeat)
-        // is still persisted. The threshold is RELATIVE to the base strength, so
-        // a real fractional move is caught even when α,β are large (κ up to ~200);
-        // an absolute EPS would be below the ULP at high strength.
+        // compare the FULL (α,β), not just the mean: even a small change or
+        // balanced support/defeat that changes only strength must be stored.
         let mut updated: Vec<(Uuid, (f64, f64))> = Vec::new();
         for &v in &order {
             let (a, b) = state[&v];
             let (ba, bb) = base[&v];
-            let scale = (ba + bb).max(1.0);
-            if (a - ba).abs() > EPS * scale || (b - bb).abs() > EPS * scale {
+            if a != ba || b != bb {
                 updated.push((v, (a, b)));
             }
         }
