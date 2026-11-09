@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 pub type StepWork<'a> = Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>>;
 pub type FinalStepWork<'a> = Pin<Box<dyn Future<Output = Result<(Value, Value)>> + Send + 'a>>;
-type PublicationWork<'a> =
+pub(super) type PublicationWork<'a> =
     Pin<Box<dyn Future<Output = Result<(Value, Option<Value>)>> + Send + 'a>>;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -96,7 +96,7 @@ impl AgeStore {
         .await
     }
 
-    async fn publish_operation_step<F>(
+    pub(super) async fn publish_operation_step<F>(
         &self,
         registered: &RegisteredStep,
         final_step: bool,

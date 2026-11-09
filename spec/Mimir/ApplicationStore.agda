@@ -28,6 +28,7 @@ import Mimir.LearningRecompute as Recompute
 import Mimir.IndependentProvenance as Independent
 import Mimir.StructuredValue as Wire
 import Mimir.LearningHistoryWire as RawHistory
+import Mimir.RetirementClock as Retirement
 
 -- At an external embedding boundary each binary32 component may be widened
 -- exactly to Float for transport/storage description. No binary64 dot product
@@ -91,6 +92,43 @@ record World : Set where
     history : RawHistory.Database -- original JSONB, including older payload shapes
     operations : OperationTables
     embeddingOwners : List EmbeddingOwnerRow
+    -- Projection of first_defeated_at / legacy_defeat_expired on Belief nodes.
+    -- This is not a separate physical table or an inferred source timestamp.
+    retirementClocks : List (ℕ × Retirement.Clock)
+
+lookupRetirementRows : ℕ → List (ℕ × Retirement.Clock) → Maybe Retirement.Clock
+lookupRetirementRows identity [] = nothing
+lookupRetirementRows identity ((key , clock) ∷ rest) with identity ≟ key
+... | yes _ = just clock
+... | no _ = lookupRetirementRows identity rest
+
+lookupRetirement : ℕ → World → Maybe Retirement.Clock
+lookupRetirement identity state = lookupRetirementRows identity (World.retirementClocks state)
+
+recordDefeatTime : ℤ → ℕ → World → World
+recordDefeatTime received identity state with lookupRetirement identity state
+... | just _ = state
+... | nothing = record state { retirementClocks =
+    (identity , Retirement.firstDefeat received) ∷ World.retirementClocks state }
+
+firstDefeatReadable : ∀ received identity state →
+  lookupRetirement identity (recordDefeatTime received identity state) ≡
+    just (Retirement.recordFirst received (lookupRetirement identity state))
+firstDefeatReadable received identity state with lookupRetirement identity state in observed
+... | just original = observed
+... | nothing with identity ≟ identity
+... | yes _ = refl
+... | no impossible = ⊥-elim (impossible refl)
+
+recordedDefeatIsUnchanged : ∀ later identity state clock → lookupRetirement identity state ≡ just clock →
+  recordDefeatTime later identity state ≡ state
+recordedDefeatIsUnchanged later identity state clock found rewrite found = refl
+
+laterDefeatPreservesDate : ∀ first later identity state →
+  recordDefeatTime later identity (recordDefeatTime first identity state) ≡ recordDefeatTime first identity state
+laterDefeatPreservesDate first later identity state =
+  recordedDefeatIsUnchanged later identity (recordDefeatTime first identity state)
+    (Retirement.recordFirst first (lookupRetirement identity state)) (firstDefeatReadable first identity state)
 
 replyKey? : ∀ token step row → Dec (token ≡ SavedReplyRow.token row × step ≡ SavedReplyRow.step row)
 replyKey? token step row = (token ≟ SavedReplyRow.token row) ×-dec (step ≟Text SavedReplyRow.step row)
@@ -167,11 +205,11 @@ otherSavedAnswerPreserved before token step proposed otherToken otherStep differ
 -- This projection is only a frame assertion. Recovery still observes the
 -- complete World, including all operation tables, without a smaller-world API.
 BusinessSnapshot = Learning.World × List Documents.Chunk ×
-  List (ℕ × Vector) × List (ℕ × Vector) × List Ground × RawHistory.Database
+  List (ℕ × Vector) × List (ℕ × Vector) × List Ground × RawHistory.Database × List (ℕ × Retirement.Clock)
 
 businessSnapshot : World → BusinessSnapshot
 businessSnapshot before = World.learning before , World.chunks before ,
-  World.beliefVectors before , World.chunkVectors before , World.grounds before , World.history before
+  World.beliefVectors before , World.chunkVectors before , World.grounds before , World.history before , World.retirementClocks before
 
 savingAnswerPreservesBusiness : ∀ before token step proposed →
   businessSnapshot (saveAnswer before token step proposed) ≡ businessSnapshot before
@@ -233,7 +271,8 @@ removeNodes ids retireCandidates w = record w
           ; edges = detach ids (Publication.World.edges pub)
           ; registry = registry }
       ; independentOrigins = filterᵇ (λ row → not (Ranking.member (proj₁ row) ids)) (Learning.World.independentOrigins learn) }
-  ; grounds = filterᵇ (λ e → not (Ranking.member (Ground.belief e) ids)) (World.grounds w) }
+  ; grounds = filterᵇ (λ e → not (Ranking.member (Ground.belief e) ids)) (World.grounds w)
+  ; retirementClocks = filterᵇ (λ row → not (Ranking.member (proj₁ row) ids)) (World.retirementClocks w) }
   where
   learn = World.learning w
   pub = Learning.World.publication learn

@@ -182,6 +182,7 @@ mod capture_tests {
             .join()
             .unwrap();
     }
+
     #[test]
     fn legacy_plans_keep_their_shape_and_reject_hidden_capture() -> Result<()> {
         let operation = Operation::named("delete_project").unwrap();
@@ -220,6 +221,12 @@ pub struct RegisteredStep {
     position: usize,
 }
 impl OperationPlan {
+    pub(crate) fn captured(&self) -> Option<&Value> {
+        self.inner.stored.capture.as_ref().map(|value| &**value)
+    }
+    pub(crate) fn original_request(&self) -> &OperationBindingRequest {
+        &self.inner.binding.request
+    }
     pub fn operation_token(&self) -> Uuid {
         self.inner.binding.operation_token
     }
@@ -233,6 +240,11 @@ impl OperationPlan {
     }
 }
 impl RegisteredStep {
+    pub(super) fn plan(&self) -> OperationPlan {
+        OperationPlan {
+            inner: self.inner.clone(),
+        }
+    }
     pub(super) fn is_final(&self) -> bool {
         self.position + 1 == self.inner.stored.steps.len()
     }
@@ -644,53 +656,75 @@ impl AgeStore {
         reply: Value,
     ) -> impl Future<Output = Result<CompletionDecision>> + Send + 'a {
         let reply = mimir_json::Document::new(reply);
-        async move {
-            let mut client = self.client.lock().await;
-            let tx = super::learning_transaction(&mut client).await?;
-            let token = plan.operation_token();
-            if !super::cancellations::lock_token(&tx, token).await? {
-                tx.rollback().await?;
-                return Ok(CompletionDecision::UnknownBinding);
-            }
-            let Some((original, matches)) =
-                binding(&tx, token, &plan.inner.binding.request, true).await?
-            else {
-                tx.rollback().await?;
-                return Ok(CompletionDecision::UnknownBinding);
-            };
-            if !matches {
-                tx.rollback().await?;
-                return Ok(CompletionDecision::ChangedRequest(original));
-            }
-            if let Some(cancelled) = super::cancellations::lookup(&tx, token).await? {
-                tx.rollback().await?;
-                return Ok(CompletionDecision::Cancelled(cancelled));
-            }
-            validate(&plan.inner.stored)?;
-            let (_, saved, next) = progress(&tx, token, &plan.inner.stored).await?;
-            if let Some(step) = plan.inner.stored.steps.get(next) {
-                let next = step.clone();
-                tx.rollback().await?;
-                return Ok(CompletionDecision::Incomplete(next));
-            }
-            let reply = match saved {
-                Some(reply) => reply,
-                None => {
-                    if let Some(last) = plan.inner.stored.steps.last() {
-                        let last = last.clone();
-                        tx.rollback().await?;
-                        return Ok(CompletionDecision::FinalStepRequired(last));
-                    }
-                    let encoded = mimir_json::to_string(&reply)?;
-                    let row=tx.query_one("INSERT INTO mimir_operation_step_replies (operation_token,step,reply) VALUES ($1,$2,$3::text::jsonb) RETURNING reply::text",&[&token,&RESULT_KEY,&encoded]).await?;
-                    mimir_json::from_str(row.try_get::<_, &str>(0)?)?
-                }
-            };
-            tx.commit().await?;
-            Ok(CompletionDecision::Done(CompletedOperation {
-                operation_token: token,
-                reply,
-            }))
+        self.complete_operation_checked(plan, move |_| {
+            Box::pin(async move { Ok(reply.into_value()) })
+        })
+    }
+
+    pub(super) async fn complete_operation_checked<F>(
+        &self,
+        plan: &OperationPlan,
+        verify: F,
+    ) -> Result<CompletionDecision>
+    where
+        F: for<'a, 'client> FnOnce(
+            &'a Transaction<'client>,
+        ) -> super::operation_steps::StepWork<'a>,
+    {
+        let mut client = self.client.lock().await;
+        let tx = super::learning_transaction(&mut client).await?;
+        let token = plan.operation_token();
+        if !super::cancellations::lock_token(&tx, token).await? {
+            tx.rollback().await?;
+            return Ok(CompletionDecision::UnknownBinding);
         }
+        let Some((original, matches)) =
+            binding(&tx, token, &plan.inner.binding.request, true).await?
+        else {
+            tx.rollback().await?;
+            return Ok(CompletionDecision::UnknownBinding);
+        };
+        if !matches {
+            tx.rollback().await?;
+            return Ok(CompletionDecision::ChangedRequest(original));
+        }
+        if let Some(cancelled) = super::cancellations::lookup(&tx, token).await? {
+            tx.rollback().await?;
+            return Ok(CompletionDecision::Cancelled(cancelled));
+        }
+        validate(&plan.inner.stored)?;
+        let (_, saved, next) = progress(&tx, token, &plan.inner.stored).await?;
+        if let Some(step) = plan.inner.stored.steps.get(next) {
+            let next = step.clone();
+            tx.rollback().await?;
+            return Ok(CompletionDecision::Incomplete(next));
+        }
+        let reply = match saved {
+            Some(reply) => reply,
+            None => {
+                if let Some(last) = plan.inner.stored.steps.last() {
+                    let last = last.clone();
+                    tx.rollback().await?;
+                    return Ok(CompletionDecision::FinalStepRequired(last));
+                }
+                let reply = match verify(&tx).await {
+                    Ok(reply) => mimir_json::Document::new(reply),
+                    Err(original) => {
+                        if let Err(rollback) = tx.rollback().await {
+                            return Err(anyhow!("Completion check failed but rollback could not be confirmed: {rollback:#}. Keep token {token} and read its outcome. Original cause: {original:#}"));
+                        }
+                        return Err(original);
+                    }
+                };
+                let encoded = mimir_json::to_string(&reply)?;
+                let row=tx.query_one("INSERT INTO mimir_operation_step_replies (operation_token,step,reply) VALUES ($1,$2,$3::text::jsonb) RETURNING reply::text",&[&token,&RESULT_KEY,&encoded]).await?;
+                mimir_json::from_str(row.try_get::<_, &str>(0)?)?
+            }
+        };
+        tx.commit().await?;
+        Ok(CompletionDecision::Done(CompletedOperation {
+            operation_token: token,
+            reply,
+        }))
     }
 }

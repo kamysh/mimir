@@ -77,6 +77,19 @@ impl RegisteredOperation {
         // with earlier commits (for example document loading and grounding).
         if matches!(
             self.handler,
+            Operation::Graph(GraphOperation::SweepExpiredDefeated | GraphOperation::RecordDefeat)
+                | Operation::Learning(LearningOperation::ReviewExperience)
+        ) {
+            if let Err(error) = &result {
+                if let Some(issue) =
+                    error.downcast_ref::<mimir_core::store::RetirementMetadataIssue>()
+                {
+                    return Ok(serde_json::to_value(issue.correction())?);
+                }
+            }
+        }
+        if matches!(
+            self.handler,
             Operation::Graph(
                 GraphOperation::RecordSupport
                     | GraphOperation::RecordCause

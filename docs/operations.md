@@ -206,3 +206,26 @@ file and ownership checks remain in force. New trace fields
 are absent. Batch state can contain every selected/deferred revision without a
 fixed file-size ceiling. Provider/platform limits remain external constraints;
 see the runtime guide for Anthropic’s required native capacity lookup.
+
+## Retirement after defeat
+
+Sweeping requires the user's `[retirement].grace_hours` setting. There is no
+default and no per-call override. The first actual defeat recorded by
+PostgreSQL starts that waiting period. Creating a correcting belief earlier
+does not start the clock, and another defeat or a retry never restarts it.
+
+For example, if the first defeat was recorded Monday and another correction
+is added Wednesday, the waiting period still starts Monday. Its date stays
+with the defeated target even if the original correcting belief is removed.
+The defeat edge, that date and the saved write receipt commit together.
+
+Older defeated targets that had no recorded defeat date are marked explicitly
+as already past their waiting period by the upgrade. This remains true for
+every configured grace period. It does not waive the other checks: the target
+must still have a visible defeat, be in the selected project, and fall below
+the requested probability threshold before it can be deleted.
+
+A new missing or conflicting date is not treated as old data. Mimir requests
+a user decision, identifies the stored metadata and migration receipt to
+inspect, and leaves the beliefs unchanged. Do not invent a historical date,
+restart the clock or delete a belief to bypass that request.
