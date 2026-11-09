@@ -489,3 +489,5 @@ import Mimir.JudgeCommandExecution
 
 import Mimir.PreparedRetrieval
 import Mimir.TraversalCompleteness
+import Mimir.OrderedRetrieval
+import Mimir.PublicRetrievalRecovery

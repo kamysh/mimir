@@ -476,9 +476,12 @@
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda",
-        "spec/Mimir/PreparedRetrieval.agda"
+        "spec/Mimir/PreparedRetrieval.agda",
+        "spec/Mimir/TraversalCompleteness.agda",
+        "spec/Mimir/OrderedRetrieval.agda",
+        "spec/Mimir/PublicRetrievalRecovery.agda"
       ],
-      "remaining": "Prepared default-preference intent is concrete. Public preparation/receipt coupling, memory-type preference recovery and Rust correspondence remain open.",
+      "remaining": "Public recovery certificate derives preference-aware responses and optional evidence from the whole stored world and the actual configured-backend/query receipt. Mandatory dispatcher registration (#74) and Rust correspondence remain open.",
       "baseline_gap": "Executable candidate selection, weighted RRF (k=60), memory preference, deterministic ordering/limits, project scope and evidence joins; comments and percentage sorting are insufficient."
     },
     {
