@@ -58,6 +58,7 @@ import Mimir.SignedMachine
 import Mimir.Effects
 import Mimir.Recovery
 import Mimir.RecoverableStoreStep
+import Mimir.RecoverableStoreSequence
 import Mimir.RegisteredStoreAdmission
 import Mimir.BeliefDeletionRecovery
 import Mimir.GroundingRecovery
