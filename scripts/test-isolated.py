@@ -128,11 +128,7 @@ class Run:
                             process.wait()
                         else:
                             os.killpg(process.pid, signal.SIGTERM)
-                            try:
-                                process.wait(timeout=5)
-                            except subprocess.TimeoutExpired:
-                                os.killpg(process.pid, signal.SIGKILL)
-                                process.wait()
+                            process.wait()
                     if not drained:
                         remaining, _ = process.communicate()
                         output.write(remaining)

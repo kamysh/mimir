@@ -66,5 +66,13 @@ database contract and stores complete stdout, stderr and actual exit status.
 `tests/judge-adapters.sh --cancellation-only` selects the stalled model,
 descendant and paused-watcher checks through the maintained entrypoint. The
 watcher check expects explicit retry rather than removed interval flags or an
-invented backoff. The separate generic-command and forced-shutdown grace
-periods remain unfinished under #116; readiness changes do not approve them.
+invented backoff.
+
+When the release runner is interrupted, it requests normal shutdown of its
+owned command group and awaits the owner's actual exit. The cancellation helper
+likewise sends SIGTERM to Mimir and waits for its existing stop handler to clean
+up MCP and model work. Neither helper chooses a five- or ten-second allowance
+or kills the outer owner because elapsed time passed. Output capture and owned
+tasks finish before the helper returns. A controlled check verifies that an
+owner reaps its child in a separate process group before that completion.
+Other fixture restrictions remain tracked by #116.

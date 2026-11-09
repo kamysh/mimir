@@ -296,6 +296,46 @@ class IsolationTests(unittest.TestCase):
         child.mkdir(mode=0o700)
         return runner.Run(child)
 
+    def test_interrupted_command_waits_for_owner_to_reap_its_separate_child_group(self):
+        run=self.owned_run("owned-stop")
+        child_source=(
+            'import signal,sys\n'
+            'def stopped(*_):\n'
+            '    print("child done",flush=True);sys.exit(0)\n'
+            'signal.signal(signal.SIGTERM,stopped)\n'
+            'print("child ready",flush=True)\n'
+            'signal.pause()\n')
+        marker=run.root/"owner-completed.json"
+        source=(
+            'import json,os,signal,subprocess,sys\nfrom pathlib import Path\n'
+            f'child=subprocess.Popen([sys.executable,"-c",{child_source!r}],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)\n'
+            'separate=os.getpgid(child.pid)!=os.getpgrp()\n'
+            'def stopped(*_):\n'
+            '    os.killpg(child.pid,signal.SIGTERM)\n'
+            '    out,err=child.communicate()\n'
+            '    sys.stdout.write(out);sys.stdout.flush()\n'
+            '    sys.stderr.write(err+"owner cleanup diagnostics\\n");sys.stderr.flush()\n'
+            f'    Path({str(marker)!r}).write_text(json.dumps({{"child_status":child.returncode,"separate_group":separate}}))\n'
+            '    print("owner done",flush=True);sys.exit(0)\n'
+            'signal.signal(signal.SIGTERM,stopped)\n'
+            'assert child.stdout.readline()=="child ready\\n"\n'
+            f'os.kill({os.getpid()},signal.SIGUSR1)\n'
+            'signal.pause()\n')
+
+        def interrupted(*_):
+            raise InterruptedError("owned cancellation requested")
+
+        prior=runner.signal.signal(runner.signal.SIGUSR1,interrupted)
+        try:
+            with self.assertRaisesRegex(InterruptedError,"owned cancellation requested"):
+                run.command("owned-stop",[sys.executable,"-c",source])
+        finally:
+            runner.signal.signal(runner.signal.SIGUSR1,prior)
+        self.assertEqual(json.loads(marker.read_text()),{"child_status":0,"separate_group":True})
+        self.assertEqual((run.root/"001-owned-stop.exit").read_text(),"0\n")
+        self.assertEqual((run.root/"001-owned-stop.stdout").read_text(),"child done\nowner done\n")
+        self.assertEqual((run.root/"001-owned-stop.stderr").read_text(),"owner cleanup diagnostics\n")
+
     def test_readiness_ignores_bootstrap_and_preserves_both_output_streams(self):
         run = self.owned_run("readiness")
         script = (

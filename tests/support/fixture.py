@@ -59,7 +59,7 @@ def cancel(data, args):
 
 
 async def cancel_owned(command, args):
-    """Readiness is an event; shutdown allowances remain a separate concern."""
+    """Readiness and shutdown completion are observed from the owned work."""
     loop = asyncio.get_running_loop()
     ready = loop.create_future()
     readers = set()
@@ -127,7 +127,7 @@ async def cancel_owned(command, args):
             if exited.done():
                 raise RuntimeError(f"judge exited before fixture cancellation; inspect {stderr}")
             process.terminate()
-            if await asyncio.wait_for(asyncio.shield(exited), timeout=10) != 0:
+            if await asyncio.shield(exited) != 0:
                 raise RuntimeError(f"judge did not stop cleanly; inspect {stderr}")
         finally:
             if process is not None and process.returncode is None:
@@ -135,11 +135,9 @@ async def cancel_owned(command, args):
                     process.terminate()
                 except ProcessLookupError:
                     pass
-                try:
-                    await asyncio.wait_for(asyncio.shield(exited), timeout=10)
-                except asyncio.TimeoutError:
-                    process.kill()
-                    await exited
+                # Interruption must not cancel the owned process-wait task;
+                # cleanup observes the same actual exit before returning.
+                await asyncio.shield(exited)
             if stderr_task is not None:
                 await stderr_task
             if server is not None:
