@@ -27,6 +27,9 @@ Transactions that stage a review, grounding or deletion roll back instead of
 publishing their partial state. The current `record_defeat` path has an earlier
 edge commit: its response explicitly identifies that committed edge and says
 that no posterior was published. It must not claim that nothing changed.
+A partial dialog is a separate formal outcome. Emitting the edge fact requires
+its committed statement receipt; it cannot be emitted as a no-change
+correction or completed work.
 Document loading and multi-item sweeping have their own earlier commits and
 must not inherit an inner step's no-change claim.
 

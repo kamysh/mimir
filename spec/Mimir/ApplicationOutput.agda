@@ -61,6 +61,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     success : V.Value → Projection
     failure : A.Result → Projection
     decision : Errors.AgentCorrection.Claim → Projection
+    partialDecision : Mutation.CommittedEdge → Errors.AgentCorrection.Claim → Projection
 
   flag : String → Bool → V.Value
   flag fieldKey value = object ((fieldKey , V.boolean value) ∷ [])
@@ -90,6 +91,19 @@ module Project (environment : Application.Environment) (format : Encoding.Format
          numericalCounts repeated ++ toList "Observed history: " ++ numericalHistory visited))
       (toList "Every final alpha and beta must equal the value recomputed from its fixed prior and all incoming evidence in that same final state.")
       (toList "Open a dialog with the user showing the repeated values. Ask whether to cancel or agree on an explicit numerical accuracy policy before retrying. Do not choose an iterate, change weights, invent a tolerance, or retry automatically.")) []
+
+  partialValue : Mutation.CommittedEdge → Errors.AgentCorrection.Claim → V.Value
+  partialValue edge report = object
+    (("status" , V.string (toList "needs_input")) ∷
+     ("issues" , Errors.AgentCorrection.issues report) ∷
+     ("next_action" , V.string (toList "ask_user")) ∷
+     ("business_changes" , object (("committed_edge" , object
+       (("from_id" , uuid (Mutation.CommittedEdge.from edge)) ∷
+        ("to_id" , uuid (Mutation.CommittedEdge.to edge)) ∷
+        ("relation" , V.string (toList "defeats")) ∷
+        ("weight" , V.floating (Mutation.CommittedEdge.weight edge)) ∷ [])) ∷ [])) ∷
+     ("posterior_publication" , V.string (toList "not_performed")) ∷
+     ("message" , V.string (toList "The defeat edge was committed before propagation requested a user decision. The edge remains stored; no posterior update was published. Open the user dialog using the repeated values. Do not report this operation as complete or claim that nothing changed.")) ∷ [])
 
   patternResult : Pattern.Result → V.Value
   patternResult p = object (("pattern" , patternValue (Pattern.Result.patternValue p)) ∷
@@ -157,6 +171,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project (A.mutated Mutation.edgeInserted) = success (flag "ok" true)
   project (A.mutated (Mutation.needsInput report)) = decision report
   project (A.mutated (Mutation.embeddingFailed (Embedding.needsUserDecision report))) = decision report
+  project (A.mutated (Mutation.edgeNeedsDecision edge repeated visited)) = partialDecision edge (numericalCorrection repeated visited)
   project original@(A.mutated _) = failure original
   project original@(A.readResult result) = projectRead original result
   project (A.deleted (A.Delete.T.applied value)) = success (flag "deleted" value)

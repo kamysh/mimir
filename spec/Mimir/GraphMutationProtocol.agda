@@ -9,7 +9,7 @@ open import Data.Integer using (ℤ)
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
-open import Data.Product using (_×_; _,_)
+open import Data.Product using (Σ; _×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -30,7 +30,12 @@ import Mimir.DatabaseTransaction as DB
 import Mimir.Effects as Effects
 import Mimir.Validation as Validation
 import Mimir.McpErrors as Errors
+import Mimir.PosteriorComputation as Posterior
 module Correction = Errors.AgentCorrection
+
+record CommittedEdge : Set where
+  constructor committedEdge
+  field from to : ℕ; weight : Number
 
 data Request : Set where
   belief : Text → Float → Float → Maybe Text → C.Memory → Maybe Origin.Provenance → Request
@@ -88,6 +93,7 @@ data Result : Set where
   insertedPattern : G.PatternValues → Result
   embeddingFailed : Embedding.Failure → Result
   propagationFailed : Inference.Result → Result
+  edgeNeedsDecision : CommittedEdge → Posterior.State → List Posterior.State → Result
   edgeInserted : Result
 
 liftEmbedding : ∀ {A : Set} → Embedding.E.Script A → Script A
@@ -122,15 +128,17 @@ makePattern situation approach success project (id , now) with Records.newPatter
 ... | just p = write (insertPattern scoped) (done (insertedPattern scoped))
   where scoped = record p { project = project }
 
-afterPropagation : Inference.Result → Script Result
-afterPropagation (Inference.propagated values limit) = done edgeInserted
-afterPropagation result = done (propagationFailed result)
+afterPropagation : CommittedEdge → Inference.Result → Script Result
+afterPropagation savedEdge (Inference.propagated values limit) = done edgeInserted
+afterPropagation savedEdge (Inference.numericalDecision repeated visited) = done (edgeNeedsDecision savedEdge repeated visited)
+afterPropagation savedEdge result = done (propagationFailed result)
 
-afterEdge : R.Relation → ℕ → Script Result
-afterEdge R.defeats from = liftInference (Inference.start (Inference.propagate from)) >>= afterPropagation
-afterEdge R.supports from = done edgeInserted
-afterEdge R.causes from = done edgeInserted
-afterEdge R.contradicts from = done edgeInserted
+afterEdge : R.Relation → ℕ → ℕ → Number → Script Result
+afterEdge R.defeats from to weight = liftInference (Inference.start (Inference.propagate from)) >>=
+  afterPropagation (committedEdge from to weight)
+afterEdge R.supports from to weight = done edgeInserted
+afterEdge R.causes from to weight = done edgeInserted
+afterEdge R.contradicts from to weight = done edgeInserted
 
 start : Bool → Request → Script Result
 start enabled (belief content probability confidence project memory nothing)
@@ -157,4 +165,25 @@ start enabled (edge from to relation weight) with Numeric.number weight
 ... | nothing = done invalidNumbers
 ... | just value with Numbers.probability value
 ...   | false = done invalidNumbers
-...   | true = write (insertEdge from to relation weight) (afterEdge relation from)
+...   | true = write (insertEdge from to relation weight) (afterEdge relation from to weight)
+
+-- A dialog after this ordered write cannot erase its acknowledged commit.
+-- This holds for every continuation, diagnostic and observed suffix.
+partialRequiresAcknowledgedWrite : ∀ command next events savedEdge repeated visited →
+  E.Runs (write command next) events (edgeNeedsDecision savedEdge repeated visited) →
+  Σ (List E.Event) (λ rest → events ≡
+    ((statement command , inj₂ (receipt DB.committed)) ∷ rest))
+partialRequiresAcknowledgedWrite command next events savedEdge repeated visited
+  (E.replied _ _ (inj₁ error) execution) with E.completedCannotProduceEffects execution
+... | same , ()
+partialRequiresAcknowledgedWrite command next events savedEdge repeated visited
+  (E.replied _ _ (inj₂ (rejected report)) execution) with E.completedCannotProduceEffects execution
+... | same , ()
+partialRequiresAcknowledgedWrite command next ._ savedEdge repeated visited
+  (E.replied _ _ (inj₂ (receipt DB.committed)) {events = rest} execution) = rest , refl
+partialRequiresAcknowledgedWrite command next events savedEdge repeated visited
+  (E.replied _ _ (inj₂ (receipt DB.aborted)) execution) with E.completedCannotProduceEffects execution
+... | same , ()
+partialRequiresAcknowledgedWrite command next events savedEdge repeated visited
+  (E.replied _ _ (inj₂ (receipt DB.acknowledgementLost)) execution) with E.completedCannotProduceEffects execution
+... | same , ()

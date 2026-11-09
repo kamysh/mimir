@@ -19,6 +19,9 @@ import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
 import Mimir.ApplicationStore as Store
 import Mimir.McpErrors as Errors
+import Mimir.GraphMutationProtocol as Mutation
+import Mimir.DatabaseTransaction as Database
+import Mimir.ReviewSchema as Review
 module Correction = Errors.AgentCorrection
 
 data External : Exchange.Effect → Set where
@@ -44,6 +47,12 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
         (proof : Correction.Certified Store.BusinessSnapshot
           (Store.businessSnapshot before) (Store.businessSnapshot after)) →
         Materialized (H.preparationDecision (Correction.Certified.report proof)) (inj₂ (Correction.emitCorrection proof))
+      partial : ∀ {before after} edge report →
+        Mutation.StatementReceipt (Mutation.insertEdge
+          (Mutation.CommittedEdge.from edge) (Mutation.CommittedEdge.to edge)
+          Review.defeats (Mutation.CommittedEdge.weight edge)) before
+          (Mutation.receipt Database.committed) after →
+        Materialized (H.partialDecision edge report) (inj₂ (H.P.partialValue edge report))
 
     data Event : Set where
       external : (effect : Exchange.Effect) → External effect → Exchange.Reply effect → Event
