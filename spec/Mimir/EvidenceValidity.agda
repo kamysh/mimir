@@ -10,6 +10,9 @@ open import Data.Product using (_×_; _,_)
 open import Data.Unit using (⊤)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≟_)
+open import Data.Integer using (ℤ; _⊔_)
+import Data.Integer as Integer
+import Data.Integer.Properties as IntegerProps
 open import Relation.Nullary using (Dec; yes; no; does)
 open import Relation.Nullary.Decidable.Core using (_×-dec_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -62,6 +65,24 @@ updated : G.BeliefValues → P.Beta → G.BeliefValues
 updated before value = record before
   { alpha = P.Beta.alpha value ; beta = P.Beta.negative value
   ; probability = P.mean value ; confidence = P.confidence value }
+
+-- A physical posterior publication states which time its new counts represent.
+-- Earlier wall clocks or old reservations never rewind an existing baseline.
+accounted : ℤ → G.BeliefValues → G.BeliefValues
+accounted now before = record before
+  { decayAccountedAt = G.BeliefValues.decayAccountedAt before ⊔ now }
+
+accountedValid : ∀ now before → ValidBelief before → ValidBelief (accounted now before)
+accountedValid now before valid = valid
+
+accountedNeverRewinds : ∀ now before →
+  G.BeliefValues.decayAccountedAt before Integer.≤ G.BeliefValues.decayAccountedAt (accounted now before)
+accountedNeverRewinds now before = IntegerProps.i≤i⊔j (G.BeliefValues.decayAccountedAt before) now
+
+accountedThroughPublicationTime : ∀ now before → now Integer.≤ G.BeliefValues.decayAccountedAt (accounted now before)
+accountedThroughPublicationTime now before
+  rewrite IntegerProps.⊔-comm (G.BeliefValues.decayAccountedAt before) now =
+  IntegerProps.i≤i⊔j now (G.BeliefValues.decayAccountedAt before)
 
 updatedValid : ∀ before value → ValidBelief before → P.ValidCounts value → ValidBelief (updated before value)
 updatedValid before value (_ , prior , _) valid =

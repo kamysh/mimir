@@ -9,6 +9,7 @@ open import Data.Float.Base using (Float; _+_; _*_)
 open import Data.List using (List; []; _∷_; map; filterᵇ; foldl)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≟_)
+open import Data.Integer using (ℤ)
 open import Data.Product using (_×_; _,_; Σ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
@@ -146,19 +147,19 @@ data InferenceRead (databaseSum : List Float → Float) (snapshot : Store.World)
 data Statement : Set where
   insertBelief : Graph.BeliefValues → Maybe Origin.Provenance → Statement
   beliefVector : ℕ → Store.Vector → Statement
-  posterior : Posterior.State → Statement
+  posterior : ℤ → Posterior.State → Statement
 
 apply : Statement → Store.World → Store.World
 apply (insertBelief belief origin) = Write.insertBelief belief origin
 apply (beliefVector id vector) state = record state
   { beliefVectors = Store.putVector id vector (Store.World.beliefVectors state) }
-apply (posterior writes) state = Store.setNodes (Recompute.apply writes (Store.nodes state)) state
+apply (posterior publicationTime writes) state = Store.setNodes (Recompute.applyAt publicationTime writes (Store.nodes state)) state
 
 AdmittedStatement : Statement → Store.World → Set
 AdmittedStatement (insertBelief belief origin) before = Evidence.ValidBelief belief
 AdmittedStatement (beliefVector id vector) before =
   Σ Graph.BeliefValues (λ belief → Ranking.lookup id (Store.beliefs before) ≡ just belief)
-AdmittedStatement (posterior writes) before = Posterior.ValidState writes
+AdmittedStatement (posterior publicationTime writes) before = Posterior.ValidState writes
 
 record StatementPublication (statement : Statement) (before : Store.World)
   (receipt : DB.Receipt) (after : Store.World) : Set where
@@ -180,32 +181,32 @@ missingBeliefCannotPublishVector id vector before receipt after absent evidence
 
 -- A failed/lost acknowledgement has the same invariant on either possible
 -- published state. Admission never licenses replacing the original priors.
-posteriorPublicationPreservesValidity : ∀ writes before receipt after →
-  StatementPublication (posterior writes) before receipt after →
+posteriorPublicationPreservesValidity : ∀ publicationTime writes before receipt after →
+  StatementPublication (posterior publicationTime writes) before receipt after →
   All Evidence.ValidNode (Store.nodes before) → All Evidence.ValidNode (Store.nodes after)
-posteriorPublicationPreservesValidity writes before receipt after evidence valid =
+posteriorPublicationPreservesValidity publicationTime writes before receipt after evidence valid =
   DB.invariantPreserved (λ state → All Evidence.ValidNode (Store.nodes state))
     (StatementPublication.publication evidence) valid
-    (Recompute.applyPreservesValidity writes (Store.nodes before)
+    (Recompute.applyAtPreservesValidity publicationTime writes (Store.nodes before)
       (StatementPublication.admitted evidence) valid)
 
-posteriorPublicationPreservesOriginals : ∀ writes before receipt after →
-  StatementPublication (posterior writes) before receipt after →
+posteriorPublicationPreservesOriginals : ∀ publicationTime writes before receipt after →
+  StatementPublication (posterior publicationTime writes) before receipt after →
   Recompute.originals (Store.nodes after) ≡ Recompute.originals (Store.nodes before)
-posteriorPublicationPreservesOriginals writes before receipt after evidence =
+posteriorPublicationPreservesOriginals publicationTime writes before receipt after evidence =
   DB.invariantPreserved
     (λ state → Recompute.originals (Store.nodes state) ≡ Recompute.originals (Store.nodes before))
     (StatementPublication.publication evidence) refl
-    (Recompute.applyPreservesOriginals writes (Store.nodes before))
+    (Recompute.applyAtPreservesOriginals publicationTime writes (Store.nodes before))
 
 -- A learning-only proposed state never overwrites document/vector/grounding
 -- storage. These physical writes remain in the same database transaction.
 LearningPublication : Store.World → Learning.World → DB.Receipt → Store.World → Set
 LearningPublication before proposed receipt after = DB.Atomic before (Store.installLearning proposed before) receipt after
 
-module Bound (database : ℕ) (calculator : Posterior.Calculator) where
-  module G = Ground.Operation database calculator
-  module D = Deletion.Operation database calculator
+module Bound (database : ℕ) (calculator : Posterior.Calculator) (publicationTime : ℤ) where
+  module G = Ground.Operation database calculator publicationTime
+  module D = Deletion.Operation database calculator publicationTime
 
   data GroundSuccess (chunk belief : ℕ) (weight : Float) : Set where
     committed : ∀ events → G.T.E.Runs (G.Run.P.start (Ground.add chunk belief weight)) events (G.T.applied tt) →
@@ -225,9 +226,9 @@ vectorWritePreservesLearning : ∀ id vector state →
   Store.World.learning (apply (beliefVector id vector) state) ≡ Store.World.learning state
 vectorWritePreservesLearning id vector state = refl
 
-posteriorWritePreservesEvidence : ∀ writes state →
-  Store.World.grounds (apply (posterior writes) state) ≡ Store.World.grounds state
-posteriorWritePreservesEvidence writes state = refl
+posteriorWritePreservesEvidence : ∀ publicationTime writes state →
+  Store.World.grounds (apply (posterior publicationTime writes) state) ≡ Store.World.grounds state
+posteriorWritePreservesEvidence publicationTime writes state = refl
 
 learningCommitPreservesOtherStores : ∀ before proposed receipt after →
   LearningPublication before proposed receipt after →

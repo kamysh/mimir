@@ -61,6 +61,7 @@ import Mimir.RecoverableStoreStep
 import Mimir.RecoverableStoreSequence
 import Mimir.RegisteredStoreAdmission
 import Mimir.BeliefDeletionRecovery
+import Mimir.DecayRecovery
 import Mimir.GroundingRecovery
 import Mimir.AtomicFile
 import Mimir.CharacterRules

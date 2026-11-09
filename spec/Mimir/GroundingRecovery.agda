@@ -81,7 +81,7 @@ module Business (databaseSum : List Float → Float) (calculator : P.Calculator)
 
   Outcome = Diagnostic ⊎ (Store.World × Wire.Value)
 
-  module Selected (selected : N.Context) where
+  module Selected (publicationTime : ℤ) (selected : N.Context) where
     open N.Context selected
     module A = P.Assess seed external edges targets
     module C = N.Cycle selected edges
@@ -94,7 +94,7 @@ module Business (databaseSum : List Float → Float) (calculator : P.Calculator)
     Goal : Store.World → Outcome → Set
     Goal before (inj₁ diagnostic) = DiagnosticGoal diagnostic
     Goal before (inj₂ (after , reply)) = Σ (List (ℕ × Float)) (λ numericalReply →
-      N.Completed selected before after numericalReply × reply ≡ answer)
+      N.Completed publicationTime selected before after numericalReply × reply ≡ answer)
 
     report = calculator seed external edges targets
 
@@ -102,7 +102,7 @@ module Business (databaseSum : List Float → Float) (calculator : P.Calculator)
     checked before with A.check report in assessed
     ... | A.rejected = inj₁ (rejectedReport report) , assessed
     ... | A.accepted counts valid shape complete =
-      inj₂ (N.proposed selected before counts , answer) ,
+      inj₂ (N.proposed publicationTime selected before counts , answer) ,
       Numeric.project (N.writes selected counts) ,
       (edges , Perm.↭-refl , counts , valid , shape , complete , refl , refl) , refl
     ... | A.repeated final visited seen incomplete runs =
@@ -116,38 +116,38 @@ module Business (databaseSum : List Float → Float) (calculator : P.Calculator)
     ... | true = refl
     ... | false = refl
 
-  Goal : Ground.Request → Store.World → Outcome → Set
-  Goal request before outcome with intendedEvidence request before
+  Goal : ℤ → Ground.Request → Store.World → Outcome → Set
+  Goal publicationTime request before outcome with intendedEvidence request before
   ... | inj₁ fault = outcome ≡ inj₁ (requestFault fault)
   ... | inj₂ proposed with N.prepare (N.recompute (root request ∷ [])) proposed
   ... | inj₁ issue = outcome ≡ inj₁ (preparation issue)
-  ... | inj₂ selected = Selected.Goal selected proposed outcome
+  ... | inj₂ selected = Selected.Goal publicationTime selected proposed outcome
 
-  checked : ∀ request before → Σ Outcome (Goal request before)
-  checked request before with intendedEvidence request before
+  checked : ∀ publicationTime request before → Σ Outcome (Goal publicationTime request before)
+  checked publicationTime request before with intendedEvidence request before
   ... | inj₁ fault = inj₁ (requestFault fault) , refl
   ... | inj₂ proposed with N.prepare (N.recompute (root request ∷ [])) proposed
   ... | inj₁ issue = inj₁ (preparation issue) , refl
-  ... | inj₂ selected = Selected.checked selected proposed
+  ... | inj₂ selected = Selected.checked publicationTime selected proposed
 
-  publicationKeepsJournal : ∀ request before after reply → Goal request before (inj₂ (after , reply)) →
+  publicationKeepsJournal : ∀ publicationTime request before after reply → Goal publicationTime request before (inj₂ (after , reply)) →
     Store.World.operations after ≡ Store.World.operations before
-  publicationKeepsJournal request before after reply correct with intendedEvidence request before in intended
+  publicationKeepsJournal publicationTime request before after reply correct with intendedEvidence request before in intended
   ... | inj₁ fault with correct
   ... | ()
-  publicationKeepsJournal request before after reply correct | inj₂ proposed
+  publicationKeepsJournal publicationTime request before after reply correct | inj₂ proposed
     with N.prepare (N.recompute (root request ∷ [])) proposed
   ... | inj₁ issue with correct
   ... | ()
-  publicationKeepsJournal request before after reply correct | inj₂ proposed | inj₂ selected =
+  publicationKeepsJournal publicationTime request before after reply correct | inj₂ proposed | inj₂ selected =
     Relation.Binary.PropositionalEquality.trans
-      (Selected.publicationKeepsJournal selected proposed after reply correct)
+      (Selected.publicationKeepsJournal publicationTime selected proposed after reply correct)
       (intendedKeepsJournal request before proposed intended)
 
-  journalUnchanged : ∀ request before after reply → proj₁ (checked request before) ≡ inj₂ (after , reply) →
+  journalUnchanged : ∀ publicationTime request before after reply → proj₁ (checked publicationTime request before) ≡ inj₂ (after , reply) →
     Store.World.operations after ≡ Store.World.operations before
-  journalUnchanged request before after reply accepted = publicationKeepsJournal request before after reply
-    (subst (Goal request before) accepted (proj₂ (checked request before)))
+  journalUnchanged publicationTime request before after reply accepted = publicationKeepsJournal publicationTime request before after reply
+    (subst (Goal publicationTime request before) accepted (proj₂ (checked publicationTime request before)))
 
 data Kind : Set where addition removal : Kind
 
@@ -192,11 +192,12 @@ module Registered (kind : Kind) (conversion : Conversion.Contract)
   request : Wire.Value → Validation.Fault ⊎ Ground.Request
   request = requestFor kind
 
-  original : ℕ → Step.Registration → Validation.Fault ⊎ Ground.Request
+  original : ℕ → Step.Registration → Validation.Fault ⊎ (Ground.Request × ℤ)
   original token registration with Admission.resolve descriptor token registration
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ (reserved , binding) with Store.BindingRow.settings binding
-  ... | Wire.object [] = request (Store.BindingRow.arguments binding)
+  ... | Wire.object [] = Decode.mapResult (λ requested → requested , Store.ReservationRow.reservedAt reserved)
+    (request (Store.BindingRow.arguments binding))
   ... | _ = inj₁ mismatch
 
   admit : ℕ → Step.Registration → Maybe B.Diagnostic
@@ -207,56 +208,56 @@ module Registered (kind : Kind) (conversion : Conversion.Contract)
   decide : ℕ → Store.World → B.Outcome
   decide token before with original token (Step.registration before)
   ... | inj₁ fault = inj₁ (B.requestFault fault)
-  ... | inj₂ requested = proj₁ (B.checked requested before)
+  ... | inj₂ (requested , publicationTime) = proj₁ (B.checked publicationTime requested before)
 
   keepsJournal : ∀ token before after reply → decide token before ≡ inj₂ (after , reply) →
     Store.World.operations after ≡ Store.World.operations before
   keepsJournal token before after reply accepted with original token (Step.registration before)
   ... | inj₁ fault with accepted
   ... | ()
-  keepsJournal token before after reply accepted | inj₂ requested = B.journalUnchanged requested before after reply accepted
+  keepsJournal token before after reply accepted | inj₂ (requested , publicationTime) = B.journalUnchanged publicationTime requested before after reply accepted
 
   module Saved = Step.Admitted ℕ B.Diagnostic (λ token → token) key distinct decide keepsJournal admit
 
-  FreshGoal : ℕ → Ground.Request → Store.World → Store.World → Saved.Reply → Set
-  FreshGoal token requested before after (Step.done reply) = Σ Store.World (λ changed →
-    B.Goal requested before (inj₂ (changed , reply)) × after ≡ Saved.Kernel.publication token changed reply)
-  FreshGoal token requested before after (Step.needsInput diagnostic) =
-    after ≡ before × B.Goal requested before (inj₁ diagnostic)
-  FreshGoal token requested before after _ = ⊥
+  FreshGoal : ℕ → Ground.Request → ℤ → Store.World → Store.World → Saved.Reply → Set
+  FreshGoal token requested publicationTime before after (Step.done reply) = Σ Store.World (λ changed →
+    B.Goal publicationTime requested before (inj₂ (changed , reply)) × after ≡ Saved.Kernel.publication token changed reply)
+  FreshGoal token requested publicationTime before after (Step.needsInput diagnostic) =
+    after ≡ before × B.Goal publicationTime requested before (inj₁ diagnostic)
+  FreshGoal token requested publicationTime before after _ = ⊥
 
-  originalDecides : ∀ token before requested → original token (Step.registration before) ≡ inj₂ requested →
-    decide token before ≡ proj₁ (B.checked requested before)
-  originalDecides token before requested bound rewrite bound = refl
+  originalDecides : ∀ token before requested publicationTime → original token (Step.registration before) ≡ inj₂ (requested , publicationTime) →
+    decide token before ≡ proj₁ (B.checked publicationTime requested before)
+  originalDecides token before requested publicationTime bound rewrite bound = refl
 
-  freshMeaning : ∀ token requested before → original token (Step.registration before) ≡ inj₂ requested →
-    FreshGoal token requested before (proj₁ (Saved.Kernel.fresh token before)) (proj₂ (Saved.Kernel.fresh token before))
-  freshMeaning token requested before bound rewrite originalDecides token before requested bound
-    with B.checked requested before
+  freshMeaning : ∀ token requested publicationTime before → original token (Step.registration before) ≡ inj₂ (requested , publicationTime) →
+    FreshGoal token requested publicationTime before (proj₁ (Saved.Kernel.fresh token before)) (proj₂ (Saved.Kernel.fresh token before))
+  freshMeaning token requested publicationTime before bound rewrite originalDecides token before requested publicationTime bound
+    with B.checked publicationTime requested before
   ... | inj₁ diagnostic , correct = refl , correct
   ... | inj₂ (changed , reply) , correct = changed , correct , refl
 
   Goal : ℕ → Store.World → Store.World → Saved.Reply → Set
   Goal token before after reply with original token (Step.registration before)
   ... | inj₁ fault = after ≡ before × reply ≡ Step.needsInput (B.requestFault fault)
-  ... | inj₂ requested with Store.lookupCancellation before token
+  ... | inj₂ (requested , publicationTime) with Store.lookupCancellation before token
   ... | just cancelled = after ≡ before × reply ≡ Step.cancelled cancelled
   ... | nothing with Store.lookupSaved before token (key token) | Store.lookupSaved before token Step.resultKey
   ... | just saved | just _ = after ≡ before × reply ≡ Step.done saved
   ... | just _ | nothing = after ≡ before × reply ≡ Step.needsRecovery
   ... | nothing | just _ = after ≡ before × reply ≡ Step.needsRecovery
-  ... | nothing | nothing = FreshGoal token requested before after reply
+  ... | nothing | nothing = FreshGoal token requested publicationTime before after reply
 
   meaning : ∀ token before → Goal token before (proj₁ (Saved.execute token before)) (proj₂ (Saved.execute token before))
   meaning token before with original token (Step.registration before) in bound
   ... | inj₁ fault = refl , refl
-  ... | inj₂ requested with Store.lookupCancellation before token
+  ... | inj₂ (requested , publicationTime) with Store.lookupCancellation before token
   ... | just cancelled = refl , refl
   ... | nothing with Store.lookupSaved before token (key token) | Store.lookupSaved before token Step.resultKey
   ... | just saved | just _ = refl , refl
   ... | just _ | nothing = refl , refl
   ... | nothing | just _ = refl , refl
-  ... | nothing | nothing = freshMeaning token requested before bound
+  ... | nothing | nothing = freshMeaning token requested publicationTime before bound
 
   module Certified = Saved.Certified Goal meaning
   operation = Certified.operation

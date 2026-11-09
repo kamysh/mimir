@@ -8,6 +8,7 @@ open import Data.Bool using (Bool; true; false)
 open import Data.List using (List; []; _∷_; map; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≟_)
+open import Data.Integer using (ℤ)
 open import Data.Product using (_×_; _,_; proj₁; proj₂)
 open import Data.String using (toList)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -164,7 +165,7 @@ data Failure : Set where
 
   numericalDecision : Posterior.State → List Posterior.State → Failure
 
-module Operation (database : ℕ) (calculator : Posterior.Calculator) where
+module Operation (database : ℕ) (calculator : Posterior.Calculator) (publicationTime : ℤ) where
   module T = Transaction.Over Store.World Bool Failure database 671942183
 
   finish : Store.World → Recompute.Result → T.Decision
@@ -179,7 +180,7 @@ module Operation (database : ℕ) (calculator : Posterior.Calculator) where
   ... | false = T.replay false
   ... | true with kind
   ...   | patternNode = T.replace (Store.removeNodes (id ∷ []) true state) true
-  ...   | belief = finish proposed (Recompute.runGlobal calculator (children id state)
+  ...   | belief = finish proposed (Recompute.runGlobal publicationTime calculator (children id state)
     (Store.nodes proposed) (Publication.World.edges pub)
     (Recompute.activeReviewsScoped nothing (Learning.identities learn) (Publication.World.ledger pub))
     (Store.groundingMasses proposed))

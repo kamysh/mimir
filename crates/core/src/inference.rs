@@ -477,20 +477,21 @@ impl InferenceEngine {
             if belief.memory_type != MemoryType::Fact {
                 continue;
             }
-            let days = ((now - belief.last_activated_at).num_seconds() as f64 / 86400.0).max(0.0);
+            let baseline = belief.last_activated_at.max(belief.decay_accounted_at);
+            if now <= baseline {
+                continue;
+            }
+            let elapsed = now - baseline;
+            let elapsed_nanos = i128::from(elapsed.num_seconds()) * 1_000_000_000
+                + i128::from(elapsed.subsec_nanos());
+            let days = elapsed_nanos as f64 / 86_400_000_000_000.0;
             let base_f = decay_factor.powf(days);
             // Apply decay-resistance: grounding mass damps the pull toward (1,1).
             let mass = grounding_masses.get(&belief.id).copied().unwrap_or(0.0);
             let f = 1.0 - (1.0 - base_f) / (1.0 + mass);
             let alpha = 1.0 + f * (belief.alpha - 1.0);
             let beta = 1.0 + f * (belief.beta - 1.0);
-            // RELATIVE threshold (scaled by current strength): f64::EPSILON is
-            // far below the ULP of α,β near κ≈200, so an absolute test cannot
-            // resolve a real fractional decay step on a strong belief.
-            let scale = (belief.alpha + belief.beta).max(1.0);
-            if (alpha - belief.alpha).abs() > f64::EPSILON * scale
-                || (beta - belief.beta).abs() > f64::EPSILON * scale
-            {
+            if alpha != belief.alpha || beta != belief.beta {
                 result.push((belief.id, (alpha, beta)));
             }
         }
@@ -959,6 +960,7 @@ mod tests {
         let mut b = Belief::new("old".to_string(), 0.9, 0.9).unwrap();
         // Wind back last_activated_at by 100 days
         b.last_activated_at -= chrono::Duration::days(100);
+        b.decay_accounted_at -= chrono::Duration::days(100);
         let now = chrono::Utc::now();
         let updates = engine()
             .decay_all(&[b.clone()], now, 0.99, &HashMap::new())
@@ -980,6 +982,7 @@ mod tests {
             .unwrap()
             .with_memory_type(crate::graph::MemoryType::Experiential);
         b.last_activated_at -= chrono::Duration::days(100);
+        b.decay_accounted_at -= chrono::Duration::days(100);
         let now = chrono::Utc::now();
         let updates = engine()
             .decay_all(&[b], now, 0.99, &HashMap::new())
@@ -996,6 +999,7 @@ mod tests {
             .unwrap()
             .with_memory_type(crate::graph::MemoryType::Working);
         b.last_activated_at -= chrono::Duration::days(100);
+        b.decay_accounted_at -= chrono::Duration::days(100);
         let now = chrono::Utc::now();
         let updates = engine()
             .decay_all(&[b], now, 0.99, &HashMap::new())
@@ -1010,10 +1014,12 @@ mod tests {
     fn test_decay_all_mixed_types_only_decays_fact() {
         let mut fact = Belief::new("fact".to_string(), 0.9, 0.9).unwrap();
         fact.last_activated_at -= chrono::Duration::days(100);
+        fact.decay_accounted_at -= chrono::Duration::days(100);
         let mut exp = Belief::new("lesson".to_string(), 0.9, 0.9)
             .unwrap()
             .with_memory_type(crate::graph::MemoryType::Experiential);
         exp.last_activated_at -= chrono::Duration::days(100);
+        exp.decay_accounted_at -= chrono::Duration::days(100);
 
         let updates = engine()
             .decay_all(

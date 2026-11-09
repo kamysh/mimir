@@ -9,6 +9,7 @@ open import Data.List using (List; []; _∷_; map)
 open import Data.List.Relation.Binary.Permutation.Propositional using (_↭_)
 open import Data.Maybe using (Maybe; nothing)
 open import Data.Nat using (ℕ)
+open import Data.Integer using (ℤ)
 open import Data.Product using (_,_; proj₁)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (tt)
@@ -40,12 +41,12 @@ module Bound (database maximumIndex : ℕ) (calculator : Posterior.Calculator) (
   (widen : Ranking.F32.Value float → Float)
   (home : Maybe Path.NativePath) (withExtension : Path.Path → Text → Path.Path) (pid : Text)
   (configured : Maybe Config.Embeddings) (ops : Read.VectorOperations)
-  (reads : Committed.Contract Store.World) where
+  (reads : Committed.Contract Store.World) (publicationTime : ℤ) where
   private
     module E = Embedding.Run float 768 maximumIndex numeric widen home withExtension pid
     module R = Committed.Contract reads
     module Vectors = Read.Vectors ops
-    module Atomic = B.Atomic database calculator
+    module Atomic = B.Atomic database calculator publicationTime
 
   module WithErrors (display : E.Failure → Text) where
     result : E.Result → Text ⊎ List Store.Vector

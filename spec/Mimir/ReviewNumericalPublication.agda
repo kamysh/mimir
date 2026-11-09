@@ -44,7 +44,7 @@ data NumericFailure : Set where
   numericalDecision : Posterior.State → List Posterior.State → NumericFailure
 
 module For (calculator : Posterior.Calculator) (before : Publication.World) (current : Experience) (requested : Review)
-  (clock : Candidate → ℤ)
+  (clock : Candidate → ℤ) (publicationTime : ℤ)
   (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes before)))
   (expected : ℕ) (experienceIDs : List ℕ) (ground : List (ℕ × Float)) where
 
@@ -62,7 +62,7 @@ module For (calculator : Posterior.Calculator) (before : Publication.World) (cur
   -- The identity proof is about the actual calculated node list, not a
   -- caller-supplied assertion that numeric code preserves graph identity.
   complete : (selected : F.Fresh expected) → Decision
-  complete selected with Recompute.run calculator project roots
+  complete selected with Recompute.run publicationTime calculator project roots
     (Publication.World.nodes staged) (Publication.World.edges staged)
     (Recompute.activeReviews project experienceIDs (Publication.World.ledger staged)) ground
     in calculated
@@ -74,7 +74,7 @@ module For (calculator : Posterior.Calculator) (before : Publication.World) (cur
   ... | Recompute.invalidNumericInput = numericFailure invalidInput
   ... | Recompute.invalidNumericWrite = numericFailure invalidWrite
   ... | Recompute.needsDecision counts history = numericFailure (numericalDecision counts history)
-  ... | Recompute.recomputed nodes limit = fresh selected nodes (Recompute.runPreservesIdentities calculator (Experience.project current)
+  ... | Recompute.recomputed nodes limit = fresh selected nodes (Recompute.runPreservesIdentities publicationTime calculator (Experience.project current)
      (oldTargets F.prior ++
       targets (F.P.materialized (F.Fresh.preparation selected)))
      (Publication.World.nodes (F.publish selected))

@@ -98,6 +98,7 @@ module Encode (format : Formatting) where
     ("alpha" , real (G.BeliefValues.alpha b)) ∷ ("beta" , real (G.BeliefValues.beta b)) ∷
     ("alpha0" , real (G.BeliefValues.alpha0 b)) ∷ ("beta0" , real (G.BeliefValues.beta0 b)) ∷
     ("created_at" , timestamp (G.BeliefValues.created b)) ∷ ("last_activated_at" , timestamp (G.BeliefValues.activated b)) ∷
+    ("decay_accounted_at" , timestamp (G.BeliefValues.decayAccountedAt b)) ∷
     ("memory_type" , V.string (Candidate.memoryText (G.BeliefValues.memory b))) ∷
     projectField (G.BeliefValues.project b))
     where

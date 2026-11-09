@@ -419,9 +419,13 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/DecayRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda",
+        "spec/Mimir/EvidenceValidity.agda"
       ],
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered storage decay has an original-time whole-world goal and isolated database checks; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
     },
     {

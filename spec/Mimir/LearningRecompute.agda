@@ -4,6 +4,7 @@
 module Mimir.LearningRecompute where
 
 open import Data.Float.Base using (Float; _+_; _*_)
+open import Data.Integer using (ℤ)
 open import Data.Bool using (Bool; true; false; _∧_; not)
 open import Data.List using (List; []; _∷_; _++_; map; length; concatMap)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
@@ -127,6 +128,18 @@ apply changes (Graph.beliefNode b ∷ ns) with Posterior.lookup (Graph.BeliefVal
 ... | nothing = Graph.beliefNode b ∷ apply changes ns
 ... | just value = Graph.beliefNode (Evidence.updated b value) ∷ apply changes ns
 
+-- Numerical preparation is count-only; the physical publication additionally
+-- records the explicit time represented by every written posterior.
+accountAt : ℤ → Posterior.State → List Graph.Node → List Graph.Node
+accountAt now changes [] = []
+accountAt now changes (Graph.patternNode p ∷ rest) = Graph.patternNode p ∷ accountAt now changes rest
+accountAt now changes (Graph.beliefNode b ∷ rest) with Posterior.lookup (Graph.BeliefValues.identity b) changes
+... | nothing = Graph.beliefNode b ∷ accountAt now changes rest
+... | just value = Graph.beliefNode (Evidence.accounted now b) ∷ accountAt now changes rest
+
+applyAt : ℤ → Posterior.State → List Graph.Node → List Graph.Node
+applyAt now changes nodes = accountAt now changes (apply changes nodes)
+
 applyPreservesValidity : ∀ changes nodes → Posterior.ValidState changes →
   All Evidence.ValidNode nodes → All Evidence.ValidNode (apply changes nodes)
 applyPreservesValidity changes [] writes [] = []
@@ -138,6 +151,21 @@ applyPreservesValidity changes (Graph.beliefNode b ∷ ns) writes (valid ∷ tai
 ... | just value = Evidence.updatedValid b value valid
   (Evidence.lookupValid (Graph.BeliefValues.identity b) changes value writes found) ∷
   applyPreservesValidity changes ns writes tail
+
+accountAtPreservesValidity : ∀ now changes nodes → All Evidence.ValidNode nodes →
+  All Evidence.ValidNode (accountAt now changes nodes)
+accountAtPreservesValidity now changes [] [] = []
+accountAtPreservesValidity now changes (Graph.patternNode p ∷ rest) (valid ∷ tail) =
+  valid ∷ accountAtPreservesValidity now changes rest tail
+accountAtPreservesValidity now changes (Graph.beliefNode b ∷ rest) (valid ∷ tail)
+  with Posterior.lookup (Graph.BeliefValues.identity b) changes
+... | nothing = valid ∷ accountAtPreservesValidity now changes rest tail
+... | just value = Evidence.accountedValid now b valid ∷ accountAtPreservesValidity now changes rest tail
+
+applyAtPreservesValidity : ∀ now changes nodes → Posterior.ValidState changes →
+  All Evidence.ValidNode nodes → All Evidence.ValidNode (applyAt now changes nodes)
+applyAtPreservesValidity now changes nodes writes valid =
+  accountAtPreservesValidity now changes (apply changes nodes) (applyPreservesValidity changes nodes writes valid)
 
 originals : List Graph.Node → List (ℕ × (Float × Float))
 originals [] = []
@@ -155,44 +183,58 @@ applyPreservesOriginals changes (Graph.beliefNode b ∷ rest)
 ... | just value = cong ((Graph.BeliefValues.identity b , Graph.BeliefValues.alpha0 b , Graph.BeliefValues.beta0 b) ∷_)
   (applyPreservesOriginals changes rest)
 
+accountAtPreservesOriginals : ∀ now changes nodes → originals (accountAt now changes nodes) ≡ originals nodes
+accountAtPreservesOriginals now changes [] = refl
+accountAtPreservesOriginals now changes (Graph.patternNode p ∷ rest) = accountAtPreservesOriginals now changes rest
+accountAtPreservesOriginals now changes (Graph.beliefNode b ∷ rest)
+  with Posterior.lookup (Graph.BeliefValues.identity b) changes
+... | nothing = cong ((Graph.BeliefValues.identity b , Graph.BeliefValues.alpha0 b , Graph.BeliefValues.beta0 b) ∷_)
+  (accountAtPreservesOriginals now changes rest)
+... | just value = cong ((Graph.BeliefValues.identity b , Graph.BeliefValues.alpha0 b , Graph.BeliefValues.beta0 b) ∷_)
+  (accountAtPreservesOriginals now changes rest)
+
+applyAtPreservesOriginals : ∀ now changes nodes → originals (applyAt now changes nodes) ≡ originals nodes
+applyAtPreservesOriginals now changes nodes = Relation.Binary.PropositionalEquality.trans
+  (accountAtPreservesOriginals now changes (apply changes nodes)) (applyPreservesOriginals changes nodes)
+
 data Result : Set where
   foreignTarget invalidNumericInput invalidNumericWrite : Result
   recomputed : List Graph.Node → Bool → Result
   needsDecision : Posterior.State → List Posterior.State → Result
 
-finish : List Graph.Node → Posterior.Result → Result
-finish nodes r with not (Posterior.Result.numericFailure r) ∧ validWrites (Posterior.Result.writes r)
+finish : ℤ → List Graph.Node → Posterior.Result → Result
+finish publicationTime nodes r with not (Posterior.Result.numericFailure r) ∧ validWrites (Posterior.Result.writes r)
 ... | false = invalidNumericWrite
 ... | true with Posterior.Result.dialogue r
 ...   | just (counts , history) = needsDecision counts history
-...   | nothing = recomputed (apply (Posterior.Result.writes r) nodes) false
+...   | nothing = recomputed (applyAt publicationTime (Posterior.Result.writes r) nodes) false
 
-finishPreservesValidity : ∀ nodes r after limit → All Evidence.ValidNode nodes →
-  finish nodes r ≡ recomputed after limit → All Evidence.ValidNode after
-finishPreservesValidity nodes r after limit valid observed
+finishPreservesValidity : ∀ publicationTime nodes r after limit → All Evidence.ValidNode nodes →
+  finish publicationTime nodes r ≡ recomputed after limit → All Evidence.ValidNode after
+finishPreservesValidity publicationTime nodes r after limit valid observed
   with not (Posterior.Result.numericFailure r) ∧ validWrites (Posterior.Result.writes r) in admitted
 ... | false with observed
 ...   | ()
-finishPreservesValidity nodes r after limit valid observed | true with Posterior.Result.dialogue r
+finishPreservesValidity publicationTime nodes r after limit valid observed | true with Posterior.Result.dialogue r
 ... | just decision with observed
 ...   | ()
-finishPreservesValidity nodes r after .false valid refl | true | nothing =
-  applyPreservesValidity (Posterior.Result.writes r) nodes
+finishPreservesValidity publicationTime nodes r after .false valid refl | true | nothing =
+  applyAtPreservesValidity publicationTime (Posterior.Result.writes r) nodes
     (Posterior.validStateSound (Posterior.Result.writes r)
       (Posterior.andRight (not (Posterior.Result.numericFailure r)) (validWrites (Posterior.Result.writes r)) admitted)) valid
 
-failedCalculationCannotSucceed : ∀ nodes r → Posterior.Result.numericFailure r ≡ true →
-  finish nodes r ≡ invalidNumericWrite
-failedCalculationCannotSucceed nodes r failed rewrite failed = refl
+failedCalculationCannotSucceed : ∀ publicationTime nodes r → Posterior.Result.numericFailure r ≡ true →
+  finish publicationTime nodes r ≡ invalidNumericWrite
+failedCalculationCannotSucceed publicationTime nodes r failed rewrite failed = refl
 
 evaluate : Posterior.Calculator → List Graph.Node → List Posterior.Node → List Posterior.Edge → Posterior.Result
 evaluate calculator nodes prepared incoming = Posterior.run nothing ext incoming prepared
   (calculator nothing ext incoming prepared)
   where ext = external (map Posterior.Node.identity prepared) (beliefs nodes)
 
-run : Posterior.Calculator → Text → List ℕ → List Graph.Node → List Edges.Edge →
+run : ℤ → Posterior.Calculator → Text → List ℕ → List Graph.Node → List Edges.Edge →
   List Review.Review → List (ℕ × Float) → Result
-run calculator project roots nodes edges reviews ground with owned project chosen
+run publicationTime calculator project roots nodes edges reviews ground with owned project chosen
   where chosen = selected (closure project (beliefs nodes) edges roots) (beliefs nodes)
 ... | false = foreignTarget
 ... | true with prepareNodes (concatMap Review.Review.feedbacks reviews) ground chosen
@@ -200,26 +242,26 @@ run calculator project roots nodes edges reviews ground with owned project chose
   where chosen = selected (closure project (beliefs nodes) edges roots) (beliefs nodes)
 ...   | nothing | _ = invalidNumericInput
 ...   | just prepared | nothing = invalidNumericInput
-...   | just prepared | just incoming = finish nodes
+...   | just prepared | just incoming = finish publicationTime nodes
   (evaluate calculator nodes prepared incoming)
 
-runPreservesValidity : ∀ calculator project roots nodes edges reviews ground after limit →
-  All Evidence.ValidNode nodes → run calculator project roots nodes edges reviews ground ≡ recomputed after limit →
+runPreservesValidity : ∀ publicationTime calculator project roots nodes edges reviews ground after limit →
+  All Evidence.ValidNode nodes → run publicationTime calculator project roots nodes edges reviews ground ≡ recomputed after limit →
   All Evidence.ValidNode after
-runPreservesValidity calculator project roots nodes edges reviews ground after limit valid observed
+runPreservesValidity publicationTime calculator project roots nodes edges reviews ground after limit valid observed
   with owned project (selected (closure project (beliefs nodes) edges roots) (beliefs nodes))
 ... | false with observed
 ...   | ()
-runPreservesValidity calculator project roots nodes edges reviews ground after limit valid observed | true
+runPreservesValidity publicationTime calculator project roots nodes edges reviews ground after limit valid observed | true
   with prepareNodes (concatMap Review.Review.feedbacks reviews) ground chosen
   | prepareEdges (map Graph.BeliefValues.identity chosen) edges
   where chosen = selected (closure project (beliefs nodes) edges roots) (beliefs nodes)
 ... | nothing | _ with observed
 ...   | ()
-runPreservesValidity calculator project roots nodes edges reviews ground after limit valid observed | true | just prepared | nothing with observed
+runPreservesValidity publicationTime calculator project roots nodes edges reviews ground after limit valid observed | true | just prepared | nothing with observed
 ... | ()
-runPreservesValidity calculator project roots nodes edges reviews ground after limit valid observed | true | just prepared | just incoming =
-  finishPreservesValidity nodes
+runPreservesValidity publicationTime calculator project roots nodes edges reviews ground after limit valid observed | true | just prepared | just incoming =
+  finishPreservesValidity publicationTime nodes
     (evaluate calculator nodes prepared incoming)
     after limit valid observed
 
@@ -232,32 +274,45 @@ identitiesPreserved changes (Graph.beliefNode b ∷ ns) with Posterior.lookup (G
 ... | just value = cong (Graph.BeliefValues.identity b ∷_)
   (identitiesPreserved changes ns)
 
-finishPreservesIdentities : ∀ nodes r after limit → finish nodes r ≡ recomputed after limit →
+accountIdentitiesPreserved : ∀ now changes nodes → map Graph.nodeID (accountAt now changes nodes) ≡ map Graph.nodeID nodes
+accountIdentitiesPreserved now changes [] = refl
+accountIdentitiesPreserved now changes (Graph.patternNode p ∷ rest) =
+  cong (Graph.PatternValues.identity p ∷_) (accountIdentitiesPreserved now changes rest)
+accountIdentitiesPreserved now changes (Graph.beliefNode b ∷ rest)
+  with Posterior.lookup (Graph.BeliefValues.identity b) changes
+... | nothing = cong (Graph.BeliefValues.identity b ∷_) (accountIdentitiesPreserved now changes rest)
+... | just value = cong (Graph.BeliefValues.identity b ∷_) (accountIdentitiesPreserved now changes rest)
+
+identitiesPreservedAt : ∀ now changes nodes → map Graph.nodeID (applyAt now changes nodes) ≡ map Graph.nodeID nodes
+identitiesPreservedAt now changes nodes = Relation.Binary.PropositionalEquality.trans
+  (accountIdentitiesPreserved now changes (apply changes nodes)) (identitiesPreserved changes nodes)
+
+finishPreservesIdentities : ∀ publicationTime nodes r after limit → finish publicationTime nodes r ≡ recomputed after limit →
   map Graph.nodeID after ≡ map Graph.nodeID nodes
-finishPreservesIdentities nodes r after limit proof with not (Posterior.Result.numericFailure r) ∧ validWrites (Posterior.Result.writes r)
+finishPreservesIdentities publicationTime nodes r after limit proof with not (Posterior.Result.numericFailure r) ∧ validWrites (Posterior.Result.writes r)
 ... | false with proof
 ...   | ()
-finishPreservesIdentities nodes r after limit observed | true with Posterior.Result.dialogue r
+finishPreservesIdentities publicationTime nodes r after limit observed | true with Posterior.Result.dialogue r
 ... | just decision with observed
 ...   | ()
-finishPreservesIdentities nodes r after .false refl | true | nothing = identitiesPreserved (Posterior.Result.writes r) nodes
+finishPreservesIdentities publicationTime nodes r after .false refl | true | nothing = identitiesPreservedAt publicationTime (Posterior.Result.writes r) nodes
 
-runPreservesIdentities : ∀ calculator project roots nodes edges reviews ground after limit →
-  run calculator project roots nodes edges reviews ground ≡ recomputed after limit →
+runPreservesIdentities : ∀ publicationTime calculator project roots nodes edges reviews ground after limit →
+  run publicationTime calculator project roots nodes edges reviews ground ≡ recomputed after limit →
   map Graph.nodeID after ≡ map Graph.nodeID nodes
-runPreservesIdentities calculator project roots nodes edges reviews ground after limit proof
+runPreservesIdentities publicationTime calculator project roots nodes edges reviews ground after limit proof
   with owned project (selected (closure project (beliefs nodes) edges roots) (beliefs nodes))
 ... | false with proof
 ...   | ()
-runPreservesIdentities calculator project roots nodes edges reviews ground after limit proof | true
+runPreservesIdentities publicationTime calculator project roots nodes edges reviews ground after limit proof | true
   with prepareNodes (concatMap Review.Review.feedbacks reviews) ground chosen
   | prepareEdges (map Graph.BeliefValues.identity chosen) edges
   where chosen = selected (closure project (beliefs nodes) edges roots) (beliefs nodes)
 ... | nothing | _ with proof
 ...   | ()
-runPreservesIdentities calculator project roots nodes edges reviews ground after limit proof | true | just prepared | nothing with proof
+runPreservesIdentities publicationTime calculator project roots nodes edges reviews ground after limit proof | true | just prepared | nothing with proof
 ... | ()
-runPreservesIdentities calculator project roots nodes edges reviews ground after limit proof | true | just prepared | just incoming = finishPreservesIdentities nodes
+runPreservesIdentities publicationTime calculator project roots nodes edges reviews ground after limit proof | true | just prepared | just incoming = finishPreservesIdentities publicationTime nodes
   (evaluate calculator nodes prepared incoming)
   after limit proof
 
@@ -271,12 +326,12 @@ activeReviewsScoped nothing (id ∷ ids) ledger with Ledger.activeApplied
 ... | nothing = activeReviewsScoped nothing ids ledger
 ... | just applied = applied ∷ activeReviewsScoped nothing ids ledger
 
-runGlobal : Posterior.Calculator → List ℕ → List Graph.Node → List Edges.Edge →
+runGlobal : ℤ → Posterior.Calculator → List ℕ → List Graph.Node → List Edges.Edge →
   List Review.Review → List (ℕ × Float) → Result
-runGlobal calculator roots nodes edges reviews ground with prepareNodes (concatMap Review.Review.feedbacks reviews) ground chosen
+runGlobal publicationTime calculator roots nodes edges reviews ground with prepareNodes (concatMap Review.Review.feedbacks reviews) ground chosen
   | prepareEdges (map Graph.BeliefValues.identity chosen) edges
   where chosen = selected (closureScoped nothing (beliefs nodes) edges roots) (beliefs nodes)
 ... | nothing | _ = invalidNumericInput
 ... | just prepared | nothing = invalidNumericInput
-... | just prepared | just incoming = finish nodes
+... | just prepared | just incoming = finish publicationTime nodes
   (evaluate calculator nodes prepared incoming)

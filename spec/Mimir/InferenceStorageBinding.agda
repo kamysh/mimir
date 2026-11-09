@@ -7,6 +7,7 @@ module Mimir.InferenceStorageBinding where
 open import Data.List using (List; []; _∷_; map; filterᵇ; concatMap)
 open import Data.Float.Base using (Float)
 open import Data.Nat using (ℕ; _≟_)
+open import Data.Integer using (ℤ)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Maybe using (Maybe; just; nothing)
@@ -109,33 +110,33 @@ module NumericalOutcome (databaseSum : List Float → Float) where
   writes : Context → P.State → P.State
   writes selected = P.updates (ordered selected)
 
-  proposed : Context → Store.World → P.State → Store.World
-  proposed selected before counts with Context.readOnly selected
+  proposed : ℤ → Context → Store.World → P.State → Store.World
+  proposed publicationTime selected before counts with Context.readOnly selected
   ... | true = before
-  ... | false = Store.setNodes (Recompute.apply (writes selected counts) (Store.nodes before)) before
+  ... | false = Store.setNodes (Recompute.applyAt publicationTime (writes selected counts) (Store.nodes before)) before
 
   -- Every stored component is retained in this equality. Only the declared
   -- posterior fields may differ; cached values are derived by apply.
-  Completed : Context → Store.World → Store.World → List (ℕ × Float) → Set
-  Completed selected before after reply = Σ (List P.Edge) (λ incoming →
+  Completed : ℤ → Context → Store.World → Store.World → List (ℕ × Float) → Set
+  Completed publicationTime selected before after reply = Σ (List P.Edge) (λ incoming →
     incoming ↭ Context.edges selected × Σ P.State (λ counts →
     P.ValidState counts ×
     map proj₁ counts ≡ map P.Node.identity (ordered selected) ×
     P.PosteriorGoal (Context.seed selected) (Context.external selected)
       incoming (ordered selected) counts ×
-    after ≡ proposed selected before counts ×
+    after ≡ proposed publicationTime selected before counts ×
     reply ≡ Numeric.project (writes selected counts)))
 
-  completedHasEveryPosterior : ∀ selected before after reply → Completed selected before after reply →
+  completedHasEveryPosterior : ∀ publicationTime selected before after reply → Completed publicationTime selected before after reply →
     Σ (List P.Edge) (λ incoming → incoming ↭ Context.edges selected ×
       Σ P.State (λ counts → P.PosteriorGoal (Context.seed selected) (Context.external selected)
         incoming (ordered selected) counts))
-  completedHasEveryPosterior selected before after reply (incoming , allInputs , counts , valid , shape , complete , framed , answered) =
+  completedHasEveryPosterior publicationTime selected before after reply (incoming , allInputs , counts , valid , shape , complete , framed , answered) =
     incoming , allInputs , counts , complete
 
-  readOnlyCompletionPreservesWholeWorld : ∀ selected before after reply →
-    Context.readOnly selected ≡ true → Completed selected before after reply → after ≡ before
-  readOnlyCompletionPreservesWholeWorld selected before after reply readOnly
+  readOnlyCompletionPreservesWholeWorld : ∀ publicationTime selected before after reply →
+    Context.readOnly selected ≡ true → Completed publicationTime selected before after reply → after ≡ before
+  readOnlyCompletionPreservesWholeWorld publicationTime selected before after reply readOnly
     (incoming , allInputs , counts , valid , shape , complete , framed , answered) rewrite readOnly = framed
 
   -- This projection is only a preservation theorem. Completed still compares
@@ -143,9 +144,9 @@ module NumericalOutcome (databaseSum : List Float → Float) where
   withoutNodes : Store.World → Store.World
   withoutNodes = Store.setNodes []
 
-  completedPreservesOtherStoreComponents : ∀ selected before after reply →
-    Completed selected before after reply → withoutNodes after ≡ withoutNodes before
-  completedPreservesOtherStoreComponents selected before after reply
+  completedPreservesOtherStoreComponents : ∀ publicationTime selected before after reply →
+    Completed publicationTime selected before after reply → withoutNodes after ≡ withoutNodes before
+  completedPreservesOtherStoreComponents publicationTime selected before after reply
     (incoming , allInputs , counts , valid , shape , complete , framed , answered) with Context.readOnly selected
   ... | true = cong withoutNodes framed
   ... | false rewrite framed = refl
@@ -169,13 +170,13 @@ module NumericalOutcome (databaseSum : List Float → Float) where
     needsDecision : P.State → List P.State → Result
     invalidCalculation : P.State → Result
 
-  PreparedGoal : Context → Store.World → Store.World → Result → Set
-  PreparedGoal selected before after (unavailable issue) = ⊥
-  PreparedGoal selected before after (calculated reply) = Completed selected before after reply
-  PreparedGoal selected before after (needsDecision repeated visited) =
+  PreparedGoal : ℤ → Context → Store.World → Store.World → Result → Set
+  PreparedGoal publicationTime selected before after (unavailable issue) = ⊥
+  PreparedGoal publicationTime selected before after (calculated reply) = Completed publicationTime selected before after reply
+  PreparedGoal publicationTime selected before after (needsDecision repeated visited) =
     after ≡ before × Σ (List P.Edge) (λ incoming →
       incoming ↭ Context.edges selected × Cycle.Repeated selected incoming repeated visited)
-  PreparedGoal selected before after (invalidCalculation counts) =
+  PreparedGoal publicationTime selected before after (invalidCalculation counts) =
     after ≡ before × Σ (List P.Edge) (λ incoming →
       incoming ↭ Context.edges selected × Cycle.Invalid selected incoming counts)
 
@@ -183,19 +184,19 @@ module NumericalOutcome (databaseSum : List Float → Float) where
   -- field for an operation to replace with a weaker condition. A publication
   -- wrapper must additionally retain its registered saved replies; this is
   -- the numerical business condition that wrapper has to establish.
-  Goal : Request → Store.World → Store.World → Result → Set
-  Goal request before after reply with prepare request before
+  Goal : ℤ → Request → Store.World → Store.World → Result → Set
+  Goal publicationTime request before after reply with prepare request before
   ... | inj₁ issue = after ≡ before × reply ≡ unavailable issue
-  ... | inj₂ selected = PreparedGoal selected before after reply
+  ... | inj₂ selected = PreparedGoal publicationTime selected before after reply
 
-  decisionCannotChangeStoredData : ∀ selected before after repeated visited →
-    PreparedGoal selected before after (needsDecision repeated visited) → after ≡ before
-  decisionCannotChangeStoredData selected before after repeated visited (unchanged , seen) = unchanged
+  decisionCannotChangeStoredData : ∀ publicationTime selected before after repeated visited →
+    PreparedGoal publicationTime selected before after (needsDecision repeated visited) → after ≡ before
+  decisionCannotChangeStoredData publicationTime selected before after repeated visited (unchanged , seen) = unchanged
 
-module Bound (database : ℕ) (calculator : P.Calculator) (sum : List Float → Float) (reads : Committed.Contract Store.World) where
+module Bound (database : ℕ) (calculator : P.Calculator) (sum : List Float → Float) (reads : Committed.Contract Store.World) (publicationTime : ℤ) where
   private
     module R = Read.Observed reads
-    module B = S.Bound database calculator
+    module B = S.Bound database calculator publicationTime
 
   data External : I.Effect → Set where
     clock : External I.clock
@@ -206,8 +207,8 @@ module Bound (database : ℕ) (calculator : P.Calculator) (sum : List Float → 
   data Receipt : (effect : I.Effect) → I.Reply effect → Set where
     selected : ∀ effect reply → R.SuccessfulInferenceReply sum effect reply → Receipt effect reply
     dependency : ∀ effect → External effect → (reply : I.Reply effect) → Receipt effect reply
-    persisted : ∀ writes before receipt after → S.StatementPublication (S.posterior writes) before receipt after →
-      Receipt (I.persistBeta writes) (inj₂ receipt)
+    persisted : ∀ publicationTime writes before receipt after → S.StatementPublication (S.posterior publicationTime writes) before receipt after →
+      Receipt (I.persistBeta publicationTime writes) (inj₂ receipt)
     deleted : ∀ id value → B.Deleted id value → Receipt (I.deleteBelief id) (inj₂ value)
     beliefFailed : ∀ id error → Receipt (I.getBelief id) (inj₁ error)
     descendantsFailed : ∀ id causal error → Receipt (I.descendants id causal) (inj₁ error)
@@ -218,5 +219,5 @@ module Bound (database : ℕ) (calculator : P.Calculator) (sum : List Float → 
     contradictionsFailed : ∀ scope error → Receipt (I.openContradictions scope) (inj₁ error)
     snapshotBeliefsFailed : ∀ tx first scope error → Receipt (I.snapshotBeliefs tx first scope) (inj₁ error)
     defeatsFailed : ∀ scope error → Receipt (I.defeatTimes scope) (inj₁ error)
-    persistenceFailed : ∀ writes error → Receipt (I.persistBeta writes) (inj₁ error)
+    persistenceFailed : ∀ publicationTime writes error → Receipt (I.persistBeta publicationTime writes) (inj₁ error)
     deletionFailed : ∀ id error → Receipt (I.deleteBelief id) (inj₁ error)
