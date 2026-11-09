@@ -1,4 +1,4 @@
 [workspace]
-members = ["crates/core", "crates/mcp", "crates/cli", "crates/notifications"]
+members = ["crates/core", "crates/mcp", "crates/cli", "crates/notifications", "crates/json"]
 resolver = "2"
 

@@ -82,7 +82,7 @@ async fn retry_after_reconnect_keeps_original_true_and_unrelated_records() -> Re
     let (store, service) = setup().await?;
     let removed = pattern(&store, identity().await?).await?;
     let retained = pattern(&store, identity().await?).await?;
-    let retained_before = serde_json::to_value(store.get_pattern(retained.id).await?)?;
+    let retained_before = mimir_json::to_value(store.get_pattern(retained.id).await?)?;
     let (other_token, other_step) =
         admitted(&service, "delete_pattern", json!({"id": identity().await?})).await?;
     let StepDecision::Done(other_reply) = service.delete_pattern_operation(&other_step).await?
@@ -103,7 +103,7 @@ async fn retry_after_reconnect_keeps_original_true_and_unrelated_records() -> Re
     assert_eq!(retried, first);
     assert_eq!(completed_reply(&reopened, token).await?, first.reply);
     assert_eq!(
-        serde_json::to_value(store.get_pattern(retained.id).await?)?,
+        mimir_json::to_value(store.get_pattern(retained.id).await?)?,
         retained_before
     );
     assert_eq!(
@@ -130,13 +130,13 @@ async fn saved_false_does_not_delete_a_pattern_created_after_completion() -> Res
     };
     assert_eq!(first.reply, json!({"deleted":false}));
     pattern(&store, id).await?;
-    let before = serde_json::to_value(store.get_pattern(id).await?)?;
+    let before = mimir_json::to_value(store.get_pattern(id).await?)?;
     let StepDecision::Done(retried) = service.delete_pattern_operation(&step).await? else {
         panic!("saved missing-pattern result absent")
     };
     assert_eq!(retried, first);
     assert_eq!(completed_reply(&service, token).await?, first.reply);
-    assert_eq!(serde_json::to_value(store.get_pattern(id).await?)?, before);
+    assert_eq!(mimir_json::to_value(store.get_pattern(id).await?)?, before);
     store.delete_pattern(id).await?;
     Ok(())
 }
@@ -236,7 +236,7 @@ async fn rejected_final_result_rolls_back_deletion_retirement_and_step_answer() 
 async fn another_registered_operation_cannot_enter_pattern_deletion() -> Result<()> {
     let (store, service) = setup().await?;
     let value = pattern(&store, identity().await?).await?;
-    let before = serde_json::to_value(store.get_pattern(value.id).await?)?;
+    let before = mimir_json::to_value(store.get_pattern(value.id).await?)?;
     let (token, wrong_step) =
         admitted(&service, "delete_project", json!({"project":value.project})).await?;
     let error = service
@@ -245,7 +245,7 @@ async fn another_registered_operation_cannot_enter_pattern_deletion() -> Result<
         .unwrap_err();
     assert!(error.to_string().contains("registered delete_pattern step"));
     assert_eq!(
-        serde_json::to_value(store.get_pattern(value.id).await?)?,
+        mimir_json::to_value(store.get_pattern(value.id).await?)?,
         before
     );
     assert!(service
@@ -275,12 +275,12 @@ async fn missing_final_answer_requires_recovery_without_reapplying_deletion() ->
     // Deliberately inconsistent legacy journal, confined to this test's token.
     // Existing immutable receipts and their protection are left intact.
     let original = service.read_operation_step(token, step.id()).await?;
-    let before = serde_json::to_value(store.get_pattern(id).await?)?;
+    let before = mimir_json::to_value(store.get_pattern(id).await?)?;
     assert!(matches!(
         service.delete_pattern_operation(&step).await?,
         StepDecision::NeedsRecovery(_)
     ));
-    assert_eq!(serde_json::to_value(store.get_pattern(id).await?)?, before);
+    assert_eq!(mimir_json::to_value(store.get_pattern(id).await?)?, before);
     assert_eq!(
         service.read_operation_step(token, step.id()).await?,
         original
@@ -307,12 +307,12 @@ async fn missing_step_answer_requires_recovery_before_any_business_change() -> R
             &[&token, &answer],
         )
         .await?;
-    let before = serde_json::to_value(store.get_pattern(id).await?)?;
+    let before = mimir_json::to_value(store.get_pattern(id).await?)?;
     assert!(matches!(
         service.delete_pattern_operation(&step).await?,
         StepDecision::NeedsRecovery(_)
     ));
-    assert_eq!(serde_json::to_value(store.get_pattern(id).await?)?, before);
+    assert_eq!(mimir_json::to_value(store.get_pattern(id).await?)?, before);
     assert!(service
         .read_operation_step(token, step.id())
         .await?

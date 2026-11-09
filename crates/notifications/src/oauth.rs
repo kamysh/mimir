@@ -48,7 +48,7 @@ fn identity(config: &EmailConfig) -> Result<Vec<u8>, AuthError> {
         OAuthProvider::Google => "google",
         OAuthProvider::Microsoft => "microsoft",
     };
-    let material = serde_json::to_vec(&(
+    let material = mimir_json::to_vec(&(
         provider,
         config.host.as_deref(),
         config.username.as_deref(),
@@ -124,7 +124,7 @@ async fn refresh(
         bytes.extend_from_slice(&chunk);
     }
     let reply: RefreshReply =
-        serde_json::from_slice(&bytes).map_err(|_| AuthError::NeedsAttention)?;
+        mimir_json::from_slice(&bytes).map_err(|_| AuthError::NeedsAttention)?;
     if !reply.token_type.eq_ignore_ascii_case("bearer")
         || !valid_token(&reply.access_token)
         || reply.expires_in == 0

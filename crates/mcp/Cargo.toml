@@ -8,6 +8,8 @@ name = "mimir-mcp"
 path = "src/main.rs"
 
 [dependencies]
+mimir-json = { path = "../json" }
+serde_stacker = "0.1.14"
 mimir-core = { path = "../core" }
 tokio = { version = "1.53.3", features = ["full"] }
 serde = { version = "1.0.229", features = ["derive"] }

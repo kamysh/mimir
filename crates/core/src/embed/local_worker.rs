@@ -152,7 +152,7 @@ impl Worker {
             .read_until(b'\n', &mut line)
             .await?;
         anyhow::ensure!(length != 0, "worker exited without a complete response");
-        match serde_json::from_slice(&line) {
+        match mimir_json::from_slice(&line) {
             Ok(response) => Ok(response),
             Err(error) => {
                 std::fs::write(self.directory.join("invalid-response.json"), line)?;
@@ -170,7 +170,7 @@ impl Worker {
             .into_iter()
             .map(|path| path.with_extension(format!("part-{}", self.child.id())))
             .collect();
-        let mut encoded = serde_json::to_vec(request)?;
+        let mut encoded = mimir_json::to_vec(request)?;
         encoded.push(b'\n');
         let input = self.input.as_mut().context("worker stdin unavailable")?;
         input.write_all(&encoded).await?;
@@ -250,7 +250,7 @@ fn worker_main() -> Result<()> {
     let mut selected: Option<Option<String>> = None;
     let mut output = std::io::stdout().lock();
     for line in receiver {
-        let request: Request = serde_json::from_str(&line?)?;
+        let request: Request = mimir_json::from_str(&line?)?;
         anyhow::ensure!(
             request.version == VERSION,
             "unsupported worker protocol version"

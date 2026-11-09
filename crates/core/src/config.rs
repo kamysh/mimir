@@ -82,7 +82,7 @@ mod embedding_policy_tests {
             assert!(error.contains(RETIRED_EMBEDDING_BATCH), "{error}");
             assert!(!error.contains("private-retired-value"), "{error}");
         }
-        let error = serde_json::from_value::<EmbeddingsConfig>(serde_json::json!({
+        let error = mimir_json::from_value::<EmbeddingsConfig>(serde_json::json!({
             "backend":"local", "batch_size":null
         }))
         .unwrap_err()
@@ -237,7 +237,7 @@ mod retirement_tests {
                 issue.correction().issues()[0].location(),
                 crate::interaction::Location::Configuration
             );
-            let encoded = serde_json::to_value(issue.correction()).unwrap();
+            let encoded = mimir_json::to_value(issue.correction()).unwrap();
             assert_eq!(encoded["status"], "needs_input");
             assert_eq!(encoded["business_changes"], "none");
             assert!(encoded.to_string().contains("user"));

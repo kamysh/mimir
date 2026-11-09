@@ -255,7 +255,8 @@ impl Client {
     }
 
     async fn send(&mut self, message: Value) -> Result<()> {
-        let mut bytes = serde_json::to_vec(&message)?;
+        let message = mimir_json::Document::new(message);
+        let mut bytes = mimir_json::to_vec(&message)?;
         bytes.push(b'\n');
         self.input.write_all(&bytes).await?;
         self.input.flush().await?;
@@ -280,7 +281,7 @@ impl Client {
             }
             bytes.push(byte);
         }
-        serde_json::from_slice(&bytes).map_err(|error| {
+        mimir_json::from_slice(&bytes).map_err(|error| {
             super::state::SourceFailure::json("malformed MCP response", &bytes, error).into()
         })
     }
@@ -325,58 +326,65 @@ impl Client {
         McpStreamEnded { stderr, issues }
     }
 
-    pub async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
-        let review_call = method == "tools/call" && params["name"] == "review_experience";
-        let id = self.next_id;
-        self.next_id = self
-            .next_id
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("MCP request ID overflow"))?;
-        self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
-            .await?;
-        loop {
-            let response = self.line().await?;
-            ensure!(
-                response.get("jsonrpc").and_then(Value::as_str) == Some("2.0"),
-                "invalid MCP envelope"
-            );
-            if response.get("id").is_none() {
+    pub fn request<'a>(
+        &'a mut self,
+        method: &'a str,
+        params: Value,
+    ) -> impl std::future::Future<Output = Result<mimir_json::Document>> + Send + 'a {
+        let params = mimir_json::Document::new(params);
+        async move {
+            let review_call = method == "tools/call" && params["name"] == "review_experience";
+            let id = self.next_id;
+            self.next_id = self
+                .next_id
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("MCP request ID overflow"))?;
+            self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
+                .await?;
+            loop {
+                let response = mimir_json::Document::new(self.line().await?);
                 ensure!(
-                    response.get("method").and_then(Value::as_str).is_some(),
-                    "invalid MCP notification"
+                    response.get("jsonrpc").and_then(Value::as_str) == Some("2.0"),
+                    "invalid MCP envelope"
                 );
-                continue;
-            }
-            ensure!(
-                response["id"].as_u64() == Some(id),
-                "unexpected MCP response ID"
-            );
-            if response.get("error").is_some() {
-                if method == "tools/call" {
-                    if let Some(refusal) = Refusal::from_mcp(&response["error"]) {
-                        return Err(match refusal.kind {
-                            RefusalKind::CandidateConflict if review_call => {
-                                CandidateConflict(refusal.fault).into()
-                            }
-                            RefusalKind::UndeclaredCandidate => {
-                                UndeclaredBeliefCandidate(refusal.fault).into()
-                            }
-                            _ => McpApplicationError(refusal.fault).into(),
-                        });
-                    }
+                if response.get("id").is_none() {
+                    ensure!(
+                        response.get("method").and_then(Value::as_str).is_some(),
+                        "invalid MCP notification"
+                    );
+                    continue;
                 }
-                let code = response["error"]["code"].as_i64().unwrap_or(-1);
-                let message = response["error"]["message"]
-                    .as_str()
-                    .unwrap_or("unspecified MCP failure");
-                // An unclassified error is not a validation refusal and cannot
-                // justify telling the model that no mutation occurred.
-                bail!("MCP error {code}: {message}");
+                ensure!(
+                    response["id"].as_u64() == Some(id),
+                    "unexpected MCP response ID"
+                );
+                if response.get("error").is_some() {
+                    if method == "tools/call" {
+                        if let Some(refusal) = Refusal::from_mcp(&response["error"]) {
+                            return Err(match refusal.kind {
+                                RefusalKind::CandidateConflict if review_call => {
+                                    CandidateConflict(refusal.fault).into()
+                                }
+                                RefusalKind::UndeclaredCandidate => {
+                                    UndeclaredBeliefCandidate(refusal.fault).into()
+                                }
+                                _ => McpApplicationError(refusal.fault).into(),
+                            });
+                        }
+                    }
+                    let code = response["error"]["code"].as_i64().unwrap_or(-1);
+                    let message = response["error"]["message"]
+                        .as_str()
+                        .unwrap_or("unspecified MCP failure");
+                    // An unclassified error is not a validation refusal and cannot
+                    // justify telling the model that no mutation occurred.
+                    bail!("MCP error {code}: {message}");
+                }
+                return response
+                    .get("result")
+                    .map(|v| mimir_json::Document::new(mimir_json::clone_value(v)))
+                    .ok_or_else(|| anyhow!("missing MCP result"));
             }
-            return response
-                .get("result")
-                .cloned()
-                .ok_or_else(|| anyhow!("missing MCP result"));
         }
     }
 
@@ -385,27 +393,34 @@ impl Client {
         checked_tools(&result)
     }
 
-    pub async fn tool(&mut self, name: &str, args: Value) -> Result<Value> {
-        let result = self
-            .request("tools/call", json!({"name":name,"arguments":args}))
-            .await?;
-        if result.get("isError").and_then(Value::as_bool) == Some(true) {
-            bail!("MCP tool returned an unclassified isError result");
+    pub fn tool<'a>(
+        &'a mut self,
+        name: &'a str,
+        args: Value,
+    ) -> impl std::future::Future<Output = Result<mimir_json::Document>> + Send + 'a {
+        let args = mimir_json::Document::new(args);
+        async move {
+            let result = self
+                .request("tools/call", json!({"name":name,"arguments":args}))
+                .await?;
+            if result.get("isError").and_then(Value::as_bool) == Some(true) {
+                bail!("MCP tool returned an unclassified isError result");
+            }
+            let content = result["content"]
+                .as_array()
+                .ok_or_else(|| anyhow!("invalid MCP tool result"))?;
+            ensure!(
+                content.len() == 1 && content[0]["type"] == "text",
+                "invalid MCP tool content"
+            );
+            let text = content[0]["text"]
+                .as_str()
+                .ok_or_else(|| anyhow!("invalid MCP tool text"))?;
+            mimir_json::from_str(text).map_err(|error| {
+                super::state::SourceFailure::json("invalid MCP tool JSON", text.as_bytes(), error)
+                    .into()
+            })
         }
-        let content = result["content"]
-            .as_array()
-            .ok_or_else(|| anyhow!("invalid MCP tool result"))?;
-        ensure!(
-            content.len() == 1 && content[0]["type"] == "text",
-            "invalid MCP tool content"
-        );
-        let text = content[0]["text"]
-            .as_str()
-            .ok_or_else(|| anyhow!("invalid MCP tool text"))?;
-        serde_json::from_str(text).map_err(|error| {
-            super::state::SourceFailure::json("invalid MCP tool JSON", text.as_bytes(), error)
-                .into()
-        })
     }
 }
 
@@ -510,8 +525,8 @@ fn checked_tools(result: &Value) -> Result<Vec<Value>> {
                 tools
                     .iter()
                     .find(|tool| tool["name"] == name)
-                    .unwrap()
-                    .clone(),
+                    .map(|tool| mimir_json::Document::new(mimir_json::clone_value(tool)))
+                    .unwrap(),
             );
         }
     }
@@ -523,7 +538,7 @@ fn checked_tools(result: &Value) -> Result<Vec<Value>> {
                     "unsupported assessment schema"
                 );
             }
-            allowed.push(tool.clone());
+            allowed.push(mimir_json::Document::new(mimir_json::clone_value(tool)));
         }
     }
     if let Some(tool) = tools.iter().find(|t| t["name"] == "get_learning_review") {
@@ -531,9 +546,12 @@ fn checked_tools(result: &Value) -> Result<Vec<Value>> {
             tool["inputSchema"]["properties"]["id"]["type"] == "string",
             "unsupported review receipt schema"
         );
-        allowed.push(tool.clone());
+        allowed.push(mimir_json::Document::new(mimir_json::clone_value(tool)));
     }
-    Ok(allowed)
+    Ok(allowed
+        .into_iter()
+        .map(mimir_json::Document::into_value)
+        .collect())
 }
 
 // Mimir.LearningCapabilities.admit 3 1. Compatibility is independent of the
@@ -584,6 +602,9 @@ fn validate_learning_capabilities(capabilities: &Value) -> Result<()> {
 
 impl Drop for Client {
     fn drop(&mut self) {
+        for tool in self.allowed_tools.drain(..) {
+            mimir_json::drop_value(tool);
+        }
         if let Some(pid) = self.child.id() {
             // The child was placed in its own process group before exec.
             let _ = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };

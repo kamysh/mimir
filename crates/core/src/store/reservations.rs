@@ -12,12 +12,14 @@ use uuid::Uuid;
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct OperationBindingRequest {
     operation: String,
-    arguments: Value,
-    settings: Value,
+    arguments: mimir_json::Document,
+    settings: mimir_json::Document,
 }
 
 impl OperationBindingRequest {
     pub fn new(operation: String, arguments: Value, settings: Value) -> Result<Self> {
+        let arguments = mimir_json::Document::new(arguments);
+        let settings = mimir_json::Document::new(settings);
         ensure!(
             !operation.is_empty()
                 && operation == operation.trim()
@@ -67,13 +69,15 @@ pub enum OperationBindingDecision {
 }
 
 pub(super) fn decode_binding(row: &Row) -> Result<OperationBinding> {
+    let arguments = mimir_json::parse(row.try_get::<_, &str>("arguments")?)?;
+    let settings = mimir_json::parse(row.try_get::<_, &str>("settings")?)?;
     Ok(OperationBinding {
         operation_token: row.try_get("operation_token")?,
         bound_at: row.try_get("bound_at")?,
         request: OperationBindingRequest::new(
             row.try_get("operation")?,
-            serde_json::from_str(row.try_get::<_, &str>("arguments")?)?,
-            serde_json::from_str(row.try_get::<_, &str>("settings")?)?,
+            arguments.into_value(),
+            settings.into_value(),
         )?,
     })
 }
@@ -91,6 +95,42 @@ fn decode(row: Row) -> Result<OperationReservation> {
     })
 }
 
+#[cfg(test)]
+mod json_ownership_tests {
+    use super::*;
+    #[test]
+    fn deep_json_binding_copy_format_and_rejection_keep_owned_values_safe() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let text = format!(
+                    r#"{{"nested":{}null{}}}"#,
+                    "[".repeat(10000),
+                    "]".repeat(10000)
+                );
+                let request = OperationBindingRequest::new(
+                    "operation".into(),
+                    mimir_json::parse(&text).unwrap().into_value(),
+                    serde_json::json!({}),
+                )
+                .unwrap();
+                let copy = request.clone();
+                assert_eq!(request, copy);
+                assert!(format!("{request:?}").contains("nested"));
+                assert!(mimir_json::to_string(&request).unwrap().contains("nested"));
+                assert!(OperationBindingRequest::new(
+                    " ".into(),
+                    mimir_json::parse(&text).unwrap().into_value(),
+                    serde_json::json!({})
+                )
+                .is_err());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+}
+
 impl AgeStore {
     /// A lost acknowledgement must be read back with the same token. Never
     /// allocate a replacement token or overwrite the earlier request here.
@@ -99,8 +139,8 @@ impl AgeStore {
         token: Uuid,
         request: &OperationBindingRequest,
     ) -> Result<OperationBindingDecision> {
-        let arguments = serde_json::to_string(&request.arguments)?;
-        let settings = serde_json::to_string(&request.settings)?;
+        let arguments = mimir_json::to_string(&request.arguments)?;
+        let settings = mimir_json::to_string(&request.settings)?;
         let mut client = self.client.lock().await;
         let tx = super::learning_transaction(&mut client).await?;
         if !super::cancellations::lock_token(&tx, token).await? {

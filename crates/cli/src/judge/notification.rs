@@ -463,7 +463,7 @@ mod tests {
 
     fn has_saved_alert(path: &Path) -> bool {
         let stored: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(path.join("notification-outbox.json")).unwrap())
+            mimir_json::from_slice(&std::fs::read(path.join("notification-outbox.json")).unwrap())
                 .unwrap();
         stored["incidents"]
             .as_object()

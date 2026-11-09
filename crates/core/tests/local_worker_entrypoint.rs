@@ -34,13 +34,13 @@ fn both_binaries_serve_private_embedding_protocol_without_loading_configuration(
             let mut line = String::new();
             assert_ne!(output.read_line(&mut line).unwrap(), 0);
             assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&line).unwrap(),
+                mimir_json::from_str::<serde_json::Value>(&line).unwrap(),
                 serde_json::json!({"status":"started","version":2})
             );
             line.clear();
             assert_ne!(output.read_line(&mut line).unwrap(), 0);
             assert_eq!(
-                serde_json::from_str::<serde_json::Value>(&line).unwrap(),
+                mimir_json::from_str::<serde_json::Value>(&line).unwrap(),
                 serde_json::json!({"status":"complete","vectors":[]})
             );
         }
