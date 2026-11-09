@@ -3,6 +3,16 @@ use anyhow::{anyhow, Result};
 use mimir_core::MimirService;
 use serde_json::{json, Value};
 
+pub(super) fn indexed_support_schema() -> Value {
+    json!({"type":"array","description":"For each supporting indexed passage, copy its actual chunk ID, document path and exact quotation, and explain why those words support this belief. Similarity is only a way to find suggestions; it is not evidence of support. If support is missing or unclear, open the user dialog before publication.","items":{
+        "type":"object","additionalProperties":false,"properties":{
+            "chunk_id":{"type":"string","format":"uuid","description":"Actual chunk ID returned by query_document; never invent an ID."},
+            "document_path":{"type":"string","description":"Exact indexed document path returned with that chunk; nonblank."},
+            "quotation":{"type":"string","description":"Exact, nonblank, contiguous supporting passage copied from the indexed chunk."},
+            "explanation":{"type":"string","description":"The submitting agent's nonblank explanation of why this passage supports the claim. This is an inspectable assertion, not server verification of truth."}
+        },"required":["chunk_id","document_path","quotation","explanation"]}})
+}
+
 pub fn tools() -> Vec<Value> {
     let uuid = json!({"type":"string","format":"uuid"});
     let feedback = json!({"type":"object","additionalProperties":false,"properties":{
@@ -14,7 +24,7 @@ pub fn tools() -> Vec<Value> {
         {"type":"object","additionalProperties":false,"properties":{"candidate_key":{"type":"string","minLength":1}},"required":["candidate_key"]}
     ]});
     let candidate = json!({"oneOf":[
-        {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"belief"},"key":{"type":"string","minLength":1,"description":"Stable local key: nonempty, with no leading or trailing whitespace. Internal spaces are allowed. Reuse the exact key on retries; declare each key once."},"content":{"type":"string","minLength":1},"memory_type":{"enum":["Fact","Experiential"]}},"required":["kind","key","content"]},
+        {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"belief"},"key":{"type":"string","minLength":1,"description":"Stable local key: nonempty, with no leading or trailing whitespace. Internal spaces are allowed. Reuse the exact key on retries; declare each key once."},"content":{"type":"string","minLength":1},"memory_type":{"enum":["Fact","Experiential"]},"grounding":indexed_support_schema()},"description":"Every new belief candidate requires nonempty grounding citations before publication. An exact retry of a candidate already committed by an older version preserves its original declaration without adding new fields.","required":["kind","key","content"]},
         {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"pattern"},"key":{"type":"string","minLength":1,"description":"Stable local key: nonempty, with no leading or trailing whitespace. Internal spaces are allowed. Reuse the exact key on retries; declare each key once."},"situation":{"type":"string","minLength":1},"approach":{"type":"string","minLength":1}},"required":["kind","key","situation","approach"]}
     ]});
     let axis = |minimum| json!({"type":"object","additionalProperties":false,"properties":{"value":{"type":["number","null"],"minimum":minimum,"maximum":1},"weight":{"type":"number","minimum":0,"maximum":1}},"required":["value","weight"]});

@@ -463,7 +463,6 @@ import Mimir.LocalCalendar
 
 import Mimir.JudgeClientStartup
 
-import Mimir.GroundingStorageBinding
 
 import Mimir.InferenceStorageBinding
 

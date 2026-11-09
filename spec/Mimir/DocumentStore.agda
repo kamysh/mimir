@@ -29,6 +29,24 @@ record Chunk : Set where
     project : Maybe Text
 open Chunk
 
+-- The submitting agent's source reference. Its explanation is retained as an
+-- assertion of support, without a numerical weight or a claim of proven truth.
+record Citation : Set where
+  constructor citation
+  field chunk : ℕ; document quotation explanation : Text
+
+-- Equality compares the stored source reference itself, including its original
+-- explanation; an old candidate key cannot silently acquire a new declaration.
+citationEqual : (first second : Citation) → Relation.Nullary.Dec (first ≡ second)
+citationEqual (citation id path quotedText why) (citation other actual words reason)
+  with Data.Nat._≟_ id other | ≡-dec Data.Char._≟_ path actual |
+    ≡-dec Data.Char._≟_ quotedText words | ≡-dec Data.Char._≟_ why reason
+... | yes refl | yes refl | yes refl | yes refl = yes refl
+... | no different | _ | _ | _ = no (λ { refl → different refl })
+... | _ | no different | _ | _ = no (λ { refl → different refl })
+... | _ | _ | no different | _ = no (λ { refl → different refl })
+... | _ | _ | _ | no different = no (λ { refl → different refl })
+
 module Storage (Scalar : Set) (dimension : ℕ) where
   Vector = Vec Scalar dimension
 

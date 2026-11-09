@@ -118,9 +118,10 @@ fn tools_list() -> Value {
                     "confidence":  { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                     "project":     { "type": "string", "description": "Optional project scope. Beliefs in a project can be bulk-deleted with delete_project when the project is done." },
                     "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Functional memory type. 'fact' (default): declarative knowledge that decays over time absent reinforcement. 'experiential': a hard-won working lesson (gotcha, corrected approach) — exempt from time-decay, since its truth doesn't erode with elapsed time. 'working': task-local scratch memory, excluded from cross-session query_relevant retrieval." },
+                    "grounding": learning::indexed_support_schema(),
                     "provenance": { "type": "object", "additionalProperties": false, "properties": { "basis": {"type":"string","enum":["user_instruction","document"]}, "reference": {"type":"string","minLength":1} }, "required": ["basis","reference"], "description": "Identify the independent source. Do not use this tool for a conclusion derived from an experience." }
                 },
-                "required": ["content", "probability", "confidence", "provenance"]
+                "required": ["content", "probability", "confidence", "provenance", "grounding"]
             }
         },
         {
@@ -353,7 +354,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "load_document",
-            "description": "Parse a markdown file into heading-bounded chunks, embed each chunk, and index them for semantic search. Replaces existing chunks for the same path on reload. Requires [embeddings] in config.toml.",
+            "description": "Parse a markdown file into heading-bounded chunks, embed each chunk, and index them for semantic search. Replaces existing chunks for the same path on reload. Indexing does not assert that these passages support existing beliefs; cite a supporting passage and explain it when publishing a belief. Requires [embeddings] in config.toml.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -435,6 +436,8 @@ async fn handle_graph_call(
                     .map_err(|e| anyhow::anyhow!("invalid 'memory_type': {e}"))?,
                 None => MemoryType::default(),
             };
+            let grounding: Vec<mimir_core::preparation::IndexedSupport> =
+                serde_json::from_value(args["grounding"].clone())?;
             let belief = svc
                 .add_independent_belief(
                     content,
@@ -443,6 +446,7 @@ async fn handle_graph_call(
                     args["project"].as_str(),
                     memory_type,
                     &provenance,
+                    &grounding,
                 )
                 .await?;
             Ok(serde_json::to_value(&belief)?)
@@ -693,6 +697,7 @@ async fn handle_graph_call(
                         .collect();
                     if let Value::Object(ref mut map) = belief_json {
                         map.insert("evidence".to_string(), json!(evidence));
+                        map.insert("sources".to_string(), json!(gb.sources));
                     }
                     belief_json
                 })

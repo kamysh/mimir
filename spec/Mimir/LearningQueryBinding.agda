@@ -118,7 +118,7 @@ module AssessmentReads (format : Encoding.Formatting) where
   answer (history selection offset limit) state = historyResult
     (AssessmentView.history selection (Physical.learningView state) offset limit)
   answer (explanation id offset limit) state = explanationResult
-    (Explanation.get id offset limit (Physical.learningView state))
+    (Explanation.get id offset limit (Physical.sourcesFor id state) (Physical.learningView state))
 
   -- Successful public projections share the application's exact encoders.
   -- An unsuccessful semantic answer remains in Answer; this projection is

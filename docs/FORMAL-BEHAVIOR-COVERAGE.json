@@ -29,7 +29,6 @@
         "spec/Mimir/BeliefEmbedding.agda",
         "spec/Mimir/BeliefEmbeddingStorage.agda",
         "spec/Mimir/EmbeddingService.agda",
-        "spec/Mimir/GroundingStorageBinding.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
@@ -38,7 +37,7 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
-      "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/auto-ground success and failure sequences."
+      "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/explicit indexed support success and failure sequences."
     },
     {
       "name": "delete_belief",
@@ -149,7 +148,6 @@
         "spec/Mimir/BeliefEmbedding.agda",
         "spec/Mimir/BeliefEmbeddingStorage.agda",
         "spec/Mimir/EmbeddingService.agda",
-        "spec/Mimir/GroundingStorageBinding.agda",
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/ApplicationOutput.agda",
@@ -161,7 +159,7 @@
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
       "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
-      "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/auto-ground success and failure sequences."
+      "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/explicit indexed support success and failure sequences."
     },
     {
       "name": "record_support",
@@ -657,7 +655,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
+      "baseline_gap": "Compose path read/chunk/embed/paired replacement without automatic support assertions protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
     },
     {
@@ -688,7 +686,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
+      "baseline_gap": "Compose path read/chunk/embed/paired replacement without automatic support assertions protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
     },
     {
@@ -722,7 +720,7 @@
         "spec/Mimir/RecoverableStoreStep.agda",
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
+      "baseline_gap": "Compose path read/chunk/embed/paired replacement without automatic support assertions protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
       "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85\u2013#86, including server-owned path preparation. The concrete registered operation removes chunks/vectors/evidence with complete surviving-belief updates and original saved count, retaining unrelated data and replaying without clearing a later replacement. Rust correspondence is tested rather than extracted."
     },
     {
@@ -1836,7 +1834,6 @@
         "spec/Mimir/EmbeddingBackend.agda",
         "spec/Mimir/EmbeddingBatch.agda",
         "spec/Mimir/BeliefEmbeddingStorage.agda",
-        "spec/Mimir/GroundingStorageBinding.agda",
         "spec/Mimir/DocumentLoading.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
@@ -1926,7 +1923,6 @@
       "modules": [
         "spec/Mimir/BeliefEmbeddingStorage.agda",
         "spec/Mimir/EmbeddingService.agda",
-        "spec/Mimir/GroundingStorageBinding.agda",
         "spec/Mimir/CLIReembed.agda"
       ]
     },

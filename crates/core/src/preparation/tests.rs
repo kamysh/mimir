@@ -18,13 +18,212 @@ use uuid::Uuid;
 
 struct FixedProvider(Mutex<Option<Result<Vec<Vec<f32>>>>>);
 
+#[tokio::test]
+async fn changing_a_cited_document_stops_the_owned_embedding_before_publication() -> Result<()> {
+    use tokio::sync::oneshot;
+    struct Stop(Option<oneshot::Sender<()>>);
+    impl Drop for Stop {
+        fn drop(&mut self) { if let Some(sender)=self.0.take() { let _=sender.send(()); } }
+    }
+    struct Blocked { started:Mutex<Option<oneshot::Sender<()>>>, dropped:Mutex<Option<oneshot::Sender<()>>> }
+    impl EmbeddingProvider for Blocked {
+        fn embed<'a>(&'a self, _: &'a [String], _: EmbeddingCancellation) -> EmbedFuture<'a> {
+            Box::pin(async move {
+                let _stopped=Stop(self.dropped.lock().unwrap().take());
+                self.started.lock().unwrap().take().unwrap().send(()).unwrap();
+                std::future::pending().await
+            })
+        }
+    }
+    for replace in [false,true] {
+        let (mut owned, project)=service(None).await?;
+        let chunk=passage(&owned,Some(&project),0,"source revoked during computation").await?;
+        let cited=citation(&chunk);
+        let (started,begin)=oneshot::channel();let (dropped,stopped)=oneshot::channel();
+        owned.embeddings=Some(OwnedEmbeddingBackend::for_test(Box::new(Blocked {
+            started:Mutex::new(Some(started)),dropped:Mutex::new(Some(dropped))
+        })));
+        let request_project=project.clone();
+        let job=tokio::spawn(async move {
+            owned.prepare_belief("source-bound computation",0.7,0.5,Some(&request_project),MemoryType::Fact,None,&[cited]).await
+        });
+        begin.await?;
+        let (writer,_)=service(None).await?;
+        if replace {
+            let replacement=DocumentChunk { content:"The original supporting passage was replaced.".into(),..chunk.clone() };
+            writer.store.replace_document(&chunk.document_path,&[replacement],&[vector(1)]).await?;
+        } else {
+            writer.clear_document(&chunk.document_path).await?;
+        }
+        stopped.await?;
+        let error=job.await?.unwrap_err();
+        assert!(error.downcast_ref::<PreparationRequired>().unwrap().to_string().contains("cited indexed passage changed"));
+        assert!(writer.list_beliefs(Some(&project)).await?.is_empty());
+        writer.delete_project(&project).await?;
+    }
+    Ok(())
+}
+
+#[test]
+fn cited_support_identifies_each_missing_field_without_guessing_support() {
+    let original = IndexedSupport {
+        chunk_id: Uuid::nil(),
+        document_path: "/indexed/guide.md".into(),
+        quotation: "The indexed source's exact words.".into(),
+        explanation: "These words support this particular claim because ...".into(),
+    };
+    for field in ["document_path", "quotation", "explanation"] {
+        let mut value = serde_json::to_value(&original).unwrap();
+        value[field] = json!(" \n\t ");
+        let cited: IndexedSupport = serde_json::from_value(value).unwrap();
+        let error = cited.validate_fields(3).unwrap_err();
+        let correction = error.downcast_ref::<PreparationRequired>().unwrap();
+        let issue = &correction.correction().issues()[0];
+        assert_eq!(
+            issue.fault().path,
+            vec![
+                Segment::Key("grounding".into()),
+                Segment::Index(3),
+                Segment::Key(field.into())
+            ]
+        );
+        assert_eq!(issue.fault().code, Code::EmptyText);
+        assert!(issue.fault().message.contains("open the user dialog"));
+    }
+    original.validate_fields(0).unwrap();
+}
+
+#[tokio::test]
+async fn indexed_citation_validation_checks_the_actual_reference_and_quotation() -> Result<()> {
+    let (service, project) = service(None).await?;
+    let chunk = passage(&service, Some(&project), 19, "submitted-citation").await?;
+    let original = IndexedSupport {
+        chunk_id: chunk.id,
+        document_path: chunk.document_path.clone(),
+        quotation: "π indexed evidence;".into(),
+        explanation: "The quoted passage is the submitting agent's stated support for this claim."
+            .into(),
+    };
+    // No query vector, configured provider, similarity score or threshold is
+    // needed to check the integrity of an explicitly supplied citation.
+    let validated = service
+        .store
+        .validate_indexed_support(Some(&project), &[original.clone()])
+        .await?;
+    assert_eq!(validated.len(), 1);
+    assert_eq!(validated[0].chunk, chunk);
+    assert_eq!(validated[0].citation, original);
+    for (field, replacement, expected) in [
+        (
+            "document_path",
+            "/different/document.md",
+            Code::WrongIdentity,
+        ),
+        (
+            "quotation",
+            "Words that are absent from the stored passage",
+            Code::QuotationMismatch,
+        ),
+        ("explanation", " \n ", Code::EmptyText),
+    ] {
+        let mut value = serde_json::to_value(&original)?;
+        value[field] = json!(replacement);
+        let cited: IndexedSupport = serde_json::from_value(value)?;
+        let error = service
+            .store
+            .validate_indexed_support(Some(&project), &[cited])
+            .await
+            .unwrap_err();
+        let correction = error.downcast_ref::<PreparationRequired>().unwrap();
+        assert_eq!(correction.correction().issues()[0].fault().code, expected);
+        assert_eq!(
+            correction.correction().issues()[0].fault().path,
+            vec![
+                Segment::Key("grounding".into()),
+                Segment::Index(0),
+                Segment::Key(field.into())
+            ]
+        );
+    }
+    assert!(service.list_beliefs(Some(&project)).await?.is_empty());
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    client
+        .execute(
+            "DELETE FROM public.chunk_embeddings WHERE chunk_id=$1",
+            &[&chunk.id],
+        )
+        .await?;
+    let error = service
+        .store
+        .validate_indexed_support(Some(&project), &[original])
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .downcast_ref::<PreparationRequired>()
+            .unwrap()
+            .correction()
+            .issues()[0]
+            .fault()
+            .code,
+        Code::MissingReference
+    );
+    service.delete_project(&project).await?;
+    Ok(())
+}
+
+#[test]
+fn legacy_committed_candidate_declarations_keep_their_original_shape() -> Result<()> {
+    let original = json!({"kind":"belief","key":"existing-lesson","content":"Existing committed lesson","memory_type":"Experiential"});
+    let candidate: crate::learning::Candidate = serde_json::from_value(original.clone())?;
+    assert_eq!(serde_json::to_value(candidate)?, original);
+    Ok(())
+}
+
+#[tokio::test]
+async fn document_indexing_does_not_assert_support_from_similarity() -> Result<()> {
+    let (service, project) = service(Some(Ok(vec![vector(0)]))).await?;
+    let existing = isolation::seed_belief_in_project(
+        "An existing belief with the same vector as a newly indexed passage",
+        0.7,
+        0.5,
+        &project,
+        MemoryType::Fact,
+    )
+    .await?;
+    service
+        .store
+        .insert_belief_embedding(existing.id, &vector(0))
+        .await?;
+    let original = serde_json::to_value(service.get_belief(existing.id).await?)?;
+    let path = std::env::temp_dir().join(format!("mimir-submitted-support-{}.md", existing.id));
+    std::fs::write(
+        &path,
+        "# Indexed source\n\nAn indexed passage is available for explicit citation.\n",
+    )?;
+    let loaded = service
+        .load_document(path.to_str().unwrap(), Some(&project))
+        .await;
+    std::fs::remove_file(&path)?;
+    assert_eq!(loaded?, 1);
+    assert!(service
+        .evidence_for_belief(existing.id, None)
+        .await?
+        .is_empty());
+    assert_eq!(
+        serde_json::to_value(service.get_belief(existing.id).await?)?,
+        original
+    );
+    service.delete_project(&project).await?;
+    Ok(())
+}
+
 #[test]
 fn operation_provider_identity_survives_credentials_and_execution_changes() {
     let mut configured = EmbeddingsConfig {
         backend: EmbeddingBackend::Voyage,
         model: "same-model".into(),
         api_key: Some("first-private-key".into()),
-        batch_size: 0,
         cache_dir: None,
     };
     let original = operation_settings(Some(&configured));
@@ -39,7 +238,6 @@ fn operation_provider_identity_survives_credentials_and_execution_changes() {
     }
     configured.api_key = Some("rotated-private-key".into());
     configured.cache_dir = Some("/different/execution-cache".into());
-    configured.batch_size = 17;
     assert_eq!(original, operation_settings(Some(&configured)));
     assert!(!original.to_string().contains("private-key"));
     configured.model = "different-model".into();
@@ -151,6 +349,257 @@ async fn token_cancellation_stops_owned_backfill_without_an_owner_row() -> Resul
     Ok(())
 }
 
+async fn belief_operation_plan(
+    service: &MimirService,
+    project: &str,
+) -> Result<crate::store::OperationPlan> {
+    let key: Uuid = db::connect(&isolation::fixture().database_config())
+        .await?
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let token = service
+        .reserve_operation(&key.to_string())
+        .await?
+        .operation_token;
+    let request = crate::store::OperationBindingRequest::new(
+        "insert_belief".into(),
+        json!({
+            "content":"original complete independent content", "probability":0.7,"confidence":0.5,
+            "project":project,"memory_type":"fact",
+            "provenance":{"basis":"user_instruction","reference":"explicit original fixture instruction"},
+            "grounding":indexed_citations(service,Some(project)).await?
+        }),
+        service.embedding_operation_settings(),
+    )?;
+    service.bind_operation_request(token, &request).await?;
+    let crate::store::PlanDecision::Ready(plan) = service
+        .prepare_operation(token, &request, |_, _| Box::pin(async { Ok(vec![]) }))
+        .await?
+    else {
+        anyhow::bail!("original belief plan was not saved")
+    };
+    Ok(plan)
+}
+
+#[tokio::test]
+async fn registered_citation_publication_replays_original_answer_without_embedding() -> Result<()> {
+    let (mut service, project) = service(Some(Ok(vec![vector(2)]))).await?;
+    let source = passage(&service, Some(&project), 29, "source-only exact citation").await?;
+    let plan = belief_operation_plan(&service, &project).await?;
+    let crate::store::StepDecision::Done(first) = service.publish_belief_operation(&plan).await?
+    else {
+        anyhow::bail!("complete publication did not return its saved result")
+    };
+    let belief: crate::graph::Belief = serde_json::from_value(first.reply.clone())?;
+    assert_eq!(belief.probability.value(), 0.7);
+    assert_eq!(belief.confidence.value(), 0.5);
+    assert_eq!(
+        (belief.alpha, belief.beta),
+        crate::graph::prior_from(0.7, 0.5)
+    );
+    assert!(service
+        .evidence_for_belief(belief.id, None)
+        .await?
+        .is_empty());
+    let explanation = service.explain_belief(belief.id, 0, None).await?;
+    assert_eq!(explanation["sources"][0]["chunk_id"], json!(source.id));
+    assert_eq!(
+        explanation["sources"][0]["quotation"],
+        json!(source.content)
+    );
+    assert!(explanation["sources"][0]["explanation"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+    service.embeddings = None;
+    let crate::store::StepDecision::Done(replay) = service.publish_belief_operation(&plan).await?
+    else {
+        anyhow::bail!("completed publication did not replay before provider configuration")
+    };
+    assert_eq!(first, replay);
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    let count: i64 = client
+        .query_one(
+            "SELECT count(*) FROM mimir_belief_sources WHERE belief_id=$1",
+            &[&belief.id],
+        )
+        .await?
+        .get(0);
+    assert_eq!(count, 1);
+    service.delete_project(&project).await?;
+    let remaining: i64 = client
+        .query_one(
+            "SELECT count(*) FROM mimir_belief_sources WHERE belief_id=$1",
+            &[&belief.id],
+        )
+        .await?
+        .get(0);
+    assert_eq!(remaining, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn operation_owner_reuses_postgres_identity_and_time_after_reconnect() -> Result<()> {
+    use crate::store::BeliefPublicationState;
+    use crate::store::{OperationOutcome, StepDecision};
+    let (service, project) = service(Some(Ok(vec![vector(0)]))).await?;
+    let plan = belief_operation_plan(&service, &project).await?;
+    let first = service
+        .store
+        .reserve_belief_operation(&plan.steps()[0])
+        .await?;
+    let StepDecision::Done(saved) = &first else {
+        anyhow::bail!("owner receipt missing")
+    };
+    let id: Uuid = serde_json::from_value(saved.reply["id"].clone())?;
+    let created: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(saved.reply["created_at"].clone())?;
+    no_publication(&service, id).await?;
+    let (reconnected, _) = self::service(Some(Ok(vec![vector(0)]))).await?;
+    assert_eq!(
+        reconnected
+            .store
+            .reserve_belief_operation(&plan.steps()[0])
+            .await?,
+        first
+    );
+    let BeliefPublicationState::Preparing {
+        final_step,
+        belief,
+        provenance,
+        ..
+    } = reconnected
+        .store
+        .resume_belief_operation(&plan, &reconnected.embedding_operation_settings())
+        .await?
+    else {
+        anyhow::bail!("owner did not resume")
+    };
+    assert_eq!(belief.id, id);
+    assert_eq!(belief.created_at, created);
+    assert_eq!(belief.last_activated_at, created);
+    assert_eq!(belief.decay_accounted_at, created);
+    assert_eq!(belief.content, "original complete independent content");
+    assert_eq!(belief.probability.value(), 0.7);
+    assert_eq!(belief.confidence.value(), 0.5);
+    assert_eq!(
+        provenance.reference,
+        "explicit original fixture instruction"
+    );
+    assert_eq!(final_step.id(), plan.steps()[1].id());
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    let owner=client.query_one("SELECT owner_token,reserved_at,operation_token FROM mimir_embedding_owners WHERE operation_token=$1",&[&plan.operation_token()]).await?;
+    assert_eq!(owner.get::<_, Uuid>(0), id);
+    assert_eq!(owner.get::<_, chrono::DateTime<chrono::Utc>>(1), created);
+    assert_eq!(owner.get::<_, Uuid>(2), plan.operation_token());
+    assert!(
+        matches!(reconnected.read_operation_outcome(plan.operation_token(),None).await?,OperationOutcome::Pending{next_step,..} if next_step==*final_step.description())
+    );
+    no_publication(&reconnected, id).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn operation_owner_cancel_keeps_original_answer_and_unrelated_owner() -> Result<()> {
+    use crate::store::{CancellationDecision, StepDecision};
+    let (service, project) = service(Some(Ok(vec![vector(0)]))).await?;
+    let (other, _) = service
+        .store
+        .reserve_belief_preparation(Some(&project))
+        .await?;
+    let plan = belief_operation_plan(&service, &project).await?;
+    let StepDecision::Done(saved) = service
+        .store
+        .reserve_belief_operation(&plan.steps()[0])
+        .await?
+    else {
+        anyhow::bail!("original owner was not reserved")
+    };
+    let id: Uuid = serde_json::from_value(saved.reply["id"].clone())?;
+    assert!(matches!(
+        service
+            .record_operation_cancellation(plan.operation_token())
+            .await?,
+        CancellationDecision::Recorded(_)
+    ));
+    assert!(matches!(
+        service
+            .store
+            .reserve_belief_operation(&plan.steps()[0])
+            .await?,
+        StepDecision::Cancelled(_)
+    ));
+    let crate::store::BeliefPublicationState::Resolved(decision) = service
+        .store
+        .resume_belief_operation(&plan, &service.embedding_operation_settings())
+        .await?
+    else {
+        anyhow::bail!("cancelled operation resumed preparation")
+    };
+    assert!(matches!(decision, StepDecision::Cancelled(_)));
+    assert_eq!(
+        service
+            .read_operation_step(plan.operation_token(), plan.steps()[0].id())
+            .await?,
+        Some(saved)
+    );
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    assert!(client
+        .query_opt(
+            "SELECT 1 FROM mimir_embedding_owners WHERE owner_token=$1",
+            &[&id]
+        )
+        .await?
+        .is_none());
+    assert!(client
+        .query_opt(
+            "SELECT 1 FROM mimir_embedding_owners WHERE owner_token=$1",
+            &[&other]
+        )
+        .await?
+        .is_some());
+    assert!(service
+        .read_operation_step(plan.operation_token(), "@operation-result")
+        .await?
+        .is_none());
+    no_publication(&service, id).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn operation_owner_settings_mismatch_remains_pending_without_publication() -> Result<()> {
+    let (service, project) = service(Some(Ok(vec![vector(0)]))).await?;
+    let plan = belief_operation_plan(&service, &project).await?;
+    let changed = json!({"embeddings":{"backend":"openai","model":"explicitly-different-model"}});
+    let error = service
+        .store
+        .resume_belief_operation(&plan, &changed)
+        .await
+        .unwrap_err();
+    assert!(error.is::<PreparationRequired>());
+    let saved = service
+        .read_operation_step(plan.operation_token(), plan.steps()[0].id())
+        .await?
+        .unwrap();
+    let id: Uuid = serde_json::from_value(saved.reply["id"].clone())?;
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM mimir_embedding_owners WHERE operation_token=$1",
+                &[&plan.operation_token()]
+            )
+            .await?
+            .get::<_, i64>(0),
+        1
+    );
+    assert!(service
+        .read_operation_step(plan.operation_token(), "@operation-result")
+        .await?
+        .is_none());
+    no_publication(&service, id).await?;
+    Ok(())
+}
 impl EmbeddingProvider for FixedProvider {
     fn embed<'a>(
         &'a self,
@@ -635,6 +1084,7 @@ async fn project_revocation_terminates_only_its_blocked_worker() -> Result<()> {
                     Some(&project),
                     MemoryType::Fact,
                     None,
+                    &indexed_citations(&service, Some(&project)).await?,
                 )
                 .await
         })
@@ -655,6 +1105,7 @@ async fn project_revocation_terminates_only_its_blocked_worker() -> Result<()> {
                     Some(&project),
                     MemoryType::Fact,
                     None,
+                    &indexed_citations(&service, Some(&project)).await?,
                 )
                 .await
         })
@@ -718,7 +1169,7 @@ async fn review_request(service: &MimirService, project: &str) -> Result<crate::
         json!({"experience_id":id,"experience_revision":1,
         "reviewer":"preparation test","rationale":"checked independent fixture support",
         "candidates":[{"kind":"pattern","key":"procedure","situation":"review work","approach":"prepare first"},
-            {"kind":"belief","key":"lesson","content":"the complete supported lesson","memory_type":"Fact"}]}),
+            {"kind":"belief","key":"lesson","content":"the complete supported lesson","memory_type":"Fact","grounding":indexed_citations(service,Some(project)).await?}]}),
     )?)
 }
 
@@ -735,7 +1186,7 @@ async fn experience_evidence_cannot_replace_indexed_document_support_in_review()
             Segment::Key("review".into()),
             Segment::Key("candidates".into()),
             Segment::Index(1),
-            Segment::Key("content".into())
+            Segment::Key("grounding".into())
         ]
     );
     assert!(issue.fault().message.contains("indexed document"));
@@ -763,9 +1214,10 @@ async fn service_review_publishes_complete_candidates_and_acknowledgement_togeth
         .get_pattern(state.candidate_ids["procedure"])
         .await?
         .is_some());
+    assert!(service.evidence_for_belief(id, None).await?.is_empty());
     assert_eq!(
-        service.evidence_for_belief(id, None).await?[0].chunk_id,
-        chunk.id
+        service.explain_belief(id, 0, None).await?["sources"][0]["chunk_id"],
+        json!(chunk.id)
     );
     let client = db::connect(&isolation::fixture().database_config()).await?;
     assert_eq!(
@@ -822,6 +1274,7 @@ async fn a_later_candidate_preparation_failure_leaves_the_whole_review_pending()
         key: "second".into(),
         content: "another complete lesson".into(),
         memory_type: MemoryType::Fact,
+        grounding: indexed_citations(&service, Some(&project)).await?,
     });
     let error = service.review_experience(&review, 0).await.unwrap_err();
     assert!(error
@@ -898,6 +1351,7 @@ async fn prepared_review_rolls_back_all_publications_and_replays_without_embeddi
             Some(&project),
             MemoryType::Fact,
             None,
+            &indexed_citations(&service, Some(&project)).await?,
         )
         .await?;
     let id = prepared.belief.id;
@@ -953,9 +1407,10 @@ async fn prepared_review_rolls_back_all_publications_and_replays_without_embeddi
             .get::<_, i64>(0),
         1
     );
+    assert!(service.evidence_for_belief(id, None).await?.is_empty());
     assert_eq!(
-        service.evidence_for_belief(id, None).await?[0].chunk_id,
-        chunk.id
+        service.explain_belief(id, 0, None).await?["sources"][0]["chunk_id"],
+        json!(chunk.id)
     );
     // The injected provider has already consumed its only answer: any second
     // embedding attempt would panic instead of passing this replay check.
@@ -978,6 +1433,7 @@ async fn source_change_during_preparation_prevents_complete_review_publication()
             Some(&project),
             MemoryType::Fact,
             None,
+            &indexed_citations(&service, Some(&project)).await?,
         )
         .await?;
     let id = prepared.belief.id;
@@ -1081,6 +1537,34 @@ async fn no_publication(service: &MimirService, id: Uuid) -> Result<()> {
     Ok(())
 }
 
+fn citation(chunk: &DocumentChunk) -> IndexedSupport {
+    IndexedSupport { chunk_id: chunk.id, document_path: chunk.document_path.clone(),
+        quotation: chunk.content.clone(),
+        explanation: "The submitting agent explicitly cites this complete fixture passage as support for the test belief.".into() }
+}
+
+async fn indexed_citations(
+    service: &MimirService,
+    project: Option<&str>,
+) -> Result<Vec<IndexedSupport>> {
+    let candidates = service
+        .store
+        .query_chunks_by_vector_scored(&vector(0), None, None)
+        .await?;
+    let mut scoped = Vec::new();
+    let mut global = Vec::new();
+    for (id, _) in candidates {
+        if let Some(chunk) = service.store.get_chunk_by_id(id).await? {
+            if chunk.project.as_deref() == project {
+                scoped.push(citation(&chunk));
+            } else if chunk.project.is_none() {
+                global.push(citation(&chunk));
+            }
+        }
+    }
+    Ok(if scoped.is_empty() { global } else { scoped })
+}
+
 // A private fixture allocation for the token-linked publication path. Public
 // callers cannot construct PreparedBelief or choose its owner identity.
 async fn linked_preparation() -> Result<(MimirService, String, Uuid, PreparedBelief)> {
@@ -1116,9 +1600,9 @@ async fn linked_preparation() -> Result<(MimirService, String, Uuid, PreparedBel
             reference: "explicit independent fixture instruction".into(),
         }),
         vector: vector(0),
-        support: vec![SupportingPassage {
+        support: vec![ValidatedSupport {
+            citation: citation(&document),
             chunk: document,
-            weight: crate::graph::Probability::new(1.0)?,
         }],
     };
     Ok((service, project, token, prepared))
@@ -1154,10 +1638,17 @@ async fn cancellation_preserves_a_previously_committed_prepared_belief() -> Resu
         serde_json::to_value(service.get_belief(published.id).await?)?,
         before
     );
-    assert!(!service
+    assert!(service
         .evidence_for_belief(published.id, None)
         .await?
         .is_empty());
+    assert_eq!(
+        service.explain_belief(published.id, 0, None).await?["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     service.delete_project(&project).await?;
     Ok(())
 }
@@ -1171,6 +1662,7 @@ async fn missing_backend_and_failed_embedding_publish_nothing() -> Result<()> {
         ))),
     ] {
         let (service, project) = service(response).await?;
+        passage(&service, Some(&project), 0, "backend prerequisite source").await?;
         let result = service
             .add_belief_in_project(
                 "a belief requiring preparation",
@@ -1178,6 +1670,7 @@ async fn missing_backend_and_failed_embedding_publish_nothing() -> Result<()> {
                 0.5,
                 &project,
                 MemoryType::Fact,
+                &indexed_citations(&service, Some(&project)).await?,
             )
             .await;
         let stored = service.list_beliefs(Some(&project)).await?;
@@ -1215,6 +1708,7 @@ async fn invalid_vectors_and_missing_indexed_support_request_a_decision() -> Res
                 0.5,
                 &project,
                 MemoryType::Fact,
+                &indexed_citations(&service, Some(&project)).await?,
             )
             .await;
         let stored = service.list_beliefs(Some(&project)).await?;
@@ -1243,6 +1737,7 @@ async fn preparation_has_no_belief_and_publication_commits_complete_data() -> Re
             Some(&project),
             MemoryType::Fact,
             Some(&origin),
+            &indexed_citations(&service, Some(&project)).await?,
         )
         .await?;
     no_publication(&service, prepared.belief.id).await?;
@@ -1271,11 +1766,29 @@ async fn preparation_has_no_belief_and_publication_commits_complete_data() -> Re
         .await?;
     service.delete_project(&project).await?;
     assert_eq!(
-        serde_json::to_value(published)?,
+        serde_json::to_value(&published)?,
         serde_json::to_value(stored)?
     );
     assert_eq!(vector.to_vec(), prepared.vector);
-    assert_eq!(evidence.len(), 2);
+    assert!(
+        evidence.is_empty(),
+        "source references must not become weighted evidence"
+    );
+    assert_eq!(explanation["sources"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        (
+            published.alpha,
+            published.beta,
+            published.alpha0,
+            published.beta0
+        ),
+        (
+            prepared.belief.alpha,
+            prepared.belief.beta,
+            prepared.belief.alpha0,
+            prepared.belief.beta0
+        )
+    );
     assert!(serde_json::to_string(&explanation)?.contains(&origin.reference));
     Ok(())
 }
@@ -1292,6 +1805,7 @@ async fn changed_support_refuses_the_entire_publication() -> Result<()> {
             Some(&project),
             MemoryType::Fact,
             None,
+            &indexed_citations(&service, Some(&project)).await?,
         )
         .await?;
     service.clear_document(&chunk.document_path).await?;
@@ -1320,6 +1834,7 @@ async fn deleting_the_project_revokes_preparation_even_with_global_support() -> 
             Some(&project),
             MemoryType::Fact,
             None,
+            &indexed_citations(&service, Some(&project)).await?,
         )
         .await?;
     service.delete_project(&project).await?;
@@ -1347,6 +1862,7 @@ async fn vector_write_failure_rolls_back_belief_provenance_and_grounding() -> Re
             Some(&project),
             MemoryType::Fact,
             None,
+            &indexed_citations(&service, Some(&project)).await?,
         )
         .await?;
     let client = db::connect(&isolation::fixture().database_config()).await?;
@@ -1381,7 +1897,7 @@ async fn vector_write_failure_rolls_back_belief_provenance_and_grounding() -> Re
         owner,
         "rollback must preserve the original publication ownership"
     );
-    assert_eq!(evidence.len(), 1);
+    assert!(evidence.is_empty());
     Ok(())
 }
 
@@ -1398,6 +1914,7 @@ async fn revoking_one_project_preserves_another_preparation_owner() -> Result<()
             Some(&project),
             MemoryType::Fact,
             None,
+            &indexed_citations(&first, Some(&project)).await?,
         )
         .await?;
     let second_prepared = second
@@ -1408,6 +1925,7 @@ async fn revoking_one_project_preserves_another_preparation_owner() -> Result<()
             Some(&other_project),
             MemoryType::Fact,
             None,
+            &indexed_citations(&second, Some(&other_project)).await?,
         )
         .await?;
     first.delete_project(&project).await?;

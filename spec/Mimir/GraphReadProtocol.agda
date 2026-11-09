@@ -130,7 +130,7 @@ fromExplanation Explanation.invalidStoredProvenance = invalidProvenance
 fromExplanation (Explanation.explained value) = explained value
 
 explanationAnswer : ℕ → ℕ → Ranking.Selection → Store.World → Result
-explanationAnswer id offset limit state = fromExplanation (Explanation.get id offset limit (Store.World.learning state))
+explanationAnswer id offset limit state = fromExplanation (Explanation.get id offset limit (Store.sourcesFor id state) (Store.World.learning state))
 
 explanationFromViews : ℕ → ℕ → Ranking.Selection → Store.World → Store.World → Store.World → Store.World → Store.World → Result
 explanationFromViews id offset limit beliefView parentView reviewView candidateView originView
@@ -144,7 +144,7 @@ explanationFromViews id offset limit beliefView parentView reviewView candidateV
   (Explanation.paginate offset limit (Explanation.reviews id
     (Learning.identities (Store.World.learning reviewView))
     (Publication.World.ledger (Learning.World.publication (Store.World.learning reviewView)))))
-  (Candidate.get id (Store.World.learning candidateView)) source)
+  (Candidate.get id (Store.World.learning candidateView)) source (Store.sourcesFor id beliefView))
 
 explanationFromOneView : ∀ id offset limit original parentsView reviewsView candidateView originView →
   parentsView ≡ original → reviewsView ≡ original → candidateView ≡ original → originView ≡ original →

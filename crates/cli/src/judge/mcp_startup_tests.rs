@@ -48,6 +48,7 @@ fn catalogue_requires_host_capability_and_every_typed_review_property() {
             "experience_history",
             "query_relevant",
             "query_learning_context",
+            "query_document",
             "explain_belief",
             "get_belief",
             "query_intervention",

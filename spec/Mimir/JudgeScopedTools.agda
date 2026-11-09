@@ -199,6 +199,7 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
     (require (textIs project (get "project" args)) "query is outside selected project" args)
     (λ value → require (selectedCount value) "limit must be positive or omitted for all matches" value)
   before (Tools.query Tools.learningContext) args = before (Tools.query Tools.relevant) args
+  before (Tools.query Tools.document) args = before (Tools.query Tools.relevant) args
   before (Tools.query Tools.belief) args = graph Tools.belief args
   before (Tools.query Tools.explanation) args = graph Tools.explanation args
   before (Tools.query Tools.intervention) args = graph Tools.intervention args
@@ -250,6 +251,9 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
     textIs project (V.string (Experience.Experience.project (Observation.Snapshot.experience state)))
   ...   | true = done (inj₂ value)
   ...   | false = done (inj₁ (invalidResponse (toList "MCP returned out-of-scope experience")))
+  afterValue (Tools.query Tools.document) value with array value
+  ... | inj₁ _ = done (inj₁ (invalidResponse (toList "invalid indexed-document search result")))
+  ... | inj₂ _ = done (inj₂ value)
   afterValue (Tools.query Tools.relevant) value with array (get "beliefs" value)
   ... | inj₁ error = done (inj₁ error)
   ... | inj₂ rows with allVisible project rows

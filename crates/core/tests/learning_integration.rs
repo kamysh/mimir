@@ -51,6 +51,7 @@ fn experience(project: &str) -> Experience {
 struct GroundedReviewService {
     service: Option<MimirService>,
     directory: std::path::PathBuf,
+    grounding: Vec<mimir_core::preparation::IndexedSupport>,
 }
 impl std::ops::Deref for GroundedReviewService {
     type Target = MimirService;
@@ -114,8 +115,9 @@ async fn grounded_service(project: &str) -> GroundedReviewService {
     vector[100] = 1.0;
     store.insert_chunk_embedding(id, &vector).await.unwrap();
     GroundedReviewService {
-        service: Some(service),
-        directory,
+        service: Some(service), directory,
+        grounding: vec![mimir_core::preparation::IndexedSupport { chunk_id:chunk.id, document_path:chunk.document_path,
+            quotation:chunk.content, explanation:"This indexed fixture passage is the submitting agent's explicit supporting source for the candidate.".into() }],
     }
 }
 
@@ -593,6 +595,7 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
         key: "lesson".into(),
         content: "30 minutes suffices under fixed scope".into(),
         memory_type: MemoryType::Experiential,
+        grounding: svc.grounding.clone(),
     });
     r.assessments.push(Assessment {
         target: BeliefTarget::Candidate {
@@ -812,6 +815,7 @@ async fn offline_learning_scenario_matrix() {
             key: "layout-lesson".into(),
             content: lesson.into(),
             memory_type: MemoryType::Experiential,
+            grounding: svc.grounding.clone(),
         });
         if let Some(verdict) = verdict {
             r.candidate_feedback.push(CandidateFeedback {
@@ -1168,6 +1172,7 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
             key: "lesson".into(),
             content: "restart stale keyboard process".into(),
             memory_type: MemoryType::Experiential,
+            grounding: svc.grounding.clone(),
         },
         Candidate::Pattern {
             key: "procedure".into(),
@@ -1221,6 +1226,7 @@ async fn atomic_candidates_retry_retraction_and_observed_pattern_use() {
         key: "lesson".into(),
         content: "different claim".into(),
         memory_type: MemoryType::Experiential,
+        grounding: svc.grounding.clone(),
     };
     assert!(svc.review_experience(&altered, 1).await.is_err());
     assert_eq!(
@@ -1325,6 +1331,7 @@ async fn source_correction_deactivates_candidate_support_without_deleting_identi
         key: "hypothesis".into(),
         content: "candidate may help".into(),
         memory_type: MemoryType::Fact,
+        grounding: svc.grounding.clone(),
     });
     r.candidate_feedback.push(CandidateFeedback {
         target: BeliefTarget::Candidate {
@@ -1373,6 +1380,7 @@ async fn rejected_candidate_review_rolls_back_node_and_acknowledgement() {
         key: "rolled-back".into(),
         content: "unique rollback candidate".into(),
         memory_type: MemoryType::Fact,
+        grounding: svc.grounding.clone(),
     });
     r.feedback.push(Feedback {
         belief_id: Uuid::new_v4(),
@@ -1438,6 +1446,7 @@ async fn deleting_candidate_recomputes_linked_belief_and_keeps_tombstone() {
         key: "source".into(),
         content: "candidate source".into(),
         memory_type: MemoryType::Fact,
+        grounding: svc.grounding.clone(),
     });
     r.candidate_feedback.push(CandidateFeedback {
         target: BeliefTarget::Candidate {

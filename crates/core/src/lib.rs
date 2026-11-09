@@ -43,11 +43,6 @@ fn weighted_rrf(lists: &[(&[Uuid], f32)]) -> std::collections::HashMap<Uuid, f32
     scores
 }
 
-/// Cosine similarity threshold for automatic GROUNDS edge creation.
-/// A chunk and belief are auto-grounded when their embedding cosine similarity
-/// meets or exceeds this value. Corresponds to `similarEnough` in Evidence.agda.
-const GROUND_THRESHOLD: f64 = 0.80;
-
 /// Drop the source-mean column from `get_incoming_edges` rows, yielding the
 /// `(from, to, EdgeType, weight)` edge tuples the inference engine consumes.
 fn strip_source_means(
@@ -103,6 +98,7 @@ pub struct EvidenceRef {
 pub struct GroundedBelief {
     pub belief: Belief,
     pub evidence: Vec<EvidenceRef>,
+    pub sources: Vec<preparation::IndexedSupport>,
 }
 
 /// Omission requests all matches; a supplied count cannot be zero.
@@ -165,20 +161,27 @@ impl MimirService {
         config::retirement_policy(self.retirement.as_ref())
     }
 
-    /// Add a new belief. Returns the created Belief.
+    /// Publish a new belief only with an embedding and explicit indexed sources.
     pub async fn add_belief(
         &self,
         content: &str,
         probability: f64,
         confidence: f64,
         memory_type: MemoryType,
+        grounding: &[preparation::IndexedSupport],
     ) -> Result<Belief> {
-        let belief = Belief::new(content.to_string(), probability, confidence)?
-            .with_memory_type(memory_type);
-        self.insert_and_embed_belief(belief, None).await
+        self.add_prepared_belief(
+            content,
+            probability,
+            confidence,
+            None,
+            memory_type,
+            None,
+            grounding,
+        )
+        .await
     }
 
-    /// Add a new belief scoped to a project.
     pub async fn add_belief_in_project(
         &self,
         content: &str,
@@ -186,19 +189,20 @@ impl MimirService {
         confidence: f64,
         project: &str,
         memory_type: MemoryType,
+        grounding: &[preparation::IndexedSupport],
     ) -> Result<Belief> {
-        let belief = Belief::new_in_project(
-            content.to_string(),
+        self.add_prepared_belief(
+            content,
             probability,
             confidence,
-            project.to_string(),
-        )?
-        .with_memory_type(memory_type);
-        self.insert_and_embed_belief(belief, None).await
+            Some(project),
+            memory_type,
+            None,
+            grounding,
+        )
+        .await
     }
 
-    /// Agent-facing direct write for a separately established source. The
-    /// provenance is stored with the graph node, not inferred from its text.
     pub async fn add_independent_belief(
         &self,
         content: &str,
@@ -207,27 +211,41 @@ impl MimirService {
         project: Option<&str>,
         memory_type: MemoryType,
         provenance: &crate::learning::IndependentProvenance,
+        grounding: &[preparation::IndexedSupport],
     ) -> Result<Belief> {
-        provenance.validate()?;
-        let belief = match project {
-            Some(project) => Belief::new_in_project(
-                content.to_string(),
-                probability,
-                confidence,
-                project.to_string(),
-            )?,
-            None => Belief::new(content.to_string(), probability, confidence)?,
-        }
-        .with_memory_type(memory_type);
-        self.insert_and_embed_belief(belief, Some(provenance)).await
+        self.add_prepared_belief(
+            content,
+            probability,
+            confidence,
+            project,
+            memory_type,
+            Some(provenance),
+            grounding,
+        )
+        .await
     }
 
-    async fn insert_and_embed_belief(
+    async fn add_prepared_belief(
         &self,
-        belief: Belief,
+        content: &str,
+        probability: f64,
+        confidence: f64,
+        project: Option<&str>,
+        memory_type: MemoryType,
         provenance: Option<&crate::learning::IndependentProvenance>,
+        grounding: &[preparation::IndexedSupport],
     ) -> Result<Belief> {
-        let prepared = self.prepare_belief_value(belief, provenance).await?;
+        let prepared = self
+            .prepare_belief(
+                content,
+                probability,
+                confidence,
+                project,
+                memory_type,
+                provenance,
+                grounding,
+            )
+            .await?;
         self.publish_prepared_belief(&prepared).await
     }
 
@@ -239,28 +257,52 @@ impl MimirService {
         project: Option<&str>,
         memory_type: MemoryType,
         provenance: Option<&crate::learning::IndependentProvenance>,
+        grounding: &[preparation::IndexedSupport],
     ) -> Result<preparation::PreparedBelief> {
-        let belief = match project {
-            Some(project) => {
-                Belief::new_in_project(content.into(), probability, confidence, project.into())?
-            }
-            None => Belief::new(content.into(), probability, confidence)?,
+        if content.trim().is_empty() {
+            return Err(preparation::PreparationRequired::new(interaction::Location::Arguments,
+                vec![validation::Segment::Key("content".into())], validation::Code::EmptyText,
+                "Supply the nonblank belief claim supported by the cited indexed passage. If the claim is unclear, open the user dialog; no belief was stored.".into()).into());
         }
-        .with_memory_type(memory_type);
-        self.prepare_belief_value(belief, provenance).await
+        Probability::new(probability)?;
+        Probability::new(confidence)?;
+        if let Some(origin) = provenance {
+            origin.validate()?;
+        }
+        let support = self
+            .store
+            .validate_indexed_support(project, grounding)
+            .await?;
+        let (id, created_at) = self.store.reserve_belief_preparation(project).await?;
+        let (alpha, beta) = graph::prior_from(probability, confidence);
+        let belief = Belief {
+            id,
+            content: content.into(),
+            probability: Probability::new(probability)?,
+            confidence: Probability::new(confidence)?,
+            alpha,
+            beta,
+            alpha0: alpha,
+            beta0: beta,
+            created_at,
+            last_activated_at: created_at,
+            decay_accounted_at: created_at,
+            memory_type,
+            project: project.map(str::to_owned),
+        };
+        self.prepare_owned_belief(belief, provenance.cloned(), support)
+            .await
     }
 
-    async fn prepare_belief_value(
+    async fn prepare_owned_belief(
         &self,
-        mut belief: Belief,
-        provenance: Option<&crate::learning::IndependentProvenance>,
+        belief: Belief,
+        provenance: Option<crate::learning::IndependentProvenance>,
+        support: Vec<preparation::ValidatedSupport>,
     ) -> Result<preparation::PreparedBelief> {
         use interaction::Location;
         use preparation::{PreparationRequired, PreparedBelief};
         use validation::{Code, Segment};
-        if let Some(origin) = provenance {
-            origin.validate()?;
-        }
         let embedder = self.embeddings.as_ref().ok_or_else(|| {
             PreparationRequired::new(
                 Location::Configuration,
@@ -269,17 +311,8 @@ impl MimirService {
                 "Embedding is not configured; no belief was stored.".into(),
             )
         })?;
-        let (id, created_at) = self
-            .store
-            .reserve_belief_preparation(belief.project.as_deref())
-            .await?;
-        belief.id = id;
-        belief.created_at = created_at;
-        belief.last_activated_at = created_at;
-        belief.decay_accounted_at = created_at;
-        let vectors = self.embed_prepared_belief(embedder, &belief).await.map_err(|error| {
-            if error.is::<PreparationRequired>() { return error; }
-            if error.is::<embed::EmbeddingCancelled>() { return error; }
+        let vectors = self.embed_prepared_belief(embedder, &belief, &support).await.map_err(|error| {
+            if error.is::<PreparationRequired>() || error.is::<embed::EmbeddingCancelled>() { return error; }
             PreparationRequired::new(Location::Configuration, vec![Segment::Key("embeddings".into())], Code::MissingEvidence,
                 format!("Embedding preparation failed before publication: {error:#}. No belief was stored.")).into()
         })?;
@@ -288,31 +321,51 @@ impl MimirService {
             _ => return Err(PreparationRequired::new(Location::Configuration, vec![Segment::Key("embeddings".into())], Code::MissingEvidence,
                 "The backend must return exactly one complete, finite, nonzero vector for this belief; no belief was stored.".into()).into()),
         };
-        let support = self.store.prepare_belief_support(&belief, &vector).await.map_err(|error| PreparationRequired::new(
-            Location::Configuration, vec![Segment::Key("database".into())], Code::MissingEvidence,
-            format!("Indexed grounding preparation failed before publication: {error:#}. No belief was stored.")))?;
-        if support.is_empty() {
-            return Err(PreparationRequired::new(
-                Location::Arguments,
-                vec![Segment::Key("content".into())],
-                Code::MissingEvidence,
-                "No supporting passage was found in an indexed document; no belief was stored."
-                    .into(),
-            )
-            .into());
-        }
         Ok(PreparedBelief {
             belief,
-            provenance: provenance.cloned(),
+            provenance,
             vector,
             support,
         })
+    }
+
+    /// Resume the same PostgreSQL owner; successful readback precedes all new
+    /// source checks or provider work. Publication and original answer commit together.
+    pub async fn publish_belief_operation(
+        &self,
+        plan: &store::OperationPlan,
+    ) -> Result<store::StepDecision> {
+        match self
+            .store
+            .resume_belief_operation(plan, &self.embedding_operation_settings())
+            .await?
+        {
+            store::BeliefPublicationState::Resolved(result) => Ok(result),
+            store::BeliefPublicationState::Preparing {
+                final_step,
+                belief,
+                provenance,
+                grounding,
+            } => {
+                let support = self
+                    .store
+                    .validate_indexed_support(belief.project.as_deref(), &grounding)
+                    .await?;
+                let prepared = self
+                    .prepare_owned_belief(belief, Some(provenance), support)
+                    .await?;
+                self.store
+                    .publish_belief_operation(&final_step, &prepared)
+                    .await
+            }
+        }
     }
 
     async fn embed_prepared_belief(
         &self,
         embedder: &OwnedEmbeddingBackend,
         belief: &Belief,
+        support: &[preparation::ValidatedSupport],
     ) -> Result<Vec<Vec<f32>>> {
         use interaction::Location;
         use preparation::PreparationRequired;
@@ -327,8 +380,8 @@ impl MimirService {
         let mut changes = db::EmbeddingOwnerSubscription::connect(&self.database)
             .await
             .map_err(|error| stopped(format!("cannot observe ownership changes: {error:#}")))?;
-        if !self.store.owns_belief_preparation(belief).await? {
-            return Err(stopped("publication ownership was revoked".into()).into());
+        if !self.store.preparation_is_current(belief, support).await? {
+            return Err(stopped("publication ownership was revoked or a cited indexed passage changed".into()).into());
         }
         let job = embedder.embed(std::slice::from_ref(&belief.content));
         tokio::pin!(job);
@@ -337,10 +390,10 @@ impl MimirService {
                 biased;
                 change = changes.changed() => {
                     change.map_err(|error| stopped(format!("ownership monitoring disconnected: {error:#}")))?;
-                    if !self.store.owns_belief_preparation(belief).await? {
+                    if !self.store.preparation_is_current(belief, support).await? {
                         // Returning drops the owned provider future. A local
                         // worker is killed and reaped before this returns.
-                        return Err(stopped("publication ownership was revoked".into()).into());
+                        return Err(stopped("publication ownership was revoked or a cited indexed passage changed".into()).into());
                     }
                 }
                 result = &mut job => return result,
@@ -430,42 +483,6 @@ impl MimirService {
                     validation::Code::MissingReference,
                     format!("Backfill operation {token} was explicitly cancelled. Its owned embedding stopped; no result from this job may be published. Read the original saved answers and discuss any new work with the user."),
                 ).into());
-            }
-        }
-        Ok(())
-    }
-
-    /// Auto-ground newly loaded chunks against existing beliefs.
-    /// For each chunk, finds beliefs with cosine similarity ≥ GROUND_THRESHOLD
-    /// that are project-compatible, then creates GROUNDS edges.
-    /// No-op when embeddings are not configured.
-    /// Formalised as Evidence.autoGroundChunks in the Agda spec.
-    async fn auto_ground_chunks(
-        &self,
-        chunks: &[documents::DocumentChunk],
-        embeddings: &[Vec<f32>],
-    ) -> Result<()> {
-        for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
-            let candidates = self
-                .store
-                .query_beliefs_by_vector_scored(embedding, None)
-                .await?;
-            for (belief_id, sim) in candidates {
-                if sim < GROUND_THRESHOLD {
-                    break;
-                }
-                // Fetch belief to check project compatibility.
-                if let Some(belief) = self.store.get_belief(belief_id).await? {
-                    let compatible = match (&chunk.project, &belief.project) {
-                        (None, _) | (_, None) => true,
-                        (Some(cp), Some(bp)) => cp == bp,
-                    };
-                    if compatible {
-                        self.store
-                            .insert_evidence(chunk.id, belief_id, Probability::new(sim)?)
-                            .await?;
-                    }
-                }
             }
         }
         Ok(())
@@ -1284,8 +1301,8 @@ impl MimirService {
             .replace_document(path, &chunks, &embeddings)
             .await?;
 
-        // Auto-ground: create GROUNDS edges to similar beliefs (Evidence.autoGroundChunks).
-        self.auto_ground_chunks(&chunks, &embeddings).await?;
+        // Indexing makes passages available for explicit citations. Similarity
+        // alone does not assert that a passage supports any existing belief.
 
         Ok(count)
     }
@@ -1562,9 +1579,11 @@ impl MimirService {
                     }
                 }
             }
+            let sources = self.store.belief_sources_on(client, belief.id).await?;
             out.push(GroundedBelief {
                 belief,
                 evidence: refs,
+                sources,
             });
         }
         Ok(RetrievalReport {
