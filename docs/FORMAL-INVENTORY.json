@@ -9983,7 +9983,8 @@
         "spec/Mimir/BeliefEmbedding.agda",
         "spec/Mimir/BeliefDeletionRecovery.agda",
         "spec/Mimir/RecoverableStoreStep.agda",
-        "spec/Mimir/RegisteredStoreAdmission.agda"
+        "spec/Mimir/RegisteredStoreAdmission.agda",
+        "spec/Mimir/GroundingRecovery.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -10101,7 +10102,8 @@
       "behavioral_specification": [
         "spec/Mimir/ToolCatalog.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/ApplicationProtocol.agda"
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/GroundingRecovery.agda"
       ],
       "specification_status": "behavior-defined",
       "proof_boundary_category": "application_protocol",
@@ -12181,7 +12183,8 @@
         "spec/Mimir/GroundingPublication.agda",
         "spec/Mimir/BeliefDeletionRecovery.agda",
         "spec/Mimir/RecoverableStoreStep.agda",
-        "spec/Mimir/RegisteredStoreAdmission.agda"
+        "spec/Mimir/RegisteredStoreAdmission.agda",
+        "spec/Mimir/GroundingRecovery.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -13526,7 +13529,8 @@
       "behavioral_specification": [
         "spec/Mimir/Recovery.agda",
         "spec/Mimir/DatabaseTransaction.agda",
-        "spec/Mimir/MigrationSchema.agda"
+        "spec/Mimir/MigrationSchema.agda",
+        "spec/Mimir/GroundingRecovery.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
@@ -17933,6 +17937,112 @@
           "kind": "fn",
           "name": "repeated_numerical_states_restore_deletion_edges_vector_and_pending_token",
           "line": 372,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        }
+      ],
+      "status": "unmapped",
+      "proof_boundary_category": "verification_artifact",
+      "classification": "verification-or-example-artifact"
+    },
+    {
+      "path": "crates/core/tests/atomic_grounding.rs",
+      "definitions": [
+        {
+          "kind": "fn",
+          "name": "config",
+          "line": 17,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "identity",
+          "line": 27,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "create",
+          "line": 44,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "args",
+          "line": 84,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "plan",
+          "line": 87,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "state",
+          "line": 105,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "pending",
+          "line": 112,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "cleanup",
+          "line": 129,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "addition_replays_original_answer_without_duplicating_evidence_or_probabilities",
+          "line": 136,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "removal_replays_without_removing_evidence_added_after_its_completion",
+          "line": 165,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "rejected_final_receipt_rolls_back_evidence_and_all_affected_counts",
+          "line": 209,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "cancelled_evidence_change_keeps_all_data_and_saves_no_answer",
+          "line": 234,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "malformed_originals_missing_passages_and_wrong_steps_cannot_publish",
+          "line": 270,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "repeated_numerical_states_leave_evidence_counts_and_token_pending",
+          "line": 299,
           "specification": [],
           "status": "verification-or-example-not-production-behavior"
         }

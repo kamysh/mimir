@@ -1168,6 +1168,14 @@ impl MimirService {
         self.store.delete_evidence(chunk_id, belief_id).await
     }
 
+    /// Complete the evidence change captured by this checked operation plan.
+    pub async fn change_evidence_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.change_evidence_operation(step).await
+    }
+
     /// The grounding passages for a single belief, strongest first.
     /// Omit passage selection for all support; a supplied count is positive.
     pub async fn evidence_for_belief(

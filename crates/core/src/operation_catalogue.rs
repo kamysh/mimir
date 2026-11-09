@@ -9,6 +9,7 @@ pub enum CommitSite {
     BeliefPublication,
     BeliefVectorPublication,
     EvidencePublication,
+    EvidenceRemoval,
     BeliefDeletion,
     ProjectDeletion,
     PatternPublication,
@@ -30,6 +31,7 @@ impl CommitSite {
             Self::BeliefPublication => "store.publish_prepared_belief",
             Self::BeliefVectorPublication => "store.insert_belief_embedding",
             Self::EvidencePublication => "store.insert_evidence",
+            Self::EvidenceRemoval => "store.delete_evidence",
             Self::BeliefDeletion => "store.delete_belief",
             Self::ProjectDeletion => "store.delete_project",
             Self::PatternPublication => "store.insert_pattern",
@@ -129,5 +131,40 @@ operations! {
         GetExperience => "get_experience" [],
         ExperienceHistory => "experience_history" [],
         QueryLearningContext => "query_learning_context" []
+    }
+}
+
+/// Library operations have checked plans without becoming advertised MCP tools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegisteredOperation {
+    Tool(Operation),
+    DeleteEvidence,
+}
+
+impl RegisteredOperation {
+    pub fn named(name: &str) -> Option<Self> {
+        Operation::ALL
+            .iter()
+            .copied()
+            .find(|operation| operation.name() == name)
+            .map(Self::Tool)
+            .or_else(|| (name == "delete_evidence").then_some(Self::DeleteEvidence))
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Tool(operation) => operation.name(),
+            Self::DeleteEvidence => "delete_evidence",
+        }
+    }
+
+    pub fn committed_boundaries(self) -> &'static [CommitBoundary] {
+        match self {
+            Self::Tool(operation) => operation.committed_boundaries(),
+            Self::DeleteEvidence => {
+                const PLAN: &[CommitBoundary] = &[once(EvidenceRemoval)];
+                PLAN
+            }
+        }
     }
 }

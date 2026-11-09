@@ -1,6 +1,6 @@
 //! Frozen selections and checked, token-scoped execution capabilities.
 use super::{reservations::decode_binding, AgeStore, OperationBinding, OperationBindingRequest};
-use crate::operation_catalogue::{CommitSite, Operation};
+use crate::operation_catalogue::{CommitSite, RegisteredOperation as Operation};
 use anyhow::{anyhow, ensure, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -96,7 +96,7 @@ fn build(operation: Operation, selections: Selections) -> Result<StoredPlan> {
     })
 }
 fn validate(plan: &StoredPlan) -> Result<()> {
-    let operation = Operation::ALL.iter().find(|op| op.name()==plan.operation).copied().ok_or_else(|| anyhow!("saved operation is no longer registered; read its saved outcome before choosing how to continue"))?;
+    let operation = Operation::named(&plan.operation).ok_or_else(|| anyhow!("saved operation is no longer registered; read its saved outcome before choosing how to continue"))?;
     ensure!(
         shape(operation) == plan.shape,
         "registered step boundaries changed; read the saved plan and outcome before continuing"
@@ -446,7 +446,11 @@ impl AgeStore {
                 }),
             }));
         }
-        let operation=Operation::ALL.iter().find(|op| op.name()==original.request.operation()).copied().ok_or_else(|| anyhow!("operation is not registered; read its binding and select a registered operation"))?;
+        let operation = Operation::named(original.request.operation()).ok_or_else(|| {
+            anyhow!(
+                "operation is not registered; read its binding and select a registered operation"
+            )
+        })?;
         let read = client
             .build_transaction()
             .read_only(true)
