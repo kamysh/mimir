@@ -112,7 +112,9 @@ enum Command {
     /// from those overrides non-interactively (no $EDITOR). Recognised keys:
     /// host, port, dbname, user, password, pgpassfile, ssl_mode, ssl_root_cert, ssl_client_cert,
     /// ssl_client_key, backend, model, api_key, cache_dir.
-    /// Exits non-zero if the config already exists.
+    /// An existing valid config is left unchanged when the explicit overrides
+    /// already match. Conflicting overrides ask for a decision. With no
+    /// arguments, an existing config is preserved and reported as an error.
     Init {
         /// KEY=VALUE pairs (e.g. `host=localhost port=5450 backend=local`).
         /// Omit to get the interactive $EDITOR flow.

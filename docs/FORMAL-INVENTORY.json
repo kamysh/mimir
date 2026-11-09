@@ -10421,7 +10421,13 @@
         "spec/Mimir/OperationalLifecycle.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
-      "proof_boundary_category": "application_protocol"
+      "proof_boundary_category": "application_protocol",
+      "configuration_upgrade_recovery": {
+        "module": "spec/Mimir/ConfigurationUpgrade.agda",
+        "operation": "Document.Replacement.recoverable",
+        "goal": "Original pure document upgrade and complete semantic answer, preserving unrelated settings and frame, including an explicit log-directory override.",
+        "remaining": "Mandatory configuration lifecycle dispatch is unfinished; filesystem and TOML dependency contracts remain explicit."
+      }
     },
     {
       "path": "crates/core/src/password.rs",
