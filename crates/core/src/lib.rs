@@ -587,6 +587,22 @@ impl MimirService {
         self.store.propagate_locked(seed_id).await
     }
 
+    /// Resume the original propagation and save its complete answer atomically.
+    pub async fn propagate_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.propagate_operation(step).await
+    }
+
+    /// Resume a defeat plan without writing its committed edge again.
+    pub async fn record_defeat_operation(
+        &self,
+        plan: &store::OperationPlan,
+    ) -> Result<store::StepDecision> {
+        self.store.record_defeat_operation(plan).await
+    }
+
     /// Counterfactual projection P(· | do(target = value)). Read-only: computes
     /// and returns projected probabilities for the causal descendants of
     /// `target`; does NOT write to the store. Contrast `propagate_from`, which
