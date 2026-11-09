@@ -18,6 +18,7 @@ open import Relation.Binary.PropositionalEquality using (sym; subst)
 open import Data.List.Relation.Binary.Permutation.Propositional using (_↭_)
 import Data.List.Relation.Unary.Any as Any
 open import Data.Empty using (⊥)
+open import Data.Unit using (⊤)
 import Mimir.ApplicationStore as Store
 import Mimir.InferenceProtocol as I
 import Mimir.StorageSemantics as S
@@ -306,7 +307,14 @@ module InterventionRecovery (databaseSum : List Float → Float) (calculator : P
           (completedMeetsGoal query interrupted final result completion)
     }
 
-  module Run = Recovery.CheckedFor operation
+  Success : N.Result → Set
+  Success (N.unavailable _) = ⊥
+  Success (N.calculated _) = ⊤
+  Success (N.needsDecision _ _) = ⊥
+  Success (N.invalidCalculation _) = ⊥
+  Success (N.rejectedReport _) = ⊥
+
+  module Run = Recovery.CheckedFor operation Success
 
 module Bound (database : ℕ) (calculator : P.Calculator) (sum : List Float → Float) (reads : Committed.Contract Store.World) (publicationTime : ℤ) where
   private
