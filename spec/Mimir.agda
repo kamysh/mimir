@@ -496,3 +496,4 @@ import Mimir.PreparedRetrieval
 import Mimir.TraversalCompleteness
 import Mimir.OrderedRetrieval
 import Mimir.PublicRetrievalRecovery
+import Mimir.PublicLearningContextRecovery

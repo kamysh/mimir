@@ -18,4 +18,6 @@ The exported operation certificate requires three proofs:
 
 The receipt and stored snapshot are proof evidence, not additional public response fields. The success condition compares the complete semantic response; it is not a free predicate supplied by an operation.
 
-The database boundary is the existing stable composite-read view. Individual SQL replies retain the meanings in `StorageReadBinding`. Connecting this certificate to mandatory dispatcher registration remains #74; checking all Rust statement boundaries against it remains separate work. Learning-context composition remains #135. This change does not claim those separate integration tasks are complete.
+Dispatcher registration in #74 must receive the full request-specific `Operation` certificate, including `observes`. Accepting only its `RecoverableFor` projection would discard the required link to the actual request and backend response. The running state may still use the operation's checked `RunState`, but its assembly input type must retain the complete certificate. Learning-context composition keeps that complete retrieval certificate as a required field.
+
+The database boundary is the existing stable composite-read view. Individual SQL replies retain the meanings in `StorageReadBinding`. Connecting this certificate to mandatory dispatcher registration remains #74; checking all Rust statement boundaries against it remains separate work. Public learning-context composition is defined in `PublicLearningContextRecovery`; see [its contract](PUBLIC-LEARNING-CONTEXT-RECOVERY.md).

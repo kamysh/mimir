@@ -595,7 +595,9 @@ impl crate::MimirService {
         F: FnOnce() -> W,
         W: std::future::Future<Output = Result<()>>,
     {
-        ensure!(!project.trim().is_empty(), "project must be explicit");
+        if project.trim().is_empty() {
+            return Err(RequestCorrection::learning_context_project().into());
+        }
         let mut client = self.store.snapshot_connection().await;
         let tx = crate::store::snapshot_transaction(&mut client).await?;
         let report = self

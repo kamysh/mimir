@@ -2768,6 +2768,38 @@ mod snapshot_read_tests {
     }
 
     #[tokio::test]
+    async fn blank_learning_context_project_is_corrected_before_snapshot_work() -> Result<()> {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+
+        let service = MimirService::connect(&config()).await?;
+        // A snapshot attempt would wait on this lease. One poll must finish
+        // with the correction, without using a timer or doing database work.
+        let snapshot = service.store.snapshot_connection().await;
+        for project in ["", " \t\r\n", "\u{2003}"] {
+            let mut request =
+                std::pin::pin!(service.query_learning_context("literal context", project, None));
+            let mut context = Context::from_waker(Waker::noop());
+            let Poll::Ready(Err(error)) = request.as_mut().poll(&mut context) else {
+                panic!("blank project started work instead of returning its correction");
+            };
+            let correction = error
+                .downcast_ref::<crate::interaction::RequestCorrection>()
+                .expect("typed project correction");
+            let issue = &correction.correction().issues()[0];
+            assert_eq!(
+                issue.fault().path,
+                vec![crate::validation::Segment::Key("project".into())]
+            );
+            assert_eq!(issue.fault().code, crate::validation::Code::EmptyText);
+            assert!(issue.expected().contains("nonblank project"));
+            assert!(issue.suggested_correction().contains("ask the user"));
+        }
+        drop(snapshot);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn retrieval_tie_break_ignores_belief_insertion_order() -> Result<()> {
         let cfg = config();
         let writer = MimirService::connect(&cfg).await?;
