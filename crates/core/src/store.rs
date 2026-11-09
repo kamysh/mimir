@@ -982,6 +982,48 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
     // -----------------------------------------------------------------------
 
     pub async fn insert_pattern(&self, pattern: &Pattern) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_pattern_on(tx.client(), pattern).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Production creation obtains identity and time from PostgreSQL in the
+    /// same transaction as publication. No application UUID is substituted.
+    pub async fn create_pattern(
+        &self,
+        situation: &str,
+        approach: &str,
+        success_rate: f64,
+        project: Option<&str>,
+    ) -> Result<Pattern> {
+        let success_rate = crate::graph::Probability::new(success_rate)?;
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let metadata = tx.query_one(
+            "SELECT pg_catalog.gen_random_uuid() AS identity, pg_catalog.transaction_timestamp() AS created_at",
+            &[],
+        ).await?;
+        let pattern = Pattern {
+            id: metadata.get("identity"),
+            situation: situation.to_owned(),
+            approach: approach.to_owned(),
+            activation_count: 0,
+            success_rate,
+            created_at: metadata.get("created_at"),
+            project: project.map(str::to_owned),
+        };
+        self.insert_pattern_on(tx.client(), &pattern).await?;
+        tx.commit().await?;
+        Ok(pattern)
+    }
+
+    async fn insert_pattern_on(&self, client: &Client, pattern: &Pattern) -> Result<()> {
         let g = &self.graph_name;
         let id = pattern.id.to_string();
         let activation_count = pattern.activation_count;
@@ -1013,12 +1055,7 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
              RETURN p.id $$, $1) AS (id ag_catalog.agtype)"
         );
 
-        let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
-        age_execute(tx.client(), &stmt, &prepare, &agtype_json).await?;
-        tx.commit().await?;
+        age_execute(client, &stmt, &prepare, &agtype_json).await?;
         Ok(())
     }
 

@@ -63,6 +63,9 @@ refusalCertified : ∀ {command before after report} →
 refusalCertified (missing report absent) = Correction.certified report refl
 
 data Effect : Set where
+  -- Fulfilled by PostgreSQL's UUID generator and clock. Generation and
+  -- uniqueness are external database guarantees, not application algorithms.
+  -- Pattern publication consumes this exact metadata rather than replacing it.
   newIdentityAndTime : Effect
   newBeliefOwner : Maybe Text → Effect
   statement : Statement → Effect
