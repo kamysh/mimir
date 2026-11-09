@@ -57,6 +57,7 @@ import Mimir.SignedMachine
 
 import Mimir.Effects
 import Mimir.Recovery
+import Mimir.RecoverableStoreStep
 import Mimir.AtomicFile
 import Mimir.CharacterRules
 import Mimir.OAuthCache
