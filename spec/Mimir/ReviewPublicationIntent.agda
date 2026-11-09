@@ -6,8 +6,10 @@
 module Mimir.ReviewPublicationIntent where
 
 open import Data.Bool using (Bool; true; false; _∧_; _∨_; not)
+open import Data.Empty using (⊥-elim)
 open import Data.Float.Base using (Float)
 open import Data.Integer using (ℤ; +_)
+import Data.Integer.Properties as Integer
 open import Data.List using (List; []; _∷_; _++_; map; filterᵇ)
 open import Data.List.Membership.Propositional using (_∈_)
 open import Data.List.Relation.Unary.Any using (there)
@@ -17,7 +19,7 @@ open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.String using (toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Nullary using (yes; no; does)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; trans; subst)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; trans; subst)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.ApplicationStore as Store
@@ -26,22 +28,66 @@ import Mimir.CandidateGraph as Graph
 import Mimir.CandidateRegistry as Registry
 import Mimir.CandidateReview as Candidates
 import Mimir.ExperienceSchema as Experience
+import Mimir.EmbeddingLifecycle as Lifecycle
 import Mimir.ExperienceSourceIntent as SourceIntent
 import Mimir.GroundingRecovery as Grounding
 import Mimir.InferenceStorageBinding as Inference
 import Mimir.LearningCandidates as Declarations
 import Mimir.LearningHistoryWire as History
+import Mimir.LearningInput as Input
 import Mimir.LearningStore as Learning
+import Mimir.LearningSchema as Items
 import Mimir.PosteriorComputation as Posterior
 import Mimir.PublicEncoding as Encoding
 import Mimir.ReviewNumericalPublication as Numerical
 import Mimir.ReviewObservation as Observation
 import Mimir.ReviewPlanning as Planning
+import Mimir.ReviewAdmission as ReviewAdmission
+import Mimir.ReviewLedger as Ledger
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.ReviewRecord as ReviewRecord
 import Mimir.ReviewSchema as Review
 import Mimir.StructuredValue as Wire
 import Mimir.Validation as Validation
+
+-- Each source/review/candidate notification re-runs the same actual admission
+-- checks. A refusal or already completed review releases this job; neither
+-- requires the provider to finish or allows a stale preparation to publish.
+module Watching (original : Maybe Input.Review) (before : Publication.World) (current : Experience.Experience)
+  (requested : Review.Review) (clock : Declarations.Candidate → ℤ)
+  (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes before)))
+  (expected : ℕ) where
+  module Plan = Planning.WithOriginal original before current requested clock unique expected
+
+  checkedOwnership : Plan.Decision → Lifecycle.Ownership.State → Lifecycle.Ownership.State
+  checkedOwnership (Plan.refused _) owned = Lifecycle.Ownership.stop owned
+  checkedOwnership (Plan.replay _) owned = Lifecycle.Ownership.stop owned
+  checkedOwnership (Plan.fresh _) owned = owned
+
+  refusalStopsItsJob : ∀ issue owned →
+    checkedOwnership (Plan.refused issue) owned ≡ Lifecycle.Ownership.stop owned
+  refusalStopsItsJob issue owned = refl
+
+  completedReviewStopsItsJob : ∀ replay owned →
+    checkedOwnership (Plan.replay replay) owned ≡ Lifecycle.Ownership.stop owned
+  completedReviewStopsItsJob replay owned = refl
+
+  changedReviewStopsItsJob : ∀ decision owned →
+    expected ≢ Ledger.R.Cell.review Plan.F.state →
+    checkedOwnership decision owned ≡ Lifecycle.Ownership.stop owned
+  changedReviewStopsItsJob (Plan.refused _) owned different = refl
+  changedReviewStopsItsJob (Plan.replay _) owned different = refl
+  changedReviewStopsItsJob (Plan.fresh selected) owned different =
+    ⊥-elim (different (Plan.F.Fresh.expectedMatches selected))
+
+  changedSourceStopsItsJob : ∀ decision owned →
+    Review.Review.experienceRevision requested ≢ (+ Ledger.R.Cell.current Plan.F.state) →
+    checkedOwnership decision owned ≡ Lifecycle.Ownership.stop owned
+  changedSourceStopsItsJob (Plan.refused _) owned different = refl
+  changedSourceStopsItsJob (Plan.replay _) owned different = refl
+  changedSourceStopsItsJob (Plan.fresh selected) owned different = ⊥-elim (different
+    (proj₂ (ReviewAdmission.For.Admitted.pinned
+      (Plan.F.P.Prepared.admitted (Plan.F.Fresh.preparation selected)))))
 
 -- Native ExperienceState extends the original source item map with the
 -- review item map. Reusing a local key retains one map entry, rather than
@@ -56,18 +102,36 @@ extendItems : List (Text × ℕ) → List (Text × ℕ) → List (Text × ℕ)
 extendItems [] existingItems = existingItems
 extendItems (first ∷ rest) existingItems = extendItems rest (putItem first existingItems)
 
+stateReply : Encoding.Formatting → Observation.Snapshot → List Items.LearningItem → Wire.Value
+stateReply format observed extra = Wire.object
+  ((toList "experience" , Encode.experience (Observation.Snapshot.experience observed)) ∷
+   (toList "revision" , Wire.signed (Observation.Snapshot.revision observed)) ∷
+   (toList "review_revision" , Wire.signed (Observation.Snapshot.reviewRevision observed)) ∷
+   (toList "reviewed_revision" , Wire.signed (Observation.Snapshot.reviewedRevision observed)) ∷
+   named "candidate_ids" (Observation.Snapshot.candidateIDs observed) ++
+   named "item_ids" (extendItems (SourceIntent.itemIDs extra)
+     (SourceIntent.itemIDs (Experience.Experience.items (Observation.Snapshot.experience observed)))))
+  where
+  module Encode = Encoding.Encode format
+  named : Data.String.String → List (Text × ℕ) → List (Text × Wire.Value)
+  named name [] = []
+  named name pairs@(_ ∷ _) = (toList name , Wire.object
+    (map (λ { (key , identity) → key , Encode.uuid identity }) pairs)) ∷ []
+
 -- A registered review can consume only the owners reserved for its own
 -- token. Existing published candidate identities require no new owner.
-ownedBy : ℕ → ℕ → List Store.EmbeddingOwnerRow → Bool
-ownedBy token identity [] = false
-ownedBy token identity (entry ∷ rest) with Store.EmbeddingOwnerRow.operationToken entry
-... | nothing = ownedBy token identity rest
-... | just linked = (does (token ≟ linked) ∧ does (identity ≟ Store.EmbeddingOwnerRow.token entry)) ∨ ownedBy token identity rest
+ownedBy : ℕ → Graph.BeliefValues → List Store.EmbeddingOwnerRow → Bool
+ownedBy token belief [] = false
+ownedBy token belief (entry ∷ rest) with Store.EmbeddingOwnerRow.operationToken entry
+... | nothing = ownedBy token belief rest
+... | just linked = (does (token ≟ linked) ∧
+  does (Graph.BeliefValues.identity belief ≟ Store.EmbeddingOwnerRow.token entry) ∧
+  does (Graph.BeliefValues.created belief Integer.≟ Store.EmbeddingOwnerRow.reservedAt entry)) ∨ ownedBy token belief rest
 
 ownedSelection : ℕ → ReviewRecord.PreparedSelection → List Store.EmbeddingOwnerRow → Bool
 ownedSelection token [] owners = true
 ownedSelection token ((belief , value) ∷ rest) owners =
-  ownedBy token (Graph.BeliefValues.identity belief) owners ∧ ownedSelection token rest owners
+  ownedBy token belief owners ∧ ownedSelection token rest owners
 
 retainOwner : ℕ → Store.EmbeddingOwnerRow → Bool
 retainOwner token entry with Store.EmbeddingOwnerRow.operationToken entry
@@ -78,6 +142,22 @@ releaseOwners : ℕ → Store.World → Store.World
 releaseOwners token before = record before
   { embeddingOwners = filterᵇ (retainOwner token) (Store.World.embeddingOwners before) }
 
+consumeBeliefKey : Text → List Declarations.Candidate → Maybe (List Declarations.Candidate)
+consumeBeliefKey key [] = nothing
+consumeBeliefKey key (candidate ∷ rest) with key ≟Text Declarations.candidateKey candidate
+... | yes _ with candidate
+... | Declarations.patternCandidate _ _ _ = nothing
+... | Declarations.belief _ _ _ _ = just rest
+consumeBeliefKey key (candidate ∷ rest) | no _ with consumeBeliefKey key rest
+... | nothing = nothing
+... | just remaining = just (candidate ∷ remaining)
+
+preparedScope : List Declarations.Candidate → List ReviewRecord.PreparedCandidate → Bool
+preparedScope candidates [] = true
+preparedScope candidates (first ∷ rest) with consumeBeliefKey (ReviewRecord.PreparedCandidate.key first) candidates
+... | nothing = false
+... | just remaining = preparedScope remaining rest
+
 preparedKeepsJournal : ∀ prepared before →
   Store.World.operations (ReviewRecord.installPrepared prepared before) ≡ Store.World.operations before
 preparedKeepsJournal [] before = refl
@@ -85,6 +165,7 @@ preparedKeepsJournal ((belief , value) ∷ rest) before = preparedKeepsJournal r
 
 module Fresh (database : ℕ) (format : Encoding.Formatting)
   (databaseSum : List Float → Float) (calculator : Posterior.Calculator)
+  (original : Input.Review)
   (before : Store.World) (old : Observation.Snapshot) (requested : Review.Review)
   (expected : ℕ) (clock : Declarations.Candidate → ℤ)
   (unique : Registry.IDs.Unique (map Graph.nodeID
@@ -94,7 +175,7 @@ module Fresh (database : ℕ) (format : Encoding.Formatting)
   module M = SourceIntent.For database format databaseSum calculator
   module B = Grounding.Business databaseSum calculator
   module N = Inference.NumericalOutcome databaseSum
-  module Plan = Planning.For (Learning.World.publication (Store.World.learning before))
+  module Plan = Planning.WithOriginal (just original) (Learning.World.publication (Store.World.learning before))
     (Observation.Snapshot.experience old) requested clock unique expected
   module F = Plan.F
 
@@ -121,7 +202,9 @@ module Fresh (database : ℕ) (format : Encoding.Formatting)
       (map (λ { (key , identity) → key , Encode.uuid identity }) pairs)) ∷ []
 
   required : Maybe ReviewRecord.PreparedSelection
-  required with ReviewRecord.selectPrepared before (Review.Review.experienceID requested)
+  required with preparedScope (Review.Review.candidates requested) supplied
+  ... | false = nothing
+  ... | true with ReviewRecord.selectPrepared before (Review.Review.experienceID requested)
     (Experience.Experience.project (Observation.Snapshot.experience old))
     (Review.Review.candidates requested) supplied
   ... | nothing = nothing
