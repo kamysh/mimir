@@ -91,7 +91,7 @@ module For (calculator : Posterior.Calculator) (posteriorTime : ℤ) (database :
           numericAdvanced (N.numericFailure failure) after resultSnapshot ()
           numericAdvanced (N.replay receipt) after resultSnapshot ()
           numericAdvanced (N.fresh selected nodes same limit) after resultSnapshot refl =
-            First.advancesExactlyOnce calculator before old requested expectedNat clock now unique selected nodes same limit
+            First.advancesExactlyOnce calculator posteriorTime before old requested expectedNat clock now unique selected nodes same limit
 
       abstract
         checkStateInert : ∀ before old expectedNat →
