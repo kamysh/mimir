@@ -201,6 +201,20 @@ async fn concurrent_vector_stops_redundant_job_preserves_vector_and_continues() 
     let (target, other) = if a.id < b.id { (a, b) } else { (b, a) };
     let (owner, started, stopped, calls) = blocked(target.content.clone()).await?;
     let token = reserve(&owner).await?;
+    let PlanDecision::Ready(original) = owner.prepare_reembed_operation(token).await? else {
+        panic!("original selection was not saved")
+    };
+    let sources = AgeStore::reembed_sources(&original)?;
+    let pending = sources
+        .iter()
+        .filter(|source| !source.already_embedded)
+        .count();
+    for id in [target.id, other.id] {
+        assert!(sources
+            .iter()
+            .any(|source| source.id == id && !source.already_embedded));
+    }
+    let initially_skipped = sources.len() - pending;
     let running = {
         let owner = owner.clone();
         tokio::spawn(async move { owner.reembed_operation(token).await })
@@ -215,9 +229,9 @@ async fn concurrent_vector_stops_redundant_job_preserves_vector_and_continues() 
     stopped.await?;
     assert_eq!(
         completed(running.await??),
-        json!({"embedded":1,"skipped":1})
+        json!({"embedded":pending-1,"skipped":initially_skipped+1})
     );
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), pending);
     assert_eq!(stored(target.id).await?, Some(preserved));
     assert_eq!(stored(other.id).await?, Some(vector(2)));
     writer.delete_project(&project).await?;
