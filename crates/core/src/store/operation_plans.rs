@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 pub(super) const RESULT_KEY: &str = "@operation-result";
 const PLAN_BINDING_MISMATCH: &str = "The saved plan belongs to a different operation than this token's original request. Read its binding, plan and saved answers and ask the user to resolve the mismatch. Do not repeat changes or invent a completion answer.";
+const LEGACY_READBACK_ONLY: &str = "An earlier Mimir version saved this operation with different steps. Its completed result can still be read. If it is unfinished, keep its token and saved answers, then ask the user whether to cancel it and start separate work. Do not reinterpret or repeat its old steps.";
 pub type Selections = Vec<(CommitSite, Vec<String>)>;
 pub type SelectionWork<'a> = Pin<Box<dyn Future<Output = Result<Selections>> + Send + 'a>>;
 pub(super) struct CapturedSelection {
@@ -69,32 +70,47 @@ fn shape(operation: Operation) -> Vec<Shape> {
         })
         .collect()
 }
-fn build(
-    operation: Operation,
-    selections: Selections,
-    capture: Option<Value>,
-) -> Result<StoredPlan> {
-    let capture = capture.map(mimir_json::Document::new);
-    if operation == Operation::Reembed {
-        let captured = capture.as_ref().ok_or_else(|| anyhow!(
-            "Backfill requires its original server-captured selection; use prepare_reembed_operation rather than guessing row keys"))?;
-        let pending = super::backfill::pending_keys(captured)?;
-        ensure!(selections == vec![(CommitSite::BeliefVectorPublication, pending)],
-            "The backfill steps do not match its original captured pending selection; read the plan and ask the user to resolve it");
-    } else {
-        ensure!(capture.is_none(), "Captured backfill metadata cannot be attached to another operation; read its original binding and plan");
-    }
+
+// These exact historical layouts remain readable, without becoming current
+// registrations or executable capabilities. There is no approximate match.
+fn legacy_shape(operation: Operation) -> Option<Vec<Shape>> {
+    let boundaries = match operation.name() {
+        "sweep_expired_defeated" => vec![(CommitSite::BeliefDeletion, true)],
+        "load_document" => vec![
+            (CommitSite::DocumentReplacement, false),
+            (CommitSite::EvidencePublication, true),
+        ],
+        _ => return None,
+    };
+    Some(
+        boundaries
+            .into_iter()
+            .map(|(site, may_repeat)| Shape {
+                site: site.name().into(),
+                may_repeat,
+            })
+            .collect(),
+    )
+}
+
+fn legacy(plan: &StoredPlan) -> bool {
+    Operation::named(&plan.operation).is_some_and(|operation| {
+        plan.shape != shape(operation) && legacy_shape(operation).as_ref() == Some(&plan.shape)
+    })
+}
+
+fn steps_for_shape(declared: &[Shape], selections: Selections) -> Result<Vec<PlannedStep>> {
     let mut selected = BTreeMap::new();
     for (site, keys) in selections {
         ensure!(
-            selected.insert(site.name(), keys).is_none(),
+            selected.insert(site.name().to_owned(), keys).is_none(),
             "selection was supplied twice for {}",
             site.name()
         );
     }
     let mut steps = Vec::new();
-    for boundary in operation.committed_boundaries() {
-        let site = boundary.site.name();
+    for boundary in declared {
+        let site = boundary.site.as_str();
         let keys = if boundary.may_repeat {
             selected.remove(site).ok_or_else(|| anyhow!("provide the captured selection for {site}, including an explicit empty selection when no rows matched"))?.into_iter().map(Some).collect::<Vec<_>>()
         } else {
@@ -124,44 +140,158 @@ fn build(
         selected.is_empty(),
         "selection supplied for a site outside this operation's repeated boundaries"
     );
+    Ok(steps)
+}
+
+fn build(
+    operation: Operation,
+    selections: Selections,
+    capture: Option<Value>,
+) -> Result<StoredPlan> {
+    let capture = capture.map(mimir_json::Document::new);
+    if operation == Operation::Reembed {
+        let captured = capture.as_ref().ok_or_else(|| anyhow!(
+            "Backfill requires its original server-captured selection; use prepare_reembed_operation rather than guessing row keys"))?;
+        let pending = super::backfill::pending_keys(captured)?;
+        ensure!(selections == vec![(CommitSite::BeliefVectorPublication, pending)],
+            "The backfill steps do not match its original captured pending selection; read the plan and ask the user to resolve it");
+    } else {
+        ensure!(capture.is_none(), "Captured backfill metadata cannot be attached to another operation; read its original binding and plan");
+    }
+    let declared = shape(operation);
+    let steps = steps_for_shape(&declared, selections)?;
     Ok(StoredPlan {
         operation: operation.name().into(),
-        shape: shape(operation),
+        shape: declared,
         steps,
         capture,
     })
 }
 fn validate(plan: &StoredPlan) -> Result<()> {
     let operation = Operation::named(&plan.operation).ok_or_else(|| anyhow!("saved operation is no longer registered; read its saved outcome before choosing how to continue"))?;
+    let historical = legacy(plan);
     ensure!(
-        shape(operation) == plan.shape,
+        shape(operation) == plan.shape || historical,
         "registered step boundaries changed; read the saved plan and outcome before continuing"
     );
     let mut selections = Vec::new();
-    for b in operation
-        .committed_boundaries()
-        .iter()
-        .filter(|b| b.may_repeat)
-    {
+    for b in plan.shape.iter().filter(|b| b.may_repeat) {
         let keys = plan
             .steps
             .iter()
-            .filter(|s| s.site == b.site.name())
+            .filter(|s| s.site == b.site)
             .map(|s| {
                 s.key
                     .clone()
                     .ok_or_else(|| anyhow!("saved repeated step has no selected key"))
             })
             .collect::<Result<Vec<_>>>()?;
-        selections.push((b.site, keys));
+        let site = operation
+            .committed_boundaries()
+            .iter()
+            .find(|item| item.site.name() == b.site)
+            .map(|item| item.site)
+            .or_else(|| match b.site.as_str() {
+                "store.delete_belief"
+                    if historical && operation.name() == "sweep_expired_defeated" =>
+                {
+                    Some(CommitSite::BeliefDeletion)
+                }
+                "store.insert_evidence" if historical && operation.name() == "load_document" => {
+                    Some(CommitSite::EvidencePublication)
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                anyhow!("the saved boundary is not a current or exact historical site")
+            })?;
+        selections.push((site, keys));
     }
-    ensure!(*plan==build(operation,selections,plan.capture.clone().map(mimir_json::Document::into_value))?, "saved plan disagrees with the registered order; read its outcome and resolve the journal before continuing");
+    if historical {
+        ensure!(
+            plan.capture.is_none(),
+            "Historical operation plans cannot contain an added capture"
+        );
+        ensure!(plan.steps == steps_for_shape(&plan.shape, selections)?,
+            "the historical plan has missing, duplicated, reordered or undeclared steps; read its original outcome");
+    } else {
+        ensure!(*plan==build(operation,selections,plan.capture.clone().map(mimir_json::Document::into_value))?, "saved plan disagrees with the registered order; read its outcome and resolve the journal before continuing");
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod capture_tests {
     use super::*;
+
+    #[test]
+    fn historical_step_layouts_keep_exact_answers_addressable() -> Result<()> {
+        for operation_name in ["sweep_expired_defeated", "load_document"] {
+            let operation = Operation::named(operation_name).unwrap();
+            let declared = legacy_shape(operation).unwrap();
+            let site = if operation_name == "load_document" {
+                CommitSite::EvidencePublication
+            } else {
+                CommitSite::BeliefDeletion
+            };
+            let keys = vec![
+                "first-original-selection".into(),
+                "second-original-selection".into(),
+            ];
+            let plan = StoredPlan {
+                operation: operation_name.into(),
+                steps: steps_for_shape(&declared, vec![(site, keys)])?,
+                shape: declared,
+                capture: None,
+            };
+            validate(&plan)?;
+            let original_ids = plan
+                .steps
+                .iter()
+                .map(|step| step.id.clone())
+                .collect::<Vec<_>>();
+            let roundtrip: StoredPlan = mimir_json::from_str(&mimir_json::to_string(&plan)?)?;
+            validate(&roundtrip)?;
+            assert_eq!(
+                roundtrip
+                    .steps
+                    .iter()
+                    .map(|step| step.id.clone())
+                    .collect::<Vec<_>>(),
+                original_ids
+            );
+
+            let mut duplicate = roundtrip.clone();
+            duplicate
+                .steps
+                .push(duplicate.steps.last().unwrap().clone());
+            assert!(validate(&duplicate).is_err());
+            let mut renamed = roundtrip.clone();
+            renamed.steps.last_mut().unwrap().id = "a-different-answer-address".into();
+            assert!(validate(&renamed).is_err());
+            let mut hidden = roundtrip;
+            hidden.capture = Some(mimir_json::Document::new(Value::Null));
+            assert!(validate(&hidden).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_operations_cannot_borrow_a_historical_layout() -> Result<()> {
+        let declared = legacy_shape(Operation::named("sweep_expired_defeated").unwrap()).unwrap();
+        let forged = StoredPlan {
+            operation: "record_cause".into(),
+            steps: steps_for_shape(
+                &declared,
+                vec![(CommitSite::BeliefDeletion, vec!["original".into()])],
+            )?,
+            shape: declared,
+            capture: None,
+        };
+        assert!(validate(&forged).is_err());
+        Ok(())
+    }
+
     #[test]
     fn deep_json_saved_plan_rejection_keeps_capture_cleanup_safe() {
         std::thread::Builder::new()
@@ -571,6 +701,9 @@ impl AgeStore {
             if stored.operation.as_str() != original.request.operation() {
                 return Ok(PlanDecision::NeedsRecovery(PLAN_BINDING_MISMATCH.into()));
             }
+            if legacy(&stored) {
+                return Ok(PlanDecision::NeedsRecovery(LEGACY_READBACK_ONLY.into()));
+            }
             return Ok(PlanDecision::Ready(OperationPlan {
                 inner: Arc::new(Inner {
                     binding: original,
@@ -613,6 +746,10 @@ impl AgeStore {
             if stored.operation.as_str() != original.request.operation() {
                 tx.rollback().await?;
                 return Ok(PlanDecision::NeedsRecovery(PLAN_BINDING_MISMATCH.into()));
+            }
+            if legacy(&stored) {
+                tx.rollback().await?;
+                return Ok(PlanDecision::NeedsRecovery(LEGACY_READBACK_ONLY.into()));
             }
             tx.commit().await?;
             return Ok(PlanDecision::Ready(OperationPlan {
