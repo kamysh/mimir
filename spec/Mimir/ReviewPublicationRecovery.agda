@@ -714,6 +714,30 @@ module FinalBody (library : Library.Contract) (format : Encoding.Formatting) (da
   ... | published metadata value observed = trans (cong Step.registration (cong proj₁ observed))
     (executeKeepsRegistration token metadata before)
 
+  -- A first final publication adds exactly its step/result pair around a
+  -- business world whose operation rows were unchanged. This is the bridge
+  -- to the prefix's application-owned complete-journal readback check.
+  firstPublication : ∀ token metadata before after value →
+    Store.lookupSaved before token (key token) ≡ nothing → Store.lookupSaved before token Step.resultKey ≡ nothing →
+    (after , Step.done value) ≡ Saved.execute (token , metadata) before →
+    Σ Store.World (λ changed → decide (token , metadata) before ≡ inj₂ (changed , value) ×
+      after ≡ K.publication (token , metadata) changed value)
+  firstPublication token metadata before after value emptyStep emptyResult observed
+    with admit (token , metadata) (Step.registration before)
+  ... | just _ with observed
+  ... | ()
+  firstPublication token metadata before after value emptyStep emptyResult observed | nothing
+    with Store.lookupCancellation before token
+  ... | just _ with observed
+  ... | ()
+  firstPublication token metadata before after value emptyStep emptyResult observed | nothing | nothing
+    rewrite emptyStep | emptyResult with decide (token , metadata) before in accepted
+  ... | inj₁ _ with observed
+  ... | ()
+  firstPublication token metadata before after value emptyStep emptyResult observed | nothing | nothing | inj₂ (changed , answer)
+    with observed
+  ... | refl = changed , refl , refl
+
 -- This private provider stage has no database publication effect. A ready
 -- batch contains one actual usable response for every selected new belief;
 -- patterns are allocated only by the final review transaction.
@@ -941,3 +965,213 @@ module ProviderStage (token : ℕ) (input : Request) (allocations : Preparing.Al
     ((snapshot , observedStore before) ∷ events)
     (E.replied snapshot afterSnapshot (observedStore before) execution)
     (X.changed before snapshot (observedStore before) before (refl , refl) physical)
+
+-- After the concrete owner prefix, actual provider responses supply the
+-- prepared data for the final transaction. The final reply cannot substitute
+-- another packet list, and interrupted preparation leaves the store intact.
+module AfterOwners (library : Library.Contract) (format : Encoding.Formatting) (database : ℕ)
+  (databaseSum : List Float → Float) (calculator : Posterior.Calculator) (dependencies : Dependencies)
+  (token : ℕ) (input : Request) (allocations : Preparing.Allocations)
+  (backend : Store.World → Preparing.Claim → Text ⊎ List Store.Vector) where
+  module P = ProviderStage token input allocations backend
+  module F = FinalBody library format database databaseSum calculator dependencies
+  Result = F.Saved.Reply
+
+  supplied : List Record.PreparedCandidate → Metadata → Metadata
+  supplied packets observed = record observed { prepared = packets }
+
+  data Effect : Set where
+    prepare : P.Effect → Effect
+    finish : List Record.PreparedCandidate → Effect
+
+  Reply : Effect → Set
+  Reply (prepare effect) = P.Reply effect
+  Reply (finish _) = Metadata × Result
+
+  Atomic : Store.World → (effect : Effect) → Reply effect → Store.World → Set
+  Atomic before (prepare effect) observed after = P.Atomic before effect observed after
+  Atomic before (finish packets) (metadata , reply) after = F.Atomic before token (supplied packets metadata , reply) after
+
+  module X = Recovery.Execution Store.World Effect Reply Atomic
+  module E = X.E
+
+  liftPreparation : ∀ {R} → P.E.Script R → E.Script R
+  liftPreparation (P.E.done result) = E.done result
+  liftPreparation (P.E.ask effect next) = E.ask (prepare effect) (λ observed → liftPreparation (next observed))
+
+  event : P.E.Event → E.Event
+  event (effect , observed) = prepare effect , observed
+
+  liftRuns : ∀ {R} {program : P.E.Script R} {events result} → P.E.Runs program events result →
+    E.Runs (liftPreparation program) (map event events) result
+  liftRuns (P.E.returned result) = E.returned result
+  liftRuns (P.E.replied effect next observed rest) = E.replied _ _ observed (liftRuns rest)
+
+  liftChanges : ∀ {before events after} → P.X.Changes before events after → X.Changes before (map event events) after
+  liftChanges (P.X.unchanged before) = X.unchanged before
+  liftChanges (P.X.changed before effect observed middle physical rest) = X.changed before _ _ middle physical (liftChanges rest)
+
+  final : List Record.PreparedCandidate → E.Script Result
+  final packets = E.ask (finish packets) (λ observed → E.done (proj₂ observed))
+
+  afterPreparation : P.Result → E.Script Result
+  afterPreparation (P.stopped fault) = E.done (Step.needsInput (inj₁ fault))
+  afterPreparation (P.replayed _ _ _) = final []
+  afterPreparation (P.preparedBatch _ _ _ _ packets _) = final packets
+
+  script : E.Script Result
+  script = E._>>=_ (liftPreparation P.script) afterPreparation
+
+  data Ready : P.Result → List Record.PreparedCandidate → Set where
+    replay : ∀ captured old observed → Ready (P.replayed captured old observed) []
+    batch : ∀ captured old pending observed packets complete →
+      Ready (P.preparedBatch captured old pending observed packets complete) packets
+
+  data Goal (before after : Store.World) : Result → Set where
+    preparationStopped : ∀ fault → after ≡ before → Goal before after (Step.needsInput (inj₁ fault))
+    reviewAttempted : ∀ prepared packets metadata reply → P.Captured before prepared → Ready prepared packets →
+      F.MetaGoal token (supplied packets metadata) before after reply → Goal before after reply
+
+  finalProgress : ∀ packets before → Σ Store.World (λ after → Σ Result (λ reply → X.Completed (final packets) before after reply))
+  finalProgress packets before = proj₁ expected , proj₂ expected , X.completed
+    ((finish packets , metadata , proj₂ expected) ∷ []) (E.replied _ _ _ (E.returned _))
+    (X.changed before _ _ _ (refl , F.Saved.expectedPhysical (token , supplied packets metadata) before) (X.unchanged _))
+    where
+    metadata = Dependencies.observation dependencies token before
+    expected = F.Saved.execute (token , supplied packets metadata) before
+
+  afterPreparationProgress : ∀ prepared before → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (afterPreparation prepared) before after reply))
+  afterPreparationProgress (P.stopped fault) before = before , Step.needsInput (inj₁ fault) , X.completed [] (E.returned _) (X.unchanged before)
+  afterPreparationProgress (P.replayed _ _ _) before = finalProgress [] before
+  afterPreparationProgress (P.preparedBatch _ _ _ _ packets _) before = finalProgress packets before
+
+  progress : ∀ before → Σ Store.World (λ after → Σ Result (λ reply → X.Completed script before after reply))
+  progress before with P.progress before
+  ... | prepared , P.X.completed firstEvents firstRun firstChanges with afterPreparationProgress prepared before
+  ... | after , reply , X.completed laterEvents laterRun laterChanges = after , reply , X.completed _
+    (E.bindRuns (liftRuns firstRun) laterRun) (X.changesAppend (liftChanges firstChanges) laterChanges)
+
+  splitPreparation : ∀ (program : P.E.Script P.Result) before after reply {events} →
+    E.Runs (E._>>=_ (liftPreparation program) afterPreparation) events reply → X.Changes before events after →
+    Σ Store.World (λ middle → Σ P.Result (λ prepared →
+      P.X.Completed program before middle prepared × X.Completed (afterPreparation prepared) middle after reply))
+  splitPreparation (P.E.done prepared) before after reply execution physical = before , prepared ,
+    P.X.completed [] (P.E.returned _) (P.X.unchanged before) , X.completed _ execution physical
+  splitPreparation (P.E.ask effect next) before after reply (E.replied _ _ observed execution)
+    (X.changed _ _ _ middle physical later)
+    with splitPreparation (next observed) middle after reply execution later
+  ... | baseline , prepared , P.X.completed events firstRun firstChanges , finished = baseline , prepared ,
+    P.X.completed ((effect , observed) ∷ events) (P.E.replied effect next observed firstRun)
+      (P.X.changed before effect observed middle physical firstChanges) , finished
+
+  finalMeaning : ∀ prepared packets before after reply → P.Captured before prepared → Ready prepared packets →
+    X.Completed (final packets) before after reply → Goal before after reply
+  finalMeaning prepared packets before after reply captured ready
+    (X.completed _ (E.replied _ _ (metadata , _) (E.returned _))
+      (X.changed _ _ _ _ physical (X.unchanged _))) =
+    reviewAttempted prepared packets metadata reply captured ready
+      (subst (λ result → F.MetaGoal token (supplied packets metadata) before (proj₁ result) (proj₂ result))
+        (sym (F.atomicObservation token before after (supplied packets metadata) reply physical))
+        (F.meaning token (supplied packets metadata) before))
+
+  afterPreparationMeaning : ∀ prepared before after reply → P.Captured before prepared →
+    X.Completed (afterPreparation prepared) before after reply → Goal before after reply
+  afterPreparationMeaning (P.stopped fault) before .before .(Step.needsInput (inj₁ fault)) captured
+    (X.completed [] (E.returned _) (X.unchanged _)) = preparationStopped fault refl
+  afterPreparationMeaning prepared@(P.replayed captured old observed) before after reply valid finished =
+    finalMeaning prepared [] before after reply valid (replay captured old observed) finished
+  afterPreparationMeaning prepared@(P.preparedBatch captured old pending observed packets complete) before after reply valid finished =
+    finalMeaning prepared packets before after reply valid (batch captured old pending observed packets complete) finished
+
+  completedGoal : ∀ before after reply → X.Completed script before after reply → Goal before after reply
+  completedGoal before after reply (X.completed events execution physical)
+    with splitPreparation P.script before after reply execution physical
+  ... | middle , prepared , preparation , publication with P.completedGoal before middle prepared preparation
+  ... | refl , captured = afterPreparationMeaning prepared before after reply captured publication
+
+  data Cut (before after : Store.World) : Set where
+    noPublication : after ≡ before → Cut before after
+    published : ∀ prepared packets metadata value → P.Captured before prepared → Ready prepared packets →
+      (after , Step.done value) ≡ F.Saved.execute (token , supplied packets metadata) before → Cut before after
+
+  finishAtomicCut : ∀ prepared packets before after metadata reply → P.Captured before prepared → Ready prepared packets →
+    Atomic before (finish packets) (metadata , reply) after → Cut before after
+  finishAtomicCut prepared packets before after metadata (Step.done value) captured ready physical =
+    published prepared packets metadata value captured ready (F.atomicObservation token before after (supplied packets metadata) (Step.done value) physical)
+  finishAtomicCut prepared packets before .before metadata (Step.needsInput _) captured ready (observed , DB.abortedNone) = noPublication refl
+  finishAtomicCut prepared packets before .before metadata Step.needsRecovery captured ready (observed , DB.abortedNone) = noPublication refl
+  finishAtomicCut prepared packets before .before metadata (Step.cancelled _) captured ready (observed , DB.abortedNone) = noPublication refl
+
+  doneInterruptedSameWorld : ∀ {R : Set} (value : R) before after → X.Interrupted (E.done value) before after → after ≡ before
+  doneInterruptedSameWorld value before .before (X.atPrefix [] _ _ (E.stopped _) (X.unchanged _)) = refl
+  doneInterruptedSameWorld value before after (X.beforeReply _ _ _ _ _ _ () _ _)
+
+  finalCut : ∀ prepared packets before after → P.Captured before prepared → Ready prepared packets →
+    X.Interrupted (final packets) before after → Cut before after
+  finalCut prepared packets before .before captured ready (X.atPrefix [] _ _ (E.stopped _) (X.unchanged _)) = noPublication refl
+  finalCut prepared packets before after captured ready
+    (X.atPrefix _ _ _ (E.replied _ _ (metadata , reply) (E.stopped _))
+      (X.changed _ _ _ _ physical (X.unchanged _))) = finishAtomicCut prepared packets before after metadata reply captured ready physical
+  finalCut prepared packets before after captured ready
+    (X.beforeReply [] _ _ _ (metadata , reply) _ (E.stopped _) (X.unchanged _) physical) =
+    finishAtomicCut prepared packets before after metadata reply captured ready physical
+  finalCut prepared packets before after captured ready (X.beforeReply _ _ _ _ _ _ (E.replied _ _ _ ()) _ _)
+
+  afterPreparationCut : ∀ prepared before after → P.Captured before prepared →
+    X.Interrupted (afterPreparation prepared) before after → Cut before after
+  afterPreparationCut (P.stopped fault) before after captured interrupted =
+    noPublication (doneInterruptedSameWorld (Step.needsInput (inj₁ fault)) before after interrupted)
+  afterPreparationCut prepared@(P.replayed source old observed) before after captured interrupted =
+    finalCut prepared [] before after captured (replay source old observed) interrupted
+  afterPreparationCut prepared@(P.preparedBatch source old pending observed packets complete) before after captured interrupted =
+    finalCut prepared packets before after captured (batch source old pending observed packets complete) interrupted
+
+  prependPreparationInterruption : ∀ before effect (next : P.Reply effect → P.E.Script P.Result) observed middle after → P.Atomic before effect observed middle →
+    P.X.Interrupted (next observed) middle after → P.X.Interrupted (P.E.ask effect next) before after
+  prependPreparationInterruption before effect next observed middle after physical
+    (P.X.atPrefix events residual _ prefix changes) = P.X.atPrefix ((effect , observed) ∷ events) residual after
+      (P.E.replied effect next observed prefix) (P.X.changed before effect observed middle physical changes)
+  prependPreparationInterruption before effect next observed middle after physical
+    (P.X.beforeReply events active later current reply _ prefix changes actual) =
+    P.X.beforeReply ((effect , observed) ∷ events) active later current reply after
+      (P.E.replied effect next observed prefix) (P.X.changed before effect observed middle physical changes) actual
+
+  data Phase (program : P.E.Script P.Result) (before after : Store.World) : Set where
+    preparing : P.X.Interrupted program before after → Phase program before after
+    finishing : ∀ baseline prepared → P.X.Completed program before baseline prepared →
+      X.Interrupted (afterPreparation prepared) baseline after → Phase program before after
+
+  prependPhase : ∀ before effect next observed middle after → P.Atomic before effect observed middle →
+    Phase (next observed) middle after → Phase (P.E.ask effect next) before after
+  prependPhase before effect next observed middle after physical (preparing interrupted) =
+    preparing (prependPreparationInterruption before effect next observed middle after physical interrupted)
+  prependPhase before effect next observed middle after physical
+    (finishing baseline prepared (P.X.completed events execution changes) interrupted) =
+    finishing baseline prepared (P.X.completed ((effect , observed) ∷ events)
+      (P.E.replied effect next observed execution) (P.X.changed before effect observed middle physical changes)) interrupted
+
+  splitInterrupted : ∀ (program : P.E.Script P.Result) before after →
+    X.Interrupted (E._>>=_ (liftPreparation program) afterPreparation) before after → Phase program before after
+  splitInterrupted (P.E.done prepared) before after interrupted =
+    finishing before prepared (P.X.completed [] (P.E.returned prepared) (P.X.unchanged before)) interrupted
+  splitInterrupted (P.E.ask effect next) before .before
+    (X.atPrefix [] _ _ (E.stopped _) (X.unchanged _)) = preparing (P.X.atPrefix [] _ before (P.E.stopped _) (P.X.unchanged before))
+  splitInterrupted (P.E.ask effect next) before after
+    (X.atPrefix _ residual _ (E.replied _ _ observed prefix) (X.changed _ _ _ middle physical changes)) =
+    prependPhase before effect next observed middle after physical
+      (splitInterrupted (next observed) middle after (X.atPrefix _ residual after prefix changes))
+  splitInterrupted (P.E.ask effect next) before after
+    (X.beforeReply [] _ _ _ observed _ (E.stopped _) (X.unchanged _) physical) =
+    preparing (P.X.beforeReply [] effect next before observed after (P.E.stopped _) (P.X.unchanged before) physical)
+  splitInterrupted (P.E.ask effect next) before after
+    (X.beforeReply _ active later current reply _ (E.replied _ _ observed prefix)
+      (X.changed _ _ _ middle physical changes) actual) =
+    prependPhase before effect next observed middle after physical
+      (splitInterrupted (next observed) middle after (X.beforeReply _ active later current reply after prefix changes actual))
+
+  interruptionCut : ∀ before after → X.Interrupted script before after → Cut before after
+  interruptionCut before after interrupted with splitInterrupted P.script before after interrupted
+  ... | preparing cut = noPublication (P.interruptedUnchanged before after cut)
+  ... | finishing baseline prepared providerDone cut with P.completedGoal before baseline prepared providerDone
+  ... | refl , captured = afterPreparationCut prepared before after captured cut
