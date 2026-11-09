@@ -102,7 +102,7 @@ impl Refusal {
         if error["code"].as_i64() != Some(-32000) {
             return None;
         }
-        serde_json::from_value(error.get("data")?.clone()).ok()
+        mimir_json::from_value(error.get("data")?.clone()).ok()
     }
 }
 
@@ -121,14 +121,14 @@ mod tests {
     #[test]
     fn serialized_source_quote_failure_is_located_and_survives_mcp_round_trip() {
         let id = uuid::Uuid::new_v4();
-        let experience: crate::learning::Experience = serde_json::from_value(json!({
+        let experience: crate::learning::Experience = mimir_json::from_value(json!({
             "id":id,"project":"citation-fixture","context":"serialized source",
             "action":"review quoted suggestion","outcome":"unknown","source":"agent_report",
             "evidence":["record/1"],"source_records":[{"source_ref":"record/1","actor":"agent",
                 "provenance":"agent_report","text":"{\"message\":\"Check first\\nThen proceed\"}"}]
         }))
         .unwrap();
-        let mut review: crate::learning::Review = serde_json::from_value(json!({
+        let mut review: crate::learning::Review = mimir_json::from_value(json!({
             "experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"untried suggestion",
             "extracted_items":[{"id":uuid::Uuid::new_v4(),"kind":"suggestion","actor":"agent",
                 "source_ref":"record/1","statement":"Check first\nThen proceed","conditions":"untried"}],
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn recorded_actor_refusal_locates_nested_speaker_and_survives_mcp_round_trip() {
         let id = uuid::Uuid::new_v4();
-        let mut experience: crate::learning::Experience = serde_json::from_value(json!({
+        let mut experience: crate::learning::Experience = mimir_json::from_value(json!({
             "id":id,"project":"actor-fixture","context":"nested source authorship",
             "action":"extract source-bound suggestions","outcome":"unknown","source":"agent_report",
             "evidence":["event/0","wrapped/1"],
@@ -166,7 +166,7 @@ mod tests {
             ]
         })).unwrap();
         let allocated = uuid::Uuid::new_v4();
-        let mut review: crate::learning::Review = serde_json::from_value(json!({
+        let mut review: crate::learning::Review = mimir_json::from_value(json!({
             "experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"unobserved suggestions",
             "extracted_items":[
                 {"id":uuid::Uuid::new_v4(),"key":"careful","kind":"suggestion","actor":"agent",

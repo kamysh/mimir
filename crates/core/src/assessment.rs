@@ -325,7 +325,7 @@ mod tests {
     use proptest::prelude::*;
     #[test]
     fn explicit_legacy_rejection_can_be_scored_without_source_records() {
-        let mut experience: Experience = serde_json::from_value(serde_json::json!({
+        let mut experience: Experience = mimir_json::from_value(serde_json::json!({
             "id":"11111111-1111-4111-8111-111111111111","project":"rejection-fixture",
             "context":"Copying succeeded; scope compliance was rejected",
             "action":"Created unsolicited backups","outcome":"unknown","source":"user_feedback",
@@ -333,7 +333,7 @@ mod tests {
             "belief_ids":[],"pattern_id":null
         }))
         .unwrap();
-        let mut assessment: Assessment = serde_json::from_value(serde_json::json!({
+        let mut assessment: Assessment = mimir_json::from_value(serde_json::json!({
             "target":{"belief_id":"22222222-2222-4222-8222-222222222222"},
             "scope":"This unsolicited-backup decision","rubric":"authorized-and-user-accepted/v1",
             "correctness":{"value":0,"weight":1},"usefulness":{"value":-1,"weight":1},
@@ -359,7 +359,7 @@ mod tests {
         // Structured provenance overrides the root and cannot flow to neighbors.
         experience.source = ObservationSource::UserFeedback;
         experience.evidence = vec!["agent".into(), "human".into()];
-        experience.source_records=serde_json::from_value(serde_json::json!([
+        experience.source_records=mimir_json::from_value(serde_json::json!([
             {"source_ref":"agent","actor":"agent","provenance":"agent_report","text":"Copy succeeded"},
             {"source_ref":"human","actor":"human","provenance":"user_feedback","text":"Nobody asked you to make them"}
         ])).unwrap();

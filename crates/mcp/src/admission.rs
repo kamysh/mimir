@@ -330,7 +330,7 @@ pub fn unknown_tool(name: &str, accepted: &[String]) -> NeedsInput {
     .expect("an unknown tool has one described issue")
 }
 
-pub fn tool_parameters(params: &Value) -> Result<(&str, Value), NeedsInput> {
+pub fn tool_parameters(params: &Value) -> Result<(&str, mimir_json::Document), NeedsInput> {
     let name = params.get("name");
     let mut issues = Vec::new();
     if let Some(fields) = params.as_object() {
@@ -380,10 +380,12 @@ pub fn tool_parameters(params: &Value) -> Result<(&str, Value), NeedsInput> {
     }
     Ok((
         name.and_then(Value::as_str).expect("tool name was checked"),
-        params
-            .get("arguments")
-            .cloned()
-            .unwrap_or_else(|| json!({})),
+        mimir_json::Document::new(
+            params
+                .get("arguments")
+                .map(mimir_json::clone_value)
+                .unwrap_or_else(|| json!({})),
+        ),
     ))
 }
 
@@ -517,7 +519,7 @@ mod tests {
                         Segment::Key(field.into())
                     ]));
         }
-        assert!(serde_json::to_string(&correction)
+        assert!(mimir_json::to_string(&correction)
             .unwrap()
             .contains("do not guess"));
     }
@@ -531,7 +533,7 @@ mod tests {
                 vec![Segment::Key("limit".into())]
             );
             assert_eq!(correction.issues()[0].fault().code, Code::InvalidNumber);
-            assert!(serde_json::to_string(&correction)
+            assert!(mimir_json::to_string(&correction)
                 .unwrap()
                 .contains("omit limit"));
         }
@@ -543,7 +545,7 @@ mod tests {
         assert_eq!(page_offset(&json!(0)).unwrap(), 0);
         assert_eq!(page_offset(&json!(u64::MAX)).unwrap(), usize::MAX);
         assert!(page_offset(&json!(-1)).is_err());
-        assert!(serde_json::to_string(&offset_requires_selection())
+        assert!(mimir_json::to_string(&offset_requires_selection())
             .unwrap()
             .contains("positive limit"));
     }
@@ -595,7 +597,7 @@ mod tests {
             "enabled":{"type":"boolean"}, "offset":{"type":"integer"}}});
         let correction = arguments(&schema, &json!({"project":null,"review":{"items":[{}, {"weight":"1"}]},"enabled":0,"offset":1.5})).unwrap();
         assert_eq!(correction.issues().len(), 5);
-        let encoded = serde_json::to_value(correction).unwrap().to_string();
+        let encoded = mimir_json::to_value(correction).unwrap().to_string();
         assert!(
             encoded.contains("weight")
                 && encoded.contains("missing_field")

@@ -57,7 +57,7 @@ FOR EACH ROW EXECUTE FUNCTION public.{function}();
         let retained = service
             .add_pattern("unrelated metadata fixture", &suffix, 0.4)
             .await?;
-        let retained_before = serde_json::to_value(store.get_pattern(retained.id).await?)?;
+        let retained_before = mimir_json::to_value(store.get_pattern(retained.id).await?)?;
         let unscoped = service
             .add_pattern(&marker, "unscoped creation", 0.6)
             .await?;
@@ -68,12 +68,12 @@ FOR EACH ROW EXECUTE FUNCTION public.{function}();
         ensure!(scoped.project.as_deref() == Some(marker.as_str()));
         for pattern in [&unscoped, &scoped] {
             ensure!(
-                serde_json::to_value(store.get_pattern(pattern.id).await?)?
-                    == serde_json::to_value(Some(pattern))?
+                mimir_json::to_value(store.get_pattern(pattern.id).await?)?
+                    == mimir_json::to_value(Some(pattern))?
             );
             ensure!(pattern.activation_count == 0);
         }
-        ensure!(serde_json::to_value(store.get_pattern(retained.id).await?)? == retained_before);
+        ensure!(mimir_json::to_value(store.get_pattern(retained.id).await?)? == retained_before);
         Ok(vec![unscoped, scoped, retained])
     }
     .await;

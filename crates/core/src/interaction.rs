@@ -53,7 +53,7 @@ impl CorrectionItem {
         } else {
             format!(
                 "Use only the advertised fields: {}.",
-                serde_json::to_string(accepted_fields)?
+                mimir_json::to_string(accepted_fields)?
             )
         };
         Self::new(Location::Arguments, Fault {
@@ -510,7 +510,7 @@ mod tests {
     #[test]
     fn missing_and_unknown_fields_share_an_actionable_non_success_response() {
         let response = response();
-        let wire = serde_json::to_value(&response).unwrap();
+        let wire = mimir_json::to_value(&response).unwrap();
         assert_eq!(wire["status"], "needs_input");
         assert_eq!(wire["business_changes"], "none");
         assert_eq!(wire["next_action"], "correct_request_or_ask_user");
@@ -524,14 +524,14 @@ mod tests {
         assert!(wire["issues"][0].get("value").is_none());
         assert!(wire.get("result").is_none());
         assert_eq!(
-            serde_json::from_value::<NeedsInput>(wire).unwrap(),
+            mimir_json::from_value::<NeedsInput>(wire).unwrap(),
             response
         );
     }
 
     #[test]
     fn incomplete_or_uncertain_outcomes_cannot_decode_as_no_change_corrections() {
-        let original = serde_json::to_value(response()).unwrap();
+        let original = mimir_json::to_value(response()).unwrap();
         for (path, value) in [
             (vec!["issues"], json!([])),
             (vec!["status"], json!("success")),
@@ -541,17 +541,17 @@ mod tests {
         ] {
             let mut wire = original.clone();
             wire[path[0]] = value;
-            assert!(serde_json::from_value::<NeedsInput>(wire).is_err());
+            assert!(mimir_json::from_value::<NeedsInput>(wire).is_err());
         }
         let mut wire = original.clone();
         wire["issues"][0]["expected"] = json!("");
-        assert!(serde_json::from_value::<NeedsInput>(wire).is_err());
+        assert!(mimir_json::from_value::<NeedsInput>(wire).is_err());
         let mut wire = original;
         wire["issues"][0]
             .as_object_mut()
             .unwrap()
             .remove("suggested_correction");
-        assert!(serde_json::from_value::<NeedsInput>(wire).is_err());
+        assert!(mimir_json::from_value::<NeedsInput>(wire).is_err());
     }
 
     #[test]
@@ -573,7 +573,7 @@ mod tests {
             .collect();
         let response = NeedsInput::new(first, remaining).unwrap();
         let decoded: NeedsInput =
-            serde_json::from_slice(&serde_json::to_vec(&response).unwrap()).unwrap();
+            mimir_json::from_slice(&mimir_json::to_vec(&response).unwrap()).unwrap();
         assert_eq!(decoded, response);
         assert_eq!(decoded.issues().len(), 2050);
         assert_eq!(

@@ -16,7 +16,7 @@ impl AgeStore {
         let graph = &self.graph_name;
         let name = format!("age_project_ids_{}", Uuid::new_v4().simple());
         let prepare=format!("PREPARE {name}(agtype) AS SELECT id::text FROM ag_catalog.cypher('{graph}', $$ MATCH (n:{label}) WHERE n.project = $project RETURN n.id $$, $1) AS (id agtype)");
-        let parameters = serde_json::to_string(&json!({"project":project}))?;
+        let parameters = mimir_json::to_string(&json!({"project":project}))?;
         age_query_rows(client, &name, &prepare, &parameters)
             .await?
             .iter()
@@ -25,7 +25,7 @@ impl AgeStore {
                     .get(0)
                     .context("A project-owned node has no id; deletion was not committed")?;
                 let text = if raw.starts_with('"') {
-                    serde_json::from_str::<String>(raw)?
+                    mimir_json::from_str::<String>(raw)?
                 } else {
                     raw.to_owned()
                 };

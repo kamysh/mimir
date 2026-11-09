@@ -19,7 +19,7 @@ type PublicationWork<'a> =
 pub struct StepReceipt {
     pub operation_token: Uuid,
     pub step: String,
-    pub reply: Value,
+    pub reply: mimir_json::Document,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +48,7 @@ pub(super) fn receipt(row: &Row) -> Result<StepReceipt> {
     Ok(StepReceipt {
         operation_token: row.try_get("operation_token")?,
         step: row.try_get("step")?,
-        reply: serde_json::from_str(row.try_get::<_, &str>("reply")?)?,
+        reply: mimir_json::from_str(row.try_get::<_, &str>("reply")?)?,
     })
 }
 
@@ -112,8 +112,8 @@ impl AgeStore {
         let expected = registered.expected();
         let step = registered.id();
         step_name(step)?;
-        let arguments = serde_json::to_string(expected.arguments())?;
-        let settings = serde_json::to_string(expected.settings())?;
+        let arguments = mimir_json::to_string(expected.arguments())?;
+        let settings = mimir_json::to_string(expected.settings())?;
         let mut client = self.client.lock().await;
         let tx = super::learning_transaction(&mut client).await?;
         if !super::cancellations::lock_token(&tx, token).await? {
@@ -197,13 +197,15 @@ impl AgeStore {
                 return Err(original);
             }
         };
-        let reply = serde_json::to_string(&reply)?;
+        let reply = mimir_json::Document::new(reply);
+        let operation_result = operation_result.map(mimir_json::Document::new);
+        let reply = mimir_json::to_string(&reply)?;
         let saved = receipt(&tx.query_one(
             "INSERT INTO mimir_operation_step_replies (operation_token,step,reply) VALUES ($1,$2,$3::text::jsonb) RETURNING operation_token,step,reply::text AS reply",
             &[&token, &step, &reply],
         ).await?)?;
         if let Some(result) = operation_result {
-            let result = serde_json::to_string(&result)?;
+            let result = mimir_json::to_string(&result)?;
             tx.execute("INSERT INTO mimir_operation_step_replies (operation_token,step,reply) VALUES ($1,$2,$3::text::jsonb)", &[&token, &super::operation_plans::RESULT_KEY, &result]).await?;
         }
         // A failed acknowledgement requires readback, not an invented success

@@ -103,7 +103,7 @@ async fn retry_after_reconnect_keeps_original_true_and_unrelated_records() -> Re
         .await?;
     service.propagate_from(removed.id).await?;
     assert!(store.get_belief(child.id).await?.unwrap().alpha > child.alpha0);
-    let retained_before = serde_json::to_value(store.get_belief(retained.id).await?)?;
+    let retained_before = mimir_json::to_value(store.get_belief(retained.id).await?)?;
     let (other_token, other_step) =
         admitted(&service, "delete_belief", json!({"id": identity().await?})).await?;
     let StepDecision::Done(other_reply) = service.delete_belief_operation(&other_step).await?
@@ -142,7 +142,7 @@ async fn retry_after_reconnect_keeps_original_true_and_unrelated_records() -> Re
     assert_eq!(retried, first);
     assert_eq!(completed_reply(&reopened, token).await?, first.reply);
     assert_eq!(
-        serde_json::to_value(store.get_belief(retained.id).await?)?,
+        mimir_json::to_value(store.get_belief(retained.id).await?)?,
         retained_before
     );
     assert_eq!(
@@ -170,13 +170,13 @@ async fn saved_false_does_not_delete_a_belief_created_after_completion() -> Resu
     };
     assert_eq!(first.reply, json!({"deleted":false}));
     belief(&store, id).await?;
-    let before = serde_json::to_value(store.get_belief(id).await?)?;
+    let before = mimir_json::to_value(store.get_belief(id).await?)?;
     let StepDecision::Done(retried) = service.delete_belief_operation(&step).await? else {
         panic!("saved missing-belief result absent")
     };
     assert_eq!(retried, first);
     assert_eq!(completed_reply(&service, token).await?, first.reply);
-    assert_eq!(serde_json::to_value(store.get_belief(id).await?)?, before);
+    assert_eq!(mimir_json::to_value(store.get_belief(id).await?)?, before);
     store.delete_belief(id).await?;
     Ok(())
 }
@@ -284,7 +284,7 @@ async fn rejected_final_result_rolls_back_deletion_retirement_and_step_answer() 
 async fn another_registered_operation_cannot_enter_belief_deletion() -> Result<()> {
     let (store, service) = setup().await?;
     let value = belief(&store, identity().await?).await?;
-    let before = serde_json::to_value(store.get_belief(value.id).await?)?;
+    let before = mimir_json::to_value(store.get_belief(value.id).await?)?;
     let (token, wrong_step) =
         admitted(&service, "delete_project", json!({"project":value.project})).await?;
     let error = service
@@ -293,7 +293,7 @@ async fn another_registered_operation_cannot_enter_belief_deletion() -> Result<(
         .unwrap_err();
     assert!(error.to_string().contains("registered delete_belief step"));
     assert_eq!(
-        serde_json::to_value(store.get_belief(value.id).await?)?,
+        mimir_json::to_value(store.get_belief(value.id).await?)?,
         before
     );
     assert!(service
@@ -312,7 +312,7 @@ async fn another_registered_operation_cannot_enter_belief_deletion() -> Result<(
 async fn explicit_cancellation_preserves_belief_and_saves_no_completion() -> Result<()> {
     let (store, service) = setup().await?;
     let value = belief(&store, identity().await?).await?;
-    let before = serde_json::to_value(store.get_belief(value.id).await?)?;
+    let before = mimir_json::to_value(store.get_belief(value.id).await?)?;
     let (token, step) = admitted(&service, "delete_belief", json!({"id":value.id})).await?;
     let CancellationDecision::Recorded(receipt) =
         service.record_operation_cancellation(token).await?
@@ -324,7 +324,7 @@ async fn explicit_cancellation_preserves_belief_and_saves_no_completion() -> Res
         StepDecision::Cancelled(receipt)
     );
     assert_eq!(
-        serde_json::to_value(store.get_belief(value.id).await?)?,
+        mimir_json::to_value(store.get_belief(value.id).await?)?,
         before
     );
     assert!(service
@@ -389,7 +389,7 @@ async fn repeated_numerical_states_restore_deletion_edges_vector_and_pending_tok
     store.insert_belief_embedding(root.id, &[0.3, 0.4]).await?;
     let mut original_edges = store.get_edges_among(&[root.id, a.id, b.id]).await?;
     original_edges.sort_by_key(|edge| (edge.0, edge.1));
-    let before = serde_json::to_value([
+    let before = mimir_json::to_value([
         store.get_belief(root.id).await?,
         store.get_belief(a.id).await?,
         store.get_belief(b.id).await?,
@@ -404,7 +404,7 @@ async fn repeated_numerical_states_restore_deletion_edges_vector_and_pending_tok
         .suggested_correction()
         .contains("Open a dialog"));
     assert_eq!(
-        serde_json::to_value([
+        mimir_json::to_value([
             store.get_belief(root.id).await?,
             store.get_belief(a.id).await?,
             store.get_belief(b.id).await?

@@ -73,9 +73,9 @@ fn cited_support_identifies_each_missing_field_without_guessing_support() {
         explanation: "These words support this particular claim because ...".into(),
     };
     for field in ["document_path", "quotation", "explanation"] {
-        let mut value = serde_json::to_value(&original).unwrap();
+        let mut value = mimir_json::to_value(&original).unwrap();
         value[field] = json!(" \n\t ");
-        let cited: IndexedSupport = serde_json::from_value(value).unwrap();
+        let cited: IndexedSupport = mimir_json::from_value(value).unwrap();
         let error = cited.validate_fields(3).unwrap_err();
         let correction = error.downcast_ref::<PreparationRequired>().unwrap();
         let issue = &correction.correction().issues()[0];
@@ -126,9 +126,9 @@ async fn indexed_citation_validation_checks_the_actual_reference_and_quotation()
         ),
         ("explanation", " \n ", Code::EmptyText),
     ] {
-        let mut value = serde_json::to_value(&original)?;
+        let mut value = mimir_json::to_value(&original)?;
         value[field] = json!(replacement);
-        let cited: IndexedSupport = serde_json::from_value(value)?;
+        let cited: IndexedSupport = mimir_json::from_value(value)?;
         let error = service
             .store
             .validate_indexed_support(Some(&project), &[cited])
@@ -175,8 +175,8 @@ async fn indexed_citation_validation_checks_the_actual_reference_and_quotation()
 #[test]
 fn legacy_committed_candidate_declarations_keep_their_original_shape() -> Result<()> {
     let original = json!({"kind":"belief","key":"existing-lesson","content":"Existing committed lesson","memory_type":"Experiential"});
-    let candidate: crate::learning::Candidate = serde_json::from_value(original.clone())?;
-    assert_eq!(serde_json::to_value(candidate)?, original);
+    let candidate: crate::learning::Candidate = mimir_json::from_value(original.clone())?;
+    assert_eq!(mimir_json::to_value(candidate)?, original);
     Ok(())
 }
 
@@ -195,7 +195,7 @@ async fn document_indexing_does_not_assert_support_from_similarity() -> Result<(
         .store
         .insert_belief_embedding(existing.id, &vector(0))
         .await?;
-    let original = serde_json::to_value(service.get_belief(existing.id).await?)?;
+    let original = mimir_json::to_value(service.get_belief(existing.id).await?)?;
     let path = std::env::temp_dir().join(format!("mimir-submitted-support-{}.md", existing.id));
     std::fs::write(
         &path,
@@ -211,7 +211,7 @@ async fn document_indexing_does_not_assert_support_from_similarity() -> Result<(
         .await?
         .is_empty());
     assert_eq!(
-        serde_json::to_value(service.get_belief(existing.id).await?)?,
+        mimir_json::to_value(service.get_belief(existing.id).await?)?,
         original
     );
     service.delete_project(&project).await?;
@@ -293,7 +293,7 @@ async fn token_cancellation_stops_owned_backfill_without_an_owner_row() -> Resul
         MemoryType::Fact,
     )
     .await?;
-    let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+    let before = mimir_json::to_value(service.get_belief(belief.id).await?)?;
     let cfg = isolation::fixture().database_config();
     let client = db::connect(&cfg).await?;
     let key: String = client
@@ -342,7 +342,7 @@ async fn token_cancellation_stops_owned_backfill_without_an_owner_row() -> Resul
         "a cancelled token cannot start another provider job"
     );
     assert_eq!(
-        serde_json::to_value(owner.get_belief(belief.id).await?)?,
+        mimir_json::to_value(owner.get_belief(belief.id).await?)?,
         before
     );
     assert!(!owner.list_embedded_belief_ids().await?.contains(&belief.id));
@@ -391,7 +391,7 @@ async fn registered_citation_publication_replays_original_answer_without_embeddi
     else {
         anyhow::bail!("complete publication did not return its saved result")
     };
-    let belief: crate::graph::Belief = serde_json::from_value(first.reply.clone())?;
+    let belief: crate::graph::Belief = mimir_json::from_value(first.reply.clone())?;
     assert_eq!(belief.probability.value(), 0.7);
     assert_eq!(belief.confidence.value(), 0.5);
     assert_eq!(
@@ -451,9 +451,9 @@ async fn operation_owner_reuses_postgres_identity_and_time_after_reconnect() -> 
     let StepDecision::Done(saved) = &first else {
         anyhow::bail!("owner receipt missing")
     };
-    let id: Uuid = serde_json::from_value(saved.reply["id"].clone())?;
+    let id: Uuid = mimir_json::from_value(saved.reply["id"].clone())?;
     let created: chrono::DateTime<chrono::Utc> =
-        serde_json::from_value(saved.reply["created_at"].clone())?;
+        mimir_json::from_value(saved.reply["created_at"].clone())?;
     no_publication(&service, id).await?;
     let (reconnected, _) = self::service(Some(Ok(vec![vector(0)]))).await?;
     assert_eq!(
@@ -515,7 +515,7 @@ async fn operation_owner_cancel_keeps_original_answer_and_unrelated_owner() -> R
     else {
         anyhow::bail!("original owner was not reserved")
     };
-    let id: Uuid = serde_json::from_value(saved.reply["id"].clone())?;
+    let id: Uuid = mimir_json::from_value(saved.reply["id"].clone())?;
     assert!(matches!(
         service
             .record_operation_cancellation(plan.operation_token())
@@ -581,7 +581,7 @@ async fn operation_owner_settings_mismatch_remains_pending_without_publication()
         .read_operation_step(plan.operation_token(), plan.steps()[0].id())
         .await?
         .unwrap();
-    let id: Uuid = serde_json::from_value(saved.reply["id"].clone())?;
+    let id: Uuid = mimir_json::from_value(saved.reply["id"].clone())?;
     let client = db::connect(&isolation::fixture().database_config()).await?;
     assert_eq!(
         client
@@ -794,9 +794,9 @@ async fn backfill_missing_backend_and_invalid_vectors_preserve_the_stored_belief
             MemoryType::Fact,
         )
         .await?;
-        let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+        let before = mimir_json::to_value(service.get_belief(belief.id).await?)?;
         let result = service.embed_and_store_belief(&belief).await;
-        let after = serde_json::to_value(service.get_belief(belief.id).await?)?;
+        let after = mimir_json::to_value(service.get_belief(belief.id).await?)?;
         let client = db::connect(&isolation::fixture().database_config()).await?;
         let count: i64 = client
             .query_one(
@@ -835,9 +835,9 @@ async fn backfill_success_means_the_requested_vector_was_stored() -> Result<()> 
         MemoryType::Fact,
     )
     .await?;
-    let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+    let before = mimir_json::to_value(service.get_belief(belief.id).await?)?;
     let result = service.embed_and_store_belief(&belief).await;
-    let after = serde_json::to_value(service.get_belief(belief.id).await?)?;
+    let after = mimir_json::to_value(service.get_belief(belief.id).await?)?;
     let client = db::connect(&isolation::fixture().database_config()).await?;
     let stored = client
         .query_opt(
@@ -875,9 +875,9 @@ async fn backfill_provider_failure_neither_claims_success_nor_replaces_a_vector(
                 .insert_belief_embedding(belief.id, vector)
                 .await?;
         }
-        let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+        let before = mimir_json::to_value(service.get_belief(belief.id).await?)?;
         let result = service.embed_and_store_belief(&belief).await;
-        let after = serde_json::to_value(service.get_belief(belief.id).await?)?;
+        let after = mimir_json::to_value(service.get_belief(belief.id).await?)?;
         let client = db::connect(&isolation::fixture().database_config()).await?;
         let stored = client
             .query_opt(
@@ -1165,7 +1165,7 @@ async fn review_request(service: &MimirService, project: &str) -> Result<crate::
         source_records: vec![],
     };
     service.record_experience(&source, 0).await?;
-    Ok(serde_json::from_value(
+    Ok(mimir_json::from_value(
         json!({"experience_id":id,"experience_revision":1,
         "reviewer":"preparation test","rationale":"checked independent fixture support",
         "candidates":[{"kind":"pattern","key":"procedure","situation":"review work","approach":"prepare first"},
@@ -1629,13 +1629,13 @@ async fn cancelled_operation_cannot_publish_its_prepared_belief() -> Result<()> 
 async fn cancellation_preserves_a_previously_committed_prepared_belief() -> Result<()> {
     let (service, project, token, prepared) = linked_preparation().await?;
     let published = service.publish_prepared_belief(&prepared).await?;
-    let before = serde_json::to_value(service.get_belief(published.id).await?)?;
+    let before = mimir_json::to_value(service.get_belief(published.id).await?)?;
     assert!(matches!(
         service.record_operation_cancellation(token).await?,
         crate::store::CancellationDecision::Recorded(_)
     ));
     assert_eq!(
-        serde_json::to_value(service.get_belief(published.id).await?)?,
+        mimir_json::to_value(service.get_belief(published.id).await?)?,
         before
     );
     assert!(service
@@ -1679,7 +1679,7 @@ async fn missing_backend_and_failed_embedding_publish_nothing() -> Result<()> {
         let required = error
             .downcast_ref::<PreparationRequired>()
             .expect("preparation returns a decision, not a generic tool failure");
-        let report = serde_json::to_value(required.correction())?;
+        let report = mimir_json::to_value(required.correction())?;
         assert_eq!(report["status"], "needs_input");
         assert_eq!(report["business_changes"], "none");
         assert_eq!(report["issues"][0]["fault"]["path"], json!(["embeddings"]));
@@ -1766,8 +1766,8 @@ async fn preparation_has_no_belief_and_publication_commits_complete_data() -> Re
         .await?;
     service.delete_project(&project).await?;
     assert_eq!(
-        serde_json::to_value(&published)?,
-        serde_json::to_value(stored)?
+        mimir_json::to_value(&published)?,
+        mimir_json::to_value(stored)?
     );
     assert_eq!(vector.to_vec(), prepared.vector);
     assert!(
@@ -1789,7 +1789,7 @@ async fn preparation_has_no_belief_and_publication_commits_complete_data() -> Re
             prepared.belief.beta0
         )
     );
-    assert!(serde_json::to_string(&explanation)?.contains(&origin.reference));
+    assert!(mimir_json::to_string(&explanation)?.contains(&origin.reference));
     Ok(())
 }
 

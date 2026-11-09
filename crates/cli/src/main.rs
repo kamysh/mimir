@@ -416,13 +416,13 @@ async fn application_main() -> Result<()> {
             ) {
                 error.exit();
             }
-            println!("{}", serde_json::to_string(&corrections::parser(&error))?);
+            println!("{}", mimir_json::to_string(&corrections::parser(&error))?);
             return Ok(());
         }
     };
 
     if let Some(correction) = corrections::command(&cli.command) {
-        println!("{}", serde_json::to_string(&correction)?);
+        println!("{}", mimir_json::to_string(&correction)?);
         return Ok(());
     }
 
@@ -853,7 +853,7 @@ async fn cmd_sweep_defeated(threshold: f64, project: Option<&str>) -> Result<()>
     let policy = match svc.retirement_policy() {
         Ok(policy) => policy,
         Err(issue) => {
-            println!("{}", serde_json::to_string(issue.correction())?);
+            println!("{}", mimir_json::to_string(issue.correction())?);
             return Ok(());
         }
     };
@@ -1072,7 +1072,7 @@ fn print_backfill_decision(
 ) -> Result<()> {
     println!(
         "{}",
-        serde_json::to_string(&serde_json::json!({
+        mimir_json::to_string(&serde_json::json!({
             "status":"needs_input","operation_status":"incomplete",
             "confirmed_counts":{"embedded":confirmed.len(),"skipped":skipped},
             "business_changes":{"embedded_belief_ids":confirmed},
@@ -1196,7 +1196,7 @@ async fn cmd_hook_stop(project: Option<&str>) -> Result<()> {
     if std::io::stdin().read_to_string(&mut input).is_err() {
         return Ok(());
     }
-    let v: serde_json::Value = match serde_json::from_str(&input) {
+    let v: serde_json::Value = match mimir_json::from_str(&input) {
         Ok(v) => v,
         Err(_) => return Ok(()),
     };
@@ -1262,7 +1262,7 @@ async fn cmd_hook_prompt() -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
 
-    let v: serde_json::Value = serde_json::from_str(&input)?;
+    let v: serde_json::Value = mimir_json::from_str(&input)?;
     let prompt = v["prompt"].as_str().unwrap_or("").trim().to_string();
     if prompt.is_empty() {
         return Ok(());
@@ -1309,7 +1309,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
 
-    let v: serde_json::Value = serde_json::from_str(&input)?;
+    let v: serde_json::Value = mimir_json::from_str(&input)?;
     let ti = &v["tool_input"];
     let query_raw = ti["file_path"]
         .as_str()

@@ -69,7 +69,7 @@ pub(crate) fn validate_operation_settings(value: &serde_json::Value) -> anyhow::
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Settings {
-        embeddings: serde_json::Value,
+        embeddings: mimir_json::Document,
     }
     #[derive(serde::Deserialize)]
     #[serde(tag = "backend", rename_all = "lowercase", deny_unknown_fields)]
@@ -87,9 +87,9 @@ pub(crate) fn validate_operation_settings(value: &serde_json::Value) -> anyhow::
             model: String,
         },
     }
-    let settings: Settings = serde_json::from_value(value.clone())?;
+    let settings: Settings = mimir_json::decode_ref(value)?;
     if !settings.embeddings.is_null() {
-        match serde_json::from_value::<Identity>(settings.embeddings)? {
+        match mimir_json::decode_ref::<Identity>(&settings.embeddings)? {
             Identity::Local { model } => anyhow::ensure!(model == crate::embed::HF_MODEL_ID,
                 "Retain the actual configured local BGE model; read the original binding before choosing a different model"),
             Identity::Voyage { model, input_type, truncation } => {
@@ -168,7 +168,7 @@ impl PreparationRequired {
 
 impl std::fmt::Display for PreparationRequired {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match serde_json::to_string(&self.correction) {
+        match mimir_json::to_string(&self.correction) {
             Ok(report) => formatter.write_str(&report),
             Err(_) => formatter
                 .write_str("Belief preparation requires a user decision; no belief was stored."),

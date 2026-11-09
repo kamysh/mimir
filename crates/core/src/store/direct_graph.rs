@@ -24,7 +24,7 @@ fn decode<T: DeserializeOwned>(request: &OperationBindingRequest, schema: &str) 
         )
         .into());
     }
-    serde_json::from_value(request.arguments().clone()).map_err(|error| {
+    mimir_json::from_value(request.arguments().clone()).map_err(|error| {
         RequestCorrection::bound_graph_request(
             "",
             Code::MalformedInput,
@@ -148,7 +148,7 @@ impl AgeStore {
                         args.project.as_deref(),
                     )
                     .await?;
-                let reply = serde_json::to_value(created)?;
+                let reply = mimir_json::to_value(created)?;
                 Ok((reply.clone(), reply))
             })
         })

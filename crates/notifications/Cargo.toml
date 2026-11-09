@@ -4,6 +4,7 @@ version = "2.3.0"
 edition = "2021"
 
 [dependencies]
+mimir-json = { path = "../json" }
 anyhow = "1.0.104"
 libc = "0.2.190"
 lettre = { version = "=0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }

@@ -43,7 +43,7 @@ fn review_revision_refusal(source: bool, supplied: i64, current: i64) -> anyhow:
 }
 
 fn state(row: &Row) -> Result<ExperienceState> {
-    let experience: Experience = serde_json::from_str(row.get::<_, &str>("payload"))?;
+    let experience: Experience = mimir_json::from_str(row.get::<_, &str>("payload"))?;
     let item_ids = local_item_ids(&experience.learning_items);
     Ok(ExperienceState {
         experience,
@@ -290,7 +290,7 @@ impl AgeStore {
         let client = self.client.lock().await;
         let rows = client.query("SELECT a.experience_id,a.review_revision,r.experience_revision,a.payload::text,r.created_at,(e.review_revision=r.revision AND e.revision=r.experience_revision) AS active FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 ORDER BY r.created_at,a.experience_id,a.review_revision", &[&project,&belief_id,&scope,&rubric]).await?;
         let count = limit.map(|count| count.get()).unwrap_or(rows.len());
-        let entries = rows.iter().skip(offset).take(count).map(|r| Ok(serde_json::json!({"experience_id":r.get::<_,Uuid>(0),"review_revision":r.get::<_,i64>(1),"experience_revision":r.get::<_,i64>(2),"assessment":serde_json::from_str::<serde_json::Value>(r.get::<_,&str>(3))?,"created_at":r.get::<_,chrono::DateTime<chrono::Utc>>(4),"active":r.get::<_,bool>(5)}))).collect::<Result<Vec<_>>>()?;
+        let entries = rows.iter().skip(offset).take(count).map(|r| Ok(serde_json::json!({"experience_id":r.get::<_,Uuid>(0),"review_revision":r.get::<_,i64>(1),"experience_revision":r.get::<_,i64>(2),"assessment":mimir_json::from_str::<serde_json::Value>(r.get::<_,&str>(3))?,"created_at":r.get::<_,chrono::DateTime<chrono::Utc>>(4),"active":r.get::<_,bool>(5)}))).collect::<Result<Vec<_>>>()?;
         let next = offset + entries.len();
         Ok(
             serde_json::json!({"entries":entries,"next_offset":if next<rows.len() {Some(next)}else{None}}),
@@ -334,7 +334,7 @@ impl AgeStore {
     pub async fn learning_review(&self, id: Uuid) -> Result<serde_json::Value> {
         let client = self.client.lock().await;
         let row=client.query_opt("SELECT e.revision,e.review_revision,e.reviewed_revision,r.payload::text FROM mimir_experiences e LEFT JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=e.review_revision AND r.experience_revision=e.revision WHERE e.id=$1", &[&id]).await?;
-        row.map(|r| Ok(serde_json::json!({"experience_id":id,"revision":r.get::<_,i64>(0),"review_revision":r.get::<_,i64>(1),"reviewed_revision":r.get::<_,i64>(2),"review":r.get::<_,Option<&str>>(3).map(serde_json::from_str::<serde_json::Value>).transpose()?}))).transpose().map(|v|v.unwrap_or(serde_json::Value::Null))
+        row.map(|r| Ok(serde_json::json!({"experience_id":id,"revision":r.get::<_,i64>(0),"review_revision":r.get::<_,i64>(1),"reviewed_revision":r.get::<_,i64>(2),"review":r.get::<_,Option<&str>>(3).map(mimir_json::from_str::<mimir_json::Document>).transpose()?}))).transpose().map(|v|v.unwrap_or(serde_json::Value::Null))
     }
     pub async fn experience_history(&self, id: Uuid) -> Result<serde_json::Value> {
         self.experience_history_after_sources(id, || async { Ok(()) })
@@ -359,12 +359,23 @@ impl AgeStore {
         Ok(serde_json::json!({"experiences": sources, "reviews": reviews}))
     }
 
-    async fn history_rows_on(client: &Client, id: Uuid, table: &str) -> Result<serde_json::Value> {
+    async fn history_rows_on(
+        client: &Client,
+        id: Uuid,
+        table: &str,
+    ) -> Result<mimir_json::Document> {
         // The two callers supply fixed table names, never request content.
         let rows = client.query(&format!("SELECT revision,payload::text,created_at FROM {table} WHERE experience_id=$1 ORDER BY revision"), &[&id]).await?;
-        Ok(serde_json::Value::Array(rows.iter().map(|row| {
-            Ok(serde_json::json!({"revision":row.get::<_,i64>(0), "payload":serde_json::from_str::<serde_json::Value>(row.get::<_,&str>(1))?, "created_at":row.get::<_,chrono::DateTime<chrono::Utc>>(2)}))
-        }).collect::<Result<_>>()?))
+        let mut history = mimir_json::Document::new(serde_json::Value::Array(Vec::new()));
+        for row in rows {
+            let payload = mimir_json::parse(row.get::<_, &str>(1))?;
+            let entry = serde_json::json!({"revision":row.get::<_,i64>(0), "payload":payload, "created_at":row.get::<_,chrono::DateTime<chrono::Utc>>(2)});
+            history
+                .as_array_mut()
+                .expect("history is an array")
+                .push(entry);
+        }
+        Ok(history)
     }
     async fn learning_beliefs_for_ids(
         &self,
@@ -387,7 +398,7 @@ impl AgeStore {
         tx.query(ACTIVE_REVIEWS, &[])
             .await?
             .iter()
-            .map(|r| Ok(serde_json::from_str(r.get::<_, &str>(0))?))
+            .map(|r| Ok(mimir_json::from_str(r.get::<_, &str>(0))?))
             .collect()
     }
     async fn active_reviews_for_targets(
@@ -403,19 +414,19 @@ impl AgeStore {
         tx.query(&sql, &[&project, &ids])
             .await?
             .iter()
-            .map(|r| Ok(serde_json::from_str(r.get::<_, &str>(0))?))
+            .map(|r| Ok(mimir_json::from_str(r.get::<_, &str>(0))?))
             .collect()
     }
     async fn active_review(tx: &Transaction<'_>, id: Uuid) -> Result<Option<Review>> {
         tx.query_opt(&format!("{ACTIVE_REVIEWS} WHERE e.id=$1"), &[&id])
             .await?
-            .map(|row| Ok(serde_json::from_str(row.get::<_, &str>(0))?))
+            .map(|row| Ok(mimir_json::from_str(row.get::<_, &str>(0))?))
             .transpose()
     }
     async fn active_request(tx: &Transaction<'_>, id: Uuid) -> Result<Option<Review>> {
         tx.query_opt("SELECT COALESCE(r.request,r.payload)::text FROM mimir_experiences e JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=e.review_revision AND r.experience_revision=e.revision WHERE e.id=$1", &[&id])
             .await?
-            .map(|row| Ok(serde_json::from_str(row.get::<_, &str>(0))?))
+            .map(|row| Ok(mimir_json::from_str(row.get::<_, &str>(0))?))
             .transpose()
     }
 
@@ -425,7 +436,7 @@ impl AgeStore {
         revision: i64,
     ) -> Result<()> {
         let Some(row) = tx.query_opt("SELECT payload::text FROM mimir_review_versions WHERE experience_id=$1 AND revision=$2", &[&review.experience_id,&revision]).await? else { return Ok(()); };
-        let prior: Review = serde_json::from_str(row.get(0))?;
+        let prior: Review = mimir_json::from_str(row.get(0))?;
         for item in prior.extracted_items {
             if !review.extracted_items.iter().any(|i| {
                 i.id == item.id
@@ -453,8 +464,8 @@ impl AgeStore {
                 anyhow::bail!("candidate key is not reserved");
             };
             let kind: &str = row.get(0);
-            let declaration: serde_json::Value = serde_json::from_str(row.get(2))?;
-            if kind != candidate.kind() || declaration != serde_json::to_value(candidate)? {
+            let declaration: serde_json::Value = mimir_json::from_str(row.get(2))?;
+            if kind != candidate.kind() || declaration != mimir_json::to_value(candidate)? {
                 return Err(crate::validation::Refusal::candidate_conflict().into());
             }
             ids.insert(candidate.key().to_owned(), row.get(1));
@@ -561,9 +572,9 @@ impl AgeStore {
             let row = tx.query_opt("SELECT kind,declaration::text,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2",
                 &[&review.experience_id, &candidate.key()]).await?;
             if let Some(row) = row {
-                let declaration: serde_json::Value = serde_json::from_str(row.get(1))?;
+                let declaration: serde_json::Value = mimir_json::from_str(row.get(1))?;
                 if row.get::<_, &str>(0) != candidate.kind()
-                    || declaration != serde_json::to_value(candidate)?
+                    || declaration != mimir_json::to_value(candidate)?
                 {
                     return Err(RequestCorrection::candidate_declaration(
                         candidate_path(index),
@@ -598,9 +609,9 @@ impl AgeStore {
         for (index, candidate) in candidates.iter().enumerate() {
             if let Some(row) = tx.query_opt("SELECT kind,node_id,declaration::text,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2", &[&experience_id, &candidate.key()]).await? {
                 let kind: &str = row.get(0);
-                let declaration: serde_json::Value = serde_json::from_str(row.get(2))?;
+                let declaration: serde_json::Value = mimir_json::from_str(row.get(2))?;
                 let retired: bool = row.get(3);
-                if kind != candidate.kind() || declaration != serde_json::to_value(candidate)? {
+                if kind != candidate.kind() || declaration != mimir_json::to_value(candidate)? {
                     return Err(RequestCorrection::candidate_declaration(candidate_path(index), Code::WrongIdentity,
                         format!("Candidate key {:?} has a different stored declaration.", candidate.key())).into());
                 }
@@ -653,7 +664,7 @@ impl AgeStore {
                 prepared.get(candidate.key()),
             )
             .await?;
-            let declaration = serde_json::to_string(candidate)?;
+            let declaration = mimir_json::to_string(candidate)?;
             tx.execute("INSERT INTO mimir_review_candidates(experience_id,candidate_key,kind,node_id,declaration) VALUES($1,$2,$3,$4,$5::text::jsonb)", &[&experience_id,&candidate.key(),&candidate.kind(),&id,&declaration]).await?;
             ids.insert(candidate.key().to_owned(), id);
         }
@@ -709,7 +720,7 @@ impl AgeStore {
             .query(ACTIVE_REVIEWS, &[])
             .await?
             .iter()
-            .map(|row| Ok(serde_json::from_str(row.get::<_, &str>(0))?))
+            .map(|row| Ok(mimir_json::from_str(row.get::<_, &str>(0))?))
             .collect::<Result<Vec<Review>>>()?;
         Ok(overlay(&reviews))
     }
@@ -770,7 +781,7 @@ impl AgeStore {
         )
         .await?;
         let experience = &allocated;
-        let payload = serde_json::to_string(experience)?;
+        let payload = mimir_json::to_string(experience)?;
         if let Some(ref p) = prior {
             if p.experience.project != experience.project {
                 return Err(RequestCorrection::source_retention(
@@ -884,7 +895,7 @@ impl AgeStore {
                 )
                 .into());
             }
-            let args: Arguments = serde_json::from_value(request.arguments().clone())
+            let args: Arguments = mimir_json::from_value(request.arguments().clone())
                 .map_err(|error| RequestCorrection::bound_graph_request("", Code::MalformedInput,
                     format!("Invalid original source request: {error}. No experience was changed."),
                     "Exactly experience and expected_revision, using the advertised experience schema and its original stable incident UUID."))?;
@@ -934,7 +945,7 @@ impl AgeStore {
                 }
                 tx.batch_execute("RELEASE SAVEPOINT mimir_source_preparation")
                     .await?;
-                let reply = serde_json::to_value(state)?;
+                let reply = mimir_json::to_value(state)?;
                 Ok((reply.clone(), reply))
             })
         })
@@ -1012,7 +1023,7 @@ impl AgeStore {
                 current.review_revision,
             ));
         }
-        let request = serde_json::to_string(review)?;
+        let request = mimir_json::to_string(review)?;
         let references = review_references(review);
         let beliefs = self
             .learning_beliefs_for_ids(&tx, &references.iter().map(|(id, _)| *id).collect())
@@ -1081,7 +1092,7 @@ impl AgeStore {
         affected.extend(review_targets(std::iter::once(&applied)));
         affected.extend(prepared.values().map(|value| value.belief.id));
         let revision = expected + 1;
-        let payload = serde_json::to_string(&applied)?;
+        let payload = mimir_json::to_string(&applied)?;
         tx.execute("INSERT INTO mimir_review_versions(experience_id,revision,experience_revision,payload,request) VALUES($1,$2,$3,$4::text::jsonb,$5::text::jsonb)", &[&review.experience_id,&revision,&review.experience_revision,&payload,&request]).await?;
         tx.execute("UPDATE mimir_experiences SET review_revision=$2,reviewed_revision=revision WHERE id=$1", &[&review.experience_id,&revision]).await?;
         for a in &applied.assessments {
@@ -1091,7 +1102,7 @@ impl AgeStore {
             let positive = a.correctness.weight * a.correctness.value.unwrap_or(0.);
             let negative = a.correctness.weight * (1. - a.correctness.value.unwrap_or(0.));
             let benefit = a.usefulness.weight * a.usefulness.value.unwrap_or(0.);
-            let payload = serde_json::to_string(a)?;
+            let payload = mimir_json::to_string(a)?;
             tx.execute("INSERT INTO mimir_assessment_contributions(experience_id,review_revision,belief_id,scope,rubric,positive,negative,benefit,benefit_weight,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::text::jsonb)",
                 &[&review.experience_id,&revision,&belief_id,&a.scope,&a.rubric,&positive,&negative,&benefit,&a.usefulness.weight,&payload]).await?;
         }
@@ -1546,7 +1557,7 @@ impl AgeStore {
             .query(&sql, &[&id_text])
             .await?
             .iter()
-            .map(|row| serde_json::from_str(row.get::<_, &str>(0)))
+            .map(|row| mimir_json::from_str(row.get::<_, &str>(0)))
             .collect::<std::result::Result<_, _>>()?;
         reviews.sort_by_key(|r| r.experience_id);
         let total = reviews.len();

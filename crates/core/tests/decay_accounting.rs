@@ -159,8 +159,8 @@ async fn different_tokens_at_one_time_charge_one_interval_and_retries_keep_origi
         MemoryType::Fact,
     )
     .await?;
-    let exempt_before = serde_json::to_value(store.get_belief(exempt.id).await?)?;
-    let unrelated_before = serde_json::to_value(store.get_belief(unrelated.id).await?)?;
+    let exempt_before = mimir_json::to_value(store.get_belief(exempt.id).await?)?;
+    let unrelated_before = mimir_json::to_value(store.get_belief(unrelated.id).await?)?;
     let first = plan(
         &service,
         tokens[0].0,
@@ -186,18 +186,18 @@ async fn different_tokens_at_one_time_charge_one_interval_and_retries_keep_origi
         json!({"decayed":0})
     );
     assert_eq!(
-        serde_json::to_value(store.get_belief(fact.id).await?)?,
-        serde_json::to_value(Some(after))?
+        mimir_json::to_value(store.get_belief(fact.id).await?)?,
+        mimir_json::to_value(Some(after))?
     );
     drop(service);
     let reopened = MimirService::connect(&config()).await?;
     assert_eq!(completed(&reopened, &first).await?, original);
     assert_eq!(
-        serde_json::to_value(store.get_belief(exempt.id).await?)?,
+        mimir_json::to_value(store.get_belief(exempt.id).await?)?,
         exempt_before
     );
     assert_eq!(
-        serde_json::to_value(store.get_belief(unrelated.id).await?)?,
+        mimir_json::to_value(store.get_belief(unrelated.id).await?)?,
         unrelated_before
     );
     store.delete_project(&project).await?;
@@ -218,7 +218,7 @@ async fn final_answer_rejection_restores_counts_baseline_and_pending_status() ->
         MemoryType::Fact,
     )
     .await?;
-    let before = serde_json::to_value(store.get_belief(belief.id).await?)?;
+    let before = mimir_json::to_value(store.get_belief(belief.id).await?)?;
     let step = plan(
         &service,
         reserved.operation_token,
@@ -237,7 +237,7 @@ async fn final_answer_rejection_restores_counts_baseline_and_pending_status() ->
         .await?;
     assert!(attempted.is_err());
     assert_eq!(
-        serde_json::to_value(store.get_belief(belief.id).await?)?,
+        mimir_json::to_value(store.get_belief(belief.id).await?)?,
         before
     );
     pending(&service, reserved.operation_token, &step).await?;
@@ -280,8 +280,8 @@ async fn an_old_reserved_time_cannot_rewind_a_later_posterior_publication() -> R
         json!({"decayed":0})
     );
     assert_eq!(
-        serde_json::to_value(store.get_belief(belief.id).await?)?,
-        serde_json::to_value(Some(current))?
+        mimir_json::to_value(store.get_belief(belief.id).await?)?,
+        mimir_json::to_value(Some(current))?
     );
     store.delete_project(&project).await?;
     Ok(())
@@ -352,7 +352,7 @@ async fn migration_preserves_existing_counts_and_never_resets_an_existing_baseli
         MemoryType::Fact,
     )
     .await?;
-    let retained_before = serde_json::to_value(store.get_belief(retained.id).await?)?;
+    let retained_before = mimir_json::to_value(store.get_belief(retained.id).await?)?;
     let audit = db::connect(&config().database).await?;
     audit.query(&format!("SELECT * FROM ag_catalog.cypher('{}', $$ MATCH (n:Belief {{id:'{}'}}) SET n.decay_accounted_at = NULL RETURN n.id $$) AS (id ag_catalog.agtype)",config().database.dbname,belief.id),&[]).await?;
     let sql = include_str!("../migrations/020_decay_accounting.sql")
@@ -369,7 +369,7 @@ async fn migration_preserves_existing_counts_and_never_resets_an_existing_baseli
     assert_eq!(after.last_activated_at, belief.last_activated_at);
     assert!(after.decay_accounted_at >= reserved.reserved_at);
     assert_eq!(
-        serde_json::to_value(store.get_belief(retained.id).await?)?,
+        mimir_json::to_value(store.get_belief(retained.id).await?)?,
         retained_before
     );
     audit.batch_execute(sql).await?;
@@ -398,7 +398,7 @@ async fn cancelled_or_malformed_decay_preserves_the_original_counts_and_baseline
         MemoryType::Fact,
     )
     .await?;
-    let before = serde_json::to_value(store.get_belief(belief.id).await?)?;
+    let before = mimir_json::to_value(store.get_belief(belief.id).await?)?;
     let step = plan(
         &service,
         reserved.operation_token,
@@ -428,7 +428,7 @@ async fn cancelled_or_malformed_decay_preserves_the_original_counts_and_baseline
         pending(&service, token, &step).await?;
     }
     assert_eq!(
-        serde_json::to_value(store.get_belief(belief.id).await?)?,
+        mimir_json::to_value(store.get_belief(belief.id).await?)?,
         before
     );
     store.delete_project(&project).await?;

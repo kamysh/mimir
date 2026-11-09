@@ -766,11 +766,11 @@ async fn typed_assessments_replace_retract_and_preserve_legacy_probability() {
     );
     // Legacy JSON keeps exactly the old shape when typed fields are absent.
     let legacy = experience(&project);
-    assert!(serde_json::to_value(&legacy)
+    assert!(mimir_json::to_value(&legacy)
         .unwrap()
         .get("learning_items")
         .is_none());
-    assert!(serde_json::to_value(review(&legacy))
+    assert!(mimir_json::to_value(review(&legacy))
         .unwrap()
         .get("assessments")
         .is_none());
@@ -1473,8 +1473,8 @@ async fn deleting_candidate_recomputes_linked_belief_and_keeps_tombstone() {
     let history = svc.experience_history(e.id).await.unwrap();
     let replayed = svc.review_experience(&r, 0).await.unwrap();
     assert_eq!(
-        serde_json::to_value(&replayed).unwrap(),
-        serde_json::to_value(&applied).unwrap()
+        mimir_json::to_value(&replayed).unwrap(),
+        mimir_json::to_value(&applied).unwrap()
     );
     assert!(svc.get_belief(source).await.unwrap().is_none());
     assert!((svc.get_belief(target.id).await.unwrap().unwrap().alpha - target.alpha0).abs() < 1e-8);
@@ -2049,14 +2049,14 @@ async fn complete_large_source_review_is_stored_and_read_back_without_caps() {
             predictions: vec![],
         })
         .collect();
-    assert!(serde_json::to_vec(&r).unwrap().len() > 65536);
+    assert!(mimir_json::to_vec(&r).unwrap().len() > 65536);
     let applied = svc.review_experience(&r, 0).await.unwrap();
     assert_eq!(applied.review_revision, 1);
     for item in &mut r.extracted_items {
         item.id = Some(applied.item_ids[item.key.as_ref().unwrap()]);
     }
     let receipt = svc.learning_review(e.id).await.unwrap();
-    assert_eq!(receipt["review"], serde_json::to_value(&r).unwrap());
+    assert_eq!(receipt["review"], mimir_json::to_value(&r).unwrap());
     assert!(!svc
         .pending_experiences(Some(&e.project), std::num::NonZeroUsize::new(101))
         .await
@@ -2085,7 +2085,7 @@ fn postgres_item_fixture(project: &str) -> (Experience, Review) {
         text: "I estimate 30 minutes.".into(),
         recorded_at: None,
     }];
-    let r = serde_json::from_value(serde_json::json!({
+    let r = mimir_json::from_value(serde_json::json!({
         "experience_id":e.id,"experience_revision":1,"reviewer":"postgres-item-fixture",
         "rationale":"Retain an estimate without inventing observed correctness",
         "extracted_items":[{"key":"estimate-1","kind":"estimate","source_ref":"event/1",
@@ -2131,7 +2131,7 @@ async fn postgres_item_ids_isolate_keys_and_keep_concurrent_retries_stable() {
         assigned.to_string()
     );
     assert!(canonical["assessments"][0].get("item_keys").is_none());
-    let mut correction: Review = serde_json::from_value(canonical).unwrap();
+    let mut correction: Review = mimir_json::from_value(canonical).unwrap();
     correction.extracted_items[0].conditions = "Still waiting for independent evidence".into();
     let corrected = svc.review_experience(&correction, 1).await.unwrap();
     assert_eq!(corrected.item_ids["estimate-1"], assigned);

@@ -43,7 +43,7 @@ async fn business_snapshot(client: &Client, graph: &str) -> Result<BTreeMap<Stri
         let table: String = row.get(0);
         let sql = format!("SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb)::text FROM {table} t");
         let encoded: String = client.query_one(&sql, &[]).await?.get(0);
-        snapshot.insert(table, serde_json::from_str(&encoded)?);
+        snapshot.insert(table, mimir_json::from_str(&encoded)?);
     }
     Ok(snapshot)
 }
@@ -205,7 +205,7 @@ async fn original_request_survives_changed_input_reconnection_and_direct_mutatio
     // JSON object order and equivalent JSONB numbers do not change a request.
     let equivalent = OperationBindingRequest::new(
         "delete_project".into(),
-        serde_json::from_str("{\"selected\":[1.0,2],\"project\":\"fixture-project\"}")?,
+        mimir_json::from_str("{\"selected\":[1.0,2],\"project\":\"fixture-project\"}")?,
         json!({"policy":"user-selected"}),
     )?;
     assert_eq!(

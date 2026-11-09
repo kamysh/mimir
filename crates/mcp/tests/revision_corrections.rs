@@ -56,12 +56,12 @@ impl Client {
             self.output.read_line(&mut line).await? != 0,
             "MCP stopped after {name}"
         );
-        let response: Value = serde_json::from_str(&line)?;
+        let response: Value = mimir_json::from_str(&line)?;
         ensure!(
             response.get("error").is_none(),
             "{name} did not offer a normal result: {response}"
         );
-        Ok(serde_json::from_str(
+        Ok(mimir_json::from_str(
             response["result"]["content"][0]["text"].as_str().unwrap(),
         )?)
     }
@@ -100,7 +100,7 @@ async fn blank_source_fields_offer_precise_corrections_and_keep_the_mcp_connecti
         for field in ["project", "context", "action"] {
             let mut invalid = source.clone();
             invalid[field] = json!(" \t\n");
-            let correction: NeedsInput = serde_json::from_value(
+            let correction: NeedsInput = mimir_json::from_value(
                 client
                     .call(
                         "record_experience",
@@ -163,9 +163,9 @@ async fn missing_propagation_source_offers_readback_and_accepts_a_corrected_requ
     let service = test_service().await?;
     let mut client = Client::start(id)?;
     let checked = async {
-        let before = serde_json::to_value(service.get_belief(source.id).await?)?;
+        let before = mimir_json::to_value(service.get_belief(source.id).await?)?;
         let response = client.call("propagate_from", json!({"id":id})).await?;
-        let correction: NeedsInput = serde_json::from_value(response)?;
+        let correction: NeedsInput = mimir_json::from_value(response)?;
         ensure!(correction.issues()[0].fault().path == vec![Segment::Key("id".into())]);
         ensure!(correction.issues()[0]
             .suggested_correction()
@@ -177,7 +177,7 @@ async fn missing_propagation_source_offers_readback_and_accepts_a_corrected_requ
             .call("propagate_from", json!({"id":source.id}))
             .await?;
         ensure!(valid.is_array());
-        ensure!(serde_json::to_value(service.get_belief(source.id).await?)? == before);
+        ensure!(mimir_json::to_value(service.get_belief(source.id).await?)? == before);
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -205,7 +205,7 @@ async fn blank_learning_context_project_offers_correction_and_keeps_connection_u
                 json!({"context":"literal context", "project":project}),
             )
             .await?;
-        let correction: NeedsInput = serde_json::from_value(response.clone())?;
+        let correction: NeedsInput = mimir_json::from_value(response.clone())?;
         let issue = &correction.issues()[0];
         ensure!(issue.fault().path == vec![Segment::Key("project".into())]);
         ensure!(issue.fault().code == Code::EmptyText);
@@ -257,46 +257,46 @@ async fn cyclic_numerical_decision_preserves_posteriors_and_reports_an_earlier_e
     service
         .add_edge(seed.id, a.id, EdgeType::Supports, 0.0)
         .await?;
-    let before_a = serde_json::to_value(service.get_belief(a.id).await?)?;
-    let before_b = serde_json::to_value(service.get_belief(b.id).await?)?;
+    let before_a = mimir_json::to_value(service.get_belief(a.id).await?)?;
+    let before_b = mimir_json::to_value(service.get_belief(b.id).await?)?;
     let mut client = Client::start(id)?;
     let checked=async {
         let correction=client.call("propagate_from",json!({"id":seed.id})).await?;
-        let parsed:NeedsInput=serde_json::from_value(correction)?;
+        let parsed:NeedsInput=mimir_json::from_value(correction)?;
         ensure!(parsed.issues()[0].fault().message.contains("2 distinct"));
-        ensure!(serde_json::to_value(service.get_belief(a.id).await?)?==before_a);
-        ensure!(serde_json::to_value(service.get_belief(b.id).await?)?==before_b);
+        ensure!(mimir_json::to_value(service.get_belief(a.id).await?)?==before_a);
+        ensure!(mimir_json::to_value(service.get_belief(b.id).await?)?==before_b);
 
         let source=json!({"id":id,"project":project,"context":"cyclic counts","action":"retain a numerical decision","outcome":"unknown","source":"tool_result","evidence":["isolated fixture"],"belief_ids":[a.id,b.id]});
         client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?;
         let original=service.experience_history(id).await?;
         let review=json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"no invented tolerance","feedback":[{"belief_id":a.id,"verdict":"support","weight":0}]});
         let result=client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
-        let parsed:NeedsInput=serde_json::from_value(result)?;
+        let parsed:NeedsInput=mimir_json::from_value(result)?;
         ensure!(parsed.issues()[0].suggested_correction().contains("Open a dialog"));
         ensure!(service.experience_history(id).await?==original);
-        ensure!(serde_json::to_value(service.get_belief(a.id).await?)?==before_a);
-        ensure!(serde_json::to_value(service.get_belief(b.id).await?)?==before_b);
+        ensure!(mimir_json::to_value(service.get_belief(a.id).await?)?==before_a);
+        ensure!(mimir_json::to_value(service.get_belief(b.id).await?)?==before_b);
 
         let partial=client.call("record_defeat",json!({"from_id":seed.id,"to_id":a.id,"weight":0.0})).await?;
         ensure!(partial["status"]=="needs_input");
         ensure!(partial["posterior_publication"]=="not_performed");
         ensure!(partial["business_changes"]["committed_edge"]["from_id"]==json!(seed.id));
-        ensure!(serde_json::from_value::<NeedsInput>(partial).is_err(),"a committed edge must not decode as a no-change correction");
+        ensure!(mimir_json::from_value::<NeedsInput>(partial).is_err(),"a committed edge must not decode as a no-change correction");
         let store=AgeStore::new(db::connect(&isolation::fixture().database_config()).await?,isolation::fixture().database_config().dbname)?;
         ensure!(store.get_incoming_edges(&[a.id]).await?.iter().any(|(from,to,kind,_,_)|*from==seed.id&&*to==a.id&&*kind==EdgeType::Defeats));
-        ensure!(serde_json::to_value(service.get_belief(a.id).await?)?==before_a);
-        ensure!(serde_json::to_value(service.get_belief(b.id).await?)?==before_b);
+        ensure!(mimir_json::to_value(service.get_belief(a.id).await?)?==before_a);
+        ensure!(mimir_json::to_value(service.get_belief(b.id).await?)?==before_b);
 
         // Deletion detaches rows before recomputing, in one transaction. An
         // unfinished numerical result must roll back that deletion as well.
         let decision = client.call("delete_belief",json!({"id":seed.id})).await?;
-        let parsed:NeedsInput=serde_json::from_value(decision)?;
+        let parsed:NeedsInput=mimir_json::from_value(decision)?;
         ensure!(parsed.issues()[0].fault().message.contains("2 distinct"));
         ensure!(service.get_belief(seed.id).await?.is_some(),"a numerical decision committed the deletion");
         ensure!(store.get_incoming_edges(&[a.id]).await?.iter().any(|(from,to,kind,_,_)|*from==seed.id&&*to==a.id&&*kind==EdgeType::Defeats),"rolled-back deletion detached the committed edge");
-        ensure!(serde_json::to_value(service.get_belief(a.id).await?)?==before_a);
-        ensure!(serde_json::to_value(service.get_belief(b.id).await?)?==before_b);
+        ensure!(mimir_json::to_value(service.get_belief(a.id).await?)?==before_a);
+        ensure!(mimir_json::to_value(service.get_belief(b.id).await?)?==before_b);
         Ok::<_,anyhow::Error>(())
     }.await;
     drop(client.input);
@@ -319,7 +319,7 @@ async fn document_query_without_embeddings_requests_a_user_dialog() -> Result<()
                 json!({"context":"complete query with its final condition"}),
             )
             .await?;
-        let correction: NeedsInput = serde_json::from_value(reply)?;
+        let correction: NeedsInput = mimir_json::from_value(reply)?;
         let issue = &correction.issues()[0];
         ensure!(issue.fault().code == Code::MissingField);
         ensure!(issue.fault().path == vec![Segment::Key("embeddings".into())]);
@@ -395,10 +395,10 @@ async fn local_key_mistakes_offer_precise_repairs_before_any_reservation_or_publ
 }
 
 fn key_correction(result: Value, path: Value, code: Code) -> Result<()> {
-    let correction: NeedsInput = serde_json::from_value(result)?;
+    let correction: NeedsInput = mimir_json::from_value(result)?;
     let issue = &correction.issues()[0];
     ensure!(
-        serde_json::to_value(&issue.fault().path)? == path && issue.fault().code == code,
+        mimir_json::to_value(&issue.fault().path)? == path && issue.fault().code == code,
         "wrong key correction: {correction:?}"
     );
     ensure!(!issue.expected().is_empty() && !issue.suggested_correction().is_empty());
@@ -457,9 +457,9 @@ async fn conflicting_review_entries_offer_repairs_without_changing_saved_work() 
         cases.push((duplicate_feedback,json!(["review","feedback",1]),Code::Duplicate));
         for (review,path,code) in cases {
             let result=client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
-            let correction:NeedsInput=serde_json::from_value(result)?;
+            let correction:NeedsInput=mimir_json::from_value(result)?;
             let item=&correction.issues()[0];
-            ensure!(item.fault().code==code && serde_json::to_value(&item.fault().path)?==path);
+            ensure!(item.fault().code==code && mimir_json::to_value(&item.fault().path)?==path);
             ensure!(!item.fault().message.is_empty() && !item.expected().is_empty());
             ensure!(item.suggested_correction().contains("same experience ID"));
             ensure!(client.call("get_experience",json!({"id":id})).await?==original,"conflict changed its experience");
@@ -525,8 +525,8 @@ async fn learning_history_and_explanations_return_all_or_the_explicit_positive_s
             }
             for bad in [json!(0),json!(-1),json!("all"),json!(null)] {
                 let mut request=base.clone();request["limit"]=bad;
-                let correction:NeedsInput=serde_json::from_value(client.call(name,request).await?)?;
-                ensure!(serde_json::to_value(&correction.issues()[0].fault().path)?==json!(["limit"]));
+                let correction:NeedsInput=mimir_json::from_value(client.call(name,request).await?)?;
+                ensure!(mimir_json::to_value(&correction.issues()[0].fault().path)?==json!(["limit"]));
                 ensure!(!correction.issues()[0].suggested_correction().is_empty());
             }
             ensure!(client.call(name,base).await?["status"]!="needs_input");
@@ -801,10 +801,10 @@ async fn fixture_pattern(project: Option<&str>) -> Result<mimir_core::graph::Pat
 }
 
 fn reference_correction(value: Value, path: Value, code: Code) -> Result<()> {
-    let response: NeedsInput = serde_json::from_value(value)?;
+    let response: NeedsInput = mimir_json::from_value(value)?;
     let issue = &response.issues()[0];
     ensure!(
-        issue.fault().code == code && serde_json::to_value(&issue.fault().path)? == path,
+        issue.fault().code == code && mimir_json::to_value(&issue.fault().path)? == path,
         "wrong reference diagnosis: {response:?}"
     );
     ensure!(
@@ -1050,7 +1050,7 @@ async fn completed_review_readback_survives_candidate_deletion_without_resurrect
         let row = db.query_one("SELECT node_id,retired FROM mimir_review_candidates WHERE experience_id=$1 AND candidate_key=$2", &[&id, &"retry-step"]).await?;
         ensure!(row.get::<_, uuid::Uuid>(0) == assigned && row.get::<_, bool>(1), "readback changed the saved identity or retirement");
         let mut fresh = review.clone(); fresh["rationale"] = json!("a genuinely new review request");
-        let fresh: mimir_core::learning::Review = serde_json::from_value(fresh)?;
+        let fresh: mimir_core::learning::Review = mimir_json::from_value(fresh)?;
         let refusal = service.review_experience(&fresh, 1).await.unwrap_err();
         ensure!(refusal.to_string().contains("deleted"), "new publication reused a retired key");
         ensure!(service.get_pattern(assigned).await?.is_none() && service.experience_history(id).await? == history);
@@ -1067,7 +1067,7 @@ async fn completed_review_readback_survives_candidate_deletion_without_resurrect
 }
 
 fn correction(value: Value, path: &[&str], reads: &[&str]) -> Result<()> {
-    let response: NeedsInput = serde_json::from_value(value)?;
+    let response: NeedsInput = mimir_json::from_value(value)?;
     let issue = &response.issues()[0];
     ensure!(issue.fault().code == Code::StaleRevision);
     ensure!(

@@ -781,7 +781,7 @@ async fn run_with_settings(
     if !watch_mode {
         println!(
             "{}",
-            serde_json::to_string(&report)
+            mimir_json::to_string(&report)
                 .unwrap_or_else(|_| "{\"status\":\"unavailable\"}".into())
         );
     }

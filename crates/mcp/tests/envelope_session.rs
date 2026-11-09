@@ -30,14 +30,14 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         .query_one("SELECT gen_random_uuid()", &[])
         .await?
         .get(0);
-    service.record_experience(&serde_json::from_value(json!({
+    service.record_experience(&mimir_json::from_value(json!({
         "id":other_id,"project":other_project,"context":"preserve the other possible project too",
         "action":"reject ambiguous deletion","outcome":"unknown","source":"agent_report",
         "evidence":["private fixture setup"]
     }))?,0).await?;
     service
         .record_experience(
-            &serde_json::from_value(json!({
+            &mimir_json::from_value(json!({
                 "id":experience_id, "project":project, "context":"preserve this project",
                 "action":"exercise envelope admission", "outcome":"unknown", "source":"agent_report",
                 "evidence":["private fixture setup"]
@@ -100,18 +100,18 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             output.read_line(&mut line).await? != 0,
             "server exited on malformed input"
         );
-        let response: Value = serde_json::from_str(&line)?;
+        let response: Value = mimir_json::from_str(&line)?;
         ensure!(
             response["id"] == id && response["error"]["code"] == code,
             "wrong protocol response: {response}"
         );
-        let correction: NeedsInput = serde_json::from_value(response["error"]["data"].clone())?;
+        let correction: NeedsInput = mimir_json::from_value(response["error"]["data"].clone())?;
         ensure!(!correction.issues().is_empty(), "missing repair details");
     }
     // Repeated envelope/argument members are diagnosed before normalization
     // could choose a handler, project or response identity.
-    let encoded_project = serde_json::to_string(&project)?;
-    let encoded_other_project = serde_json::to_string(&other_project)?;
+    let encoded_project = mimir_json::to_string(&project)?;
+    let encoded_other_project = mimir_json::to_string(&other_project)?;
     for (message,id,path) in [
         (format!(r#"{{"jsonrpc":"2.0","id":"duplicate-project","method":"tools/call","params":{{"name":"delete_project","arguments":{{"project":{encoded_other_project},"project":{encoded_project}}}}}}}"#),json!("duplicate-project"),json!(["params","arguments","project"])),
         (format!(r#"{{"jsonrpc":"2.0","id":"duplicate-method","method":"tools/list","method":"tools/call","params":{delete}}}"#),json!("duplicate-method"),json!(["method"])),
@@ -122,10 +122,10 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         input.flush().await?;
         let mut line=String::new();
         ensure!(output.read_line(&mut line).await?!=0,"server stopped on duplicate fields");
-        let response:Value=serde_json::from_str(&line)?;
+        let response:Value=mimir_json::from_str(&line)?;
         ensure!(response["id"]==id && response["error"]["code"]==-32600,"wrong ambiguous-request response: {response}");
-        let correction:NeedsInput=serde_json::from_value(response["error"]["data"].clone())?;
-        let details=serde_json::to_value(correction)?;
+        let correction:NeedsInput=mimir_json::from_value(response["error"]["data"].clone())?;
+        let details=mimir_json::to_value(correction)?;
         ensure!(details["issues"].as_array().unwrap().iter().any(|issue|issue["fault"]["path"]==path),"missing repeated-field path: {details}");
     }
     // This ambiguous notification must produce no response and no deletion.
@@ -146,12 +146,12 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             output.read_line(&mut line).await? != 0,
             "server exited on missing method fields"
         );
-        let response: Value = serde_json::from_str(&line)?;
+        let response: Value = mimir_json::from_str(&line)?;
         ensure!(
             response["error"]["code"] == -32602,
             "missing method correction: {response}"
         );
-        let _: NeedsInput = serde_json::from_value(response["error"]["data"].clone())?;
+        let _: NeedsInput = mimir_json::from_value(response["error"]["data"].clone())?;
     }
     for (name, args, field) in [
         (
@@ -211,14 +211,14 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             output.read_line(&mut line).await? != 0,
             "server exited on invalid arguments"
         );
-        let response: Value = serde_json::from_str(&line)?;
+        let response: Value = mimir_json::from_str(&line)?;
         ensure!(
             response.get("error").is_none(),
             "tool correction became a protocol failure: {response}"
         );
         let correction: NeedsInput =
-            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
-        let encoded = serde_json::to_value(&correction)?;
+            mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+        let encoded = mimir_json::to_value(&correction)?;
         if name == "sweep_expired_defeated" {
             ensure!(
                 correction.issues()[0].fault().code == mimir_core::validation::Code::InvalidNumber,
@@ -277,14 +277,14 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             output.read_line(&mut line).await? != 0,
             "server stopped on malformed UUIDs"
         );
-        let response: Value = serde_json::from_str(&line)?;
+        let response: Value = mimir_json::from_str(&line)?;
         ensure!(
             response.get("error").is_none(),
             "UUID correction became a tool error: {response}"
         );
         let correction: NeedsInput =
-            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
-        let encoded = serde_json::to_value(&correction)?;
+            mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+        let encoded = mimir_json::to_value(&correction)?;
         ensure!(
             encoded["business_changes"] == "none",
             "UUID refusal did not certify no business writes"
@@ -321,13 +321,13 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         output.read_line(&mut line).await? != 0,
         "server exited on unavailable review preparation"
     );
-    let response: Value = serde_json::from_str(&line)?;
+    let response: Value = mimir_json::from_str(&line)?;
     ensure!(
         response.get("error").is_none(),
         "review decision became a protocol failure: {response}"
     );
     let decision: NeedsInput =
-        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+        mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
     ensure!(
         decision.issues()[0]
             .fault()
@@ -364,14 +364,14 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         output.read_line(&mut line).await? != 0,
         "server exited on unavailable preparation"
     );
-    let response: Value = serde_json::from_str(&line)?;
+    let response: Value = mimir_json::from_str(&line)?;
     ensure!(
         response.get("error").is_none(),
         "preparation must open the dialog, not become a tool failure: {response}"
     );
     let decision: NeedsInput =
-        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
-    let decision = serde_json::to_value(decision)?;
+        mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+    let decision = mimir_json::to_value(decision)?;
     ensure!(
         decision["business_changes"] == "none" && decision["status"] == "needs_input",
         "untruthful preparation outcome: {decision}"
@@ -405,13 +405,13 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             output.read_line(&mut line).await? != 0,
             "server stopped on missing retention"
         );
-        let response: Value = serde_json::from_str(&line)?;
+        let response: Value = mimir_json::from_str(&line)?;
         ensure!(
             response.get("error").is_none(),
             "retention decision became a tool failure: {response}"
         );
         let correction: NeedsInput =
-            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+            mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
         let code = if arguments.get("grace_hours").is_some() {
             mimir_core::validation::Code::UnknownField
         } else {
@@ -445,13 +445,13 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         output.read_line(&mut line).await? != 0,
         "server failed before corrected request"
     );
-    let response: Value = serde_json::from_str(&line)?;
+    let response: Value = mimir_json::from_str(&line)?;
     ensure!(
         response["id"] == "still-usable" && response.get("error").is_none(),
         "connection did not recover: {response}"
     );
     let body: Value =
-        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+        mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
     ensure!(
         body.to_string().contains(&experience_id.to_string()),
         "invalid message deleted project data: {body}"
@@ -468,13 +468,13 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         output.read_line(&mut line).await? != 0,
         "server exited before checking pattern state"
     );
-    let response: Value = serde_json::from_str(&line)?;
+    let response: Value = mimir_json::from_str(&line)?;
     ensure!(
         response["id"] == "no-hidden-pattern",
         "unexpected extra response: {response}"
     );
     let patterns: Value =
-        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+        mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
     ensure!(
         patterns == json!([]),
         "invalid fields created a pattern: {patterns}"

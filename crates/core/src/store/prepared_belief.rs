@@ -40,7 +40,7 @@ struct OwnerAllocation {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderSettings {
-    embeddings: serde_json::Value,
+    embeddings: mimir_json::Document,
 }
 
 #[derive(serde::Deserialize)]
@@ -63,10 +63,10 @@ enum ProviderIdentity {
 fn original_arguments(request: &OperationBindingRequest) -> Result<BeliefArguments> {
     anyhow::ensure!(request.operation() == "insert_belief",
         "Use the original insert_belief operation; read its saved binding and outcome before continuing");
-    let settings: ProviderSettings = serde_json::from_value(request.settings().clone())
+    let settings: ProviderSettings = mimir_json::decode_ref(request.settings())
         .context("Read the original server-selected embedding settings; do not invent a model or supply credentials in this binding")?;
     if !settings.embeddings.is_null() {
-        let provider: ProviderIdentity = serde_json::from_value(settings.embeddings)
+        let provider: ProviderIdentity = mimir_json::from_value(settings.embeddings)
             .context("The original embedding identity has unknown or missing fields; read its binding and ask the user before choosing a model")?;
         match provider {
             ProviderIdentity::Local { model } => anyhow::ensure!(model == crate::embed::HF_MODEL_ID,
@@ -79,7 +79,7 @@ fn original_arguments(request: &OperationBindingRequest) -> Result<BeliefArgumen
             ProviderIdentity::OpenAi { model } => { let _ = model; }
         }
     }
-    let arguments: BeliefArguments = serde_json::from_value(request.arguments().clone())
+    let arguments: BeliefArguments = mimir_json::decode_ref(request.arguments())
         .context("Read the original insert_belief content, probability, confidence, provenance and grounding citations, retaining only its declared optional project and memory_type fields")?;
     crate::graph::Probability::new(arguments.probability)?;
     crate::graph::Probability::new(arguments.confidence)?;
@@ -221,7 +221,7 @@ impl AgeStore {
                 "INSERT INTO mimir_embedding_owners(project,operation_token) VALUES($1,$2) RETURNING owner_token,reserved_at",
                 &[&arguments.project,&token],
             ).await?;
-            Ok(serde_json::to_value(OwnerAllocation { id:row.try_get(0)?, created_at:row.try_get(1)? })?)
+            Ok(mimir_json::to_value(OwnerAllocation { id:row.try_get(0)?, created_at:row.try_get(1)? })?)
         })).await
     }
 
@@ -263,7 +263,7 @@ impl AgeStore {
             return Err(PreparationRequired::new(Location::Configuration,vec![],Code::WrongIdentity,
                 "The configured embedding backend or model differs from this unfinished operation's original settings. Read its saved binding and open a dialog with the user; do not switch models, repeat publication or replace the original token automatically. No belief was stored.".into()).into());
         }
-        let owner:OwnerAllocation=serde_json::from_value(allocation.reply)
+        let owner:OwnerAllocation=mimir_json::decode_ref(&allocation.reply)
             .context("The original preparation allocation cannot be read; inspect its saved answer rather than reserving a replacement identity")?;
         Ok(BeliefPublicationState::Preparing {
             final_step: final_step.clone(),
@@ -374,7 +374,7 @@ impl AgeStore {
             owner.lock_preparation_operations(tx, &[prepared.belief.id]).await?;
             tx.query("SELECT pg_advisory_xact_lock(671942183)", &[]).await?;
             owner.insert_prepared_belief_on(tx, &prepared).await?;
-            let reply = serde_json::to_value(&prepared.belief)?;
+            let reply = mimir_json::to_value(&prepared.belief)?;
             Ok((reply.clone(), reply))
         })).await
     }
@@ -391,7 +391,7 @@ impl AgeStore {
             )
             .await?
         {
-            Some(row) => Ok(serde_json::from_str(row.get(0))?),
+            Some(row) => Ok(mimir_json::from_str(row.get(0))?),
             None => Ok(vec![]),
         }
     }
@@ -455,7 +455,7 @@ impl AgeStore {
             .iter()
             .map(|support| &support.citation)
             .collect();
-        let encoded = serde_json::to_string(&citations)?;
+        let encoded = mimir_json::to_string(&citations)?;
         tx.execute(
             "INSERT INTO mimir_belief_sources(belief_id,citations) VALUES($1,$2::text::jsonb)",
             &[&belief.id, &encoded],

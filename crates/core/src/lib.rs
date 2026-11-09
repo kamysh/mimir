@@ -1709,12 +1709,12 @@ impl MimirService {
         }
     }
 
-    pub async fn complete_operation(
-        &self,
-        plan: &store::OperationPlan,
+    pub fn complete_operation<'a>(
+        &'a self,
+        plan: &'a store::OperationPlan,
         reply: serde_json::Value,
-    ) -> Result<store::CompletionDecision> {
-        self.store.complete_operation(plan, reply).await
+    ) -> impl std::future::Future<Output = Result<store::CompletionDecision>> + Send + 'a {
+        self.store.complete_operation(plan, reply)
     }
 
     pub async fn read_operation_outcome(
