@@ -4,6 +4,7 @@ import ast
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import sys
 import socket
@@ -535,6 +536,48 @@ class IsolationTests(unittest.TestCase):
         self.assertTrue(events["completed"])
         self.assertEqual(events["observed"], [marker, runner.POSTGRES_READY])
         self.assertIn(runner.POSTGRES_READY, result.stdout)
+
+    def test_migration_schema_check_requires_exact_current_names_and_owners(self):
+        path = REPO / "tests/database-connections.py"
+        definition = next(node for node in ast.parse(path.read_text()).body
+                          if isinstance(node, ast.FunctionDef) and node.name == "check_migration_schemas")
+        context = {"json": json}
+        exec(compile(ast.Module(body=[definition], type_ignores=[]), str(path), "exec"), context)
+        check = context["check_migration_schemas"]
+        names = ["initial", "recent"]
+        def query(rows, ledger=names):
+            return lambda sql: json.dumps(rows if "applied_migration_schemas" in sql else ledger)
+        check(query([["recent", "public"], ["initial", "public"]]), names)
+        for rows in ([], [["initial", "public"]],
+                     [["initial", "public"], ["unexpected", "public"]],
+                     [["initial", "public"], ["recent", "other"]],
+                     [["initial", "public"], ["recent", "public"], ["recent", "public"]]):
+            with self.subTest(rows=rows), self.assertRaisesRegex(AssertionError, "migration schema owners differ"):
+                check(query(rows), names)
+        with self.assertRaisesRegex(AssertionError, "migration ledger names differ"):
+            check(query([["initial", "public"], ["recent", "public"]], ["initial"]), names)
+
+    def test_migration_names_come_from_current_source_headers(self):
+        path = REPO / "tests/database-connections.py"
+        definition = next(node for node in ast.parse(path.read_text()).body
+                          if isinstance(node, ast.FunctionDef) and node.name == "current_migration_names")
+        context = {"json": json, "re": re}
+        exec(compile(ast.Module(body=[definition], type_ignores=[]), str(path), "exec"), context)
+        directory = self.root/"migration-source"
+        directory.mkdir()
+        first = directory/"001_initial.sql"
+        first.write_text('-- #!migration\n-- name: "initial",\n-- description: "first";\nSELECT 1;\n')
+        read = context["current_migration_names"]
+        self.assertEqual(read(directory), ["initial"])
+        later = directory/"002_later.sql"
+        later.write_text('-- #!migration\n-- name: "newer",\n-- description: "later";\nSELECT 2;\n')
+        self.assertEqual(read(directory), ["initial", "newer"])
+        later.write_text('-- #!migration\n-- name: "initial",\n-- description: "duplicate";\nSELECT 2;\n')
+        with self.assertRaisesRegex(AssertionError, "repeated source migration names"):
+            read(directory)
+        later.write_text('-- #!migration\n-- name: "unterminated",\nSELECT 2;\n')
+        with self.assertRaisesRegex(AssertionError, "unterminated migration header"):
+            read(directory)
 
 
 if __name__ == "__main__":
