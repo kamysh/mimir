@@ -12,12 +12,17 @@ open import Data.Integer.DivMod using (_/ℕ_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Maybe.Properties using (just-injective)
 open import Data.Product using (_×_; _,_)
+open import Data.Sum using (_⊎_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; sym; trans)
 open import Mimir.Text using (Text)
 
 record Local : Set where
   constructor local
   field day : ℤ; secondOfDay : Fin 86400; offsetSeconds : ℤ
+
+AtOrAfter : ℤ → ℕ → Local → Set
+AtOrAfter day second observed = day < Local.day observed ⊎
+  (day ≡ Local.day observed × (second Data.Nat.≤ toℕ (Local.secondOfDay observed)))
 
 data Midnight : Set where
   unavailable : Midnight
@@ -39,6 +44,9 @@ record Calendar : Set where
     localAt : ℤ → Local -- UTC nanoseconds, also the stored-history time unit
     showOffset : ℤ → Text
     midnights : ℤ → Midnight -- UTC nanoseconds for the local date
+    -- The calendar library resolves a user-selected wall time. The earliest
+    -- matching UTC instant also handles gaps and repeated clock times.
+    deliveryBoundary : ℤ → ℕ → Maybe ℤ
 
   midnight : ℤ → Maybe ℤ
   midnight day = earliest (midnights day)
@@ -58,6 +66,10 @@ record Calendar : Set where
     dayMembership : ∀ day start end instant → midnight day ≡ just start → midnight (day + + 1) ≡ just end →
       (((start ≤ instant) × (instant < end)) → Local.day (localAt instant) ≡ day) ×
       ((Local.day (localAt instant) ≡ day) → (start ≤ instant) × (instant < end))
+    boundaryMeaning : ∀ day second instant → deliveryBoundary day second ≡ just instant →
+      AtOrAfter day second (localAt instant)
+    boundaryEarliest : ∀ day second instant candidate → deliveryBoundary day second ≡ just instant →
+      AtOrAfter day second (localAt candidate) → instant ≤ candidate
 
 -- The clock supplies one timestamp. Day, hour and displayed timezone cannot
 -- be independently selected or taken from separate reads.

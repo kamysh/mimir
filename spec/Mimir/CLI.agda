@@ -41,7 +41,7 @@ data JudgeCommand : Set where
   diagnose : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   checkConfig : Maybe Path.Path → JudgeCommand
   run : Maybe Path.Path → Maybe Path.Path → JudgeCommand
-  watch : Maybe Path.Path → Maybe Path.Path → ℕ → ℕ → JudgeCommand
+  watch : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   status : Maybe Path.Path → JudgeCommand
   diagnostics : Maybe Path.Path → Bool → Maybe ℕ → JudgeCommand
 
@@ -76,12 +76,11 @@ data Command : Set where
 
 record Defaults : Set where
   field listLimit queryLimit documentLimit : Ranking.Selection
-        watchInterval watchFailures : ℕ
         queryEvidence : Bool
         decayFactor threshold evidenceWeight : Float
 
 defaults : Defaults
-defaults = record { listLimit = nothing; queryLimit = nothing; documentLimit = nothing; watchInterval = 300; watchFailures = 3
+defaults = record { listLimit = nothing; queryLimit = nothing; documentLimit = nothing
   ; queryEvidence = false; decayFactor = 0.99; threshold = 0.3; evidenceWeight = 1.0 }
 
 -- Pure admission precedes configuration and database access for every service

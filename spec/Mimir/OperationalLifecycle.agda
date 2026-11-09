@@ -29,18 +29,20 @@ record LogAttempt (configurationValue : Schema.Config) : Set where
     outcome : LogAt.Outcome configurationValue
     completed : LogAt.Attempt configurationValue entry events outcome
 
+data WaitReason : Set where workEvent prerequisite : WaitReason
+
 data State : Set where
   reading : State
   logging : Schema.Config → State
   reviewing : Schema.Config → State
   blocked : Text → State
-  waiting : ℕ → State
+  waiting : WaitReason → State
 
 data Event : Set where
   configuration : Text ⊎ Schema.Config → Event
   logCompleted : ∀ configurationValue → LogAttempt configurationValue → Event
-  batchFinished : ℕ → Event
-  retry : Event
+  batchFinished : WaitReason → Event
+  retry configurationChanged workChanged : Event
 
 data Step : State → Event → State → Set where
   compatible : ∀ configurationValue → Step reading (configuration (inj₂ configurationValue)) (logging configurationValue)
@@ -51,9 +53,12 @@ data Step : State → Event → State → Set where
   failed : ∀ configurationValue (observed : LogAttempt configurationValue) error files →
     LogAttempt.outcome observed ≡ LogAt.failed {configurationValue} error files →
     Step (logging configurationValue) (logCompleted configurationValue observed) (blocked error)
-  completed : ∀ configurationValue delay → Step (reviewing configurationValue) (batchFinished delay) (waiting delay)
+  completed : ∀ configurationValue reason → Step (reviewing configurationValue) (batchFinished reason) (waiting reason)
   retryBlocked : ∀ error → Step (blocked error) retry reading
-  retryWaiting : ∀ delay → Step (waiting delay) retry reading
+  retryWaiting : ∀ reason → Step (waiting reason) retry reading
+  changedBlocked : ∀ error → Step (blocked error) configurationChanged reading
+  changedWaiting : ∀ reason → Step (waiting reason) configurationChanged reading
+  availableWork : Step (waiting workEvent) workChanged reading
 
 reviewRequiresLog : ∀ before event configurationValue → Step before event (reviewing configurationValue) →
   before ≡ logging configurationValue
@@ -84,11 +89,18 @@ reviewRequiresCompatible before event configurationValue step = C.acceptedVersio
 
 -- A wait/retry never reuses an already-loaded configuration. This matters
 -- when settings change while a long-lived watcher is sleeping.
-retryRevalidates : ∀ delay after → Step (waiting delay) retry after → after ≡ reading
-retryRevalidates delay .reading (retryWaiting .delay) = refl
+retryRevalidates : ∀ reason after → Step (waiting reason) retry after → after ≡ reading
+retryRevalidates reason .reading (retryWaiting .reason) = refl
+
+workCannotRetryMissingPrerequisite : ∀ after → Step (waiting prerequisite) workChanged after → ⊥
+workCannotRetryMissingPrerequisite after ()
+
+configurationChangeRevalidates : ∀ reason after →
+  Step (waiting reason) configurationChanged after → after ≡ reading
+configurationChangeRevalidates reason .reading (changedWaiting .reason) = refl
 
 record RuntimeReceipt : Set where
   constructor receipt
-  field packageVersion : Text; processId : ℕ; nextAttempt : Maybe ℕ; failures : ℕ
+  field packageVersion : Text; processId : ℕ; waitingFor : Maybe WaitReason
 -- A receipt describes observed activity; its presence does not prove a process
 -- remains alive. UI labels this as a snapshot, not a liveness assertion.

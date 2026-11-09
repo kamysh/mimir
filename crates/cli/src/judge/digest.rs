@@ -1,6 +1,6 @@
 use super::{state, RunOutcome};
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Local, NaiveDate, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use mimir_notifications::{Digest, Notifier, Outcome};
 use std::{fmt::Write, path::Path};
 use tokio_postgres::Client;
@@ -31,11 +31,91 @@ fn midnight(day: NaiveDate) -> Result<DateTime<Utc>> {
         .ok_or_else(|| anyhow!("local midnight is unavailable"))
 }
 
-fn reporting_day(now: DateTime<Local>) -> Option<NaiveDate> {
-    if now.hour() < 9 {
-        return None;
+fn reporting_day<T: TimeZone>(
+    now: &DateTime<T>,
+    time: super::config::DailyTime,
+) -> Result<Option<NaiveDate>> {
+    let zone = now.timezone();
+    let boundary = first_valid_time(now.date_naive().and_time(time.local_time()), |local| {
+        zone.from_local_datetime(&local)
+            .earliest()
+            .map(|value| value.with_timezone(&Utc))
+    })?;
+    Ok((now.with_timezone(&Utc) >= boundary)
+        .then(|| now.date_naive().pred_opt())
+        .flatten())
+}
+
+/// Resolve a skipped local time by advancing to the first valid second.
+/// The resolver chooses the first occurrence when a local time is repeated.
+fn first_valid_time(
+    mut local: NaiveDateTime,
+    mut resolve: impl FnMut(NaiveDateTime) -> Option<DateTime<Utc>>,
+) -> Result<DateTime<Utc>> {
+    loop {
+        if let Some(instant) = resolve(local) {
+            return Ok(instant);
+        }
+        local = local
+            .checked_add_signed(chrono::Duration::seconds(1))
+            .ok_or_else(|| anyhow!("calendar date overflow; correct the computer clock"))?;
     }
-    now.date_naive().pred_opt()
+}
+
+fn next_wake<T: TimeZone>(
+    now: DateTime<T>,
+    time: super::config::DailyTime,
+) -> Result<DateTime<Utc>> {
+    let date = if reporting_day(&now, time)?.is_none() {
+        now.date_naive()
+    } else {
+        now.date_naive()
+            .succ_opt()
+            .ok_or_else(|| anyhow!("calendar date overflow"))?
+    };
+    let zone = now.timezone();
+    first_valid_time(date.and_time(time.local_time()), |local| {
+        zone.from_local_datetime(&local)
+            .earliest()
+            .map(|value| value.with_timezone(&Utc))
+    })
+}
+
+/// One owner remembers admission even when delivery is still pending.
+/// Configuration/status updates do not re-admit that day's report.
+pub(super) async fn calendar<C, S, F>(
+    mut updates: tokio::sync::watch::Receiver<Option<super::notification::CalendarJob>>,
+    pending: tokio::sync::mpsc::UnboundedSender<super::notification::Job>,
+    clock: C,
+    sleep_until: S,
+) -> Result<()>
+where
+    C: Fn() -> DateTime<Local>,
+    S: Fn(DateTime<Utc>) -> F,
+    F: std::future::Future<Output = ()>,
+{
+    let mut admitted = None;
+    loop {
+        let current = updates.borrow_and_update().clone();
+        let Some(job) = current else {
+            if updates.changed().await.is_err() {
+                return Ok(());
+            }
+            continue;
+        };
+        let now = clock();
+        if reporting_day(&now, job.time)?.is_some() && admitted != Some(now.date_naive()) {
+            pending
+                .send(super::notification::Job::Digest(job.clone()))
+                .map_err(|_| anyhow!("notification worker is unavailable; restart the watcher"))?;
+            admitted = Some(now.date_naive());
+        }
+        let wake = next_wake(now, job.time)?;
+        tokio::select! {
+            changed = updates.changed() => if changed.is_err() { return Ok(()); },
+            _ = sleep_until(wake) => (),
+        }
+    }
 }
 
 fn first_day(last: Option<&str>, through: NaiveDate) -> Result<Option<NaiveDate>> {
@@ -152,8 +232,9 @@ pub async fn tick(
     database: &mimir_core::config::DatabaseConfig,
     state_dir: Option<&Path>,
     run: &RunOutcome,
+    time: super::config::DailyTime,
 ) -> Result<bool> {
-    tick_at(email, database, state_dir, run, Local::now()).await
+    tick_at(email, database, state_dir, run, Local::now(), time).await
 }
 
 async fn tick_at(
@@ -162,8 +243,9 @@ async fn tick_at(
     state_dir: Option<&Path>,
     run: &RunOutcome,
     now: DateTime<Local>,
+    time: super::config::DailyTime,
 ) -> Result<bool> {
-    let Some(through) = reporting_day(now) else {
+    let Some(through) = reporting_day(&now, time)? else {
         return Ok(false);
     };
     if !email.enabled {
@@ -186,7 +268,7 @@ async fn tick_at(
     .await?;
     let report = state::read(&state::resolve(state_dir)?).ok().flatten();
     body.push_str(&super::diagnose::summary(report.as_ref()));
-    body.push_str("The watcher retries automatically while running, with hourly backoff after repeated failures. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/main/docs/operations.md\n");
+    body.push_str("After an unresolved prerequisite, the watcher waits for a configuration correction or explicit SIGHUP retry. The running watcher prints the retry command. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/main/docs/operations.md\n");
     let digest = Digest {
         through_day: through.to_string(),
         body,
@@ -233,7 +315,14 @@ mod tests {
             .with_ymd_and_hms(2026, 11, 8, 9, 0, 0)
             .single()
             .unwrap();
-        let request = tick_at(&email, &database, Some(work.path()), &outcome, now);
+        let request = tick_at(
+            &email,
+            &database,
+            Some(work.path()),
+            &outcome,
+            now,
+            super::super::config::DailyTime { hour: 9, minute: 0 },
+        );
         tokio::pin!(request);
         assert!(
             poll_fn(|cx| std::task::Poll::Ready(request.as_mut().poll(cx).is_pending())).await,
@@ -251,18 +340,22 @@ mod tests {
     }
 
     #[test]
-    fn nine_am_boundary_and_catch_up_start() {
+    fn configured_boundary_and_catch_up_start() {
+        let time = super::super::config::DailyTime {
+            hour: 9,
+            minute: 17,
+        };
         let day = NaiveDate::from_ymd_opt(2026, 10, 11).unwrap();
         let early = Local
-            .from_local_datetime(&day.and_hms_opt(8, 59, 0).unwrap())
+            .from_local_datetime(&day.and_hms_opt(9, 16, 59).unwrap())
             .single()
             .unwrap();
         let due = Local
-            .from_local_datetime(&day.and_hms_opt(9, 0, 0).unwrap())
+            .from_local_datetime(&day.and_hms_opt(9, 17, 0).unwrap())
             .single()
             .unwrap();
-        assert_eq!(reporting_day(early), None);
-        assert_eq!(reporting_day(due), day.pred_opt());
+        assert_eq!(reporting_day(&early, time).unwrap(), None);
+        assert_eq!(reporting_day(&due, time).unwrap(), day.pred_opt());
         assert_eq!(first_day(None, day).unwrap(), Some(day));
         assert_eq!(
             first_day(Some("2026-10-08"), day).unwrap(),
@@ -320,5 +413,168 @@ mod tests {
             }),
             "batch complete"
         );
+    }
+
+    #[test]
+    fn skipped_time_uses_the_first_valid_second_and_repeats_use_the_first_instant() {
+        let date = NaiveDate::from_ymd_opt(2026, 3, 8).unwrap();
+        let missing = date.and_hms_opt(2, 30, 0).unwrap();
+        let valid = date.and_hms_opt(3, 0, 27).unwrap();
+        let instant =
+            first_valid_time(missing, |local| (local >= valid).then(|| local.and_utc())).unwrap();
+        assert_eq!(instant.naive_utc(), valid);
+        let earlier = missing.and_utc();
+        let later = earlier + chrono::Duration::hours(1);
+        assert_eq!(
+            first_valid_time(missing, |_| chrono::LocalResult::Ambiguous(earlier, later)
+                .earliest())
+            .unwrap(),
+            earlier
+        );
+    }
+
+    #[test]
+    fn repeated_clock_hour_never_schedules_an_already_elapsed_first_occurrence() {
+        #[derive(Clone, Copy)]
+        struct RepeatedHour;
+        impl TimeZone for RepeatedHour {
+            type Offset = chrono::FixedOffset;
+            fn from_offset(_: &Self::Offset) -> Self {
+                Self
+            }
+            fn offset_from_local_date(
+                &self,
+                date: &NaiveDate,
+            ) -> chrono::LocalResult<Self::Offset> {
+                self.offset_from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+            }
+            fn offset_from_local_datetime(
+                &self,
+                local: &NaiveDateTime,
+            ) -> chrono::LocalResult<Self::Offset> {
+                let day = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+                let first = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
+                let second = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+                if *local < day.and_hms_opt(1, 0, 0).unwrap() {
+                    chrono::LocalResult::Single(first)
+                } else if *local < day.and_hms_opt(2, 0, 0).unwrap() {
+                    chrono::LocalResult::Ambiguous(first, second)
+                } else {
+                    chrono::LocalResult::Single(second)
+                }
+            }
+            fn offset_from_utc_date(&self, date: &NaiveDate) -> Self::Offset {
+                self.offset_from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+            }
+            fn offset_from_utc_datetime(&self, utc: &NaiveDateTime) -> Self::Offset {
+                let boundary = NaiveDate::from_ymd_opt(2026, 11, 1)
+                    .unwrap()
+                    .and_hms_opt(6, 0, 0)
+                    .unwrap();
+                chrono::FixedOffset::west_opt(if *utc < boundary { 4 * 3600 } else { 5 * 3600 })
+                    .unwrap()
+            }
+        }
+        let day = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let time = super::super::config::DailyTime {
+            hour: 1,
+            minute: 30,
+        };
+        let before = day
+            .and_hms_opt(5, 10, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&RepeatedHour);
+        let repeated = day
+            .and_hms_opt(6, 10, 0)
+            .unwrap()
+            .and_utc()
+            .with_timezone(&RepeatedHour);
+        assert_eq!(reporting_day(&before, time).unwrap(), None);
+        assert_eq!(reporting_day(&repeated, time).unwrap(), day.pred_opt());
+        let wake = next_wake(repeated, time).unwrap();
+        assert!(wake > repeated.with_timezone(&Utc));
+        assert_eq!(
+            wake.with_timezone(&RepeatedHour).date_naive(),
+            day.succ_opt().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_calendar_queues_once_without_delivery_or_review_events() {
+        use std::{
+            future::{poll_fn, Future},
+            sync::{Arc, Mutex},
+        };
+        let day = NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
+        let at = |hour, minute| {
+            Local
+                .from_local_datetime(&day.and_hms_opt(hour, minute, 0).unwrap())
+                .single()
+                .unwrap()
+        };
+        let now = Arc::new(Mutex::new(at(10, 16)));
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let job = super::super::notification::CalendarJob {
+            email: mimir_notifications::config::EmailConfig::default(),
+            database: toml::from_str("host='unused'\nport=5432\ndbname='unused'\nuser='unused'\n")
+                .unwrap(),
+            path: std::env::temp_dir(),
+            outcome: RunOutcome {
+                code: 0,
+                degraded: false,
+                idle: true,
+            },
+            time: super::super::config::DailyTime {
+                hour: 10,
+                minute: 17,
+            },
+        };
+        let (update, received) = tokio::sync::watch::channel(Some(job.clone()));
+        let (pending, mut jobs) = tokio::sync::mpsc::unbounded_channel();
+        let clock = now.clone();
+        let notify = wake.clone();
+        let task = calendar(
+            received,
+            pending,
+            move || *clock.lock().unwrap(),
+            move |_| {
+                let notify = notify.clone();
+                async move { notify.notified().await }
+            },
+        );
+        tokio::pin!(task);
+        assert!(poll_fn(|cx| std::task::Poll::Ready(task.as_mut().poll(cx).is_pending())).await);
+        assert!(jobs.try_recv().is_err());
+        *now.lock().unwrap() = at(10, 17);
+        wake.notify_one();
+        assert!(poll_fn(|cx| std::task::Poll::Ready(task.as_mut().poll(cx).is_pending())).await);
+        assert!(matches!(
+            jobs.try_recv().unwrap(),
+            super::super::notification::Job::Digest(_)
+        ));
+        // The delivery consumer remains stalled. Status/configuration updates
+        // cannot enqueue that day again or cause a ready-future busy loop.
+        update.send(Some(job.clone())).unwrap();
+        assert!(poll_fn(|cx| std::task::Poll::Ready(task.as_mut().poll(cx).is_pending())).await);
+        assert!(jobs.try_recv().is_err());
+        update.send(None).unwrap();
+        assert!(poll_fn(|cx| std::task::Poll::Ready(task.as_mut().poll(cx).is_pending())).await);
+        *now.lock().unwrap() = at(10, 17) + chrono::Duration::days(1);
+        wake.notify_one();
+        assert!(poll_fn(|cx| std::task::Poll::Ready(task.as_mut().poll(cx).is_pending())).await);
+        assert!(
+            jobs.try_recv().is_err(),
+            "disabled scheduling must stay disabled"
+        );
+        update.send(Some(job)).unwrap();
+        assert!(poll_fn(|cx| std::task::Poll::Ready(task.as_mut().poll(cx).is_pending())).await);
+        assert!(matches!(
+            jobs.try_recv().unwrap(),
+            super::super::notification::Job::Digest(_)
+        ));
+        assert!(jobs.try_recv().is_err());
+        drop(update);
+        task.await.unwrap();
     }
 }

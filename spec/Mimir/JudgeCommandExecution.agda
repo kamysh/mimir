@@ -63,15 +63,15 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   data Completion : CLI.JudgeCommand → O.Work → ℕ → Set where
     once : ∀ initial events result → H.Runs (H.once false) events result →
       Completion (CLI.run explicitConfig explicitState) initial (Host.code (Host.Outcome.exit result))
-    watched : ∀ initial migrations interval threshold exit →
-      W.Trace migrations interval threshold (Host.startWatch interval threshold) (Host.exited exit) →
-      Completion (CLI.watch explicitConfig explicitState interval threshold) initial (Host.code exit)
+    watched : ∀ initial migrations exit →
+      W.Trace migrations Host.startWatch (Host.exited exit) →
+      Completion (CLI.watch explicitConfig explicitState) initial (Host.code exit)
 
   module Stop command = SignalBinding.Bound conversion format libraries (Completion command)
 
   data Cancellable : CLI.JudgeCommand → Set where
     run : Cancellable (CLI.run explicitConfig explicitState)
-    watch : ∀ interval threshold → Cancellable (CLI.watch explicitConfig explicitState interval threshold)
+    watch : Cancellable (CLI.watch explicitConfig explicitState)
 
   program : ∀ command → Cancellable command → (initial : O.Work) → Stop.Initial command initial → Stop.S.Script command ℕ
   program command admitted initial unpolled = Stop.run command initial unpolled

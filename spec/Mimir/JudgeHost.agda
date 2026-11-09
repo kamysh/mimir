@@ -64,7 +64,7 @@ outcomeOf watch report = outcome exit degraded (is status (toList "idle"))
 
 record Watch : Set where
   constructor watchState
-  field failures : ℕ; episode digestProblem : Bool
+  field episode digestProblem : Bool
 
 data Transition : Set where
   invalidConfiguration lockBusy stateUnavailable incompleteRun recovered
@@ -85,24 +85,14 @@ episodeMessage state result with Outcome.degraded result | Watch.episode state
 ...   | true = just recovered
 ...   | false = nothing
 
-advance : ℕ → Watch → Outcome → Watch
-advance usizeMaximum state result = watchState failures episode (Watch.digestProblem state)
+advance : Watch → Outcome → Watch
+advance state result = watchState episode (Watch.digestProblem state)
   where
-  failures : ℕ
-  failures with Outcome.exit result
-  ... | success = 0
-  ... | _ = suc (Watch.failures state) ⊓ usizeMaximum
   episode : Bool
   episode with Outcome.degraded result | Outcome.idle result
   ... | true | _ = true
   ... | false | true = false
   ... | false | false = Watch.episode state
-
-delay : ℕ → ℕ → Watch → ℕ
-delay interval threshold state = Judge.Watch.retryDelay threshold (Watch.failures state) interval (interval ⊔ 3600)
-
-admitted : ℕ → ℕ → Bool
-admitted interval threshold = does (1 ≤? interval) ∧ does (1 ≤? threshold)
 
 -- This startup protocol must finish before the first batch can read the
 -- queue. Both connection and LISTEN acknowledgement are native observations;
@@ -134,7 +124,9 @@ module Subscription where
   successRequiresAcknowledgedListen dbConfig events handle (replied _ _ (inj₂ .handle)
     (replied _ _ (inj₂ tt) (returned .(inj₂ handle)))) = refl
 
-data QueueWake : Set where workAvailable configurationChanged disconnected interrupted : QueueWake
+data QueueWake : Set where workAvailable configurationChanged disconnected explicitRetry interrupted : QueueWake
+
+data PrerequisiteWake : Set where configurationCorrected retryRequested stopped : PrerequisiteWake
 
 data Phase : Set where
   subscribing : Watch → Phase
@@ -143,17 +135,17 @@ data Phase : Set where
   digest : Watch → Outcome → Phase
   continuing : Watch → List Transition → Phase
   awaitingWork : Watch → List Transition → Phase
-  waiting : Watch → ℕ → List Transition → Phase
+  waitingPrerequisite : Watch → List Transition → Phase
   exited : Exit → Phase
 
 Reply : Phase → Set
 Reply (subscribing state) = Exit ⊎ Outcome
-Reply (waitingConfiguration state) = Bool -- Ctrl-C or a configuration file event
+Reply (waitingConfiguration state) = PrerequisiteWake
 Reply (running state) = Outcome
 Reply (digest state result) = Text ⊎ Bool -- error is an unavailable digest
 Reply (continuing state messages) = ⊤ -- emit transitions, then continue; no timer
 Reply (awaitingWork state messages) = QueueWake
-Reply (waiting state seconds messages) = Bool -- true = Ctrl-C, false = timer
+Reply (waitingPrerequisite state messages) = PrerequisiteWake
 Reply (exited code) = ⊤
 
 digestTransitions : Bool → Bool → List Transition
@@ -166,81 +158,81 @@ completedWork : Outcome → Bool
 completedWork (outcome success false false) = true
 completedWork _ = false
 
-schedule : Outcome → Watch → ℕ → List Transition → Phase
-schedule (outcome success false false) state seconds messages = continuing state messages
-schedule (outcome success false true) state seconds messages = awaitingWork state messages
-schedule _ state seconds messages = waiting state seconds messages
+schedule : Outcome → Watch → List Transition → Phase
+schedule (outcome success false false) state messages = continuing state messages
+schedule (outcome success false true) state messages = awaitingWork state messages
+schedule _ state messages = waitingPrerequisite state messages
 
-afterDigest : ℕ → ℕ → ℕ → Watch → Outcome → Bool → Phase
-afterDigest usizeMaximum interval threshold before result problem =
-  schedule result after (delay interval threshold after) messages
+afterDigest : Watch → Outcome → Bool → Phase
+afterDigest before result problem =
+  schedule result after messages
   where
-  after = record (advance usizeMaximum before result) { digestProblem = problem }
+  after = record (advance before result) { digestProblem = problem }
   messages : List Transition
   messages with episodeMessage before result
   ... | nothing = digestTransitions (Watch.digestProblem before) problem
   ... | just transition = digestTransitions (Watch.digestProblem before) problem Data.List.++ (transition ∷ [])
 
-step : ℕ → ℕ → ℕ → (phase : Phase) → Reply phase → Phase
-step usizeMaximum interval threshold (subscribing state) (inj₁ invalidConfig) = waitingConfiguration state
-step usizeMaximum interval threshold (subscribing state) (inj₁ code) = exited code
-step usizeMaximum interval threshold (subscribing state) (inj₂ result) = digest state result
-step usizeMaximum interval threshold (waitingConfiguration state) false = subscribing state
-step usizeMaximum interval threshold (waitingConfiguration state) true = exited success
-step usizeMaximum interval threshold (running state) result = digest state result
-step usizeMaximum interval threshold (digest state result) (inj₁ error) = afterDigest usizeMaximum interval threshold state result true
-step usizeMaximum interval threshold (digest state result) (inj₂ problem) = afterDigest usizeMaximum interval threshold state result problem
-step usizeMaximum interval threshold (continuing state messages) reply = running state
-step usizeMaximum interval threshold (awaitingWork state messages) workAvailable = running state
-step usizeMaximum interval threshold (awaitingWork state messages) configurationChanged = subscribing state
-step usizeMaximum interval threshold (awaitingWork state messages) disconnected = subscribing state
-step usizeMaximum interval threshold (awaitingWork state messages) interrupted = exited success
-step usizeMaximum interval threshold (waiting state seconds messages) true = exited success
-step usizeMaximum interval threshold (waiting state seconds messages) false = running state
-step usizeMaximum interval threshold (exited code) reply = exited code
+step : (phase : Phase) → Reply phase → Phase
+step (subscribing state) (inj₁ invalidConfig) = waitingConfiguration state
+step (subscribing state) (inj₁ code) = waitingPrerequisite state (failureMessage code ∷ [])
+step (subscribing state) (inj₂ result) = digest state result
+step (waitingConfiguration state) configurationCorrected = subscribing state
+step (waitingConfiguration state) retryRequested = subscribing state
+step (waitingConfiguration state) stopped = exited success
+step (running state) result = digest state result
+step (digest state result) (inj₁ error) = afterDigest state result true
+step (digest state result) (inj₂ problem) = afterDigest state result problem
+step (continuing state messages) reply = running state
+step (awaitingWork state messages) workAvailable = running state
+step (awaitingWork state messages) configurationChanged = subscribing state
+step (awaitingWork state messages) disconnected = subscribing state
+step (awaitingWork state messages) explicitRetry = subscribing state
+step (awaitingWork state messages) interrupted = exited success
+step (waitingPrerequisite state messages) configurationCorrected = subscribing state
+step (waitingPrerequisite state messages) retryRequested = subscribing state
+step (waitingPrerequisite state messages) stopped = exited success
+step (exited code) reply = exited code
 
-startWatch : ℕ → ℕ → Phase
-startWatch interval threshold with admitted interval threshold
-... | false = exited invalidConfig
-... | true = subscribing (watchState 0 false false)
+startWatch : Phase
+startWatch = subscribing (watchState false false)
 
-cancelAtWait : ∀ maximum interval threshold state seconds messages →
-  step maximum interval threshold (waiting state seconds messages) true ≡ exited success
-cancelAtWait maximum interval threshold state seconds messages = refl
+cancelAtWait : ∀ state messages →
+  step (waitingPrerequisite state messages) stopped ≡ exited success
+cancelAtWait state messages = refl
 
-successfulBatchDoesNotCloseEpisode : ∀ maximum failures episode digestProblem →
-  Watch.episode (advance maximum (watchState failures episode digestProblem) (outcome success false false)) ≡ episode
-successfulBatchDoesNotCloseEpisode maximum failures episode digestProblem = refl
+successfulBatchDoesNotCloseEpisode : ∀ episode digestProblem →
+  Watch.episode (advance (watchState episode digestProblem) (outcome success false false)) ≡ episode
+successfulBatchDoesNotCloseEpisode episode digestProblem = refl
 
--- A confirmed non-idle batch cannot require any timer acknowledgement,
--- independently of the configured interval, failure history or digest reply.
 data Immediate : Phase → Set where
   ready : ∀ state messages → Immediate (continuing state messages)
 
-successfulBatchContinuesImmediately : ∀ maximum interval threshold before reply →
-  Immediate (step maximum interval threshold
-    (digest before (outcome success false false)) reply)
-successfulBatchContinuesImmediately maximum interval threshold before (inj₁ error) = ready _ _
-successfulBatchContinuesImmediately maximum interval threshold before (inj₂ problem) = ready _ _
+successfulBatchContinuesImmediately : ∀ before reply →
+  Immediate (step (digest before (outcome success false false)) reply)
+successfulBatchContinuesImmediately before (inj₁ error) = ready _ _
+successfulBatchContinuesImmediately before (inj₂ problem) = ready _ _
 
 data AwaitsWork : Phase → Set where
   subscribed : ∀ state messages → AwaitsWork (awaitingWork state messages)
 
-idleBatchWaitsForWork : ∀ maximum interval threshold before reply →
-  AwaitsWork (step maximum interval threshold (digest before (outcome success false true)) reply)
-idleBatchWaitsForWork maximum interval threshold before (inj₁ error) = subscribed _ _
-idleBatchWaitsForWork maximum interval threshold before (inj₂ problem) = subscribed _ _
+idleBatchWaitsForWork : ∀ before reply →
+  AwaitsWork (step (digest before (outcome success false true)) reply)
+idleBatchWaitsForWork before (inj₁ error) = subscribed _ _
+idleBatchWaitsForWork before (inj₂ problem) = subscribed _ _
 
-cancelAtWorkWait : ∀ maximum interval threshold state messages →
-  step maximum interval threshold (awaitingWork state messages) interrupted ≡ exited success
-cancelAtWorkWait maximum interval threshold state messages = refl
+cancelAtWorkWait : ∀ state messages →
+  step (awaitingWork state messages) interrupted ≡ exited success
+cancelAtWorkWait state messages = refl
 
--- A lost connection never resumes the queue wait directly. The shared
--- subscribing phase requires acknowledgement and a fresh first batch.
-disconnectionRequiresSubscription : ∀ maximum interval threshold state messages →
-  step maximum interval threshold (awaitingWork state messages) disconnected ≡ subscribing state
-disconnectionRequiresSubscription maximum interval threshold state messages = refl
+disconnectionRequiresSubscription : ∀ state messages →
+  step (awaitingWork state messages) disconnected ≡ subscribing state
+disconnectionRequiresSubscription state messages = refl
 
-configurationChangeRequiresSubscription : ∀ maximum interval threshold state messages →
-  step maximum interval threshold (awaitingWork state messages) configurationChanged ≡ subscribing state
-configurationChangeRequiresSubscription maximum interval threshold state messages = refl
+configurationChangeRequiresSubscription : ∀ state messages →
+  step (awaitingWork state messages) configurationChanged ≡ subscribing state
+configurationChangeRequiresSubscription state messages = refl
+
+retryRequiresSubscription : ∀ state messages →
+  step (waitingPrerequisite state messages) retryRequested ≡ subscribing state
+retryRequiresSubscription state messages = refl

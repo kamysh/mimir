@@ -76,11 +76,12 @@ mean the failure has been repaired. After a successful non-idle batch, the
 watcher immediately checks for the next eligible work. An empty queue waits for
 a PostgreSQL work event and then scans the durable queue again. There is no idle
 polling interval. After losing its listener, the watcher reconnects and scans
-saved pending work, including changes whose notifications were missed. The current
-incomplete-work paths still use the configured interval and failure backoff;
-their removal is tracked separately in #67. It announces
-failure/recovery transitions instead of repeating the same error on every
-polling cycle.
+saved pending work, including changes whose notifications were missed. After
+incomplete work or an unresolved prerequisite, it waits for a configuration
+correction or explicit SIGHUP retry and prints `kill -HUP PID` for its current
+process. Correct the cause before retrying. New work notifications cannot retry
+an unchanged missing prerequisite. There is no failure-count threshold or
+scheduled backoff. It announces failure/recovery transitions once per episode.
 
 While running, the watcher observes configuration file changes through OS
 events, including edits and atomic replacements. It applies a valid replacement
@@ -90,14 +91,26 @@ file and last admitted settings are left intact. Save the corrected file to
 resume, or press Ctrl-C to stop. No polling timer is used for configuration
 changes.
 
+Daily reports require the user's `judge.daily_report_time` configuration, with
+an explicit `hour` and `minute` and no default. The watcher has a separate
+calendar wake-up for that chosen local time, including when review work is idle
+or awaiting correction. That wake-up queues mail and does not retry reviews.
+Skipped local times use the first valid time afterward; repeated times produce
+one admission at the first occurrence. A stalled delivery cannot cause repeated
+admission of that day's report. Calendar and delivery tasks are cancelled and
+joined when the watcher stops.
+
 In watch mode, alert and daily-summary delivery run in one owned background
 task. A stalled SMTP or authentication exchange does not hold the judge's state
 lock or block another review. The report's `notification: "queued"` records
 queue admission, not confirmed email delivery. Delivery problems are logged by
 the worker. Stopping the watcher cancels and awaits the worker: existing notifier
 outbox entries remain on disk, while jobs not yet submitted are cancelled.
-Completed review reports remain stored. Standalone `judge run` delivery is still
-synchronous; its remaining delivery ownership work is tracked in #180.
+Completed review reports remain stored. Standalone `judge run` saves mail to
+the private incoming queue for delivery by `judge watch`; the command
+returns without waiting for SMTP or OAuth. It prints the exact watcher command
+needed to resume delivery when a watcher is absent. Queue admission does not
+claim that the email was delivered.
 
 Common cases:
 

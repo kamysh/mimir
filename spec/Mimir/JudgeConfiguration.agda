@@ -9,7 +9,7 @@ open import Data.Bool.ListAction using (all; any)
 open import Data.Maybe using (Maybe; just; nothing; is-just; is-nothing)
 open import Data.Nat using (ℕ; _≤?_)
 open import Data.Fin using (_≟_)
-open import Data.Product using (_×_; _,_)
+open import Data.Product using (_×_; _,_; Σ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Data.String using (String; toList)
@@ -49,9 +49,14 @@ data Backend : Set where claudeCode codex commandMode api : Backend
 data Provider : Set where openai anthropic openrouter deepseek zai gemini compatible : Provider
 data Effort : Set where minimal low medium high xhigh : Effort
 
+record DailyTime : Set where
+  constructor dailyTime
+  field hour minute : ℕ
+
 record Judge : Set where
   constructor judgeSettings
   field project : Maybe Text; mcpCommand : Text; mcpArgs : List Text
+        dailyReportTime : Maybe DailyTime
 
 record Llm : Set where
   constructor llmSettings
@@ -72,14 +77,20 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
   module Num = Numbers conversion
   module E = EmailWire.Decode sizeMaximum
 
+  dailyTimeValue : V.Value → Validation.Fault ⊎ DailyTime
+  dailyTimeValue = recordOf ("hour" ∷ "minute" ∷ []) (λ fields →
+    required "hour" (unsigned 255) fields >>= λ hour →
+    required "minute" (unsigned 255) fields >>= λ minute → inj₂ (dailyTime hour minute))
+
   judge : V.Value → Validation.Fault ⊎ Judge
   judge raw with view raw (toList "batch_size")
   ... | just _ = inj₁ (Validation.fault (Validation.key "batch_size" ∷ []) Validation.unsupportedCombination
     "judge.batch_size is obsolete; run mimir config upgrade to remove it, then mimir config check")
-  ... | nothing = recordOf ("project" ∷ "mcp_command" ∷ "mcp_args" ∷ []) (λ fields →
+  ... | nothing = recordOf ("project" ∷ "mcp_command" ∷ "mcp_args" ∷ "daily_report_time" ∷ []) (λ fields →
     optional "project" V.asString fields >>= λ project →
     defaulted "mcp_command" (toList "mimir-mcp") V.asString fields >>= λ cmd →
-    defaulted "mcp_args" [] (readArray V.asString) fields >>= λ args → inj₂ (judgeSettings project cmd args)) raw
+    defaulted "mcp_args" [] (readArray V.asString) fields >>= λ args →
+    optional "daily_report_time" dailyTimeValue fields >>= λ time → inj₂ (judgeSettings project cmd args time)) raw
 
   llm : V.Value → Validation.Fault ⊎ Llm
   llm = recordOf ("backend" ∷ "model" ∷ "reasoning_effort" ∷ "provider" ∷ "api_key" ∷ "base_url" ∷ "command" ∷ "args" ∷ [])
@@ -154,6 +165,21 @@ module Validate (libraries : Libraries) where
     ensure (URL.emptyUsername url ∧ URL.noPassword url ∧ URL.noQuery url ∧ URL.noFragment url)
       "llm.base_url must not contain credentials, query, or fragment"
 
+  dailyTimeCheck : DailyTime → Text ⊎ ⊤
+  dailyTimeCheck value = ensure
+    (does (DailyTime.hour value ≤? 23) ∧ does (DailyTime.minute value ≤? 59))
+    "judge.daily_report_time requires hour 0..23 and minute 0..59"
+
+  reportTime : Bool → Maybe DailyTime → Text ⊎ ⊤
+  reportTime true nothing = inj₁ (toList "Set judge.daily_report_time = { hour = H, minute = M } to your chosen local delivery time before enabling email")
+  reportTime false nothing = inj₂ tt
+  reportTime _ (just value) = dailyTimeCheck value
+
+  enabledEmailRequiresChosenTime : ∀ value → reportTime true value ≡ inj₂ tt →
+    Σ DailyTime (λ time → value ≡ just time)
+  enabledEmailRequiresChosenTime nothing ()
+  enabledEmailRequiresChosenTime (just time) admitted = time , refl
+
   judge : Judge → Text ⊎ ⊤
   judge j =
     optionalCheck (λ p → ensure (clean p) "invalid judge.project") (Judge.project j) >>= λ _ →
@@ -202,7 +228,8 @@ module Validate (libraries : Libraries) where
 
   validate : Runtime → Text ⊎ ⊤
   validate r = judge (Runtime.judge r) >>= λ _ → llm (Runtime.llm r) >>= λ _ →
-    email (Email.validate (Runtime.email r))
+    email (Email.validate (Runtime.email r)) >>= λ _ →
+    reportTime (Email.Config.enabled (Runtime.email r)) (Judge.dailyReportTime (Runtime.judge r))
     where
     email : Validation.Checked (Email.Valid (Runtime.email r)) → Text ⊎ ⊤
     email (Validation.rejected fault _) = inj₁ (Validation.Fault.explanation fault)

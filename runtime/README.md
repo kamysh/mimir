@@ -150,6 +150,20 @@ when a required account or permission step remains unresolved.
 
 ## Runtime behavior
 
+When enabling email, obtain the desired local delivery time from the user and set
+`judge.daily_report_time = { hour = H, minute = M }` in the configuration. Hours
+run from 0 through 23 and minutes from 0 through 59. Both fields are required;
+there is no default and no request-level override. A missing or invalid time
+produces a configuration diagnostic with the correction to make.
+
+An owned calendar task admits the report at that time even when reviews are idle
+or paused for correction. It does not start a review batch. A skipped clock time
+uses the first valid time afterward; a repeated time uses its first occurrence,
+once. Missed days are included by the existing reporting cursor. Queue admission
+is remembered while delivery is pending, so status updates cannot repeatedly
+enqueue the same day's report. Disabling email through an admitted configuration
+stops future calendar admissions. Restart cancels and joins the calendar owner.
+
 Watch mode owns a background task for alert and daily-summary delivery. A stalled
 SMTP or authentication exchange does not block another review. `notification:
 "queued"` means accepted for an attempt, not delivered. Shutdown cancels and
@@ -162,13 +176,18 @@ for further eligible work after each successful non-idle batch. An empty queue
 waits for PostgreSQL work events and scans again when one arrives; it has no idle
 polling interval. After a listener disconnects, it subscribes again and scans
 saved work before waiting, so missed notifications do not lose pending reviews.
-If restoring the connection fails, it reports how to correct the problem and
-restart. OS file events detect configuration edits and replacements without
+If restoring the connection fails, it waits for a configuration correction or
+an explicit SIGHUP retry. OS file events detect configuration edits and replacements without
 polling. Valid changes are subscribed before the next queue scan. Invalid
 settings pause for a correction event, leave the file intact, and do not replace
-the admitted settings. Incomplete-work paths still wait five minutes by default
-(`--interval-seconds`, positive values). After three consecutive incomplete or unavailable runs by default
-(`--max-consecutive-failures`), it backs off to hourly runs (removal tracked in #67). An empty queue
+the admitted settings. After incomplete work or an unresolved prerequisite, the
+watcher explains the problem and prints `kill -HUP PID` with its current process
+ID. Correct the cause before requesting that retry. New work notifications do
+not retry an unchanged missing prerequisite. The retry revalidates configuration
+and acknowledges its database subscription before scanning pending work.
+There is no failure-count threshold or retry timer. The former
+`--interval-seconds` and `--max-consecutive-failures` arguments are removed.
+An empty queue
 makes no model call. `mimir judge status` reads the last local report and gives
 the ID of a retained failure trace. `mimir judge diagnostics` reads the first
 failure trace of the current incident; `--list` shows retained attempt IDs and

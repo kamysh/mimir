@@ -16,18 +16,22 @@ pub enum Mode<'a> {
     Queued(&'a Worker),
 }
 
-enum Job {
+#[derive(Clone)]
+pub(super) struct CalendarJob {
+    pub email: EmailConfig,
+    pub database: DatabaseConfig,
+    pub path: PathBuf,
+    pub outcome: super::RunOutcome,
+    pub time: super::config::DailyTime,
+}
+
+pub(super) enum Job {
     #[cfg(test)]
     Idle(tokio::sync::oneshot::Sender<()>),
     Alert {
         email: EmailConfig,
     },
-    Digest {
-        email: EmailConfig,
-        database: DatabaseConfig,
-        path: PathBuf,
-        outcome: super::RunOutcome,
-    },
+    Digest(CalendarJob),
 }
 
 /// Own one consumer; queue admission never waits for SMTP or OAuth.
@@ -35,6 +39,8 @@ pub struct Worker {
     pending: tokio::sync::mpsc::UnboundedSender<Job>,
     path: PathBuf,
     task: Option<tokio::task::JoinHandle<()>>,
+    calendar: Option<tokio::task::JoinHandle<()>>,
+    schedule: tokio::sync::watch::Sender<Option<CalendarJob>>,
 }
 
 impl Worker {
@@ -50,6 +56,19 @@ impl Worker {
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
         let owned_path = path.to_owned();
         let (pending, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let (schedule, updates) = tokio::sync::watch::channel(None);
+        let calendar_pending = pending.clone();
+        let calendar = tokio::spawn(async move {
+            if let Err(error) =
+                super::digest::calendar(updates, calendar_pending, Local::now, |at| async move {
+                    let delay = (at - Utc::now()).to_std().unwrap_or_default();
+                    tokio::time::sleep(delay).await;
+                })
+                .await
+            {
+                eprintln!("Daily report scheduler stopped: {error:#}. Correct the reported prerequisite and restart the watcher. Reviews continue.");
+            }
+        });
         let task = tokio::spawn(async move {
             let mut digest_problem = false;
             let mut scan = true;
@@ -88,7 +107,7 @@ impl Worker {
                     scan = true;
                     continue;
                 }
-                let digest = matches!(&job, Job::Digest { .. });
+                let digest = matches!(&job, Job::Digest(_));
                 match deliver(job).await {
                     Ok(Some(problem)) => {
                         if problem != digest_problem {
@@ -117,6 +136,8 @@ impl Worker {
             pending,
             path: path.to_owned(),
             task: Some(task),
+            calendar: Some(calendar),
+            schedule,
         })
     }
 
@@ -163,17 +184,30 @@ impl Worker {
         outcome: &super::RunOutcome,
     ) -> Result<()> {
         if !settings.email.enabled {
+            let _ = self.schedule.send(None);
             return Ok(());
         }
-        self.send(Job::Digest {
-            email: settings.email.clone(),
-            database: settings.core.database.clone(),
-            path: path.to_owned(),
-            outcome: *outcome,
-        })
+        let time = settings.judge.daily_report_time.ok_or_else(|| {
+            anyhow::anyhow!("Set judge.daily_report_time to your chosen local delivery time")
+        })?;
+        self.schedule
+            .send(Some(CalendarJob {
+                email: settings.email.clone(),
+                database: settings.core.database.clone(),
+                path: path.to_owned(),
+                outcome: *outcome,
+                time,
+            }))
+            .map_err(|_| {
+                anyhow::anyhow!("daily report scheduler is unavailable; restart the watcher")
+            })
     }
 
     pub async fn shutdown(mut self) {
+        if let Some(calendar) = self.calendar.take() {
+            calendar.abort();
+            let _ = calendar.await;
+        }
         if let Some(task) = self.task.take() {
             task.abort();
             if let Err(error) = task.await {
@@ -187,6 +221,9 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
+        if let Some(calendar) = &self.calendar {
+            calendar.abort();
+        }
         if let Some(task) = &self.task {
             task.abort();
         }
@@ -198,12 +235,13 @@ async fn deliver(job: Job) -> Result<Option<bool>> {
         #[cfg(test)]
         Job::Idle(_) => unreachable!("test readiness is handled before delivery"),
         Job::Alert { .. } => unreachable!("alert wake-ups are handled before delivery"),
-        Job::Digest {
+        Job::Digest(CalendarJob {
             email,
             database,
             path,
             outcome,
-        } => super::digest::tick(&email, &database, Some(&path), &outcome)
+            time,
+        }) => super::digest::tick(&email, &database, Some(&path), &outcome, time)
             .await
             .map(Some),
     }
@@ -441,7 +479,7 @@ mod tests {
         let work = crate::judge::harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
         let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let text = format!(
-            "config_version=1\n[logging]\ndirectory={}\n[database]\nhost='127.0.0.1'\nport=15432\nuser='fixture-user'\ndbname='fixture'\n[judge]\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n[email]\nenabled=true\nhost='127.0.0.1'\nport={}\ntls='starttls'\nfrom='sender@example.test'\nto=['recipient@example.test']\nauth='none'\n",
+            "config_version=1\n[logging]\ndirectory={}\n[database]\nhost='127.0.0.1'\nport=15432\nuser='fixture-user'\ndbname='fixture'\n[judge]\ndaily_report_time={{ hour=9, minute=17 }}\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n[email]\nenabled=true\nhost='127.0.0.1'\nport={}\ntls='starttls'\nfrom='sender@example.test'\nto=['recipient@example.test']\nauth='none'\n",
             toml::Value::String(work.path().join("logs").display().to_string()), server.local_addr().unwrap().port()
         );
         let path = work.write("config.toml", text.as_bytes()).unwrap();
@@ -490,7 +528,7 @@ mod tests {
         let work = crate::judge::harness::RunDir::new_in(&std::env::temp_dir()).unwrap();
         let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let text = format!(
-            "config_version=1\n[logging]\ndirectory={}\n[database]\nhost='127.0.0.1'\nport=15432\nuser='fixture-user'\ndbname='fixture'\n[judge]\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n[email]\nenabled=true\nhost='127.0.0.1'\nport={}\ntls='starttls'\nfrom='sender@example.test'\nto=['recipient@example.test']\nauth='none'\n",
+            "config_version=1\n[logging]\ndirectory={}\n[database]\nhost='127.0.0.1'\nport=15432\nuser='fixture-user'\ndbname='fixture'\n[judge]\ndaily_report_time={{ hour=10, minute=17 }}\n[llm]\nbackend='command'\nmodel='fixture-model'\ncommand='/bin/true'\n[email]\nenabled=true\nhost='127.0.0.1'\nport={}\ntls='starttls'\nfrom='sender@example.test'\nto=['recipient@example.test']\nauth='none'\n",
             toml::Value::String(work.path().join("logs").display().to_string()), server.local_addr().unwrap().port()
         );
         let path = work.write("config.toml", text.as_bytes()).unwrap();
@@ -538,7 +576,12 @@ mod tests {
             assert_eq!(next.notification, "queued");
             assert_eq!(state::read(state.path()).unwrap().unwrap().confirmed, 1);
         }
+        let calendar_updates = worker.schedule.clone();
         worker.shutdown().await;
+        assert!(
+            calendar_updates.is_closed(),
+            "shutdown must join the calendar owner"
+        );
         let mut received = Vec::new();
         transport.read_to_end(&mut received).await.unwrap();
         assert!(Notifier::new(&settings.email, state.path())
