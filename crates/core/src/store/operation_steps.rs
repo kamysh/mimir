@@ -129,6 +129,28 @@ impl AgeStore {
             tx.rollback().await?;
             return Ok(StepDecision::ChangedRequest(binding));
         }
+        // Inspect this impossible pair before progress() rejects an old
+        // completed-but-incomplete journal. It must open recovery, not invoke
+        // the business callback or fabricate the missing immutable answer.
+        if final_step
+            && tx
+                .query_opt(
+                    "SELECT 1 FROM mimir_operation_step_replies WHERE operation_token=$1 AND step=$2",
+                    &[&token, &super::operation_plans::RESULT_KEY],
+                )
+                .await?
+                .is_some()
+            && tx
+                .query_opt(
+                    "SELECT 1 FROM mimir_operation_step_replies WHERE operation_token=$1 AND step=$2",
+                    &[&token, &step],
+                )
+                .await?
+                .is_none()
+        {
+            tx.rollback().await?;
+            return Ok(StepDecision::NeedsRecovery("The operation has a saved result but its last step answer is absent. Read the saved answers and resolve this older operation; do not repeat its data change or invent a step answer.".into()));
+        }
         if let Some(next) = registered.admission(&tx).await? {
             tx.rollback().await?;
             return Ok(StepDecision::OutOfOrder(next));

@@ -9,7 +9,7 @@ mod reservations;
 #[allow(dead_code)]
 #[path = "../../../tests/support/isolation.rs"]
 mod snapshot_test_isolation;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::DateTime;
 pub use operation_plans::{
     CompletedOperation, CompletionDecision, OperationOutcome, OperationPlan, PlanDecision,
@@ -23,7 +23,7 @@ pub use reservations::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio_postgres::{Client, Row};
+use tokio_postgres::{Client, Row, Transaction};
 use uuid::Uuid;
 
 use crate::documents::DocumentChunk;
@@ -982,6 +982,48 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
     // -----------------------------------------------------------------------
 
     pub async fn insert_pattern(&self, pattern: &Pattern) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_pattern_on(tx.client(), pattern).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Production creation obtains identity and time from PostgreSQL in the
+    /// same transaction as publication. No application UUID is substituted.
+    pub async fn create_pattern(
+        &self,
+        situation: &str,
+        approach: &str,
+        success_rate: f64,
+        project: Option<&str>,
+    ) -> Result<Pattern> {
+        let success_rate = crate::graph::Probability::new(success_rate)?;
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        let metadata = tx.query_one(
+            "SELECT pg_catalog.gen_random_uuid() AS identity, pg_catalog.transaction_timestamp() AS created_at",
+            &[],
+        ).await?;
+        let pattern = Pattern {
+            id: metadata.get("identity"),
+            situation: situation.to_owned(),
+            approach: approach.to_owned(),
+            activation_count: 0,
+            success_rate,
+            created_at: metadata.get("created_at"),
+            project: project.map(str::to_owned),
+        };
+        self.insert_pattern_on(tx.client(), &pattern).await?;
+        tx.commit().await?;
+        Ok(pattern)
+    }
+
+    async fn insert_pattern_on(&self, client: &Client, pattern: &Pattern) -> Result<()> {
         let g = &self.graph_name;
         let id = pattern.id.to_string();
         let activation_count = pattern.activation_count;
@@ -1013,12 +1055,7 @@ $$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_c
              RETURN p.id $$, $1) AS (id ag_catalog.agtype)"
         );
 
-        let mut client = self.client.lock().await;
-        let tx = learning_transaction(&mut client).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
-        age_execute(tx.client(), &stmt, &prepare, &agtype_json).await?;
-        tx.commit().await?;
+        age_execute(client, &stmt, &prepare, &agtype_json).await?;
         Ok(())
     }
 
@@ -1050,10 +1087,16 @@ $$) {PATTERN_RETURN_COLUMNS}"#
 
     /// Delete a pattern and all its edges by ID. Returns true if found and deleted.
     pub async fn delete_pattern(&self, id: Uuid) -> Result<bool> {
-        let g = &self.graph_name;
-        let id_str = id.to_string();
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
+        let deleted = self.delete_pattern_in(&tx, id).await?;
+        tx.commit().await?;
+        Ok(deleted)
+    }
+
+    async fn delete_pattern_in(&self, tx: &Transaction<'_>, id: Uuid) -> Result<bool> {
+        let g = &self.graph_name;
+        let id_str = id.to_string();
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
         let exists = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (p:Pattern {{id:'{id_str}'}}) RETURN p.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
@@ -1073,8 +1116,28 @@ $$) {PATTERN_RETURN_COLUMNS}"#
 $$) AS (ok ag_catalog.agtype)"#
         );
         tx.query(&sql, &[]).await?;
-        tx.commit().await?;
         Ok(true)
+    }
+
+    /// The original bound identity, deletion and both answers share one commit.
+    pub async fn delete_pattern_operation(&self, step: &RegisteredStep) -> Result<StepDecision> {
+        anyhow::ensure!(
+            step.description().site
+                == crate::operation_catalogue::CommitSite::PatternDeletion.name(),
+            "Use the registered delete_pattern step; no pattern was changed"
+        );
+        let owner = AgeStore {
+            client: self.client.clone(),
+            graph_name: self.graph_name.clone(),
+        };
+        self.commit_final_operation_step(step, move |tx, request| Box::pin(async move {
+            let id = request.arguments().get("id").and_then(serde_json::Value::as_str)
+                .context("delete_pattern requires the admitted id string; correct the request before writing")?;
+            let id = Uuid::parse_str(id).context("delete_pattern id must be a UUID; correct it before writing")?;
+            let deleted = owner.delete_pattern_in(tx, id).await?;
+            let reply = serde_json::json!({"deleted":deleted});
+            Ok((reply.clone(), reply))
+        })).await
     }
 
     pub async fn list_patterns(&self) -> Result<Vec<Pattern>> {

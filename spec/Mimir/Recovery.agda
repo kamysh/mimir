@@ -16,8 +16,10 @@ open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Empty using (⊥-elim)
 open import Data.Bool using (Bool; true; false)
-open import Relation.Nullary using (Dec; yes; no)
+open import Relation.Nullary using (Dec; yes; no; ¬_)
 open import Data.Unit using (⊤; tt)
+open import Data.Nat using (ℕ)
+open import Mimir.Text using (Text)
 
 -- Assembly fixes World once for the entire dispatcher. An operation over a
 -- smaller world cannot be supplied where this dispatcher expects the larger
@@ -643,6 +645,117 @@ module Bindings (Business Request Timestamp : Set)
 -- One named step after its request binding has been checked under the token
 -- lock. Business retains the complete surrounding world, including other
 -- tokens and steps. The selected reply is published with the business change.
+-- The physical application journal is part of World. A business operation
+-- cannot replace it with a private optional answer or discard unrelated rows.
+module StoreFinalStep (Input : Set)
+  (token : Input → ℕ) (key : Input → Text) (resultKey : Text)
+  (distinct : ∀ input → ¬ (key input ≡ resultKey))
+  (apply : Input → Store.World → Store.World × Wire.Value)
+  (keepsJournal : ∀ input before →
+    Store.World.operations (proj₁ (apply input before)) ≡ Store.World.operations before) where
+
+  data Result : Set where
+    done : Wire.Value → Result
+    needsRecovery : Result
+
+  module G = Outcome Store.World Result
+  module S = SingleResult Result
+
+  firstPublication : Input → Store.World → Store.World
+  firstPublication input before = Store.saveAnswer (proj₁ (apply input before))
+    (token input) (key input) (proj₂ (apply input before))
+
+  publication : Input → Store.World → Store.World
+  publication input before = Store.saveAnswer (firstPublication input before)
+    (token input) resultKey (proj₂ (apply input before))
+
+  execute : Input → Store.World → Store.World × Result
+  execute input before with Store.lookupSaved before (token input) (key input)
+    | Store.lookupSaved before (token input) resultKey
+  ... | just saved | just _ = before , done saved
+  ... | nothing | nothing = publication input before , done (proj₂ (apply input before))
+  ... | just _ | nothing = before , needsRecovery
+  ... | nothing | just _ = before , needsRecovery
+
+  replay : ∀ input before saved result →
+    Store.lookupSaved before (token input) (key input) ≡ just saved →
+    Store.lookupSaved before (token input) resultKey ≡ just result →
+    execute input before ≡ (before , done saved)
+  replay input before saved result observed completed rewrite observed | completed = refl
+
+  missingResultPreservesWorld : ∀ input before saved →
+    Store.lookupSaved before (token input) (key input) ≡ just saved →
+    Store.lookupSaved before (token input) resultKey ≡ nothing →
+    execute input before ≡ (before , needsRecovery)
+  missingResultPreservesWorld input before saved observed missing rewrite observed | missing = refl
+
+  missingStepPreservesWorld : ∀ input before result →
+    Store.lookupSaved before (token input) (key input) ≡ nothing →
+    Store.lookupSaved before (token input) resultKey ≡ just result →
+    execute input before ≡ (before , needsRecovery)
+  missingStepPreservesWorld input before result missing completed rewrite missing | completed = refl
+
+  journalOfApplied : ∀ input before →
+    Store.lookupSaved (proj₁ (apply input before)) (token input) (key input) ≡
+    Store.lookupSaved before (token input) (key input)
+  journalOfApplied input before = cong
+    (λ tables → Store.lookupReply (token input) (key input) (Store.OperationTables.savedReplies tables))
+    (keepsJournal input before)
+
+  firstReadable : ∀ input before →
+    Store.lookupSaved before (token input) (key input) ≡ nothing →
+    Store.lookupSaved (Store.saveAnswer (proj₁ (apply input before))
+      (token input) (key input) (proj₂ (apply input before))) (token input) (key input) ≡
+      just (proj₂ (apply input before))
+  firstReadable input before absent
+    rewrite journalOfApplied input before | absent =
+    Store.headReplyReadable (token input) (key input) (proj₂ (apply input before)) _
+
+  publishedStepReadable : ∀ input before →
+    Store.lookupSaved before (token input) (key input) ≡ nothing →
+    Store.lookupSaved (publication input before) (token input) (key input) ≡ just (proj₂ (apply input before))
+  publishedStepReadable input before absent = trans
+    (Store.otherSavedAnswerPreserved (firstPublication input before) (token input) resultKey
+      (proj₂ (apply input before)) (token input) (key input)
+      (λ same → distinct input (proj₂ same)))
+    (firstReadable input before absent)
+
+  firstHasNoResult : ∀ input before →
+    Store.lookupSaved before (token input) resultKey ≡ nothing →
+    Store.lookupSaved (firstPublication input before) (token input) resultKey ≡ nothing
+  firstHasNoResult input before absent = trans
+    (Store.otherSavedAnswerPreserved (proj₁ (apply input before)) (token input) (key input)
+      (proj₂ (apply input before)) (token input) resultKey
+      (λ same → distinct input (sym (proj₂ same))))
+    (trans (cong (λ tables → Store.lookupReply (token input) resultKey
+      (Store.OperationTables.savedReplies tables)) (keepsJournal input before)) absent)
+
+  publishedResultReadable : ∀ input before →
+    Store.lookupSaved before (token input) resultKey ≡ nothing →
+    Store.lookupSaved (publication input before) (token input) resultKey ≡ just (proj₂ (apply input before))
+  publishedResultReadable input before absent
+    rewrite firstHasNoResult input before absent =
+    Store.headReplyReadable (token input) resultKey (proj₂ (apply input before)) _
+
+  stable : ∀ input before → execute input (proj₁ (execute input before)) ≡ execute input before
+  stable input before with Store.lookupSaved before (token input) (key input) in observed
+    | Store.lookupSaved before (token input) resultKey in completed
+  ... | just saved | just result = replay input before saved result observed completed
+  ... | just saved | nothing rewrite observed | completed = refl
+  ... | nothing | just result rewrite observed | completed = refl
+  ... | nothing | nothing = replay input _ _ _ (publishedStepReadable input before observed)
+    (Store.savedAnswerReadable (firstPublication input before) (token input) resultKey (proj₂ (apply input before)))
+
+  statement : (intent : G.Intent Input) →
+    (∀ input initial → execute input initial ≡ G.expected intent (G.invocation input initial)) →
+    S.Statement Store.World Input
+  statement intent correct = record { execute = execute; intent = intent; correct = correct }
+
+  recoverable : (intent : G.Intent Input) →
+    (∀ input initial → execute input initial ≡ G.expected intent (G.invocation input initial)) →
+    Recoverable Store.World Input
+  recoverable intent correct = S.single (statement intent correct) (record { stable = stable })
+
 module SavedStep (Business Input : Set)
   (apply : Input → Business → Business × Wire.Value) where
 

@@ -462,6 +462,13 @@ impl MimirService {
         self.store.delete_pattern(id).await
     }
 
+    pub async fn delete_pattern_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.delete_pattern_operation(step).await
+    }
+
     /// Add a new pattern.
     pub async fn add_pattern(
         &self,
@@ -469,9 +476,9 @@ impl MimirService {
         approach: &str,
         success_rate: f64,
     ) -> Result<Pattern> {
-        let pattern = Pattern::new(situation.to_string(), approach.to_string(), success_rate)?;
-        self.store.insert_pattern(&pattern).await?;
-        Ok(pattern)
+        self.store
+            .create_pattern(situation, approach, success_rate, None)
+            .await
     }
 
     /// Add an edge between two beliefs. Validates both exist.
