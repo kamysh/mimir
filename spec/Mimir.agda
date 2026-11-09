@@ -72,6 +72,7 @@ import Mimir.ExperienceSourceRecovery
 import Mimir.DecayRecovery
 import Mimir.GroundingRecovery
 import Mimir.DefeatRecovery
+import Mimir.SweepRecovery
 import Mimir.PropagationRecovery
 import Mimir.DocumentRemovalRecovery
 import Mimir.AtomicFile

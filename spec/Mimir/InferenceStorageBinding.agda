@@ -1,7 +1,8 @@
 {-# OPTIONS --safe #-}
 -- Read effects observe their own statement snapshots; numerical persistence
--- acknowledges the exact posterior write set; sweep deletion runs the complete
--- deletion transaction. Clock, HashMap iteration and chrono are dependencies.
+-- acknowledges the exact posterior write set. Sweep's complete atomic
+-- publication is governed by SweepRecovery; it has no per-belief commit here.
+-- Clock and chrono remain dependency observations.
 module Mimir.InferenceStorageBinding where
 
 open import Data.List using (List; []; _∷_; map; filterᵇ; concatMap)
@@ -332,7 +333,6 @@ module Bound (database : ℕ) (calculator : P.Calculator) (sum : List Float → 
     dependency : ∀ effect → External effect → (reply : I.Reply effect) → Receipt effect reply
     persisted : ∀ publicationTime writes before receipt after → S.StatementPublication (S.posterior publicationTime writes) before receipt after →
       Receipt (I.persistBeta publicationTime writes) (inj₂ receipt)
-    deleted : ∀ id value → B.Deleted id value → Receipt (I.deleteBelief id) (inj₂ value)
     beliefFailed : ∀ id error → Receipt (I.getBelief id) (inj₁ error)
     descendantsFailed : ∀ id causal error → Receipt (I.descendants id causal) (inj₁ error)
     reviewsFailed : ∀ error → Receipt I.activeReviews (inj₁ error)
@@ -343,4 +343,4 @@ module Bound (database : ℕ) (calculator : P.Calculator) (sum : List Float → 
     snapshotBeliefsFailed : ∀ tx first scope error → Receipt (I.snapshotBeliefs tx first scope) (inj₁ error)
     defeatsFailed : ∀ scope error → Receipt (I.defeatTimes scope) (inj₁ error)
     persistenceFailed : ∀ publicationTime writes error → Receipt (I.persistBeta publicationTime writes) (inj₁ error)
-    deletionFailed : ∀ id error → Receipt (I.deleteBelief id) (inj₁ error)
+    sweepFailed : ∀ scope threshold grace error → Receipt (I.sweepPublication scope threshold grace) (inj₁ error)

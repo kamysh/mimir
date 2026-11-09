@@ -46,8 +46,11 @@ and indexed support, the review and its acknowledgement together. The repeated
 reservation site describes actual metadata writes without limiting their count.
 
 A boundary can be skipped when execution stops earlier or its branch is not
-taken. Grounding and sweeping can revisit the same site for multiple selected
-records. `may_repeat` records that control flow; it does not restrict the number
+taken. Grounding can revisit the same site for multiple selected records.
+Sweeping now has one deletion publication for its complete eligible set,
+dependent vectors, affected survivor updates and saved original count/IDs.
+Exact historical repeated sweep plans remain readable, but cannot execute.
+`may_repeat` records actual control flow; it does not restrict the number
 of records, statements, retries or workers. Read-only operations declare no
 business-write sites.
 

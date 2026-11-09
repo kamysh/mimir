@@ -1,6 +1,8 @@
 {-# OPTIONS --safe #-}
 -- Service orchestration for propagation, intervention, decay, contradictions
--- and defeated-belief sweep. Ordinary reads are separate observations;
+-- and defeated-belief sweep. Sweep is one atomic publication, including the
+-- entire selected set and survivor recomputation. Ordinary other reads remain
+-- separate observations;
 -- contradictions and intervention inputs explicitly share read-only snapshots.
 -- The dependency owns I/O; application numerical decisions are concrete.
 module Mimir.InferenceProtocol where
@@ -60,7 +62,7 @@ data Effect : Set where
   hashIteration : List ℕ → Effect
   calculatePosterior : P.Seed → P.External → List P.Edge → List P.Node → Effect
   persistBeta : ℤ → P.State → Effect
-  deleteBelief : ℕ → Effect -- GraphDeletion.Operation, including its transaction
+  sweepPublication : Maybe Text → Float → ℤ → Effect
 
 Reply : Effect → Set
 Reply (getBelief id) = Text ⊎ Maybe G.BeliefValues
@@ -80,7 +82,7 @@ Reply clock = ℤ
 Reply (hashIteration ids) = Σ (List ℕ) (λ order → order ↭ ids)
 Reply (calculatePosterior seed external edges nodes) = P.CalculationReport
 Reply (persistBeta publicationTime writes) = Text ⊎ DB.Receipt
-Reply (deleteBelief id) = Text ⊎ Bool
+Reply (sweepPublication project threshold grace) = Text ⊎ (Correction.Claim ⊎ List ℕ)
 
 module E = Effects.Protocol Effect Reply
 open E
@@ -196,12 +198,6 @@ projectFrom tx first id value = readAt tx first (descendants id true) refl (λ b
     readAt tx first (incomingEdges (map G.BeliefValues.identity beliefs Data.List.++ (id ∷ []))) refl
       (λ incomingRows → calculate true id value beliefs reviews ground incomingRows >>= closeProjection tx))))
 
-sweepDeletes : ℕ → List ℕ → Script Result
-sweepDeletes count [] = done (deleted count)
-sweepDeletes count (id ∷ ids) = read (deleteBelief id) refl (λ
-  { true → sweepDeletes (suc count) ids ; false → sweepDeletes count ids })
-  where open import Relation.Binary.PropositionalEquality using (refl)
-
 start : Request → Script Result
 start (propagate id) = read (getBelief id) refl (λ
   { nothing → done missingBelief ; (just b) → afterSeed false id (G.BeliefValues.probability b) })
@@ -230,15 +226,12 @@ start (contradictions project) = read (openContradictions project) refl decide
     ; (inj₂ beliefs) → closeRead tx (pairs (N.activeContradictions beliefs candidates)) })
 start (sweep project threshold grace) with N.probability threshold
 ... | false = done invalidProbability
-... | true = read (defeatTimes project) refl decide
+... | true = read (sweepPublication project threshold grace) refl decide
   where
   open import Relation.Binary.PropositionalEquality using (refl)
-  decide : Correction.Claim ⊎ List N.Defeat → Script Result
+  decide : Correction.Claim ⊎ List ℕ → Script Result
   decide (inj₁ issue) = done (needsInput issue)
-  decide (inj₂ []) = done (deleted 0)
-  decide (inj₂ edges@(_ ∷ _)) = read (listBeliefs project) refl (λ beliefs → ask clock (λ now →
-    ask (hashIteration (Ranking.unique (map N.Defeat.target edges))) (λ { (order , sameMembers) →
-      sweepDeletes 0 (N.expiredTargets now grace threshold beliefs edges order) })))
+  decide (inj₂ identities) = done (deleted (length identities))
 
 -- An invalid threshold cannot even read the store, whatever the project,
 -- retention policy or replies a caller might otherwise supply.

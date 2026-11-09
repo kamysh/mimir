@@ -12,6 +12,11 @@ mod project_deletion;
 mod reservations;
 mod retirement;
 pub use retirement::{DefeatClock, RetirementMetadataIssue};
+mod sweep;
+pub use sweep::SweepPolicyIssue;
+pub(crate) use sweep::{
+    check_policy as check_sweep_policy, settings as sweep_settings, Arguments as SweepArguments,
+};
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "../../../tests/support/isolation.rs"]

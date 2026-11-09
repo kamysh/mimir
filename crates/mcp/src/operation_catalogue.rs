@@ -59,6 +59,7 @@ impl RegisteredOperation {
                     | GraphOperation::InsertBelief
                     | GraphOperation::DeleteBelief
                     | GraphOperation::AddEvidence
+                    | GraphOperation::SweepExpiredDefeated
             ) | Operation::Learning(
                 LearningOperation::RecordExperience | LearningOperation::ReviewExperience
             )
@@ -88,6 +89,13 @@ impl RegisteredOperation {
                 }
             }
         }
+        if self.handler == Operation::Graph(GraphOperation::SweepExpiredDefeated) {
+            if let Err(error) = &result {
+                if let Some(issue) = error.downcast_ref::<mimir_core::store::SweepPolicyIssue>() {
+                    return Ok(mimir_json::to_value(issue.correction())?);
+                }
+            }
+        }
         if matches!(
             self.handler,
             Operation::Graph(
@@ -99,6 +107,7 @@ impl RegisteredOperation {
                     | GraphOperation::QueryIntervention
                     | GraphOperation::QueryDocument
                     | GraphOperation::PropagateFrom
+                    | GraphOperation::SweepExpiredDefeated
             ) | Operation::Learning(
                 LearningOperation::RecordExperience
                     | LearningOperation::ReviewExperience

@@ -109,7 +109,7 @@ operations! {
         ListPatterns => "list_patterns" [],
         GetContradictions => "get_contradictions" [],
         DecayAll => "decay_all" [once(Decay)],
-        SweepExpiredDefeated => "sweep_expired_defeated" [repeated(BeliefDeletion)],
+        SweepExpiredDefeated => "sweep_expired_defeated" [once(BeliefDeletion)],
         QueryRelevant => "query_relevant" [],
         AddEvidence => "add_evidence" [once(EvidencePublication)],
         GetEvidence => "get_evidence" [],
