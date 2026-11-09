@@ -2,6 +2,7 @@ pub mod assessment;
 mod backfill_service;
 pub mod config;
 pub mod db;
+mod document_service;
 pub mod documents;
 pub mod embed;
 pub mod graph;
