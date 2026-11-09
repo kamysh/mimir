@@ -34,11 +34,11 @@ impl RegisteredOperation {
     }
     pub async fn call(&self, service: &MimirService, input: &Input) -> Result<Value> {
         if let Some(correction) = super::admission::arguments(self.input_schema(), input) {
-            return Ok(serde_json::to_value(correction)?);
+            return Ok(mimir_json::to_value(correction)?);
         }
         if self.handler == Operation::Graph(GraphOperation::SweepExpiredDefeated) {
             if let Err(issue) = service.retirement_policy() {
-                return Ok(serde_json::to_value(issue.correction())?);
+                return Ok(mimir_json::to_value(issue.correction())?);
             }
         }
         let result = call(self.handler, service, input).await;
@@ -69,7 +69,7 @@ impl RegisteredOperation {
                 {
                     let correction =
                         mimir_core::interaction::NeedsInput::new(decision.issue().clone(), vec![])?;
-                    return Ok(serde_json::to_value(correction)?);
+                    return Ok(mimir_json::to_value(correction)?);
                 }
             }
         }
@@ -110,7 +110,7 @@ impl RegisteredOperation {
                 if let Some(refusal) =
                     error.downcast_ref::<mimir_core::interaction::RequestCorrection>()
                 {
-                    return Ok(serde_json::to_value(refusal.correction())?);
+                    return Ok(mimir_json::to_value(refusal.correction())?);
                 }
             }
         }
@@ -123,7 +123,7 @@ impl RegisteredOperation {
                 if let Some(decision) =
                     error.downcast_ref::<mimir_core::preparation::PreparationRequired>()
                 {
-                    return Ok(serde_json::to_value(decision.correction())?);
+                    return Ok(mimir_json::to_value(decision.correction())?);
                 }
             }
         }
@@ -198,7 +198,7 @@ impl Catalogue {
     pub async fn call(&self, service: &MimirService, name: &str, input: &Input) -> Result<Value> {
         match self.get(name) {
             Some(operation) => operation.call(service, input).await,
-            None => Ok(serde_json::to_value(super::admission::unknown_tool(
+            None => Ok(mimir_json::to_value(super::admission::unknown_tool(
                 name,
                 &self
                     .entries

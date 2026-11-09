@@ -439,9 +439,15 @@ docker ps --filter name=postgres-ai
 
 ## MCP tools
 
+Every new belief needs an indexed-document passage with its actual chunk ID,
+exact document path and quotation, and the submitting agent’s explanation of
+support. Source references do not change probability. Missing support or an
+unavailable embedding returns guidance to open the user dialog. See
+[belief preparation and source references](docs/BELIEF-SOURCE-PUBLICATION.md).
+
 | Tool | What it does |
 |---|---|
-| `insert_belief` | Add an independently sourced belief with `content`, `probability` [0,1], `confidence` [0,1], and required `provenance` (`basis`, `reference`) |
+| `insert_belief` | Add a belief with `content`, `probability` [0,1], `confidence` [0,1], independent `provenance` and required indexed-document `grounding` citations; an embedding is prepared before publication |
 | `delete_belief` | Remove a belief and all its edges by `id` |
 | `insert_pattern` | Add a pattern with `situation`, `approach`, `success_rate` [0,1] |
 | `delete_pattern` | Remove a pattern by `id` |
@@ -663,3 +669,5 @@ compatible PostgreSQL instance with separate roles and databases.
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
+
+Configuration creation and safe retries are described in [Creating configuration safely](docs/CONFIGURATION-CREATION.md).

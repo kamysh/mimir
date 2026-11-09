@@ -99,7 +99,7 @@ async fn cancellation_retries_keep_the_original_time_and_reservation() -> Result
         .await?
         .is_none());
     let retained = pattern(&store).await?;
-    let before = serde_json::to_value(store.get_pattern(retained.id).await?)?;
+    let before = mimir_json::to_value(store.get_pattern(retained.id).await?)?;
     let token = reserve(&service).await?;
     let reservation = service.read_operation_reservation(token).await?;
     let CancellationDecision::Recorded(first) =
@@ -136,7 +136,7 @@ async fn cancellation_retries_keep_the_original_time_and_reservation() -> Result
         OperationOutcome::Cancelled { binding: None, .. }
     ));
     assert_eq!(
-        serde_json::to_value(store.get_pattern(retained.id).await?)?,
+        mimir_json::to_value(store.get_pattern(retained.id).await?)?,
         before
     );
     store.delete_pattern(retained.id).await?;

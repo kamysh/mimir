@@ -19,7 +19,7 @@ import Mimir.ItemOwners as Owners
 import Mimir.LearningStore as Learning
 import Mimir.DatabaseTransaction as Database
 open import Mimir.Migrations public
-  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys; candidateKeyContent; embeddingOwners; operationCancellations; decayAccounting; firstDefeatClock; backfillChangeEvents)
+  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys; candidateKeyContent; embeddingOwners; operationCancellations; decayAccounting; firstDefeatClock; backfillChangeEvents; beliefSources)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation;
@@ -40,7 +40,7 @@ data Expr : Set where
   columnValue : String → Expr
   number : String → Expr -- exact SQL decimal literal, interpreted by PostgreSQL
   literal : String → Expr
-  add subtract multiply absolute charLength trimSpaces : List Expr → Expr
+  add subtract multiply absolute charLength trimSpaces jsonType : List Expr → Expr
   less lessEqual equal between oneOf either isNull : List Expr → Expr
 
 data DeleteAction : Set where restrict cascade : DeleteAction
@@ -70,6 +70,12 @@ chunkVectors = table "public.chunk_embeddings"
   (required "chunk_id" uuid ∷ optional "embedding" vector ∷ []) ("chunk_id" ∷ []) [] [] []
 beliefVectors = table "public.belief_embeddings"
   (required "belief_id" uuid ∷ optional "embedding" vector ∷ []) ("belief_id" ∷ []) [] [] []
+
+beliefSourceTable : Table
+beliefSourceTable = table "public.mimir_belief_sources"
+  (required "belief_id" uuid ∷ required "citations" jsonb ∷ []) ("belief_id" ∷ []) []
+  (references ("belief_id" ∷ []) "public.belief_embeddings" ("belief_id" ∷ []) cascade ∷ [])
+  (equal (jsonType (columnValue "citations" ∷ []) ∷ literal "array" ∷ []) ∷ [])
 
 experiences : Table
 experiences = table "mimir_experiences"
@@ -224,6 +230,7 @@ body operationCancellations = create cancellationTable ∷ installOperationCance
 body decayAccounting = initializeMissingBeliefTimestamp "decay_accounted_at" now ∷ []
 body firstDefeatClock = markExistingUndatedDefeatsExpired ∷ []
 body backfillChangeEvents = installBeliefVectorNotifier ∷ []
+body beliefSources = create beliefSourceTable ∷ []
 body candidateKeyContent =
   dropCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_check" ∷
   addCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_nonempty"

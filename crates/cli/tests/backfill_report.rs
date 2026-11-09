@@ -32,7 +32,7 @@ async fn reembed_without_backend_requests_a_decision_and_preserves_existing_data
         MemoryType::Fact,
     )
     .await?;
-    let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+    let before = mimir_json::to_value(service.get_belief(belief.id).await?)?;
     let log = fixture
         .root
         .join(format!("backfill-missing-backend-{identity}"));
@@ -46,7 +46,7 @@ async fn reembed_without_backend_requests_a_decision_and_preserves_existing_data
     let status = child.wait().await?;
     std::fs::write(log.with_extension("exit"), format!("{:?}\n", status.code()))?;
     let output = std::fs::read(log.with_extension("stdout"))?;
-    let after = serde_json::to_value(service.get_belief(belief.id).await?)?;
+    let after = mimir_json::to_value(service.get_belief(belief.id).await?)?;
     let vector_count: i64 = client
         .query_one(
             "SELECT count(*) FROM public.belief_embeddings WHERE belief_id=$1",
@@ -62,7 +62,7 @@ async fn reembed_without_backend_requests_a_decision_and_preserves_existing_data
         log.display()
     );
     // Parse all stdout: a trailing success summary would make this fail too.
-    let report: Value = serde_json::from_slice(&output)?;
+    let report: Value = mimir_json::from_slice(&output)?;
     ensure!(report["status"] == "needs_input");
     ensure!(report["operation_status"] == "incomplete");
     ensure!(report["next_action"] == "open_user_dialog");

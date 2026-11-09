@@ -308,7 +308,8 @@ async fn remote_embeddings(
         };
         anyhow::bail!("Embedding provider returned HTTP {status}: {detail}");
     }
-    let body = response.json().await?;
+    let bytes = response.bytes().await?;
+    let body: mimir_json::Document = mimir_json::from_slice(&bytes)?;
     parse_embeddings(&body, count)
 }
 

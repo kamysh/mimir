@@ -26,6 +26,13 @@ retrieval alone is not successful use. Direct `insert_belief` now requires an
 independent user instruction or document reference; incident-derived claims go
 through experience-owned review candidates.
 
+Every new belief, including a review-created candidate, also requires an
+indexed-document citation with its actual chunk ID, exact document path and
+quotation, and the submitting agent’s explanation of support. Mimir requires
+a usable embedding before publication. Citations record sources without
+changing probability; similarity alone cannot establish support. If support
+is missing or unclear, follow the correction and open the user dialog.
+
 After Mimir or Muninn retrieval, give the user a brief 0–5 usefulness assessment
 for the current task, one reason, and the next step it informs. Rate the
 information, not belief probability. Combine related calls into one assessment

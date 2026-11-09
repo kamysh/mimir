@@ -21,6 +21,7 @@ open import Mimir.LearningCandidates using (Candidate; belief; patternCandidate;
 open import Mimir.ExperienceSchema using (Experience; Outcome; success; failure; unknown)
 open import Mimir.ReviewSchema using (Review; Feedback; Link; CandidateFeedback; CandidateLink;
   Verdict; support; defeat; relationCode)
+import Mimir.DocumentStore as Documents
 
 optional : ∀ {A : Set} → (A → Key) → Maybe A → Key
 optional encode nothing = fields []
@@ -100,8 +101,12 @@ memory experiential = natural 1
 memory working = natural 2
 
 candidateValue : Candidate → Key
-candidateValue (belief name content mode) = fields
-  (natural 0 ∷ text name ∷ text content ∷ memory mode ∷ [])
+candidateValue (belief name content mode cited) = fields
+  (natural 0 ∷ text name ∷ text content ∷ memory mode ∷ many citation cited ∷ [])
+  where
+  citation : Documents.Citation → Key
+  citation value = fields (natural (Documents.Citation.chunk value) ∷ text (Documents.Citation.document value) ∷
+    text (Documents.Citation.quotation value) ∷ text (Documents.Citation.explanation value) ∷ [])
 candidateValue (patternCandidate name situation approach) = fields
   (natural 1 ∷ text name ∷ text situation ∷ text approach ∷ [])
 

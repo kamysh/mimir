@@ -177,7 +177,7 @@ async fn stored_defeat_survives_a_later_propagation_failure() {
         let target = isolation::seed_belief_in_project("target", 0.5, 0.0, &project, MemoryType::Fact).await?;
         let downstream = isolation::seed_belief_in_project("downstream", 0.5, 0.0, &project, MemoryType::Fact).await?;
         store.insert_edge(&Edge::new(target.id, downstream.id, EdgeType::Supports, 0.2)?).await?;
-        let target_before = serde_json::to_value(store.get_belief(target.id).await?)?;
+        let target_before = mimir_json::to_value(store.get_belief(target.id).await?)?;
         let observer = db::connect(&cfg.database).await?;
         let g = &cfg.database.dbname;
         let id = downstream.id;
@@ -189,7 +189,7 @@ async fn stored_defeat_survives_a_later_propagation_failure() {
         anyhow::ensure!(edges.len() == 1, "expected exactly the committed defeat edge: {edges:?}");
         let (from, to, kind, weight) = edges[0];
         anyhow::ensure!(from == seed.id && to == target.id && kind == EdgeType::Defeats && weight.value() == 0.2, "stored defeat edge changed: {edges:?}");
-        anyhow::ensure!(serde_json::to_value(store.get_belief(target.id).await?)? == target_before, "failed propagation changed the target belief");
+        anyhow::ensure!(mimir_json::to_value(store.get_belief(target.id).await?)? == target_before, "failed propagation changed the target belief");
         Ok(())
     }.await;
     let cleanup = store.delete_project(&project).await;

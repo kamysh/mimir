@@ -108,7 +108,8 @@ evidenceGrounds ids snapshot = filterᵇ (λ ground → Ranking.member (Store.Gr
 
 EvidenceMeaning : Store.World → (effect : Evidence.Effect) → Evidence.Reply effect → Set
 EvidenceMeaning snapshot (Evidence.readGrounds ids) (inj₁ error) = ⊤
-EvidenceMeaning snapshot (Evidence.readGrounds ids) (inj₂ rows) = rows ↭ evidenceGrounds ids snapshot
+EvidenceMeaning snapshot (Evidence.readGrounds ids) (inj₂ (rows , sources)) =
+  rows ↭ evidenceGrounds ids snapshot × sources ≡ Store.World.beliefSources snapshot
 EvidenceMeaning snapshot (Evidence.readChunk id) (inj₁ error) = ⊤
 EvidenceMeaning snapshot (Evidence.readChunk id) (inj₂ row) = row ≡ Store.chunk id (Store.World.chunks snapshot)
 EvidenceMeaning snapshot (Evidence.openSnapshot belief) (inj₁ error) = ⊤

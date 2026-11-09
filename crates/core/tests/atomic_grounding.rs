@@ -315,7 +315,7 @@ async fn repeated_numerical_states_leave_evidence_counts_and_token_pending() -> 
         .await?;
     let checked = async {
         let before = f.state().await?;
-        let cyclic = serde_json::to_value([
+        let cyclic = mimir_json::to_value([
             f.store.get_belief(a.id).await?,
             f.store.get_belief(b.id).await?,
         ])?;
@@ -339,7 +339,7 @@ async fn repeated_numerical_states_leave_evidence_counts_and_token_pending() -> 
             "evidence or counts escaped rollback"
         );
         ensure!(
-            serde_json::to_value([
+            mimir_json::to_value([
                 f.store.get_belief(a.id).await?,
                 f.store.get_belief(b.id).await?
             ])? == cyclic

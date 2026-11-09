@@ -285,22 +285,10 @@ addEdgePrecondition-empty-false :
 addEdgePrecondition-empty-false _ _ = refl
 
 -- ---------------------------------------------------------------------------
--- insert_belief is TOTAL (unconditional)
--- Unlike add_edge (MATCH → bail! if endpoint missing), insert_belief uses
--- Cypher CREATE which always succeeds when labelsCreated = true.
--- No uniqueness constraint: two beliefs with identical content can coexist
--- with different UUIDs.  Every call adds exactly one vertex.
--- Modelled as list prepend; the list length increases by exactly 1.
---
--- AUTO-GROUNDING (when an embedding backend is configured):
---   After inserting the belief vertex and storing its embedding in
---   belief_embeddings, insert_belief performs auto-grounding:
---   find existing chunks in chunk_embeddings with cosine similarity
---   ≥ GROUND_THRESHOLD (0.80) to the belief embedding AND project-compatible
---   (same project, or chunk/belief project is absent), then create a GROUNDS
---   edge for each match.  Formalised in Evidence.autoGroundBelief.
---   Non-interference is preserved: GROUNDS edges are EvidenceEdges and never
---   enter the belief-inference substrate (Evidence.propagate-evidence-invariant).
+-- Structural list insertion used by the graph algebra. Public belief
+-- publication additionally requires complete embedding and an explicitly
+-- cited indexed passage; see BeliefEmbedding and IndependentBeliefRecovery.
+-- Similarity matching alone does not assert support.
 -- ---------------------------------------------------------------------------
 
 insertBelief : Belief → List Belief → List Belief

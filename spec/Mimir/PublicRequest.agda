@@ -37,6 +37,7 @@ import Mimir.ReviewSchema as R
 import Mimir.AssessmentSelection as Assessment
 import Mimir.IndependentProvenance as Origin
 import Mimir.Validation as Validation
+import Mimir.CandidateWire as Candidate
 open import Mimir.JsonObjects using (forbid)
 
 data Request : Set where
@@ -74,7 +75,7 @@ defaultMemory (just kind) = kind
 
 -- Closed argument-field inventory. A new tool requires an explicit clause.
 acceptedFields : Tools.Tool → List Text
-acceptedFields Tools.insertBelief = Data.List.map toList ("confidence" ∷ "content" ∷ "memory_type" ∷ "probability" ∷ "project" ∷ "provenance" ∷ [])
+acceptedFields Tools.insertBelief = Data.List.map toList ("confidence" ∷ "content" ∷ "memory_type" ∷ "probability" ∷ "project" ∷ "provenance" ∷ "grounding" ∷ [])
 acceptedFields Tools.deleteBelief = Data.List.map toList ("id" ∷ [])
 acceptedFields Tools.deleteProject = Data.List.map toList ("project" ∷ [])
 acceptedFields Tools.deletePattern = Data.List.map toList ("id" ∷ [])
@@ -177,7 +178,8 @@ module Decode (conversion : Conversion.Contract) where
   decode Tools.insertBelief fields = required "provenance" validOrigin fields >>= λ origin →
     required "content" V.asString fields >>= λ content → required "probability" unitProbability fields >>= λ probability →
     required "confidence" unitProbability fields >>= λ confidence → memoryField (toList "memory_type") fields >>= λ kind →
-    inj₂ (mutation (Mutation.belief content probability confidence (project fields) (defaultMemory kind) (just origin)))
+    required "grounding" (readArray (Candidate.readCitation uuid Mimir.JsonObjects.keepLast)) fields >>= λ cited →
+    inj₂ (mutation (Mutation.belief content probability confidence (project fields) (defaultMemory kind) (just origin) cited))
   decode Tools.deleteBelief fields = mapResult (delete Delete.belief) (required "id" uuid fields)
   decode Tools.deletePattern fields = mapResult (delete Delete.patternNode) (required "id" uuid fields)
   decode Tools.deleteProject fields = mapResult deleteProject (required "project" V.asString fields)

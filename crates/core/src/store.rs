@@ -7,6 +7,7 @@ mod learning;
 mod operation_plans;
 mod operation_steps;
 mod prepared_belief;
+pub(crate) use prepared_belief::BeliefPublicationState;
 mod project_deletion;
 mod reservations;
 mod retirement;
@@ -407,7 +408,7 @@ fn chunk_from_row(row: &Row) -> Result<DocumentChunk> {
 
     let id = Uuid::parse_str(id_str)?;
     // AGE lists cast to text as JSON arrays: ["H1","H2"] or []
-    let section_path: Vec<String> = serde_json::from_str(section_path_str).unwrap_or_default();
+    let section_path: Vec<String> = mimir_json::from_str(section_path_str).unwrap_or_default();
     let parent_id = parent_id_str.and_then(|s| Uuid::parse_str(s).ok());
 
     Ok(DocumentChunk {
@@ -708,7 +709,7 @@ $$) AS (ok ag_catalog.agtype)"#
                     && request.settings().as_object().is_some_and(|settings| settings.is_empty()),
                 "delete_belief requires its original operation name and empty settings; read the binding and outcome, then resolve the request before writing"
             );
-            let arguments: Arguments = serde_json::from_value(request.arguments().clone())
+            let arguments: Arguments = mimir_json::from_value(request.arguments().clone())
                 .context("delete_belief requires exactly one id field containing a UUID; correct the original request before writing")?;
             Ok(arguments.id)
         }
@@ -1926,6 +1927,13 @@ $$) AS (ok ag_catalog.agtype)"#
         };
         self.recompute_learning_at(tx, None, affected, publication_time)
             .await?;
+        // AGE graph writes bypass PostgreSQL row triggers. This actual writer
+        // wakes each owner to recheck its own cited indexed passages.
+        tx.query(
+            "SELECT pg_notify('mimir_embedding_owners_changed', '')",
+            &[],
+        )
+        .await?;
         Ok(())
     }
 
@@ -1951,6 +1959,12 @@ $$) AS (ok ag_catalog.agtype)"#
             .execute(
                 "DELETE FROM public.chunk_embeddings WHERE chunk_id = ANY($1)",
                 &[&ids],
+            )
+            .await?;
+        client
+            .query(
+                "SELECT pg_notify('mimir_embedding_owners_changed', '')",
+                &[],
             )
             .await?;
         Ok(())
@@ -2338,12 +2352,12 @@ $$) {CHUNK_RETURN_COLUMNS}"#
                 "Evidence changes have no per-request settings; read the original binding and outcome before continuing");
             match request.operation() {
                 "add_evidence" => {
-                    let args: Add = serde_json::from_value(request.arguments().clone())
+                    let args: Add = mimir_json::from_value(request.arguments().clone())
                         .context("add_evidence requires chunk_id and belief_id UUIDs, and an optional numeric weight in [0,1]; correct the original request before writing")?;
                     let weight = Probability::new(args.weight)?;
                     Ok(Change::Add(args, weight))
                 }
-                "delete_evidence" => Ok(Change::Remove(serde_json::from_value(request.arguments().clone())
+                "delete_evidence" => Ok(Change::Remove(mimir_json::from_value(request.arguments().clone())
                     .context("delete_evidence requires exactly chunk_id and belief_id UUIDs; correct the original request before writing")?)),
                 _ => anyhow::bail!("Use the original registered evidence operation; no evidence was changed"),
             }
@@ -2824,7 +2838,7 @@ mod snapshot_read_tests {
             let a = snapshot_test_isolation::seed_belief_in_project("statistics first", 0.8, 0.1, &project, MemoryType::Fact).await?;
             let b = snapshot_test_isolation::seed_belief_in_project("statistics second", 0.7, 0.1, &project, MemoryType::Fact).await?;
             let untouched = snapshot_test_isolation::seed_belief_in_project("statistics unrelated", 0.6, 0.1, &foreign_project, MemoryType::Fact).await?;
-            let preserved = serde_json::to_value(writer.get_belief(untouched.id).await?)?;
+            let preserved = mimir_json::to_value(writer.get_belief(untouched.id).await?)?;
             writer.store.create_pattern("counted situation", "counted approach", 0.5, Some(&project)).await?;
             for edge in [EdgeType::Supports, EdgeType::Defeats, EdgeType::Causes, EdgeType::Contradicts] {
                 if edge == EdgeType::Contradicts {
@@ -2845,7 +2859,7 @@ mod snapshot_read_tests {
             }).await?;
             anyhow::ensure!(statistics_values(&during) == before, "all six counts must retain the original view after another connection commits deletion");
             anyhow::ensure!(statistics_values(&reader.stats().await?) != before, "the next command must observe that deletion");
-            anyhow::ensure!(serde_json::to_value(writer.get_belief(untouched.id).await?)? == preserved, "statistics must preserve unrelated beliefs");
+            anyhow::ensure!(mimir_json::to_value(writer.get_belief(untouched.id).await?)? == preserved, "statistics must preserve unrelated beliefs");
             Ok::<_, anyhow::Error>(())
         }.await;
         let cleanup = writer.delete_project(&project).await;
@@ -2890,8 +2904,8 @@ mod snapshot_read_tests {
             let before = reader
                 .get_contradictions_with_beliefs(Some(&project))
                 .await?;
-            let stored_a = serde_json::to_value(writer.get_belief(a.id).await?)?;
-            let stored_b = serde_json::to_value(writer.get_belief(b.id).await?)?;
+            let stored_a = mimir_json::to_value(writer.get_belief(a.id).await?)?;
+            let stored_b = mimir_json::to_value(writer.get_belief(b.id).await?)?;
             let error = reader
                 .contradictions_with_beliefs_after_pairs(Some(&project), || async {
                     anyhow::bail!("controlled CLI contradiction interruption")
@@ -2921,8 +2935,8 @@ mod snapshot_read_tests {
                 .find(|belief| belief.id == b.id)
                 .expect("original second endpoint");
             anyhow::ensure!(
-                serde_json::to_value(Some(actual_a))? == stored_a
-                    && serde_json::to_value(Some(actual_b))? == stored_b,
+                mimir_json::to_value(Some(actual_a))? == stored_a
+                    && mimir_json::to_value(Some(actual_b))? == stored_b,
                 "CLI labels must use the same physical records as pair selection"
             );
             anyhow::ensure!(
@@ -2964,12 +2978,12 @@ mod snapshot_read_tests {
             let chunk = DocumentChunk::with_id(chunk_id, format!("/{project}/support.md"), vec![], "support for this projected belief".into(), None, Some(project.clone()));
             writer.store.insert_document_chunk(&chunk).await?;
             writer.store.insert_evidence(chunk.id, child.id, Probability::new(0.4)?).await?;
-            let preserved = serde_json::to_value(writer.get_belief(untouched.id).await?)?;
-            let stored_child = serde_json::to_value(writer.get_belief(child.id).await?)?;
+            let preserved = mimir_json::to_value(writer.get_belief(untouched.id).await?)?;
+            let stored_child = mimir_json::to_value(writer.get_belief(child.id).await?)?;
             let before = reader.query_intervention_with_beliefs(seed.id, 1.0).await?;
             anyhow::ensure!(before.0.len() == 1 && before.0[0].0 == child.id);
-            anyhow::ensure!(serde_json::to_value(reader.query_intervention(seed.id, 1.0).await?)? == serde_json::to_value(&before.0)?, "existing MCP/library result shape and calculation must stay unchanged");
-            anyhow::ensure!(serde_json::to_value(writer.get_belief(child.id).await?)? == stored_child, "a projection must not publish numerical overlays");
+            anyhow::ensure!(mimir_json::to_value(reader.query_intervention(seed.id, 1.0).await?)? == mimir_json::to_value(&before.0)?, "existing MCP/library result shape and calculation must stay unchanged");
+            anyhow::ensure!(mimir_json::to_value(writer.get_belief(child.id).await?)? == stored_child, "a projection must not publish numerical overlays");
             let error = reader.intervention_snapshot_after_target(seed.id, 1.0, true, || async {
                 anyhow::bail!("controlled CLI intervention interruption")
             }).await.unwrap_err();
@@ -2978,11 +2992,11 @@ mod snapshot_read_tests {
                 writer.delete_project(&project).await?;
                 Ok(())
             }).await?;
-            anyhow::ensure!(serde_json::to_value(updates)? == serde_json::to_value(before.0)?, "projection and details must retain the target's original view");
+            anyhow::ensure!(mimir_json::to_value(updates)? == mimir_json::to_value(before.0)?, "projection and details must retain the target's original view");
             let original = beliefs.iter().find(|belief| belief.id == child.id).expect("original descendant");
-            anyhow::ensure!(serde_json::to_value(Some(original))? == stored_child, "returned details must be physical records, not temporary beta overlays or later lookups");
+            anyhow::ensure!(mimir_json::to_value(Some(original))? == stored_child, "returned details must be physical records, not temporary beta overlays or later lookups");
             anyhow::ensure!(reader.query_intervention_with_beliefs(seed.id, 1.0).await.unwrap_err().to_string().contains("not found"), "the next request must see deletion and explain the missing target");
-            anyhow::ensure!(serde_json::to_value(writer.get_belief(untouched.id).await?)? == preserved);
+            anyhow::ensure!(mimir_json::to_value(writer.get_belief(untouched.id).await?)? == preserved);
             Ok::<_, anyhow::Error>(())
         }.await;
         let cleanup = writer.delete_project(&project).await;
@@ -3356,7 +3370,7 @@ mod snapshot_read_tests {
             usage.pattern_id = Some(pattern);
             usage.action = "use the procedure".into();
             writer.record_experience(&usage, 0).await?;
-            let stored = serde_json::to_value(writer.get_belief(belief.id).await?)?;
+            let stored = mimir_json::to_value(writer.get_belief(belief.id).await?)?;
             let before = reader.query_learning_context(&term, &project, None).await?;
             anyhow::ensure!(before.beliefs.len() == 1 && before.beliefs[0].id == belief.id);
             anyhow::ensure!(before.patterns.len() == 1 && before.patterns[0].pattern.id == pattern);
@@ -3369,7 +3383,7 @@ mod snapshot_read_tests {
             );
             anyhow::ensure!(before.assessments.len() == 1 && !before.assessments_truncated);
             anyhow::ensure!(
-                serde_json::to_value(writer.get_belief(belief.id).await?)? == stored,
+                mimir_json::to_value(writer.get_belief(belief.id).await?)? == stored,
                 "context retrieval must not write back"
             );
             let interrupted = reader
@@ -3382,8 +3396,8 @@ mod snapshot_read_tests {
                 .to_string()
                 .contains("controlled learning-context interruption"));
             anyhow::ensure!(
-                serde_json::to_value(reader.query_learning_context(&term, &project, None).await?)?
-                    == serde_json::to_value(&before)?,
+                mimir_json::to_value(reader.query_learning_context(&term, &project, None).await?)?
+                    == mimir_json::to_value(&before)?,
                 "interruption must release its transaction"
             );
             let during = reader
@@ -3393,7 +3407,7 @@ mod snapshot_read_tests {
                 })
                 .await?;
             anyhow::ensure!(
-                serde_json::to_value(during)? == serde_json::to_value(before)?,
+                mimir_json::to_value(during)? == mimir_json::to_value(before)?,
                 "beliefs, procedures, counts, provenance and assessments must share the first view"
             );
             let after = reader.query_learning_context(&term, &project, None).await?;
@@ -3443,20 +3457,20 @@ mod snapshot_read_tests {
                 feedback: vec![Feedback { belief_id: child.id, verdict: Verdict::Support, weight: 0.5 }],
                 superseded_beliefs: vec![], links: vec![], candidate_feedback: vec![], candidate_links: vec![],
                 extracted_items: vec![], source_coverage: vec![], assessments: vec![], candidates: vec![] }, 0).await?;
-            let stored = serde_json::to_value(writer.get_belief(child.id).await?)?;
+            let stored = mimir_json::to_value(writer.get_belief(child.id).await?)?;
             let before = reader.query_intervention(seed.id, 1.0).await?;
             anyhow::ensure!(before.len() == 1 && before[0].0 == child.id, "the descendant must be projected");
-            anyhow::ensure!(serde_json::to_value(writer.get_belief(child.id).await?)? == stored, "normal intervention must not write back");
+            anyhow::ensure!(mimir_json::to_value(writer.get_belief(child.id).await?)? == stored, "normal intervention must not write back");
             let interrupted = reader.intervention_after_target(seed.id, 1.0, || async {
                 anyhow::bail!("controlled intervention interruption")
             }).await;
             anyhow::ensure!(interrupted.unwrap_err().to_string().contains("controlled intervention interruption"));
-            anyhow::ensure!(serde_json::to_value(reader.query_intervention(seed.id, 1.0).await?)? == serde_json::to_value(&before)?, "interruption must release its read transaction");
+            anyhow::ensure!(mimir_json::to_value(reader.query_intervention(seed.id, 1.0).await?)? == mimir_json::to_value(&before)?, "interruption must release its read transaction");
             let during = reader.intervention_after_target(seed.id, 1.0, || async {
                 anyhow::ensure!(writer.delete_project(&project).await? >= 3);
                 Ok(())
             }).await?;
-            anyhow::ensure!(serde_json::to_value(during)? == serde_json::to_value(before)?, "target, descendants, both causes, review mass and grounding must share the first view");
+            anyhow::ensure!(mimir_json::to_value(during)? == mimir_json::to_value(before)?, "target, descendants, both causes, review mass and grounding must share the first view");
             let after = reader.query_intervention(seed.id, 1.0).await.unwrap_err();
             anyhow::ensure!(after.to_string().contains("not found"), "the next request must see deletion");
             anyhow::ensure!(reader.get_belief(child.id).await?.is_none());
@@ -3505,7 +3519,7 @@ mod snapshot_read_tests {
                     writer.clear_document(&document).await?;
                     Ok(())
                 }).await?;
-                anyhow::ensure!(serde_json::to_value(during)? == serde_json::to_value(before)?, "every selected field and parent must retain the initial database view: scoped={scoped}");
+                anyhow::ensure!(mimir_json::to_value(during)? == mimir_json::to_value(before)?, "every selected field and parent must retain the initial database view: scoped={scoped}");
                 let after = reader.document_query_snapshot(&query, scope, None).await?;
                 anyhow::ensure!(after.iter().all(|value| value.id != child_id.to_string()), "the next request must see the removal and reuse the connection");
                 Ok::<_, anyhow::Error>(())
@@ -3558,7 +3572,7 @@ mod snapshot_read_tests {
                     } else {
                         let values = reader.query_relevant(&term, None, scope, Some(MemoryType::Fact)).await?.beliefs;
                         anyhow::ensure!(values.len() == 2 && values.iter().any(|v| v.id == descendant.id), "must include graph expansion");
-                        serde_json::to_value(values)?
+                        mimir_json::to_value(values)?
                     };
                     let interrupted = reader.relevant_after_overlay(&term, None, scope, None, || async {
                         anyhow::bail!("controlled retrieval interruption")
@@ -3570,7 +3584,7 @@ mod snapshot_read_tests {
                             Ok(())
                         }).await?.beliefs)
                     } else {
-                        serde_json::to_value(reader.relevant_after_overlay(&term, None, scope, Some(MemoryType::Fact), || async {
+                        mimir_json::to_value(reader.relevant_after_overlay(&term, None, scope, Some(MemoryType::Fact), || async {
                             writer.delete_project(&project).await?;
                             Ok(())
                         }).await?.beliefs)?
@@ -3881,7 +3895,7 @@ mod snapshot_read_tests {
             anyhow::ensure!(writer.learning_review(id).await?["review"] == historical_review,
                 "current review must preserve raw historical fields");
             source.action = "third source".into();
-            let current_payload = serde_json::to_string(&source)?;
+            let current_payload = mimir_json::to_string(&source)?;
             let next_review = serde_json::json!({"new_review_shape": {"unchanged": [true, 4, "全文"]}}).to_string();
             let during = reader.experience_history_after_sources(id, || async {
                 let tx = setup.transaction().await?;

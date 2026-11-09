@@ -147,7 +147,7 @@ async fn positive_selection_has_no_ten_record_ceiling_and_zero_is_a_correction()
             output.read_line(&mut line).await? != 0,
             "server exited during {name}"
         );
-        let response: Value = serde_json::from_str(&line)?;
+        let response: Value = mimir_json::from_str(&line)?;
         ensure!(
             response["id"] == name && response.get("error").is_none(),
             "request failed: {response}"
@@ -181,13 +181,13 @@ async fn positive_selection_has_no_ten_record_ceiling_and_zero_is_a_correction()
             continue;
         }
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
-        let result: Value = serde_json::from_str(text)?;
+        let result: Value = mimir_json::from_str(text)?;
         match name {
             "retrieval-zero" | "document-zero" | "learning-zero" | "evidence-zero"
             | "selection-string" => {
-                let correction: NeedsInput = serde_json::from_str(text)?;
+                let correction: NeedsInput = mimir_json::from_str(text)?;
                 ensure!(
-                    serde_json::to_string(&correction)?.contains("omit"),
+                    mimir_json::to_string(&correction)?.contains("omit"),
                     "selection correction lacks a repair: {result}"
                 );
             }
@@ -220,7 +220,7 @@ async fn positive_selection_has_no_ten_record_ceiling_and_zero_is_a_correction()
                 );
             }
             "zero" | "negative-offset" | "missing-selection" => {
-                let correction: NeedsInput = serde_json::from_str(text)?;
+                let correction: NeedsInput = mimir_json::from_str(text)?;
                 let issue = &correction.issues()[0];
                 let (field, code) = match name {
                     "zero" => ("limit", mimir_core::validation::Code::InvalidNumber),
@@ -229,7 +229,7 @@ async fn positive_selection_has_no_ten_record_ceiling_and_zero_is_a_correction()
                     _ => unreachable!(),
                 };
                 ensure!(
-                    serde_json::to_value(&issue.fault().path)? == json!([field])
+                    mimir_json::to_value(&issue.fault().path)? == json!([field])
                         && issue.fault().code == code
                 );
                 let guidance = format!("{} {}", issue.expected(), issue.suggested_correction());

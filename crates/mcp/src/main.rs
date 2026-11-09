@@ -65,6 +65,7 @@ impl Serialize for AgentJson<'_> {
                     "created_at",
                     "last_activated_at",
                     "evidence",
+                    "sources",
                 ];
                 const POSTERIOR_FIELDS: &[&str] = &["alpha", "beta", "alpha0", "beta0"];
                 let is_belief = fields.contains_key("content")
@@ -101,14 +102,14 @@ impl Serialize for AgentJson<'_> {
 }
 
 fn agent_json_text(value: &Value) -> serde_json::Result<String> {
-    serde_json::to_string(&AgentJson(value))
+    mimir_json::to_string(&AgentJson(value))
 }
 
 fn tools_list() -> Value {
     let mut tools = json!([
         {
             "name": "insert_belief",
-            "description": "Store a belief from an explicit user instruction or document independent of a queued incident. Provenance is required. Before storing anything, Mimir requires a complete embedding and a supporting passage from an indexed, project-compatible document. If either prerequisite is unavailable, the normal result is needs_input: open a dialog with the user using its explanation and suggested correction. Do not invent evidence, shorten the source, or change the model automatically. Incident-derived conclusions must use record_experience and review_experience candidates; a standalone prior plus review feedback would count one incident twice.",
+            "description": "Store a belief from an explicit user instruction or document independent of a queued incident. Provenance is required. Supply grounding citations with the actual indexed chunk ID, exact document path and quotation, and your explanation of support. Before storing anything, Mimir requires a complete embedding and validates these citations against project-compatible indexed documents. Citations record sources without changing probability; similarity only ranks suggestions, and citation weights are not accepted. If either prerequisite is unavailable, the normal result is needs_input: open a dialog with the user using its explanation and suggested correction. Do not invent evidence, shorten the source, or change the model automatically. Incident-derived conclusions must use record_experience and review_experience candidates; a standalone prior plus review feedback would count one incident twice.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -118,9 +119,10 @@ fn tools_list() -> Value {
                     "confidence":  { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                     "project":     { "type": "string", "description": "Optional project scope. Beliefs in a project can be bulk-deleted with delete_project when the project is done." },
                     "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Functional memory type. 'fact' (default): declarative knowledge that decays over time absent reinforcement. 'experiential': a hard-won working lesson (gotcha, corrected approach) — exempt from time-decay, since its truth doesn't erode with elapsed time. 'working': task-local scratch memory, excluded from cross-session query_relevant retrieval." },
+                    "grounding": learning::indexed_support_schema(),
                     "provenance": { "type": "object", "additionalProperties": false, "properties": { "basis": {"type":"string","enum":["user_instruction","document"]}, "reference": {"type":"string","minLength":1} }, "required": ["basis","reference"], "description": "Identify the independent source. Do not use this tool for a conclusion derived from an experience." }
                 },
-                "required": ["content", "probability", "confidence", "provenance"]
+                "required": ["content", "probability", "confidence", "provenance", "grounding"]
             }
         },
         {
@@ -353,7 +355,7 @@ fn tools_list() -> Value {
         },
         {
             "name": "load_document",
-            "description": "Parse a markdown file into heading-bounded chunks, embed each chunk, and index them for semantic search. Replaces existing chunks for the same path on reload. Requires [embeddings] in config.toml.",
+            "description": "Parse a markdown file into heading-bounded chunks, embed each chunk, and index them for semantic search. Replaces existing chunks for the same path on reload. Indexing does not assert that these passages support existing beliefs; cite a supporting passage and explain it when publishing a belief. Requires [embeddings] in config.toml.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -414,10 +416,9 @@ async fn handle_graph_call(
     use operation_catalogue::GraphOperation;
     match operation {
         GraphOperation::InsertBelief => {
-            let provenance: IndependentProvenance = serde_json::from_value(
+            let provenance: IndependentProvenance = mimir_json::decode_ref(
                 args.get("provenance")
-                    .ok_or_else(|| anyhow::anyhow!("missing 'provenance'"))?
-                    .clone(),
+                    .ok_or_else(|| anyhow::anyhow!("missing 'provenance'"))?,
             )?;
             provenance.validate()?;
             let content = args["content"]
@@ -435,6 +436,8 @@ async fn handle_graph_call(
                     .map_err(|e| anyhow::anyhow!("invalid 'memory_type': {e}"))?,
                 None => MemoryType::default(),
             };
+            let grounding: Vec<mimir_core::preparation::IndexedSupport> =
+                mimir_json::from_value(args["grounding"].clone())?;
             let belief = svc
                 .add_independent_belief(
                     content,
@@ -443,9 +446,10 @@ async fn handle_graph_call(
                     args["project"].as_str(),
                     memory_type,
                     &provenance,
+                    &grounding,
                 )
                 .await?;
-            Ok(serde_json::to_value(&belief)?)
+            Ok(mimir_json::to_value(&belief)?)
         }
 
         GraphOperation::DeleteBelief => {
@@ -497,7 +501,7 @@ async fn handle_graph_call(
                         .transpose()?,
                 )
                 .await?;
-            Ok(serde_json::to_value(&pattern)?)
+            Ok(mimir_json::to_value(&pattern)?)
         }
 
         GraphOperation::RecordSupport => {
@@ -577,7 +581,7 @@ async fn handle_graph_call(
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
             let id = uuid::Uuid::parse_str(id_str)?;
             let belief = svc.get_belief(id).await?;
-            Ok(serde_json::to_value(&belief)?)
+            Ok(mimir_json::to_value(&belief)?)
         }
 
         GraphOperation::ListBeliefs => {
@@ -592,22 +596,22 @@ async fn handle_graph_call(
             match args.get("limit") {
                 None => {
                     if args.get("offset").is_some() {
-                        return Ok(serde_json::to_value(admission::offset_requires_selection())?);
+                        return Ok(mimir_json::to_value(admission::offset_requires_selection())?);
                     }
-                    Ok(serde_json::to_value(
+                    Ok(mimir_json::to_value(
                         svc.list_beliefs_filtered(project, memory_type).await?,
                     )?)
                 }
                 Some(raw_limit) => {
                     let limit = match admission::positive_selection("limit", raw_limit) {
                         Ok(count) => count.get(),
-                        Err(correction) => return Ok(serde_json::to_value(correction)?),
+                        Err(correction) => return Ok(mimir_json::to_value(correction)?),
                     };
                     let offset = match args.get("offset") {
                         None => 0,
                         Some(raw_offset) => match admission::page_offset(raw_offset) {
                             Ok(offset) => offset,
-                            Err(correction) => return Ok(serde_json::to_value(correction)?),
+                            Err(correction) => return Ok(mimir_json::to_value(correction)?),
                         },
                     };
                     svc.list_beliefs_page(project, memory_type, limit, offset)
@@ -619,7 +623,7 @@ async fn handle_graph_call(
         GraphOperation::ListPatterns => {
             let project = args["project"].as_str();
             let patterns = svc.list_patterns(project).await?;
-            Ok(serde_json::to_value(&patterns)?)
+            Ok(mimir_json::to_value(&patterns)?)
         }
 
         GraphOperation::GetContradictions => {
@@ -652,7 +656,7 @@ async fn handle_graph_call(
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
             let limit = match admission::selection(args, "limit") {
                 Ok(selection) => selection,
-                Err(correction) => return Ok(serde_json::to_value(correction)?),
+                Err(correction) => return Ok(mimir_json::to_value(correction)?),
             };
             let include_evidence = args["include_evidence"].as_bool().unwrap_or(false);
             let project = args["project"].as_str();
@@ -662,13 +666,13 @@ async fn handle_graph_call(
                 .transpose()?;
             let per = match admission::selection(args, "evidence_per_belief") {
                 Ok(selection) => selection,
-                Err(correction) => return Ok(serde_json::to_value(correction)?),
+                Err(correction) => return Ok(mimir_json::to_value(correction)?),
             };
             if !include_evidence {
                 let beliefs = svc
                     .query_relevant(query, limit, project, prefer_type)
                     .await?;
-                return Ok(serde_json::to_value(&beliefs)?);
+                return Ok(mimir_json::to_value(&beliefs)?);
             }
             let grounded = svc
                 .query_relevant_grounded_preferred(query, limit, per, project, prefer_type)
@@ -677,7 +681,7 @@ async fn handle_graph_call(
                 .beliefs
                 .into_iter()
                 .map(|gb| {
-                    let mut belief_json = serde_json::to_value(&gb.belief).unwrap_or(json!({}));
+                    let mut belief_json = mimir_json::to_value(&gb.belief).unwrap_or(json!({}));
                     let evidence: Vec<Value> = gb
                         .evidence
                         .into_iter()
@@ -693,6 +697,7 @@ async fn handle_graph_call(
                         .collect();
                     if let Value::Object(ref mut map) = belief_json {
                         map.insert("evidence".to_string(), json!(evidence));
+                        map.insert("sources".to_string(), json!(gb.sources));
                     }
                     belief_json
                 })
@@ -787,10 +792,10 @@ async fn handle_graph_call(
             let project = args["project"].as_str();
             let limit = match admission::selection(args, "limit") {
                 Ok(selection) => selection,
-                Err(correction) => return Ok(serde_json::to_value(correction)?),
+                Err(correction) => return Ok(mimir_json::to_value(correction)?),
             };
             let results = svc.query_document(context, project, limit).await?;
-            Ok(serde_json::to_value(&results)?)
+            Ok(mimir_json::to_value(&results)?)
         }
 
         GraphOperation::ClearDocument => {
@@ -962,7 +967,7 @@ async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
         envelope::Incoming::Request(request) => request,
         envelope::Incoming::Notification { method, diagnostic } => {
             if let Some(diagnostic) = diagnostic {
-                error!(method, correction = %serde_json::to_string(&diagnostic)?, "notification was not executed");
+                error!(method, correction = %mimir_json::to_string(&diagnostic)?, "notification was not executed");
             }
             return Ok(());
         }
@@ -976,7 +981,7 @@ async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
     let method = request.method();
     let params = request.params();
 
-    let response = match method {
+    let response = mimir_json::Document::new(match method {
         "initialize" => ok_response(
             &id,
             json!({
@@ -991,14 +996,17 @@ async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
         "tools/call" => match admission::tool_parameters(params) {
             Err(correction) => envelope::invalid_params(id, correction),
             Ok((tool_name, arguments)) => match catalogue.call(svc, tool_name, &arguments).await {
-                Ok(result) => ok_response(
-                    &id,
-                    json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
-                ),
+                Ok(result) => {
+                    let result = mimir_json::Document::new(result);
+                    ok_response(
+                        &id,
+                        json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
+                    )
+                }
                 Err(e) => {
                     let mut response = err_response(&id, -32000, &e.to_string());
                     if let Some(refusal) = e.downcast_ref::<mimir_core::validation::Refusal>() {
-                        response["error"]["data"] = serde_json::to_value(refusal)?;
+                        response["error"]["data"] = mimir_json::to_value(refusal)?;
                     }
                     response
                 }
@@ -1009,7 +1017,7 @@ async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
             error!("unknown method: {}", other);
             err_response(&id, -32601, "Method not found")
         }
-    };
+    });
 
     let mut out = response.to_string();
     out.push('\n');
@@ -1048,14 +1056,14 @@ mod agent_json_tests {
         assert!(text.contains(
             "\"extra\":\"future field\",\"alpha\":2.0,\"beta\":3.0,\"alpha0\":1.0,\"beta0\":1.0}"
         ));
-        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), result);
+        assert_eq!(mimir_json::from_str::<Value>(&text).unwrap(), result);
     }
 
     #[test]
     fn non_belief_json_keeps_its_fields_and_values() {
         let result = json!({"z": [true, null], "a": {"beta": 2, "content": "not a belief"}});
         let text = agent_json_text(&result).unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), result);
+        assert_eq!(mimir_json::from_str::<Value>(&text).unwrap(), result);
     }
 }
 

@@ -31,12 +31,12 @@ fn invalid(arguments: &[&str]) -> Result<NeedsInput> {
         output.stderr.is_empty(),
         "correction must carry its own complete diagnostic"
     );
-    let value: Value = serde_json::from_slice(&output.stdout)?;
+    let value: Value = mimir_json::from_slice(&output.stdout)?;
     ensure!(
         value["status"] == "needs_input" && value["business_changes"] == "none",
         "input was reported as completed"
     );
-    Ok(serde_json::from_value(value)?)
+    Ok(mimir_json::from_value(value)?)
 }
 
 #[test]
@@ -148,12 +148,12 @@ async fn cli_and_mcp_keep_the_same_uuid_diagnosis_and_mcp_remains_usable() -> Re
             output.read_line(&mut line).await? != 0,
             "MCP stopped on correction"
         );
-        let response: Value = serde_json::from_str(&line)?;
+        let response: Value = mimir_json::from_str(&line)?;
         ensure!(response.get("error").is_none());
         let value: Value =
-            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+            mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
         if id == 1 {
-            let mcp: NeedsInput = serde_json::from_value(value)?;
+            let mcp: NeedsInput = mimir_json::from_value(value)?;
             ensure!(
                 mcp.issues() == cli.issues(),
                 "MCP and CLI disagree about the same identifier"

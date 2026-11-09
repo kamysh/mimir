@@ -15,6 +15,7 @@ tools=$(jq -nc '
    experience_history:{id:"string"},
    query_relevant:{context:"string",project:"string",limit:"integer"},
    query_learning_context:{context:"string",project:"string",limit:"integer"},
+   query_document:{context:"string",project:"string",limit:"integer"},
    explain_belief:{id:"string",limit:"integer",offset:"integer"},
    get_belief:{id:"string"},query_intervention:{id:"string",value:"number"},
    get_contradictions:{project:"string"}}
@@ -90,6 +91,7 @@ while IFS= read -r request; do
                         error='{"code":-32000,"message":"candidate belief reference must be declared in this review","data":{"kind":"undeclared_candidate","fault":{"path":["candidates"],"code":"missing_reference","message":"candidate belief reference must be declared in this review"}}}'
                     else reviewed=1; value='{"review_revision":1}'; fi ;;
                 query_relevant) error='{"code":-32000,"message":"private fixture database detail"}' ;;
+                query_document) value='[]' ;;
                 *) error='{"code":-32601,"message":"unexpected fixture tool"}' ;;
             esac
             if [[ -z "$error" ]]; then

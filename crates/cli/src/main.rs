@@ -112,7 +112,9 @@ enum Command {
     /// from those overrides non-interactively (no $EDITOR). Recognised keys:
     /// host, port, dbname, user, password, pgpassfile, ssl_mode, ssl_root_cert, ssl_client_cert,
     /// ssl_client_key, backend, model, api_key, cache_dir.
-    /// Exits non-zero if the config already exists.
+    /// An existing valid config is left unchanged when the explicit overrides
+    /// already match. Conflicting overrides ask for a decision. With no
+    /// arguments, an existing config is preserved and reported as an error.
     Init {
         /// KEY=VALUE pairs (e.g. `host=localhost port=5450 backend=local`).
         /// Omit to get the interactive $EDITOR flow.
@@ -416,13 +418,13 @@ async fn application_main() -> Result<()> {
             ) {
                 error.exit();
             }
-            println!("{}", serde_json::to_string(&corrections::parser(&error))?);
+            println!("{}", mimir_json::to_string(&corrections::parser(&error))?);
             return Ok(());
         }
     };
 
     if let Some(correction) = corrections::command(&cli.command) {
-        println!("{}", serde_json::to_string(&correction)?);
+        println!("{}", mimir_json::to_string(&correction)?);
         return Ok(());
     }
 
@@ -492,8 +494,14 @@ fn cmd_init(pairs: Vec<(String, String)>) -> Result<()> {
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
         std::process::Command::new(&editor).arg(&path).status()?;
     } else {
-        let path = Config::create_from_kv(&pairs)?;
-        println!("Created: {}", path.display());
+        match Config::create_from_kv(&pairs)? {
+            mimir_core::config::ConfigCreation::Created(path) => {
+                println!("Created: {}", path.display())
+            }
+            mimir_core::config::ConfigCreation::AlreadyConfigured(path) => {
+                println!("Already configured: {}", path.display())
+            }
+        }
     }
     println!("Restart Claude Code to activate the mimir MCP server.");
     Ok(())
@@ -853,7 +861,7 @@ async fn cmd_sweep_defeated(threshold: f64, project: Option<&str>) -> Result<()>
     let policy = match svc.retirement_policy() {
         Ok(policy) => policy,
         Err(issue) => {
-            println!("{}", serde_json::to_string(issue.correction())?);
+            println!("{}", mimir_json::to_string(issue.correction())?);
             return Ok(());
         }
     };
@@ -1072,7 +1080,7 @@ fn print_backfill_decision(
 ) -> Result<()> {
     println!(
         "{}",
-        serde_json::to_string(&serde_json::json!({
+        mimir_json::to_string(&serde_json::json!({
             "status":"needs_input","operation_status":"incomplete",
             "confirmed_counts":{"embedded":confirmed.len(),"skipped":skipped},
             "business_changes":{"embedded_belief_ids":confirmed},
@@ -1196,7 +1204,7 @@ async fn cmd_hook_stop(project: Option<&str>) -> Result<()> {
     if std::io::stdin().read_to_string(&mut input).is_err() {
         return Ok(());
     }
-    let v: serde_json::Value = match serde_json::from_str(&input) {
+    let v: serde_json::Value = match mimir_json::from_str(&input) {
         Ok(v) => v,
         Err(_) => return Ok(()),
     };
@@ -1262,7 +1270,7 @@ async fn cmd_hook_prompt() -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
 
-    let v: serde_json::Value = serde_json::from_str(&input)?;
+    let v: serde_json::Value = mimir_json::from_str(&input)?;
     let prompt = v["prompt"].as_str().unwrap_or("").trim().to_string();
     if prompt.is_empty() {
         return Ok(());
@@ -1309,7 +1317,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
 
-    let v: serde_json::Value = serde_json::from_str(&input)?;
+    let v: serde_json::Value = mimir_json::from_str(&input)?;
     let ti = &v["tool_input"];
     let query_raw = ti["file_path"]
         .as_str()

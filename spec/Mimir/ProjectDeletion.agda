@@ -172,6 +172,7 @@ eraseProject project before = record before
           (Learning.World.independentOrigins learn) }
   ; chunks = Retention.retain (λ chunk → Writes.tagged project (Documents.Chunk.project chunk)) (Store.World.chunks before)
   ; beliefVectors = Retention.retain (λ row → Ranking.member (proj₁ row) (Closure.beliefs selected)) (Store.World.beliefVectors before)
+  ; beliefSources = Retention.retain (λ row → Ranking.member (proj₁ row) (Closure.beliefs selected)) (Store.World.beliefSources before)
   ; chunkVectors = Retention.retain (λ row → Ranking.member (proj₁ row) (Closure.chunks selected)) (Store.World.chunkVectors before)
   ; grounds = Retention.retain (ownedGround selected) (Store.World.grounds before)
   ; history = eraseHistory project before

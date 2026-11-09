@@ -7,13 +7,14 @@ module Mimir.BeliefEmbedding where
 open import Data.Bool using (Bool; true; false; not; _∧_; _∨_)
 open import Data.Float.Base using (Float; _<ᵇ_)
 open import Data.List using (List; []; _∷_; _++_; map; filterᵇ)
+open import Data.List.Relation.Unary.All using (All; []; _∷_)
 import Data.List.Properties as Lists
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; suc; _≟_)
 open import Data.Integer using (ℤ)
 import Data.Maybe.Properties as Maybes
 open import Data.Product using (Σ; _×_; _,_)
-open import Data.String using (toList)
+open import Data.String using (String; toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -33,13 +34,93 @@ import Mimir.GraphNumerics as Numeric
 import Mimir.GraphWrites as Writes
 import Mimir.GroundingPublication as Publication
 import Mimir.PosteriorComputation as Posterior
+import Mimir.EvidenceValidity as Evidence
 import Mimir.LearningTransaction as Transaction
 open import Mimir.SourceReview using (_≟Text_)
 open import Relation.Nullary using (does)
 import Mimir.EmbeddingLifecycle as Lifecycle
+import Mimir.SourceText as Quotation
+import Data.Char as Chars
+import Mimir.Text as Text
+import Data.Bool.Properties as BoolProperties
 module Correction = Errors.AgentCorrection
 
-Support = Documents.Chunk × Float
+-- A citation is a submitting agent's inspectable account of support. Literal
+-- reference/quotation integrity is checked; its explanation is not a proof of
+-- semantic truth and similarity never occurs in this validity predicate.
+Citation = Documents.Citation
+module Citation = Documents.Citation
+
+module Quote = Quotation.Matching Chars.Char Chars._≟_
+
+checkCitationText : (fieldName : String) (value : Text) → Validation.Checked (Text.Nonblank value)
+checkCitationText fieldName value = Validation.at (Validation.key fieldName) (Validation.check
+  (Validation.fault [] Validation.emptyText "The citation field must contain nonblank text; if support is unclear, open the user dialog before publication.")
+  (Text.nonblank? value))
+
+CitationValid : G.BeliefValues → Store.World → Citation → Set
+CitationValid belief before cited with Store.chunk (Citation.chunk cited) (Store.World.chunks before)
+... | nothing = Data.Empty.⊥
+  where import Data.Empty
+... | just chunk = Text.Nonblank (Citation.document cited) ×
+  Citation.document cited ≡ Documents.Chunk.document chunk ×
+  Text.Nonblank (Citation.quotation cited) × Quote.Contains (Citation.quotation cited) (Documents.Chunk.content chunk) ×
+  Text.Nonblank (Citation.explanation cited) ×
+  Grounding.compatible (G.BeliefValues.project belief) (Documents.Chunk.project chunk) ≡ true ×
+  Ranking.member (Citation.chunk cited) (map Data.Product.proj₁ (Store.World.chunkVectors before)) ≡ true
+
+validateCitation : ∀ belief before cited → Validation.Checked (CitationValid belief before cited)
+validateCitation belief before cited with Store.chunk (Citation.chunk cited) (Store.World.chunks before)
+... | nothing = Validation.rejected
+  (Validation.fault (Validation.key "chunk_id" ∷ []) Validation.missingReference
+    "The cited chunk is not stored. Query the indexed document and copy its current chunk ID; do not invent an ID.") (λ impossible → impossible)
+... | just chunk = Validation.combine
+  (checkCitationText "document_path" (Citation.document cited))
+  (Validation.combine
+    (Validation.at (Validation.key "document_path") (Validation.check
+      (Validation.fault [] Validation.wrongIdentity "The cited document path must match the indexed chunk's actual document.")
+      (Citation.document cited ≟Text Documents.Chunk.document chunk)))
+    (Validation.combine
+      (checkCitationText "quotation" (Citation.quotation cited))
+      (Validation.combine
+        (Validation.at (Validation.key "quotation") (Validation.check
+          (Validation.fault [] Validation.quotationMismatch "Copy an exact contiguous passage from the indexed chunk; put interpretation in explanation.")
+          (Quote.contains? (Citation.quotation cited) (Documents.Chunk.content chunk))))
+        (Validation.combine
+          (checkCitationText "explanation" (Citation.explanation cited))
+          (Validation.combine
+            (Validation.check
+              (Validation.fault (Validation.key "chunk_id" ∷ []) Validation.missingReference "The indexed document must be compatible with this belief's project.")
+              (Grounding.compatible (G.BeliefValues.project belief) (Documents.Chunk.project chunk) BoolProperties.≟ true))
+            (Validation.check
+              (Validation.fault (Validation.key "chunk_id" ∷ []) Validation.missingReference "The cited chunk must have an indexed document vector before belief publication.")
+              (Ranking.member (Citation.chunk cited) (map Data.Product.proj₁ (Store.World.chunkVectors before)) BoolProperties.≟ true)))))))
+
+validCitationAccepted : ∀ belief before cited → CitationValid belief before cited →
+  Validation.reported (validateCitation belief before cited) ≡ []
+validCitationAccepted belief before cited valid = Validation.noFalseRejection (validateCitation belief before cited) valid
+
+-- All submitted passages must be valid. Missing or faulty support is an
+-- explained decision before publication, never a similarity-based substitute.
+CitationsValid : G.BeliefValues → Store.World → List Citation → Set
+CitationsValid belief before [] = Data.Empty.⊥
+  where import Data.Empty
+CitationsValid belief before (first ∷ rest) =
+  CitationValid belief before first × All (CitationValid belief before) rest
+
+validateCitations : ∀ belief before cited → Validation.Checked (CitationsValid belief before cited)
+validateCitations belief before [] = Validation.rejected
+  (Validation.fault (Validation.key "grounding" ∷ []) Validation.missingEvidence
+    "Supply an indexed-document passage and explain its support. If none is available, open the user dialog before publication.") (λ impossible → impossible)
+validateCitations belief before (first ∷ rest) = Validation.at (Validation.key "grounding")
+  (Validation.combine (Validation.at (Validation.index 0) (validateCitation belief before first))
+    (Validation.allCheckedFrom 1 (validateCitation belief before) rest))
+
+validCitationsAccepted : ∀ belief before cited → CitationsValid belief before cited →
+  Validation.reported (validateCitations belief before cited) ≡ []
+validCitationsAccepted belief before cited valid = Validation.noFalseRejection (validateCitations belief before cited) valid
+
+Support = Documents.Chunk × Citation
 
 record Prepared : Set where
   constructor prepared
@@ -60,6 +141,9 @@ nonzeroVector (value ∷ rest) = (value <ᵇ 0.0) ∨ (0.0 <ᵇ value) ∨ nonze
 usableVector : Store.Vector → Bool
 usableVector vector = finiteVector vector ∧ nonzeroVector vector
 
+readback : G.BeliefValues → G.BeliefValues
+readback belief = Evidence.updated belief (Posterior.beta (G.BeliefValues.alpha belief) (G.BeliefValues.beta belief))
+
 sameChunk : Documents.Chunk → Documents.Chunk → Bool
 sameChunk first second =
   does (Documents.Chunk.identity first ≟ Documents.Chunk.identity second) ∧
@@ -69,38 +153,36 @@ sameChunk first second =
   does (Maybes.≡-dec _≟_ (Documents.Chunk.parent first) (Documents.Chunk.parent second)) ∧
   does (Maybes.≡-dec _≟Text_ (Documents.Chunk.project first) (Documents.Chunk.project second))
 
+citationCurrent : G.BeliefValues → Store.World → Citation → Bool
+citationCurrent belief before cited with validateCitation belief before cited
+... | Validation.accepted _ = true
+... | Validation.rejected _ _ = false
+
 supportCurrent : G.BeliefValues → Store.World → Support → Bool
-supportCurrent belief before (chunk , weight)
+supportCurrent belief before (chunk , cited)
   with Store.chunk (Documents.Chunk.identity chunk) (Store.World.chunks before)
 ... | nothing = false
-... | just current = sameChunk chunk current ∧ Numeric.probability weight ∧
-  not (weight <ᵇ 0.80) ∧ Grounding.compatible (G.BeliefValues.project belief) (Documents.Chunk.project chunk) ∧
-  Ranking.member (Documents.Chunk.identity chunk) (map Data.Product.proj₁ (Store.World.chunkVectors before))
+... | just current = sameChunk chunk current ∧
+  does (Documents.Chunk.identity chunk ≟ Citation.chunk cited) ∧ citationCurrent belief before cited
 
 allSupportCurrent : G.BeliefValues → Store.World → List Support → Bool
 allSupportCurrent belief before [] = true
 allSupportCurrent belief before (first ∷ rest) =
   supportCurrent belief before first ∧ allSupportCurrent belief before rest
 
--- Read every candidate against one stored view. The first supporting passage
--- and the rest retain complete document fields; preparation writes nothing.
-selectSupport : G.BeliefValues → Store.World → List (ℕ × Float) → Text ⊎ List Support
+hasSupport : List Support → Bool
+hasSupport [] = false
+hasSupport (_ ∷ _) = true
+
+selectSupport : G.BeliefValues → Store.World → List Citation → Text ⊎ List Support
 selectSupport belief before [] = inj₂ []
-selectSupport belief before ((identity , similarity) ∷ rest) with Scores.finite similarity
-... | false = inj₁ (toList "An indexed document produced a nonfinite grounding score; check its stored embedding before retrying.")
-... | true with similarity <ᵇ 0.80
-...   | true = selectSupport belief before rest
-...   | false with Numeric.probability similarity
-...     | false = inj₁ (toList "An indexed document produced an invalid grounding probability; no belief was stored.")
-...     | true with Store.chunk identity (Store.World.chunks before)
-...       | nothing = selectSupport belief before rest
-...       | just chunk with Documents.Chunk.content chunk
-...         | [] = selectSupport belief before rest
-...         | _ ∷ _ with Grounding.compatible (G.BeliefValues.project belief) (Documents.Chunk.project chunk)
-...           | false = selectSupport belief before rest
-...           | true with selectSupport belief before rest
-...             | inj₁ error = inj₁ error
-...             | inj₂ following = inj₂ ((chunk , similarity) ∷ following)
+selectSupport belief before (cited ∷ rest) with validateCitation belief before cited
+... | Validation.rejected fault _ = inj₁ (Validation.Fault.explanation fault)
+... | Validation.accepted valid with Store.chunk (Citation.chunk cited) (Store.World.chunks before)
+... | nothing = inj₁ (toList "The cited indexed chunk is missing; no belief was stored.")
+... | just chunk with selectSupport belief before rest
+... | inj₁ reason = inj₁ reason
+... | inj₂ following = inj₂ ((chunk , cited) ∷ following)
 
 ownsPreparation : G.BeliefValues → List Store.EmbeddingOwnerRow → Bool
 ownsPreparation belief [] = false
@@ -108,6 +190,10 @@ ownsPreparation belief (owner ∷ rest) =
   (does (G.BeliefValues.identity belief ≟ Store.EmbeddingOwnerRow.token owner) ∧
    does (Maybes.≡-dec _≟Text_ (G.BeliefValues.project belief) (Store.EmbeddingOwnerRow.project owner))) ∨
   ownsPreparation belief rest
+
+preparationCurrent : G.BeliefValues → List Support → Store.World → Bool
+preparationCurrent belief support before = ownsPreparation belief (Store.World.embeddingOwners before) ∧
+  hasSupport support ∧ allSupportCurrent belief before support
 
 module OwnerSubscription where
   data Effect : Set where
@@ -142,6 +228,19 @@ retainedOwnerKeepsItsJob : ∀ belief before state →
   checkedOwnership belief before state ≡ state
 retainedOwnerKeepsItsJob belief before state present rewrite present = refl
 
+checkedPreparation : G.BeliefValues → List Support → Store.World → Lifecycle.Ownership.State → Lifecycle.Ownership.State
+checkedPreparation belief support before state with preparationCurrent belief support before
+... | true = state
+... | false = Lifecycle.Ownership.stop state
+
+changedSourceStopsItsJob : ∀ belief support before state → preparationCurrent belief support before ≡ false →
+  checkedPreparation belief support before state ≡ Lifecycle.Ownership.stop state
+changedSourceStopsItsJob belief support before state changed rewrite changed = refl
+
+unchangedSourcesKeepTheirJob : ∀ belief support before state → preparationCurrent belief support before ≡ true →
+  checkedPreparation belief support before state ≡ state
+unchangedSourcesKeepTheirJob belief support before state current rewrite current = refl
+
 -- Backfill belongs to an existing belief, rather than a reservation for a new
 -- one. A database hint must recheck this exact target before cancelling.
 ownsBackfill : G.BeliefValues → Store.World → Bool
@@ -163,27 +262,18 @@ retainedBackfillKeepsItsJob belief before state present rewrite present = refl
 
 -- User-visible intent: one complete new belief, its provenance, its vector,
 -- and every prepared supporting passage. Rechecking cannot silently discard
--- a passage selected during preparation. Numerical effects reuse the existing
--- whole-world grounding meaning, inside this same publication transaction.
+-- a passage supplied during preparation. Citations are source references;
+-- they change neither numerical evidence nor the submitted belief values.
 module Atomic (database : ℕ) (calculator : Posterior.Calculator) (publicationTime : ℤ) where
   module P = Publication.Operation database calculator publicationTime
   module T = Transaction.Over Store.World G.BeliefValues Publication.Failure database 671942183
   paired : G.BeliefValues → Maybe Origin.Provenance → Prepared → Store.World → Store.World
   paired belief origin value before = record inserted
     { beliefVectors = Store.putVector (G.BeliefValues.identity belief) (Prepared.vector value) (Store.World.beliefVectors before)
-    ; grounds = Store.World.grounds before ++ map
-        (λ where (chunk , weight) → Store.ground (Documents.Chunk.identity chunk) (G.BeliefValues.identity belief) weight)
-        (supports value)
+    ; beliefSources = (G.BeliefValues.identity belief , map Data.Product.proj₂ (supports value)) ∷ Store.World.beliefSources before
     ; embeddingOwners = filterᵇ (λ owner → not (does
         (Store.EmbeddingOwnerRow.token owner ≟ G.BeliefValues.identity belief))) (Store.World.embeddingOwners before) }
     where inserted = Writes.insertBelief belief origin before
-
-  finish : ℕ → P.T.Decision → T.Decision
-  finish identity (P.T.reject reason) = T.reject reason
-  finish identity (P.T.replay tt) = T.reject Publication.foreignTarget
-  finish identity (P.T.replace after tt) with Ranking.lookup identity (Store.beliefs after)
-  ... | nothing = T.reject Publication.missingEndpoint
-  ... | just belief = T.replace after belief
 
   intended : G.BeliefValues → Maybe Origin.Provenance → Prepared → Store.World → T.Decision
   intended belief origin value before with Ranking.lookup (G.BeliefValues.identity belief) (Store.beliefs before)
@@ -191,8 +281,7 @@ module Atomic (database : ℕ) (calculator : Posterior.Calculator) (publicationT
   ... | nothing with ownsPreparation belief (Store.World.embeddingOwners before) ∧
     usableVector (Prepared.vector value) ∧ allSupportCurrent belief before (supports value)
   ...   | false = T.reject Publication.missingEndpoint
-  ...   | true = finish (G.BeliefValues.identity belief)
-    (P.recompute (G.BeliefValues.identity belief) (paired belief origin value before))
+  ...   | true = T.replace (paired belief origin value before) (readback belief)
 
   module Run (belief : G.BeliefValues) (origin : Maybe Origin.Provenance) (value : Prepared) where
     module Execution = T.Plan (intended belief origin value)
@@ -210,21 +299,21 @@ missingBackend = preparationDecision Correction.configuration (Validation.key "e
 
 data Effect : Set where
   backfillEmbedding : G.BeliefValues → Effect
-  prepareEmbedding : G.BeliefValues → Effect
+  prepareEmbedding : G.BeliefValues → List Support → Effect
   upsert : ℕ → Store.Vector → Effect
   listBeliefs embeddedIDs : Effect
   progress : G.BeliefValues → Effect
-  supportingPassages : G.BeliefValues → Store.Vector → Effect
+  supportingPassages : G.BeliefValues → List Citation → Effect
   publishPrepared : G.BeliefValues → Maybe Origin.Provenance → Prepared → Effect
 
 Reply : Effect → Set
 Reply (backfillEmbedding belief) = Text ⊎ List Store.Vector
-Reply (prepareEmbedding belief) = Text ⊎ List Store.Vector
+Reply (prepareEmbedding belief support) = Text ⊎ List Store.Vector
 Reply (upsert id vector) = Text ⊎ ⊤
 Reply listBeliefs = Text ⊎ List G.BeliefValues
 Reply embeddedIDs = Text ⊎ List ℕ
 Reply (progress b) = Text ⊎ ⊤
-Reply (supportingPassages b vector) = Text ⊎ List Support
+Reply (supportingPassages b cited) = Text ⊎ List Support
 Reply (publishPrepared b origin value) = Text ⊎ (Correction.Claim ⊎ G.BeliefValues)
 
 module E = Effects.Protocol Effect Reply
@@ -271,34 +360,29 @@ afterPublication (inj₁ error) = done (inj₁ (nativeFailure error))
 afterPublication (inj₂ (inj₁ report)) = done (inj₁ (needsUserDecision report))
 afterPublication (inj₂ (inj₂ belief)) = done (inj₂ belief)
 
-afterSupport : G.BeliefValues → Maybe Origin.Provenance → Store.Vector → Text ⊎ List Support → Script InsertionResult
-afterSupport b origin vector (inj₁ error) = done (inj₁ (needsUserDecision
-  (preparationDecision Correction.configuration (Validation.key "database" ∷ []) error)))
-afterSupport b origin vector (inj₂ []) = done (inj₁ (needsUserDecision
-  (preparationDecision Correction.arguments (Validation.key "content" ∷ [])
-    (toList "No supporting passage was found in an indexed document; no belief was stored."))))
-afterSupport b origin vector (inj₂ (first ∷ rest)) =
-  ask (publishPrepared b origin (prepared vector first rest)) afterPublication
-
-afterPreparationEmbedding : G.BeliefValues → Maybe Origin.Provenance → Text ⊎ List Store.Vector → Script InsertionResult
-afterPreparationEmbedding b origin (inj₁ error) = done (inj₁ (needsUserDecision
+afterPreparationEmbedding : G.BeliefValues → Maybe Origin.Provenance → List Support → Text ⊎ List Store.Vector → Script InsertionResult
+afterPreparationEmbedding b origin support (inj₁ error) = done (inj₁ (needsUserDecision
   (preparationDecision Correction.configuration (Validation.key "embeddings" ∷ []) error)))
-afterPreparationEmbedding b origin (inj₂ (vector ∷ [])) with usableVector vector
-... | true = ask (supportingPassages b vector) (afterSupport b origin vector)
+afterPreparationEmbedding b origin (first ∷ rest) (inj₂ (vector ∷ [])) with usableVector vector
+... | true = ask (publishPrepared b origin (prepared vector first rest)) afterPublication
 ... | false = done (inj₁ (needsUserDecision
   (preparationDecision Correction.configuration (Validation.key "embeddings" ∷ [])
     (toList "The backend returned an empty, nonfinite, or zero vector; no belief was stored."))))
-afterPreparationEmbedding b origin (inj₂ _) = done (inj₁ (needsUserDecision
+afterPreparationEmbedding b origin _ (inj₂ _) = done (inj₁ (needsUserDecision
   (preparationDecision Correction.configuration (Validation.key "embeddings" ∷ [])
     (toList "The backend must return exactly one complete vector for this belief; no belief was stored."))))
 
-start : Bool → G.BeliefValues → Maybe Origin.Provenance → Script InsertionResult
-start false b origin = done (inj₁ (needsUserDecision missingBackend))
-start true b origin = ask (prepareEmbedding b) (afterPreparationEmbedding b origin)
+afterSupport : Bool → G.BeliefValues → Maybe Origin.Provenance → Text ⊎ List Support → Script InsertionResult
+afterSupport enabled b origin (inj₁ error) = done (inj₁ (needsUserDecision
+  (preparationDecision Correction.arguments (Validation.key "grounding" ∷ []) error)))
+afterSupport enabled b origin (inj₂ []) = done (inj₁ (needsUserDecision
+  (preparationDecision Correction.arguments (Validation.key "grounding" ∷ [])
+    (toList "Supply an indexed-document supporting passage and your explanation; no belief was stored."))))
+afterSupport false b origin (inj₂ (_ ∷ _)) = done (inj₁ (needsUserDecision missingBackend))
+afterSupport true b origin (inj₂ support@(_ ∷ _)) = ask (prepareEmbedding b support) (afterPreparationEmbedding b origin support)
 
-unconfiguredCannotStartPublication : ∀ b origin →
-  start false b origin ≡ done (inj₁ (needsUserDecision missingBackend))
-unconfiguredCannotStartPublication b origin = refl
+start : Bool → G.BeliefValues → Maybe Origin.Provenance → List Citation → Script InsertionResult
+start enabled b origin cited = ask (supportingPassages b cited) (afterSupport enabled b origin)
 
 record Counts : Set where
   constructor counts

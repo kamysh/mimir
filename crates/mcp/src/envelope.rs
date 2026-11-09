@@ -3,6 +3,7 @@ use mimir_core::{
     interaction::{CorrectionItem, Location, NeedsInput},
     validation::{Code, Fault, Segment},
 };
+use mimir_json::Document;
 use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
 use serde_json::{json, Value};
 use std::fmt;
@@ -11,88 +12,98 @@ use std::fmt;
 // repeated member paths before an object insertion could hide them. Nothing
 // is routed until the complete input has been read and this list is empty.
 struct CheckedValue<'a> {
-    path: Vec<Segment>,
+    path: &'a mut Vec<Segment>,
     repeated: &'a mut Vec<Vec<Segment>>,
 }
 impl<'de> DeserializeSeed<'de> for CheckedValue<'_> {
-    type Value = Value;
-    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Value, D::Error> {
+    type Value = Document;
+    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Document, D::Error> {
         decoder.deserialize_any(self)
     }
 }
 impl<'de> Visitor<'de> for CheckedValue<'_> {
-    type Value = Value;
+    type Value = Document;
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("a JSON value")
     }
-    fn visit_unit<E: Error>(self) -> Result<Value, E> {
-        Ok(Value::Null)
+    fn visit_unit<E: Error>(self) -> Result<Document, E> {
+        Ok(Document::new(Value::Null))
     }
-    fn visit_bool<E: Error>(self, value: bool) -> Result<Value, E> {
-        Ok(Value::Bool(value))
+    fn visit_bool<E: Error>(self, value: bool) -> Result<Document, E> {
+        Ok(Document::new(Value::Bool(value)))
     }
-    fn visit_i64<E: Error>(self, value: i64) -> Result<Value, E> {
-        Ok(value.into())
+    fn visit_i64<E: Error>(self, value: i64) -> Result<Document, E> {
+        Ok(Document::new(value.into()))
     }
-    fn visit_u64<E: Error>(self, value: u64) -> Result<Value, E> {
-        Ok(value.into())
+    fn visit_u64<E: Error>(self, value: u64) -> Result<Document, E> {
+        Ok(Document::new(value.into()))
     }
-    fn visit_f64<E: Error>(self, value: f64) -> Result<Value, E> {
+    fn visit_f64<E: Error>(self, value: f64) -> Result<Document, E> {
         serde_json::Number::from_f64(value)
-            .map(Value::Number)
+            .map(|v| Document::new(Value::Number(v)))
             .ok_or_else(|| E::custom("JSON number is not finite"))
     }
-    fn visit_str<E: Error>(self, value: &str) -> Result<Value, E> {
-        Ok(Value::String(value.into()))
+    fn visit_str<E: Error>(self, value: &str) -> Result<Document, E> {
+        Ok(Document::new(Value::String(value.into())))
     }
-    fn visit_string<E: Error>(self, value: String) -> Result<Value, E> {
-        Ok(Value::String(value))
+    fn visit_string<E: Error>(self, value: String) -> Result<Document, E> {
+        Ok(Document::new(Value::String(value)))
     }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Value, A::Error> {
-        let mut values = Vec::new();
+    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Document, A::Error> {
+        let mut values = Document::new(Value::Array(Vec::new()));
         loop {
-            let mut path = self.path.clone();
-            path.push(Segment::Index(values.len()));
-            let Some(value) = sequence.next_element_seed(CheckedValue {
-                path,
+            self.path
+                .push(Segment::Index(values.as_array().unwrap().len()));
+            let child = sequence.next_element_seed(CheckedValue {
+                path: &mut *self.path,
                 repeated: &mut *self.repeated,
-            })?
-            else {
+            });
+            self.path.pop();
+            let Some(value) = child? else {
                 break;
             };
-            values.push(value);
+            values.as_array_mut().unwrap().push(value.into_value());
         }
-        Ok(Value::Array(values))
+        Ok(values)
     }
-    fn visit_map<A: MapAccess<'de>>(self, mut object: A) -> Result<Value, A::Error> {
-        let mut values = serde_json::Map::new();
+    fn visit_map<A: MapAccess<'de>>(self, mut object: A) -> Result<Document, A::Error> {
+        let mut values = Document::new(Value::Object(serde_json::Map::new()));
         while let Some(key) = object.next_key::<String>()? {
-            let mut path = self.path.clone();
-            path.push(Segment::Key(key.clone()));
-            if values.contains_key(&key) {
-                self.repeated.push(path.clone());
+            self.path.push(Segment::Key(key.clone()));
+            if values.as_object().unwrap().contains_key(&key) {
+                self.repeated.push(self.path.clone());
             }
-            let value = object.next_value_seed(CheckedValue {
-                path,
+            let child = object.next_value_seed(CheckedValue {
+                path: &mut *self.path,
                 repeated: &mut *self.repeated,
-            })?;
-            values.insert(key, value);
+            });
+            self.path.pop();
+            let value = child?;
+            if let Some(replaced) = values
+                .as_object_mut()
+                .unwrap()
+                .insert(key, value.into_value())
+            {
+                mimir_json::drop_value(replaced);
+            }
         }
-        Ok(Value::Object(values))
+        Ok(values)
     }
 }
 
 pub fn parse(text: &str) -> Result<Incoming, serde_json::Error> {
     let mut decoder = serde_json::Deserializer::from_str(text);
+    decoder.disable_recursion_limit();
     let mut repeated = Vec::new();
+    let mut path = Vec::new();
     let value = CheckedValue {
-        path: vec![],
+        path: &mut path,
         repeated: &mut repeated,
     }
-    .deserialize(&mut decoder)?;
+    .deserialize(serde_stacker::Deserializer::new(&mut decoder))?;
     decoder.end()?;
     if repeated.is_empty() {
-        return Ok(decode(value));
+        return Ok(decode(value.into_value()));
     }
     let repeated_id = repeated
         .iter()
@@ -136,7 +147,7 @@ pub fn parse(text: &str) -> Result<Incoming, serde_json::Error> {
 pub struct Request {
     id: Value,
     method: String,
-    params: Value,
+    params: Document,
 }
 impl Request {
     pub fn id(&self) -> &Value {
@@ -200,6 +211,7 @@ pub fn invalid_params(id: &Value, correction: NeedsInput) -> Value {
 }
 
 pub fn decode(value: Value) -> Incoming {
+    let mut value = Document::new(value);
     let Some(fields) = value.as_object() else {
         return Incoming::Rejected(error(
             Value::Null,
@@ -298,11 +310,15 @@ pub fn decode(value: Value) -> Incoming {
             });
         return Incoming::Notification { method, diagnostic };
     }
-    Incoming::Request(Request {
-        id: provided_id.expect("admitted requests have an ID").clone(),
-        method,
-        params: fields.get("params").cloned().unwrap_or_else(|| json!({})),
-    })
+    let id = provided_id.expect("admitted requests have an ID").clone();
+    let params = Document::new(
+        value
+            .as_object_mut()
+            .expect("checked object")
+            .remove("params")
+            .unwrap_or_else(|| json!({})),
+    );
+    Incoming::Request(Request { id, method, params })
 }
 
 #[cfg(test)]
@@ -310,11 +326,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deep_requests_and_replaced_values_do_not_exhaust_the_stack_or_change_admission() {
+        std::thread::Builder::new().stack_size(256 * 1024).spawn(|| {
+            let depth=10000;
+            let nested=format!("{}null{}", "[".repeat(depth), "]".repeat(depth));
+            let clean=format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"list_beliefs","arguments":{{"extra":{nested}}}}}}}"#);
+            let Incoming::Request(request)=parse(&clean).unwrap() else {panic!("valid envelope refused")};
+            let (_,arguments)=super::super::admission::tool_parameters(request.params()).unwrap();
+            assert!(arguments["extra"].is_array());
+            let copy=arguments.clone();
+            assert!(mimir_json::equal(&arguments,&copy));
+            drop((request,arguments,copy));
+            let duplicate=format!(r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{{"extra":{nested},"extra":null}}}}"#);
+            assert!(matches!(parse(&duplicate).unwrap(),Incoming::Rejected(_)));
+            assert!(parse(&format!("[{nested},")).is_err());
+            assert!(matches!(parse(r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#).unwrap(),Incoming::Request(_)));
+        }).unwrap().join().unwrap();
+    }
+
+    #[test]
     fn duplicate_members_are_located_without_choosing_a_response_id() {
         let Incoming::Rejected(response) = parse(r#"{"jsonrpc":"2.0","id":1,"id":2,"method":"tools/list","method":"tools/call","params":{"arguments":{"project":"one","project":"two","sources":[{"actor":"one","actor":"two"}]}}}"#).unwrap() else {panic!("duplicates admitted")};
         assert_eq!(response["id"], Value::Null);
         let diagnostic: NeedsInput =
-            serde_json::from_value(response["error"]["data"].clone()).unwrap();
+            mimir_json::from_value(response["error"]["data"].clone()).unwrap();
         let paths: Vec<_> = diagnostic
             .issues()
             .iter()
@@ -351,7 +386,7 @@ mod tests {
     #[test]
     fn clean_values_keep_standard_json_numbers_strings_and_complete_input_checks() {
         let text = r#"{"jsonrpc":"2.0","id":0,"method":"tools/list","params":{"values":[null,true,-1,18446744073709551615,1.0,1e20,"escaped\\text\n","\u0061"],"nested":{"whole":[]}}}"#;
-        let expected: Value = serde_json::from_str(text).unwrap();
+        let expected: Value = mimir_json::from_str(text).unwrap();
         let Incoming::Request(request) = parse(text).unwrap() else {
             panic!("clean input refused")
         };
@@ -384,7 +419,7 @@ mod tests {
             };
             assert_eq!(response["id"], expected_id);
             let diagnostic: NeedsInput =
-                serde_json::from_value(response["error"]["data"].clone()).unwrap();
+                mimir_json::from_value(response["error"]["data"].clone()).unwrap();
             assert!(!diagnostic.issues().is_empty());
         }
         for id in [json!(0), json!(-1), json!(0.5), json!("")] {

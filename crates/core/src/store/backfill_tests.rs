@@ -2,6 +2,24 @@
 #[path = "../../../../tests/support/isolation.rs"]
 mod isolation;
 use super::*;
+
+#[test]
+fn deeply_nested_invalid_capture_is_rejected_without_recursive_copy_or_cleanup() {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let source = format!(
+                r#"{{"beliefs":{}null{}}}"#,
+                "[".repeat(10000),
+                "]".repeat(10000)
+            );
+            let source = mimir_json::parse(&source).unwrap();
+            assert!(pending_keys(&source).is_err());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
 use crate::{config::Config, db, graph::MemoryType, store::CancellationDecision, MimirService};
 use serde_json::json;
 
@@ -76,7 +94,7 @@ async fn original_capture_survives_new_records_vectors_and_reconnect() -> Result
         )
         .await?
         .get(0);
-    let original: Value = serde_json::from_str(&original)?;
+    let original: Value = mimir_json::from_str(&original)?;
     let captured = original["capture"]["beliefs"]
         .as_array()
         .unwrap()
@@ -129,7 +147,7 @@ async fn original_capture_survives_new_records_vectors_and_reconnect() -> Result
         )
         .await?
         .get(0);
-    assert_eq!(serde_json::from_str::<Value>(&saved)?, original);
+    assert_eq!(mimir_json::from_str::<Value>(&saved)?, original);
     assert!(reopened
         .read_operation_step(token, super::super::operation_plans::RESULT_KEY)
         .await?

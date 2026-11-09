@@ -3,6 +3,16 @@ use anyhow::{anyhow, Result};
 use mimir_core::MimirService;
 use serde_json::{json, Value};
 
+pub(super) fn indexed_support_schema() -> Value {
+    json!({"type":"array","description":"For each supporting indexed passage, copy its actual chunk ID, document path and exact quotation, and explain why those words support this belief. These citations record sources without changing probability; do not supply a weight. Similarity only ranks suggestions and does not establish support. If support is missing or unclear, open the user dialog before publication.","items":{
+        "type":"object","additionalProperties":false,"properties":{
+            "chunk_id":{"type":"string","format":"uuid","description":"Actual chunk ID returned by query_document; never invent an ID."},
+            "document_path":{"type":"string","description":"Exact indexed document path returned with that chunk; nonblank."},
+            "quotation":{"type":"string","description":"Exact, nonblank, contiguous supporting passage copied from the indexed chunk."},
+            "explanation":{"type":"string","description":"The submitting agent's nonblank explanation of why this passage supports the claim. This is an inspectable assertion, not server verification of truth."}
+        },"required":["chunk_id","document_path","quotation","explanation"]}})
+}
+
 pub fn tools() -> Vec<Value> {
     let uuid = json!({"type":"string","format":"uuid"});
     let feedback = json!({"type":"object","additionalProperties":false,"properties":{
@@ -14,7 +24,7 @@ pub fn tools() -> Vec<Value> {
         {"type":"object","additionalProperties":false,"properties":{"candidate_key":{"type":"string","minLength":1}},"required":["candidate_key"]}
     ]});
     let candidate = json!({"oneOf":[
-        {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"belief"},"key":{"type":"string","minLength":1,"description":"Stable local key: nonempty, with no leading or trailing whitespace. Internal spaces are allowed. Reuse the exact key on retries; declare each key once."},"content":{"type":"string","minLength":1},"memory_type":{"enum":["Fact","Experiential"]}},"required":["kind","key","content"]},
+        {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"belief"},"key":{"type":"string","minLength":1,"description":"Stable local key: nonempty, with no leading or trailing whitespace. Internal spaces are allowed. Reuse the exact key on retries; declare each key once."},"content":{"type":"string","minLength":1},"memory_type":{"enum":["Fact","Experiential"]},"grounding":indexed_support_schema()},"description":"Every new belief candidate requires nonempty grounding citations before publication. An exact retry of a candidate already committed by an older version preserves its original declaration without adding new fields.","required":["kind","key","content"]},
         {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"pattern"},"key":{"type":"string","minLength":1,"description":"Stable local key: nonempty, with no leading or trailing whitespace. Internal spaces are allowed. Reuse the exact key on retries; declare each key once."},"situation":{"type":"string","minLength":1},"approach":{"type":"string","minLength":1}},"required":["kind","key","situation","approach"]}
     ]});
     let axis = |minimum| json!({"type":"object","additionalProperties":false,"properties":{"value":{"type":["number","null"],"minimum":minimum,"maximum":1},"weight":{"type":"number","minimum":0,"maximum":1}},"required":["value","weight"]});
@@ -106,7 +116,7 @@ pub async fn call(svc: &MimirService, operation: LearningOperation, args: &Value
         LearningOperation::LessonAssessmentHistory => {
             let (offset, limit) = match page_selection(args) {
                 Ok(page) => page,
-                Err(correction) => return Ok(serde_json::to_value(correction)?),
+                Err(correction) => return Ok(mimir_json::to_value(correction)?),
             };
             svc.lesson_assessment_history(
                 text(args, "project")?,
@@ -121,21 +131,21 @@ pub async fn call(svc: &MimirService, operation: LearningOperation, args: &Value
         LearningOperation::ExplainBelief => {
             let (offset, limit) = match page_selection(args) {
                 Ok(page) => page,
-                Err(correction) => return Ok(serde_json::to_value(correction)?),
+                Err(correction) => return Ok(mimir_json::to_value(correction)?),
             };
             svc.explain_belief(text(args, "id")?.parse()?, offset, limit)
                 .await?
         }
-        LearningOperation::RecordExperience => serde_json::to_value(
+        LearningOperation::RecordExperience => mimir_json::to_value(
             svc.record_experience(
-                &serde_json::from_value(required(args, "experience")?.clone())?,
+                &mimir_json::decode_ref(required(args, "experience")?)?,
                 integer(args, "expected_revision")?,
             )
             .await?,
         )?,
-        LearningOperation::ReviewExperience => serde_json::to_value(
+        LearningOperation::ReviewExperience => mimir_json::to_value(
             svc.review_experience(
-                &serde_json::from_value(required(args, "review")?.clone())?,
+                &mimir_json::decode_ref(required(args, "review")?)?,
                 integer(args, "expected_review_revision")?,
             )
             .await?,
@@ -144,35 +154,35 @@ pub async fn call(svc: &MimirService, operation: LearningOperation, args: &Value
             svc.learning_review(text(args, "id")?.parse()?).await?
         }
         LearningOperation::GetExperience => {
-            serde_json::to_value(svc.get_experience(text(args, "id")?.parse()?).await?)?
+            mimir_json::to_value(svc.get_experience(text(args, "id")?.parse()?).await?)?
         }
         LearningOperation::ExperienceHistory => {
             svc.experience_history(text(args, "id")?.parse()?).await?
         }
-        LearningOperation::PendingExperiences => serde_json::to_value(
+        LearningOperation::PendingExperiences => mimir_json::to_value(
             svc.pending_experiences_excluding(
                 args.get("project")
                     .map(|_| text(args, "project"))
                     .transpose()?,
                 match super::admission::selection(args, "limit") {
                     Ok(selection) => selection,
-                    Err(correction) => return Ok(serde_json::to_value(correction)?),
+                    Err(correction) => return Ok(mimir_json::to_value(correction)?),
                 },
                 &args
                     .get("exclude_ids")
-                    .map(|ids| serde_json::from_value::<Vec<uuid::Uuid>>(ids.clone()))
+                    .map(mimir_json::decode_ref::<Vec<uuid::Uuid>>)
                     .transpose()?
                     .unwrap_or_default(),
             )
             .await?,
         )?,
-        LearningOperation::QueryLearningContext => serde_json::to_value(
+        LearningOperation::QueryLearningContext => mimir_json::to_value(
             svc.query_learning_context(
                 text(args, "context")?,
                 text(args, "project")?,
                 match super::admission::selection(args, "limit") {
                     Ok(selection) => selection,
-                    Err(correction) => return Ok(serde_json::to_value(correction)?),
+                    Err(correction) => return Ok(mimir_json::to_value(correction)?),
                 },
             )
             .await?,

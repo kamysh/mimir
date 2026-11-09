@@ -49,7 +49,7 @@ async fn hooks_keep_late_query_terms_all_results_and_full_belief_text() -> Resul
             let mut child = Command::new(env!("CARGO_BIN_EXE_mimir"))
                 .args(args).env("TMPDIR", &scratch).env("CLAUDE_CODE_SESSION_ID", id.to_string())
                 .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-            child.stdin.take().unwrap().write_all(serde_json::to_string(&input)?.as_bytes())?;
+            child.stdin.take().unwrap().write_all(mimir_json::to_string(&input)?.as_bytes())?;
             Ok(child.wait_with_output()?)
         };
         let declared = execute(&["hook", "set-project", &project], serde_json::json!({}))?;
@@ -64,7 +64,7 @@ async fn hooks_keep_late_query_terms_all_results_and_full_belief_text() -> Resul
             ensure!(output.status.success(), "{event} failed: {}", String::from_utf8_lossy(&output.stderr));
             let stdout = String::from_utf8(output.stdout)?;
             let shown = if event == "pretooluse" {
-                serde_json::from_str::<serde_json::Value>(&stdout)?["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_owned()
+                mimir_json::from_str::<serde_json::Value>(&stdout)?["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_owned()
             } else { stdout };
             for text in &texts {
                 ensure!(shown.contains(text), "{event} must use the late term, retain all six matches and print every complete belief");

@@ -19,6 +19,7 @@ import Mimir.IndependentProvenance as Independent
 import Mimir.PosteriorComputation as Numeric
 import Mimir.ApplicationFloat as FloatInput
 import Mimir.RetrievalRanking as Ranking
+import Mimir.DocumentStore as Documents
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 
 findBelief : ℕ → List Graph.Node → Maybe Graph.BeliefValues
@@ -92,6 +93,7 @@ record Explanation : Set where
     learning : Page
     candidateProvenance : Maybe Candidate.Provenance
     independentProvenance : Independent.Read
+    sources : List Documents.Citation
 
 data Result : Set where
   beliefMissing invalidStoredProvenance : Result
@@ -102,12 +104,12 @@ origin id w with Numeric.lookup id (Store.World.independentOrigins w)
 ... | nothing = Independent.noProvenance
 ... | just value = Independent.decode value
 
-get : ℕ → ℕ → Ranking.Selection → Store.World → Result
-get id offset limit w with findBelief id (Publication.World.nodes (Store.World.publication w))
+get : ℕ → ℕ → Ranking.Selection → List Documents.Citation → Store.World → Result
+get id offset limit sources w with findBelief id (Publication.World.nodes (Store.World.publication w))
 ... | nothing = beliefMissing
 ... | just b with origin id w
 ...   | Independent.malformed = invalidStoredProvenance
 ...   | provenance = explained (explanation b
   (parents id (Publication.World.nodes (Store.World.publication w)) (Publication.World.edges (Store.World.publication w)))
   (paginate offset limit (reviews id (Store.identities w) (Publication.World.ledger (Store.World.publication w))))
-  (Candidate.get id w) provenance)
+  (Candidate.get id w) provenance sources)

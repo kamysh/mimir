@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
 -- Belief insertion/backfill connects configured backend calls, physical vector
--- writes, actual graph reads and automatic grounding. A backend error retains
+-- writes and explicit source-reference validation. A backend error retains
 -- its resulting cache state; prior acknowledged database writes are retained.
 module Mimir.BeliefEmbeddingStorage where
 
@@ -63,17 +63,14 @@ module Bound (database maximumIndex : ℕ) (calculator : Posterior.Calculator) (
               events (inj₂ subscription)
             observation : R.Read
 
-    record Active (belief : G.BeliefValues) (read : SubscribedRead) : Set where
+    record Active (belief : G.BeliefValues) (support : List B.Support) (read : SubscribedRead) : Set where
       field
-        present : B.ownsPreparation belief
-          (Store.World.embeddingOwners (R.snapshot (SubscribedRead.observation read))) ≡ true
+        present : B.preparationCurrent belief support (R.snapshot (SubscribedRead.observation read)) ≡ true
 
-    missingOwnerCannotStart : ∀ belief read → B.ownsPreparation belief
-      (Store.World.embeddingOwners (R.snapshot (SubscribedRead.observation read))) ≡ false →
-      Active belief read → ⊥
-    missingOwnerCannotStart belief read missing active
-      with Relation.Binary.PropositionalEquality.trans
-        (Relation.Binary.PropositionalEquality.sym (Active.present active)) missing
+    changedPreparationCannotStart : ∀ belief support read → B.preparationCurrent belief support
+      (R.snapshot (SubscribedRead.observation read)) ≡ false → Active belief support read → ⊥
+    changedPreparationCannotStart belief support read missing active
+      with trans (sym (Active.present active)) missing
     ... | ()
 
     record BackfillActive (belief : G.BeliefValues) (read : SubscribedRead) : Set where
@@ -100,25 +97,25 @@ module Bound (database maximumIndex : ℕ) (calculator : Posterior.Calculator) (
       backfillSubscriptionFailed : ∀ cache belief events error →
         B.OwnerSubscription.E.Runs (B.OwnerSubscription.start database) events (inj₁ error) →
         Receipt cache (B.backfillEmbedding belief) (inj₁ error) cache
-      preparedEmbedding : ∀ before belief read after reply → Active belief read →
+      preparedEmbedding : ∀ before belief support read after reply → Active belief support read →
         E.Call configured before (G.BeliefValues.content belief ∷ []) after reply →
-        Receipt before (B.prepareEmbedding belief) (result reply) after
-      preparationRevoked : ∀ before belief read stopped observation reply → Active belief read →
-        B.ownsPreparation belief (Store.World.embeddingOwners (R.snapshot observation)) ≡ false →
+        Receipt before (B.prepareEmbedding belief support) (result reply) after
+      preparationMissing : ∀ cache belief support read reply →
+        B.preparationCurrent belief support (R.snapshot (SubscribedRead.observation read)) ≡ false →
+        Receipt cache (B.prepareEmbedding belief support) (inj₁ reply) cache
+      preparationRevoked : ∀ before belief support read stopped observation reply → Active belief support read →
+        B.preparationCurrent belief support (R.snapshot observation) ≡ false →
         E.Call configured before (G.BeliefValues.content belief ∷ []) stopped (inj₁ E.cancelled) →
-        Receipt before (B.prepareEmbedding belief) (inj₁ reply) stopped
-      subscriptionFailed : ∀ cache belief events error →
+        Receipt before (B.prepareEmbedding belief support) (inj₁ reply) stopped
+      subscriptionFailed : ∀ cache belief support events error →
         B.OwnerSubscription.E.Runs (B.OwnerSubscription.start database) events (inj₁ error) →
-        Receipt cache (B.prepareEmbedding belief) (inj₁ error) cache
+        Receipt cache (B.prepareEmbedding belief support) (inj₁ error) cache
       written : ∀ cache id vector before after →
         Semantics.StatementPublication (Semantics.beliefVector id vector) before DB.committed after →
         Receipt cache (B.upsert id vector) (inj₂ tt) cache
-      supported : ∀ cache belief vector observation ids
-        (selected : Vectors.Selected vector nothing nothing (Store.World.chunkVectors (R.snapshot observation)) ids) →
-        Receipt cache (B.supportingPassages belief vector)
-          (B.selectSupport belief (R.snapshot observation) (map
-            (λ row → proj₁ row , 1.0 - Read.VectorOperations.cosineDistance ops vector (Data.Product.proj₂ row))
-            (Vectors.Selected.sorted selected))) cache
+      supported : ∀ cache belief cited observation →
+        Receipt cache (B.supportingPassages belief cited)
+          (B.selectSupport belief (R.snapshot observation) cited) cache
       published : ∀ cache belief origin prepared before proposed after value events →
         Atomic.intended belief origin prepared before ≡ Atomic.T.replace proposed value →
         DB.Atomic before proposed DB.committed after →
@@ -130,7 +127,7 @@ module Bound (database maximumIndex : ℕ) (calculator : Posterior.Calculator) (
         Atomic.T.E.Runs (Atomic.Run.Execution.start belief origin prepared) events (Atomic.T.refused reason cleanup) →
         Receipt cache (B.publishPrepared belief origin prepared)
           (inj₂ (inj₁ (Errors.AgentCorrection.Certified.report report))) cache
-      supportFailed : ∀ cache belief vector error → Receipt cache (B.supportingPassages belief vector) (inj₁ error) cache
+      supportFailed : ∀ cache belief cited error → Receipt cache (B.supportingPassages belief cited) (inj₁ error) cache
       publicationFailed : ∀ cache belief origin prepared error → Receipt cache (B.publishPrepared belief origin prepared) (inj₁ error) cache
       beliefs : ∀ cache observation → Receipt cache B.listBeliefs
         (inj₂ (Records.listBeliefs nothing nothing (Store.beliefs (R.snapshot observation)))) cache

@@ -34,6 +34,7 @@ import Mimir.LearningCandidates as Declarations
 import Mimir.ApplicationStore as Application
 import Mimir.BeliefEmbedding as Embedding
 import Mimir.DocumentStore as Documents
+import Data.List.Properties as Lists
 import Mimir.RevisionBounds as Bounds
 
 data Failure : Set where
@@ -120,7 +121,7 @@ selectPrepared : Application.World → ℕ → Text → List Candidate → List 
 selectPrepared before experience project [] supplied = just []
 selectPrepared before experience project (Declarations.patternCandidate _ _ _ ∷ rest) supplied =
   selectPrepared before experience project rest supplied
-selectPrepared before experience project (candidate@(Declarations.belief key content memory) ∷ rest) supplied
+selectPrepared before experience project (candidate@(Declarations.belief key content memory cited) ∷ rest) supplied
   with Registry.lookup (experience , key)
     (Publication.World.registry (Store.World.publication (Application.World.learning before)))
 ... | just existing = selectPrepared before experience project rest supplied
@@ -131,24 +132,19 @@ selectPrepared before experience project (candidate@(Declarations.belief key con
 ...     | Graph.patternNode _ = nothing
 ...     | Graph.beliefNode belief with Embedding.ownsPreparation belief (Application.World.embeddingOwners before) ∧
   Embedding.usableVector (Embedding.Prepared.vector (PreparedCandidate.value prepared)) ∧
-  Embedding.allSupportCurrent belief before (Embedding.supports (PreparedCandidate.value prepared))
+  Embedding.allSupportCurrent belief before (Embedding.supports (PreparedCandidate.value prepared)) ∧
+  does (Lists.≡-dec Documents.citationEqual cited (map proj₂ (Embedding.supports (PreparedCandidate.value prepared))))
 ...       | false = nothing
 ...       | true with selectPrepared before experience project rest supplied
 ...         | nothing = nothing
 ...         | just following = just ((belief , PreparedCandidate.value prepared) ∷ following)
-
-selectedGrounds : PreparedSelection → List Application.Ground
-selectedGrounds [] = []
-selectedGrounds ((belief , value) ∷ rest) = map
-  (λ where (chunk , weight) → Application.ground (Documents.Chunk.identity chunk) (Graph.BeliefValues.identity belief) weight)
-  (Embedding.supports value) ++ selectedGrounds rest
 
 installPrepared : PreparedSelection → Application.World → Application.World
 installPrepared [] before = before
 installPrepared ((belief , value) ∷ rest) before = installPrepared rest (record before
   { beliefVectors = Application.putVector (Graph.BeliefValues.identity belief) (Embedding.Prepared.vector value)
       (Application.World.beliefVectors before)
-  ; grounds = Application.World.grounds before ++ selectedGrounds ((belief , value) ∷ [])
+  ; beliefSources = (Graph.BeliefValues.identity belief , map proj₂ (Embedding.supports value)) ∷ Application.World.beliefSources before
   ; embeddingOwners = filterᵇ (λ owner → not (does
       (Application.EmbeddingOwnerRow.token owner ≟ Graph.BeliefValues.identity belief)))
       (Application.World.embeddingOwners before) })
@@ -177,10 +173,7 @@ module PreparedReview (calculator : Posterior.Calculator) (posteriorTime : ℤ) 
   chosen (just values) = values
 
   pending : Application.World → Store.World
-  pending before = record (Application.learningView before)
-    { grounding = Application.groundingMasses before ++ map
-        (λ row → Application.Ground.belief row , Application.Ground.weight row)
-        (selectedGrounds (chosen (selections before))) }
+  pending before = Application.learningView before
 
   data Result : Set where
     refused : Failure → Result

@@ -43,7 +43,7 @@ pub async fn migrate(cfg: &DatabaseConfig) -> Result<()> {
     client
         .query("SELECT pg_advisory_lock(671942184)", &[])
         .await?;
-    let receipt: kryzhen::sqlx_import::Receipt = serde_json::from_str(RECEIPT_JSON)?;
+    let receipt: kryzhen::sqlx_import::Receipt = mimir_json::from_str(RECEIPT_JSON)?;
     let result: Result<()> = async {
         kryzhen::sqlx_import::import(&mut client, &receipt, &migrations)
             .await

@@ -48,15 +48,15 @@ struct StoredPlan {
         deserialize_with = "present_capture",
         skip_serializing_if = "Option::is_none"
     )]
-    capture: Option<Value>,
+    capture: Option<mimir_json::Document>,
 }
 
 // Omission retains the old three-field plan. An explicitly supplied null is
 // still present and must be rejected rather than treated as omission.
 fn present_capture<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
-) -> std::result::Result<Option<Value>, D::Error> {
-    Value::deserialize(deserializer).map(Some)
+) -> std::result::Result<Option<mimir_json::Document>, D::Error> {
+    mimir_json::Document::deserialize(deserializer).map(Some)
 }
 
 fn shape(operation: Operation) -> Vec<Shape> {
@@ -74,6 +74,7 @@ fn build(
     selections: Selections,
     capture: Option<Value>,
 ) -> Result<StoredPlan> {
+    let capture = capture.map(mimir_json::Document::new);
     if operation == Operation::Reembed {
         let captured = capture.as_ref().ok_or_else(|| anyhow!(
             "Backfill requires its original server-captured selection; use prepare_reembed_operation rather than guessing row keys"))?;
@@ -111,7 +112,7 @@ fn build(
                     "duplicate selected key for {site}"
                 );
             }
-            let id = serde_json::to_string(&(site, &key))?;
+            let id = mimir_json::to_string(&(site, &key))?;
             steps.push(PlannedStep {
                 site: site.into(),
                 key,
@@ -154,7 +155,7 @@ fn validate(plan: &StoredPlan) -> Result<()> {
             .collect::<Result<Vec<_>>>()?;
         selections.push((b.site, keys));
     }
-    ensure!(*plan==build(operation,selections,plan.capture.clone())?, "saved plan disagrees with the registered order; read its outcome and resolve the journal before continuing");
+    ensure!(*plan==build(operation,selections,plan.capture.clone().map(mimir_json::Document::into_value))?, "saved plan disagrees with the registered order; read its outcome and resolve the journal before continuing");
     Ok(())
 }
 
@@ -162,16 +163,37 @@ fn validate(plan: &StoredPlan) -> Result<()> {
 mod capture_tests {
     use super::*;
     #[test]
+    fn deep_json_saved_plan_rejection_keeps_capture_cleanup_safe() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let plan =
+                    build(Operation::named("delete_project").unwrap(), vec![], None).unwrap();
+                let mut source = mimir_json::Document::new(mimir_json::to_value(plan).unwrap());
+                source["capture"] =
+                    mimir_json::parse(&format!("{}null{}", "[".repeat(10000), "]".repeat(10000)))
+                        .unwrap()
+                        .into_value();
+                let parsed: StoredPlan = mimir_json::decode_ref(&source).unwrap();
+                assert!(validate(&parsed).is_err());
+                drop(parsed.clone());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
     fn legacy_plans_keep_their_shape_and_reject_hidden_capture() -> Result<()> {
         let operation = Operation::named("delete_project").unwrap();
         let plan = build(operation, vec![], None)?;
-        let original = serde_json::to_value(&plan)?;
+        let original = mimir_json::to_value(&plan)?;
         assert!(original.get("capture").is_none());
-        validate(&serde_json::from_value(original.clone())?)?;
+        validate(&mimir_json::from_value(original.clone())?)?;
         for captured in [Value::Null, serde_json::json!({"beliefs":[]})] {
             let mut changed = original.clone();
             changed["capture"] = captured;
-            let changed: StoredPlan = serde_json::from_value(changed)?;
+            let changed: StoredPlan = mimir_json::from_value(changed)?;
             assert!(validate(&changed).is_err());
         }
         assert!(build(
@@ -200,7 +222,7 @@ pub struct RegisteredStep {
 }
 impl OperationPlan {
     pub(crate) fn captured(&self) -> Option<&Value> {
-        self.inner.stored.capture.as_ref()
+        self.inner.stored.capture.as_ref().map(|value| &**value)
     }
     pub(crate) fn original_request(&self) -> &OperationBindingRequest {
         &self.inner.binding.request
@@ -259,7 +281,7 @@ pub enum PlanDecision {
 #[derive(Clone, Debug, Serialize)]
 pub struct CompletedOperation {
     operation_token: Uuid,
-    reply: Value,
+    reply: mimir_json::Document,
 }
 impl CompletedOperation {
     pub fn reply(&self) -> &Value {
@@ -312,8 +334,8 @@ async fn binding<C: GenericClient + Sync>(
     expected: &OperationBindingRequest,
     lock: bool,
 ) -> Result<Option<(OperationBinding, bool)>> {
-    let args = serde_json::to_string(expected.arguments())?;
-    let settings = serde_json::to_string(expected.settings())?;
+    let args = mimir_json::to_string(expected.arguments())?;
+    let settings = mimir_json::to_string(expected.settings())?;
     let mut sql="SELECT operation_token,bound_at,operation,arguments::text AS arguments,settings::text AS settings,operation=$2 AND arguments=$3::text::jsonb AND settings=$4::text::jsonb AS matches FROM mimir_operation_bindings WHERE operation_token=$1".to_owned();
     if lock {
         sql.push_str(" FOR UPDATE");
@@ -332,7 +354,7 @@ async fn load<C: GenericClient + Sync>(client: &C, token: Uuid) -> Result<Option
         )
         .await?
         .map(|row| {
-            let plan: StoredPlan = serde_json::from_str(row.try_get::<_, &str>(0)?)?;
+            let plan: StoredPlan = mimir_json::from_str(row.try_get::<_, &str>(0)?)?;
             validate(&plan)?;
             Ok(plan)
         })
@@ -342,7 +364,11 @@ async fn progress<C: GenericClient + Sync>(
     client: &C,
     token: Uuid,
     plan: &StoredPlan,
-) -> Result<(BTreeMap<String, Value>, Option<Value>, usize)> {
+) -> Result<(
+    BTreeMap<String, mimir_json::Document>,
+    Option<mimir_json::Document>,
+    usize,
+)> {
     let mut rows = BTreeMap::new();
     let mut result = None;
     for row in client
@@ -353,7 +379,7 @@ async fn progress<C: GenericClient + Sync>(
         .await?
     {
         let key: String = row.try_get(0)?;
-        let reply = serde_json::from_str(row.try_get::<_, &str>(1)?)?;
+        let reply = mimir_json::parse(row.try_get::<_, &str>(1)?)?;
         if key == RESULT_KEY {
             result = Some(reply);
         } else {
@@ -609,7 +635,7 @@ impl AgeStore {
         }
         let captured = captured?;
         let stored = build(operation, captured.selections, captured.capture)?;
-        let encoded = serde_json::to_string(&stored)?;
+        let encoded = mimir_json::to_string(&stored)?;
         tx.execute(
             "INSERT INTO mimir_operation_plans (operation_token,plan) VALUES ($1,$2::text::jsonb)",
             &[&token, &encoded],
@@ -624,13 +650,15 @@ impl AgeStore {
         }))
     }
 
-    pub async fn complete_operation(
-        &self,
-        plan: &OperationPlan,
+    pub fn complete_operation<'a>(
+        &'a self,
+        plan: &'a OperationPlan,
         reply: Value,
-    ) -> Result<CompletionDecision> {
-        self.complete_operation_checked(plan, move |_| Box::pin(async move { Ok(reply) }))
-            .await
+    ) -> impl Future<Output = Result<CompletionDecision>> + Send + 'a {
+        let reply = mimir_json::Document::new(reply);
+        self.complete_operation_checked(plan, move |_| {
+            Box::pin(async move { Ok(reply.into_value()) })
+        })
     }
 
     pub(super) async fn complete_operation_checked<F>(
@@ -680,7 +708,7 @@ impl AgeStore {
                     return Ok(CompletionDecision::FinalStepRequired(last));
                 }
                 let reply = match verify(&tx).await {
-                    Ok(reply) => reply,
+                    Ok(reply) => mimir_json::Document::new(reply),
                     Err(original) => {
                         if let Err(rollback) = tx.rollback().await {
                             return Err(anyhow!("Completion check failed but rollback could not be confirmed: {rollback:#}. Keep token {token} and read its outcome. Original cause: {original:#}"));
@@ -688,9 +716,9 @@ impl AgeStore {
                         return Err(original);
                     }
                 };
-                let encoded = serde_json::to_string(&reply)?;
+                let encoded = mimir_json::to_string(&reply)?;
                 let row=tx.query_one("INSERT INTO mimir_operation_step_replies (operation_token,step,reply) VALUES ($1,$2,$3::text::jsonb) RETURNING reply::text",&[&token,&RESULT_KEY,&encoded]).await?;
-                serde_json::from_str(row.try_get::<_, &str>(0)?)?
+                mimir_json::from_str(row.try_get::<_, &str>(0)?)?
             }
         };
         tx.commit().await?;

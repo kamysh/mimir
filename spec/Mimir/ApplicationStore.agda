@@ -89,6 +89,7 @@ record World : Set where
     chunks : List Documents.Chunk
     beliefVectors chunkVectors : List (ℕ × Vector)
     grounds : List Ground
+    beliefSources : List (ℕ × List Documents.Citation)
     history : RawHistory.Database -- original JSONB, including older payload shapes
     operations : OperationTables
     embeddingOwners : List EmbeddingOwnerRow
@@ -205,11 +206,13 @@ otherSavedAnswerPreserved before token step proposed otherToken otherStep differ
 -- This projection is only a frame assertion. Recovery still observes the
 -- complete World, including all operation tables, without a smaller-world API.
 BusinessSnapshot = Learning.World × List Documents.Chunk ×
-  List (ℕ × Vector) × List (ℕ × Vector) × List Ground × RawHistory.Database × List (ℕ × Retirement.Clock)
+  List (ℕ × Vector) × List (ℕ × Vector) × List Ground ×
+  List (ℕ × List Documents.Citation) × RawHistory.Database × List (ℕ × Retirement.Clock)
 
 businessSnapshot : World → BusinessSnapshot
 businessSnapshot before = World.learning before , World.chunks before ,
-  World.beliefVectors before , World.chunkVectors before , World.grounds before , World.history before , World.retirementClocks before
+  World.beliefVectors before , World.chunkVectors before , World.grounds before ,
+  World.beliefSources before , World.history before , World.retirementClocks before
 
 savingAnswerPreservesBusiness : ∀ before token step proposed →
   businessSnapshot (saveAnswer before token step proposed) ≡ businessSnapshot before
@@ -239,6 +242,15 @@ nodes w = Publication.World.nodes (Learning.World.publication (World.learning w)
 
 beliefs : World → List Graph.BeliefValues
 beliefs w = Recompute.beliefs (nodes w)
+
+sourceReferences : ℕ → List (ℕ × List Documents.Citation) → List Documents.Citation
+sourceReferences id [] = []
+sourceReferences id ((identity , cited) ∷ rest) with id ≟ identity
+... | yes _ = cited
+... | no _ = sourceReferences id rest
+
+sourcesFor : ℕ → World → List Documents.Citation
+sourcesFor id before = sourceReferences id (World.beliefSources before)
 
 patterns : List Graph.Node → List Graph.PatternValues
 patterns [] = []
@@ -284,7 +296,8 @@ removeNodes ids retireCandidates w = record w
 
 removeBeliefVectors : List ℕ → World → World
 removeBeliefVectors ids w = record w
-  { beliefVectors = filterᵇ (λ row → not (Ranking.member (proj₁ row) ids)) (World.beliefVectors w) }
+  { beliefVectors = filterᵇ (λ row → not (Ranking.member (proj₁ row) ids)) (World.beliefVectors w)
+  ; beliefSources = filterᵇ (λ row → not (Ranking.member (proj₁ row) ids)) (World.beliefSources w) }
 
 removeChunks : List ℕ → World → World
 removeChunks ids w = record w

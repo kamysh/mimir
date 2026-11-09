@@ -203,7 +203,7 @@ module Encode (format : Formatting) where
     ("experience_revision" , V.signed (R.Review.experienceRevision r)) ∷ ("reviewer" , V.string (R.Review.reviewer r)) ∷
     ("rationale" , V.string (R.Review.rationale r)) ∷ ("feedback" , V.array (map feedback (R.Review.feedbacks r))) ∷
     ("links" , V.array (map link (R.Review.links r))) ∷ ("superseded_beliefs" , V.array (map uuid (R.Review.superseded r))) ∷
-    ("candidates" , V.array (map Candidate.encode (R.Review.candidates r))) ∷
+    ("candidates" , V.array (map (Candidate.encode (Formatting.uuidText format)) (R.Review.candidates r))) ∷
     ("candidate_feedback" , V.array (map candidateFeedback (R.Review.candidateFeedbacks r))) ∷
     ("candidate_links" , V.array (map candidateLink (R.Review.candidateLinks r))) ∷
     (nonempty "assessments" assessment (R.Review.assessments r) ++ nonempty "extracted_items" item (R.Review.extracted r) ++
@@ -225,7 +225,8 @@ module Encode (format : Formatting) where
 
   grounded : Evidence.Grounded → V.Value
   grounded b with belief (Evidence.Grounded.belief b)
-  ... | V.object fields = V.object ((toList "evidence" , V.array (map reference (Evidence.Grounded.evidence b))) ∷ fields)
+  ... | V.object fields = V.object ((toList "sources" , V.array (map (Candidate.encodeCitation (Formatting.uuidText format)) (Evidence.Grounded.sources b))) ∷
+    (toList "evidence" , V.array (map reference (Evidence.Grounded.evidence b))) ∷ fields)
   ... | other = other
 
   documentHit : Document.Hit → V.Value
@@ -297,6 +298,7 @@ module Encode (format : Formatting) where
 
   explanation : Explain.Explanation → V.Value
   explanation e = object (("belief" , belief (Explain.Explanation.belief e)) ∷
+    ("sources" , V.array (map (Candidate.encodeCitation (Formatting.uuidText format)) (Explain.Explanation.sources e))) ∷
     ("incoming_edges" , V.array (map incoming (Explain.Explanation.incomingEdges e))) ∷
     ("learning" , object (("reviews" , V.array (map review (Explain.Page.entries page))) ∷
       ("total" , V.unsigned (Explain.Page.total page)) ∷ ("next_offset" , optional V.unsigned (Explain.Page.nextOffset page)) ∷ [])) ∷

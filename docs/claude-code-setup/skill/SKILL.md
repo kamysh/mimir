@@ -57,6 +57,20 @@ The MCP tool requires `provenance: {"basis":"user_instruction"|"document",
 do not label an agent inference or incident report as an independent source.
 `explain_belief` exposes this provenance. Older untagged MCP insertion calls
 are rejected; capture their incident as an experience instead.
+
+Every new belief also requires an embedding and `grounding` citations from
+indexed documents, including beliefs created by a review. Use `query_document`
+to find a passage, then supply its actual `chunk_id`, exact `document_path`, an
+exact `quotation`, and your `explanation` of why those words support the claim.
+A similar passage is only a suggestion; its score does not establish support.
+Your explanation remains your assertion, not Mimir's verification of truth.
+These citations record the source without changing probability. Do not supply a
+citation weight; weighted evidence is a separate operation.
+Indexing a document does not automatically assert support for existing beliefs.
+If the source is unavailable or support is unclear, use the returned correction
+to open a dialog before publication. Do not invent a citation or leave out
+grounding to make the write succeed. Exact retries of older completed writes
+keep their original result and declarations.
 User requirements are authoritative constraints for the task, not statistical
 hypotheses for the judge to approve or disprove. If both kinds of information
 arrive together, keep the requirement direct and the observed incident in its

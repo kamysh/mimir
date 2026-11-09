@@ -59,8 +59,8 @@ async fn supporting_passages_preserve_search_preference_and_selection() -> Resul
                 "support changed selection or order"
             );
             ensure!(
-                serde_json::to_value(&enriched.retrieval)?
-                    == serde_json::to_value(&preferred.retrieval)?,
+                mimir_json::to_value(&enriched.retrieval)?
+                    == mimir_json::to_value(&preferred.retrieval)?,
                 "support changed coverage report"
             );
             ensure!(
