@@ -180,7 +180,7 @@ module Registered (kind : Kind) (conversion : Conversion.Contract)
     "Read the original evidence request and outcome before continuing. Correct its exact declared fields; do not replace its arguments or settings."
 
   requestFor : Kind → Wire.Value → Validation.Fault ⊎ Ground.Request
-  requestFor addition raw with PublicDecode.readTool Tools.addEvidence raw
+  requestFor addition raw with PublicDecode.readBoundTool Tools.addEvidence raw
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ (Public.addEvidence belief chunk weight) = inj₂ (Ground.add chunk belief weight)
   ... | inj₂ _ = inj₁ mismatch

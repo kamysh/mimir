@@ -334,7 +334,7 @@ module BasicReads (format : Encoding.Formatting) where
 
   data Request : Set where
     stats : Request
-    getBelief : ℕ → Request
+    getBelief getPattern : ℕ → Request
     listBeliefs : Maybe Text → Maybe Candidates.Memory → Request
     beliefPage : Maybe Text → Maybe Candidates.Memory → ℕ → ℕ → Request
     listPatterns : Maybe Text → Request
@@ -360,6 +360,8 @@ module BasicReads (format : Encoding.Formatting) where
      ("contradicts" , Wire.unsigned (Graph.Statistics.contradictionCount counts)) ∷ [])
     where counts = Graph.statisticsAnswer state
   answer (getBelief id) state = Encoding.optional Encode.belief (Ranking.lookup id (Store.beliefs state))
+  answer (getPattern id) state = Encoding.optional Encode.patternValue
+    (Records.getPattern id (Store.patterns (Store.nodes state)))
   answer (listBeliefs project memory) state = Wire.array
     (map Encode.belief (Records.listBeliefs project memory (Store.beliefs state)))
   answer (beliefPage project memory count offset) state = Encode.beliefPage

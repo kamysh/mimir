@@ -99,7 +99,7 @@ module Registered (format : Encoding.Formatting) (conversion : Conversion.Contra
     "Read the original propagation request and outcome before continuing. Correct its exact declared fields; do not replace its arguments or settings."
 
   request : Wire.Value → Validation.Fault ⊎ ℕ
-  request raw with PublicDecode.readTool Tools.propagateFrom raw
+  request raw with PublicDecode.readBoundTool Tools.propagateFrom raw
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ (Public.inference (Protocol.propagate identity)) = inj₂ identity
   ... | inj₂ _ = inj₁ mismatch

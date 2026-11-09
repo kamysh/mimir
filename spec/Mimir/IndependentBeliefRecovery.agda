@@ -222,7 +222,7 @@ module Binding (format : Encoding.Formatting) (conversion : Conversion.Contract)
     "Read the original belief request and its server-selected embedding settings. Retain the original token and plan; do not invent a provider, identity or replacement request."
 
   decodePublic : Wire.Value → Validation.Fault ⊎ Request
-  decodePublic raw with D.readTool Tools.insertBelief raw
+  decodePublic raw with D.readBoundTool Tools.insertBelief raw
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ (Public.mutation (Mutation.belief content probability confidence project memory (just origin) cited)) =
     inj₂ (request content probability confidence project memory origin cited)
