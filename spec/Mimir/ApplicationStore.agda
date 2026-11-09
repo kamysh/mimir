@@ -61,6 +61,10 @@ record SavedReplyRow : Set where
   constructor savedReplyRow
   field token : ℕ; step : Text; reply : Wire.Value
 
+record CancellationRow : Set where
+  constructor cancellationRow
+  field token : ℕ; cancelledAt : ℤ
+
 -- PostgreSQL-issued ownership for work prepared before business publication.
 -- Deletion/cancellation revoke it; there is deliberately no expiry timer.
 record EmbeddingOwnerRow : Set where
@@ -75,6 +79,7 @@ record OperationTables : Set where
     bindings : List BindingRow
     plans : List PlanRow
     savedReplies : List SavedReplyRow
+    cancellations : List CancellationRow
 
 record World : Set where
   constructor world
@@ -98,6 +103,21 @@ lookupReply token step (row ∷ rest) with replyKey? token step row
 
 lookupSaved : World → ℕ → Text → Maybe Wire.Value
 lookupSaved before token step = lookupReply token step (OperationTables.savedReplies (World.operations before))
+
+lookupCancellationRows : ℕ → List CancellationRow → Maybe CancellationRow
+lookupCancellationRows token [] = nothing
+lookupCancellationRows token (row ∷ rest) with token ≟ CancellationRow.token row
+... | yes _ = just row
+... | no _ = lookupCancellationRows token rest
+
+lookupCancellation : World → ℕ → Maybe CancellationRow
+lookupCancellation before token = lookupCancellationRows token (OperationTables.cancellations (World.operations before))
+
+headCancellationReadable : ∀ token timestamp rest →
+  lookupCancellationRows token (cancellationRow token timestamp ∷ rest) ≡ just (cancellationRow token timestamp)
+headCancellationReadable token timestamp rest with token ≟ token
+... | yes _ = refl
+... | no impossible = ⊥-elim (impossible refl)
 
 -- The executor returns an already saved answer rather than replacing it.
 saveAnswer : World → ℕ → Text → Wire.Value → World
@@ -167,6 +187,12 @@ savingAnswerPreservesOperationInputs : ∀ before token step proposed →
      (OperationTables.reservations prior , OperationTables.requestKeys prior ,
       OperationTables.bindings prior , OperationTables.plans prior)
 savingAnswerPreservesOperationInputs before token step proposed with lookupSaved before token step
+... | just _ = refl
+... | nothing = refl
+
+savingAnswerPreservesCancellation : ∀ before token step proposed other →
+  lookupCancellation (saveAnswer before token step proposed) other ≡ lookupCancellation before other
+savingAnswerPreservesCancellation before token step proposed other with lookupSaved before token step
 ... | just _ = refl
 ... | nothing = refl
 

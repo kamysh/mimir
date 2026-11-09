@@ -14,7 +14,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 
 data Migration : Set where
   initial searchPath beliefEmbeddings evidenceEdges betaBeliefs learningLedger
-    reviewCandidates assessments itemOwners postgresItemAllocation reviewQueueNotifications operationReservations operationBindings operationStepReplies operationPlans operationRequestKeys candidateKeyContent embeddingOwners : Migration
+    reviewCandidates assessments itemOwners postgresItemAllocation reviewQueueNotifications operationReservations operationBindings operationStepReplies operationPlans operationRequestKeys candidateKeyContent embeddingOwners operationCancellations : Migration
 
 name : Migration → String
 name initial = "initial"
@@ -35,6 +35,7 @@ name operationPlans = "operation-plans"
 name operationRequestKeys = "operation-request-keys"
 name candidateKeyContent = "candidate-key-content"
 name embeddingOwners = "embedding-publication-owners"
+name operationCancellations = "operation-cancellations"
 
 predecessor : Migration → Maybe Migration
 predecessor initial = nothing
@@ -55,11 +56,12 @@ predecessor operationPlans = just operationStepReplies
 predecessor operationRequestKeys = just operationPlans
 predecessor candidateKeyContent = just operationRequestKeys
 predecessor embeddingOwners = just candidateKeyContent
+predecessor operationCancellations = just embeddingOwners
 
 manifest : List Migration
 manifest = initial ∷ searchPath ∷ beliefEmbeddings ∷ evidenceEdges ∷
   betaBeliefs ∷ learningLedger ∷ reviewCandidates ∷ assessments ∷ itemOwners ∷ postgresItemAllocation ∷
-  reviewQueueNotifications ∷ operationReservations ∷ operationBindings ∷ operationStepReplies ∷ operationPlans ∷ operationRequestKeys ∷ candidateKeyContent ∷ embeddingOwners ∷ []
+  reviewQueueNotifications ∷ operationReservations ∷ operationBindings ∷ operationStepReplies ∷ operationPlans ∷ operationRequestKeys ∷ candidateKeyContent ∷ embeddingOwners ∷ operationCancellations ∷ []
 
 -- The executable lifecycle is MigrationDriver. The former untyped state
 -- table was removed because it conflated queued rollback with acknowledgement

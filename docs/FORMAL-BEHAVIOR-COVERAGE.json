@@ -63,9 +63,12 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/BeliefDeletionRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered storage deletion has a whole-world posterior goal and isolated database checks; this is not a compiled Rust refinement theorem.",
       "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
     },
     {
@@ -504,10 +507,11 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/GroundingRecovery.agda"
       ],
       "baseline_gap": "Concrete evidence lookup/add admission, result fields, grounding association and numerical recomputation/failure composition.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Public token admission and mandatory dispatcher integration remain under #85/#74/#76. Registered evidence completion proves the requested contribution and all resulting posterior equations, preserves the complete world outside those changes, and replays original answers without another contribution."
     },
     {
       "name": "get_evidence",
@@ -1862,9 +1866,10 @@
         "spec/Mimir/PublicRequest.agda",
         "spec/Mimir/ApplicationProtocol.agda",
         "spec/Mimir/GroundingPublication.agda",
-        "spec/Mimir/GroundingProtocol.agda"
+        "spec/Mimir/GroundingProtocol.agda",
+        "spec/Mimir/GroundingRecovery.agda"
       ],
-      "note": "Existing core API; no new MCP tool."
+      "note": "Existing core removal API, registered internally without a new MCP tool. Completion removes all matching contributions, recomputes affected posteriors and retains the original saved result on retry. Public dispatcher wiring remains separate."
     },
     {
       "name": "get_pattern, unscoped creation, scalar graph/inference helpers",

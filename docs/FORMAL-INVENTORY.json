@@ -9948,6 +9948,19 @@
             "spec/Mimir/PublicRequest.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "delete_belief_operation",
+          "line": 442,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/BeliefDeletionRecovery.agda",
+            "spec/Mimir/RecoverableStoreStep.agda",
+            "spec/Mimir/RegisteredStoreAdmission.agda"
+          ],
+          "mapping_boundary": "Independent complete-world deletion and posterior goal plus isolated native checks; not a compiled Rust refinement theorem."
         }
       ],
       "status": "unmapped",
@@ -9967,7 +9980,11 @@
         "spec/Mimir/DocumentQuery.agda",
         "spec/Mimir/EvidenceRead.agda",
         "spec/Mimir/GroundingProtocol.agda",
-        "spec/Mimir/BeliefEmbedding.agda"
+        "spec/Mimir/BeliefEmbedding.agda",
+        "spec/Mimir/BeliefDeletionRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda",
+        "spec/Mimir/GroundingRecovery.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -10085,7 +10102,8 @@
       "behavioral_specification": [
         "spec/Mimir/ToolCatalog.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/ApplicationProtocol.agda"
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/GroundingRecovery.agda"
       ],
       "specification_status": "behavior-defined",
       "proof_boundary_category": "application_protocol",
@@ -12122,6 +12140,32 @@
             "spec/Mimir/PublicRequest.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "delete_belief_operation",
+          "line": 675,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/BeliefDeletionRecovery.agda",
+            "spec/Mimir/RecoverableStoreStep.agda",
+            "spec/Mimir/RegisteredStoreAdmission.agda"
+          ],
+          "mapping_boundary": "Independent complete-world deletion and posterior goal plus isolated native checks; not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "delete_belief_in",
+          "line": 631,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/BeliefDeletionRecovery.agda",
+            "spec/Mimir/RecoverableStoreStep.agda",
+            "spec/Mimir/RegisteredStoreAdmission.agda"
+          ],
+          "mapping_boundary": "Independent complete-world deletion and posterior goal plus isolated native checks; not a compiled Rust refinement theorem."
         }
       ],
       "status": "unmapped",
@@ -12136,7 +12180,11 @@
         "spec/Mimir/GraphRecords.agda",
         "spec/Mimir/GraphPaths.agda",
         "spec/Mimir/DocumentPublication.agda",
-        "spec/Mimir/GroundingPublication.agda"
+        "spec/Mimir/GroundingPublication.agda",
+        "spec/Mimir/BeliefDeletionRecovery.agda",
+        "spec/Mimir/RecoverableStoreStep.agda",
+        "spec/Mimir/RegisteredStoreAdmission.agda",
+        "spec/Mimir/GroundingRecovery.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -13481,7 +13529,8 @@
       "behavioral_specification": [
         "spec/Mimir/Recovery.agda",
         "spec/Mimir/DatabaseTransaction.agda",
-        "spec/Mimir/MigrationSchema.agda"
+        "spec/Mimir/MigrationSchema.agda",
+        "spec/Mimir/GroundingRecovery.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
@@ -13588,7 +13637,8 @@
           "behavioral_area": [
             "spec/Mimir/Recovery.agda",
             "spec/Mimir/DatabaseTransaction.agda",
-            "spec/Mimir/MigrationSchema.agda"
+            "spec/Mimir/MigrationSchema.agda",
+            "spec/Mimir/RecoverableStoreStep.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -13601,7 +13651,8 @@
           "behavioral_area": [
             "spec/Mimir/Recovery.agda",
             "spec/Mimir/DatabaseTransaction.agda",
-            "spec/Mimir/MigrationSchema.agda"
+            "spec/Mimir/MigrationSchema.agda",
+            "spec/Mimir/RecoverableStoreStep.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -13614,7 +13665,8 @@
           "behavioral_area": [
             "spec/Mimir/Recovery.agda",
             "spec/Mimir/DatabaseTransaction.agda",
-            "spec/Mimir/MigrationSchema.agda"
+            "spec/Mimir/MigrationSchema.agda",
+            "spec/Mimir/RecoverableStoreStep.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -13638,7 +13690,8 @@
       "behavioral_specification": [
         "spec/Mimir/Recovery.agda",
         "spec/Mimir/DatabaseTransaction.agda",
-        "spec/Mimir/MigrationSchema.agda"
+        "spec/Mimir/MigrationSchema.agda",
+        "spec/Mimir/RecoverableStoreStep.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
@@ -17672,6 +17725,331 @@
       "status": "unmapped",
       "proof_boundary_category": "verification_artifact",
       "classification": "verification-or-example-artifact"
+    },
+    {
+      "path": "crates/core/src/store/cancellations.rs",
+      "definitions": [
+        {
+          "kind": "struct",
+          "name": "CancellationReceipt",
+          "line": 10,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "enum",
+          "name": "CancellationDecision",
+          "line": 16,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "decode",
+          "line": 24,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "lookup",
+          "line": 31,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "lock_token",
+          "line": 42,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "saved_replies",
+          "line": 52,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "record_operation_cancellation",
+          "line": 65,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "read_operation_cancellation",
+          "line": 99,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/Recovery.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DatabaseTransaction.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        }
+      ],
+      "status": "mapped",
+      "proof_boundary_category": "database_effects",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/Recovery.agda",
+        "spec/Mimir/ApplicationStore.agda",
+        "spec/Mimir/DatabaseTransaction.agda",
+        "spec/Mimir/MigrationSchema.agda"
+      ],
+      "specification_status": "behavior-defined-and-aggregate-checked"
+    },
+    {
+      "path": "crates/core/tests/atomic_belief_deletion.rs",
+      "definitions": [
+        {
+          "kind": "fn",
+          "name": "identity",
+          "line": 30,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "setup",
+          "line": 38,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "belief",
+          "line": 45,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "admitted",
+          "line": 58,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "completed_reply",
+          "line": 80,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "retry_after_reconnect_keeps_original_true_and_unrelated_records",
+          "line": 90,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "saved_false_does_not_delete_a_belief_created_after_completion",
+          "line": 164,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "rejected_final_result_rolls_back_deletion_retirement_and_step_answer",
+          "line": 185,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "another_registered_operation_cannot_enter_belief_deletion",
+          "line": 284,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "explicit_cancellation_preserves_belief_and_saves_no_completion",
+          "line": 312,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "malformed_original_arguments_receive_correction_before_any_deletion",
+          "line": 343,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "repeated_numerical_states_restore_deletion_edges_vector_and_pending_token",
+          "line": 372,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        }
+      ],
+      "status": "unmapped",
+      "proof_boundary_category": "verification_artifact",
+      "classification": "verification-or-example-artifact"
+    },
+    {
+      "path": "crates/core/tests/atomic_grounding.rs",
+      "definitions": [
+        {
+          "kind": "fn",
+          "name": "config",
+          "line": 17,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "identity",
+          "line": 27,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "create",
+          "line": 44,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "args",
+          "line": 84,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "plan",
+          "line": 87,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "state",
+          "line": 105,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "pending",
+          "line": 112,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "cleanup",
+          "line": 129,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "addition_replays_original_answer_without_duplicating_evidence_or_probabilities",
+          "line": 136,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "removal_replays_without_removing_evidence_added_after_its_completion",
+          "line": 165,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "rejected_final_receipt_rolls_back_evidence_and_all_affected_counts",
+          "line": 209,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "cancelled_evidence_change_keeps_all_data_and_saves_no_answer",
+          "line": 234,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "malformed_originals_missing_passages_and_wrong_steps_cannot_publish",
+          "line": 270,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "repeated_numerical_states_leave_evidence_counts_and_token_pending",
+          "line": 299,
+          "specification": [],
+          "status": "verification-or-example-not-production-behavior"
+        }
+      ],
+      "status": "unmapped",
+      "proof_boundary_category": "verification_artifact",
+      "classification": "verification-or-example-artifact"
     }
   ],
   "dependency_contracts": [
@@ -17865,7 +18243,7 @@
         "formal_status": "One external-interface postulate outside the safe spec import graph; the Rust adapter correspondence remains open.",
         "approval": "User selected Approve for the PostgreSQL transaction-atomicity question on 2026-10-30.",
         "module_file": "assumptions/Mimir/Assumptions/PostgreSQL.agda",
-        "declaration": "atomicTransactions : (State : Set) → Mimir.DatabaseTransaction.Contract State",
+        "declaration": "atomicTransactions : (State : Set) \u2192 Mimir.DatabaseTransaction.Contract State",
         "isolation_audit": "/tmp/mimir-assumption-isolation-audit-eejzpx6r.json",
         "verification": "/tmp/mimir-agda-approved-postgresql-vetBrZBn.log and .exit",
         "verification_limit": "Checks the declaration and imports; PostgreSQL behavior is assumed, not proved."

@@ -840,6 +840,12 @@ impl AgeStore {
         );
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
+        let preparation_ids = prepared
+            .values()
+            .map(|value| value.belief.id)
+            .collect::<Vec<_>>();
+        self.lock_preparation_operations(&tx, &preparation_ids)
+            .await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
         let current = state(

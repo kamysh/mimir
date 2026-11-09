@@ -28,6 +28,13 @@ pub(super) fn reference<T>(result: anyhow::Result<T>) -> anyhow::Result<Option<T
             {
                 println!("{}", serde_json::to_string(refusal.correction())?);
                 Ok(None)
+            } else if let Some(decision) =
+                error.downcast_ref::<mimir_core::inference::NumericalDecision>()
+            {
+                let correction =
+                    mimir_core::interaction::NeedsInput::new(decision.issue().clone(), vec![])?;
+                println!("{}", serde_json::to_string(&correction)?);
+                Ok(None)
             } else {
                 Err(error)
             }

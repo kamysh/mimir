@@ -16,6 +16,7 @@ import Mimir.ApplicationStore as Store
 import Mimir.LearningStore as Learning
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.LearningRecompute as Recompute
+import Mimir.PosteriorComputation as Posterior
 import Mimir.RetrievalRanking as Ranking
 import Mimir.GraphNumerics as Numeric
 import Mimir.LearningTransaction as Transaction
@@ -27,6 +28,7 @@ data Request : Set where
 data Failure : Set where
   storageFailure : Text → Failure
   invalidWeight missingEndpoint missingChunk missingBelief invalidNumericInput invalidNumericWrite foreignTarget : Failure
+  numericalDecision : Posterior.State → List Posterior.State → Failure
 
 admitted : Request → Bool
 admitted (add chunk belief weight) = Numeric.probability weight
@@ -36,7 +38,7 @@ unlink : ℕ → ℕ → Store.World → Store.World
 unlink chunk belief before = record before { grounds = filterᵇ
   (λ e → not (does (chunk ≟ Store.Ground.chunk e) ∧ does (belief ≟ Store.Ground.belief e))) (Store.World.grounds before) }
 
-module Operation (database : ℕ) where
+module Operation (database : ℕ) (calculator : Posterior.Calculator) where
   module T = Transaction.Over Store.World ⊤ Failure database 671942183
 
   finish : Store.World → Recompute.Result → T.Decision
@@ -44,9 +46,10 @@ module Operation (database : ℕ) where
   finish proposed Recompute.foreignTarget = T.reject foreignTarget
   finish proposed Recompute.invalidNumericInput = T.reject invalidNumericInput
   finish proposed Recompute.invalidNumericWrite = T.reject invalidNumericWrite
+  finish proposed (Recompute.needsDecision counts history) = T.reject (numericalDecision counts history)
 
   recompute : ℕ → Store.World → T.Decision
-  recompute belief proposed = finish proposed (Recompute.runGlobal (belief ∷ [])
+  recompute belief proposed = finish proposed (Recompute.runGlobal calculator (belief ∷ [])
     (Store.nodes proposed) (Publication.World.edges pub)
     (Recompute.activeReviewsScoped nothing (Learning.identities learn) (Publication.World.ledger pub))
     (Store.groundingMasses proposed))

@@ -20,6 +20,7 @@ import Mimir.GraphRecords as Records
 import Mimir.RetrievalRanking as Ranking
 import Mimir.ReviewEdges as Edges
 import Mimir.LearningRecompute as Recompute
+import Mimir.PosteriorComputation as Posterior
 import Mimir.LearningStore as Learning
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.LearningTransaction as Transaction
@@ -74,7 +75,9 @@ module PatternRecovery where
   module Saved = Recovery.StoreFinalStep Input Input.token key resultKey distinct apply preservesJournal
 
   intended : Input → Store.World → Store.World
-  intended request before with Store.lookupSaved before (Input.token request) (key request)
+  intended request before with Store.lookupCancellation before (Input.token request)
+  ... | just _ = before
+  ... | nothing with Store.lookupSaved before (Input.token request) (key request)
     | Store.lookupSaved before (Input.token request) resultKey
   ... | nothing | nothing = Store.saveAnswer
     (Store.saveAnswer (desired request before) (Input.token request) (key request) (answer request before))
@@ -84,7 +87,9 @@ module PatternRecovery where
   ... | nothing | just _ = before
 
   expectedReply : Input → Store.World → Saved.Result
-  expectedReply request before with Store.lookupSaved before (Input.token request) (key request)
+  expectedReply request before with Store.lookupCancellation before (Input.token request)
+  ... | just original = Saved.cancelled original
+  ... | nothing with Store.lookupSaved before (Input.token request) (key request)
     | Store.lookupSaved before (Input.token request) resultKey
   ... | just saved | just _ = Saved.done saved
   ... | nothing | nothing = Saved.done (answer request before)
@@ -96,7 +101,9 @@ module PatternRecovery where
 
   correct : ∀ request before → Saved.execute request before ≡
     Saved.G.expected intent (Saved.G.invocation request before)
-  correct request before with Store.lookupSaved before (Input.token request) (key request)
+  correct request before with Store.lookupCancellation before (Input.token request)
+  ... | just _ = refl
+  ... | nothing with Store.lookupSaved before (Input.token request) (key request)
     | Store.lookupSaved before (Input.token request) resultKey
   ... | just _ | just _ = refl
   ... | nothing | nothing = refl
@@ -155,7 +162,9 @@ data Failure : Set where
   storageFailure : Text → Failure
   foreignTarget invalidNumericInput invalidNumericWrite : Failure
 
-module Operation (database : ℕ) where
+  numericalDecision : Posterior.State → List Posterior.State → Failure
+
+module Operation (database : ℕ) (calculator : Posterior.Calculator) where
   module T = Transaction.Over Store.World Bool Failure database 671942183
 
   finish : Store.World → Recompute.Result → T.Decision
@@ -163,13 +172,14 @@ module Operation (database : ℕ) where
   finish state Recompute.foreignTarget = T.reject foreignTarget
   finish state Recompute.invalidNumericInput = T.reject invalidNumericInput
   finish state Recompute.invalidNumericWrite = T.reject invalidNumericWrite
+  finish state (Recompute.needsDecision counts history) = T.reject (numericalDecision counts history)
 
   delete : Kind → ℕ → Store.World → T.Decision
   delete kind id state with exists kind id state
   ... | false = T.replay false
   ... | true with kind
   ...   | patternNode = T.replace (Store.removeNodes (id ∷ []) true state) true
-  ...   | belief = finish proposed (Recompute.runGlobal (children id state)
+  ...   | belief = finish proposed (Recompute.runGlobal calculator (children id state)
     (Store.nodes proposed) (Publication.World.edges pub)
     (Recompute.activeReviewsScoped nothing (Learning.identities learn) (Publication.World.ledger pub))
     (Store.groundingMasses proposed))

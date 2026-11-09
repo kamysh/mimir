@@ -439,6 +439,13 @@ impl MimirService {
         self.store.delete_belief(id).await
     }
 
+    pub async fn delete_belief_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.delete_belief_operation(step).await
+    }
+
     /// Delete all beliefs and DocumentChunks tagged with the given project.
     /// Returns the combined count of vertices removed.
     pub async fn delete_project(&self, project: &str) -> Result<usize> {
@@ -498,7 +505,15 @@ impl MimirService {
             let edge = graph::Edge::new(from_id, to_id, edge_type, weight)?;
             self.store.insert_edge(&edge).await?;
             if edge_type == EdgeType::Defeats {
-                self.propagate_from(from_id).await?;
+                if let Err(error) = self.propagate_from(from_id).await {
+                    if let Some(decision) = error.downcast_ref::<inference::NumericalDecision>() {
+                        return Err(inference::EdgeCommittedDecision::new(
+                            from_id, to_id, weight, decision,
+                        )
+                        .into());
+                    }
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -1153,6 +1168,14 @@ impl MimirService {
         self.store.delete_evidence(chunk_id, belief_id).await
     }
 
+    /// Complete the evidence change captured by this checked operation plan.
+    pub async fn change_evidence_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.change_evidence_operation(step).await
+    }
+
     /// The grounding passages for a single belief, strongest first.
     /// Omit passage selection for all support; a supplied count is positive.
     pub async fn evidence_for_belief(
@@ -1385,6 +1408,22 @@ impl MimirService {
         expected: Option<&store::OperationBindingRequest>,
     ) -> Result<store::OperationOutcome> {
         self.store.read_operation_outcome(token, expected).await
+    }
+
+    /// Record the explicit decision and revoke publication. Public callers
+    /// must separately stop and join owned work before reporting cleanup done.
+    pub async fn record_operation_cancellation(
+        &self,
+        token: Uuid,
+    ) -> Result<store::CancellationDecision> {
+        self.store.record_operation_cancellation(token).await
+    }
+
+    pub async fn read_operation_cancellation(
+        &self,
+        token: Uuid,
+    ) -> Result<Option<store::CancellationReceipt>> {
+        self.store.read_operation_cancellation(token).await
     }
 
     /// Collect graph statistics.
