@@ -8,7 +8,7 @@ module Mimir.RetrievalProtocol where
 
 open import Data.Bool using (Bool; true; false; not)
 open import Data.Float.Base using (Float)
-open import Data.Float.Base using (isNaN; isInfinite)
+open import Data.Float.Base using (isNaN; isInfinite; _≡ᵇ_)
 open import Data.List using (List; []; _∷_; _++_; map; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
@@ -194,10 +194,19 @@ module Run (ops : R.F32) (unicode : R.Unicode) where
   ...   | true = false
   ...   | false = finiteVector rest
 
+  nonzeroVector : List Float → Bool
+  nonzeroVector [] = false
+  nonzeroVector (value ∷ rest) with value ≡ᵇ 0.0
+  ... | true = nonzeroVector rest
+  ... | false = true
+
   afterEmbedding : Request → List ℕ → List Graph.BeliefValues → List ℕ → List (List Float) → State
   afterEmbedding r retired all token ((value ∷ values) ∷ []) with finiteVector (value ∷ values)
-  ... | true = vectorQuery r retired all token (value ∷ values)
   ... | false = seeded r retired all token [] (unusableQueryVector (toList "The query embedding contains a non-finite value."))
+  ... | true with nonzeroVector (value ∷ values)
+  ...   | false = seeded r retired all token []
+    (unusableQueryVector (toList "The query embedding has zero norm, so cosine similarity is undefined."))
+  ...   | true = vectorQuery r retired all token (value ∷ values)
   afterEmbedding r retired all token [] = seeded r retired all token []
     (unusableQueryVector (toList "The backend returned no query embedding."))
   afterEmbedding r retired all token ([] ∷ []) = seeded r retired all token []
@@ -252,6 +261,14 @@ module Run (ops : R.F32) (unicode : R.Unicode) where
       seeded r retired all token []
         (unusableQueryVector (toList "The query embedding contains a non-finite value."))
   nonfiniteQueryVectorIsNotSemanticSearch r retired all token first rest invalid rewrite invalid = refl
+
+  zeroNormQueryVectorIsNotSemanticSearch : ∀ r retired all token first rest →
+    finiteVector (first ∷ rest) ≡ true → nonzeroVector (first ∷ rest) ≡ false →
+    afterEmbedding r retired all token ((first ∷ rest) ∷ []) ≡
+      seeded r retired all token []
+        (unusableQueryVector (toList "The query embedding has zero norm, so cosine similarity is undefined."))
+  zeroNormQueryVectorIsNotSemanticSearch r retired all token first rest finite zeroNorm
+    rewrite finite | zeroNorm = refl
 
 -- Commands contain no graph writes, activations or experience recording.
 -- Warnings accompanying embedder fallback are presentation events; the error

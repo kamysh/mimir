@@ -116,6 +116,12 @@ async fn semantic_availability_preserves_literal_results_and_explains_each_actua
             Some("The query embedding contains a non-finite value.".into()),
         ),
         (
+            Some(QueryAnswer::Vectors(vec![vec![0.0, -0.0, 0.0]])),
+            "unavailable",
+            "unusable_query_vector",
+            Some("The query embedding has zero norm, so cosine similarity is undefined.".into()),
+        ),
+        (
             Some(QueryAnswer::Vectors(vec![vec![1.0, 0.0, 0.0]])),
             "available",
             "evaluated",

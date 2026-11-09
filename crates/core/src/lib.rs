@@ -857,7 +857,8 @@ impl MimirService {
                     Ok(mut vecs)
                         if vecs.len() == 1
                             && !vecs[0].is_empty()
-                            && vecs[0].iter().all(|value| value.is_finite()) =>
+                            && vecs[0].iter().all(|value| value.is_finite())
+                            && vecs[0].iter().any(|value| *value != 0.0) =>
                     {
                         let qv = vecs
                             .pop()
@@ -884,8 +885,10 @@ impl MimirService {
                             "The backend returned multiple embeddings for one submitted context."
                         } else if vecs[0].is_empty() {
                             "The query embedding is empty."
-                        } else {
+                        } else if !vecs[0].iter().all(|value| value.is_finite()) {
                             "The query embedding contains a non-finite value."
+                        } else {
+                            "The query embedding has zero norm, so cosine similarity is undefined."
                         };
                         (
                             Vec::new(),
