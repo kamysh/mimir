@@ -417,7 +417,7 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
   Effect = ℕ
   Reply : Effect → Set
   Reply _ = Metadata × Saved.Reply
-  Atomic : Store.World → Effect → Reply _ → Store.World → Set
+  Atomic : Store.World → (token : Effect) → Reply token → Store.World → Set
   Atomic before token (metadata , reply) after = Saved.Atomic before (token , metadata) reply after
   module X = Recovery.Execution Store.World Effect Reply Atomic
   module E = X.E
