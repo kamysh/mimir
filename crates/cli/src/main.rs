@@ -629,7 +629,7 @@ async fn cmd_query(
 
     if evidence {
         let grounded = svc
-            .query_relevant_grounded(text, limit, None, project)
+            .query_relevant_grounded_preferred(text, limit, None, project, prefer_type)
             .await?;
         println!("Search context: {}", grounded.retrieval.context);
         println!("{}", grounded.retrieval.message);

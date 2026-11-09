@@ -1203,9 +1203,27 @@ impl MimirService {
         evidence_per_belief: Selection,
         project: Option<&str>,
     ) -> Result<RetrievalReport<GroundedBelief>> {
-        self.grounded_after_overlay(query, limit, evidence_per_belief, project, || async {
-            Ok(())
-        })
+        self.query_relevant_grounded_preferred(query, limit, evidence_per_belief, project, None)
+            .await
+    }
+
+    /// Enrich the requested search without changing its memory preference.
+    pub async fn query_relevant_grounded_preferred(
+        &self,
+        query: &str,
+        limit: Selection,
+        evidence_per_belief: Selection,
+        project: Option<&str>,
+        prefer_type: Option<MemoryType>,
+    ) -> Result<RetrievalReport<GroundedBelief>> {
+        self.grounded_after_overlay(
+            query,
+            limit,
+            evidence_per_belief,
+            project,
+            prefer_type,
+            || async { Ok(()) },
+        )
         .await
     }
 
@@ -1215,6 +1233,7 @@ impl MimirService {
         limit: Selection,
         evidence_per_belief: Selection,
         project: Option<&str>,
+        prefer_type: Option<MemoryType>,
         after_overlay: F,
     ) -> Result<RetrievalReport<GroundedBelief>>
     where
@@ -1230,6 +1249,7 @@ impl MimirService {
                 limit,
                 evidence_per_belief,
                 project,
+                prefer_type,
                 after_overlay,
             )
             .await?;
@@ -1244,6 +1264,7 @@ impl MimirService {
         limit: Selection,
         evidence_per_belief: Selection,
         project: Option<&str>,
+        prefer_type: Option<MemoryType>,
         after_overlay: F,
     ) -> Result<RetrievalReport<GroundedBelief>>
     where
@@ -1251,7 +1272,7 @@ impl MimirService {
         W: std::future::Future<Output = Result<()>>,
     {
         let report = self
-            .relevant_on(client, query, limit, project, None, after_overlay)
+            .relevant_on(client, query, limit, project, prefer_type, after_overlay)
             .await?;
         let beliefs = report.beliefs;
         if beliefs.is_empty() {

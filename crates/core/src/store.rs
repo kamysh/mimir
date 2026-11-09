@@ -3011,7 +3011,7 @@ mod snapshot_read_tests {
                     }).await;
                     anyhow::ensure!(interrupted.unwrap_err().to_string().contains("controlled retrieval interruption"));
                     let during = if grounded {
-                        grounded_value(reader.grounded_after_overlay(&term, None, None, scope, || async {
+                        grounded_value(reader.grounded_after_overlay(&term, None, None, scope, None, || async {
                             writer.delete_project(&project).await?;
                             Ok(())
                         }).await?.beliefs)

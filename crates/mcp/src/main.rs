@@ -671,7 +671,7 @@ async fn handle_graph_call(
                 return Ok(serde_json::to_value(&beliefs)?);
             }
             let grounded = svc
-                .query_relevant_grounded(query, limit, per, project)
+                .query_relevant_grounded_preferred(query, limit, per, project, prefer_type)
                 .await?;
             let result: Vec<Value> = grounded
                 .beliefs

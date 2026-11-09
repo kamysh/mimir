@@ -207,10 +207,6 @@ module Run (environment : Environment) where
   ... | nothing = finished invalidGrounding
   ... | just program = groundState program
 
-  preference : Bool → Maybe Candidates.Memory → Maybe Candidates.Memory
-  preference false requested = requested
-  preference true requested = nothing -- current grounded-service path ignores prefer_type
-
   start : Public.Request → State
   start (Public.mutation q) = mutationState (Mutation.start embeddingsEnabled q)
   start (Public.read q) = readState (Read.start q)
@@ -221,7 +217,7 @@ module Run (environment : Environment) where
   ... | inj₁ detail = finished (failed (Validation.Fault.explanation detail))
   ... | inj₂ period = inferenceState (Inference.start (Inference.sweep project threshold period))
   start (Public.relevant query limit project prefer include per) = retrievalState include per
-    (Retrieval.overlay (Retrieval.request query limit project (preference include prefer) embeddingsEnabled))
+    (Retrieval.overlay (Retrieval.request query limit project prefer embeddingsEnabled))
   start (Public.addEvidence belief chunk weight) = groundStart belief chunk weight
   start (Public.removeEvidence belief chunk) = groundState (Grounding.Run.P.start (Ground.remove chunk belief))
   start (Public.evidence belief) = evidenceState (Evidence.one belief nothing)
@@ -233,6 +229,18 @@ module Run (environment : Environment) where
   start (Public.learningContext query project limit) = contextState
     (LearningContext.begin (Context.contextRequest query project limit embeddingsEnabled))
   start Public.capabilities = finished (capabilitiesResult Capabilities.current)
+
+  -- Adding supporting passages must preserve the caller's complete search.
+  -- In particular, it must not silently discard the requested memory type.
+  retrievalCore : State → Maybe Retrieval.State
+  retrievalCore (retrievalState _ _ search) = just search
+  retrievalCore _ = nothing
+
+  requestedSearchIsPreserved : ∀ query limit project prefer include per →
+    retrievalCore (start (Public.relevant query limit project prefer include per)) ≡
+      just (Retrieval.overlay
+        (Retrieval.request query limit project prefer embeddingsEnabled))
+  requestedSearchIsPreserved query limit project prefer include per = refl
 
   Event = Σ Effect Reply
 

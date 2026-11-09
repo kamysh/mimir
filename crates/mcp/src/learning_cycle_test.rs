@@ -10,6 +10,46 @@ use mimir_core::{config::Config, MimirService};
 use serde_json::json;
 use uuid::Uuid;
 
+#[path = "../../../tests/support/retrieval_preference.rs"]
+mod preference;
+
+#[tokio::test]
+async fn evidence_and_memory_preference_compose_in_mcp_requests() -> Result<()> {
+    let config = Config {
+        database: isolation::fixture().database_config(),
+        embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: None,
+    };
+    let service = MimirService::connect(&config).await?;
+    let fixture = preference::PreferenceFixture::create(&config).await?;
+    let checked = async {
+        let ordinary = handle_tool_call(&service, "query_relevant", &json!({"context":fixture.query,"project":fixture.project,"limit":1})).await?;
+        ensure!(ordinary["beliefs"][0]["id"] == fixture.ordinary_first.to_string());
+        for limit in [None, Some(1)] {
+            let mut args = json!({"context":fixture.query,"project":fixture.project,"prefer_type":"experiential","evidence_per_belief":1});
+            if let Some(count) = limit { args["limit"] = json!(count); }
+            let plain = handle_tool_call(&service, "query_relevant", &args).await?;
+            ensure!(plain["beliefs"][0]["id"] == fixture.preferred_first.to_string(), "preference must change selection");
+            args["include_evidence"] = json!(true);
+            let enriched = handle_tool_call(&service, "query_relevant", &args).await?;
+            ensure!(enriched["retrieval"] == plain["retrieval"], "coverage changed");
+            let rows = enriched["beliefs"].as_array().unwrap();
+            ensure!(rows.len() == plain["beliefs"].as_array().unwrap().len());
+            for (supported, original) in rows.iter().zip(plain["beliefs"].as_array().unwrap()) {
+                ensure!(supported["id"] == original["id"], "support changed selection or order");
+                ensure!(supported["evidence"].as_array().is_some_and(|rows| rows.len() == 1), "support missing");
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    let cleanup = fixture.cleanup().await;
+    checked?;
+    cleanup
+}
+
 #[tokio::test]
 async fn retrieval_reports_explain_keyword_coverage_in_all_mcp_response_shapes() -> Result<()> {
     use mimir_core::{db, graph::Belief, store::AgeStore};

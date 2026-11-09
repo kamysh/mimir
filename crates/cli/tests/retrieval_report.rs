@@ -12,6 +12,62 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "../../../tests/support/retrieval_preference.rs"]
+mod preference;
+
+#[tokio::test]
+async fn cli_evidence_preserves_memory_preference_and_selection() -> Result<()> {
+    let fixture = isolation::fixture();
+    let config = Config::load_from_path(&fixture.root.join("config.toml"))?;
+    fixture.assert_database(&config.database);
+    let state = preference::PreferenceFixture::create(&config).await?;
+    let output_root = fixture
+        .root
+        .join(format!("preference-output-{}", state.ordinary_first));
+    std::fs::create_dir(&output_root)?;
+    let checked = async {
+        let base = [
+            "query",
+            state.query.as_str(),
+            "--project",
+            state.project.as_str(),
+            "--limit",
+            "1",
+        ];
+        let ordinary = run(&output_root, "ordinary", &base, None)?;
+        ensure!(ordinary.contains(&state.ordinary_first.to_string()));
+        let mut preferred = base.to_vec();
+        preferred.extend(["--prefer-type", "experiential"]);
+        let plain = run(&output_root, "preferred", &preferred, None)?;
+        preferred.push("--evidence");
+        let enriched = run(&output_root, "preferred-evidence", &preferred, None)?;
+        for output in [&plain, &enriched] {
+            ensure!(
+                output.contains(&state.preferred_first.to_string()),
+                "preference ignored; complete output at {}",
+                output_root.display()
+            );
+            ensure!(
+                !output.contains(&state.ordinary_first.to_string()),
+                "selection changed"
+            );
+            ensure!(
+                output.contains("semantic similarity was not evaluated"),
+                "coverage missing"
+            );
+        }
+        ensure!(
+            enriched.contains("Complete supporting passage"),
+            "support missing"
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    let cleanup = state.cleanup().await;
+    checked?;
+    cleanup
+}
+
 fn run(root: &Path, name: &str, args: &[&str], input: Option<serde_json::Value>) -> Result<String> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_mimir"))
         .args(args)
