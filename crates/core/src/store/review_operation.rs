@@ -127,7 +127,9 @@ impl AgeStore {
                 let row = tx.query_one("INSERT INTO mimir_embedding_owners(project,operation_token) VALUES($1,$2) RETURNING owner_token,reserved_at", &[&project,&token]).await?;
                 Ok(mimir_json::to_value(Allocation { id:row.try_get(0)?,created_at:row.try_get(1)?,project })?)
             })).await? {
-                StepDecision::Done(answer) => mimir_json::decode_ref::<Allocation>(&answer.reply)?,
+                StepDecision::Done(answer) => mimir_json::decode_ref::<Allocation>(&answer.reply)
+                    .map_err(|error| PreparationRequired::bound_request(Code::MalformedInput,
+                        format!("The saved preparation answer for candidate {key:?} cannot be read: {error:#}. Keep token {} and read its original plan, this step's saved answer and diagnostics. Open the user dialog to resolve the stored answer; do not allocate a replacement owner or repeat publication. No review was published.", plan.operation_token())))?,
                 other => return Ok(ReviewPublicationState::Resolved(other)),
             };
             let candidate = args
