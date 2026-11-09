@@ -76,3 +76,11 @@ or kills the outer owner because elapsed time passed. Output capture and owned
 tasks finish before the helper returns. A controlled check verifies that an
 owner reaps its child in a separate process group before that completion.
 Other fixture restrictions remain tracked by #116.
+
+The MCP startup checks own independent event connections too. Each fake shell
+and its blocked descendant keep their connection open. After client cleanup,
+the check waits for EOF and verifies the recorded processes have stopped. This
+replaces forty process-state checks separated by twenty-five-millisecond
+sleeps. Parallel checks select their own endpoints without changing a global
+environment variable. Normal shutdown, rejected startup capabilities and large
+transport frames keep their existing assertions.

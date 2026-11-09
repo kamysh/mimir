@@ -32,14 +32,15 @@ if [[ "$mode" == "dump-catalogue" ]]; then
     exit 0
 fi
 if [[ -n "$pid_file" ]]; then
-    if [[ -n "${MIMIR_JUDGE_FIXTURE_EVENTS:-}" ]]; then
-        exec 9<>"/dev/tcp/${MIMIR_JUDGE_FIXTURE_EVENTS/://}"
+    event_address="${6:-${MIMIR_JUDGE_FIXTURE_EVENTS:-}}"
+    if [[ -n "$event_address" ]]; then
+        exec 9<>"/dev/tcp/${event_address/://}"
     fi
     mkfifo "$pid_file.wait.$$"
     cat "$pid_file.wait.$$" >/dev/null & descendant=$!
     printf '%s\n' "$$" "$descendant" > "$pid_file"
     printf '%s' "${MIMIR_CONFIG:-}" > "$pid_file.config"
-    if [[ -n "${MIMIR_JUDGE_FIXTURE_EVENTS:-}" ]]; then
+    if [[ -n "$event_address" ]]; then
         printf 'mcp %s %s\n' "$$" "$descendant" >&9
     fi
 fi

@@ -3,8 +3,6 @@ use mimir_core::validation::{Fault, Refusal, RefusalKind};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Stdio;
-#[cfg(test)]
-use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::task::JoinHandle;
