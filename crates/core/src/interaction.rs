@@ -187,6 +187,19 @@ pub(crate) const RECORD_REVISION_READBACK: &str = "Call get_experience with the 
 pub(crate) const REVIEW_REVISION_READBACK: &str = "Call get_experience and get_learning_review with the same experience ID to read the current source, source revision and review revision. Inspect experience_history if needed. Re-evaluate the review against that source before resubmitting review.experience_revision and expected_review_revision. Do not blindly overwrite another review or invent revision values.";
 
 impl RequestCorrection {
+    /// Only the document-query preparation path uses this constructor. No
+    /// database read or business publication has started at that point.
+    pub(crate) fn document_query_embedding(code: Code, message: String) -> Self {
+        let issue=CorrectionItem::new(Location::Configuration,
+            Fault { path:vec![Segment::Key("embeddings".into())],code,message },
+            "One complete, finite, nonzero embedding for the query from the configured backend.".into(),
+            "Open a dialog with the user explaining the embedding prerequisite and reported cause. Ask whether to configure or repair the backend, revise the query, retry, or cancel. Do not change the model, shorten the query, invent a vector, or return empty results as if the search completed.".into())
+            .expect("compiled query preparation guidance is complete");
+        Self {
+            correction: NeedsInput::new(issue, vec![]).expect("one explained prerequisite"),
+        }
+    }
+
     pub(crate) fn local_key(path: Vec<Segment>, code: Code, message: String) -> Self {
         let issue = CorrectionItem::new(Location::Arguments, Fault { path, code, message },
             "A nonempty stable local key, with no leading or trailing whitespace. Spaces inside a key are allowed. Each key appears once in its declaration or reference list.".into(),

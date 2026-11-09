@@ -31,6 +31,162 @@ impl EmbeddingProvider for FixedProvider {
 }
 
 #[tokio::test]
+async fn document_query_prerequisites_request_a_dialog_without_an_empty_success() -> Result<()> {
+    for response in [
+        None,
+        Some(Err(anyhow::anyhow!(
+            "complete controlled backend cause; final condition"
+        ))),
+        Some(Ok(vec![])),
+        Some(Ok(vec![vec![]])),
+        Some(Ok(vec![vec![0.0, 0.0, 0.0]])),
+        Some(Ok(vec![vec![f32::NAN, 1.0, 0.0]])),
+        Some(Ok(vec![vec![f32::INFINITY, 1.0, 0.0]])),
+        Some(Ok(vec![vec![1.0, 0.0, 0.0], vec![1.0, 0.0, 0.0]])),
+    ] {
+        let missing = response.is_none();
+        let (service, project) = service(response).await?;
+        let error = service
+            .query_document(
+                "complete query with its final condition",
+                Some(&project),
+                None,
+            )
+            .await
+            .unwrap_err();
+        let correction = error
+            .downcast_ref::<crate::interaction::RequestCorrection>()
+            .expect("query prerequisite must request correction")
+            .correction();
+        let issue = &correction.issues()[0];
+        assert_eq!(
+            issue.location(),
+            crate::interaction::Location::Configuration
+        );
+        assert_eq!(
+            issue.fault().path,
+            vec![crate::validation::Segment::Key("embeddings".into())]
+        );
+        assert_eq!(
+            issue.fault().code,
+            if missing {
+                crate::validation::Code::MissingField
+            } else {
+                crate::validation::Code::UnsupportedCombination
+            }
+        );
+        assert!(issue.suggested_correction().contains("Open a dialog"));
+        assert!(issue
+            .suggested_correction()
+            .contains("return empty results as if"));
+        service.delete_project(&project).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn document_query_returns_full_scoped_passages_with_stable_equal_distances() -> Result<()> {
+    let (mut service, project) = service(Some(Ok(vec![vector(0)]))).await?;
+    let connection = db::connect(&isolation::fixture().database_config()).await?;
+    let identities = connection
+        .query_one(
+            "SELECT gen_random_uuid(),gen_random_uuid(),gen_random_uuid()",
+            &[],
+        )
+        .await?;
+    let first: Uuid = identities.get(0);
+    let second: Uuid = identities.get(1);
+    let parent_id: Uuid = identities.get(2);
+    let (low, high) = if first < second {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    let path = format!("/document-query/{project}.md");
+    let parent = DocumentChunk::with_id(
+        parent_id,
+        path.clone(),
+        vec!["parent".into()],
+        "complete parent π ".repeat(500),
+        None,
+        Some(project.clone()),
+    );
+    let lower = DocumentChunk::with_id(
+        low,
+        path.clone(),
+        vec!["parent".into(), "lower".into()],
+        "complete lower child ".repeat(500),
+        Some(parent_id),
+        Some(project.clone()),
+    );
+    let higher = DocumentChunk::with_id(
+        high,
+        path.clone(),
+        vec!["parent".into(), "higher".into()],
+        "complete higher child ".repeat(500),
+        Some(parent_id),
+        Some(project.clone()),
+    );
+    let global = passage(&service, None, 0, "global-query-control").await?;
+    let checked = async {
+        service.store.insert_document_chunk(&parent).await?;
+        for child in [&higher, &lower] {
+            service.store.insert_document_chunk(child).await?;
+            service
+                .store
+                .insert_chunk_embedding(child.id, &vector(0))
+                .await?;
+        }
+        let found = service
+            .query_document("complete query", Some(&project), None)
+            .await?;
+        assert_eq!(
+            found.iter().map(|hit| hit.id.as_str()).collect::<Vec<_>>(),
+            vec![lower.id.to_string(), higher.id.to_string()]
+        );
+        for (actual, expected) in found.iter().zip([&lower, &higher]) {
+            assert_eq!(actual.content, expected.content);
+            assert_eq!(actual.parent_content.as_ref(), Some(&parent.content));
+            assert_eq!(actual.section_path, expected.section_path);
+            assert_eq!(actual.document_path, expected.document_path);
+        }
+        for _ in 0..2 {
+            service.embeddings = Some(OwnedEmbeddingBackend::for_test(Box::new(FixedProvider(
+                Mutex::new(Some(Ok(vec![vector(0)]))),
+            ))));
+            let one = service
+                .query_document(
+                    "complete query",
+                    Some(&project),
+                    std::num::NonZeroUsize::new(1),
+                )
+                .await?;
+            assert_eq!(one.len(), 1);
+            assert_eq!(one[0].id, low.to_string());
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    let global_cleanup = service.clear_document(&global.document_path).await;
+    let cleanup = service.delete_project(&project).await;
+    checked?;
+    global_cleanup?;
+    cleanup?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn document_query_with_no_scoped_matches_completes_with_an_empty_result() -> Result<()> {
+    let (service, project) = service(Some(Ok(vec![vector(0)]))).await?;
+    let found = service
+        .query_document("complete query", Some(&project), None)
+        .await?;
+    assert!(found.is_empty());
+    service.delete_project(&project).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn deleted_backfill_target_does_not_start_embedding() -> Result<()> {
     struct CountCalls(std::sync::Arc<std::sync::atomic::AtomicUsize>);
     impl EmbeddingProvider for CountCalls {
@@ -266,7 +422,7 @@ async fn project_revocation_terminates_only_its_blocked_worker() -> Result<()> {
 }
 
 fn vector(axis: usize) -> Vec<f32> {
-    let mut vector = vec![0.0; 768];
+    let mut vector = vec![0.0; crate::embed::LOCAL_DIM];
     vector[axis] = 1.0;
     vector
 }

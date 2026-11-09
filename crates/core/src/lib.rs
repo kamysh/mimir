@@ -1170,16 +1170,41 @@ impl MimirService {
         project: Option<&str>,
         limit: Selection,
     ) -> Result<Vec<QueryResult>> {
+        use interaction::RequestCorrection;
+        use validation::Code;
         let embedder = self.embeddings.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("embeddings not configured — add [embeddings] to config.toml")
+            RequestCorrection::document_query_embedding(
+                Code::MissingField,
+                "Document queries require a configured embedding backend.".into(),
+            )
         })?;
 
-        let mut vecs = embedder.embed(&[context.to_string()]).await?;
-        let query_vec = if vecs.is_empty() {
-            anyhow::bail!("empty embedding response");
-        } else {
-            vecs.swap_remove(0)
+        let mut vecs =
+            embedder
+                .embed(&[context.to_string()])
+                .await
+                .map_err(|error| {
+                    RequestCorrection::document_query_embedding(Code::UnsupportedCombination,
+                format!("The embedding backend could not prepare this document query: {error:#}"))
+                })?;
+        let message = match vecs.as_slice() {
+            [] => Some("The embedding backend returned no vector for this document query."),
+            [vector] if !preparation::usable_vector(vector) => {
+                Some("The embedding backend returned an empty, nonfinite or all-zero query vector.")
+            }
+            [_] => None,
+            _ => Some(
+                "The embedding backend returned more than one vector for a single document query.",
+            ),
         };
+        if let Some(message) = message {
+            return Err(RequestCorrection::document_query_embedding(
+                Code::UnsupportedCombination,
+                message.into(),
+            )
+            .into());
+        }
+        let query_vec = vecs.swap_remove(0);
 
         self.store
             .document_query_snapshot(&query_vec, project, limit)

@@ -215,6 +215,10 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project (A.documentResult (A.Document.cleared n)) = success (count "cleared" n)
   project original@(A.documentResult _) = failure original
   project (A.documentQueryResult (DocumentQuery.found hits)) = success (V.array (map documentHit hits))
+  project (A.documentQueryResult (DocumentQuery.preparationRequired issue)) = decision
+    (Errors.AgentCorrection.claim
+      (Errors.AgentCorrection.embeddingQueryItem (DocumentQuery.preparationCode issue)
+        (DocumentQuery.preparationDescription issue)) [])
   project original@(A.documentQueryResult _) = failure original
   project (A.learned q (A.Learn.transacted (A.Learn.T.applied s))) = success (snapshot s)
   project (A.learned q (A.Learn.transacted (A.Learn.T.replayed s cleanup))) = success (snapshot s)

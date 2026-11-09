@@ -924,7 +924,10 @@ async fn cmd_query_doc(
     limit: mimir_core::Selection,
 ) -> Result<()> {
     let svc = connect().await?;
-    let results = svc.query_document(context, project, limit).await?;
+    let Some(results) = corrections::reference(svc.query_document(context, project, limit).await)?
+    else {
+        return Ok(());
+    };
 
     if results.is_empty() {
         println!("(no results)");
