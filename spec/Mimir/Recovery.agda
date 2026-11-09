@@ -76,6 +76,13 @@ module Execution (World Effect : Set) (Reply : Effect → Set)
       Atomic before effect reply middle → Changes middle events after →
       Changes before ((effect , reply) ∷ events) after
 
+  changesAppend : ∀ {first middle last before after} →
+    Changes first before middle → Changes middle after last →
+    Changes first (before ++ after) last
+  changesAppend (unchanged _) later = later
+  changesAppend (changed before effect reply middle physical rest) later =
+    changed before effect reply middle physical (changesAppend rest later)
+
   record Completed {Result : Set} (script : E.Script Result)
     (before after : World) (result : Result) : Set where
     constructor completed
@@ -176,6 +183,97 @@ record Recoverable (World Input : Set) : Set₁ where
   progressReachesIntent input initial with progress input initial
   ... | final , reply , execution =
     final , reply , execution , completedMeetsIntent input initial final reply execution
+
+-- A dispatcher continuation must retain both its control prefix and the
+-- physical meaning of every observed effect. No raw Script is a RunState.
+module CheckedRun {World Input : Set} (operation : Recoverable World Input) where
+  module O = Recoverable operation
+  module E = O.E
+  module X = O.X
+  module G = O.G
+
+  record History (input : Input) (initial : World)
+    (remaining : E.Script O.Result) : Set where
+    constructor history
+    field
+      current : World
+      events : List E.Event
+      reached : E.Prefix (O.script input) events remaining
+      physical : X.Changes initial events current
+
+  record RunState (input : Input) (initial : World) : Set where
+    constructor runState
+    field
+      remaining : E.Script O.Result
+      evidence : History input initial remaining
+
+  begin : ∀ input initial → RunState input initial
+  begin input initial = runState (O.script input)
+    (history initial [] (E.stopped _) (X.unchanged initial))
+
+  advanceHistory : ∀ {input initial} effect continuation →
+    (past : History input initial (E.ask effect continuation)) →
+    (reply : O.Reply effect) → (after : World) →
+    O.Atomic (History.current past) effect reply after →
+    History input initial (continuation reply)
+  advanceHistory effect continuation (history current events prefix physical) reply after meaning =
+    history after (events ++ ((effect , reply) ∷ []))
+      (E.prefixAppend prefix (E.replied effect continuation reply (E.stopped _)))
+      (X.changesAppend physical
+        (X.changed current effect reply after meaning (X.unchanged after)))
+
+  -- The equality selects the request actually exposed by this continuation;
+  -- the physical witness selects the world actually reached by its reply.
+  advance : ∀ {input initial} (running : RunState input initial) effect continuation →
+    RunState.remaining running ≡ E.ask effect continuation →
+    (reply : O.Reply effect) → (after : World) →
+    O.Atomic (History.current (RunState.evidence running)) effect reply after →
+    RunState input initial
+  advance (runState .(E.ask effect continuation) past) effect continuation refl reply after meaning =
+    runState (continuation reply) (advanceHistory effect continuation past reply after meaning)
+
+  prefixReturned : ∀ {script : E.Script O.Result} {events} {reply : O.Result} → E.Prefix script events (E.done reply) →
+    E.Runs script events reply
+  prefixReturned (E.stopped (E.done reply)) = E.returned reply
+  prefixReturned (E.replied effect continuation reply rest) =
+    E.replied effect continuation reply (prefixReturned rest)
+
+  completed : ∀ {input initial reply} → (past : History input initial (E.done reply)) →
+    X.Completed (O.script input) initial (History.current past) reply
+  completed (history current events prefix physical) =
+    X.completed events (prefixReturned prefix) physical
+
+  finishedMeetsOriginalIntent : ∀ {input initial reply} →
+    (past : History input initial (E.done reply)) →
+    G.Goal O.intent (G.invocation input initial) (History.current past) reply
+  finishedMeetsOriginalIntent {input} {initial} {reply} past =
+    O.completedMeetsIntent input initial (History.current past) reply (completed past)
+
+  interrupt : ∀ {input initial remaining} → (past : History input initial remaining) →
+    X.Interrupted (O.script input) initial (History.current past)
+  interrupt (history current events prefix physical) =
+    X.atPrefix events _ current prefix physical
+
+  -- A committed change whose reply was lost is an interruption of the same
+  -- original invocation. The unobserved reply is not appended to its history.
+  loseReply : ∀ {input initial} effect continuation →
+    (past : History input initial (E.ask effect continuation)) →
+    (reply : O.Reply effect) → (after : World) →
+    O.Atomic (History.current past) effect reply after →
+    X.Interrupted (O.script input) initial after
+  loseReply effect continuation (history current events prefix physical) reply after meaning =
+    X.beforeReply events effect continuation current reply after prefix physical meaning
+
+  retryAfterLostReplyMeetsOriginalIntent : ∀ {input initial} effect continuation →
+    (past : History input initial (E.ask effect continuation)) →
+    (unobserved : O.Reply effect) → (after final : World) → (reply : O.Result) →
+    O.Atomic (History.current past) effect unobserved after →
+    X.Completed (O.script input) after final reply →
+    G.Goal O.intent (G.invocation input initial) final reply
+  retryAfterLostReplyMeetsOriginalIntent {input} {initial}
+    effect continuation past unobserved after final reply meaning retry =
+    O.converges input initial after final reply
+      (loseReply effect continuation past unobserved after meaning) retry
 
 -- One committed statement is not automatically repeatable. Its physical
 -- meaning and independently reviewed intent are separate, and the complete
