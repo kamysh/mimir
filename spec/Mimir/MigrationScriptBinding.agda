@@ -44,3 +44,27 @@ source Schema.decayAccounting = toList "DO $migration$\nDECLARE\n  baseline text
 
 source Schema.firstDefeatClock = toList "DO $migration$\nBEGIN\n  EXECUTE format($query$\n    SELECT * FROM ag_catalog.cypher(%L, $cypher$\n      MATCH (:Belief)-[:DEFEATS]->(target:Belief)\n      WHERE target.first_defeated_at IS NULL\n        AND target.legacy_defeat_expired IS NULL\n      SET target.legacy_defeat_expired = true\n      RETURN count(target)\n    $cypher$) AS (count ag_catalog.agtype)\n  $query$, current_database());\nEND\n$migration$;"
 source Schema.backfillChangeEvents = toList "CREATE TRIGGER mimir_backfill_vector_changed\nAFTER INSERT OR UPDATE OR DELETE ON public.belief_embeddings\nFOR EACH STATEMENT EXECUTE FUNCTION mimir_embedding_owner_changed();"
+
+data Statement : Set where
+  application : Schema.DDL → Statement
+  transactionSearchPath : List Text → Statement
+  dropLegacyLedger : Statement
+
+data Meaning (original : Text) : List Statement → Set where
+  embedded : ∀ migration → trim original ≡ trim (source migration) →
+    Meaning original (Data.List.map application (Schema.body migration))
+  localPath : trim original ≡ toList "SET LOCAL search_path TO public,ag_catalog" →
+    Meaning original (transactionSearchPath (toList "public" ∷ toList "ag_catalog" ∷ []) ∷ [])
+  legacyDrop : trim original ≡ toList "DROP TABLE IF EXISTS _sqlx_migrations" →
+    Meaning original (dropLegacyLedger ∷ [])
+
+record Embedded (migration : Schema.Migration) (loaded : Ledger.Migration) : Set where
+  field named : Ledger.Migration.name loaded ≡ toList (Schema.migrationName migration)
+        body : trim (Ledger.Metadata.script (Ledger.Migration.payload loaded)) ≡ trim (source migration)
+
+-- This receipt connects executeOriginalSQL/executeScript to the exact loaded
+-- body, while MigrationRuntime retains transaction/lock/checksum/ledger order.
+meaning : ∀ migration loaded → Embedded migration loaded →
+  Meaning (Ledger.Metadata.script (Ledger.Migration.payload loaded))
+    (Data.List.map application (Schema.body migration))
+meaning migration loaded loadedSource = embedded migration (Embedded.body loadedSource)

@@ -185,3 +185,21 @@ def check():
     migration_keys = ['initial', 'searchPath', 'embeddingTable', 'evidenceEdges',
                       'betaBeliefs', 'learning', 'candidates', 'assessment', 'owners', 'allocation',
                       'reviewQueueNotifications', 'operationReservations', 'operationBindings', 'operationStepReplies', 'operationPlans', 'operationRequestKeys', 'candidateKeyContent', 'embeddingOwners', 'operationCancellations', 'decayAccounting', 'firstDefeatClock', 'backfillChangeEvents']
+    sql_files = sorted((ROOT / 'crates/core/migrations').glob('*.sql'))
+    assert len(sql_files) == len(migration_keys) == len(bound_sources)
+    for path, key in zip(sql_files, migration_keys):
+        assert embedded_sql_body(path.read_text()) == bound_sources[key], path
+
+    return {
+        'result': 'passed', 'mcp_operations': len(operation_names),
+        'cli_leaves': len(cli_names), 'lifecycle_groups': len(coverage['lifecycles']),
+        'source_artifacts': len(inventory['files']),
+        'production_artifacts': sum(x['classification'] == 'production-behavior' for x in inventory['files']),
+        'safe_modules': len(files), 'root_reachable_modules': len(reached),
+        'referenced_modules': len(referenced), 'exact_migration_bodies': len(sql_files),
+        'boundary': 'Inventory and structural audit; Agda checking and Rust correspondence are separate.'
+    }
+
+
+if __name__ == '__main__':
+    print(json.dumps(check(), indent=2))
