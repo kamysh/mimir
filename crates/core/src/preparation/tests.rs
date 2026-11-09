@@ -24,7 +24,6 @@ fn operation_provider_identity_survives_credentials_and_execution_changes() {
         backend: EmbeddingBackend::Voyage,
         model: "same-model".into(),
         api_key: Some("first-private-key".into()),
-        batch_size: 0,
         cache_dir: None,
     };
     let original = operation_settings(Some(&configured));
@@ -39,7 +38,6 @@ fn operation_provider_identity_survives_credentials_and_execution_changes() {
     }
     configured.api_key = Some("rotated-private-key".into());
     configured.cache_dir = Some("/different/execution-cache".into());
-    configured.batch_size = 17;
     assert_eq!(original, operation_settings(Some(&configured)));
     assert!(!original.to_string().contains("private-key"));
     configured.model = "different-model".into();
