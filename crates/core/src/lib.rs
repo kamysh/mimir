@@ -346,17 +346,30 @@ impl MimirService {
     }
 
     /// Embed a belief's content and upsert the vector into `belief_embeddings`
-    /// when an embedding backend is configured. No-op when `[embeddings]` is
-    /// absent (the vector half of `query_relevant` simply degrades to empty).
+    /// when an embedding backend is configured. Missing configuration or an
+    /// incomplete/unusable backend result requests a user decision before writing.
     /// Backfills existing beliefs. New belief insertion instead requires both
     /// embedding and indexed grounding before one atomic publication.
     pub async fn embed_and_store_belief(&self, belief: &Belief) -> Result<()> {
-        if let Some(embedder) = &self.embeddings {
-            let mut vecs = self.embed_existing_belief(embedder, belief).await?;
-            if let Some(v) = vecs.pop() {
-                self.store.insert_belief_embedding(belief.id, &v).await?;
-            }
+        let Some(embedder) = &self.embeddings else {
+            return Err(preparation::PreparationRequired::backfill(
+                validation::Code::MissingEvidence,
+                "Embedding is not configured; this belief's vector was not written.".into(),
+            )
+            .into());
+        };
+        let vectors = self.embed_existing_belief(embedder, belief).await?;
+        let [vector] = vectors.as_slice() else {
+            return Err(preparation::PreparationRequired::backfill(validation::Code::MalformedInput,
+                format!("The backend must return exactly one vector for this belief, but returned {}; its vector was not written.",vectors.len())).into());
+        };
+        if !preparation::usable_vector(vector) {
+            return Err(preparation::PreparationRequired::backfill(validation::Code::InvalidNumber,
+                "The backend returned an empty, nonfinite, or zero vector; this belief's vector was not written.".into()).into());
         }
+        self.store
+            .insert_belief_embedding(belief.id, vector)
+            .await?;
         Ok(())
     }
 

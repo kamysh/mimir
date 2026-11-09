@@ -988,17 +988,14 @@ async fn cmd_contradictions(project: Option<&str>) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn cmd_reembed() -> Result<()> {
-    // Re-load config to check whether [embeddings] is configured. The
-    // service's `embed_and_store_belief` is a silent no-op when it isn't —
-    // for backfill we want to fail loudly with an actionable message instead.
+    // Check prerequisites before startup or vector work. Report an actionable
+    // incomplete operation, never a completed count for absent vectors.
     let cfg = Config::load()
         .map_err(|e| anyhow::anyhow!("{e}\nRun `mimir init` to create a config file."))?;
     if cfg.embeddings.is_none() {
-        anyhow::bail!(
-            "no [embeddings] in config.toml — cannot embed beliefs. Add an \
-             [embeddings] section (backend = \"local\" / \"voyage\" / \"openai\") \
-             and re-run."
-        );
+        return print_backfill_decision(&[],0,None,
+            "Embedding is not configured. Ask the user to choose or repair [embeddings] in Mimir configuration before re-embedding; do not choose a model automatically.",
+            "not_attempted",None);
     }
     let svc = MimirService::connect(&cfg).await?;
 
@@ -1013,12 +1010,31 @@ async fn cmd_reembed() -> Result<()> {
 
     let mut embedded = 0_usize;
     let mut skipped = 0_usize;
+    let mut confirmed = Vec::new();
     for belief in &beliefs {
         if embedded_ids.contains(&belief.id) {
             skipped += 1;
             continue;
         }
-        svc.embed_and_store_belief(belief).await?;
+        if let Err(error) = svc.embed_and_store_belief(belief).await {
+            let preparation = error.downcast_ref::<mimir_core::preparation::PreparationRequired>();
+            let publication = if preparation.is_some()
+                || error.is::<mimir_core::store::BeliefEmbeddingTargetMissing>()
+            {
+                "not_attempted"
+            } else {
+                "unconfirmed"
+            };
+            return print_backfill_decision(
+                &confirmed,
+                skipped,
+                Some(belief.id),
+                &error.to_string(),
+                publication,
+                preparation.map(|value| value.correction()),
+            );
+        }
+        confirmed.push(belief.id);
         embedded += 1;
         println!("  embedded {}  {}", belief.id, &belief.content);
     }
@@ -1026,6 +1042,29 @@ async fn cmd_reembed() -> Result<()> {
     println!(
         "\nembedded {embedded} belief{}; skipped {skipped} that already had vectors.",
         if embedded == 1 { "" } else { "s" }
+    );
+    Ok(())
+}
+
+fn print_backfill_decision(
+    confirmed: &[uuid::Uuid],
+    skipped: usize,
+    current: Option<uuid::Uuid>,
+    problem: &str,
+    publication: &str,
+    correction: Option<&mimir_core::interaction::NeedsInput>,
+) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "status":"needs_input","operation_status":"incomplete",
+            "confirmed_counts":{"embedded":confirmed.len(),"skipped":skipped},
+            "business_changes":{"embedded_belief_ids":confirmed},
+            "current_belief_id":current,"current_vector_publication":publication,
+            "problem":problem,"current_belief_correction":correction,
+            "next_action":"open_user_dialog",
+            "suggested_correction":"Explain this problem and the confirmed prior writes to the user. If the current vector outcome is unconfirmed, read it back before retrying; do not infer rollback or success from an error. Ask whether to repair the prerequisite or cancel. Do not silently change the model or report this run complete."
+        }))?
     );
     Ok(())
 }

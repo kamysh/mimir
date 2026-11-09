@@ -15,6 +15,17 @@ pub struct PreparationRequired {
 }
 
 impl PreparationRequired {
+    pub(crate) fn backfill(code: Code, message: String) -> Self {
+        let item=CorrectionItem::new(Location::Configuration,
+            Fault {path:vec![Segment::Key("embeddings".into())],code,message},
+            "Exactly one complete, finite, nonzero embedding for this stored belief before reporting it embedded.".into(),
+            "Open a dialog with the user to repair the configured embedding backend or cancel. Do not silently shorten the content, change the model, or count this belief as embedded.".into())
+            .expect("compiled backfill guidance contains the problem and repair path");
+        Self {
+            correction: NeedsInput::new(item, vec![]).expect("one explained backfill issue"),
+        }
+    }
+
     pub(crate) fn new(location: Location, path: Vec<Segment>, code: Code, message: String) -> Self {
         let item = CorrectionItem::new(location, Fault { path, code, message },
             "A complete embedding and a supporting passage from an indexed, project-compatible document before this belief is stored.".into(),

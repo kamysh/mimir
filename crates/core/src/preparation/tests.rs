@@ -31,6 +31,138 @@ impl EmbeddingProvider for FixedProvider {
 }
 
 #[tokio::test]
+async fn backfill_missing_backend_and_invalid_vectors_preserve_the_stored_belief() -> Result<()> {
+    use crate::validation::{Code, Segment};
+
+    for (response, expected_code) in [
+        (None, Code::MissingEvidence),
+        (Some(Ok(vec![])), Code::MalformedInput),
+        (Some(Ok(vec![vector(0), vector(1)])), Code::MalformedInput),
+        (Some(Ok(vec![vec![]])), Code::InvalidNumber),
+        (Some(Ok(vec![vec![0.0; 768]])), Code::InvalidNumber),
+        (Some(Ok(vec![vec![f32::NAN; 768]])), Code::InvalidNumber),
+        (
+            Some(Ok(vec![vec![f32::INFINITY; 768]])),
+            Code::InvalidNumber,
+        ),
+    ] {
+        let (service, project) = service(response).await?;
+        let belief = isolation::seed_belief_in_project(
+            "existing belief waiting for its embedding",
+            0.7,
+            0.5,
+            &project,
+            MemoryType::Fact,
+        )
+        .await?;
+        let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+        let result = service.embed_and_store_belief(&belief).await;
+        let after = serde_json::to_value(service.get_belief(belief.id).await?)?;
+        let client = db::connect(&isolation::fixture().database_config()).await?;
+        let count: i64 = client
+            .query_one(
+                "SELECT count(*) FROM public.belief_embeddings WHERE belief_id=$1",
+                &[&belief.id],
+            )
+            .await?
+            .get(0);
+        service.delete_project(&project).await?;
+
+        let error = result.expect_err("absent or unusable embeddings cannot report success");
+        let required = error
+            .downcast_ref::<PreparationRequired>()
+            .expect("a pre-write embedding problem must offer a typed user decision");
+        let issue = &required.correction().issues()[0];
+        assert_eq!(issue.fault().code, expected_code);
+        assert_eq!(issue.fault().path, vec![Segment::Key("embeddings".into())]);
+        assert!(issue.suggested_correction().contains("user"));
+        assert!(issue.suggested_correction().contains("cancel"));
+        assert!(issue.suggested_correction().contains("Do not"));
+        assert_eq!(count, 0, "a rejected result must not create a vector");
+        assert_eq!(after, before, "backfill must preserve the stored belief");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn backfill_success_means_the_requested_vector_was_stored() -> Result<()> {
+    let expected = vector(3);
+    let (service, project) = service(Some(Ok(vec![expected.clone()]))).await?;
+    let belief = isolation::seed_belief_in_project(
+        "existing belief with a usable backfill result",
+        0.7,
+        0.5,
+        &project,
+        MemoryType::Fact,
+    )
+    .await?;
+    let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+    let result = service.embed_and_store_belief(&belief).await;
+    let after = serde_json::to_value(service.get_belief(belief.id).await?)?;
+    let client = db::connect(&isolation::fixture().database_config()).await?;
+    let stored = client
+        .query_opt(
+            "SELECT embedding FROM public.belief_embeddings WHERE belief_id=$1",
+            &[&belief.id],
+        )
+        .await?
+        .map(|row| row.get::<_, pgvector::Vector>(0).to_vec());
+    service.delete_project(&project).await?;
+
+    result?;
+    assert_eq!(stored, Some(expected));
+    assert_eq!(after, before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn backfill_provider_failure_neither_claims_success_nor_replaces_a_vector() -> Result<()> {
+    for previous in [None, Some(vector(5))] {
+        let (service, project) = service(Some(Err(anyhow::anyhow!(
+            "controlled backfill provider failure: keep the complete cause"
+        ))))
+        .await?;
+        let belief = isolation::seed_belief_in_project(
+            "existing belief whose provider fails",
+            0.7,
+            0.5,
+            &project,
+            MemoryType::Fact,
+        )
+        .await?;
+        if let Some(vector) = &previous {
+            service
+                .store
+                .insert_belief_embedding(belief.id, vector)
+                .await?;
+        }
+        let before = serde_json::to_value(service.get_belief(belief.id).await?)?;
+        let result = service.embed_and_store_belief(&belief).await;
+        let after = serde_json::to_value(service.get_belief(belief.id).await?)?;
+        let client = db::connect(&isolation::fixture().database_config()).await?;
+        let stored = client
+            .query_opt(
+                "SELECT embedding FROM public.belief_embeddings WHERE belief_id=$1",
+                &[&belief.id],
+            )
+            .await?
+            .map(|row| row.get::<_, pgvector::Vector>(0).to_vec());
+        service.delete_project(&project).await?;
+
+        let error = result.expect_err("provider failure cannot report a completed backfill");
+        assert!(error
+            .to_string()
+            .contains("controlled backfill provider failure: keep the complete cause"));
+        assert_eq!(
+            stored, previous,
+            "failed work must preserve the prior vector"
+        );
+        assert_eq!(after, before);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn deleted_backfill_target_does_not_start_embedding() -> Result<()> {
     struct CountCalls(std::sync::Arc<std::sync::atomic::AtomicUsize>);
     impl EmbeddingProvider for CountCalls {

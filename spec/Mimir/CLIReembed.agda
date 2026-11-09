@@ -24,6 +24,8 @@ import Mimir.BeliefEmbedding as B
 data Summary : Set where
   noBeliefs : Summary
   counts : ℕ → ℕ → Summary -- embedded, skipped; plural suffix iff embedded != 1
+  needsBackend : Summary
+  needsDecision : B.Counts → B.Failure → Summary
 
 summary : B.Counts → Summary
 summary (B.counts 0 0) = noBeliefs
@@ -38,9 +40,7 @@ module Run (sizeMaximum : ℕ) (path : Path.Path) (environment : Connection.Envi
 
   data Failure : Set where
     configurationFailure : Configuration.Failure → Failure
-    disabled : Failure
     startupFailure : (configurationValue : Config.Config) → S.Failure configurationValue → Failure
-    backfillFailure : B.Counts → B.Failure → Failure
     outputFailure : Text → Failure
 
   data State : Set where
@@ -53,7 +53,7 @@ module Run (sizeMaximum : ℕ) (path : Path.Path) (environment : Connection.Envi
 
   configured : M.Inputs → Config.Config → State
   configured migrations configurationValue with Values.Config.embed (Config.Config.core configurationValue)
-  ... | nothing = failed disabled
+  ... | nothing = printing needsBackend
   ... | just _ = starting configurationValue (S.start configurationValue migrations)
 
   data Event : Set where
@@ -77,7 +77,7 @@ module Run (sizeMaximum : ℕ) (path : Path.Path) (environment : Connection.Envi
       (backfill (effect , reply)) (embedding configurationValue service (next reply))
     completed : ∀ configurationValue service count → Step migrations (embedding configurationValue service (B.E.done (B.complete count))) returned (printing (summary count))
     interrupted : ∀ configurationValue service count error → Step migrations (embedding configurationValue service (B.E.done (B.interrupted count error))) returned
-      (failed (backfillFailure count error))
+      (printing (needsDecision count error))
     printed : ∀ value → Step migrations (printing value) (output (inj₂ Data.Unit.tt)) finished
     outputFailed : ∀ value error → Step migrations (printing value) (output (inj₁ error)) (failed (outputFailure error))
 
