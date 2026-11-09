@@ -24,7 +24,33 @@ answer. Interruptions include a commit whose acknowledgement was lost.
 This constructor receives the original admitted request. It does not replace
 MCP/CLI decoding or the checked native step handle. Mandatory dispatcher and
 public token integration remain #74/#76 and #85–#86. Concrete belief-deletion
-and decay goals remain #138 and #141.
+and decay are completed separately under #138 and #141.
+
+## Belief deletion keeps its original result
+
+The registered belief-deletion writer now uses the stored original belief ID.
+Deletion, candidate retirement, vector removal, recalculation of affected
+beliefs and both saved answers commit together. A completed retry returns the
+original `deleted` value. In particular, an original `false` must not delete a
+belief created later with the same ID.
+
+`BeliefDeletionRecovery` defines success from the complete initial stored state.
+The selected belief and its references disappear, every affected posterior
+satisfies its required equation, and all other stored components survive.
+The calculator supplies raw results; the existing checker validates them.
+A repeated incomplete calculation produces a request for a user decision,
+with the complete original state preserved and no completion answer saved.
+
+`RegisteredStoreAdmission` reads the reservation, original binding and saved
+single-step plan before replaying any answer. The original arguments must
+contain exactly a valid UUID `id`, with no per-request settings. A mismatch
+explains what to correct and preserves stored state. The shared admission
+wrapper preserves the complete-world recovery requirement; it does not use a
+smaller view of the database as its goal.
+
+The native entrypoint still receives the existing checked registered-step
+handle. Public token handling and mandatory MCP/CLI dispatcher wiring remain
+their existing follow-up issues; this storage writer does not replace them.
 
 ## Confirm rollback before returning a no-change diagnostic
 

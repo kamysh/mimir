@@ -439,6 +439,13 @@ impl MimirService {
         self.store.delete_belief(id).await
     }
 
+    pub async fn delete_belief_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.delete_belief_operation(step).await
+    }
+
     /// Delete all beliefs and DocumentChunks tagged with the given project.
     /// Returns the combined count of vertices removed.
     pub async fn delete_project(&self, project: &str) -> Result<usize> {

@@ -621,10 +621,16 @@ impl AgeStore {
 
     /// Delete a belief and all its edges by ID. Returns true if found and deleted.
     pub async fn delete_belief(&self, id: Uuid) -> Result<bool> {
-        let g = &self.graph_name;
-        let id_str = id.to_string();
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
+        let deleted = self.delete_belief_in(&tx, id).await?;
+        tx.commit().await?;
+        Ok(deleted)
+    }
+
+    async fn delete_belief_in(&self, tx: &Transaction<'_>, id: Uuid) -> Result<bool> {
+        let g = &self.graph_name;
+        let id_str = id.to_string();
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
         let exists = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief {{id:'{id_str}'}}) RETURN n.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
@@ -654,7 +660,7 @@ $$) AS (ok ag_catalog.agtype)"#
             &[&id],
         )
         .await?;
-        self.recompute_learning(&tx, None, affected).await?;
+        self.recompute_learning(tx, None, affected).await?;
         // Delivered only with the deletion commit. Backfill listeners recheck
         // their own belief; this hint must not cancel unrelated requests.
         tx.query(
@@ -662,8 +668,46 @@ $$) AS (ok ag_catalog.agtype)"#
             &[],
         )
         .await?;
-        tx.commit().await?;
         Ok(true)
+    }
+
+    /// Delete the original bound belief and save both original answers together.
+    pub async fn delete_belief_operation(&self, step: &RegisteredStep) -> Result<StepDecision> {
+        anyhow::ensure!(
+            step.description().site
+                == crate::operation_catalogue::CommitSite::BeliefDeletion.name(),
+            "Use the registered delete_belief step; no belief was changed"
+        );
+        fn identity(request: &OperationBindingRequest) -> Result<Uuid> {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Arguments {
+                id: Uuid,
+            }
+            anyhow::ensure!(
+                request.operation() == "delete_belief"
+                    && request.settings().as_object().is_some_and(|settings| settings.is_empty()),
+                "delete_belief requires its original operation name and empty settings; read the binding and outcome, then resolve the request before writing"
+            );
+            let arguments: Arguments = serde_json::from_value(request.arguments().clone())
+                .context("delete_belief requires exactly one id field containing a UUID; correct the original request before writing")?;
+            Ok(arguments.id)
+        }
+        // Validate before readback too: saved answers cannot hide malformed
+        // arguments. The helper compares these with the immutable DB binding.
+        identity(step.expected())?;
+        let owner = AgeStore {
+            client: self.client.clone(),
+            graph_name: self.graph_name.clone(),
+        };
+        self.commit_final_operation_step(step, move |tx, original| {
+            Box::pin(async move {
+                let deleted = owner.delete_belief_in(tx, identity(original)?).await?;
+                let reply = serde_json::json!({"deleted":deleted});
+                Ok((reply.clone(), reply))
+            })
+        })
+        .await
     }
 
     pub async fn get_belief(&self, id: Uuid) -> Result<Option<Belief>> {
