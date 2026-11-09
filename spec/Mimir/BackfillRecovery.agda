@@ -313,6 +313,13 @@ record Frame (token : ℕ) (keys : List Text) (selected : List Source)
       (Store.OperationTables.savedReplies (Store.World.operations original))
       (Store.OperationTables.savedReplies (Store.World.operations final))
 
+-- Selection/model admission only reads the immutable reservation, binding
+-- and plan components. Item publication cannot reinterpret those components.
+frameKeepsRegistration : ∀ token keys selected original final → Frame token keys selected original final →
+  StoreStep.registration final ≡ StoreStep.registration original
+frameKeepsRegistration token keys selected original final frame =
+  cong StoreStep.registration (Frame.otherFields frame)
+
 initialFrame : ∀ token keys selected original → Frame token keys selected original original
 initialFrame token keys selected original = record
   { otherFields = refl; vectorRows = originalVectors _; receiptRows = originalReplies _ }
@@ -1423,3 +1430,9 @@ module Body (library : Library.Contract) (postgres : Controls.PostgreSQL)
   operation = record
     { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic
     ; converges = converges; progress = progress }
+
+  admittedContextSurvivesBody : ∀ original final → Invariant original final →
+    A.original token (StoreStep.registration original) ≡ inj₂ context →
+    A.original token (StoreStep.registration final) ≡ inj₂ context
+  admittedContextSurvivesBody original final invariant admitted = trans
+    (cong (A.original token) (frameKeepsRegistration token keys selected original final (proj₁ invariant))) admitted
