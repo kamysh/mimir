@@ -331,4 +331,3 @@ module For (database : ℕ) (format : Encoding.Formatting)
     ; publication = record (Learning.World.publication prior)
       { owners = Publication.World.owners (Learning.World.publication staged) } } }
     where prior = Store.World.learning before
-
