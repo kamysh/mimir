@@ -44,6 +44,13 @@ import Mimir.AssessmentScores as Scores
 import Mimir.LearningCapabilities as Capabilities
 import Mimir.BeliefEmbedding as Embedding
 import Mimir.McpErrors as Errors
+import Mimir.Validation as Validation
+import Mimir.GraphDeletion as Deletion
+import Mimir.ExperienceRecord as Recording
+import Mimir.ReviewRecord as Reviewing
+import Mimir.ReviewNumericalPublication as Numerical
+import Mimir.PosteriorComputation as Posterior
+import Data.Float.Base as Float
 
 module Project (environment : Application.Environment) (format : Encoding.Formatting) where
   module A = Application.Run environment
@@ -59,6 +66,30 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   flag fieldKey value = object ((fieldKey , V.boolean value) ∷ [])
   count : String → ℕ → V.Value
   count fieldKey value = object ((fieldKey , V.unsigned value) ∷ [])
+
+  -- Rendering uses the standard Float and configured UUID dependencies. The
+  -- business decision retains every observed value; no diagnostic cutoff.
+  numericalCounts : Posterior.State → Text
+  numericalCounts [] = []
+  numericalCounts ((identity , counts) ∷ rest) =
+    toList "belief " ++ Formatting.uuidText format identity ++
+    toList ": alpha=" ++ toList (Float.show (Posterior.Beta.alpha counts)) ++
+    toList ", beta=" ++ toList (Float.show (Posterior.Beta.negative counts)) ++
+    toList "; " ++ numericalCounts rest
+
+  numericalHistory : List Posterior.State → Text
+  numericalHistory [] = []
+  numericalHistory (first ∷ rest) = toList "[" ++ numericalCounts first ++
+    toList "] " ++ numericalHistory rest
+
+  numericalCorrection : Posterior.State → List Posterior.State → Errors.AgentCorrection.Claim
+  numericalCorrection repeated visited = Errors.AgentCorrection.claim
+    (Errors.AgentCorrection.item Errors.AgentCorrection.arguments
+      (Validation.problem [] Validation.unsupportedCombination
+        (toList "Cyclic propagation repeats incomplete stored-count states. This calculation produced no complete result. Repeated values: " ++
+         numericalCounts repeated ++ toList "Observed history: " ++ numericalHistory visited))
+      (toList "Every final alpha and beta must equal the value recomputed from its fixed prior and all incoming evidence in that same final state.")
+      (toList "Open a dialog with the user showing the repeated values. Ask whether to cancel or agree on an explicit numerical accuracy policy before retrying. Do not choose an iterate, change weights, invent a tolerance, or retry automatically.")) []
 
   patternResult : Pattern.Result → V.Value
   patternResult p = object (("pattern" , patternValue (Pattern.Result.patternValue p)) ∷
@@ -130,6 +161,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project original@(A.readResult result) = projectRead original result
   project (A.deleted (A.Delete.T.applied value)) = success (flag "deleted" value)
   project (A.deleted (A.Delete.T.replayed value cleanup)) = success (flag "deleted" value)
+  project (A.deleted (A.Delete.T.refused (Deletion.numericalDecision repeated visited) (inj₂ tt))) = decision (numericalCorrection repeated visited)
   project original@(A.deleted _) = failure original
   project (A.forgotten (A.Forget.deleted n)) = success (count "deleted" n)
   project original@(A.forgotten _) = failure original
@@ -140,11 +172,13 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project (A.inferred (Inference.changed n)) = success (count "decayed" n)
   project (A.inferred (Inference.deleted n)) = success (count "deleted" n)
   project (A.inferred (Inference.pairs pairs)) = success (V.array (map identityPair pairs))
+  project (A.inferred (Inference.numericalDecision repeated visited)) = decision (numericalCorrection repeated visited)
   project (A.inferred Inference.missingBelief) = decision (Errors.AgentCorrection.claim
     (Errors.AgentCorrection.missingStoredReference "id" (Data.String.toList "The requested belief is not stored in Mimir.")
       (Data.String.toList "Use list_beliefs or query_relevant_beliefs to find the intended stored belief, then retry with its ID. If the intended record is unknown, ask the user. Do not invent an identifier.")) [])
   project original@(A.inferred _) = failure original
   project (A.grounded (A.Grounding.T.applied tt)) = success (flag "ok" true)
+  project (A.grounded (A.Grounding.T.refused (Ground.numericalDecision repeated visited) (inj₂ tt))) = decision (numericalCorrection repeated visited)
   project (A.grounded (A.Grounding.T.refused Ground.missingChunk (inj₂ tt))) = decision (Errors.AgentCorrection.claim
     (Errors.AgentCorrection.missingStoredReference "chunk_id" (Data.String.toList "The requested document passage is not stored in Mimir.")
       (Data.String.toList "Use query_document or list_documents to find the intended indexed passage. If the document is missing, ask the user whether to index it; do not invent a passage ID.")) [])
@@ -168,6 +202,12 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project (A.learned q (A.Learn.reviewTransacted (A.Learn.Full.applied s))) = success (snapshot s)
   project (A.learned q (A.Learn.reviewTransacted (A.Learn.Full.replayed s cleanup))) = success (snapshot s)
   project (A.learned q (A.Learn.preparationDecision report)) = decision report
+  project (A.learned q (A.Learn.transacted (A.Learn.T.refused
+    (Operations.recordFailure (Recording.numericalDecision repeated visited)) (inj₂ tt)))) = decision (numericalCorrection repeated visited)
+  project (A.learned q (A.Learn.transacted (A.Learn.T.refused
+    (Operations.reviewFailure (Reviewing.numeric (Numerical.numericalDecision repeated visited))) (inj₂ tt)))) = decision (numericalCorrection repeated visited)
+  project (A.learned q (A.Learn.reviewTransacted (A.Learn.Full.refused
+    (Operations.reviewFailure (Reviewing.numeric (Numerical.numericalDecision repeated visited))) (inj₂ tt)))) = decision (numericalCorrection repeated visited)
   project (A.learned q (A.Learn.reviewTransacted (A.Learn.Full.refused (Operations.preparationFailure report) cleanup))) = decision report
   project original@(A.learned q (A.Learn.transacted (A.Learn.T.refused reason (inj₂ tt)))) with Operations.requestCorrection reason
   ... | just report = decision report

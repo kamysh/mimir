@@ -203,9 +203,9 @@ posteriorPublicationPreservesOriginals writes before receipt after evidence =
 LearningPublication : Store.World → Learning.World → DB.Receipt → Store.World → Set
 LearningPublication before proposed receipt after = DB.Atomic before (Store.installLearning proposed before) receipt after
 
-module Bound (database : ℕ) where
-  module G = Ground.Operation database
-  module D = Deletion.Operation database
+module Bound (database : ℕ) (calculator : Posterior.Calculator) where
+  module G = Ground.Operation database calculator
+  module D = Deletion.Operation database calculator
 
   data GroundSuccess (chunk belief : ℕ) (weight : Float) : Set where
     committed : ∀ events → G.T.E.Runs (G.Run.P.start (Ground.add chunk belief weight)) events (G.T.applied tt) →

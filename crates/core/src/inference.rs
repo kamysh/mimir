@@ -3,6 +3,77 @@ use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
 use crate::graph::{Belief, EdgeType, MemoryType, Probability};
+use crate::interaction::{CorrectionItem, Location};
+use crate::validation::{Code, Fault};
+
+/// The calculation has repeated distinct count states. This is not a completed
+/// posterior and does not authorize publishing any of the observed iterates.
+#[derive(Debug)]
+pub struct NumericalDecision {
+    issue: CorrectionItem,
+}
+
+impl NumericalDecision {
+    fn repeated(order: &[Uuid], cycle: &[Vec<(u64, u64)>]) -> Self {
+        let values: Vec<_> = cycle
+            .iter()
+            .map(|state| {
+                order.iter().zip(state).map(|(id, (alpha, beta))| serde_json::json!({
+                "belief_id":id,"alpha":f64::from_bits(*alpha),"beta":f64::from_bits(*beta)
+            })).collect::<Vec<_>>()
+            })
+            .collect();
+        let item = CorrectionItem::new(Location::Arguments, Fault {
+            path: vec![], code: Code::UnsupportedCombination,
+            message: format!("Cyclic propagation repeats {} distinct stored-count states without satisfying every final posterior equation. This calculation produced no complete result. Repeating values: {}", cycle.len(), serde_json::to_string(&values).expect("posterior count diagnostics serialize")),
+        },
+        "Every final alpha and beta must equal the value recomputed from its fixed prior and all incoming evidence in that same final state.".into(),
+        "Open a dialog with the user showing the repeated values. Ask whether to cancel or agree on an explicit numerical accuracy policy before retrying. Do not choose an iterate, change weights, invent a tolerance, or retry automatically.".into())
+        .expect("compiled numerical-decision guidance is complete");
+        Self { issue: item }
+    }
+
+    pub fn issue(&self) -> &CorrectionItem {
+        &self.issue
+    }
+}
+
+impl std::fmt::Display for NumericalDecision {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match serde_json::to_string(self.issue()) {
+            Ok(value) => output.write_str(&value),
+            Err(_) => output.write_str(
+                "Cyclic propagation needs a user decision; this calculation produced no complete result.",
+            ),
+        }
+    }
+}
+impl std::error::Error for NumericalDecision {}
+
+/// record_defeat currently has an earlier, confirmed edge commit. Keep that
+/// fact separate from the no-change correction used by an atomic calculation.
+#[derive(Debug)]
+pub struct EdgeCommittedDecision {
+    response: serde_json::Value,
+}
+impl EdgeCommittedDecision {
+    pub(crate) fn new(from: Uuid, to: Uuid, weight: f64, decision: &NumericalDecision) -> Self {
+        let mut response = serde_json::json!({"status":"needs_input","issues":[decision.issue()],"next_action":"ask_user"});
+        response["business_changes"] = serde_json::json!({"committed_edge":{"from_id":from,"to_id":to,"relation":"defeats","weight":weight}});
+        response["posterior_publication"] = serde_json::json!("not_performed");
+        response["message"] = serde_json::json!("The defeat edge was committed before propagation requested a user decision. The edge remains stored; no posterior update was published. Open the user dialog using the repeated values. Do not report this operation as complete or claim that nothing changed.");
+        Self { response }
+    }
+    pub fn response(&self) -> &serde_json::Value {
+        &self.response
+    }
+}
+impl std::fmt::Display for EdgeCommittedDecision {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(output, "{}", self.response)
+    }
+}
+impl std::error::Error for EdgeCommittedDecision {}
 
 pub struct InferenceEngine;
 
@@ -147,10 +218,9 @@ impl InferenceEngine {
     /// persists the result. At the MCP layer the result key is
     /// `projected_probability`, reinforcing that nothing was written.
     ///
-    /// As of Phase 2 the shared `propagate_core` is an order-independent
-    /// fixpoint (per-node one-shot aggregation), so cycles and re-convergent
-    /// paths in the causal subgraph yield a well-defined, order-independent
-    /// result for both functions at once.
+    /// Acyclic descendants complete in dependency order. Cyclic descendants
+    /// require an exact complete posterior; a repeated unfinished count state
+    /// requests a user decision instead of returning an approximate result.
     /// `edges` is the complete incoming-edge set of every causal descendant;
     /// `external_means` supplies the stored mean of any CAUSES source that is
     /// outside the descendant set — a genuine CO-CAUSE (spec Mimir.Inference
@@ -201,7 +271,7 @@ impl InferenceEngine {
     /// (spec: `Mimir.Beta.accumulate-↭`), and because the posterior is re-derived
     /// from the prior (never folded into a mutated scalar) propagation is
     /// idempotent. Acyclic graphs are completed in dependency order. Cyclic
-    /// completion still uses the existing policy pending #114/#115. Pure;
+    /// completion checks every final equation, without a pass or epsilon quota. Pure;
     /// never writes to the store. Returns the full posterior per changed node.
     fn propagate_core(
         &self,
@@ -214,9 +284,6 @@ impl InferenceEngine {
         if downstream.is_empty() {
             return Ok(vec![]);
         }
-
-        const MAX_ITERS: usize = 50;
-        const EPS: f64 = 1e-9;
 
         // Fixed prior (α₀, β₀) and the base posterior (α, β) (for change
         // detection) per downstream node. The seed carries no prior — it is
@@ -302,34 +369,39 @@ impl InferenceEngine {
                 state.insert(v, value);
             }
         } else {
-            // The remaining cyclic policy is tracked by #114/#115. It cannot
-            // limit the dependency-order path above.
-            let mut converged = false;
-            for _ in 0..MAX_ITERS {
-                let mut max_rel_delta = 0.0_f64;
+            let signature = |state: &HashMap<Uuid, (f64, f64)>| {
+                order
+                    .iter()
+                    .map(|id| {
+                        let (alpha, beta) = state[id];
+                        (alpha.to_bits(), beta.to_bits())
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let first = signature(&state);
+            let mut seen = HashMap::from([(first.clone(), 0)]);
+            let mut history = vec![first];
+            loop {
                 for &v in &order {
                     let (alpha, beta) = posterior(v, &state);
-                    let (oa, ob) = state[&v];
-                    let old_m = crate::graph::beta_mean(oa, ob);
-                    let new_m = crate::graph::beta_mean(alpha, beta);
-                    // Relative to the mean's [0,1] scale; the mean already normalizes
-                    // strength, so its delta is the right convergence signal.
-                    let d = (new_m - old_m).abs();
-                    if d > max_rel_delta {
-                        max_rel_delta = d;
-                    }
                     state.insert(v, (alpha, beta));
                 }
-                if max_rel_delta < EPS {
-                    converged = true;
+                // Completion is checked against the whole final state, not
+                // a small change between two iterates or only their means.
+                if order.iter().all(|id| {
+                    let (alpha, beta) = posterior(*id, &state);
+                    let (stored_alpha, stored_beta) = state[id];
+                    alpha.to_bits() == stored_alpha.to_bits()
+                        && beta.to_bits() == stored_beta.to_bits()
+                }) {
                     break;
                 }
-            }
-            if !converged {
-                tracing::warn!(
-                    subgraph_size = order.len(),
-                    "cyclic propagate_core hit MAX_ITERS without converging; returning current values"
-                );
+                let current = signature(&state);
+                if let Some(start) = seen.get(&current) {
+                    return Err(NumericalDecision::repeated(&order, &history[*start..]).into());
+                }
+                seen.insert(current.clone(), history.len());
+                history.push(current);
             }
         }
 

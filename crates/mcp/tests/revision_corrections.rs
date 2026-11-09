@@ -88,6 +88,91 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
 }
 
 #[tokio::test]
+async fn cyclic_numerical_decision_preserves_posteriors_and_reports_an_earlier_edge() -> Result<()>
+{
+    use mimir_core::{
+        graph::{EdgeType, MemoryType},
+        store::AgeStore,
+    };
+    let service = test_service().await?;
+    let id = fixture_identity().await?;
+    let project = format!("cyclic-decision-{id}");
+    let first =
+        isolation::seed_belief_in_project("cycle A", 0.1, 0.0, &project, MemoryType::Fact).await?;
+    let second =
+        isolation::seed_belief_in_project("cycle B", 0.1, 0.0, &project, MemoryType::Fact).await?;
+    let (a, b) = if first.id < second.id {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    let seed = isolation::seed_belief_in_project(
+        "zero-valued external seed",
+        0.0,
+        0.0,
+        &project,
+        MemoryType::Fact,
+    )
+    .await?;
+    service
+        .add_edge(a.id, b.id, EdgeType::Supports, 1.0)
+        .await?;
+    service.add_edge(b.id, a.id, EdgeType::Defeats, 0.7).await?;
+    service
+        .add_edge(seed.id, a.id, EdgeType::Supports, 0.0)
+        .await?;
+    let before_a = serde_json::to_value(service.get_belief(a.id).await?)?;
+    let before_b = serde_json::to_value(service.get_belief(b.id).await?)?;
+    let mut client = Client::start(id)?;
+    let checked=async {
+        let correction=client.call("propagate_from",json!({"id":seed.id})).await?;
+        let parsed:NeedsInput=serde_json::from_value(correction)?;
+        ensure!(parsed.issues()[0].fault().message.contains("2 distinct"));
+        ensure!(serde_json::to_value(service.get_belief(a.id).await?)?==before_a);
+        ensure!(serde_json::to_value(service.get_belief(b.id).await?)?==before_b);
+
+        let source=json!({"id":id,"project":project,"context":"cyclic counts","action":"retain a numerical decision","outcome":"unknown","source":"tool_result","evidence":["isolated fixture"],"belief_ids":[a.id,b.id]});
+        client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?;
+        let original=service.experience_history(id).await?;
+        let review=json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"no invented tolerance","feedback":[{"belief_id":a.id,"verdict":"support","weight":0}]});
+        let result=client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
+        let parsed:NeedsInput=serde_json::from_value(result)?;
+        ensure!(parsed.issues()[0].suggested_correction().contains("Open a dialog"));
+        ensure!(service.experience_history(id).await?==original);
+        ensure!(serde_json::to_value(service.get_belief(a.id).await?)?==before_a);
+        ensure!(serde_json::to_value(service.get_belief(b.id).await?)?==before_b);
+
+        let partial=client.call("record_defeat",json!({"from_id":seed.id,"to_id":a.id,"weight":0.0})).await?;
+        ensure!(partial["status"]=="needs_input");
+        ensure!(partial["posterior_publication"]=="not_performed");
+        ensure!(partial["business_changes"]["committed_edge"]["from_id"]==json!(seed.id));
+        ensure!(serde_json::from_value::<NeedsInput>(partial).is_err(),"a committed edge must not decode as a no-change correction");
+        let store=AgeStore::new(db::connect(&isolation::fixture().database_config()).await?,isolation::fixture().database_config().dbname)?;
+        ensure!(store.get_incoming_edges(&[a.id]).await?.iter().any(|(from,to,kind,_,_)|*from==seed.id&&*to==a.id&&*kind==EdgeType::Defeats));
+        ensure!(serde_json::to_value(service.get_belief(a.id).await?)?==before_a);
+        ensure!(serde_json::to_value(service.get_belief(b.id).await?)?==before_b);
+
+        // Deletion detaches rows before recomputing, in one transaction. An
+        // unfinished numerical result must roll back that deletion as well.
+        let decision = client.call("delete_belief",json!({"id":seed.id})).await?;
+        let parsed:NeedsInput=serde_json::from_value(decision)?;
+        ensure!(parsed.issues()[0].fault().message.contains("2 distinct"));
+        ensure!(service.get_belief(seed.id).await?.is_some(),"a numerical decision committed the deletion");
+        ensure!(store.get_incoming_edges(&[a.id]).await?.iter().any(|(from,to,kind,_,_)|*from==seed.id&&*to==a.id&&*kind==EdgeType::Defeats),"rolled-back deletion detached the committed edge");
+        ensure!(serde_json::to_value(service.get_belief(a.id).await?)?==before_a);
+        ensure!(serde_json::to_value(service.get_belief(b.id).await?)?==before_b);
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    let cleanup = service.delete_project(&project).await;
+    checked?;
+    ensure!(stopped.success());
+    cleanup?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn local_key_mistakes_offer_precise_repairs_before_any_reservation_or_publication(
 ) -> Result<()> {
     use mimir_core::graph::MemoryType;

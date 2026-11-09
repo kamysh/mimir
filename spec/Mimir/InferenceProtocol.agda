@@ -55,6 +55,7 @@ data Effect : Set where
   closeIntervention : ℕ → Effect
   clock : Effect
   hashIteration : List ℕ → Effect
+  calculatePosterior : P.Seed → P.External → List P.Edge → List P.Node → Effect
   persistBeta : P.State → Effect
   deleteBelief : ℕ → Effect -- GraphDeletion.Operation, including its transaction
 
@@ -74,6 +75,7 @@ Reply (closeIntervention tx) = ⊤
 Reply (defeatTimes project) = Text ⊎ List N.Defeat
 Reply clock = ℤ
 Reply (hashIteration ids) = Σ (List ℕ) (λ order → order ↭ ids)
+Reply (calculatePosterior seed external edges nodes) = P.CalculationReport
 Reply (persistBeta writes) = Text ⊎ DB.Receipt
 Reply (deleteBelief id) = Text ⊎ Bool
 
@@ -87,6 +89,7 @@ data Result : Set where
   projected propagated : List (ℕ × Float) → Bool → Result
   changed deleted : ℕ → Result
   pairs : List (ℕ × ℕ) → Result
+  numericalDecision : P.State → List P.State → Result
 
 closeRead : ℕ → Result → Script Result
 closeRead tx result = ask (closeContradictions tx) (λ _ → done result)
@@ -128,22 +131,37 @@ persist writes success with L.validWrites writes
   ; (inj₂ DB.aborted) → done publicationAborted
   ; (inj₂ DB.acknowledgementLost) → done publicationUncertain })
 
-finishPropagation : Bool → P.Result → Script Result
-finishPropagation causal outcome with P.Result.numericFailure outcome
-... | true = done invalidNumericWrite
-... | false with causal
-...   | true = done (projected (N.project (P.Result.writes outcome)) (P.Result.iterationLimitReached outcome))
-...   | false = persist (P.Result.writes outcome)
-  (propagated (N.project (P.Result.writes outcome)) (P.Result.iterationLimitReached outcome))
+module Calculation (seed : P.Seed) (external : P.External)
+  (edges : List P.Edge) (nodes : List P.Node) where
+  module A = P.Assess seed external edges nodes
+
+  finish : Bool → A.Verdict → Script Result
+  finish causal A.rejected = done invalidNumericWrite
+  finish causal (A.repeated final visited seen incomplete steps) = done (numericalDecision final visited)
+  finish causal outcome@(A.accepted final valid shape complete) with causal
+  ... | true = done (projected (N.project (A.writes outcome)) false)
+  ... | false = persist (A.writes outcome) (propagated (N.project (A.writes outcome)) false)
+
+  -- No effect is exposed after a checked incomplete repetition. In
+  -- particular persistBeta cannot be reached, for any repeat or history.
+  repetitionCannotPersist : ∀ causal final visited seen incomplete steps events reply →
+    E.Runs (finish causal (A.repeated final visited seen incomplete steps)) events reply →
+    events ≡ [] × reply ≡ numericalDecision final visited
+  repetitionCannotPersist causal final visited seen incomplete steps events reply execution =
+    E.completedCannotProduceEffects execution
+
+  start : Bool → Script Result
+  start causal = ask (calculatePosterior seed external edges nodes) (λ report → finish causal (A.check report))
 
 calculate : Bool → ℕ → Float → List G.BeliefValues → List Reviews.Review →
   List (ℕ × Float) → List Incoming → Script Result
 calculate causal id value beliefs reviews ground incomingRows with prepare (concatMap Reviews.Review.feedbacks reviews) ground beliefs
 ... | nothing = done invalidNumericInput
 ... | just nodes with causal
-...   | true = finishPropagation true (N.intervene id value nodes (map Incoming.edge incomingRows) ext)
+...   | true = Calculation.start (just (id , value)) ext
+  (filterᵇ (N.surgical id) (map Incoming.edge incomingRows)) nodes true
   where ext = external (id ∷ map G.BeliefValues.identity beliefs) incomingRows
-...   | false = finishPropagation false (P.run (just (id , value)) ext (map Incoming.edge incomingRows) nodes)
+...   | false = Calculation.start (just (id , value)) ext (map Incoming.edge incomingRows) nodes false
   where ext = external (id ∷ map G.BeliefValues.identity beliefs) incomingRows
 
 afterSeed : Bool → ℕ → Float → Script Result

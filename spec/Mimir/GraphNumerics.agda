@@ -112,10 +112,6 @@ surgical target incoming = not (does (target ≟ P.Edge.target incoming)) ∧ ca
   causes Review.causes = true
   causes _ = false
 
-intervene : ℕ → Float → List P.Node → List P.Edge → P.External → P.Result
-intervene target value nodes edges external = P.run (just (target , value)) external
-  (filterᵇ (surgical target) edges) nodes
-
 project : P.State → List (ℕ × Float)
 project = map (λ { (id , b) → id , P.mean b })
 

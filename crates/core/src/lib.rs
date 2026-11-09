@@ -491,7 +491,15 @@ impl MimirService {
             let edge = graph::Edge::new(from_id, to_id, edge_type, weight)?;
             self.store.insert_edge(&edge).await?;
             if edge_type == EdgeType::Defeats {
-                self.propagate_from(from_id).await?;
+                if let Err(error) = self.propagate_from(from_id).await {
+                    if let Some(decision) = error.downcast_ref::<inference::NumericalDecision>() {
+                        return Err(inference::EdgeCommittedDecision::new(
+                            from_id, to_id, weight, decision,
+                        )
+                        .into());
+                    }
+                    return Err(error);
+                }
             }
         }
         Ok(())
