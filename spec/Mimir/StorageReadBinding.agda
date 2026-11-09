@@ -128,7 +128,7 @@ module Read (ops : VectorOperations) where
     project : ∀ project rows → rows ↭ projectChunks project snapshot →
       DocumentMeaning snapshot (Query.projectChunkIDs project) (inj₂ rows)
     projectFailed : ∀ project error → DocumentMeaning snapshot (Query.projectChunkIDs project) (inj₁ error)
-    vectors : ∀ query limit filter ids → V.Selected query limit filter (Store.World.chunkVectors snapshot) ids →
+    vectors : ∀ query limit filter ids → V.StableSelected query limit filter (Store.World.chunkVectors snapshot) ids →
       DocumentMeaning snapshot (Query.queryVectors query limit filter) (inj₂ ids)
     vectorsFailed : ∀ query limit filter error → DocumentMeaning snapshot (Query.queryVectors query limit filter) (inj₁ error)
     chunk : ∀ id → DocumentMeaning snapshot (Query.getChunk id) (inj₂ (Store.chunk id (Store.World.chunks snapshot)))
@@ -345,6 +345,65 @@ module BasicReads (format : Encoding.Formatting) where
   answer (evidence id) state = Wire.array (map Encode.reference
     (supportingPassages state (Evidence.ranked id nothing (Semantics.groundRows state))))
   answer capabilities state = Capabilities.encode Capabilities.current
+
+  module Checked = Recovery.ReadOnly answer
+
+  operation : Recovery.Recoverable Store.World Request
+  operation = Checked.operation
+
+  completeReplyAndUnchangedWorld : ∀ request initial interrupted final reply →
+    Checked.Checked.X.Interrupted (Checked.Checked.script request) initial interrupted →
+    Checked.Checked.X.Completed (Checked.Checked.script request) interrupted final reply →
+    final ≡ initial × reply ≡ answer request initial
+  completeReplyAndUnchangedWorld = Checked.completedRetryPreservesStateAndAnswer
+
+-- The embedding primitive describes the configured model's query vector; it
+-- is not a caller-supplied search answer. The selected rows, missing-row
+-- handling, project scope and complete parent text are computed from World.
+module DocumentReads (enabled : Bool)
+  (embedding : Text → Text Data.Sum.⊎ List Store.Vector)
+  (ops : VectorOperations) where
+  module V = Vectors ops
+
+  record Request : Set where
+    constructor request
+    field context : Text; selection : Ranking.Selection; project : Maybe Text
+
+  before : Store.Vector → (ℕ × Store.Vector) → (ℕ × Store.Vector) → Bool
+  before query first second with VectorOperations.databaseLessEqual ops
+    (VectorOperations.cosineDistance ops query (proj₂ first))
+    (VectorOperations.cosineDistance ops query (proj₂ second))
+  ... | false = false
+  ... | true = V.tieBefore query first second
+
+  rows : Request → Store.Vector → Store.World → List ℕ
+  rows input query snapshot = Ranking.cap (Request.selection input)
+    (map proj₁ (Ranking.sort (before query)
+      (eligibleVectors filter (Store.World.chunkVectors snapshot))))
+    where
+    filter : Maybe (List ℕ)
+    filter with Request.project input
+    ... | nothing = nothing
+    ... | just project = just (projectChunks project snapshot)
+
+  passages : Store.World → List ℕ → List Query.Hit
+  passages snapshot [] = []
+  passages snapshot (id ∷ rest) with Store.chunk id (Store.World.chunks snapshot)
+  ... | nothing = passages snapshot rest
+  ... | just chunk with Documents.Chunk.parent chunk
+  ...   | nothing = Query.project chunk nothing ∷ passages snapshot rest
+  ...   | just parent = Query.project chunk (Store.chunk parent (Store.World.chunks snapshot)) ∷ passages snapshot rest
+
+  preparedAnswer : Request → Store.World → Query.PreparationIssue Data.Sum.⊎ Store.Vector → Query.Result
+  preparedAnswer input snapshot (inj₁ issue) = Query.preparationRequired issue
+  preparedAnswer input snapshot (inj₂ vector) = Query.found (passages snapshot (rows input vector snapshot))
+
+  answerEnabled : Bool → Request → Store.World → Query.Result
+  answerEnabled false input snapshot = Query.preparationRequired Query.notConfigured
+  answerEnabled true input snapshot = preparedAnswer input snapshot (Query.prepare (embedding (Request.context input)))
+
+  answer : Request → Store.World → Query.Result
+  answer = answerEnabled enabled
 
   module Checked = Recovery.ReadOnly answer
 

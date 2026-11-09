@@ -53,6 +53,7 @@ impl RegisteredOperation {
                     | GraphOperation::RecordContradiction
                     | GraphOperation::AddEvidence
                     | GraphOperation::QueryIntervention
+                    | GraphOperation::QueryDocument
             ) | Operation::Learning(
                 LearningOperation::RecordExperience
                     | LearningOperation::ReviewExperience

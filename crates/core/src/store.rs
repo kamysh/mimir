@@ -473,9 +473,9 @@ fn vector_query(
     filtered: bool,
     scored: bool,
 ) -> String {
-    let (table, id, stable_ties) = match table {
-        VectorTable::Chunks => ("chunk_embeddings", "chunk_id", false),
-        VectorTable::Beliefs => ("belief_embeddings", "belief_id", true),
+    let (table, id) = match table {
+        VectorTable::Chunks => ("chunk_embeddings", "chunk_id"),
+        VectorTable::Beliefs => ("belief_embeddings", "belief_id"),
     };
     let filter = if filtered {
         format!("WHERE {id} = ANY($2)")
@@ -488,11 +488,7 @@ fn vector_query(
         ""
     };
     let base=format!("SELECT {id}::text{score}, embedding <=> $1 AS selection_distance FROM public.{table} {filter}");
-    let order = if stable_ties {
-        format!("selection_distance, {id}")
-    } else {
-        "selection_distance".into()
-    };
+    let order = format!("selection_distance, {id}");
     match selection {
         None=>format!("{base} ORDER BY {order}"),
         Some(count)=>format!("SELECT * FROM (SELECT source.*, row_number() OVER (ORDER BY {order}) AS selection_position FROM ({base}) source) selected WHERE selection_position::numeric <= {}::numeric ORDER BY selection_position",count.get()),
@@ -2452,6 +2448,12 @@ mod snapshot_read_tests {
     use super::*;
     use crate::{config::Config, db, MimirService};
 
+    fn fixture_vector(axis: usize) -> Vec<f32> {
+        let mut values = vec![0.0; crate::embed::LOCAL_DIM];
+        values[axis] = 1.0;
+        values
+    }
+
     fn config() -> Config {
         Config {
             database: snapshot_test_isolation::fixture().database_config(),
@@ -2543,6 +2545,8 @@ mod snapshot_read_tests {
         }
         ids.sort();
         let project = format!("retrieval-vector-ties-{}", ids[0]);
+        let query = fixture_vector(0);
+        let orthogonal = fixture_vector(1);
         let checked = async {
             for index in [2, 1, 0] {
                 let mut belief = Belief::new_in_project(
@@ -2557,18 +2561,14 @@ mod snapshot_read_tests {
                     .store
                     .insert_belief_embedding(
                         belief.id,
-                        if index == 0 {
-                            &[0.0, 1.0, 0.0]
-                        } else {
-                            &[1.0, 0.0, 0.0]
-                        },
+                        if index == 0 { &orthogonal } else { &query },
                     )
                     .await?;
             }
             let expected = vec![ids[1], ids[2], ids[0]];
             let filtered = writer
                 .store
-                .query_beliefs_by_vector_filtered(&[1.0, 0.0, 0.0], None, &ids)
+                .query_beliefs_by_vector_filtered(&query, None, &ids)
                 .await?;
             anyhow::ensure!(
                 filtered == expected,
@@ -2576,17 +2576,10 @@ mod snapshot_read_tests {
             );
             let first = writer
                 .store
-                .query_beliefs_by_vector_filtered(
-                    &[1.0, 0.0, 0.0],
-                    std::num::NonZeroUsize::new(1),
-                    &ids,
-                )
+                .query_beliefs_by_vector_filtered(&query, std::num::NonZeroUsize::new(1), &ids)
                 .await?;
             anyhow::ensure!(first == vec![ids[1]]);
-            let all = writer
-                .store
-                .query_beliefs_by_vector(&[1.0, 0.0, 0.0], None)
-                .await?;
+            let all = writer.store.query_beliefs_by_vector(&query, None).await?;
             anyhow::ensure!(
                 all.iter()
                     .copied()
@@ -2596,12 +2589,12 @@ mod snapshot_read_tests {
             );
             let first = writer
                 .store
-                .query_beliefs_by_vector(&[1.0, 0.0, 0.0], std::num::NonZeroUsize::new(1))
+                .query_beliefs_by_vector(&query, std::num::NonZeroUsize::new(1))
                 .await?;
             anyhow::ensure!(first == all[..1]);
             let scored = writer
                 .store
-                .query_beliefs_by_vector_scored(&[1.0, 0.0, 0.0], None)
+                .query_beliefs_by_vector_scored(&query, None)
                 .await?;
             anyhow::ensure!(scored.iter().map(|(id, _)| *id).collect::<Vec<_>>() == all);
             Ok::<_, anyhow::Error>(())
@@ -2926,6 +2919,7 @@ mod snapshot_read_tests {
             let project = format!("consistent-document-query-{id}");
             let scope = scoped.then_some(project.as_str());
             let document = format!("/mimir-test/{project}.md");
+            let query = fixture_vector(0);
             let checked = async {
                 let parent_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
                 let child_id: Uuid = setup.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
@@ -2933,20 +2927,20 @@ mod snapshot_read_tests {
                 let child = DocumentChunk::with_id(child_id, document.clone(), vec!["Parent".into(), "Child".into()], "complete child passage ".repeat(400), Some(parent_id), Some(project.clone()));
                 writer.store.insert_document_chunk(&parent).await?;
                 writer.store.insert_document_chunk(&child).await?;
-                writer.store.insert_chunk_embedding(child_id, &[1.0, 0.0, 0.0]).await?;
-                let before = reader.document_query_snapshot(&[1.0, 0.0, 0.0], scope, None).await?;
+                writer.store.insert_chunk_embedding(child_id, &query).await?;
+                let before = reader.document_query_snapshot(&query, scope, None).await?;
                 let selected = before.iter().find(|value| value.id == child_id.to_string()).expect("selected child");
                 anyhow::ensure!(selected.content == child.content && selected.parent_content.as_ref() == Some(&parent.content), "must return complete child and parent content");
-                let interrupted = reader.document_query_after_first_read(&[1.0, 0.0, 0.0], scope, None, || async {
+                let interrupted = reader.document_query_after_first_read(&query, scope, None, || async {
                     anyhow::bail!("controlled document-query interruption")
                 }).await;
                 anyhow::ensure!(interrupted.unwrap_err().to_string().contains("controlled document-query interruption"));
-                let during = reader.document_query_after_first_read(&[1.0, 0.0, 0.0], scope, None, || async {
+                let during = reader.document_query_after_first_read(&query, scope, None, || async {
                     writer.clear_document(&document).await?;
                     Ok(())
                 }).await?;
                 anyhow::ensure!(serde_json::to_value(during)? == serde_json::to_value(before)?, "every selected field and parent must retain the initial database view: scoped={scoped}");
-                let after = reader.document_query_snapshot(&[1.0, 0.0, 0.0], scope, None).await?;
+                let after = reader.document_query_snapshot(&query, scope, None).await?;
                 anyhow::ensure!(after.iter().all(|value| value.id != child_id.to_string()), "the next request must see the removal and reuse the connection");
                 Ok::<_, anyhow::Error>(())
             }.await;

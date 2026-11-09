@@ -174,6 +174,12 @@ module AgentCorrection where
     constructor claim
     field first : Item; rest : List Item
 
+  embeddingQueryItem : Mimir.Validation.Code → Text → Item
+  embeddingQueryItem code explanation = item configuration
+    (Mimir.Validation.problem (Mimir.Validation.key "embeddings" ∷ []) code explanation)
+    (toList "One complete, finite, nonzero embedding for the query from the configured backend.")
+    (toList "Open a dialog with the user explaining the embedding prerequisite and reported cause. Ask whether to configure or repair the backend, revise the query, retry, or cancel. Do not change the model, shorten the query, invent a vector, or return empty results as if the search completed.")
+
   uuidItem : List Mimir.Validation.Segment → Item
   uuidItem path = item arguments
     (fault path malformedInput "The supplied identifier is not a valid UUID.")

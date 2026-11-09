@@ -88,6 +88,33 @@ async fn fixture_identity() -> Result<uuid::Uuid> {
 }
 
 #[tokio::test]
+async fn document_query_without_embeddings_requests_a_user_dialog() -> Result<()> {
+    let id = fixture_identity().await?;
+    let mut client = Client::start(id)?;
+    let checked = async {
+        let reply = client
+            .call(
+                "query_document",
+                json!({"context":"complete query with its final condition"}),
+            )
+            .await?;
+        let correction: NeedsInput = serde_json::from_value(reply)?;
+        let issue = &correction.issues()[0];
+        ensure!(issue.fault().code == Code::MissingField);
+        ensure!(issue.fault().path == vec![Segment::Key("embeddings".into())]);
+        ensure!(issue.suggested_correction().contains("Open a dialog"));
+        ensure!(!issue.expected().is_empty());
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    drop(client.input);
+    let stopped = client.child.wait().await?;
+    checked?;
+    ensure!(stopped.success());
+    Ok(())
+}
+
+#[tokio::test]
 async fn local_key_mistakes_offer_precise_repairs_before_any_reservation_or_publication(
 ) -> Result<()> {
     use mimir_core::graph::MemoryType;
