@@ -843,7 +843,7 @@ impl MimirService {
     /// deletion, not immediate hard deletion at record_defeat time). A
     /// defeated belief is deleted only once its probability has
     /// decayed below `prob_threshold` AND `grace_period` has passed since it
-    /// was last defeated, with no intervening reversal — this gives a wrong
+    /// was first defeated, with no intervening reversal — this gives a wrong
     /// `record_defeat` call time to be caught and reversed before its target
     /// is permanently removed. `project`, when given, restricts the sweep to
     /// that project's beliefs plus untagged (global) ones, same semantics as

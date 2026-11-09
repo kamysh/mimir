@@ -104,15 +104,15 @@ contradictions : Maybe Text → Store.World → List (ℕ × ℕ)
 contradictions scope state = map (λ edgeRow → Edge.Edge.from edgeRow , Edge.Edge.to edgeRow)
   (selectedEdges Review.contradicts scope state)
 
-defeats : Maybe Text → Store.World → List Numeric.Defeat
+defeats : Maybe Text → Store.World → Maybe (List Numeric.Defeat)
 defeats scope state = go (selectedEdges Review.defeats scope state)
   where
-  go : List Edge.Edge → List Numeric.Defeat
-  go [] = []
-  go (edgeRow ∷ rest) with Ranking.lookup (Edge.Edge.from edgeRow) (Store.beliefs state)
-  ... | nothing = go rest
-  ... | just source = Numeric.defeat (Edge.Edge.from edgeRow) (Edge.Edge.to edgeRow)
-    (Graph.BeliefValues.created source) ∷ go rest
+  go : List Edge.Edge → Maybe (List Numeric.Defeat)
+  go [] = just []
+  go (edgeRow ∷ rest) with Store.lookupRetirement (Edge.Edge.to edgeRow) state | go rest
+  ... | nothing | _ = nothing
+  ... | just clock | nothing = nothing
+  ... | just clock | just rows = just (Numeric.defeat (Edge.Edge.from edgeRow) (Edge.Edge.to edgeRow) clock ∷ rows)
 
 pathQuery : ℕ → Bool → Paths.Query
 pathQuery id false = Paths.allDownstream id
@@ -141,8 +141,10 @@ data InferenceRead (databaseSum : List Float → Float) (snapshot : Store.World)
   readSnapshotBeliefs : ∀ tx first scope → snapshot ≡ first →
     InferenceRead databaseSum snapshot (Inference.snapshotBeliefs tx first scope)
       (inj₂ (Records.listBeliefs scope nothing (Store.beliefs snapshot)))
-  readDefeats : ∀ scope → InferenceRead databaseSum snapshot (Inference.defeatTimes scope)
-    (inj₂ (defeats scope snapshot))
+  readDefeats : ∀ scope rows → defeats scope snapshot ≡ just rows →
+    InferenceRead databaseSum snapshot (Inference.defeatTimes scope) (inj₂ (inj₂ rows))
+  repairDefeatClock : ∀ scope issue → defeats scope snapshot ≡ nothing →
+    InferenceRead databaseSum snapshot (Inference.defeatTimes scope) (inj₂ (inj₁ issue))
 
 data Statement : Set where
   insertBelief : Graph.BeliefValues → Maybe Origin.Provenance → Statement

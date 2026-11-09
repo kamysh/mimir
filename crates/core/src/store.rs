@@ -9,6 +9,8 @@ mod operation_steps;
 mod prepared_belief;
 mod project_deletion;
 mod reservations;
+mod retirement;
+pub use retirement::{DefeatClock, RetirementMetadataIssue};
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "../../../tests/support/isolation.rs"]
@@ -1084,76 +1086,18 @@ $$) AS (n ag_catalog.agtype)"#
         })
     }
 
-    /// Returns every (defeater_id, defeated_id, defeater_created_at) triple for
-    /// DEFEATS relationships in the graph. Used by the attenuated-deletion sweep
-    /// to find defeated beliefs whose grace period has elapsed. DEFEATS edges carry no
-    /// timestamp of their own, so the defeater's `created_at` is returned as the
-    /// proxy for when the defeat happened — see `InferenceEngine::find_expired_defeated`.
-    pub async fn get_defeats_with_timestamps(
-        &self,
-    ) -> Result<Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)>> {
-        let g = &self.graph_name;
-        let sql = format!(
-            r#"SELECT defeater_id::text, defeated_id::text, defeater_created_at::text
-FROM ag_catalog.cypher('{g}', $$
-  MATCH (a:Belief)-[:DEFEATS]->(b:Belief)
-  RETURN a.id, b.id, a.created_at
-$$) AS (defeater_id ag_catalog.agtype, defeated_id ag_catalog.agtype, defeater_created_at ag_catalog.agtype)"#
-        );
-        let client = self.client.lock().await;
-        let rows = client.query(&sql, &[]).await?;
-        let mut triples = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let defeater_id = Uuid::parse_str(row.get::<_, &str>("defeater_id"))?;
-            let defeated_id = Uuid::parse_str(row.get::<_, &str>("defeated_id"))?;
-            let created_at_str: &str = row.get("defeater_created_at");
-            let defeater_created_at =
-                DateTime::parse_from_rfc3339(created_at_str)?.with_timezone(&chrono::Utc);
-            triples.push((defeater_id, defeated_id, defeater_created_at));
-        }
-        Ok(triples)
+    /// Target clocks are actual first defeat dates, or explicit legacy expiry.
+    /// The source belief's creation time is never used as a proxy.
+    pub async fn get_defeats_with_timestamps(&self) -> Result<Vec<(Uuid, Uuid, DefeatClock)>> {
+        self.defeat_clocks(None).await
     }
 
-    /// Like `get_defeats_with_timestamps`, scoped to a project: only edges
-    /// where both endpoints match the project (or are untagged/global) are
-    /// returned, matching `list_beliefs_by_project`'s inclusion semantics.
+    /// Both endpoints retain the existing project/global visibility rule.
     pub async fn get_defeats_with_timestamps_by_project(
         &self,
         project: &str,
-    ) -> Result<Vec<(Uuid, Uuid, chrono::DateTime<chrono::Utc>)>> {
-        let g = &self.graph_name;
-        let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
-        let stmt = format!("age_defeats_ts_proj_{}", Uuid::new_v4().simple());
-        let prepare = format!(
-            "PREPARE {stmt}(agtype) AS SELECT defeater_id::text, defeated_id::text, defeater_created_at::text \
-             FROM ag_catalog.cypher('{g}', $$ \
-             MATCH (a:Belief)-[:DEFEATS]->(b:Belief) \
-             WHERE (a.project = $project OR a.project IS NULL) \
-               AND (b.project = $project OR b.project IS NULL) \
-             RETURN a.id, b.id, a.created_at \
-             $$, $1) AS (defeater_id agtype, defeated_id agtype, defeater_created_at agtype)"
-        );
-
-        let client = self.client.lock().await;
-        let rows = age_query_rows(&client, &stmt, &prepare, &agtype_json).await?;
-        let mut triples = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let defeater_id_raw = row
-                .get("defeater_id")
-                .ok_or_else(|| anyhow::anyhow!("missing column defeater_id"))?;
-            let defeated_id_raw = row
-                .get("defeated_id")
-                .ok_or_else(|| anyhow::anyhow!("missing column defeated_id"))?;
-            let created_at_raw = row
-                .get("defeater_created_at")
-                .ok_or_else(|| anyhow::anyhow!("missing column defeater_created_at"))?;
-            let defeater_id = Uuid::parse_str(defeater_id_raw)?;
-            let defeated_id = Uuid::parse_str(defeated_id_raw)?;
-            let defeater_created_at =
-                DateTime::parse_from_rfc3339(created_at_raw)?.with_timezone(&chrono::Utc);
-            triples.push((defeater_id, defeated_id, defeater_created_at));
-        }
-        Ok(triples)
+    ) -> Result<Vec<(Uuid, Uuid, DefeatClock)>> {
+        self.defeat_clocks(Some(project)).await
     }
 
     // -----------------------------------------------------------------------
@@ -1410,6 +1354,9 @@ $$) {PATTERN_RETURN_COLUMNS}"#
         self.require_belief_on(client, edge.from_id, "from_id")
             .await?;
         self.require_belief_on(client, edge.to_id, "to_id").await?;
+        if edge.edge_type == EdgeType::Defeats {
+            self.record_defeat_time_on(client, edge.to_id).await?;
+        }
         let g = &self.graph_name;
         let from_id = edge.from_id.to_string();
         let to_id = edge.to_id.to_string();

@@ -46,9 +46,9 @@ data Statement : Set where
   insertPattern : G.PatternValues → Statement
   insertEdge : ℕ → ℕ → R.Relation → Number → Statement
 
-meaning : Statement → Store.World → Writes.Result
-meaning (insertPattern p) w = Writes.applied (Writes.insertPattern p w)
-meaning (insertEdge from to relation weight) w = Writes.insertEdge from to relation weight w
+meaning : Statement → ℤ → Store.World → Writes.Result
+meaning (insertPattern p) received w = Writes.applied (Writes.insertPattern p w)
+meaning (insertEdge from to relation weight) received w = Writes.insertEdge received from to relation weight w
 
 data StatementReply : Set where
   rejected : Correction.Claim → StatementReply
@@ -57,15 +57,18 @@ data StatementReply : Set where
 -- A refused endpoint check cannot describe a changed world. Successful writes
 -- still require their atomic receipt; an unknown outcome is not a refusal.
 data StatementReceipt (command : Statement) (before : Store.World) : StatementReply → Store.World → Set where
-  missing : ∀ report → meaning command before ≡ Writes.missingEndpoint →
+  missing : ∀ received report → meaning command received before ≡ Writes.missingEndpoint →
     StatementReceipt command before (rejected report) before
-  published : ∀ proposed receipt after → meaning command before ≡ Writes.applied proposed →
+  clockRepair : ∀ received report → meaning command received before ≡ Writes.invalidRetirement →
+    StatementReceipt command before (rejected report) before
+  published : ∀ received proposed receipt after → meaning command received before ≡ Writes.applied proposed →
     DB.Atomic before proposed receipt after → StatementReceipt command before (StatementReply.receipt receipt) after
 
 refusalCertified : ∀ {command before after report} →
   StatementReceipt command before (rejected report) after →
   Correction.Certified Store.World before after
-refusalCertified (missing report absent) = Correction.certified report refl
+refusalCertified (missing received report absent) = Correction.certified report refl
+refusalCertified (clockRepair received report absent) = Correction.certified report refl
 
 data Effect : Set where
   -- Fulfilled by PostgreSQL's UUID generator and clock. Generation and

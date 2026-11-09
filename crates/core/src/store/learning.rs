@@ -1111,6 +1111,13 @@ impl AgeStore {
         id: Uuid,
         links: &[LearningLink],
     ) -> Result<()> {
+        // Validate/stamp before replacing old review edges. A missing clock on
+        // an existing defeat is not silently assigned a fresh grace period.
+        for link in links {
+            if link.relation == EdgeType::Defeats {
+                self.record_defeat_time_on(tx.client(), link.to_id).await?;
+            }
+        }
         let g = &self.graph_name;
         tx.query(&format!("SELECT * FROM ag_catalog.cypher('{g}', $$ MATCH (:Belief)-[r]->(:Belief) WHERE r.experience_id='{id}' DELETE r $$) AS (v ag_catalog.agtype)"), &[]).await?;
         for link in links {

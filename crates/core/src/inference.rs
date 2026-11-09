@@ -511,47 +511,30 @@ impl InferenceEngine {
         Ok(result)
     }
 
-    /// Find defeated beliefs eligible for deletion under the attenuated-deletion
-    /// design: a defeated belief is deleted only after (a) its probability has decayed
-    /// below `prob_threshold` and (b) a `grace_period` has elapsed since it was
-    /// last defeated, with no intervening reversal.
-    ///
-    /// DEFEATS edges carry no timestamp of their own, so the defeat time is
-    /// approximated as the MOST RECENT defeater's `created_at` for that target
-    /// — record_defeat is expected to be called in the same breath as writing
-    /// the correcting belief (see the "call record_defeat immediately" rule),
-    /// so a defeater's creation time is a close proxy for when the defeat
-    /// actually landed. If a belief is defeated more than once, the latest
-    /// defeat resets its grace-period clock.
-    ///
-    /// `edges` is every (defeater_id, defeated_id, defeater_created_at) triple
-    /// for DEFEATS relationships in the graph. `beliefs` supplies current
-    /// probability for each defeated id (a belief absent from `beliefs`, e.g.
-    /// already deleted, is silently skipped). Pure function — the caller
-    /// performs the actual `delete_belief` calls.
+    /// Select below-threshold defeated targets after their first actual defeat
+    /// has waited the user's grace period. Explicit legacy expiry satisfies the
+    /// waiting condition for every configured duration. Later defeats cannot
+    /// restart it. Every edge for a target carries that same stored clock.
     pub fn find_expired_defeated(
         &self,
-        edges: &[(Uuid, Uuid, chrono::DateTime<chrono::Utc>)],
+        edges: &[(Uuid, Uuid, crate::store::DefeatClock)],
         beliefs: &HashMap<Uuid, Belief>,
         now: chrono::DateTime<chrono::Utc>,
         prob_threshold: f64,
         grace_period: chrono::Duration,
     ) -> Vec<Uuid> {
-        let mut latest_defeat: HashMap<Uuid, chrono::DateTime<chrono::Utc>> = HashMap::new();
-        for (_defeater, defeated, defeater_created_at) in edges {
-            latest_defeat
-                .entry(*defeated)
-                .and_modify(|t| *t = (*t).max(*defeater_created_at))
-                .or_insert(*defeater_created_at);
-        }
-        latest_defeat
+        let clocks: HashMap<Uuid, crate::store::DefeatClock> = edges
+            .iter()
+            .map(|(_, target, clock)| (*target, *clock))
+            .collect();
+        clocks
             .into_iter()
             .filter_map(|(defeated_id, defeat_time)| {
                 let belief = beliefs.get(&defeated_id)?;
                 if belief.probability.value() >= prob_threshold {
                     return None;
                 }
-                if now - defeat_time < grace_period {
+                if !defeat_time.waiting_satisfied(now, grace_period) {
                     return None;
                 }
                 Some(defeated_id)
@@ -1218,6 +1201,7 @@ mod tests {
         let defeater = belief_with_prob(0.9);
         let now = chrono::Utc::now();
         let defeat_time = now - chrono::Duration::hours(48);
+        let defeat_time = crate::store::DefeatClock::Recorded(defeat_time);
         let edges = vec![(defeater.id, defeated.id, defeat_time)];
         let beliefs: HashMap<Uuid, Belief> =
             [(defeated.id, defeated.clone())].into_iter().collect();
@@ -1231,7 +1215,8 @@ mod tests {
         let defeated = belief_with_prob(0.1);
         let defeater = belief_with_prob(0.9);
         let now = chrono::Utc::now();
-        let defeat_time = now - chrono::Duration::hours(1); // well within a 24h grace period
+        let defeat_time = now - chrono::Duration::hours(1);
+        let defeat_time = crate::store::DefeatClock::Recorded(defeat_time); // well within a 24h grace period
         let edges = vec![(defeater.id, defeated.id, defeat_time)];
         let beliefs: HashMap<Uuid, Belief> =
             [(defeated.id, defeated.clone())].into_iter().collect();
@@ -1248,6 +1233,7 @@ mod tests {
         let defeater = belief_with_prob(0.9);
         let now = chrono::Utc::now();
         let defeat_time = now - chrono::Duration::hours(48);
+        let defeat_time = crate::store::DefeatClock::Recorded(defeat_time);
         let edges = vec![(defeater.id, defeated.id, defeat_time)];
         let beliefs: HashMap<Uuid, Belief> =
             [(defeated.id, defeated.clone())].into_iter().collect();
@@ -1257,10 +1243,9 @@ mod tests {
     }
 
     #[test]
-    fn test_find_expired_defeated_latest_defeat_resets_grace_clock() {
-        // Defeated twice: an old defeat (past grace) and a recent one (within
-        // grace). The most recent defeat must reset the clock — the belief is
-        // NOT yet eligible, because the second defeat hasn't survived scrutiny.
+    fn test_find_expired_defeated_later_sources_keep_original_target_clock() {
+        // Different correcting beliefs share the target's original date.
+        // Their own creation dates do not restart its waiting period.
         let defeated = belief_with_prob(0.1);
         let old_defeater = belief_with_prob(0.9);
         let recent_defeater = belief_with_prob(0.9);
@@ -1269,22 +1254,19 @@ mod tests {
             (
                 old_defeater.id,
                 defeated.id,
-                now - chrono::Duration::hours(72),
+                crate::store::DefeatClock::Recorded(now - chrono::Duration::hours(48)),
             ),
             (
                 recent_defeater.id,
                 defeated.id,
-                now - chrono::Duration::hours(1),
+                crate::store::DefeatClock::Recorded(now - chrono::Duration::hours(48)),
             ),
         ];
         let beliefs: HashMap<Uuid, Belief> =
             [(defeated.id, defeated.clone())].into_iter().collect();
         let candidates =
             engine().find_expired_defeated(&edges, &beliefs, now, 0.3, chrono::Duration::hours(24));
-        assert!(
-            candidates.is_empty(),
-            "the more recent defeat should reset the grace-period clock"
-        );
+        assert_eq!(candidates, vec![defeated.id]);
     }
 
     #[test]
@@ -1294,7 +1276,11 @@ mod tests {
         let defeated_id = Uuid::new_v4();
         let defeater = belief_with_prob(0.9);
         let now = chrono::Utc::now();
-        let edges = vec![(defeater.id, defeated_id, now - chrono::Duration::hours(48))];
+        let edges = vec![(
+            defeater.id,
+            defeated_id,
+            crate::store::DefeatClock::Recorded(now - chrono::Duration::hours(48)),
+        )];
         let beliefs: HashMap<Uuid, Belief> = HashMap::new();
         let candidates =
             engine().find_expired_defeated(&edges, &beliefs, now, 0.3, chrono::Duration::hours(24));

@@ -18159,6 +18159,118 @@
       ],
       "proof_boundary_category": "database_effects",
       "specification_status": "item-policy-and-admission-checked-whole-operation-certificate-open"
+    },
+    {
+      "path": "crates/core/src/store/retirement.rs",
+      "definitions": [
+        {
+          "kind": "fn",
+          "name": "correction",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/RetirementClock.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DefeatRecovery.agda",
+            "spec/Mimir/GraphNumerics.agda",
+            "spec/Mimir/StorageSemantics.agda",
+            "spec/Mimir/MigrationScriptBinding.agda"
+          ],
+          "mapping_boundary": "Source navigation; actual PostgreSQL timestamps, legacy upgrade and correction behavior are checked in isolated native/MCP tests, not extracted Rust."
+        },
+        {
+          "kind": "fn",
+          "name": "fmt",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/RetirementClock.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DefeatRecovery.agda",
+            "spec/Mimir/GraphNumerics.agda",
+            "spec/Mimir/StorageSemantics.agda",
+            "spec/Mimir/MigrationScriptBinding.agda"
+          ],
+          "mapping_boundary": "Source navigation; actual PostgreSQL timestamps, legacy upgrade and correction behavior are checked in isolated native/MCP tests, not extracted Rust."
+        },
+        {
+          "kind": "fn",
+          "name": "repair",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/RetirementClock.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DefeatRecovery.agda",
+            "spec/Mimir/GraphNumerics.agda",
+            "spec/Mimir/StorageSemantics.agda",
+            "spec/Mimir/MigrationScriptBinding.agda"
+          ],
+          "mapping_boundary": "Source navigation; actual PostgreSQL timestamps, legacy upgrade and correction behavior are checked in isolated native/MCP tests, not extracted Rust."
+        },
+        {
+          "kind": "fn",
+          "name": "waiting_satisfied",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/RetirementClock.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DefeatRecovery.agda",
+            "spec/Mimir/GraphNumerics.agda",
+            "spec/Mimir/StorageSemantics.agda",
+            "spec/Mimir/MigrationScriptBinding.agda"
+          ],
+          "mapping_boundary": "Source navigation; actual PostgreSQL timestamps, legacy upgrade and correction behavior are checked in isolated native/MCP tests, not extracted Rust."
+        },
+        {
+          "kind": "fn",
+          "name": "metadata",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/RetirementClock.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DefeatRecovery.agda",
+            "spec/Mimir/GraphNumerics.agda",
+            "spec/Mimir/StorageSemantics.agda",
+            "spec/Mimir/MigrationScriptBinding.agda"
+          ],
+          "mapping_boundary": "Source navigation; actual PostgreSQL timestamps, legacy upgrade and correction behavior are checked in isolated native/MCP tests, not extracted Rust."
+        },
+        {
+          "kind": "fn",
+          "name": "record_defeat_time_on",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/RetirementClock.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DefeatRecovery.agda",
+            "spec/Mimir/GraphNumerics.agda",
+            "spec/Mimir/StorageSemantics.agda",
+            "spec/Mimir/MigrationScriptBinding.agda"
+          ],
+          "mapping_boundary": "Source navigation; actual PostgreSQL timestamps, legacy upgrade and correction behavior are checked in isolated native/MCP tests, not extracted Rust."
+        },
+        {
+          "kind": "fn",
+          "name": "defeat_clocks",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/RetirementClock.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/DefeatRecovery.agda",
+            "spec/Mimir/GraphNumerics.agda",
+            "spec/Mimir/StorageSemantics.agda",
+            "spec/Mimir/MigrationScriptBinding.agda"
+          ],
+          "mapping_boundary": "Source navigation; actual PostgreSQL timestamps, legacy upgrade and correction behavior are checked in isolated native/MCP tests, not extracted Rust."
+        }
+      ],
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/RetirementClock.agda",
+        "spec/Mimir/DefeatRecovery.agda",
+        "spec/Mimir/GraphNumerics.agda"
+      ],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "specification_status": "behavior-defined-and-local-proof-checked",
+      "proof_boundary_category": "application_protocol"
     }
   ],
   "dependency_contracts": [
@@ -18352,7 +18464,7 @@
         "formal_status": "One external-interface postulate outside the safe spec import graph; the Rust adapter correspondence remains open.",
         "approval": "User selected Approve for the PostgreSQL transaction-atomicity question on 2026-10-30.",
         "module_file": "assumptions/Mimir/Assumptions/PostgreSQL.agda",
-        "declaration": "atomicTransactions : (State : Set) → Mimir.DatabaseTransaction.Contract State",
+        "declaration": "atomicTransactions : (State : Set) \u2192 Mimir.DatabaseTransaction.Contract State",
         "isolation_audit": "/tmp/mimir-assumption-isolation-audit-eejzpx6r.json",
         "verification": "/tmp/mimir-agda-approved-postgresql-vetBrZBn.log and .exit",
         "verification_limit": "Checks the declaration and imports; PostgreSQL behavior is assumed, not proved."
