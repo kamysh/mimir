@@ -28,6 +28,9 @@ import Mimir.ReviewSchema as Reviews
 import Mimir.DatabaseTransaction as DB
 import Mimir.EvidenceValidity as Evidence
 import Mimir.ApplicationStore as Store
+import Mimir.McpErrors as Errors
+import Mimir.Validation as Validation
+module Correction = Errors.AgentCorrection
 
 record Incoming : Set where
   constructor incoming
@@ -72,7 +75,7 @@ Reply (closeContradictions tx) = ⊤
 Reply (openIntervention id) = Text ⊎ (ℕ × Store.World × Maybe G.BeliefValues)
 Reply (inSnapshot tx first effect) = Reply effect
 Reply (closeIntervention tx) = ⊤
-Reply (defeatTimes project) = Text ⊎ List N.Defeat
+Reply (defeatTimes project) = Text ⊎ (Correction.Claim ⊎ List N.Defeat)
 Reply clock = ℤ
 Reply (hashIteration ids) = Σ (List ℕ) (λ order → order ↭ ids)
 Reply (calculatePosterior seed external edges nodes) = P.CalculationReport
@@ -84,6 +87,7 @@ open E
 
 data Result : Set where
   failed : Text → Result
+  needsInput : Correction.Claim → Result
   missingBelief invalidProbability invalidDecay invalidNumericInput invalidNumericWrite : Result
   publicationUncertain publicationAborted : Result
   projected propagated : List (ℕ × Float) → Bool → Result
@@ -229,9 +233,10 @@ start (sweep project threshold grace) with N.probability threshold
 ... | true = read (defeatTimes project) refl decide
   where
   open import Relation.Binary.PropositionalEquality using (refl)
-  decide : List N.Defeat → Script Result
-  decide [] = done (deleted 0)
-  decide edges@(_ ∷ _) = read (listBeliefs project) refl (λ beliefs → ask clock (λ now →
+  decide : Correction.Claim ⊎ List N.Defeat → Script Result
+  decide (inj₁ issue) = done (needsInput issue)
+  decide (inj₂ []) = done (deleted 0)
+  decide (inj₂ edges@(_ ∷ _)) = read (listBeliefs project) refl (λ beliefs → ask clock (λ now →
     ask (hashIteration (Ranking.unique (map N.Defeat.target edges))) (λ { (order , sameMembers) →
       sweepDeletes 0 (N.expiredTargets now grace threshold beliefs edges order) })))
 

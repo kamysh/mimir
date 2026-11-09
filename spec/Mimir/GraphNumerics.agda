@@ -22,6 +22,7 @@ import Mimir.PosteriorComputation as P
 import Mimir.AssessmentScores as Scores
 import Mimir.ReviewSchema as Review
 import Mimir.EvidenceValidity as Evidence
+import Mimir.RetirementClock as Retirement
 
 probability : Float → Bool
 probability x = (0.0 ≤ᵇ x) ∧ (x ≤ᵇ 1.0)
@@ -98,25 +99,22 @@ decay now factor masses beliefs with probability factor
 ... | false = nothing
 ... | true = decayRows now factor masses beliefs
 
--- Latest defeat is the source belief creation time, not an edge timestamp.
--- HashMap iteration order is intentionally not invented: callers provide the
--- enumeration order, and duplicate target identities are removed before use.
+-- Every visible edge carries its target's same durable first-defeat clock.
+-- The read boundary refuses a missing clock instead of guessing a history.
 record Defeat : Set where
   constructor defeat
-  field source target : ℕ; sourceCreated : ℤ
+  field source target : ℕ; clock : Retirement.Clock
 
-latest : ℕ → List Defeat → Maybe ℤ
-latest id [] = nothing
-latest id (e ∷ es) with id ≟ Defeat.target e
-... | no _ = latest id es
-... | yes _ with latest id es
-...   | nothing = just (Defeat.sourceCreated e)
-...   | just time = just (Defeat.sourceCreated e Int.⊔ time)
+targetClock : ℕ → List Defeat → Maybe Retirement.Clock
+targetClock id [] = nothing
+targetClock id (e ∷ es) with id ≟ Defeat.target e
+... | no _ = targetClock id es
+... | yes _ = just (Defeat.clock e)
 
 expired : ℤ → ℤ → Float → List Graph.BeliefValues → List Defeat → ℕ → Bool
-expired now grace threshold beliefs edges id with Ranking.lookup id beliefs | latest id edges
-... | just belief | just time = not (threshold ≤ᵇ Graph.BeliefValues.probability belief) ∧
-  does (grace Int.≤? (now Int.- time))
+expired now grace threshold beliefs edges id with Ranking.lookup id beliefs | targetClock id edges
+... | just belief | just clock = not (threshold ≤ᵇ Graph.BeliefValues.probability belief) ∧
+  Retirement.waitingSatisfied now grace clock
 ... | _ | _ = false
 
 expiredTargets : ℤ → ℤ → Float → List Graph.BeliefValues → List Defeat → List ℕ → List ℕ

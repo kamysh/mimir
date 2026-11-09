@@ -258,10 +258,16 @@
         "spec/Mimir/DefeatRecovery.agda",
         "spec/Mimir/RecoverableStoreStep.agda",
         "spec/Mimir/RegisteredStoreAdmission.agda",
-        "spec/Mimir/RecoverableStoreSequence.agda"
+        "spec/Mimir/RecoverableStoreSequence.agda",
+        "spec/Mimir/RetirementClock.agda",
+        "spec/Mimir/ApplicationStore.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/StorageSemantics.agda",
+        "spec/Mimir/MigrationScriptBinding.agda"
       ],
       "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85\u2013#86. The concrete registered operation keeps the independently committed defeat prefix, resumes complete propagation, and saves completion only with all posterior updates; Rust correspondence is tested, not an extracted refinement theorem.",
-      "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
+      "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects.",
+      "retirement_clock_boundary": "First actual PostgreSQL defeat date is write-once; explicit legacy expiry bypasses only waiting. Missing new metadata asks for repair. Original sweep selection/policy recovery remains separate unfinished work."
     },
     {
       "name": "record_contradiction",
@@ -469,10 +475,16 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/RetirementClock.agda",
+        "spec/Mimir/ApplicationStore.agda",
+        "spec/Mimir/DefeatRecovery.agda",
+        "spec/Mimir/StorageSemantics.agda",
+        "spec/Mimir/MigrationScriptBinding.agda"
       ],
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
-      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
+      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution.",
+      "retirement_clock_boundary": "First actual PostgreSQL defeat date is write-once; explicit legacy expiry bypasses only waiting. Missing new metadata asks for repair. Original sweep selection/policy recovery remains separate unfinished work."
     },
     {
       "name": "query_relevant",
