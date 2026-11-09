@@ -184,16 +184,72 @@ record Recoverable (World Input : Set) : Set₁ where
   ... | final , reply , execution =
     final , reply , execution , completedMeetsIntent input initial final reply execution
 
--- A dispatcher continuation must retain both its control prefix and the
--- physical meaning of every observed effect. No raw Script is a RunState.
-module CheckedRun {World Input : Set} (operation : Recoverable World Input) where
+-- Assembly selects the application meaning before it receives an operation.
+-- The selected whole-world condition is a TYPE PARAMETER, never a field an
+-- operation can replace. Numerical meaning can therefore require the complete
+-- posterior equations without executing an arbitrarily capped solver here.
+record RecoverableFor (World Input Result : Set)
+  (Goal : Input → World → World → Result → Set) : Set₁ where
+  field
+    Effect : Set
+    Reply : Effect → Set
+  module E = Effects.Protocol Effect Reply
+  field
+    script : Input → E.Script Result
+    Atomic : World → (effect : Effect) → Reply effect → World → Set
+  module X = Execution World Effect Reply Atomic
+  field
+    converges : ∀ input initial interrupted final reply →
+      X.Interrupted (script input) initial interrupted →
+      X.Completed (script input) interrupted final reply →
+      Goal input initial final reply
+    progress : ∀ input initial →
+      Σ World (λ final → Σ Result (λ reply →
+        X.Completed (script input) initial final reply))
+
+  completedMeetsGoal : ∀ input initial final reply →
+    X.Completed (script input) initial final reply → Goal input initial final reply
+  completedMeetsGoal input initial final reply execution =
+    converges input initial initial final reply
+      (X.atPrefix [] (script input) initial (E.stopped _) (X.unchanged initial)) execution
+
+  progressReachesGoal : ∀ input initial →
+    Σ World (λ final → Σ Result (λ reply →
+      X.Completed (script input) initial final reply × Goal input initial final reply))
+  progressReachesGoal input initial with progress input initial
+  ... | final , reply , execution =
+    final , reply , execution , completedMeetsGoal input initial final reply execution
+
+-- Existing deterministic operations retain exactly their original complete
+-- state-and-reply equality. This adapter does not reinterpret their scripts,
+-- weaken their physical effects, or introduce another correctness premise.
+module DeterministicContract {World Input : Set} (operation : Recoverable World Input) where
   module O = Recoverable operation
-  module E = O.E
-  module X = O.X
   module G = O.G
 
+  Goal : Input → World → World → O.Result → Set
+  Goal input initial final reply = G.Goal O.intent (G.invocation input initial) final reply
+
+  operationFor : RecoverableFor World Input O.Result Goal
+  operationFor = record
+    { Effect = O.Effect
+    ; Reply = O.Reply
+    ; script = O.script
+    ; Atomic = O.Atomic
+    ; converges = O.converges
+    ; progress = O.progress
+    }
+
+-- A dispatcher continuation must retain both its control prefix and the
+-- physical meaning of every observed effect. No raw Script is a RunState.
+module CheckedFor {World Input Result : Set} {Goal : Input → World → World → Result → Set}
+  (operation : RecoverableFor World Input Result Goal) where
+  module O = RecoverableFor operation
+  module E = O.E
+  module X = O.X
+
   record History (input : Input) (initial : World)
-    (remaining : E.Script O.Result) : Set where
+    (remaining : E.Script Result) : Set where
     constructor history
     field
       current : World
@@ -204,7 +260,7 @@ module CheckedRun {World Input : Set} (operation : Recoverable World Input) wher
   record RunState (input : Input) (initial : World) : Set where
     constructor runState
     field
-      remaining : E.Script O.Result
+      remaining : E.Script Result
       evidence : History input initial remaining
 
   begin : ∀ input initial → RunState input initial
@@ -232,7 +288,7 @@ module CheckedRun {World Input : Set} (operation : Recoverable World Input) wher
   advance (runState .(E.ask effect continuation) past) effect continuation refl reply after meaning =
     runState (continuation reply) (advanceHistory effect continuation past reply after meaning)
 
-  prefixReturned : ∀ {script : E.Script O.Result} {events} {reply : O.Result} → E.Prefix script events (E.done reply) →
+  prefixReturned : ∀ {script : E.Script Result} {events} {reply : Result} → E.Prefix script events (E.done reply) →
     E.Runs script events reply
   prefixReturned (E.stopped (E.done reply)) = E.returned reply
   prefixReturned (E.replied effect continuation reply rest) =
@@ -245,9 +301,9 @@ module CheckedRun {World Input : Set} (operation : Recoverable World Input) wher
 
   finishedMeetsOriginalIntent : ∀ {input initial reply} →
     (past : History input initial (E.done reply)) →
-    G.Goal O.intent (G.invocation input initial) (History.current past) reply
+    Goal input initial (History.current past) reply
   finishedMeetsOriginalIntent {input} {initial} {reply} past =
-    O.completedMeetsIntent input initial (History.current past) reply (completed past)
+    O.completedMeetsGoal input initial (History.current past) reply (completed past)
 
   interrupt : ∀ {input initial remaining} → (past : History input initial remaining) →
     X.Interrupted (O.script input) initial (History.current past)
@@ -266,14 +322,17 @@ module CheckedRun {World Input : Set} (operation : Recoverable World Input) wher
 
   retryAfterLostReplyMeetsOriginalIntent : ∀ {input initial} effect continuation →
     (past : History input initial (E.ask effect continuation)) →
-    (unobserved : O.Reply effect) → (after final : World) → (reply : O.Result) →
+    (unobserved : O.Reply effect) → (after final : World) → (reply : Result) →
     O.Atomic (History.current past) effect unobserved after →
     X.Completed (O.script input) after final reply →
-    G.Goal O.intent (G.invocation input initial) final reply
+    Goal input initial final reply
   retryAfterLostReplyMeetsOriginalIntent {input} {initial}
     effect continuation past unobserved after final reply meaning retry =
     O.converges input initial after final reply
       (loseReply effect continuation past unobserved after meaning) retry
+
+module CheckedRun {World Input : Set} (operation : Recoverable World Input) =
+  CheckedFor (DeterministicContract.operationFor operation)
 
 -- One committed statement is not automatically repeatable. Its physical
 -- meaning and independently reviewed intent are separate, and the complete
