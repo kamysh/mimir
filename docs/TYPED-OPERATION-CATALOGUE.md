@@ -27,8 +27,13 @@ ownership remain separate work; the recovery binding remains #85–#86. An input
 schema by itself is not evidence that all business conditions were checked.
 
 Committed boundaries describe actual publication sites, rather than every SQL
-query inside a transaction. Propagation and document replacement each publish
-through one transaction. Project deletion also has one boundary: its graph
+query inside a transaction. Propagation publishes through one transaction.
+Document loading first saves its original complete file preparation and
+PostgreSQL-issued chunk identities with an embedding owner. After embedding,
+one transaction replaces the complete index, removes old evidence, recomputes
+affected beliefs, consumes the owner and saves the original loaded count.
+Those are two registered boundaries. A retry uses that saved file even if the
+file on disk has since changed. Project deletion has one boundary: its graph
 roots, dependent vectors, chunks and learning records publish together. Its
 registered token path saves the original result in that same transaction.
 This declaration describes the native publication boundary; the independent

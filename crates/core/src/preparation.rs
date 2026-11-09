@@ -111,6 +111,22 @@ pub struct PreparationRequired {
 }
 
 impl PreparationRequired {
+    pub(crate) fn document(
+        location: Location,
+        path: Vec<Segment>,
+        code: Code,
+        message: String,
+    ) -> Self {
+        let item = CorrectionItem::new(location, Fault { path, code, message },
+            "The original readable document, its saved preparation and a complete usable embedding for each chunk before replacing the index.".into(),
+            "Explain the reported problem and open a user dialog to repair the source or configured backend. Keep this operation's original token and saved outcome; do not silently substitute a file, model or new token, and do not publish a partial replacement.".into())
+            .expect("compiled document guidance provides the problem and repair path");
+        Self {
+            correction: NeedsInput::new(item, vec![])
+                .expect("document preparation reports one explained issue"),
+        }
+    }
+
     pub(crate) fn bound_request(code: Code, message: String) -> Self {
         let item=CorrectionItem::new(Location::Request,
             Fault {path:vec![Segment::Key("operation_token".into())],code,message},
