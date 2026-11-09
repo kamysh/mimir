@@ -5,11 +5,20 @@ use super::*;
 
 #[test]
 fn deeply_nested_invalid_capture_is_rejected_without_recursive_copy_or_cleanup() {
-    std::thread::Builder::new().stack_size(256*1024).spawn(|| {
-        let source=format!(r#"{{"beliefs":{}null{}}}"#,"[".repeat(10000),"]".repeat(10000));
-        let source=mimir_json::parse(&source).unwrap();
-        assert!(pending_keys(&source).is_err());
-    }).unwrap().join().unwrap();
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let source = format!(
+                r#"{{"beliefs":{}null{}}}"#,
+                "[".repeat(10000),
+                "]".repeat(10000)
+            );
+            let source = mimir_json::parse(&source).unwrap();
+            assert!(pending_keys(&source).is_err());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 use crate::{config::Config, db, graph::MemoryType, store::CancellationDecision, MimirService};
 use serde_json::json;
