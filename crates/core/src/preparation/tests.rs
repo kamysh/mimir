@@ -18,6 +18,9 @@ use uuid::Uuid;
 
 struct FixedProvider(Mutex<Option<Result<Vec<Vec<f32>>>>>);
 
+#[path = "review_operation_tests.rs"]
+mod review_operations;
+
 #[tokio::test]
 async fn changing_a_cited_document_stops_the_owned_embedding_before_publication() -> Result<()> {
     use tokio::sync::oneshot;

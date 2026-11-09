@@ -991,6 +991,22 @@ impl AgeStore {
             .await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
+        let result = self
+            .review_experience_in(&tx, review, expected, prepared)
+            .await?;
+        tx.commit().await.with_context(|| format!("The outcome of review {} at source revision {} must be read back with get_learning_review and experience_history before retrying. Keep the same request and candidate keys; do not invent a replacement review or assume nothing was committed.", review.experience_id, review.experience_revision))?;
+        Ok(result)
+    }
+
+    // Callers hold the operation reservation, when registered, followed by
+    // the learning writer lock. The supplied transaction owns publication.
+    pub(super) async fn review_experience_in(
+        &self,
+        tx: &Transaction<'_>,
+        review: &Review,
+        expected: i64,
+        prepared: &HashMap<String, crate::preparation::PreparedBelief>,
+    ) -> Result<ExperienceState> {
         let current = state(
             &tx.query_opt(
                 &format!("{CURRENT} WHERE e.id=$1"),
@@ -1114,8 +1130,14 @@ impl AgeStore {
         }
         self.replace_review_edges(&tx, review.experience_id, &applied.links)
             .await?;
-        self.recompute_learning(&tx, Some(&current.experience.project), affected)
-            .await?;
+        let publication_time = Self::posterior_time_on(tx.client()).await?;
+        self.recompute_learning_at(
+            tx,
+            Some(&current.experience.project),
+            affected,
+            publication_time,
+        )
+        .await?;
         let mut result = state(
             &tx.query_one(
                 &format!("{CURRENT} WHERE e.id=$1"),
@@ -1127,7 +1149,6 @@ impl AgeStore {
         result
             .item_ids
             .extend(local_item_ids(&applied.extracted_items));
-        tx.commit().await.with_context(|| format!("The outcome of review {} at source revision {} must be read back with get_learning_review and experience_history before retrying. Keep the same request and candidate keys; do not invent a replacement review or assume nothing was committed.", review.experience_id, review.experience_revision))?;
         Ok(result)
     }
     async fn replace_review_edges(
@@ -1157,17 +1178,6 @@ impl AgeStore {
         }
         Ok(())
     }
-    pub(super) async fn recompute_learning(
-        &self,
-        tx: &Transaction<'_>,
-        project: Option<&str>,
-        affected: HashSet<Uuid>,
-    ) -> Result<()> {
-        let publication_time = Self::posterior_time_on(tx.client()).await?;
-        self.recompute_learning_at(tx, project, affected, publication_time)
-            .await
-    }
-
     pub(super) async fn recompute_learning_at(
         &self,
         tx: &Transaction<'_>,

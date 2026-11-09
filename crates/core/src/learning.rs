@@ -538,14 +538,18 @@ impl crate::MimirService {
             } = candidate
             {
                 let value = self
-                    .prepare_belief(
-                        &content,
-                        0.5,
-                        0.0,
-                        Some(&project),
-                        memory_type,
-                        None,
-                        &grounding,
+                    .watch_review_preparation(
+                        review,
+                        expected_review_revision,
+                        self.prepare_belief(
+                            &content,
+                            0.5,
+                            0.0,
+                            Some(&project),
+                            memory_type,
+                            None,
+                            &grounding,
+                        ),
                     )
                     .await
                     .map_err(|error| {
@@ -554,11 +558,150 @@ impl crate::MimirService {
                             None => error,
                         }
                     })?;
+                let Some(value) = value else {
+                    return self
+                        .store
+                        .review_experience_prepared(review, expected_review_revision, &prepared)
+                        .await;
+                };
                 prepared.insert(key, value);
             }
         }
         self.store
             .review_experience_prepared(review, expected_review_revision, &prepared)
+            .await
+    }
+
+    /// The LISTEN acknowledgement precedes the first revision/candidate check.
+    /// Exiting this scope drops the owned provider before any outcome readback.
+    async fn watch_review_preparation<T>(
+        &self,
+        review: &Review,
+        expected: i64,
+        work: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<Option<T>> {
+        let unavailable = |error: anyhow::Error| {
+            crate::preparation::PreparationRequired::bound_request(
+            crate::validation::Code::MissingEvidence,
+            format!("Review preparation stopped because its current source and ownership cannot be observed: {error:#}. Read the original review and open the user dialog before continuing. No review was published."))
+        };
+        let mut changes = crate::db::ReviewPreparationSubscription::connect(&self.database)
+            .await
+            .map_err(unavailable)?;
+        if self
+            .store
+            .review_preparation_candidates(review, expected)
+            .await?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        tokio::pin!(work);
+        loop {
+            tokio::select! {
+                biased;
+                changed = changes.changed() => {
+                    changed.map_err(unavailable)?;
+                    if self.store.review_preparation_candidates(review, expected).await?.is_none() {
+                        return Ok(None);
+                    }
+                }
+                result = &mut work => return result.map(Some),
+            }
+        }
+    }
+
+    /// Internal registered entrypoint. Public MCP/CLI admission is assembled
+    /// separately; the immutable plan supplies every candidate owner key.
+    pub async fn review_experience_operation(
+        &self,
+        plan: &crate::store::OperationPlan,
+    ) -> Result<crate::store::StepDecision> {
+        use crate::store::{OperationOutcome, ReviewPublicationState, StepDecision};
+        let ReviewPublicationState::Preparing {
+            review,
+            expected,
+            owners,
+            final_step,
+        } = (match self
+            .store
+            .resume_review_operation(plan, &self.embedding_operation_settings())
+            .await?
+        {
+            ReviewPublicationState::Resolved(result) => return Ok(result),
+            state => state,
+        })
+        else {
+            unreachable!()
+        };
+        let Some((_, candidates)) = self
+            .store
+            .review_preparation_candidates(&review, expected)
+            .await?
+        else {
+            return self
+                .store
+                .publish_review_operation(&final_step, &std::collections::HashMap::new())
+                .await;
+        };
+        let mut prepared = std::collections::HashMap::new();
+        for (index, candidate) in candidates {
+            if let Candidate::Belief { key, grounding, .. } = candidate {
+                let belief = owners.get(&key).cloned().ok_or_else(|| {
+                    anyhow::anyhow!(
+                    "Read the original owner step for candidate {key:?}; no review was published")
+                })?;
+                let support = self
+                    .store
+                    .validate_indexed_support(belief.project.as_deref(), &grounding)
+                    .await?;
+                let result = self
+                    .watch_review_preparation(
+                        &review,
+                        expected,
+                        self.prepare_owned_belief(belief, None, support),
+                    )
+                    .await;
+                match result {
+                    Ok(Some(value)) => {
+                        prepared.insert(key, value);
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        // The provider future has already been dropped above.
+                        match self
+                            .store
+                            .read_operation_outcome(plan.operation_token(), None)
+                            .await?
+                        {
+                            OperationOutcome::Cancelled { cancellation, .. } => {
+                                return Ok(StepDecision::Cancelled(cancellation))
+                            }
+                            OperationOutcome::Completed { .. } => {
+                                return self
+                                    .store
+                                    .publish_review_operation(&final_step, &prepared)
+                                    .await
+                            }
+                            _ => {
+                                return Err(
+                                    match error
+                                        .downcast_ref::<crate::preparation::PreparationRequired>()
+                                    {
+                                        Some(decision) => {
+                                            decision.for_review_candidate(index, &key).into()
+                                        }
+                                        None => error,
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.store
+            .publish_review_operation(&final_step, &prepared)
             .await
     }
     pub async fn get_experience(&self, id: Uuid) -> Result<Option<ExperienceState>> {
