@@ -26,6 +26,46 @@ pub(crate) fn operation_settings(configured: Option<&EmbeddingsConfig>) -> serde
     serde_json::json!({"embeddings":identity})
 }
 
+/// Validate only the captured semantic identity; never accept credentials or
+/// infer a replacement model from the current configuration.
+pub(crate) fn validate_operation_settings(value: &serde_json::Value) -> anyhow::Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Settings {
+        embeddings: serde_json::Value,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "backend", rename_all = "lowercase", deny_unknown_fields)]
+    enum Identity {
+        Local {
+            model: String,
+        },
+        Voyage {
+            model: String,
+            input_type: String,
+            truncation: bool,
+        },
+        #[serde(rename = "openai")]
+        OpenAi {
+            model: String,
+        },
+    }
+    let settings: Settings = serde_json::from_value(value.clone())?;
+    if !settings.embeddings.is_null() {
+        match serde_json::from_value::<Identity>(settings.embeddings)? {
+            Identity::Local { model } => anyhow::ensure!(model == crate::embed::HF_MODEL_ID,
+                "Retain the actual configured local BGE model; read the original binding before choosing a different model"),
+            Identity::Voyage { model, input_type, truncation } => {
+                anyhow::ensure!(input_type == "document" && !truncation,
+                    "Retain Voyage document input without truncation from the original binding");
+                let _ = model;
+            }
+            Identity::OpenAi { model } => { let _ = model; }
+        }
+    }
+    Ok(())
+}
+
 /// Only preparation or a pre-write check may produce this outcome. A database
 /// error after publication was attempted must retain its uncertain outcome.
 #[derive(Debug)]

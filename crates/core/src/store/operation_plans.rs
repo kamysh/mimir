@@ -17,6 +17,12 @@ pub(super) const RESULT_KEY: &str = "@operation-result";
 const PLAN_BINDING_MISMATCH: &str = "The saved plan belongs to a different operation than this token's original request. Read its binding, plan and saved answers and ask the user to resolve the mismatch. Do not repeat changes or invent a completion answer.";
 pub type Selections = Vec<(CommitSite, Vec<String>)>;
 pub type SelectionWork<'a> = Pin<Box<dyn Future<Output = Result<Selections>> + Send + 'a>>;
+pub(super) struct CapturedSelection {
+    pub selections: Selections,
+    pub capture: Option<Value>,
+}
+pub(super) type CaptureWork<'a> =
+    Pin<Box<dyn Future<Output = Result<CapturedSelection>> + Send + 'a>>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -37,6 +43,20 @@ struct StoredPlan {
     operation: String,
     shape: Vec<Shape>,
     steps: Vec<PlannedStep>,
+    #[serde(
+        default,
+        deserialize_with = "present_capture",
+        skip_serializing_if = "Option::is_none"
+    )]
+    capture: Option<Value>,
+}
+
+// Omission retains the old three-field plan. An explicitly supplied null is
+// still present and must be rejected rather than treated as omission.
+fn present_capture<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 fn shape(operation: Operation) -> Vec<Shape> {
@@ -49,7 +69,20 @@ fn shape(operation: Operation) -> Vec<Shape> {
         })
         .collect()
 }
-fn build(operation: Operation, selections: Selections) -> Result<StoredPlan> {
+fn build(
+    operation: Operation,
+    selections: Selections,
+    capture: Option<Value>,
+) -> Result<StoredPlan> {
+    if operation == Operation::Reembed {
+        let captured = capture.as_ref().ok_or_else(|| anyhow!(
+            "Backfill requires its original server-captured selection; use prepare_reembed_operation rather than guessing row keys"))?;
+        let pending = super::backfill::pending_keys(captured)?;
+        ensure!(selections == vec![(CommitSite::BeliefVectorPublication, pending)],
+            "The backfill steps do not match its original captured pending selection; read the plan and ask the user to resolve it");
+    } else {
+        ensure!(capture.is_none(), "Captured backfill metadata cannot be attached to another operation; read its original binding and plan");
+    }
     let mut selected = BTreeMap::new();
     for (site, keys) in selections {
         ensure!(
@@ -94,6 +127,7 @@ fn build(operation: Operation, selections: Selections) -> Result<StoredPlan> {
         operation: operation.name().into(),
         shape: shape(operation),
         steps,
+        capture,
     })
 }
 fn validate(plan: &StoredPlan) -> Result<()> {
@@ -120,8 +154,34 @@ fn validate(plan: &StoredPlan) -> Result<()> {
             .collect::<Result<Vec<_>>>()?;
         selections.push((b.site, keys));
     }
-    ensure!(*plan==build(operation,selections)?, "saved plan disagrees with the registered order; read its outcome and resolve the journal before continuing");
+    ensure!(*plan==build(operation,selections,plan.capture.clone())?, "saved plan disagrees with the registered order; read its outcome and resolve the journal before continuing");
     Ok(())
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+    #[test]
+    fn legacy_plans_keep_their_shape_and_reject_hidden_capture() -> Result<()> {
+        let operation = Operation::named("delete_project").unwrap();
+        let plan = build(operation, vec![], None)?;
+        let original = serde_json::to_value(&plan)?;
+        assert!(original.get("capture").is_none());
+        validate(&serde_json::from_value(original.clone())?)?;
+        for captured in [Value::Null, serde_json::json!({"beliefs":[]})] {
+            let mut changed = original.clone();
+            changed["capture"] = captured;
+            let changed: StoredPlan = serde_json::from_value(changed)?;
+            assert!(validate(&changed).is_err());
+        }
+        assert!(build(
+            Operation::Reembed,
+            vec![(CommitSite::BeliefVectorPublication, vec![])],
+            None
+        )
+        .is_err());
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -436,6 +496,30 @@ impl AgeStore {
             &'a OperationBinding,
         ) -> SelectionWork<'a>,
     {
+        self.prepare_operation_captured(token, expected, move |tx, binding| {
+            let selected = select(tx, binding);
+            Box::pin(async move {
+                Ok(CapturedSelection {
+                    selections: selected.await?,
+                    capture: None,
+                })
+            })
+        })
+        .await
+    }
+
+    pub(super) async fn prepare_operation_captured<F>(
+        &self,
+        token: Uuid,
+        expected: &OperationBindingRequest,
+        select: F,
+    ) -> Result<PlanDecision>
+    where
+        F: for<'a, 'client> FnOnce(
+            &'a Transaction<'client>,
+            &'a OperationBinding,
+        ) -> CaptureWork<'a>,
+    {
         let mut client = self.client.lock().await;
         let Some((original, matches)) = binding(&*client, token, expected, false).await? else {
             return Ok(PlanDecision::UnknownBinding);
@@ -512,7 +596,8 @@ impl AgeStore {
             tx.rollback().await?;
             return Ok(PlanDecision::NeedsRecovery("This token already has saved steps but no registered plan. Read those answers and resolve the old operation; do not start it again under a newly guessed plan.".into()));
         }
-        let stored = build(operation, captured?)?;
+        let captured = captured?;
+        let stored = build(operation, captured.selections, captured.capture)?;
         let encoded = serde_json::to_string(&stored)?;
         tx.execute(
             "INSERT INTO mimir_operation_plans (operation_token,plan) VALUES ($1,$2::text::jsonb)",

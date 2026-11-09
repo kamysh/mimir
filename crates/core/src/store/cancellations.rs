@@ -92,6 +92,14 @@ impl AgeStore {
             &[&token],
         )
         .await?;
+        // Existing-belief backfills have no preparation-owner row. Notify on
+        // cancellation itself as well, so their owned subscriptions can read
+        // the token's durable cancellation without waiting for another event.
+        tx.execute(
+            "SELECT pg_notify('mimir_embedding_owners_changed', '')",
+            &[],
+        )
+        .await?;
         tx.commit().await?;
         Ok(CancellationDecision::Recorded(receipt))
     }

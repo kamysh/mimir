@@ -139,6 +139,7 @@ operations! {
 pub enum RegisteredOperation {
     Tool(Operation),
     DeleteEvidence,
+    Reembed,
 }
 
 impl RegisteredOperation {
@@ -149,12 +150,14 @@ impl RegisteredOperation {
             .find(|operation| operation.name() == name)
             .map(Self::Tool)
             .or_else(|| (name == "delete_evidence").then_some(Self::DeleteEvidence))
+            .or_else(|| (name == "reembed").then_some(Self::Reembed))
     }
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Tool(operation) => operation.name(),
             Self::DeleteEvidence => "delete_evidence",
+            Self::Reembed => "reembed",
         }
     }
 
@@ -163,6 +166,10 @@ impl RegisteredOperation {
             Self::Tool(operation) => operation.committed_boundaries(),
             Self::DeleteEvidence => {
                 const PLAN: &[CommitBoundary] = &[once(EvidenceRemoval)];
+                PLAN
+            }
+            Self::Reembed => {
+                const PLAN: &[CommitBoundary] = &[repeated(BeliefVectorPublication)];
                 PLAN
             }
         }
