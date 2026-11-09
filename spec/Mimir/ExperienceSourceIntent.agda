@@ -133,6 +133,8 @@ module For (database : ℕ) (format : Encoding.Formatting)
     Maybe (Operations.Failure ⊎ (Learning.World × Source.Experience))
   normalized input before = observe (Normalize.experience input (Store.learningView before))
 
+  NormalizationResult = Maybe (Operations.Failure ⊎ (Learning.World × Source.Experience))
+
   -- Every admitted source row, including its UUID, project, source records
   -- and non-item fields, comes from the submitted incident. Only item UUIDs
   -- are filled by the observed allocation program.
