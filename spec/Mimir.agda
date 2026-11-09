@@ -76,6 +76,7 @@ import Mimir.DefeatRecovery
 import Mimir.SweepRecovery
 import Mimir.PropagationRecovery
 import Mimir.DocumentRemovalRecovery
+import Mimir.DocumentReplacementRecovery
 import Mimir.AtomicFile
 import Mimir.CharacterRules
 import Mimir.OAuthCache

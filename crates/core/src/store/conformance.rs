@@ -399,6 +399,19 @@ impl AgeStore {
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
+        self.replace_document_in(&tx, path, chunks, vectors).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(super) async fn replace_document_in(
+        &self,
+        tx: &Transaction<'_>,
+        path: &str,
+        chunks: &[DocumentChunk],
+        vectors: &[Vec<f32>],
+    ) -> Result<()> {
+        validate_document_batch(path, chunks, vectors)?;
         let old = self
             .get_chunk_ids_for_document_on(tx.client(), path)
             .await?;
@@ -416,7 +429,6 @@ impl AgeStore {
             self.insert_chunk_embedding_on(tx.client(), chunk.id, vector)
                 .await?;
         }
-        tx.commit().await?;
         Ok(())
     }
 
@@ -494,7 +506,7 @@ impl AgeStore {
     }
 }
 
-fn validate_document_batch(
+pub(super) fn validate_document_batch(
     path: &str,
     chunks: &[DocumentChunk],
     vectors: &[Vec<f32>],

@@ -18,6 +18,7 @@ pub enum CommitSite {
     ContradictionPublication,
     Propagation,
     Decay,
+    DocumentPreparation,
     DocumentReplacement,
     DocumentDeletion,
     ExperiencePublication,
@@ -40,6 +41,7 @@ impl CommitSite {
             Self::ContradictionPublication => "store.insert_contradicts",
             Self::Propagation => "store.propagate_locked",
             Self::Decay => "store.decay_locked",
+            Self::DocumentPreparation => "store.prepare_document",
             Self::DocumentReplacement => "store.replace_document",
             Self::DocumentDeletion => "store.clear_document",
             Self::ExperiencePublication => "store.record_experience",
@@ -115,7 +117,7 @@ operations! {
         GetEvidence => "get_evidence" [],
         PropagateFrom => "propagate_from" [once(Propagation)],
         QueryIntervention => "query_intervention" [],
-        LoadDocument => "load_document" [once(DocumentReplacement), repeated(EvidencePublication)],
+        LoadDocument => "load_document" [once(DocumentPreparation), once(DocumentReplacement)],
         QueryDocument => "query_document" [],
         ClearDocument => "clear_document" [once(DocumentDeletion)]
     }

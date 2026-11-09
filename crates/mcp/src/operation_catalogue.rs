@@ -57,6 +57,7 @@ impl RegisteredOperation {
                 GraphOperation::PropagateFrom
                     | GraphOperation::QueryIntervention
                     | GraphOperation::InsertBelief
+                    | GraphOperation::LoadDocument
                     | GraphOperation::DeleteBelief
                     | GraphOperation::AddEvidence
                     | GraphOperation::SweepExpiredDefeated
@@ -125,7 +126,7 @@ impl RegisteredOperation {
         }
         if matches!(
             self.handler,
-            Operation::Graph(GraphOperation::InsertBelief)
+            Operation::Graph(GraphOperation::InsertBelief | GraphOperation::LoadDocument)
                 | Operation::Learning(LearningOperation::ReviewExperience)
         ) {
             if let Err(error) = &result {

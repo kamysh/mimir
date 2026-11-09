@@ -8,6 +8,8 @@ mod operation_plans;
 mod operation_steps;
 mod prepared_belief;
 pub(crate) use prepared_belief::BeliefPublicationState;
+mod prepared_document;
+pub(crate) use prepared_document::{document_arguments, DocumentDraft, DocumentPreparation};
 mod project_deletion;
 mod reservations;
 mod retirement;

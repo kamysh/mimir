@@ -14,7 +14,9 @@ open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (String; toList)
 open import Data.Unit using (⊤; tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Relation.Nullary using (yes; no)
 open import Mimir.Text using (Text)
+import Mimir.Text as Text
 open import Mimir.Validation using (Fault)
 open import Mimir.RecordDecoding using (_>>=_; mapResult; readArray)
 open import Mimir.PublicInput
@@ -62,8 +64,8 @@ data Request : Set where
 memory : V.Value → Fault ⊎ C.Memory
 memory = enum (("fact" , C.fact) ∷ ("experiential" , C.experiential) ∷ ("working" , C.working) ∷ [])
 
--- A missing or non-string memory field is absent; a string with an unknown
--- spelling is an error. This differs from the nested candidate enum grammar.
+-- Low-level legacy projection. Entry-point supplied-value checks below reject
+-- wrong public types before this accessor; stored optional null is explicit.
 memoryField : Text → V.Object.View → Fault ⊎ Maybe C.Memory
 memoryField name fields with fields name
 ... | just (V.string text) = mapResult just (memory (V.string text))
@@ -174,9 +176,25 @@ module Decode (conversion : Conversion.Contract) where
     ... | Validation.rejected fault invalid = inj₁ fault
     ... | Validation.accepted valid = inj₂ origin
 
+  nonblankContent : Text → Fault ⊎ Text
+  nonblankContent content with Text.nonblank? content
+  ... | yes valid = inj₂ content
+  ... | no invalid = inj₁ (Validation.fault [] Validation.emptyText
+    "Supply the complete nonblank belief content. If the intended claim is unknown, ask the user; do not store an empty belief.")
+
+  nonblankContentSound : ∀ before content → nonblankContent before ≡ inj₂ content → Text.Nonblank content
+  nonblankContentSound before content accepted with Text.nonblank? before
+  ... | yes valid with accepted
+  ... | refl = valid
+  nonblankContentSound before content accepted | no invalid with accepted
+  ... | ()
+
+  beliefContent : V.Value → Fault ⊎ Text
+  beliefContent raw = V.asString raw >>= nonblankContent
+
   decode : Tools.Tool → V.Object.View → Fault ⊎ Request
   decode Tools.insertBelief fields = required "provenance" validOrigin fields >>= λ origin →
-    required "content" V.asString fields >>= λ content → required "probability" unitProbability fields >>= λ probability →
+    required "content" beliefContent fields >>= λ content → required "probability" unitProbability fields >>= λ probability →
     required "confidence" unitProbability fields >>= λ confidence → memoryField (toList "memory_type") fields >>= λ kind →
     required "grounding" (readArray (Candidate.readCitation uuid Mimir.JsonObjects.keepLast)) fields >>= λ cited →
     inj₂ (mutation (Mutation.belief content probability confidence (project fields) (defaultMemory kind) (just origin) cited))
@@ -245,10 +263,16 @@ module Decode (conversion : Conversion.Contract) where
   supplied : ∀ {A : Set} → String → (V.Value → Fault ⊎ A) → V.Object.View → Fault ⊎ ⊤
   supplied name decoder fields = present name decoder fields >>= λ _ → inj₂ tt
 
-  suppliedTypes : V.Object.View → Fault ⊎ ⊤
-  suppliedTypes fields = supplied "project" V.asString fields >>= λ _ →
-    supplied "memory_type" V.asString fields >>= λ _ →
-    supplied "prefer_type" V.asString fields >>= λ _ →
+  optionalString : Bool → String → V.Object.View → Fault ⊎ ⊤
+  optionalString false name fields = supplied name V.asString fields
+  optionalString true name fields with fields (toList name)
+  ... | just V.null = inj₂ tt
+  ... | _ = supplied name V.asString fields
+
+  suppliedTypesWith : Bool → V.Object.View → Fault ⊎ ⊤
+  suppliedTypesWith stored fields = optionalString stored "project" fields >>= λ _ →
+    optionalString stored "memory_type" fields >>= λ _ →
+    optionalString stored "prefer_type" fields >>= λ _ →
     supplied "limit" integer fields >>= λ _ →
     supplied "offset" integer fields >>= λ _ →
     supplied "evidence_per_belief" integer fields >>= λ _ →
@@ -258,6 +282,9 @@ module Decode (conversion : Conversion.Contract) where
     supplied "weight" unitProbability fields >>= λ _ →
     supplied "value" unitProbability fields
 
+  suppliedTypes : V.Object.View → Fault ⊎ ⊤
+  suppliedTypes = suppliedTypesWith false
+
   admittedFields : Tools.Tool → V.Object.View → Fault ⊎ Request
   admittedFields tool fields = suppliedTypes fields >>= λ _ → decode tool fields
 
@@ -266,6 +293,24 @@ module Decode (conversion : Conversion.Contract) where
   ... | Validation.rejected detail invalid = inj₁ detail
   ... | Validation.accepted known = admittedFields tool (V.Object.normalize fields)
   readTool tool _ = inj₁ (Validation.fault [] Validation.wrongType "Tool arguments must be an object")
+
+  -- Stored bindings may contain serde's explicit null representation of an
+  -- absent Option<String>. Other handlers deliberately reject explicit null;
+  -- in particular insert_pattern uses a custom optional-project visitor.
+  storedOptionalNull : Tools.Tool → Bool
+  storedOptionalNull Tools.insertBelief = true
+  storedOptionalNull Tools.decayAll = true
+  storedOptionalNull Tools.loadDocument = true
+  storedOptionalNull _ = false
+
+  boundFields : Tools.Tool → V.Object.View → Fault ⊎ Request
+  boundFields tool fields = suppliedTypesWith (storedOptionalNull tool) fields >>= λ _ → decode tool fields
+
+  readBoundTool : Tools.Tool → V.Value → Fault ⊎ Request
+  readBoundTool tool (V.object fields) with V.Object.checkUnknowns forbid (acceptedFields tool) fields
+  ... | Validation.rejected detail invalid = inj₁ detail
+  ... | Validation.accepted known = boundFields tool (V.Object.normalize fields)
+  readBoundTool tool _ = inj₁ (Validation.fault [] Validation.wrongType "Stored operation arguments must be an object")
 
   successfulRequestHasKnownFields : ∀ tool fields requestValue →
     readTool tool (V.object fields) ≡ inj₂ requestValue →

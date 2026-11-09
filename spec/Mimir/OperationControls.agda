@@ -393,7 +393,7 @@ module Plan where
     entry "get_evidence" [] ∷
     entry "propagate_from" (once "store.propagate_locked" ∷ []) ∷
     entry "query_intervention" [] ∷
-    entry "load_document" (once "store.replace_document" ∷ repeated "store.insert_evidence" ∷ []) ∷
+    entry "load_document" (once "store.prepare_document" ∷ once "store.replace_document" ∷ []) ∷
     entry "query_document" [] ∷
     entry "clear_document" (once "store.clear_document" ∷ []) ∷
     entry "learning_capabilities" [] ∷
