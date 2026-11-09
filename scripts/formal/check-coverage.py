@@ -127,7 +127,7 @@ def check():
         r'^source Schema\.(\w+) = toList (".*")$', read('spec/Mimir/MigrationScriptBinding.agda'), re.M)}
     migration_keys = ['initial', 'searchPath', 'embeddingTable', 'evidenceEdges',
                       'betaBeliefs', 'learning', 'candidates', 'assessment', 'owners', 'allocation',
-                      'reviewQueueNotifications', 'operationReservations', 'operationBindings', 'operationStepReplies', 'operationPlans', 'operationRequestKeys', 'candidateKeyContent', 'embeddingOwners']
+                      'reviewQueueNotifications', 'operationReservations', 'operationBindings', 'operationStepReplies', 'operationPlans', 'operationRequestKeys', 'candidateKeyContent', 'embeddingOwners', 'operationCancellations']
     sql_files = sorted((ROOT / 'crates/core/migrations').glob('*.sql'))
     assert len(sql_files) == len(migration_keys) == len(bound_sources)
     for path, key in zip(sql_files, migration_keys):
