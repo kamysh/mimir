@@ -1200,6 +1200,27 @@ impl MimirService {
         self.store.clear_document(path).await
     }
 
+    /// Capture the existing path-resolution result once, retaining the caller's
+    /// original argument separately. This server-owned preparation precedes
+    /// binding; no later retry resolves the path again.
+    pub fn clear_document_request(&self, path: &str) -> Result<store::OperationBindingRequest> {
+        let resolved = std::fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_owned());
+        store::OperationBindingRequest::new(
+            "clear_document".into(),
+            serde_json::json!({"path":path}),
+            serde_json::json!({"resolved_path":resolved}),
+        )
+    }
+
+    pub async fn clear_document_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.clear_document_operation(step).await
+    }
+
     /// Semantic search over loaded document chunks.
     /// Embeds `context`, queries chunk_embeddings by cosine distance, fetches
     /// matching DocumentChunk vertices from AGE, enriches with parent content.
