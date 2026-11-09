@@ -268,6 +268,7 @@ impl MimirService {
         belief.id = id;
         belief.created_at = created_at;
         belief.last_activated_at = created_at;
+        belief.decay_accounted_at = created_at;
         let vectors = self.embed_prepared_belief(embedder, &belief).await.map_err(|error| {
             if error.is::<PreparationRequired>() { return error; }
             if error.is::<embed::EmbeddingCancelled>() { return error; }
@@ -685,6 +686,13 @@ impl MimirService {
         self.store
             .decay_locked(decay_factor.unwrap_or(0.99), project)
             .await
+    }
+
+    pub async fn decay_operation(
+        &self,
+        step: &store::RegisteredStep,
+    ) -> Result<store::StepDecision> {
+        self.store.decay_operation(step).await
     }
 
     /// Delete defeated beliefs whose grace period has elapsed (attenuated

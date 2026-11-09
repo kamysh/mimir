@@ -285,6 +285,11 @@ fn belief_from_text_row<R: TextRow>(row: &R) -> Result<Belief> {
     let last_activated_str: &str = row
         .text("last_activated_at")
         .ok_or_else(|| anyhow::anyhow!("missing column last_activated_at"))?;
+    let accounted_text = row.text("decay_accounted_at").ok_or_else(|| anyhow::anyhow!(
+        "Missing decay_accounted_at. Apply the supported database migration before reading these counts; do not guess a historical baseline."
+    ))?;
+    let decay_accounted_at =
+        DateTime::parse_from_rfc3339(accounted_text)?.with_timezone(&chrono::Utc);
     let project: Option<&str> = row.text("project");
 
     let id = Uuid::parse_str(id_str)?;
@@ -329,6 +334,7 @@ fn belief_from_text_row<R: TextRow>(row: &R) -> Result<Belief> {
         beta0,
         created_at,
         last_activated_at,
+        decay_accounted_at,
         memory_type,
         project.map(str::to_owned),
     )
@@ -429,6 +435,7 @@ const BELIEF_RETURN_COLUMNS: &str = r#"AS (
   beta0          text,
   created_at     text,
   last_activated_at text,
+  decay_accounted_at text,
   memory_type    text,
   project        text
 )"#;
@@ -572,6 +579,7 @@ impl AgeStore {
         )?;
         let created_at = belief.created_at.to_rfc3339();
         let last_activated_at = belief.last_activated_at.to_rfc3339();
+        let decay_accounted_at = belief.decay_accounted_at.to_rfc3339();
         let memory_type = belief.memory_type.as_str();
 
         let project_prop = match &belief.project {
@@ -586,7 +594,7 @@ impl AgeStore {
             )
         });
         let agtype_json = format!(
-            r#"{{"id": "{id}", "content": "{}", "created_at": "{created_at}", "last_activated_at": "{last_activated_at}", "memory_type": "{memory_type}"{project_prop}{origin_prop}}}"#,
+            r#"{{"id": "{id}", "content": "{}", "created_at": "{created_at}", "last_activated_at": "{last_activated_at}", "decay_accounted_at": "{decay_accounted_at}", "memory_type": "{memory_type}"{project_prop}{origin_prop}}}"#,
             json_esc(&belief.content)
         );
 
@@ -596,7 +604,7 @@ impl AgeStore {
              CREATE (n:Belief {{id: $id, content: $content, \
              probability: {probability}, confidence: {confidence}, \
              alpha: {alpha}, beta: {beta}, alpha0: {alpha0}, beta0: {beta0}, \
-             created_at: $created_at, last_activated_at: $last_activated_at, \
+             created_at: $created_at, last_activated_at: $last_activated_at, decay_accounted_at: $decay_accounted_at, \
              memory_type: $memory_type{}{} }}) \
              RETURN n.id $$, $1) AS (id ag_catalog.agtype)",
             if belief.project.is_some() {
@@ -619,16 +627,25 @@ impl AgeStore {
     pub async fn delete_belief(&self, id: Uuid) -> Result<bool> {
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
-        let deleted = self.delete_belief_in(&tx, id).await?;
+        let deleted = self.delete_belief_in(&tx, id, None).await?;
         tx.commit().await?;
         Ok(deleted)
     }
 
-    async fn delete_belief_in(&self, tx: &Transaction<'_>, id: Uuid) -> Result<bool> {
+    async fn delete_belief_in(
+        &self,
+        tx: &Transaction<'_>,
+        id: Uuid,
+        publication_time: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<bool> {
         let g = &self.graph_name;
         let id_str = id.to_string();
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
+        let publication_time = match publication_time {
+            Some(original) => original,
+            None => Self::posterior_time_on(tx.client()).await?,
+        };
         let exists = tx.query(&format!("SELECT id::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief {{id:'{id_str}'}}) RETURN n.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
         if exists.is_empty() {
             return Ok(false);
@@ -656,7 +673,8 @@ $$) AS (ok ag_catalog.agtype)"#
             &[&id],
         )
         .await?;
-        self.recompute_learning(tx, None, affected).await?;
+        self.recompute_learning_at(tx, None, affected, publication_time)
+            .await?;
         // Delivered only with the deletion commit. Backfill listeners recheck
         // their own belief; this hint must not cancel unrelated requests.
         tx.query(
@@ -692,13 +710,17 @@ $$) AS (ok ag_catalog.agtype)"#
         // Validate before readback too: saved answers cannot hide malformed
         // arguments. The helper compares these with the immutable DB binding.
         identity(step.expected())?;
+        let token = step.token();
         let owner = AgeStore {
             client: self.client.clone(),
             graph_name: self.graph_name.clone(),
         };
         self.commit_final_operation_step(step, move |tx, original| {
             Box::pin(async move {
-                let deleted = owner.delete_belief_in(tx, identity(original)?).await?;
+                let publication_time = Self::reserved_publication_time(tx, token).await?;
+                let deleted = owner
+                    .delete_belief_in(tx, identity(original)?, Some(publication_time))
+                    .await?;
                 let reply = serde_json::json!({"deleted":deleted});
                 Ok((reply.clone(), reply))
             })
@@ -726,11 +748,12 @@ $$) AS (ok ag_catalog.agtype)"#
   beta0::text,
   created_at::text,
   last_activated_at::text,
+  decay_accounted_at::text,
   memory_type::text,
   project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{id: '{id_str}'}})
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.decay_accounted_at, n.memory_type, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
@@ -752,17 +775,24 @@ $$) {BELIEF_RETURN_COLUMNS}"#
     /// (spec Mimir.Graph: "RETIRED SCALAR SETTERS"); this is their replacement.
     /// Build the SET-Cypher for one Beta write, validating finiteness and
     /// deriving the cached (mean, confidence) from (α, β).
-    fn update_belief_beta_sql(&self, id: Uuid, alpha: f64, beta: f64) -> Result<String> {
+    fn update_belief_beta_sql(
+        &self,
+        id: Uuid,
+        alpha: f64,
+        beta: f64,
+        accounted_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<String> {
         let g = &self.graph_name;
         let id_str = id.to_string();
         ensure_finite("update_belief_beta", &[("alpha", alpha), ("beta", beta)])?;
         // Derive the cached (mean, confidence) from (α, β) via the canonical
         // mapping (spec Mimir.Beta).
         let (mean, conf) = crate::graph::beta_to_pc(alpha, beta);
+        let accounted_at = accounted_at.to_rfc3339();
         Ok(format!(
             r#"SELECT * FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief {{id: '{id_str}'}})
-  SET n.alpha = {alpha}, n.beta = {beta}, n.probability = {mean}, n.confidence = {conf}
+  SET n.alpha = {alpha}, n.beta = {beta}, n.probability = {mean}, n.confidence = {conf}, n.decay_accounted_at = '{accounted_at}'
   RETURN n.id
 $$) AS (id ag_catalog.agtype)"#
         ))
@@ -789,26 +819,76 @@ $$) AS (id ag_catalog.agtype)"#
         Ok(())
     }
 
+    // Sample only after the caller owns the learning lock. Transaction start
+    // time can precede a writer that committed while this caller was waiting.
+    pub(super) async fn posterior_time_on(
+        client: &Client,
+    ) -> Result<chrono::DateTime<chrono::Utc>> {
+        Ok(client
+            .query_one("SELECT clock_timestamp()", &[])
+            .await?
+            .get(0))
+    }
+
+    pub(super) async fn reserved_publication_time(
+        tx: &Transaction<'_>,
+        token: Uuid,
+    ) -> Result<chrono::DateTime<chrono::Utc>> {
+        Ok(tx
+            .query_one(
+                "SELECT reserved_at FROM mimir_operation_reservations WHERE operation_token=$1",
+                &[&token],
+            )
+            .await?
+            .get(0))
+    }
+
+    pub(super) async fn write_belief_beta_at_on(
+        &self,
+        client: &Client,
+        id: Uuid,
+        alpha: f64,
+        beta: f64,
+        publication_time: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let original = self.get_belief_on(client,id).await?
+            .with_context(|| format!("Belief {id} no longer exists; no posterior was published. Read its current outcome before continuing."))?;
+        let accounted = original.decay_accounted_at.max(publication_time);
+        let rows = client
+            .query(
+                &self.update_belief_beta_sql(id, alpha, beta, accounted)?,
+                &[],
+            )
+            .await?;
+        anyhow::ensure!(
+            !rows.is_empty(),
+            "Belief {id} no longer exists; the posterior transaction must roll back"
+        );
+        Ok(())
+    }
+
     async fn update_beliefs_beta_on(
         &self,
         client: &Client,
         updates: &[(Uuid, f64, f64)],
     ) -> Result<()> {
-        if updates.is_empty() {
-            return Ok(());
+        let publication_time = Self::posterior_time_on(client).await?;
+        self.update_beliefs_beta_at_on(client, updates, publication_time)
+            .await
+    }
+
+    async fn update_beliefs_beta_at_on(
+        &self,
+        client: &Client,
+        updates: &[(Uuid, f64, f64)],
+        publication_time: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        for &(_, alpha, beta) in updates {
+            ensure_finite("update_belief_beta", &[("alpha", alpha), ("beta", beta)])?;
         }
-        // Build all statements first so a finiteness/derivation error aborts
-        // before any write is issued.
-        let mut stmts = Vec::with_capacity(updates.len());
         for &(id, alpha, beta) in updates {
-            stmts.push((id, self.update_belief_beta_sql(id, alpha, beta)?));
-        }
-        for (id, sql) in &stmts {
-            let rows = client.query(sql, &[]).await?;
-            if rows.is_empty() {
-                // Belief missing — roll the whole sweep back.
-                bail!("belief {} not found", id);
-            }
+            self.write_belief_beta_at_on(client, id, alpha, beta, publication_time)
+                .await?;
         }
         Ok(())
     }
@@ -832,11 +912,12 @@ $$) AS (id ag_catalog.agtype)"#
   beta0::text,
   created_at::text,
   last_activated_at::text,
+  decay_accounted_at::text,
   memory_type::text,
   project::text
 FROM ag_catalog.cypher('{g}', $$
   MATCH (n:Belief)
-  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project
+  RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.decay_accounted_at, n.memory_type, n.project
 $$) {BELIEF_RETURN_COLUMNS}"#
         );
 
@@ -868,10 +949,11 @@ $$) {BELIEF_RETURN_COLUMNS}"#
             "PREPARE {stmt}(agtype) AS SELECT \
              id::text, content::text, probability::text, confidence::text, \
              alpha::text, beta::text, alpha0::text, beta0::text, \
-             created_at::text, last_activated_at::text, memory_type::text, project::text \
+             created_at::text, last_activated_at::text,
+  decay_accounted_at::text, memory_type::text, project::text \
              FROM ag_catalog.cypher('{g}', $$ \
              MATCH (n:Belief) WHERE n.project = $project OR n.project IS NULL \
-             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project \
+             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.decay_accounted_at, n.memory_type, n.project \
              $$, $1) {BELIEF_RETURN_COLUMNS}"
         );
 
@@ -2176,7 +2258,8 @@ $$) {CHUNK_RETURN_COLUMNS}"#
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        self.insert_evidence_in(&tx, chunk_id, belief_id, weight)
+        let publication_time = Self::posterior_time_on(tx.client()).await?;
+        self.insert_evidence_in(&tx, chunk_id, belief_id, weight, publication_time)
             .await?;
         tx.commit().await?;
         Ok(())
@@ -2188,10 +2271,11 @@ $$) {CHUNK_RETURN_COLUMNS}"#
         chunk_id: Uuid,
         belief_id: Uuid,
         weight: Probability,
+        publication_time: chrono::DateTime<chrono::Utc>,
     ) -> Result<()> {
         self.insert_grounding_on(tx.client(), chunk_id, belief_id, weight)
             .await?;
-        self.recompute_learning(tx, None, [belief_id].into())
+        self.recompute_learning_at(tx, None, [belief_id].into(), publication_time)
             .await?;
         Ok(())
     }
@@ -2247,19 +2331,27 @@ $$) {CHUNK_RETURN_COLUMNS}"#
             client: self.client.clone(),
             graph_name: self.graph_name.clone(),
         };
+        let token = step.token();
         self.commit_final_operation_step(step, move |tx, binding| {
             Box::pin(async move {
                 tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
                     .await?;
+                let publication_time = Self::reserved_publication_time(tx, token).await?;
                 match original(binding)? {
                     Change::Add(args, weight) => {
                         owner
-                            .insert_evidence_in(tx, args.chunk_id, args.belief_id, weight)
+                            .insert_evidence_in(
+                                tx,
+                                args.chunk_id,
+                                args.belief_id,
+                                weight,
+                                publication_time,
+                            )
                             .await?
                     }
                     Change::Remove(args) => {
                         owner
-                            .delete_evidence_in(tx, args.chunk_id, args.belief_id)
+                            .delete_evidence_in(tx, args.chunk_id, args.belief_id, publication_time)
                             .await?
                     }
                 }
@@ -2453,7 +2545,9 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        self.delete_evidence_in(&tx, chunk_id, belief_id).await?;
+        let publication_time = Self::posterior_time_on(tx.client()).await?;
+        self.delete_evidence_in(&tx, chunk_id, belief_id, publication_time)
+            .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -2463,6 +2557,7 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
         tx: &Transaction<'_>,
         chunk_id: Uuid,
         belief_id: Uuid,
+        publication_time: chrono::DateTime<chrono::Utc>,
     ) -> Result<()> {
         let g = &self.graph_name;
         let c = chunk_id.to_string();
@@ -2474,7 +2569,7 @@ $$) AS (belief_id ag_catalog.agtype, chunk_id ag_catalog.agtype, weight ag_catal
 $$) AS (v ag_catalog.agtype)"#
         );
         tx.execute(&sql, &[]).await?;
-        self.recompute_learning(tx, None, [belief_id].into())
+        self.recompute_learning_at(tx, None, [belief_id].into(), publication_time)
             .await?;
         Ok(())
     }
@@ -2540,19 +2635,20 @@ $$) AS (v ag_catalog.agtype)"#
             "PREPARE {stmt}(agtype) AS SELECT \
              id::text, content::text, probability::text, confidence::text, \
              alpha::text, beta::text, alpha0::text, beta0::text, \
-             created_at::text, last_activated_at::text, memory_type::text, project::text \
+             created_at::text, last_activated_at::text,
+  decay_accounted_at::text, memory_type::text, project::text \
              FROM ag_catalog.cypher('{g}', $$ \
              MATCH (s:Belief {{id: '{id_str}'}})-[:SUPPORTS]->(n:Belief) \
              WHERE n.project = $project OR n.project IS NULL \
-             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project \
+             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.decay_accounted_at, n.memory_type, n.project \
              UNION \
              MATCH (s:Belief {{id: '{id_str}'}})-[:CAUSES]->(n:Belief) \
              WHERE n.project = $project OR n.project IS NULL \
-             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project \
+             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.decay_accounted_at, n.memory_type, n.project \
              UNION \
              MATCH (s:Belief {{id: '{id_str}'}})-[:DEFEATS]->(n:Belief) \
              WHERE n.project = $project OR n.project IS NULL \
-             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project \
+             RETURN n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.decay_accounted_at, n.memory_type, n.project \
              $$, $1) {BELIEF_RETURN_COLUMNS}"
         );
 
@@ -2637,7 +2733,8 @@ impl AgeStore {
         let stmt = format!("age_page_{}", Uuid::new_v4().simple());
         // Numeric comparisons express the requested slice without forcing a
         // positive usize selection through PostgreSQL's bigint LIMIT/OFFSET.
-        let sql = format!("PREPARE {stmt}(agtype) AS SELECT * FROM (SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text,row_number() OVER (ORDER BY trim(both '\"' from created_at::text)::timestamptz,id::text) AS page_position FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project $$,$1) {BELIEF_RETURN_COLUMNS}) selected WHERE page_position::numeric > {offset}::numeric AND page_position::numeric <= {offset}::numeric + {limit}::numeric ORDER BY page_position");
+        let sql = format!("PREPARE {stmt}(agtype) AS SELECT * FROM (SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,
+  decay_accounted_at::text,memory_type::text,project::text,row_number() OVER (ORDER BY trim(both '\"' from created_at::text)::timestamptz,id::text) AS page_position FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.decay_accounted_at,n.memory_type,n.project $$,$1) {BELIEF_RETURN_COLUMNS}) selected WHERE page_position::numeric > {offset}::numeric AND page_position::numeric <= {offset}::numeric + {limit}::numeric ORDER BY page_position");
         let rows = age_query_rows(tx.client(), &stmt, &sql, &params).await?;
         let beliefs = rows
             .iter()

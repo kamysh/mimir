@@ -10,10 +10,11 @@ import Data.Integer as Int
 open import Data.Integer.DivMod using (_/ℕ_)
 open import Data.List using (List; []; _∷_; map; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Data.Nat using (ℕ; suc; _≟_)
 open import Data.Product using (_×_; _,_)
 open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Data.Empty using (⊥-elim)
 import Mimir.CandidateGraph as Graph
 import Mimir.LearningCandidates as Candidates
 import Mimir.RetrievalRanking as Ranking
@@ -35,24 +36,33 @@ activeContradictions beliefs ((a , b) ∷ pairs) with Ranking.lookup a beliefs |
 activeContradictions beliefs ((a , b) ∷ pairs) | nothing | _ = activeContradictions beliefs pairs
 activeContradictions beliefs ((a , b) ∷ pairs) | just first | nothing = activeContradictions beliefs pairs
 
--- Timestamps are signed UTC nanoseconds. Whole elapsed seconds are used,
--- matching chrono; negative elapsed durations are clamped to zero days.
+-- Charge only time not already represented by the current counts. Activation
+-- remains independent. Full nanoseconds preserve fractional intervals; an
+-- unchanged or earlier clock returns the exact stored pair before any pow.
 decayed : ℤ → Float → Float → Graph.BeliefValues → P.Beta
-decayed now factor mass belief = P.beta
+decayed now factor mass belief with does (now Int.≤? baseline)
+  where baseline = Graph.BeliefValues.activated belief Int.⊔ Graph.BeliefValues.decayAccountedAt belief
+... | true = P.beta (Graph.BeliefValues.alpha belief) (Graph.BeliefValues.beta belief)
+... | false = P.beta
   (1.0 + retention * (Graph.BeliefValues.alpha belief - 1.0))
   (1.0 + retention * (Graph.BeliefValues.beta belief - 1.0))
   where
-  days = P.maximum (fromℤ ((now Int.- Graph.BeliefValues.activated belief) /ℕ 1000000000) ÷ 86400.0) 0.0
+  baseline = Graph.BeliefValues.activated belief Int.⊔ Graph.BeliefValues.decayAccountedAt belief
+  days = fromℤ (now Int.- baseline) ÷ 86400000000000.0
   base = factor ** days
   retention = 1.0 - ((1.0 - base) ÷ (1.0 + mass))
 
+noElapsedInterval : ∀ now factor mass belief →
+  now Int.≤ (Graph.BeliefValues.activated belief Int.⊔ Graph.BeliefValues.decayAccountedAt belief) →
+  decayed now factor mass belief ≡ P.beta (Graph.BeliefValues.alpha belief) (Graph.BeliefValues.beta belief)
+noElapsedInterval now factor mass belief accounted
+  with now Int.≤? (Graph.BeliefValues.activated belief Int.⊔ Graph.BeliefValues.decayAccountedAt belief)
+... | yes _ = refl
+... | no notAccounted = ⊥-elim (notAccounted accounted)
+
 decayChanged : Graph.BeliefValues → P.Beta → Bool
-decayChanged b value =
-  (threshold <ᵇ Scores.absolute (P.Beta.alpha value - Graph.BeliefValues.alpha b)) ∨
-  (threshold <ᵇ Scores.absolute (P.Beta.negative value - Graph.BeliefValues.beta b))
-  where
-  threshold = 0.0000000000000002220446049250313 *
-    P.maximum (Graph.BeliefValues.alpha b + Graph.BeliefValues.beta b) 1.0
+decayChanged b value = not (does (P.betaEqual?
+  (P.beta (Graph.BeliefValues.alpha b) (Graph.BeliefValues.beta b)) value))
 
 massOf : ℕ → List (ℕ × Float) → Float
 massOf id masses with P.lookup id masses
@@ -69,11 +79,19 @@ decayRows now factor masses (b ∷ bs) with Graph.BeliefValues.memory b
   (0.0 ≤ᵇ massOf (Graph.BeliefValues.identity b) masses) ∧
   P.validCounts (decayed now factor (massOf (Graph.BeliefValues.identity b) masses) b)
 ...   | false = nothing
-...   | true with decayChanged b (decayed now factor (massOf (Graph.BeliefValues.identity b) masses) b)
-...     | false = decayRows now factor masses bs
-...     | true with decayRows now factor masses bs
-...       | nothing = nothing
-...       | just rest = just ((Graph.BeliefValues.identity b , decayed now factor (massOf (Graph.BeliefValues.identity b) masses) b) ∷ rest)
+...   | true with decayRows now factor masses bs
+...     | nothing = nothing
+...     | just rest = just ((Graph.BeliefValues.identity b , decayed now factor (massOf (Graph.BeliefValues.identity b) masses) b) ∷ rest)
+
+-- All selected fact rows advance their baseline, including unchanged counts.
+-- The user-facing count still reports actual numerical changes only.
+changedCount : List Graph.BeliefValues → P.State → ℕ
+changedCount beliefs [] = 0
+changedCount beliefs ((identity , value) ∷ rest) with Ranking.lookup identity beliefs
+... | nothing = changedCount beliefs rest
+... | just belief with decayChanged belief value
+... | false = changedCount beliefs rest
+... | true = suc (changedCount beliefs rest)
 
 decay : ℤ → Float → List (ℕ × Float) → List Graph.BeliefValues → Maybe P.State
 decay now factor masses beliefs with probability factor

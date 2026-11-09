@@ -363,7 +363,7 @@ impl AgeStore {
         }
         let g = &self.graph_name;
         let ids = uuid_list(ids);
-        let sql = format!("SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) WHERE n.id IN [{ids}] RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project $$) {BELIEF_RETURN_COLUMNS}");
+        let sql = format!("SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,decay_accounted_at::text,memory_type::text,project::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) WHERE n.id IN [{ids}] RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.decay_accounted_at,n.memory_type,n.project $$) {BELIEF_RETURN_COLUMNS}");
         tx.query(&sql, &[])
             .await?
             .iter()
@@ -1011,7 +1011,19 @@ impl AgeStore {
         &self,
         tx: &Transaction<'_>,
         project: Option<&str>,
+        affected: HashSet<Uuid>,
+    ) -> Result<()> {
+        let publication_time = Self::posterior_time_on(tx.client()).await?;
+        self.recompute_learning_at(tx, project, affected, publication_time)
+            .await
+    }
+
+    pub(super) async fn recompute_learning_at(
+        &self,
+        tx: &Transaction<'_>,
+        project: Option<&str>,
         mut affected: HashSet<Uuid>,
+        publication_time: chrono::DateTime<chrono::Utc>,
     ) -> Result<()> {
         if affected.is_empty() {
             return Ok(());
@@ -1098,7 +1110,7 @@ impl AgeStore {
         let updates =
             crate::inference::InferenceEngine::new().recompute(&downstream, &edges, &external)?;
         for (id, (a, b)) in updates {
-            tx.query(&self.update_belief_beta_sql(id, a, b)?, &[])
+            self.write_belief_beta_at_on(tx.client(), id, a, b, publication_time)
                 .await?;
         }
         Ok(())

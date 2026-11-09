@@ -9,6 +9,7 @@ open import Data.Float.Base using (Float)
 open import Data.List using (List; []; _∷_; _++_; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≟_)
+open import Data.Integer using (ℤ)
 open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (does)
 open import Mimir.Text using (Text)
@@ -38,7 +39,7 @@ unlink : ℕ → ℕ → Store.World → Store.World
 unlink chunk belief before = record before { grounds = filterᵇ
   (λ e → not (does (chunk ≟ Store.Ground.chunk e) ∧ does (belief ≟ Store.Ground.belief e))) (Store.World.grounds before) }
 
-module Operation (database : ℕ) (calculator : Posterior.Calculator) where
+module Operation (database : ℕ) (calculator : Posterior.Calculator) (publicationTime : ℤ) where
   module T = Transaction.Over Store.World ⊤ Failure database 671942183
 
   finish : Store.World → Recompute.Result → T.Decision
@@ -49,7 +50,7 @@ module Operation (database : ℕ) (calculator : Posterior.Calculator) where
   finish proposed (Recompute.needsDecision counts history) = T.reject (numericalDecision counts history)
 
   recompute : ℕ → Store.World → T.Decision
-  recompute belief proposed = finish proposed (Recompute.runGlobal calculator (belief ∷ [])
+  recompute belief proposed = finish proposed (Recompute.runGlobal publicationTime calculator (belief ∷ [])
     (Store.nodes proposed) (Publication.World.edges pub)
     (Recompute.activeReviewsScoped nothing (Learning.identities learn) (Publication.World.ledger pub))
     (Store.groundingMasses proposed))

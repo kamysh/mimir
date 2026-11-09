@@ -7199,7 +7199,12 @@
         "spec/Mimir/CoreLibrary.agda",
         "spec/Mimir/StoreRows.agda",
         "spec/Mimir/PublicEncoding.agda",
-        "spec/Mimir/PublicRequest.agda"
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/DecayRecovery.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/EvidenceValidity.agda",
+        "spec/Mimir/LearningRecompute.agda",
+        "spec/Mimir/CandidateGraph.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
@@ -7841,7 +7846,12 @@
         "spec/Mimir/GraphNumerics.agda",
         "spec/Mimir/PosteriorComputation.agda",
         "spec/Mimir/GraphPaths.agda",
-        "spec/Mimir/CoreLibrary.agda"
+        "spec/Mimir/CoreLibrary.agda",
+        "spec/Mimir/DecayRecovery.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/EvidenceValidity.agda",
+        "spec/Mimir/LearningRecompute.agda",
+        "spec/Mimir/CandidateGraph.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
@@ -9984,7 +9994,13 @@
         "spec/Mimir/BeliefDeletionRecovery.agda",
         "spec/Mimir/RecoverableStoreStep.agda",
         "spec/Mimir/RegisteredStoreAdmission.agda",
-        "spec/Mimir/GroundingRecovery.agda"
+        "spec/Mimir/GroundingRecovery.agda",
+        "spec/Mimir/DecayRecovery.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/EvidenceValidity.agda",
+        "spec/Mimir/LearningRecompute.agda",
+        "spec/Mimir/CandidateGraph.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -12184,7 +12200,13 @@
         "spec/Mimir/BeliefDeletionRecovery.agda",
         "spec/Mimir/RecoverableStoreStep.agda",
         "spec/Mimir/RegisteredStoreAdmission.agda",
-        "spec/Mimir/GroundingRecovery.agda"
+        "spec/Mimir/GroundingRecovery.agda",
+        "spec/Mimir/DecayRecovery.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/EvidenceValidity.agda",
+        "spec/Mimir/LearningRecompute.agda",
+        "spec/Mimir/CandidateGraph.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -12374,7 +12396,13 @@
         "spec/Mimir/DocumentLoading.agda",
         "spec/Mimir/DocumentPublication.agda",
         "spec/Mimir/DocumentStore.agda",
-        "spec/Mimir/GraphMutationProtocol.agda"
+        "spec/Mimir/GraphMutationProtocol.agda",
+        "spec/Mimir/DecayRecovery.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/EvidenceValidity.agda",
+        "spec/Mimir/LearningRecompute.agda",
+        "spec/Mimir/CandidateGraph.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -13111,7 +13139,12 @@
         "spec/Mimir/AssessmentHistory.agda",
         "spec/Mimir/LearningInput.agda",
         "spec/Mimir/LearningNormalization.agda",
-        "spec/Mimir/ItemAllocation.agda"
+        "spec/Mimir/ItemAllocation.agda",
+        "spec/Mimir/DecayRecovery.agda",
+        "spec/Mimir/GraphNumerics.agda",
+        "spec/Mimir/InferenceStorageBinding.agda",
+        "spec/Mimir/EvidenceValidity.agda",
+        "spec/Mimir/CandidateGraph.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
@@ -18050,6 +18083,33 @@
       "status": "unmapped",
       "proof_boundary_category": "verification_artifact",
       "classification": "verification-or-example-artifact"
+    },
+    {
+      "path": "crates/core/tests/decay_accounting.rs",
+      "definitions": [],
+      "status": "unmapped",
+      "proof_boundary_category": "verification_artifact",
+      "classification": "verification-or-example-artifact"
+    },
+    {
+      "path": "crates/core/tests/decay_precision.rs",
+      "definitions": [],
+      "status": "unmapped",
+      "proof_boundary_category": "verification_artifact",
+      "classification": "verification-or-example-artifact"
+    },
+    {
+      "path": "crates/core/migrations/020_decay_accounting.sql",
+      "definitions": [],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "proof_boundary_category": "database_contract",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/Migrations.agda",
+        "spec/Mimir/MigrationSchema.agda",
+        "spec/Mimir/MigrationScriptBinding.agda"
+      ],
+      "specification_status": "behavior-defined-and-aggregate-checked"
     }
   ],
   "dependency_contracts": [

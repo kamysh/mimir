@@ -131,6 +131,8 @@ pub struct Belief {
     pub beta0: f64,
     pub created_at: DateTime<Utc>,
     pub last_activated_at: DateTime<Utc>,
+    /// Time already represented by the current counts, independent of activation.
+    pub decay_accounted_at: DateTime<Utc>,
     /// Functional memory type (Fact/Experiential/Working). See `MemoryType`.
     #[serde(default)]
     pub memory_type: MemoryType,
@@ -158,6 +160,7 @@ impl Belief {
             beta0,
             created_at: now,
             last_activated_at: now,
+            decay_accounted_at: now,
             memory_type: MemoryType::default(),
             project: None,
         })
@@ -192,6 +195,7 @@ impl Belief {
         beta0: f64,
         created_at: DateTime<Utc>,
         last_activated_at: DateTime<Utc>,
+        decay_accounted_at: DateTime<Utc>,
         memory_type: MemoryType,
         project: Option<String>,
     ) -> Result<Self> {
@@ -207,6 +211,7 @@ impl Belief {
             beta0,
             created_at,
             last_activated_at,
+            decay_accounted_at,
             memory_type,
             project,
         })

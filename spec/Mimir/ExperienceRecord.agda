@@ -78,12 +78,12 @@ coherent before old =
   where cell = Ledger.World.cells (Publication.World.ledger (Store.World.publication before))
           (Experience.identity (Observation.Snapshot.experience old))
 
-module WithCalculator (calculator : Posterior.Calculator) where
+module WithCalculator (calculator : Posterior.Calculator) (posteriorTime : ℤ) where
   prepare : Store.World → Experience → ℕ → ℤ → Maybe Observation.Snapshot → Decision
   prepare before e expected now old with Owners.prepare (Experience.identity e)
     (Publication.World.owners (Store.World.publication before)) (Experience.items e)
   ... | inj₁ failure = rejected (invalid failure)
-  ... | inj₂ (owners , ownership) with Recompute.run calculator (Experience.project e)
+  ... | inj₂ (owners , ownership) with Recompute.run posteriorTime calculator (Experience.project e)
     (Numerical.oldTargets (Ledger.activeApplied
       (Ledger.World.cells priorLedger (Experience.identity e))
       (Ledger.World.histories priorLedger (Experience.identity e))))
