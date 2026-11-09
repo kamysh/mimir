@@ -13588,7 +13588,8 @@
           "behavioral_area": [
             "spec/Mimir/Recovery.agda",
             "spec/Mimir/DatabaseTransaction.agda",
-            "spec/Mimir/MigrationSchema.agda"
+            "spec/Mimir/MigrationSchema.agda",
+            "spec/Mimir/RecoverableStoreStep.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -13601,7 +13602,8 @@
           "behavioral_area": [
             "spec/Mimir/Recovery.agda",
             "spec/Mimir/DatabaseTransaction.agda",
-            "spec/Mimir/MigrationSchema.agda"
+            "spec/Mimir/MigrationSchema.agda",
+            "spec/Mimir/RecoverableStoreStep.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -13614,7 +13616,8 @@
           "behavioral_area": [
             "spec/Mimir/Recovery.agda",
             "spec/Mimir/DatabaseTransaction.agda",
-            "spec/Mimir/MigrationSchema.agda"
+            "spec/Mimir/MigrationSchema.agda",
+            "spec/Mimir/RecoverableStoreStep.agda"
           ],
           "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
         },
@@ -13638,7 +13641,8 @@
       "behavioral_specification": [
         "spec/Mimir/Recovery.agda",
         "spec/Mimir/DatabaseTransaction.agda",
-        "spec/Mimir/MigrationSchema.agda"
+        "spec/Mimir/MigrationSchema.agda",
+        "spec/Mimir/RecoverableStoreStep.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },

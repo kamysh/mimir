@@ -183,7 +183,20 @@ impl AgeStore {
             tx.commit().await?;
             return Ok(StepDecision::Done(saved));
         }
-        let (reply, operation_result) = apply(&tx, &binding.request).await?;
+        let (reply, operation_result) = match apply(&tx, &binding.request).await {
+            Ok(publication) => publication,
+            Err(original) => {
+                if let Err(rollback) = tx.rollback().await {
+                    // Do not retain a numerical-decision error in the source
+                    // chain: a caller must not turn an unconfirmed rollback
+                    // into a response certifying that nothing changed.
+                    return Err(anyhow::anyhow!(
+                        "Operation {token} failed before commit, but rollback could not be confirmed: {rollback:#}. Keep this token and read its saved steps and operation outcome before deciding how to continue. Original cause: {original:#}"
+                    ));
+                }
+                return Err(original);
+            }
+        };
         let reply = serde_json::to_string(&reply)?;
         let saved = receipt(&tx.query_one(
             "INSERT INTO mimir_operation_step_replies (operation_token,step,reply) VALUES ($1,$2,$3::text::jsonb) RETURNING operation_token,step,reply::text AS reply",
