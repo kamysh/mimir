@@ -1978,3 +1978,42 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     ReadyMeaning.uncancelled known | ReadyMeaning.boundRequest known |
     matchesOriginalSettings call (proj₁ (ReadyMeaning.originalArguments known)) (Context.original scope)
       (proj₂ (ReadyMeaning.originalArguments known)) = refl
+
+
+  PendingReadback : ℕ → Store.World → Set
+  PendingReadback token current = Σ Store.BindingRow (λ original → Σ P.Step (λ next →
+    Σ (List Store.SavedReplyRow) (λ saved → Read.answer token current ≡ Read.pending original next saved)))
+
+  admittedAfterReadback : ∀ operation token current original found matched observed scope →
+    Read.answer token current ≡ observed →
+    Read.afterReadback operation token current original found matched observed ≡ Read.admitted scope →
+    PendingReadback token current
+  admittedAfterReadback operation token current original found matched (Read.pending binding next saved) scope known accepted =
+    binding , next , saved , known
+  admittedAfterReadback operation token current original found matched (Read.completed _ _) scope known ()
+  admittedAfterReadback operation token current original found matched (Read.cancelled _ _ _) scope known ()
+  admittedAfterReadback operation token current original found matched (Read.inconsistent _ _) scope known ()
+  admittedAfterReadback operation token current original found matched (Read.needsRecovery _) scope known ()
+  admittedAfterReadback operation token current original found matched (Read.awaitingPlan _) scope known ()
+  admittedAfterReadback operation token current original found matched (Read.awaitingCompletion _) scope known ()
+  admittedAfterReadback operation token current original found matched Read.unknownToken scope known ()
+  admittedAfterReadback operation token current original found matched Read.reserved scope known ()
+
+  admittedAfterMatch : ∀ operation token current original found matched same scope →
+    Read.afterMatch operation token current original found matched same ≡ Read.admitted scope →
+    PendingReadback token current
+  admittedAfterMatch operation token current original found false same scope ()
+  admittedAfterMatch operation token current original found true same scope accepted =
+    admittedAfterReadback operation token current original found same (Read.answer token current) scope refl accepted
+
+  admittedAfterLookup : ∀ operation token current observed found scope →
+    Read.afterBindingLookup operation token current observed found ≡ Read.admitted scope → PendingReadback token current
+  admittedAfterLookup operation token current nothing found scope ()
+  admittedAfterLookup operation token current (just original) found scope accepted =
+    admittedAfterMatch operation token current original found
+      (P.textEqual (Store.BindingRow.operation original) operation) refl scope accepted
+
+  admittedHasPending : ∀ operation token current scope → Read.admission operation token current ≡ Read.admitted scope →
+    PendingReadback token current
+  admittedHasPending operation token current scope = admittedAfterLookup operation token current
+    (binding token current) refl scope
