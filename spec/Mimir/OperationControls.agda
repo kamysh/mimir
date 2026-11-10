@@ -2438,6 +2438,138 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
         (subst (Saved.X.Interrupted (Saved.script input) before) (sym observed) (expectedCut input before))
 
 
+  -- Project deletion has its independently specified deletion intent and
+  -- Recovery.Single statement. It is not an Admitted-kernel operation.
+  module ProjectJournal where
+    module P = Project.Registered using
+      (Input; operationName; boundaryName; stepKey; resultKey; planMatches; blockedBy; blocked;
+       Mode; mode; needsInput; replay; publish; finalWorld; answer; execute; newRequestWasAdmitted;
+       module Checked; module Physical)
+    descriptor = Admission.descriptor P.operationName P.boundaryName P.stepKey
+    module Shape = Plan.SingletonProjection descriptor using (finalStep; decodedSingle)
+
+    blockedByMatched : ∀ request bindings plans binding raw →
+      Project.Registered.binding (P.Input.token request) bindings ≡ just binding →
+      Project.Registered.plan (P.Input.token request) plans ≡ just raw →
+      P.blockedBy request bindings plans ≡ nothing → P.planMatches raw ≡ true
+    blockedByMatched request bindings plans binding raw found stored allowed rewrite found
+      with does (Store.BindingRow.operation binding ≟Text P.operationName) ∧
+        Project.Registered.argumentsMatch (P.Input.project request) (Store.BindingRow.arguments binding) ∧
+        Project.Registered.settingsMatch (Store.BindingRow.settings binding)
+    ... | false with allowed
+    ... | ()
+    blockedByMatched request bindings plans binding raw found stored allowed | true rewrite stored with P.planMatches raw
+    ... | false with allowed
+    ... | ()
+    blockedByMatched request bindings plans binding raw found stored allowed | true | true = refl
+
+    blockedGivesBy : ∀ request before → P.blocked request before ≡ nothing →
+      P.blockedBy request (Store.OperationTables.bindings (Store.World.operations before))
+        (Store.OperationTables.plans (Store.World.operations before)) ≡ nothing
+    blockedGivesBy request before allowed with Store.lookupCancellation before (P.Input.token request)
+    ... | just _ with allowed
+    ... | ()
+    blockedGivesBy request before allowed | nothing = allowed
+
+    matchedPlan : ∀ request before (context : ExecutionContext P.operationName (P.Input.token request) before) →
+      P.mode request before ≡ P.publish → P.planMatches (ExecutionContext.rawPlan context) ≡ true
+    matchedPlan request before context fresh = blockedByMatched request
+      (Store.OperationTables.bindings (Store.World.operations before)) (Store.OperationTables.plans (Store.World.operations before))
+      (ExecutionContext.bindingRow context)
+      (ExecutionContext.rawPlan context) (ExecutionContext.originalBinding context) (ExecutionContext.originalPlan context)
+      (blockedGivesBy request before (P.newRequestWasAdmitted request before fresh))
+
+    freshAnswers : ∀ request before → P.mode request before ≡ P.publish →
+      Store.lookupSaved before (P.Input.token request) P.stepKey ≡ nothing ×
+      Store.lookupSaved before (P.Input.token request) P.resultKey ≡ nothing
+    freshAnswers request before fresh with P.blocked request before
+    ... | just _ with fresh
+    ... | ()
+    freshAnswers request before fresh | nothing
+      with Store.lookupSaved before (P.Input.token request) P.stepKey | Store.lookupSaved before (P.Input.token request) P.resultKey
+    ... | nothing | nothing = refl , refl
+    freshAnswers request before () | nothing | just _ | just _
+    freshAnswers request before () | nothing | just _ | nothing
+    freshAnswers request before () | nothing | nothing | just _
+
+    secondIsAbsent : ∀ request before → Store.lookupSaved before (P.Input.token request) P.resultKey ≡ nothing →
+      Store.lookupSaved (Store.saveAnswer (Project.eraseProject (P.Input.project request) before)
+        (P.Input.token request) P.stepKey (P.answer request before)) (P.Input.token request) P.resultKey ≡ nothing
+    secondIsAbsent request before missing = trans
+      (Store.otherSavedAnswerPreserved (Project.eraseProject (P.Input.project request) before)
+        (P.Input.token request) P.stepKey (P.answer request before) (P.Input.token request) P.resultKey
+        (λ { (_ , ()) })) missing
+
+    appendAnswer : Store.World → ℕ → Text → Wire.Value → Store.World
+    appendAnswer before token step value = record before
+      { operations = record (Store.World.operations before)
+        { savedReplies = Store.savedReplyRow token step value ∷ Store.OperationTables.savedReplies (Store.World.operations before) } }
+
+    saveAbsent : ∀ before token step value → Store.lookupSaved before token step ≡ nothing →
+      Store.saveAnswer before token step value ≡ appendAnswer before token step value
+    saveAbsent before token step value absent rewrite absent = refl
+
+    publishedPairAt : ∀ request before →
+      Store.lookupSaved before (P.Input.token request) P.stepKey ≡ nothing →
+      Store.lookupSaved before (P.Input.token request) P.resultKey ≡ nothing →
+      P.finalWorld request before ≡ Store.saveAnswer
+        (Store.saveAnswer (Project.eraseProject (P.Input.project request) before) (P.Input.token request) P.stepKey (P.answer request before))
+        (P.Input.token request) P.resultKey (P.answer request before)
+    publishedPairAt request before firstAbsent finalAbsent = sym (trans
+      (saveAbsent (Store.saveAnswer erased token P.stepKey value) token P.resultKey value (secondIsAbsent request before finalAbsent))
+      (cong (λ world → appendAnswer world token P.resultKey value) (saveAbsent erased token P.stepKey value firstAbsent)))
+      where
+      erased = Project.eraseProject (P.Input.project request) before
+      token = P.Input.token request
+      value = P.answer request before
+
+    publishedPair : ∀ request before → P.mode request before ≡ P.publish →
+      P.finalWorld request before ≡ Store.saveAnswer
+        (Store.saveAnswer (Project.eraseProject (P.Input.project request) before) (P.Input.token request) P.stepKey (P.answer request before))
+        (P.Input.token request) P.resultKey (P.answer request before)
+    publishedPair request before fresh = publishedPairAt request before
+      (proj₁ (freshAnswers request before fresh)) (proj₂ (freshAnswers request before fresh))
+
+    executeFrame : ∀ request before →
+      StoreStep.registration (proj₁ (P.execute request before)) ≡ StoreStep.registration before ×
+      Store.lookupCancellation (proj₁ (P.execute request before)) (P.Input.token request) ≡ Store.lookupCancellation before (P.Input.token request)
+    executeFrame request before with P.mode request before
+    ... | P.needsInput _ = refl , refl
+    ... | P.replay _ = refl , refl
+    ... | P.publish = refl , refl
+
+    interruptedFrame : ∀ request before current → P.Checked.X.Interrupted (P.Checked.script request) before current →
+      StoreStep.registration current ≡ StoreStep.registration before ×
+      Store.lookupCancellation current (P.Input.token request) ≡ Store.lookupCancellation before (P.Input.token request)
+    interruptedFrame request before current cut with P.Physical.interruptionState request before current cut
+    ... | inj₁ same = cong StoreStep.registration same , cong (λ world → Store.lookupCancellation world (P.Input.token request)) same
+    ... | inj₂ same = trans (cong StoreStep.registration same) (proj₁ (executeFrame request before)) ,
+      trans (cong (λ world → Store.lookupCancellation world (P.Input.token request)) same) (proj₂ (executeFrame request before))
+
+    publicationReadback : ∀ request before current (context : ExecutionContext P.operationName (P.Input.token request) before) →
+      admission P.operationName (P.Input.token request) before ≡ admitted context → P.mode request before ≡ P.publish →
+      current ≡ P.finalWorld request before → ResumableOrCompleted P.operationName (P.Input.token request) current
+    publicationReadback request before current context known fresh published = inj₂
+      (ExecutionContext.bindingRow context , P.answer request before ,
+       subst (λ world → admission P.operationName (P.Input.token request) world ≡
+         returned (completed (ExecutionContext.bindingRow context) (P.answer request before)))
+         (sym (trans published (publishedPair request before fresh)))
+         (singlePublicationCompletes P.operationName (P.Input.token request) before context Shape.finalStep (P.answer request before)
+           (Project.eraseProject (P.Input.project request) before) known steps refl))
+      where
+      steps = Shape.decodedSingle (ExecutionContext.rawPlan context) (ExecutionContext.plan context)
+        (matchedPlan request before context fresh) (ExecutionContext.decoded context)
+
+    interruptedReadback : ∀ request before current (context : ExecutionContext P.operationName (P.Input.token request) before) →
+      admission P.operationName (P.Input.token request) before ≡ admitted context →
+      P.Checked.X.Interrupted (P.Checked.script request) before current → ResumableOrCompleted P.operationName (P.Input.token request) current
+    interruptedReadback request before current context known cut with P.Physical.interruptionState request before current cut
+    ... | inj₁ refl = inj₁ (context , known)
+    ... | inj₂ observed with P.mode request before in selected
+    ... | P.needsInput _ = subst (ResumableOrCompleted P.operationName (P.Input.token request)) (sym observed) (inj₁ (context , known))
+    ... | P.replay _ = subst (ResumableOrCompleted P.operationName (P.Input.token request)) (sym observed) (inj₁ (context , known))
+    ... | P.publish = publicationReadback request before current context known selected observed
+
 data Request : Set where reserve readOutcome cancel : Request
 
 Input : Request → Set
