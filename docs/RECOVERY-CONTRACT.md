@@ -354,6 +354,15 @@ Every read preserves the full world, and malformed admission leaves the body
 absent. The later public projection must handle the retained outcome; this
 adapter does not add or change a public wire format.
 
+`IntendedPreparation.Evaluate.BasicIntent.evaluate` admits `get_belief`,
+`list_beliefs`, `list_patterns`, `get_contradictions`, `get_evidence` and
+`learning_capabilities`, then computes the existing `BasicReads.answer` and
+its shared public encoder. It preserves complete records, source passages,
+ordered pages and capability fields. Omitted belief selection returns all
+matches; explicit pages keep the existing positive-count and offset rules.
+The complete world is unchanged, including on malformed requests, whose
+business body stays absent. No extra observations or expected values are input.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |

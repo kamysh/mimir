@@ -8,10 +8,11 @@ open import Data.Bool using (true; false)
 open import Data.Integer using (ℤ)
 import Data.List
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ)
+open import Data.Nat using (ℕ; pred)
 open import Data.Product using (_×_; _,_; proj₁)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.String using (String)
+import Data.String
 open import Data.Unit using (tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
@@ -21,6 +22,8 @@ import Mimir.PublicOperationBinding as Binding
 import Mimir.PublicRequest as Public
 import Mimir.PublicInput as PublicInput
 import Mimir.RecordDecoding as Record
+import Mimir.RetrievalRanking as Ranking
+import Mimir.LearningCandidates as Candidates
 import Mimir.ProjectDeletion as Project
 import Mimir.StandardLibrary as Library
 import Mimir.PublicEncoding as Encoding
@@ -294,6 +297,74 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     afterRequest (inj₂ selected) before = read selected before
 
     evaluate : Family → Wire.Value → Store.World → Expected Assessments.Answer
+    evaluate family raw before with Decode.readInvocation (tool family) raw
+    ... | inj₁ fault = expected before nothing (requestCorrection fault)
+    ... | inj₂ admitted = afterRequest
+      (request family (Wire.Object.normalize (Decode.Invocation.suppliedFields admitted))) before
+
+    afterRequestKeepsWorld : ∀ received before → Expected.world (afterRequest received before) ≡ before
+    afterRequestKeepsWorld (inj₁ fault) before = refl
+    afterRequestKeepsWorld (inj₂ selected) before = refl
+
+    neverChangesWorld : ∀ family raw before → Expected.world (evaluate family raw before) ≡ before
+    neverChangesWorld family raw before with Decode.readInvocation (tool family) raw
+    ... | inj₁ fault = refl
+    ... | inj₂ admitted = afterRequestKeepsWorld
+      (request family (Wire.Object.normalize (Decode.Invocation.suppliedFields admitted))) before
+
+    malformedRequestDoesNotEnterBody : ∀ family raw before fault →
+      Decode.readInvocation (tool family) raw ≡ inj₁ fault →
+      evaluate family raw before ≡ expected before nothing (requestCorrection fault)
+    malformedRequestDoesNotEnterBody family raw before fault rejected rewrite rejected = refl
+
+  module BasicIntent (format : Encoding.Formatting) where
+    module Basic = StorageReads.BasicReads format
+    module Decode = Public.Decode library
+
+    data Family : Set where belief beliefs patterns contradictions evidence capabilities : Family
+
+    tool : Family → Tools.Tool
+    tool belief = Tools.getBelief
+    tool beliefs = Tools.listBeliefs
+    tool patterns = Tools.listPatterns
+    tool contradictions = Tools.getContradictions
+    tool evidence = Tools.getEvidence
+    tool capabilities = Tools.learningCapabilities
+
+    -- Omitted selection means all matches; an explicit page uses the same
+    -- positive count and offset validation as public admission. BasicReads
+    -- stores count-minus-one, which has no zero-means-all interpretation.
+    listRequest : Wire.Object.View → Maybe Candidates.Memory → Validation.Fault Data.Sum.⊎ Basic.Request
+    listRequest fields memory with fields (Data.String.toList "limit")
+    ... | nothing with fields (Data.String.toList "offset")
+    ... | nothing = inj₂ (Basic.listBeliefs (Decode.project fields) memory)
+    ... | just _ = PublicInput.bad "offset requires limit"
+    listRequest fields memory | just raw =
+      Record._>>=_ (PublicInput.required "limit" Decode.selectedCount fields) λ selected →
+      Record.mapResult (Basic.beliefPage (Decode.project fields) memory
+        (pred (Ranking.PositiveCount.count selected)))
+        (PublicInput.defaulted "offset" 0 Decode.integer fields)
+
+    request : Family → Wire.Object.View → Validation.Fault Data.Sum.⊎ Basic.Request
+    request belief fields = Record.mapResult Basic.getBelief
+      (PublicInput.required "id" (PublicInput.readUUID library) fields)
+    request beliefs fields = Record._>>=_
+      (Public.memoryField (Data.String.toList "memory_type") fields) (listRequest fields)
+    request patterns fields = inj₂ (Basic.listPatterns (Decode.project fields))
+    request contradictions fields = inj₂ (Basic.contradictions (Decode.project fields))
+    request evidence fields = Record.mapResult Basic.evidence
+      (PublicInput.required "belief_id" (PublicInput.readUUID library) fields)
+    request capabilities fields = inj₂ Basic.capabilities
+
+    read : Basic.Request → Store.World → Expected Wire.Value
+    read selected before = expected before (just answer) (directValue answer)
+      where answer = Basic.answer selected before
+
+    afterRequest : Validation.Fault Data.Sum.⊎ Basic.Request → Store.World → Expected Wire.Value
+    afterRequest (inj₁ fault) before = expected before nothing (requestCorrection fault)
+    afterRequest (inj₂ selected) before = read selected before
+
+    evaluate : Family → Wire.Value → Store.World → Expected Wire.Value
     evaluate family raw before with Decode.readInvocation (tool family) raw
     ... | inj₁ fault = expected before nothing (requestCorrection fault)
     ... | inj₂ admitted = afterRequest
