@@ -314,9 +314,11 @@ transport boundary, without inventing an operation constructor for them.
 
 `IntendedGraphWrites.Evaluate.With.evaluate` currently composes pattern deletion
 and direct support, cause and contradiction writes with that metadata boundary.
-It computes the complete expected world, typed body result and semantic public
-outcome. The remaining family adapters and public serialization are separate
-unfinished work; this is not a complete evaluator for all public tools.
+It computes the complete expected world at that database boundary, the typed
+body result and semantic public outcome. Host execution registration and stop
+acknowledgements must still be composed around it. The remaining family
+adapters and public serialization are separate unfinished work; this is not a
+complete evaluator for all public tools.
 
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
