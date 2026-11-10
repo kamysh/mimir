@@ -224,6 +224,10 @@ Acknowledged execution rows remain in the snapshot. A missing stop timestamp
 means that physical stop is unconfirmed; neither a host label, a PID, a client
 address nor elapsed time can substitute for that acknowledgement. Cancellation
 tests compare those stored facts as well as the unchanged business result.
+Execution identity/token values use the same canonical UUID strings as other
+identities, and registration/stop times use the existing UTC timestamp codec.
+The snapshot retains the model's field names without inventing another ID or
+time representation.
 
 Private row fields use their existing model record names, and nested public
 records use their existing public encoding. A keyed row is `{"key":...,"value":...}`;
@@ -271,6 +275,7 @@ unacknowledged commit is not automatically classified as rollback.
 | Database snapshot | The complete actual read-only snapshot and its scope, including concurrent changes seen by that read. A caller's desired snapshot is not a receipt. |
 | File read | Requested/canonical path, project, complete source text or precise filesystem failure, tied to the fixed file-read protocol. |
 | Provider | Bound backend/model/vector identity, original input and scope/owner, complete returned vectors or exact unavailability/failure. No expected vector or deterministic-provider assumption is permitted. |
+| Owned worker stop | Actual operating-system wait receipt or its precise failure, tied by the harness to the execution ID, token, attempt and worker. An application cleanup label, a missing process found later, elapsed time or a final database acknowledgement is not a replacement for that receipt. |
 | Indexed support | The actual supplied citation and explanation plus the indexed passage observed at commit; use existing scope/quotation checks, without a similarity acceptance cutoff. |
 | Numeric calculation | The actual report data required by the existing numerical semantic boundary. Existing checked numerical functions validate it; the observed new posteriors are not accepted as an expected answer. |
 | Database vector/text services | The actual configured pgvector and Unicode operations required by retrieval, preserving their existing precision and tie-breaking boundaries. |
@@ -284,6 +289,16 @@ outputs. Missing or surplus observations, wrong keys/models/scopes, or an
 unconsumed receipt fail adapter validation with the exact boundary identified.
 An observed final database state is never reclassified as an external snapshot
 receipt to obtain the expected output without computing the intent.
+
+The existing `ExecutionOwnership.WorkerExited.exited` requires the actual
+`EmbeddingLifecycle.WorkerStop.stop` trace ending in a successful wait. Its raw
+events do not contain the token, attempt or worker identity; the harness must
+retain and check that association separately. The native worker currently
+discards a successful exit status after waiting. Capturing the exact receipt
+for this adapter is still required harness work, rather than an existing
+application response field. Expected execution registration and stop rows
+must be computed from those facts and PostgreSQL observations, not copied
+from the final execution table.
 
 ### Required pure adapters
 
@@ -352,15 +367,26 @@ submitted value, decodes its token and project, prepares its metadata and then
 computes `ProjectDeletion.Registered.intended` and `expectedReply`. It retains
 the complete expected world, whether the body was entered, and the semantic
 correction or operation readback. This uses neither a desired-world input nor
-an effect-script evaluator. Public wire projection and executable transport
-remain required before this entry can be marked complete.
+an effect-script evaluator. Public wire projection, executable transport
+and the enclosing execution-registration/physical-stop composition remain
+required before this entry can be marked complete.
+
+`IntendedPreparation.Evaluate.ReadOnly.basic` and `experience` use the existing
+read functions on the selected complete world. They preserve that world and
+retain both the returned body value and the public value, including an actual
+returned null. These typed read adapters cover statistics, pattern/belief
+lookup and lists, contradictions, evidence, capabilities and experience reads;
+the executable entrypoint decoder still has to select them from the original
+request.
 
 `scripts/formal/compare-outcomes.py --expected PATH --observed PATH` compares
 the retained complete output of that adapter with a native observation. It
 requires the world, body result and public reply on both sides; the native
 file also retains its outer exchange separately. It reports every differing
 path and returns a failing status for a mismatch or an incomplete envelope.
-It does not sort arrays, truncate diagnostics, apply a numeric tolerance or
+It checks the required snapshot tables and record shapes from the contract,
+including every execution receipt field. It does not sort arrays, truncate
+diagnostics, apply a numeric tolerance or
 discard execution receipts. Physical table ordering and PostgreSQL JSONB
 normalization belong to the shared typed snapshot adapter described above.
 This comparator does not validate domain records or supply the missing #152

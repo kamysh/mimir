@@ -18,6 +18,9 @@ import Mimir.PublicOperationBinding as Binding
 import Mimir.PublicRequest as Public
 import Mimir.ProjectDeletion as Project
 import Mimir.StandardLibrary as Library
+import Mimir.PublicEncoding as Encoding
+import Mimir.StorageReadBinding as StorageReads
+import Mimir.LearningQueryBinding as LearningReads
 import Mimir.StructuredValue as Wire
 import Mimir.ToolCatalog as Tools
 import Mimir.Validation as Validation
@@ -110,13 +113,26 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   data PublicOutcome : Set where
     requestCorrection : Validation.Fault → PublicOutcome
     operationReadback : Read.Result → PublicOutcome
+    directValue : Wire.Value → PublicOutcome
 
-  record Expected : Set where
+  record Expected (Body : Set) : Set where
     constructor expected
     field
       world : Store.World
-      body : Maybe Wire.Value
+      body : Maybe Body
       publicOutcome : PublicOutcome
+
+  module ReadOnly (format : Encoding.Formatting) where
+    module Basic = StorageReads.BasicReads format using (Request; answer)
+    module Experiences = LearningReads.ExperienceReads format using (Request; answer)
+
+    basic : Basic.Request → Store.World → Expected Wire.Value
+    basic request before = expected before (just answer) (directValue answer)
+      where answer = Basic.answer request before
+
+    experience : Experiences.Request → Store.World → Expected Wire.Value
+    experience request before = expected before (just answer) (directValue answer)
+      where answer = Experiences.answer request before
 
   module ProjectDeletion (observed : (call : C.Call) → Observations call) where
     module Metadata = With observed
@@ -128,7 +144,7 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
 
     -- The operation input comes from the original submitted request. The
     -- metadata result cannot replace its token, project or desired outcome.
-    prepared : Project.Registered.Input → Outcome → Expected
+    prepared : Project.Registered.Input → Outcome → Expected Wire.Value
     prepared request (before , C.needsInput fault) =
       expected before nothing (requestCorrection fault)
     prepared request (before , C.returned outcome) =
@@ -140,7 +156,7 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
       final = Project.Registered.intended request before
       answer = Project.Registered.expectedReply request before
 
-    evaluate : Wire.Value → Store.World → Expected
+    evaluate : Wire.Value → Store.World → Expected Wire.Value
     evaluate raw before with Decode.readInvocation Tools.deleteProject raw
     ... | inj₁ fault = expected before nothing (requestCorrection fault)
     ... | inj₂ call = prepared
