@@ -5,7 +5,7 @@
 module Mimir.ConfigurationProtocol where
 
 open import Data.Bool using (Bool; true; false)
-open import Data.List using (List; []; _∷_)
+open import Data.List using (List; []; _∷_; map)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Product using (_×_; _,_)
@@ -37,6 +37,55 @@ data Failure : Set where
   validation : Validation.Fault → Failure
   editorLaunch conflictingSettings : Failure
 
+-- Matching is about the fields explicitly named by this request. A custom
+-- field omitted from that request does not become a conflict with a default.
+-- Values remain typed; neither rendering nor parsing is part of this view.
+data FieldValue : Set where
+  textField : Text → FieldValue
+  optionalTextField : Maybe Text → FieldValue
+  portField : ℕ → FieldValue
+  modeField : Values.Mode → FieldValue
+  backendField : Maybe Values.Backend → FieldValue
+  retiredField : FieldValue
+
+embeddingBackend : Maybe Values.Embeddings → Maybe Values.Backend
+embeddingBackend nothing = nothing
+embeddingBackend (just value) = just (Values.Embeddings.backend value)
+embeddingModel : Maybe Values.Embeddings → Maybe Text
+embeddingModel nothing = nothing
+embeddingModel (just value) = just (Values.Embeddings.model value)
+embeddingKey : Maybe Values.Embeddings → Maybe Text
+embeddingKey nothing = nothing
+embeddingKey (just value) = Values.Embeddings.apiKey value
+embeddingCache : Maybe Values.Embeddings → Maybe Text
+embeddingCache nothing = nothing
+embeddingCache (just value) = Values.Embeddings.cacheDirectory value
+
+fieldValue : Input.Key → Values.Config → FieldValue
+fieldValue Input.hostKey cfg = textField (Values.Database.host (Values.Config.db cfg))
+fieldValue Input.portKey cfg = portField (Values.Database.port (Values.Config.db cfg))
+fieldValue Input.databaseKey cfg = textField (Values.Database.dbname (Values.Config.db cfg))
+fieldValue Input.userKey cfg = textField (Values.Database.user (Values.Config.db cfg))
+fieldValue Input.passwordKey cfg = optionalTextField (Values.Database.password (Values.Config.db cfg))
+fieldValue Input.passfileKey cfg = optionalTextField (Values.Database.pgpassfile (Values.Config.db cfg))
+fieldValue Input.modeKey cfg = modeField (Values.Database.mode (Values.Config.db cfg))
+fieldValue Input.rootKey cfg = optionalTextField (Values.Database.rootCertificate (Values.Config.db cfg))
+fieldValue Input.certificateKey cfg = optionalTextField (Values.Database.clientCertificate (Values.Config.db cfg))
+fieldValue Input.clientKeyKey cfg = optionalTextField (Values.Database.clientKey (Values.Config.db cfg))
+fieldValue Input.backendKey cfg = backendField (embeddingBackend (Values.Config.embed cfg))
+fieldValue Input.modelKey cfg = optionalTextField (embeddingModel (Values.Config.embed cfg))
+fieldValue Input.apiKeyKey cfg = optionalTextField (embeddingKey (Values.Config.embed cfg))
+fieldValue Input.batchKey cfg = retiredField
+fieldValue Input.cacheKey cfg = optionalTextField (embeddingCache (Values.Config.embed cfg))
+
+namedField : String → Values.Config → Maybe FieldValue
+namedField name cfg with Input.lookup name Input.keys
+... | nothing = nothing
+... | just key = just (fieldValue key cfg)
+
+explicitFields : List (String × Text) → Values.Config → List (Maybe FieldValue)
+explicitFields pairs cfg = map (λ pair → namedField (Data.Product.proj₁ pair) cfg) pairs
+
 data Effect : Set where
   defaultOperations : Effect
   exists : Path.Path → Effect
@@ -44,7 +93,7 @@ data Effect : Set where
   parseTOML : Text → Effect
   prettyTOML : Values.Config → Effect
   filesystem : Path.Path → Content → IO.Effect → Effect
-  sameCore : Values.Config → Values.Config → Effect
+  sameFields : List (String × Text) → Values.Config → Values.Config → Effect
   announceCreated announceAlreadyConfigured : Path.Path → Effect
   announceEditor announceRestart : Effect
   editor : Text → Path.Path → Effect
@@ -56,7 +105,7 @@ Reply (readUTF8 _) = IO.Failure ⊎ Text
 Reply (parseTOML _) = IO.Failure ⊎ V.Value
 Reply (prettyTOML _) = IO.Failure ⊎ Text
 Reply (filesystem _ _ _) = IO.Input
-Reply (sameCore old proposed) = Dec (old ≡ proposed)
+Reply (sameFields pairs old proposed) = Dec (explicitFields pairs old ≡ explicitFields pairs proposed)
 Reply (announceCreated _) = ⊤
 Reply (announceAlreadyConfigured _) = ⊤
 Reply announceEditor = ⊤
@@ -127,11 +176,22 @@ module Run where
       (inj₂ _) → done (inj₂ (configured operations configurationValue))
 
     compareExisting : Schema.Config → List (String × Text) → Script (Failure ⊎ Content)
-    compareExisting current pairs with Overrides.collect (Schema.Config.core current) pairs
+    compareExisting current pairs with Overrides.create pairs
     ... | inj₁ error = done (inj₁ (override error))
-    ... | inj₂ proposed = ask (sameCore (Schema.Config.core current) proposed) λ where
+    ... | inj₂ proposed = ask (sameFields pairs (Schema.Config.core current) proposed) λ where
       (yes same) → done (inj₂ (alreadyConfigured current))
       (no different) → done (inj₁ conflictingSettings)
+
+    -- A file published from this request matches on retry even when its
+    -- unrelated sections are retained as opaque values. No override is
+    -- reapplied to existing settings to establish that fact.
+    createdSettingsMatch : ∀ pairs operations cfg llm judge email retirement →
+      Overrides.create pairs ≡ inj₂ cfg →
+      P.Runs (compareExisting (Schema.config operations cfg llm judge email retirement) pairs)
+        ((sameFields pairs cfg cfg , yes refl) ∷ [])
+        (inj₂ (alreadyConfigured (Schema.config operations cfg llm judge email retirement)))
+    createdSettingsMatch pairs operations cfg llm judge email retirement created rewrite created =
+      P.replied _ _ (yes refl) (P.returned _)
 
     readExisting : Path.Path → List (String × Text) → Script (Failure ⊎ Content)
     readExisting path pairs = loadFrom path >>= λ where
