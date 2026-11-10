@@ -104,9 +104,7 @@ module Business (databaseSum : List Float → Float) where
   ... | ()
   journalUnchanged requested before .(intended requested before) .(reply requested before writes) refl | just writes = refl
 
-module Registered (conversion : Conversion.Contract) (databaseSum : List Float → Float)
-  (serverTime : ℕ → Store.World → ℤ) where
-  module B = Business databaseSum
+module Registration (conversion : Conversion.Contract) where
   module PublicDecode = Public.Decode conversion
 
   descriptor = Admission.descriptor (toList "decay_all") (toList "store.decay_locked")
@@ -132,13 +130,34 @@ module Registered (conversion : Conversion.Contract) (databaseSum : List Float �
   ... | Wire.object [] = decode (Store.ReservationRow.reservedAt reserved) (Store.BindingRow.arguments binding)
   ... | _ = inj₁ mismatch
 
+  atTime : ℤ → Request → Request
+  atTime time requested = record requested { publicationTime = time }
+
+module Registered (conversion : Conversion.Contract) (databaseSum : List Float → Float)
+  (serverTime : ℕ → Store.World → ℤ) where
+  module B = Business databaseSum
+  module Shared = Registration conversion
+  module PublicDecode = Public.Decode conversion
+
+  -- Preserve the registered API while pure readers reuse the same parser
+  -- without an executable progress-clock dependency.
+  descriptor = Shared.descriptor
+  key : ℕ → Text
+  key = Shared.key
+  distinct : ∀ token → key token ≡ Step.resultKey → ⊥
+  distinct = Shared.distinct
+  mismatch = Shared.mismatch
+  decode : ℤ → Wire.Value → Validation.Fault ⊎ Request
+  decode = Shared.decode
+  original : ℕ → Step.Registration → Validation.Fault ⊎ Request
+  original = Shared.original
+  atTime : ℤ → Request → Request
+  atTime = Shared.atTime
+
   admit : ℕ → Step.Registration → Maybe B.Diagnostic
   admit token registration with original token registration
   ... | inj₁ fault = just (B.requestFault fault)
   ... | inj₂ _ = nothing
-
-  atTime : ℤ → Request → Request
-  atTime time requested = record requested { publicationTime = time }
 
   module AtReceipt (observedTime : ℤ) where
     decide : ℕ → Store.World → B.Outcome

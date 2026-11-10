@@ -425,6 +425,16 @@ while missing targets or invalid stored inputs retain their existing typed
 outcomes without an invented report. The entire world stays unchanged.
 Outer snapshot failures and complete public host/wire assembly remain unfinished.
 
+`IntendedDecay.Evaluate.With.evaluate` admits `decay_all`, computes the original
+binding/plan intentions, and reuses the independent `DecayRecovery.Business.checked`
+count/baseline computation. Only fresh business work requires the actual
+PostgreSQL publication clock sampled under its writer lock; reservation time
+is never a substitute. Success composes the original step answer and completed
+answer into the expected full world; saved/refused/cancelled paths need no new
+clock. Invalid stored inputs remain a typed no-publication outcome. The existing
+registration parser is shared without changing the registered operation's API
+or behavior. Full public host/wire assembly remains unfinished.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |

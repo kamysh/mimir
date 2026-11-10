@@ -176,6 +176,7 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     retrievalReadback : PublicRetrieval.Response → PublicOutcome
     learningContextReadback : LearningContext.Output → PublicOutcome
     invalidContextAssessment : PublicOutcome
+    invalidDecayInputs : PublicOutcome
     agentDecision : Errors.AgentCorrection.Claim → PublicOutcome
     numericalReadback : (databaseSum : Data.List.List Float.Float → Float.Float) →
       Numerical.NumericalOutcome.Result databaseSum → PublicOutcome
