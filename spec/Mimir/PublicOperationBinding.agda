@@ -451,6 +451,13 @@ module Decode (library : Library.Contract) where
     ... | inj₁ fault = ⊥-elim (doneCannotAsk _ events effect next prefix)
     ... | inj₂ tt = inj₂ (refl , eraseActive (O.script token) before current interrupted effect next reply events prefix physical active)
 
+    interruptedKeepsObservation : ∀ {Observation : Set} (observe : Store.World → Observation) →
+      (∀ token before after → O.X.Interrupted (O.script token) before after → observe after ≡ observe before) →
+      ∀ token before after → X.Interrupted (script token) before after → observe after ≡ observe before
+    interruptedKeepsObservation observe keeps token before after cut with interruptionMeaning token before after cut
+    ... | inj₁ unchanged = cong observe unchanged
+    ... | inj₂ (admitted , sourceCut) = keeps token before after sourceCut
+
     -- A final answer that appeared during this interrupted call cannot have
     -- come from rejecting its binding: that branch never changes the World.
     completedInterruption : ∀ token before current raw →
@@ -1102,6 +1109,24 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   computedExecutable call model accepted | just shape | just steps | true with accepted
   ... | refl = valid
 
+  computedOperation : ∀ call model → computedPlan call ≡ inj₂ model → P.Saved.operation model ≡ Call.name call
+  computedOperation call model accepted with P.lookup (Call.name call) P.registered
+  ... | nothing with accepted
+  ... | ()
+  computedOperation call model accepted | just shape with P.rebuild library shape (selected (Call.request call))
+  ... | nothing with accepted
+  ... | ()
+  computedOperation call model accepted | just shape | just steps with P.executable library (P.saved (Call.name call) shape steps nothing)
+  ... | false with accepted
+  ... | ()
+  computedOperation call model accepted | just shape | just steps | true with accepted
+  ... | refl = refl
+
+  sameOperation : ∀ name → P.textEqual name name ≡ true
+  sameOperation name with name ≟Text name
+  ... | yes _ = refl
+  ... | no different = ⊥-elim (different refl)
+
   headPlan : ∀ call raw before → plan (Call.token call) (putPlan (Call.token call) raw before) ≡ just raw
   headPlan call raw before with Call.token call ≟ Call.token call
   ... | yes _ = refl
@@ -1113,6 +1138,8 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
           originalArguments : Σ Wire.Value (λ settings → matches call settings (Context.original context) ≡ true)
           savedPlan : plan (Call.token call) after ≡ just (Context.raw context)
           decodedPlan : P.decode (Context.raw context) ≡ inj₂ (Context.model context)
+          planOperationMatches : P.textEqual (Store.BindingRow.operation (Context.original context))
+            (P.Saved.operation (Context.model context)) ≡ true
           executable : P.executable library (Context.model context) ≡ true
           uncancelled : Store.lookupCancellation after (Call.token call) ≡ nothing
 
@@ -1351,7 +1378,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   ... | inj₁ _ with accepted
   ... | ()
   existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted | inj₂ model
-    with P.textEqual (Store.BindingRow.operation original) (P.Saved.operation model)
+    with P.textEqual (Store.BindingRow.operation original) (P.Saved.operation model) in sameName
   ... | false with accepted
   ... | ()
   existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted | inj₂ model | true
@@ -1362,7 +1389,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     with accepted
   ... | refl = record
     { actualCall = refl; boundRequest = known; originalArguments = settings , matched
-    ; savedPlan = stored; decodedPlan = decoded; executable = valid; uncancelled = active }
+    ; savedPlan = stored; decodedPlan = decoded; planOperationMatches = sameName; executable = valid; uncancelled = active }
 
   newPlanReady : ∀ call settings original encoding before after returnedOriginal returnedModel returnedRaw →
     binding (Call.token call) before ≡ just original → matches call settings original ≡ true →
@@ -1374,8 +1401,10 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     with accepted
   ... | refl = record
     { actualCall = refl; boundRequest = known; originalArguments = settings , matched
-    ; savedPlan = headPlan call raw before; decodedPlan = decoded; executable = computedExecutable call model computed
-    ; uncancelled = active }
+    ; savedPlan = headPlan call raw before; decodedPlan = decoded
+    ; planOperationMatches = trans (cong (λ name → P.textEqual name (P.Saved.operation model)) (matchingOperation call settings original matched))
+        (trans (cong (P.textEqual (Call.name call)) (computedOperation call model computed)) (sameOperation (Call.name call)))
+    ; executable = computedExecutable call model computed; uncancelled = active }
 
   prepareReady : ∀ call settings encoding before after original model raw →
     (after , planned original model raw) ≡ prepare call settings encoding before →
@@ -1782,7 +1811,8 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     ; boundRequest = trans sameBinding (ReadyMeaning.boundRequest earlier)
     ; originalArguments = ReadyMeaning.originalArguments earlier
     ; savedPlan = trans samePlan (ReadyMeaning.savedPlan earlier)
-    ; decodedPlan = ReadyMeaning.decodedPlan earlier; executable = ReadyMeaning.executable earlier
+    ; decodedPlan = ReadyMeaning.decodedPlan earlier; planOperationMatches = ReadyMeaning.planOperationMatches earlier
+    ; executable = ReadyMeaning.executable earlier
     ; uncancelled = trans sameCancellation (ReadyMeaning.uncancelled earlier) }
 
   contextSame : ∀ first second → Context.call first ≡ Context.call second →
