@@ -152,11 +152,11 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   module PatternWrite = Pattern.Registered library format
   module PatternRemoval = DeletePattern.Registered library
   module Relationship kind = Edges.Registered library kind
-  module BeliefRemoval = DeleteBelief.Registered library databaseSum calculator
-  module Grounding kind = Ground.Registered kind library databaseSum calculator
-  module Propagate = Propagation.Registered format library databaseSum calculator
-  module Decaying = Decay.Registered library databaseSum
-  module DocumentRemoval = Clear.Registered library databaseSum calculator
+  module BeliefRemoval = DeleteBelief.Registered library databaseSum calculator serverTime
+  module Grounding kind = Ground.Registered kind library databaseSum calculator serverTime
+  module Propagate = Propagation.Registered format library databaseSum calculator serverTime
+  module Decaying = Decay.Registered library databaseSum serverTime
+  module DocumentRemoval = Clear.Registered library databaseSum calculator serverTime
   module IndependentWrite = Independent.Registered format library databaseSum calculator allocateOwner
   module IndependentPublic = IndependentWrite.Public configuration
   module Defeating = Defeat.Registered library databaseSum calculator serverTime
@@ -216,31 +216,32 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   module RelationshipGuard kind expected = Admit.Guarded (Binding.advertised (relationshipTool kind)) expected (Relationship.operation kind)
     (λ token → RelationshipFrame.existingBindingSurvives kind token token)
 
-  module BeliefRemovalFrame = Binding.AdmittedStep ℕ BeliefRemoval.B.Diagnostic (λ token → token) BeliefRemoval.key
-    BeliefRemoval.distinct BeliefRemoval.decide BeliefRemoval.keepsJournal BeliefRemoval.admit
-  module BeliefRemovalGuard expected = Admit.Guarded (Binding.advertised Tools.deleteBelief) expected BeliefRemoval.operation
-    (λ token → BeliefRemovalFrame.existingBindingSurvives token token)
+  registrationKeepsBinding : ∀ token before after original → Step.registration after ≡ Step.registration before →
+    Project.Registered.binding token (Binding.bindings before) ≡ just original →
+    Project.Registered.binding token (Binding.bindings after) ≡ just original
+  registrationKeepsBinding token before after original unchanged present = trans
+    (cong (λ registration → Project.Registered.binding token (proj₁ (proj₂ (proj₂ registration)))) unchanged) present
 
-  module GroundingFrame kind = Binding.AdmittedStep ℕ (Grounding.B.Diagnostic kind) (λ token → token) (Grounding.key kind)
-    (Grounding.distinct kind) (Grounding.decide kind) (Grounding.keepsJournal kind) (Grounding.admit kind)
+  module BeliefRemovalGuard expected = Admit.Guarded (Binding.advertised Tools.deleteBelief) expected BeliefRemoval.operation
+    (λ token before after original present crash → registrationKeepsBinding token before after original
+      (BeliefRemoval.interruptedKeepsRegistration token before after crash) present)
+
   groundingSource : Ground.Kind → Binding.Source
   groundingSource Ground.addition = Binding.advertised Tools.addEvidence
   groundingSource Ground.removal = Binding.evidenceRemoval
   module GroundingGuard kind expected = Admit.Guarded (groundingSource kind) expected (Grounding.operation kind)
-    (λ token → GroundingFrame.existingBindingSurvives kind token token)
+    (λ token before after original present crash → registrationKeepsBinding token before after original
+      (Grounding.interruptedKeepsRegistration kind token before after crash) present)
 
-  module PropagationFrame = Binding.AdmittedStep ℕ Propagate.B.Diagnostic (λ token → token) Propagate.key
-    Propagate.distinct Propagate.decide Propagate.keepsJournal Propagate.admit
   module PropagationGuard expected = Admit.Guarded (Binding.advertised Tools.propagateFrom) expected Propagate.operation
-    (λ token → PropagationFrame.existingBindingSurvives token token)
-  module DecayFrame = Binding.AdmittedStep ℕ Decaying.B.Diagnostic (λ token → token) Decaying.key
-    Decaying.distinct Decaying.decide Decaying.keepsJournal Decaying.admit
+    (λ token before after original present crash → registrationKeepsBinding token before after original
+      (Propagate.interruptedKeepsRegistration token before after crash) present)
   module DecayGuard expected = Admit.Guarded (Binding.advertised Tools.decayAll) expected Decaying.operation
-    (λ token → DecayFrame.existingBindingSurvives token token)
-  module ClearFrame = Binding.AdmittedStep ℕ DocumentRemoval.B.G.Diagnostic (λ token → token) DocumentRemoval.key
-    DocumentRemoval.distinct DocumentRemoval.decide DocumentRemoval.keepsJournal DocumentRemoval.admit
+    (λ token before after original present crash → registrationKeepsBinding token before after original
+      (Decaying.interruptedKeepsRegistration token before after crash) present)
   module ClearGuard expected = Admit.Guarded (Binding.advertised Tools.clearDocument) expected DocumentRemoval.operation
-    (λ token → ClearFrame.existingBindingSurvives token token)
+    (λ token before after original present crash → registrationKeepsBinding token before after original
+      (DocumentRemoval.interruptedKeepsRegistration token before after crash) present)
 
   independentFirstBindings : ∀ metadata token before →
     Binding.bindings (proj₁ (IndependentWrite.first metadata token before)) ≡ Binding.bindings before
@@ -496,6 +497,7 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   Success (sourceWrite _) reply = stepSucceeded reply
   Success (reviewWrite _) reply = stepSucceeded reply
   Success (documentLoading _) reply = stepSucceeded (DocumentEntry.normalized reply)
+  Success (control Controls.readOutcome _) Control.Read.unknownToken = ⊥
   Success (control request _) reply = Control.Success request reply
 
   invalidPage : Validation.Fault
