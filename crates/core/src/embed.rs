@@ -28,7 +28,8 @@ pub trait EmbeddingProvider: Send + Sync {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-/// Physical job state. Finished work can return either Ok or Err; inspect its result.
+/// Job lifecycle signal. Cancelled requests cancellation; physical cleanup is
+/// confirmed separately. Finished work can return either Ok or Err.
 pub enum EmbeddingStatus {
     Running,
     Cancelled,
@@ -47,6 +48,7 @@ impl std::error::Error for EmbeddingCancelled {}
 #[derive(Clone)]
 pub struct EmbeddingCancellation {
     state: tokio::sync::watch::Receiver<EmbeddingStatus>,
+    cleanup: Arc<local_worker::Cleanup>,
 }
 impl EmbeddingCancellation {
     pub fn status(&self) -> EmbeddingStatus {
@@ -75,9 +77,11 @@ impl EmbeddingCancellation {
 #[derive(Clone)]
 pub struct EmbeddingStopHandle {
     state: tokio::sync::watch::Sender<EmbeddingStatus>,
+    cleanup: Arc<local_worker::Cleanup>,
 }
 impl EmbeddingStopHandle {
-    /// Return whether this call stopped a running job. Finished results remain intact.
+    /// Request cancellation of a running job. This return value is not a
+    /// child-exit receipt. Finished results remain intact.
     pub fn cancel(&self) -> bool {
         self.state.send_if_modified(|state| {
             if *state == EmbeddingStatus::Running {
@@ -91,6 +95,23 @@ impl EmbeddingStopHandle {
     pub fn status(&self) -> EmbeddingStatus {
         *self.state.borrow()
     }
+
+    pub(crate) fn confirm_cleanup(&self) -> Vec<WorkerCleanupIssue> {
+        self.cleanup.retry()
+    }
+
+    pub(crate) fn cleanup_pending(&self) -> bool {
+        self.cleanup.pending()
+    }
+}
+
+/// A local child whose exit could not be confirmed. This is distinct from
+/// cancelling the future that was awaiting it.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct WorkerCleanupIssue {
+    pub pid: u32,
+    pub diagnostics: PathBuf,
+    pub error: String,
 }
 
 struct EmbeddingOwner {
@@ -146,11 +167,18 @@ impl OwnedEmbeddingBackend {
 
     pub fn embed<'a>(&'a self, texts: &'a [String]) -> EmbeddingJob<'a> {
         let (state, received) = tokio::sync::watch::channel(EmbeddingStatus::Running);
-        let control = EmbeddingStopHandle { state };
+        let cleanup = Arc::new(local_worker::Cleanup::default());
+        let control = EmbeddingStopHandle {
+            state,
+            cleanup: cleanup.clone(),
+        };
         let owner = EmbeddingOwner {
             control: control.clone(),
         };
-        let cancellation = EmbeddingCancellation { state: received };
+        let cancellation = EmbeddingCancellation {
+            state: received,
+            cleanup,
+        };
         let future = Box::pin(async move {
             cancellation.check()?;
             let mut ended = cancellation.clone();

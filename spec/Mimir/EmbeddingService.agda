@@ -9,6 +9,7 @@ open import Data.List using (List; []; map)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.Unit using (tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Data.Float.Base as Float
@@ -75,9 +76,12 @@ module Run (float : Ranking.F32) (dimension maximumIndex : ℕ)
       Lifecycle.root (Config.Embeddings.cacheDirectory cfg) home ≡ just base →
       LocalTrace base texts (L.start cache texts) (L.returned after result) →
       Call (just cfg) cache texts after (localResult result)
-    localStopped : ∀ cfg cache texts base receipt → Config.Embeddings.backend cfg ≡ Config.local →
-      LocalTrace base texts (L.start cache texts) (L.stopped receipt) →
+    localStopped : ∀ cfg cache texts base → Config.Embeddings.backend cfg ≡ Config.local →
+      LocalTrace base texts (L.start cache texts) (L.stopped (inj₂ tt)) →
       Call (just cfg) cache texts Backend.unloaded (inj₁ cancelled)
+    localStopFailed : ∀ cfg cache texts base error → Config.Embeddings.backend cfg ≡ Config.local →
+      LocalTrace base texts (L.start cache texts) (L.stopped (inj₁ error)) →
+      Call (just cfg) cache texts Backend.unloaded (inj₁ (localFailure error))
     remoteCall : ∀ cfg cache texts url events result →
       Backend.endpoint (Config.Embeddings.backend cfg) ≡ just url →
       R.P.Runs (R.run (Config.Embeddings.backend cfg) (key (Config.Embeddings.apiKey cfg))

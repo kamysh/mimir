@@ -327,6 +327,17 @@ impl MimirService {
         provenance: Option<crate::learning::IndependentProvenance>,
         support: Vec<preparation::ValidatedSupport>,
     ) -> Result<preparation::PreparedBelief> {
+        self.prepare_owned_belief_for_operation(None, belief, provenance, support)
+            .await
+    }
+
+    async fn prepare_owned_belief_for_operation(
+        &self,
+        operation_token: Option<Uuid>,
+        belief: Belief,
+        provenance: Option<crate::learning::IndependentProvenance>,
+        support: Vec<preparation::ValidatedSupport>,
+    ) -> Result<preparation::PreparedBelief> {
         use interaction::Location;
         use preparation::{PreparationRequired, PreparedBelief};
         use validation::{Code, Segment};
@@ -338,7 +349,7 @@ impl MimirService {
                 "Embedding is not configured; no belief was stored.".into(),
             )
         })?;
-        let vectors = self.embed_prepared_belief(embedder, &belief, &support).await.map_err(|error| {
+        let vectors = self.embed_prepared_belief(embedder, &belief, &support, operation_token).await.map_err(|error| {
             if error.is::<PreparationRequired>() || error.is::<embed::EmbeddingCancelled>() { return error; }
             PreparationRequired::new(Location::Configuration, vec![Segment::Key("embeddings".into())], Code::MissingEvidence,
                 format!("Embedding preparation failed before publication: {error:#}. No belief was stored.")).into()
@@ -379,7 +390,12 @@ impl MimirService {
                     .validate_indexed_support(belief.project.as_deref(), &grounding)
                     .await?;
                 let prepared = self
-                    .prepare_owned_belief(belief, Some(provenance), support)
+                    .prepare_owned_belief_for_operation(
+                        Some(plan.operation_token()),
+                        belief,
+                        Some(provenance),
+                        support,
+                    )
                     .await?;
                 self.store
                     .publish_belief_operation(&final_step, &prepared)
@@ -393,6 +409,7 @@ impl MimirService {
         embedder: &OwnedEmbeddingBackend,
         belief: &Belief,
         support: &[preparation::ValidatedSupport],
+        operation_token: Option<Uuid>,
     ) -> Result<Vec<Vec<f32>>> {
         use interaction::Location;
         use preparation::PreparationRequired;
@@ -413,7 +430,11 @@ impl MimirService {
             )
             .into());
         }
-        let job = embedder.embed(std::slice::from_ref(&belief.content));
+        let job = self.operation_embedding_job(
+            embedder,
+            std::slice::from_ref(&belief.content),
+            operation_token,
+        )?;
         tokio::pin!(job);
         loop {
             tokio::select! {
@@ -482,7 +503,11 @@ impl MimirService {
             }
             .into());
         }
-        let job = embedder.embed(std::slice::from_ref(&belief.content));
+        let job = self.operation_embedding_job(
+            embedder,
+            std::slice::from_ref(&belief.content),
+            operation_token,
+        )?;
         tokio::pin!(job);
         loop {
             tokio::select! {

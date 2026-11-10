@@ -57,6 +57,14 @@ replying with `worker_cleanup: confirmed_for_this_server`.
 
 That confirmation covers this server's registered work. Another server sees
 the database revocation, but its worker's exit is not confirmed by this reply.
+If the operating system cannot confirm that a local worker exited, the reply
+instead says `worker_cleanup: unconfirmed_for_this_server` and
+`next_action: open_user_dialog`. It includes the worker's process ID, private
+diagnostic directory and complete error. The caller must explain the unresolved
+cleanup before starting replacement work. Retrying cancellation with the same
+token checks for an exit receipt; it does not erase saved answers or repeat
+earlier business changes. Diagnostics and partial downloads remain available
+while cleanup is unconfirmed.
 An `operation_outcome` response reports
 `worker_cleanup: not_confirmed_by_this_receipt`: reading a database fact alone
 does not establish worker cleanup. If cancellation cannot be saved, this
@@ -65,8 +73,9 @@ and retry cancellation with the original token. It does not restart the work.
 
 MCP replies may arrive in a different order from requests. Each reply retains
 its original request ID; response frames are written without interleaving.
-Closing the connection drops every active request and its owned worker before
-the server returns.
+Closing the connection drops every active request and attempts to stop and reap
+its owned worker. A cleanup error is retained in private diagnostics; dropping
+the connection is not a confirmation of successful cleanup.
 
 The CLI uses the same operation identity and saved-answer format. For example:
 

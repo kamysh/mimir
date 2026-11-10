@@ -665,7 +665,12 @@ impl crate::MimirService {
                     .watch_review_preparation(
                         &review,
                         expected,
-                        self.prepare_owned_belief(belief, None, support),
+                        self.prepare_owned_belief_for_operation(
+                            Some(plan.operation_token()),
+                            belief,
+                            None,
+                            support,
+                        ),
                     )
                     .await;
                 match result {

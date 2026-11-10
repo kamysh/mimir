@@ -69,13 +69,7 @@ pub async fn call(
         ControlOperation::CancelOperation => {
             let token = token(input)?;
             let cancelled = service.cancel_operation(token).await?;
-            let confirmed = cancelled.local_cleanup_confirmed();
-            let mut reply = mimir_json::Document::new(outcome(token, cancelled.into_outcome())?);
-            if confirmed {
-                reply["worker_cleanup"] = json!("confirmed_for_this_server");
-                reply["message"]=json!("Cancellation is durable and further publication under this token is blocked. This server stopped its owned execution before replying. Other servers receive publication revocation, but their cleanup is not confirmed by this receipt. Earlier committed changes and saved answers remain.");
-            }
-            Ok(reply.into_value())
+            mimir_core::operation_reporting::cancellation(token, cancelled)
         }
     }
 }
