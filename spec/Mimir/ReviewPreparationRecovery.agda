@@ -40,6 +40,7 @@ import Mimir.StructuredValue as Wire
 import Mimir.Validation as Validation
 import Data.List.Properties as Lists
 import Data.Fin as Fin
+import Data.List.Relation.Unary.Any as Any
 
 alongObservation : ∀ {A B : Set} (original : A) (branch : (actual : A) → original ≡ actual → B)
   actual observed → branch original refl ≡ branch actual observed
@@ -780,6 +781,220 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
     returnedObservation before final (stopped (Step.done reply)) result events
       (subst (λ program → E.Runs program events result)
         (afterCompletedReadback token current before binding reply completedOutcome) later) changes
+
+  inspectContext : ∀ current token before requested → inspect current token before ≡ run requested →
+    Σ (Readback.ExecutionContext (toList "review_experience") token before)
+      (λ actual → Readback.admission (toList "review_experience") token before ≡ Readback.admitted actual)
+  inspectContext current token before requested accepted with Readback.admission (toList "review_experience") token before
+  ... | Readback.admitted actual = actual , refl
+  inspectContext current token before requested () | Readback.returned (Readback.completed _ _)
+  inspectContext current token before requested () | Readback.returned (Readback.cancelled _ _ _)
+  inspectContext current token before requested () | Readback.returned (Readback.inconsistent _ _)
+  inspectContext current token before requested () | Readback.returned (Readback.needsRecovery _)
+  inspectContext current token before requested () | Readback.returned (Readback.pending _ _ _)
+  inspectContext current token before requested () | Readback.returned Readback.unknownToken
+  inspectContext current token before requested () | Readback.returned Readback.reserved
+  inspectContext current token before requested () | Readback.returned (Readback.awaitingPlan _)
+  inspectContext current token before requested () | Readback.returned (Readback.awaitingCompletion _)
+
+  completedEntryAdmission : ∀ token before after scope → X.Completed (script token) before after (ready scope) →
+    Σ (Readback.ExecutionContext (toList "review_experience") token before)
+      (λ actual → Readback.admission (toList "review_experience") token before ≡ Readback.admitted actual)
+  completedEntryAdmission token before after scope
+    (X.completed _ (E.replied _ _ (current , .before) later) (X.changed _ _ _ .before (refl , refl) changes))
+    with inspect current token before in decision
+  ... | stop reply with later
+  ... | ()
+  completedEntryAdmission token before after scope
+    (X.completed _ (E.replied _ _ (current , .before) later) (X.changed _ _ _ .before (refl , refl) changes))
+    | run requested = inspectContext current token before requested decision
+
+  returnedIsNotAdmitted : ∀ {token before result} {entry : Readback.ExecutionContext (toList "review_experience") token before} →
+    Readback.returned result ≡ Readback.admitted entry → ⊥
+  returnedIsNotAdmitted ()
+
+  answerCancellation : ∀ token before binding row → Project.Registered.binding token
+    (Store.OperationTables.bindings (Store.World.operations before)) ≡ just binding → Store.lookupCancellation before token ≡ just row →
+    Readback.answer token before ≡ Readback.cancelled row (just binding) (Readback.ordered (Readback.savedRows token before))
+  answerCancellation token before binding row found cancellation rewrite found | cancellation = refl
+
+  entryActive : ∀ token before (entry : Readback.ExecutionContext (toList "review_experience") token before) →
+    Readback.admission (toList "review_experience") token before ≡ Readback.admitted entry →
+    Store.lookupCancellation before token ≡ nothing
+  entryActive token before entry accepted with Store.lookupCancellation before token in cancellation
+  ... | nothing = refl
+  ... | just row = ⊥-elim (returnedIsNotAdmitted (trans (sym rejected) accepted))
+    where
+    binding = Readback.ExecutionContext.bindingRow entry
+    found = Readback.ExecutionContext.originalBinding entry
+    matched = Readback.ExecutionContext.requestedOperation entry
+    cancelledAnswer : Readback.answer token before ≡ Readback.cancelled row (just binding) (Readback.ordered (Readback.savedRows token before))
+    cancelledAnswer = answerCancellation token before binding row found cancellation
+    rejected : Readback.admission (toList "review_experience") token before ≡
+      Readback.returned (Readback.cancelled row (just binding) (Readback.ordered (Readback.savedRows token before)))
+    rejected = trans (alongObservation _ (Readback.afterBindingLookup (toList "review_experience") token before) (just binding) found)
+      (trans (alongObservation _ (Readback.afterMatch (toList "review_experience") token before binding found) true matched)
+        (cong (Readback.afterReadback (toList "review_experience") token before binding found matched) cancelledAnswer))
+
+  opaqueOwners : ∀ token before steps (prefix : J.Prefix token before steps) →
+    Σ (Controls.OpaqueJournal.Prefix token before steps) (λ raw →
+      Controls.OpaqueJournal.count raw ≡ J.count prefix × Controls.OpaqueJournal.next raw ≡ J.next prefix)
+  opaqueOwners token before [] (J.waiting []) = Controls.OpaqueJournal.waiting [] , refl , refl
+  opaqueOwners token before (first ∷ rest) (J.waiting missing) = Controls.OpaqueJournal.waiting missing , refl , refl
+  opaqueOwners token before (first ∷ rest) (J.saved raw value known decoded prefix) with opaqueOwners token before rest prefix
+  ... | moved , sameCount , sameNext = Controls.OpaqueJournal.saved raw raw known refl moved , cong suc sameCount , sameNext
+
+  opaqueJournal : ∀ token before steps (journal : J.Complete token before steps) →
+    Σ (Controls.OpaqueJournal.Complete token before steps) (λ raw →
+      Controls.OpaqueJournal.next (Controls.OpaqueJournal.Complete.prefix raw) ≡ J.next (J.Complete.prefix journal))
+  opaqueJournal token before steps journal with opaqueOwners token before steps (J.Complete.prefix journal)
+  ... | moved , sameCount , sameNext = Controls.OpaqueJournal.complete moved
+    (trans (J.Complete.exactRows journal) (sym sameCount)) (J.Complete.declaredRows journal) , sameNext
+
+  appendFinalPrefix : ∀ token before steps (prefix : Controls.OpaqueJournal.Prefix token before steps) final →
+    Controls.OpaqueJournal.next prefix ≡ nothing → Store.lookupSaved before token (Plan.Step.id final) ≡ nothing →
+    Σ (Controls.OpaqueJournal.Prefix token before (steps ++ (final ∷ []))) (λ extended →
+      Controls.OpaqueJournal.count extended ≡ Controls.OpaqueJournal.count prefix × Controls.OpaqueJournal.next extended ≡ just final)
+  appendFinalPrefix token before [] (Controls.OpaqueJournal.waiting []) final finished absent =
+    Controls.OpaqueJournal.waiting (absent ∷ []) , refl , refl
+  appendFinalPrefix token before (first ∷ rest) (Controls.OpaqueJournal.waiting _) final () absent
+  appendFinalPrefix token before (first ∷ rest) (Controls.OpaqueJournal.saved raw value known decoded prefix) final finished absent
+    with appendFinalPrefix token before rest prefix final finished absent
+  ... | extended , sameCount , sameNext = Controls.OpaqueJournal.saved raw value known decoded extended , cong suc sameCount , sameNext
+
+  includeOwner : ∀ steps final row → Any.Any (λ declared → Store.SavedReplyRow.step row ≡ Plan.Step.id declared) steps →
+    Any.Any (λ declared → Store.SavedReplyRow.step row ≡ Plan.Step.id declared) (steps ++ (final ∷ []))
+  includeOwner (first ∷ rest) final row (Any.here known) = Any.here known
+  includeOwner (first ∷ rest) final row (Any.there known) = Any.there (includeOwner rest final row known)
+
+  includeOwnerRows : ∀ steps final rows →
+    All (λ row → Any.Any (λ declared → Store.SavedReplyRow.step row ≡ Plan.Step.id declared) steps) rows →
+    All (λ row → Any.Any (λ declared → Store.SavedReplyRow.step row ≡ Plan.Step.id declared) (steps ++ (final ∷ []))) rows
+  includeOwnerRows steps final [] [] = []
+  includeOwnerRows steps final (row ∷ rest) (known ∷ rows) = includeOwner steps final row known ∷ includeOwnerRows steps final rest rows
+
+  appendFinalJournal : ∀ token before steps (journal : Controls.OpaqueJournal.Complete token before steps) final →
+    Controls.OpaqueJournal.next (Controls.OpaqueJournal.Complete.prefix journal) ≡ nothing → Store.lookupSaved before token (Plan.Step.id final) ≡ nothing →
+    Σ (Controls.OpaqueJournal.Complete token before (steps ++ (final ∷ []))) (λ extended →
+      Controls.OpaqueJournal.next (Controls.OpaqueJournal.Complete.prefix extended) ≡ just final)
+  appendFinalJournal token before steps journal final finished absent
+    with appendFinalPrefix token before steps (Controls.OpaqueJournal.Complete.prefix journal) final finished absent
+  ... | extended , sameCount , sameNext = Controls.OpaqueJournal.complete extended
+    (trans (Controls.OpaqueJournal.Complete.exactRows journal) (sym sameCount))
+    (includeOwnerRows steps final _ (Controls.OpaqueJournal.Complete.declaredRows journal)) , sameNext
+
+  finalCursor : ∀ token before steps (prefix : Controls.OpaqueJournal.Prefix token before steps) final → Controls.OpaqueJournal.next prefix ≡ nothing →
+    Controls.OpaqueJournal.Cursor token before (steps ++ (final ∷ [])) (final ∷ [])
+  finalCursor token before [] (Controls.OpaqueJournal.waiting []) final finished = Controls.OpaqueJournal.here (final ∷ [])
+  finalCursor token before (first ∷ rest) (Controls.OpaqueJournal.waiting _) final ()
+  finalCursor token before (first ∷ rest) (Controls.OpaqueJournal.saved raw value known decoded prefix) final finished =
+    Controls.OpaqueJournal.passed first (rest ++ (final ∷ [])) (final ∷ []) raw known (finalCursor token before rest prefix final finished)
+
+  ownerPart : ∀ (P : Plan.Step → Set) steps final → All P (steps ++ (final ∷ [])) → All P steps
+  ownerPart P [] final all = []
+  ownerPart P (first ∷ rest) final (known ∷ all) = known ∷ ownerPart P rest final all
+
+  lastPart : ∀ (P : Plan.Step → Set) steps final → All P (steps ++ (final ∷ [])) → P final
+  lastPart P [] final (known ∷ []) = known
+  lastPart P (first ∷ rest) final (_ ∷ all) = lastPart P rest final all
+
+  ownersDifferent : ∀ steps final → Controls.Addressing (steps ++ (final ∷ [])) →
+    All (λ declared → Plan.Step.id declared ≢ Plan.Step.id final) steps
+  ownersDifferent [] final addresses = []
+  ownersDifferent (first ∷ rest) final (Controls.more distinct addresses) =
+    lastPart (λ declared → Plan.Step.id first ≢ Plan.Step.id declared) rest final distinct ∷ ownersDifferent rest final addresses
+
+  nextReindexed : ∀ token before first second (same : first ≡ second) (journal : Controls.OpaqueJournal.Complete token before first) →
+    Controls.OpaqueJournal.next (Controls.OpaqueJournal.Complete.prefix (subst (Controls.OpaqueJournal.Complete token before) same journal)) ≡
+      Controls.OpaqueJournal.next (Controls.OpaqueJournal.Complete.prefix journal)
+  nextReindexed token before first .first refl journal = refl
+
+  reviewFinal : Plan.Step
+  reviewFinal = Plan.step (toList "store.review_experience_prepared") nothing (Final.key 0)
+
+  readyContext : ∀ token initial baseline scope → X.Completed (script token) initial baseline (ready scope) →
+    ∀ time → Final.original token (Step.registration baseline) ≡ inj₂ (Context.request scope , time) →
+    J.Complete token baseline (Final.ownerSteps (Input.Review.candidates (Review.Request.original (Context.request scope)))) →
+    J.Cursor token baseline (Final.ownerSteps (Input.Review.candidates (Review.Request.original (Context.request scope)))) [] →
+    Σ (Readback.ExecutionContext (toList "review_experience") token baseline) (λ derived →
+      Controls.OpaqueJournal.next (Controls.OpaqueJournal.Complete.prefix (Readback.ExecutionContext.journal derived)) ≡ just reviewFinal ×
+      Controls.OpaqueJournal.Cursor token baseline (Plan.Saved.steps (Readback.ExecutionContext.plan derived)) (reviewFinal ∷ []) ×
+      Store.lookupSaved baseline token (Final.key token) ≡ nothing ×
+      Store.lookupSaved baseline token Step.resultKey ≡ nothing × Store.lookupCancellation baseline token ≡ nothing)
+  readyContext token initial baseline scope completion time original journal endCursor =
+    derived , nextFinal , cursorFinal , noFinal , noResult , active
+    where
+    entryObservation = completedEntryAdmission token initial baseline scope completion
+    entry = proj₁ entryObservation
+    entryExact = proj₂ entryObservation
+    frame = completedFrame token initial baseline (ready scope) completion
+    facts = Final.originalFacts token (Step.registration baseline) (Context.request scope) time original
+    bound = Final.OriginalFacts.bound facts
+    plan = Final.OriginalFacts.storedPlan facts
+    binding = Final.OriginalFacts.binding facts
+    owners = Final.ownerSteps (Input.Review.candidates (Review.Request.original (Context.request scope)))
+    initialBindingAtBaseline = trans (cong (λ stored → Project.Registered.binding token (proj₁ (proj₂ (proj₂ stored))))
+      (Frame.originalRegistration frame)) (Readback.ExecutionContext.originalBinding entry)
+    initialPlanAtBaseline = trans (cong (λ stored → Project.Registered.plan token (proj₂ (proj₂ (proj₂ stored))))
+      (Frame.originalRegistration frame)) (Readback.ExecutionContext.originalPlan entry)
+    bindingSame = Readback.sameJust (trans (sym initialBindingAtBaseline) (Final.BoundFacts.bindingKnown bound))
+    rawSame = Readback.sameJust (trans (sym initialPlanAtBaseline) (Final.BoundFacts.planKnown bound))
+    planSame = Readback.sameRight (trans (sym (Readback.ExecutionContext.decoded entry))
+      (trans (cong Plan.decode rawSame) (Final.OriginalFacts.decoded facts)))
+    stepsSame = trans (cong Plan.Saved.steps planSame) (Final.OriginalFacts.originalSteps facts)
+    expectedAddresses = subst Controls.Addressing stepsSame (Readback.ExecutionContext.addresses entry)
+    expectedSeparate = subst (All (λ declared → Plan.Step.id declared ≢ Step.resultKey)) stepsSame
+      (Readback.ExecutionContext.separateResult entry)
+    opaqueObservation = opaqueJournal token baseline owners journal
+    rawOwners = proj₁ opaqueObservation
+    finished = trans (proj₂ opaqueObservation) (J.cursorFinished token baseline owners (J.Complete.prefix journal) endCursor)
+    noFinal = Readback.undeclaredAbsent token baseline owners rawOwners (Final.key token) (ownersDifferent owners reviewFinal expectedAddresses)
+    noResult = Readback.undeclaredAbsent token baseline owners rawOwners Step.resultKey
+      (ownerPart (λ declared → Plan.Step.id declared ≢ Step.resultKey) owners reviewFinal expectedSeparate)
+    appended = appendFinalJournal token baseline owners rawOwners reviewFinal finished noFinal
+    full = proj₁ appended
+    fullSteps = sym (Final.OriginalFacts.originalSteps facts)
+    rawJournal = subst (Controls.OpaqueJournal.Complete token baseline) fullSteps full
+    nextFinal = trans (nextReindexed token baseline _ _ fullSteps full) (proj₂ appended)
+    cursorFinal = subst (λ steps → Controls.OpaqueJournal.Cursor token baseline steps (reviewFinal ∷ [])) fullSteps
+      (finalCursor token baseline owners (Controls.OpaqueJournal.Complete.prefix rawOwners) reviewFinal finished)
+    active = trans (cong (λ world → Store.lookupCancellation world token) (Frame.business frame))
+      (entryActive token initial entry entryExact)
+    derived : Readback.ExecutionContext (toList "review_experience") token baseline
+    derived = record
+      { reservationRow = Final.OriginalFacts.reserved facts
+      ; originalReservation = Final.BoundFacts.reservationKnown bound
+      ; bindingRow = binding
+      ; originalBinding = Final.BoundFacts.bindingKnown bound
+      ; requestedOperation = Final.BoundFacts.bindingOperation bound
+      ; rawPlan = Final.OriginalFacts.rawPlan facts
+      ; originalPlan = Final.BoundFacts.planKnown bound
+      ; plan = plan
+      ; decoded = Final.OriginalFacts.decoded facts
+      ; matchingOperation = trans (sym (cong₂ (λ current stored → Plan.textEqual (Store.BindingRow.operation current) (Plan.Saved.operation stored)) bindingSame planSame))
+          (Readback.ExecutionContext.matchingOperation entry)
+      ; executable = trans (sym (cong (Plan.executable library) planSame)) (Readback.ExecutionContext.executable entry)
+      ; addresses = subst Controls.Addressing (cong Plan.Saved.steps planSame) (Readback.ExecutionContext.addresses entry)
+      ; separateResult = subst (All (λ declared → Plan.Step.id declared ≢ Step.resultKey)) (cong Plan.Saved.steps planSame)
+          (Readback.ExecutionContext.separateResult entry)
+      ; journal = rawJournal }
+
+  readyThenPublicationReadback : ∀ token initial baseline scope metadata after value →
+    X.Completed (script token) initial baseline (ready scope) →
+    ∀ time → Final.original token (Step.registration baseline) ≡ inj₂ (Context.request scope , time) →
+    J.Complete token baseline (Final.ownerSteps (Input.Review.candidates (Review.Request.original (Context.request scope)))) →
+    J.Cursor token baseline (Final.ownerSteps (Input.Review.candidates (Review.Request.original (Context.request scope)))) [] →
+    (after , Step.done value) ≡ Final.Saved.execute (token , metadata) baseline →
+    Σ Store.BindingRow (λ binding → Readback.admission (toList "review_experience") token after ≡ Readback.returned (Readback.completed binding value))
+  readyThenPublicationReadback token initial baseline scope metadata after value completion time original journal endCursor observed
+    with readyContext token initial baseline scope completion time original journal endCursor
+  ... | derived , selected , cursor , noFinal , noResult , active
+    with Final.firstPublication token metadata baseline after value noFinal noResult observed
+  ... | changed , accepted , published = Readback.ExecutionContext.bindingRow derived ,
+    subst (λ world → Readback.admission (toList "review_experience") token world ≡ Readback.returned (Readback.completed (Readback.ExecutionContext.bindingRow derived) value))
+      (sym published)
+      (Readback.finalPairCompletes (toList "review_experience") token baseline derived reviewFinal value changed
+        selected cursor noResult active (Final.keepsJournal (token , metadata) baseline changed value accepted))
 
   -- Suppliers are used only to exhibit an available execution. Atomic accepts
   -- the actual observed settings/PG replies, including different uncommitted
