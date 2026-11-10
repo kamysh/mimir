@@ -451,6 +451,13 @@ module Decode (library : Library.Contract) where
     ... | inj₁ fault = ⊥-elim (doneCannotAsk _ events effect next prefix)
     ... | inj₂ tt = inj₂ (refl , eraseActive (O.script token) before current interrupted effect next reply events prefix physical active)
 
+    interruptedKeepsObservation : ∀ {Observation : Set} (observe : Store.World → Observation) →
+      (∀ token before after → O.X.Interrupted (O.script token) before after → observe after ≡ observe before) →
+      ∀ token before after → X.Interrupted (script token) before after → observe after ≡ observe before
+    interruptedKeepsObservation observe keeps token before after cut with interruptionMeaning token before after cut
+    ... | inj₁ unchanged = cong observe unchanged
+    ... | inj₂ (admitted , sourceCut) = keeps token before after sourceCut
+
     -- A final answer that appeared during this interrupted call cannot have
     -- come from rejecting its binding: that branch never changes the World.
     completedInterruption : ∀ token before current raw →
