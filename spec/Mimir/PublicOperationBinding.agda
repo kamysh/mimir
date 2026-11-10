@@ -898,8 +898,8 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterBinding : Call → Wire.Value → ℤ × BindingResult → E.Script Result
   afterBinding call settings (observedTime , bound _) = readOutcome call settings
   afterBinding call settings (observedTime , changed _) = E.done (needsInput changedRequest)
-  afterBinding call settings (observedTime , unknown) = readOutcome call settings
-  afterBinding call settings (observedTime , cancelled _) = readOutcome call settings
+  afterBinding call settings (observedTime , unknown) = E.ask (readResult call) (λ observed → E.done (returned (Read.answer (Call.token call) observed)))
+  afterBinding call settings (observedTime , cancelled _) = E.ask (readResult call) (λ observed → E.done (returned (Read.answer (Call.token call) observed)))
 
   bindRequest : Call → Wire.Value → E.Script Result
   bindRequest call settings = E.ask (bindOriginal call settings) (afterBinding call settings)
@@ -986,8 +986,8 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterBindingScoped : ∀ call settings observed → Scoped call (afterBinding call settings observed)
   afterBindingScoped call settings (observedTime , bound _) = readOutcomeScoped call settings
   afterBindingScoped call settings (observedTime , changed _) = finished _
-  afterBindingScoped call settings (observedTime , unknown) = readOutcomeScoped call settings
-  afterBindingScoped call settings (observedTime , cancelled _) = readOutcomeScoped call settings
+  afterBindingScoped call settings (observedTime , unknown) = asked _ _ refl (λ observed → finished _)
+  afterBindingScoped call settings (observedTime , cancelled _) = asked _ _ refl (λ observed → finished _)
 
   bindRequestScoped : ∀ call settings → Scoped call (bindRequest call settings)
   bindRequestScoped call settings = asked _ _ refl (afterBindingScoped call settings)
@@ -1224,8 +1224,8 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterBindingReadyAbsent : ∀ call settings observed before after result →
     X.Completed (afterBinding call settings observed) before after result → AbsentWhenReady call after result
   afterBindingReadyAbsent call settings (time , bound original) before after result completion = readOutcomeReadyAbsent call settings before after result completion
-  afterBindingReadyAbsent call settings (time , unknown) before after result completion = readOutcomeReadyAbsent call settings before after result completion
-  afterBindingReadyAbsent call settings (time , cancelled receipt) before after result completion = readOutcomeReadyAbsent call settings before after result completion
+  afterBindingReadyAbsent call settings (time , unknown) before after result completion = readbackReadyAbsent call before after result completion
+  afterBindingReadyAbsent call settings (time , cancelled receipt) before after result completion = readbackReadyAbsent call before after result completion
   afterBindingReadyAbsent call settings (time , changed original) before .before .(needsInput changedRequest)
     (X.completed [] (E.returned _) (X.unchanged _)) = tt
 
@@ -1420,8 +1420,8 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterBindingMeaning : ∀ call settings observed before after reply →
     X.Completed (afterBinding call settings observed) before after reply → ReplyMeaning call after reply
   afterBindingMeaning call settings (observedTime , bound _) before after reply completion = readOutcomeMeaning call settings before after reply completion
-  afterBindingMeaning call settings (observedTime , unknown) before after reply completion = readOutcomeMeaning call settings before after reply completion
-  afterBindingMeaning call settings (observedTime , cancelled _) before after reply completion = readOutcomeMeaning call settings before after reply completion
+  afterBindingMeaning call settings (observedTime , unknown) before after reply completion = readbackCompletion call before after reply completion
+  afterBindingMeaning call settings (observedTime , cancelled _) before after reply completion = readbackCompletion call before after reply completion
   afterBindingMeaning call settings (observedTime , changed _) before .before .(needsInput changedRequest)
     (X.completed [] (E.returned _) (X.unchanged _)) = dialogue changedRequest
 
@@ -1605,8 +1605,8 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterBindingProgress : Environment → ∀ call settings observed before → Σ Store.World (λ after → Σ Result
     (λ reply → X.Completed (afterBinding call settings observed) before after reply))
   afterBindingProgress environment call settings (observedTime , bound _) before = readOutcomeProgress environment call settings before
-  afterBindingProgress environment call settings (observedTime , unknown) before = readOutcomeProgress environment call settings before
-  afterBindingProgress environment call settings (observedTime , cancelled _) before = readOutcomeProgress environment call settings before
+  afterBindingProgress environment call settings (observedTime , unknown) before = readbackProgress call before
+  afterBindingProgress environment call settings (observedTime , cancelled _) before = readbackProgress call before
   afterBindingProgress environment call settings (observedTime , changed _) before = doneProgress _ before
 
   bindRequestProgress : Environment → ∀ call settings before → Σ Store.World (λ after → Σ Result
