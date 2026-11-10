@@ -151,7 +151,6 @@ impl AgeStore {
             step.description().site == crate::operation_catalogue::CommitSite::Propagation.name(),
             "Use the registered propagation step; no posterior was changed"
         );
-        let token = step.token();
         let owner = AgeStore {
             client: self.client.clone(),
             graph_name: self.graph_name.clone(),
@@ -160,7 +159,7 @@ impl AgeStore {
             Box::pin(async move {
                 tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
                     .await?;
-                let time = Self::reserved_publication_time(tx, token).await?;
+                let time = Self::posterior_time_on(tx.client()).await?;
                 let updates = owner
                     .propagate_in_at(tx, source(request)?, Some(time))
                     .await?;
@@ -246,7 +245,7 @@ impl AgeStore {
                     let args = defeat_arguments(request)?;
                     tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
                         .await?;
-                    let time = Self::reserved_publication_time(tx, token).await?;
+                    let time = Self::posterior_time_on(tx.client()).await?;
                     owner.propagate_in_at(tx, args.from_id, Some(time)).await?;
                     let answer = serde_json::json!({"ok":true});
                     Ok((answer.clone(), answer))
@@ -342,7 +341,6 @@ impl AgeStore {
             "Use the registered decay_all step; no belief counts were changed"
         );
         original(step.expected())?;
-        let token = step.token();
         let owner = AgeStore {
             client: self.client.clone(),
             graph_name: self.graph_name.clone(),
@@ -352,7 +350,7 @@ impl AgeStore {
                 let request = original(binding)?;
                 tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
                     .await?;
-                let publication_time = Self::reserved_publication_time(tx, token).await?;
+                let publication_time = Self::posterior_time_on(tx.client()).await?;
                 let changed = owner
                     .decay_in_at(
                         tx,
@@ -486,7 +484,6 @@ impl AgeStore {
                 == crate::operation_catalogue::CommitSite::DocumentDeletion.name(),
             "Use the registered document-removal step; no document was changed"
         );
-        let token = step.token();
         let owner = AgeStore {
             client: self.client.clone(),
             graph_name: self.graph_name.clone(),
@@ -496,7 +493,7 @@ impl AgeStore {
                 let path = path(request)?;
                 tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
                     .await?;
-                let time = Self::reserved_publication_time(tx, token).await?;
+                let time = Self::posterior_time_on(tx.client()).await?;
                 let count = owner.clear_document_in(tx, &path, Some(time)).await?;
                 let answer = serde_json::json!({"cleared":count});
                 Ok((answer.clone(), answer))

@@ -170,6 +170,8 @@ async fn removal_recomputes_beliefs_and_replay_preserves_a_later_document() -> R
     let f = Fixture::create().await?;
     let checked=async {
         let before=f.state().await?;let (token,step)=f.plan(&f.path).await?;
+        let not_before: chrono::DateTime<chrono::Utc> = db::connect(&config().database)
+            .await?.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
         let StepDecision::Done(first)=f.service.clear_document_operation(&step).await? else{panic!("no completion")};
         ensure!(first.reply==json!({"cleared":2}));let after=f.state().await?;
         ensure!(after["chunks"]==json!([]) && after["evidence"]==json!([]));
@@ -177,8 +179,10 @@ async fn removal_recomputes_beliefs_and_replay_preserves_a_later_document() -> R
         ensure!(after["other_chunks"]==before["other_chunks"]&&after["unrelated"]==before["unrelated"]);
         ensure!(after["belief"]["alpha"].as_f64().unwrap()<before["belief"]["alpha"].as_f64().unwrap());
         ensure!(after["child"]["alpha"].as_f64().unwrap()<before["child"]["alpha"].as_f64().unwrap());
-        let time=f.service.read_operation_reservation(token).await?.unwrap().reserved_at;
-        ensure!(f.store.get_belief(f.belief).await?.unwrap().decay_accounted_at==time);
+        for id in [f.belief, f.child] {
+            ensure!(f.store.get_belief(id).await?.unwrap().decay_accounted_at >= not_before);
+        }
+        ensure!(after["belief"]["created_at"] == before["belief"]["created_at"]);
         let later=DocumentChunk::with_id(identity().await?,f.path.clone(),vec![],"replacement passage".into(),None,Some(f.project.clone()));
         f.store.insert_document_chunk(&later).await?;f.store.insert_chunk_embedding(later.id,&[0.0,0.0,1.0]).await?;
         let later_state=f.state().await?;
