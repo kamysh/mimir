@@ -552,3 +552,4 @@ module Registered (conversion : Conversion.Contract) (format : Encoding.Formatti
 
   operation : Recovery.RecoverableFor Store.World ℕ Saved.Reply Goal
   operation = record { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic; converges = converges; progress = progress }
+  Result = Saved.Reply

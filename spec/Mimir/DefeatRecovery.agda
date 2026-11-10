@@ -657,6 +657,7 @@ module Registered (conversion : Conversion.Contract)
 
   module Certified = Run.Certified firstFamilyPreserved secondKeepsFamily Goal meaning
   operation = Certified.operation
+  Value = Run.Value
 
   record CacheReceipts (token : ℕ) (before : Store.World) : Set where
     field cachedFirstValue cachedFinalValue : Wire.Value

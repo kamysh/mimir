@@ -260,3 +260,4 @@ module Registered (conversion : Conversion.Contract)
   module Saved = Run.Saved
   Goal = Certified.Goal
   operation = Certified.operation
+  cachedReplay = Run.cachedReplay

@@ -10,12 +10,12 @@ open import Data.Integer using (ℤ)
 open import Data.List using (List; [])
 import Data.Maybe
 open import Data.Nat using (ℕ; zero; suc; s≤s; z≤n)
-open import Data.Maybe using (just; nothing)
+open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
 open import Data.String using (toList)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; trans)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; trans; sym)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
 import Mimir.PublicRequest as Public
@@ -147,26 +147,39 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   module Assessments = LearningReads.AssessmentReads format
   module Intervention = Inference.InterventionRecovery databaseSum calculator
   module Retrieval = Search.Run arithmetic unicode vectors configuration
+    using (Result; completed; Operation; operation; toRecoverable)
   module LearningContext = Context.Run arithmetic unicode vectors configuration textBefore
   module DocumentQuery = Documents.Run vectors configuration
+    using (Result; value; Operation; fullOperation; toRecoverable)
   module PatternWrite = Pattern.Registered library format
+    using (Internal; key; distinct; decide; keepsJournal; admit; module X; script; interruptionState; operation; cachedReplay)
   module PatternRemoval = DeletePattern.Registered library
+    using (key; distinct; decide; keepsJournal; admit; operation; cachedReplay)
   module Relationship kind = Edges.Registered library kind
+    using (key; distinct; decide; keepsJournal; admit; operation; cachedReplay)
   module BeliefRemoval = DeleteBelief.Registered library databaseSum calculator serverTime
+    using (operation; interruptedKeepsRegistration; cachedReplay)
   module Grounding kind = Ground.Registered kind library databaseSum calculator serverTime
+    using (operation; interruptedKeepsRegistration; cachedReplay)
   module Propagate = Propagation.Registered format library databaseSum calculator serverTime
+    using (operation; interruptedKeepsRegistration; cachedReplay)
   module Decaying = Decay.Registered library databaseSum serverTime
+    using (operation; interruptedKeepsRegistration; cachedReplay)
   module DocumentRemoval = Clear.Registered library databaseSum calculator serverTime
+    using (operation; interruptedKeepsRegistration; cachedReplay)
   module IndependentWrite = Independent.Registered format library databaseSum calculator allocateOwner
   module IndependentPublic = IndependentWrite.Public configuration
   module Defeating = Defeat.Registered library databaseSum calculator serverTime
+    using (Value; Goal; operation; cachedReplay)
   module Sweeping = Sweep.Registered library format databaseSum calculator sweepObservation
+    using (Result; Goal; operation; cachedReplay)
   module Recording = Source.Registered library format database databaseSum calculator sourcePostgres
+    using (Result; Goal; operation; cachedReplay)
   module DocumentEntry = Loading.Registered.Entry library format utcTimestamp databaseSum calculator serverTime configuration postgres
-    using (Outcome; inspected; executed; normalized; EntryGoal; Operation; fullOperation; toRecoverable)
+    using (Outcome; inspected; executed; normalized; EntryGoal; Operation; fullOperation; toRecoverable; cachedReplayValue)
   module Reviewing = ReviewOperation.Registered library format database databaseSum calculator
     reviewDependencies reviewCodec postgres reviewBackend
-    using (Result; Goal; operation)
+    using (Result; Goal; operation; cachedReplay)
   ReviewEnvironment : Set
   ReviewEnvironment = ReviewPreparation.Registered.Environment library format database databaseSum calculator
     reviewDependencies reviewCodec postgres
@@ -354,9 +367,9 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   Result (propagation expected) = PropagationGuard.Result expected
   Result (decay expected) = DecayGuard.Result expected
   Result (documentRemoval expected) = ClearGuard.Result expected
-  Result (defeat _) = Defeating.Run.Value
-  Result (sweep _) = Sweeping.Saved.Reply
-  Result (sourceWrite _) = Recording.Saved.Reply
+  Result (defeat _) = Defeating.Value
+  Result (sweep _) = Sweeping.Result
+  Result (sourceWrite _) = Recording.Result
   Result (reviewWrite _) = Reviewing.Result
   Result (documentLoading _) = DocumentEntry.Outcome
   Result (control request _) = Control.Result request
@@ -561,11 +574,11 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   classify (Public.queryDocument queryText project selection) = documentQuery (Documents.query queryText project selection)
   classify expected@(Public.clearDocument path) = documentRemoval expected
   classify expected@(Public.learning (Learning.recordExperience source revision)) = sourceWrite expected
-  classify expected@(Public.learning (Learning.reviewExperience review revision)) = reviewWrite expected
+  classify expected@(Public.learning (Learning.reviewExperience reviewValue revision)) = reviewWrite expected
   classify (Public.learningQuery request) = learningQuery request
   classify (Public.learningContext queryText project selection) = context (Context.contextSearch queryText project selection)
   classify Public.capabilities = basic Basic.capabilities
-  classify (Public.reserveOperation requestKey) = control Controls.reserve requestKey
+  classify (Public.reserveOperation keyValue) = control Controls.reserve keyValue
   classify (Public.operationOutcome token) = control Controls.readOutcome token
   classify (Public.cancelOperation token) = control Controls.cancel token
 
@@ -633,8 +646,8 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   resolve : Call → Choice
   resolve (toolCall tool submitted) with Request.readInvocation tool submitted
   ... | inj₁ fault = choose (correction fault) tt
-  ... | inj₂ invocation = chooseInput (classify (Request.Invocation.request invocation))
-    (tokenForKind (Tools.kind tool) (Request.Invocation.operationToken invocation))
+  ... | inj₂ acceptedCall = chooseInput (classify (Request.Invocation.request acceptedCall))
+    (tokenForKind (Tools.kind tool) (Request.Invocation.operationToken acceptedCall))
   resolve (privateRead request) = chooseInput (readKind request) nothing
 
   selectedCertificate : ReviewEnvironment → (call : Call) → Certificate (Choice.kind (resolve call))
@@ -643,3 +656,207 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
     Recovery.RecoverableFor Store.World (Input (Choice.kind (resolve call)))
       (Result (Choice.kind (resolve call))) (Goal (Choice.kind (resolve call)))
   selectedOperation environment call = executable (Choice.kind (resolve call)) (selectedCertificate environment call)
+
+  -- The preparation/body join selects these witnesses by the closed kind.
+  -- Callers supply neither a script nor a claim that replay is safe.
+  module Cached (environment : ReviewEnvironment) where
+    module Read = Controls.Readback library postgres
+    data Writer : Kind → Set where
+      projectWriter : ∀ {project} → Writer (projectRemoval project)
+      patternWriter : ∀ {expected} → Writer (patternWrite expected)
+      independentWriter : ∀ {expected} → Writer (independentWrite expected)
+      patternRemover : ∀ {expected} → Writer (patternRemoval expected)
+      beliefRemover : ∀ {expected} → Writer (beliefRemoval expected)
+      relationshipWriter : ∀ {kind expected} → Writer (relationship kind expected)
+      groundingWriter : ∀ {kind expected} → Writer (grounding kind expected)
+      propagator : ∀ {expected} → Writer (propagation expected)
+      decayer : ∀ {expected} → Writer (decay expected)
+      documentRemover : ∀ {expected} → Writer (documentRemoval expected)
+      defeater : ∀ {expected} → Writer (defeat expected)
+      sweeper : ∀ {expected} → Writer (sweep expected)
+      sourceWriter : ∀ {expected} → Writer (sourceWrite expected)
+      reviewer : ∀ {expected} → Writer (reviewWrite expected)
+      documentLoader : ∀ {expected} → Writer (documentLoading expected)
+
+    writerInput : ∀ {kind} → Writer kind → ℕ → Input kind
+    writerInput projectWriter token = token
+    writerInput patternWriter token = token
+    writerInput independentWriter token = token
+    writerInput patternRemover token = token
+    writerInput beliefRemover token = token
+    writerInput relationshipWriter token = token
+    writerInput groundingWriter token = token
+    writerInput propagator token = token
+    writerInput decayer token = token
+    writerInput documentRemover token = token
+    writerInput defeater token = token
+    writerInput sweeper token = token
+    writerInput sourceWriter token = token
+    writerInput reviewer token = token
+    writerInput documentLoader token = token
+
+    writerForKind : (kind : Kind) → Maybe (Writer kind)
+    writerForKind (basic _) = nothing
+    writerForKind (experiences _) = nothing
+    writerForKind (assessments _) = nothing
+    writerForKind (intervention _) = nothing
+    writerForKind (retrieval _) = nothing
+    writerForKind (context _) = nothing
+    writerForKind (documentQuery _) = nothing
+    writerForKind (correction _) = nothing
+    writerForKind (control _ _) = nothing
+    writerForKind (projectRemoval _) = just projectWriter
+    writerForKind (patternWrite _) = just patternWriter
+    writerForKind (independentWrite _) = just independentWriter
+    writerForKind (patternRemoval _) = just patternRemover
+    writerForKind (beliefRemoval _) = just beliefRemover
+    writerForKind (relationship _ _) = just relationshipWriter
+    writerForKind (grounding _ _) = just groundingWriter
+    writerForKind (propagation _) = just propagator
+    writerForKind (decay _) = just decayer
+    writerForKind (documentRemoval _) = just documentRemover
+    writerForKind (defeat _) = just defeater
+    writerForKind (sweep _) = just sweeper
+    writerForKind (sourceWrite _) = just sourceWriter
+    writerForKind (reviewWrite _) = just reviewer
+    writerForKind (documentLoading _) = just documentLoader
+
+    writerName : ∀ {kind} → Writer kind → Text
+    writerName projectWriter = Binding.sourceName (Binding.advertised Tools.deleteProject)
+    writerName patternWriter = Binding.sourceName (Binding.advertised Tools.insertPattern)
+    writerName independentWriter = Binding.sourceName (Binding.advertised Tools.insertBelief)
+    writerName patternRemover = Binding.sourceName (Binding.advertised Tools.deletePattern)
+    writerName beliefRemover = Binding.sourceName (Binding.advertised Tools.deleteBelief)
+    writerName (relationshipWriter {kind}) = Binding.sourceName (Binding.advertised (relationshipTool kind))
+    writerName (groundingWriter {kind}) = Binding.sourceName (groundingSource kind)
+    writerName propagator = Binding.sourceName (Binding.advertised Tools.propagateFrom)
+    writerName decayer = Binding.sourceName (Binding.advertised Tools.decayAll)
+    writerName documentRemover = Binding.sourceName (Binding.advertised Tools.clearDocument)
+    writerName defeater = Binding.sourceName (Binding.advertised Tools.recordDefeat)
+    writerName sweeper = Binding.sourceName (Binding.advertised Tools.sweepExpiredDefeated)
+    writerName sourceWriter = Binding.sourceName (Binding.advertised Tools.recordExperience)
+    writerName reviewer = Binding.sourceName (Binding.advertised Tools.reviewExperience)
+    writerName documentLoader = Binding.sourceName (Binding.advertised Tools.loadDocument)
+
+    stepValue : ∀ {Diagnostic : Set} → Step.Result Diagnostic → Maybe Wire.Value
+    stepValue (Step.done raw) = just raw
+    stepValue (Step.needsInput _) = nothing
+    stepValue Step.needsRecovery = nothing
+    stepValue (Step.cancelled _) = nothing
+
+    savedValue : ∀ {kind} → Writer kind → Result kind → Maybe Wire.Value
+    savedValue projectWriter reply = just reply
+    savedValue (patternWriter {expected}) (PatternGuard.needsInput _) = nothing
+    savedValue (patternWriter {expected}) (PatternGuard.executed reply) = stepValue reply
+    savedValue (independentWriter {expected}) (IndependentGuard.needsInput _) = nothing
+    savedValue (independentWriter {expected}) (IndependentGuard.executed reply) = stepValue (IndependentPublic.Result.value reply)
+    savedValue (patternRemover {expected}) (PatternRemovalGuard.needsInput _) = nothing
+    savedValue (patternRemover {expected}) (PatternRemovalGuard.executed reply) = stepValue reply
+    savedValue (beliefRemover {expected}) (BeliefRemovalGuard.needsInput _) = nothing
+    savedValue (beliefRemover {expected}) (BeliefRemovalGuard.executed reply) = stepValue reply
+    savedValue (relationshipWriter {kind} {expected}) (RelationshipGuard.needsInput _) = nothing
+    savedValue (relationshipWriter {kind} {expected}) (RelationshipGuard.executed reply) = stepValue reply
+    savedValue (groundingWriter {kind} {expected}) (GroundingGuard.needsInput _) = nothing
+    savedValue (groundingWriter {kind} {expected}) (GroundingGuard.executed reply) = stepValue reply
+    savedValue (propagator {expected}) (PropagationGuard.needsInput _) = nothing
+    savedValue (propagator {expected}) (PropagationGuard.executed reply) = stepValue reply
+    savedValue (decayer {expected}) (DecayGuard.needsInput _) = nothing
+    savedValue (decayer {expected}) (DecayGuard.executed reply) = stepValue reply
+    savedValue (documentRemover {expected}) (ClearGuard.needsInput _) = nothing
+    savedValue (documentRemover {expected}) (ClearGuard.executed reply) = stepValue reply
+    savedValue defeater reply = stepValue reply
+    savedValue sweeper reply = stepValue reply
+    savedValue sourceWriter reply = stepValue reply
+    savedValue reviewer reply = stepValue reply
+    savedValue documentLoader reply = stepValue (DocumentEntry.normalized reply)
+
+    module Body kind = Recovery.RecoverableFor (executable kind (certificate environment kind)) using (module X; script)
+
+    bodyReplay : ∀ {kind} (writer : Writer kind) token before current binding raw →
+      Store.lookupSaved before token Step.resultKey ≡ nothing →
+      Store.lookupSaved current token Step.resultKey ≡ just raw →
+      Read.admission (writerName writer) token current ≡ Read.returned (Read.completed binding raw) →
+      Body.X.Interrupted kind (Body.script kind (writerInput writer token)) before current →
+      Σ (Result kind) (λ reply → Body.X.Completed kind
+        (Body.script kind (writerInput writer token)) current current reply × savedValue writer reply ≡ just raw)
+    bodyReplay (projectWriter {project}) token before current binding raw absent present known cut =
+      raw , Project.Registered.cachedReplay (Project.Registered.input token project) before current raw absent cut present , refl
+    bodyReplay (patternWriter {expected}) token before current binding raw absent present known cut
+      with PatternGuard.completedInterruption expected token before current raw absent present cut
+    ... | admitted , sourceCut = PatternGuard.executed (Step.done raw) ,
+      PatternGuard.liftReadOnlyCompletion expected token current (Step.done raw)
+        (PatternGuard.admittedRetry expected token before current admitted sourceCut)
+        (PatternWrite.cachedReplay token before current raw absent present sourceCut) , refl
+    bodyReplay (independentWriter {expected}) token before current binding raw absent present known cut
+      with IndependentGuard.completedInterruption expected token before current raw absent present cut
+    ... | admitted , sourceCut with IndependentPublic.cachedReplayAfterCut token before current raw absent sourceCut present
+    ... | reply , complete , value = IndependentGuard.executed reply ,
+      IndependentGuard.liftReadOnlyCompletion expected token current reply
+        (IndependentGuard.admittedRetry expected token before current admitted sourceCut) complete , cong stepValue value
+    bodyReplay (patternRemover {expected}) token before current binding raw absent present known cut
+      with PatternRemovalGuard.completedInterruption expected token before current raw absent present cut
+    ... | admitted , sourceCut = PatternRemovalGuard.executed (Step.done raw) ,
+      PatternRemovalGuard.liftReadOnlyCompletion expected token current (Step.done raw)
+        (PatternRemovalGuard.admittedRetry expected token before current admitted sourceCut)
+        (PatternRemoval.cachedReplay token before current raw absent present sourceCut) , refl
+    bodyReplay (beliefRemover {expected}) token before current binding raw absent present known cut
+      with BeliefRemovalGuard.completedInterruption expected token before current raw absent present cut
+    ... | admitted , sourceCut = BeliefRemovalGuard.executed (Step.done raw) ,
+      BeliefRemovalGuard.liftReadOnlyCompletion expected token current (Step.done raw)
+        (BeliefRemovalGuard.admittedRetry expected token before current admitted sourceCut)
+        (BeliefRemoval.cachedReplay token before current raw absent present sourceCut) , refl
+    bodyReplay (relationshipWriter {kind} {expected}) token before current binding raw absent present known cut
+      with RelationshipGuard.completedInterruption kind expected token before current raw absent present cut
+    ... | admitted , sourceCut = RelationshipGuard.executed (Step.done raw) ,
+      RelationshipGuard.liftReadOnlyCompletion kind expected token current (Step.done raw)
+        (RelationshipGuard.admittedRetry kind expected token before current admitted sourceCut)
+        (Relationship.cachedReplay kind token before current raw absent present sourceCut) , refl
+    bodyReplay (groundingWriter {kind} {expected}) token before current binding raw absent present known cut
+      with GroundingGuard.completedInterruption kind expected token before current raw absent present cut
+    ... | admitted , sourceCut = GroundingGuard.executed (Step.done raw) ,
+      GroundingGuard.liftReadOnlyCompletion kind expected token current (Step.done raw)
+        (GroundingGuard.admittedRetry kind expected token before current admitted sourceCut)
+        (Grounding.cachedReplay kind token before current raw absent present sourceCut) , refl
+    bodyReplay (propagator {expected}) token before current binding raw absent present known cut
+      with PropagationGuard.completedInterruption expected token before current raw absent present cut
+    ... | admitted , sourceCut = PropagationGuard.executed (Step.done raw) ,
+      PropagationGuard.liftReadOnlyCompletion expected token current (Step.done raw)
+        (PropagationGuard.admittedRetry expected token before current admitted sourceCut)
+        (Propagate.cachedReplay token before current raw absent present sourceCut) , refl
+    bodyReplay (decayer {expected}) token before current binding raw absent present known cut
+      with DecayGuard.completedInterruption expected token before current raw absent present cut
+    ... | admitted , sourceCut = DecayGuard.executed (Step.done raw) ,
+      DecayGuard.liftReadOnlyCompletion expected token current (Step.done raw)
+        (DecayGuard.admittedRetry expected token before current admitted sourceCut)
+        (Decaying.cachedReplay token before current raw absent present sourceCut) , refl
+    bodyReplay (documentRemover {expected}) token before current binding raw absent present known cut
+      with ClearGuard.completedInterruption expected token before current raw absent present cut
+    ... | admitted , sourceCut = ClearGuard.executed (Step.done raw) ,
+      ClearGuard.liftReadOnlyCompletion expected token current (Step.done raw)
+        (ClearGuard.admittedRetry expected token before current admitted sourceCut)
+        (DocumentRemoval.cachedReplay token before current raw absent present sourceCut) , refl
+    bodyReplay defeater token before current binding raw absent present known cut =
+      Step.done raw , Defeating.cachedReplay token before current raw absent cut present , refl
+    bodyReplay sweeper token before current binding raw absent present known cut =
+      Step.done raw , Sweeping.cachedReplay token before current raw absent present cut , refl
+    bodyReplay sourceWriter token before current binding raw absent present known cut =
+      Step.done raw , Recording.cachedReplay token before current raw absent present cut , refl
+    bodyReplay reviewer token before current binding raw absent present known cut =
+      Step.done raw , Reviewing.cachedReplay environment token current binding raw known , refl
+    bodyReplay documentLoader token before current binding raw absent present known cut
+      with DocumentEntry.cachedReplayValue token current binding raw known
+    ... | reply , complete , value = reply , complete , cong stepValue value
+
+
+    cachedReplay : ∀ {kind} (writer : Writer kind) token before current binding raw
+      (initial : Read.ExecutionContext (writerName writer) token before) →
+      Read.admission (writerName writer) token before ≡ Read.admitted initial →
+      Body.X.Interrupted kind (Body.script kind (writerInput writer token)) before current →
+      Read.admission (writerName writer) token current ≡ Read.returned (Read.completed binding raw) →
+      Σ (Result kind) (λ reply → Body.X.Completed kind
+        (Body.script kind (writerInput writer token)) current current reply × savedValue writer reply ≡ just raw)
+    cachedReplay writer token before current binding raw initial admitted cut known =
+      bodyReplay writer token before current binding raw
+        (Read.undeclaredAbsent token before _ (Read.ExecutionContext.journal initial)
+          Step.resultKey (Read.ExecutionContext.separateResult initial))
+        (Read.admissionCompletedLookup (writerName writer) token current binding raw known) known cut
