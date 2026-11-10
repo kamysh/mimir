@@ -333,3 +333,15 @@ already exist; that does not mean their complete test adapters already exist.
 An unsupported family must be reported as unsupported and fail coverage. It
 must never fall back to an identity expected world, an observed-world goal
 validator, or a duplicate native implementation.
+
+`scripts/formal/compare-outcomes.py --expected PATH --observed PATH` compares
+the retained complete output of that adapter with a native observation. It
+requires the world, body result and public reply on both sides; the native
+file also retains its outer exchange separately. It reports every differing
+path and returns a failing status for a mismatch or an incomplete envelope.
+It does not sort arrays, truncate diagnostics, apply a numeric tolerance or
+discard execution receipts. Physical table ordering and PostgreSQL JSONB
+normalization belong to the shared typed snapshot adapter described above.
+This comparator does not validate domain records or supply the missing #152
+adapters. Its focused tests are comparison tests, not evidence that a native
+operation has already been compared with an evaluated Agda outcome.
