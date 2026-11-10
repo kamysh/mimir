@@ -54,7 +54,11 @@ Cancelling unfinished work preserves earlier
 changes and answers and revokes permission for later publication. A cancel
 request can run while another request on the same MCP connection is waiting
 for embedding. Every copy registers its execution in PostgreSQL before its
-body or provider starts. Cancellation stops the registered bodies, stops and
+body or provider starts. One enclosing public request owns its provider
+children through a private request-specific capability and joins their stop
+receipts before acknowledging that request. It does not infer ownership from
+another call using the same token. Standalone provider work registers its own
+execution. Cancellation stops the registered bodies, stops and
 reaps their active native workers, and waits for every copy's saved stop
 acknowledgement before replying with
 `worker_cleanup: confirmed_for_all_registered_copies`.

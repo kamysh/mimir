@@ -11,11 +11,69 @@ use std::{
     collections::HashMap,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     task::{Context as TaskContext, Poll},
 };
 use tokio::sync::watch;
 use uuid::Uuid;
+
+// This capability exists only while the exact registered request is polled.
+// It cannot be supplied by a caller or inferred from another active token.
+tokio::task_local! {
+    static CURRENT_REQUEST: Arc<RequestScope>;
+}
+
+#[derive(Default)]
+struct Children {
+    body_destroyed: bool,
+    stopped: Vec<watch::Receiver<bool>>,
+}
+
+struct RequestScope {
+    execution: ExecutionReceipt,
+    registry: Weak<OperationExecutions>,
+    children: Mutex<Children>,
+}
+
+impl RequestScope {
+    fn admits(&self, registry: &Arc<OperationExecutions>, token: Uuid) -> bool {
+        self.execution.operation_token == token && self.registry.ptr_eq(&Arc::downgrade(registry))
+    }
+
+    fn own_child(&self, child: &Active) -> Result<()> {
+        let mut children = self
+            .children
+            .lock()
+            .map_err(|_| anyhow::anyhow!("request child ownership is unavailable"))?;
+        if children.body_destroyed {
+            return Err(EmbeddingCancelled.into());
+        }
+        children.stopped.push(child.stopped.subscribe());
+        Ok(())
+    }
+
+    fn body_destroyed(&self) {
+        self.children
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .body_destroyed = true;
+    }
+
+    async fn join_children(&self) -> Result<()> {
+        let waiting = {
+            let children = self
+                .children
+                .lock()
+                .map_err(|_| anyhow::anyhow!("request child ownership is unavailable"))?;
+            anyhow::ensure!(
+                children.body_destroyed,
+                "The request body has not stopped; its execution cannot be acknowledged"
+            );
+            children.stopped.clone()
+        };
+        Stopping { waiting }.wait().await
+    }
+}
 
 struct Active {
     abort: AbortHandle,
@@ -26,6 +84,7 @@ struct Active {
 struct PendingAcknowledgement {
     execution: ExecutionReceipt,
     registration_uncertain: bool,
+    scope: Option<Arc<RequestScope>>,
 }
 #[derive(Default)]
 struct State {
@@ -43,12 +102,16 @@ struct Owner {
     registry: Arc<OperationExecutions>,
     token: Uuid,
     active: Arc<Active>,
+    scope: Option<Arc<RequestScope>>,
 }
 impl Drop for Owner {
     fn drop(&mut self) {
         // OwnedExecution declares its body first, so provider futures and
         // native guards have dropped. Physical cleanup errors remain tracked
         // separately and cannot become a confirmed stop receipt.
+        if let Some(scope) = &self.scope {
+            scope.body_destroyed();
+        }
         let mut state = self
             .registry
             .state
@@ -60,6 +123,7 @@ impl Drop for Owner {
                 PendingAcknowledgement {
                     execution: execution.clone(),
                     registration_uncertain: false,
+                    scope: self.scope.clone(),
                 },
             );
         }
@@ -196,6 +260,7 @@ impl OperationExecutions {
                 registry: self.clone(),
                 token,
                 active,
+                scope: None,
             },
         })
     }
@@ -210,6 +275,7 @@ impl OperationExecutions {
                 PendingAcknowledgement {
                     execution,
                     registration_uncertain,
+                    scope: None,
                 },
             );
     }
@@ -319,10 +385,57 @@ impl MimirService {
                 job.await
             };
             match token {
-                Some(token) => self.own_execution(token, work, true).await,
+                Some(token) => {
+                    let parent = CURRENT_REQUEST
+                        .try_with(|scope| {
+                            scope
+                                .admits(&self.operation_executions, token)
+                                .then(|| scope.clone())
+                        })
+                        .ok()
+                        .flatten();
+                    if let Some(parent) = parent {
+                        self.own_child(parent, token, work).await
+                    } else {
+                        self.own_execution(token, work, true).await
+                    }
+                }
                 None => work.await,
             }
         })
+    }
+
+    async fn own_child<F: Future<Output = Result<T>> + Send, T: Send>(
+        &self,
+        parent: Arc<RequestScope>,
+        token: Uuid,
+        work: F,
+    ) -> Result<T> {
+        let mut client = crate::db::connect(&self.database).await?;
+        if !executions::permits_child(&mut client, token).await? {
+            return Err(EmbeddingCancelled.into());
+        }
+        drop(client);
+        let owned = self
+            .operation_executions
+            .own_registered(token, work, None)?;
+        parent.own_child(&owned._owner.active)?;
+        let result = owned
+            .await
+            .map_err(|_| anyhow::Error::from(EmbeddingCancelled))
+            .and_then(std::convert::identity);
+        let cleanup = self.operation_executions.confirm_embedding_cleanup(token);
+        match result {
+            Ok(value) => {
+                ensure_physical_cleanup(&cleanup?)?;
+                Ok(value)
+            }
+            Err(error) => {
+                let issues = cleanup.context(format!("Original cause: {error:#}"))?;
+                ensure_physical_cleanup(&issues).context(format!("Original cause: {error:#}"))?;
+                Err(error)
+            }
+        }
     }
 
     pub(crate) async fn own_operation<F: Future<Output = Result<T>> + Send, T: Send>(
@@ -363,12 +476,19 @@ impl MimirService {
         // Registration is durable; this connection has no remaining work.
         // The separately owned cancellation subscription stays active.
         drop(client);
+        let scope = Arc::new(RequestScope {
+            execution: execution.clone(),
+            registry: Arc::downgrade(&self.operation_executions),
+            children: Default::default(),
+        });
+        let work = CURRENT_REQUEST.scope(scope.clone(), work);
         let result = match self.operation_executions.own_registered(
             token,
             work,
             Some(execution.clone()),
         ) {
-            Ok(owned) => {
+            Ok(mut owned) => {
+                owned._owner.scope = Some(scope);
                 starting.execution = None;
                 let mut owned = Box::pin(owned);
                 let result = tokio::select! {
@@ -430,6 +550,9 @@ impl MimirService {
         let mut issues = Vec::new();
         let mut client = crate::db::connect(&self.database).await?;
         for pending in pending {
+            if let Some(scope) = &pending.scope {
+                scope.join_children().await?;
+            }
             let execution = pending.execution;
             let local = self
                 .operation_executions

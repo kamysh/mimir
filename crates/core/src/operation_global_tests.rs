@@ -177,14 +177,28 @@ async fn completed_action_stops_both_duplicate_preparations_and_returns_its_exac
         .iter()
         .map(|row| row.execution_id)
         .collect();
+    assert_eq!(
+        first_ids.len(),
+        1,
+        "the provider is a child of this exact registered request"
+    );
     let (second, second_listener, second_directory) = worker_setup(Some(cache)).await?;
     let second_source = second.clone();
     let mut second_work = Box::pin(async move { second_source.reembed_operation(token).await });
     let (mut second_socket, second_pid) = started(&second_listener, &mut second_work).await?;
+    assert_eq!(executions::pending(&observer, token).await?.len(), 2);
     // Their real public reembed futures are now deliberately unpolled while
     // another copy completes the same immutable plan. This is a valid scheduler
     // interleaving; the real worker processes remain blocked on their inputs.
     let original = coordinator.reembed_operation(token).await?;
+    let registered: i64 = observer
+        .query_one(
+            "SELECT count(*) FROM mimir_operation_executions WHERE operation_token=$1",
+            &[&token],
+        )
+        .await?
+        .get(0);
+    assert_eq!(registered, 3, "each duplicate request retains its own execution; its provider children do not create hidden metadata writes");
     assert!(matches!(original, OperationOutcome::Completed { .. }));
     let original_reply = coordinator
         .read_operation_step(token, "@operation-result")
@@ -290,6 +304,62 @@ async fn completed_action_stops_both_duplicate_preparations_and_returns_its_exac
         first_directory.display(),
         second_directory.display()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_different_service_cannot_borrow_another_requests_same_token_capability() -> Result<()> {
+    use crate::embed::{
+        EmbedFuture, EmbeddingCancellation, EmbeddingProvider, OwnedEmbeddingBackend,
+    };
+    struct Ready;
+    impl EmbeddingProvider for Ready {
+        fn embed<'a>(&'a self, texts: &'a [String], _: EmbeddingCancellation) -> EmbedFuture<'a> {
+            Box::pin(async move { Ok(vec![vec![0.25; 768]; texts.len()]) })
+        }
+    }
+    let cfg = configuration();
+    let enclosing = MimirService::connect(&cfg).await?;
+    let other = MimirService::connect_with_embeddings(
+        &cfg,
+        Some(OwnedEmbeddingBackend::for_test(Box::new(Ready))),
+    )
+    .await?;
+    let token = action(&enclosing).await?;
+    let observer = db::connect(&cfg.database).await?;
+    enclosing
+        .own_operation(token, async {
+            let texts = ["A separate owner must register even with the same token.".into()];
+            assert_eq!(
+                other
+                    .operation_embedding_job(
+                        other.embeddings.as_ref().unwrap(),
+                        &texts,
+                        Some(token)
+                    )
+                    .await?
+                    .len(),
+                1
+            );
+            let rows = observer
+                .query(
+                    "SELECT stopped_at FROM mimir_operation_executions WHERE operation_token=$1",
+                    &[&token],
+                )
+                .await?;
+            assert_eq!(rows.len(), 2);
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row
+                        .get::<_, Option<chrono::DateTime<chrono::Utc>>>(0)
+                        .is_some())
+                    .count(),
+                1
+            );
+            Ok(())
+        })
+        .await?;
+    assert!(executions::pending(&observer, token).await?.is_empty());
     Ok(())
 }
 
