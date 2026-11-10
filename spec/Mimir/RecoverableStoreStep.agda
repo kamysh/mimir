@@ -126,6 +126,14 @@ module AtomicStep (Input Diagnostic : Set)
       (X.changed initial input _ _ (refl , expectedPhysical input initial) (X.unchanged _))
     where expected = execute input initial
 
+  -- A cached answer must admit an actual read-only execution of this fixed
+  -- statement. The equation is about the real executor and complete World.
+  readOnlyCompletion : ∀ input before value → execute input before ≡ (before , done value) →
+    X.Completed (script input) before before (done value)
+  readOnlyCompletion input before value observed = subst
+    (λ outcome → X.Completed (script input) before (proj₁ outcome) (proj₂ outcome))
+    observed (proj₂ (proj₂ (progress input before)))
+
   module Certified (Goal : Input → Store.World → Store.World → Reply → Set)
     (meaning : ∀ input initial → Goal input initial (proj₁ (execute input initial)) (proj₂ (execute input initial))) where
 
@@ -313,6 +321,15 @@ module Admitted (Input Diagnostic : Set)
   execute input before with admit input (registration before)
   ... | just diagnostic = before , needsInput diagnostic
   ... | nothing = Kernel.execute input before
+
+  replay : ∀ input before saved final →
+    admit input (registration before) ≡ nothing →
+    Store.lookupCancellation before (token input) ≡ nothing →
+    Store.lookupSaved before (token input) (key input) ≡ just saved →
+    Store.lookupSaved before (token input) resultKey ≡ just final →
+    execute input before ≡ (before , done saved)
+  replay input before saved final admitted active step result rewrite admitted =
+    Kernel.replay input before saved final active step result
 
   stable : ∀ input before → execute input (proj₁ (execute input before)) ≡ execute input before
   stable input before with admit input (registration before) in admitted
