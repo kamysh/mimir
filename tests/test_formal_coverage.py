@@ -77,6 +77,19 @@ class IntendedOutcomeContractTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.check_changed(lambda contract: contract['$defs']['output']['properties'].pop('public_payload'))
 
+    def test_execution_receipts_cannot_be_omitted_from_the_snapshot(self):
+        with self.assertRaises(AssertionError):
+            self.check_changed(lambda contract: contract['$defs']['operations']['properties'].pop('executions'))
+
+    def test_physical_stop_timestamp_cannot_be_omitted(self):
+        with self.assertRaises(AssertionError):
+            self.check_changed(lambda contract: contract['$defs']['execution']['properties'].pop('stoppedAt'))
+
+    def test_execution_record_coverage_cannot_be_disabled(self):
+        with self.assertRaises(AssertionError):
+            self.check_changed(lambda contract: contract['x-model-records'].remove(
+                {'definition': 'execution', 'module': 'ApplicationStore', 'record': 'ExecutionRow'}))
+
     def test_observed_final_world_cannot_be_an_expected_input(self):
         with self.assertRaises(AssertionError):
             self.check_changed(lambda contract: contract['$defs']['input']['properties'].update({'observed_world': {}}))
