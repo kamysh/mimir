@@ -65,6 +65,18 @@ data Request : Set where
   reserveOperation : Controls.RequestKey → Request
   operationOutcome cancelOperation : ℕ → Request
 
+-- The creating prefix calls this fixed validator only after observing that
+-- the token has no original binding. Completed bindings must replay before
+-- these semantic checks; structural decoding still applies to every request.
+freshLearningAdmission : Request → Fault ⊎ ⊤
+freshLearningAdmission (learning (Learning.recordExperience input expected)) with Wire.sourceHeader input
+... | inj₁ failure = inj₁ (Validation.prependPath (Validation.key "experience") failure)
+... | inj₂ _ = inj₂ tt
+freshLearningAdmission (learning (Learning.reviewExperience input expected)) with Wire.reviewHeader input
+... | inj₁ failure = inj₁ (Validation.prependPath (Validation.key "review") failure)
+... | inj₂ _ = inj₂ tt
+freshLearningAdmission _ = inj₂ tt
+
 memory : V.Value → Fault ⊎ C.Memory
 memory = enum (("fact" , C.fact) ∷ ("experiential" , C.experiential) ∷ ("working" , C.working) ∷ [])
 
@@ -182,6 +194,27 @@ module Decode (conversion : Conversion.Contract) where
   integer : V.Value → Fault ⊎ ℕ
   integer = unsigned sizeMaximum
 
+  revisionFault : Fault
+  revisionFault = Validation.fault [] Validation.invalidNumber
+    "Use the current nonnegative revision with one representable increment in the stored signed 64-bit counter. Read get_experience or get_learning_review for that counter; do not invent or clamp a revision."
+
+  expectedRevision : V.Value → Fault ⊎ ℤ
+  expectedRevision raw with i64 raw
+  ... | inj₁ fault = inj₁ fault
+  ... | inj₂ value with Learning.expectedValid value
+  ... | false = inj₁ revisionFault
+  ... | true = inj₂ value
+
+  expectedRevisionSound : ∀ raw value → expectedRevision raw ≡ inj₂ value → Learning.expectedValid value ≡ true
+  expectedRevisionSound raw value accepted with i64 raw
+  ... | inj₁ _ with accepted
+  ... | ()
+  expectedRevisionSound raw value accepted | inj₂ decoded with Learning.expectedValid decoded in valid
+  ... | false with accepted
+  ... | ()
+  expectedRevisionSound raw value accepted | inj₂ decoded | true with accepted
+  ... | refl = valid
+
   assessmentQuery : V.Object.View → Fault ⊎ Assessment.Query
   assessmentQuery fields = required "project" V.asString fields >>= λ project →
     required "belief_id" uuid fields >>= λ id → required "scope" V.asString fields >>= λ scope →
@@ -287,9 +320,9 @@ module Decode (conversion : Conversion.Contract) where
     defaulted "offset" 0 integer fields >>= λ offset → selection "limit" fields >>= λ limit →
     inj₂ (read (Read.explain id offset limit))
   decode Tools.recordExperience fields = required "experience" L.experienceInput fields >>= λ experience →
-    required "expected_revision" i64 fields >>= λ expected → inj₂ (learning (Learning.recordExperience experience expected))
+    required "expected_revision" expectedRevision fields >>= λ expected → inj₂ (learning (Learning.recordExperience experience expected))
   decode Tools.reviewExperience fields = required "review" L.reviewInput fields >>= λ review →
-    required "expected_review_revision" i64 fields >>= λ expected → inj₂ (learning (Learning.reviewExperience review expected))
+    required "expected_review_revision" expectedRevision fields >>= λ expected → inj₂ (learning (Learning.reviewExperience review expected))
   decode Tools.pendingExperiences fields = present "project" V.asString fields >>= λ project →
     selection "limit" fields >>= λ limit → defaulted "exclude_ids" [] (readArray uuid) fields >>= λ excluded →
     inj₂ (learningQuery (Query.pending project (Data.Maybe.map Ranking.PositiveCount.count limit) excluded))

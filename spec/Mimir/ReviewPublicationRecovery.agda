@@ -33,6 +33,7 @@ import Mimir.GroundingRecovery as Grounding
 import Mimir.IndependentBeliefRecovery as Independent
 import Mimir.LearningCandidates as Candidates
 import Mimir.LearningInput as Input
+import Mimir.LearningWire as LearningWire
 import Mimir.LearningOperations as Operations
 import Mimir.LearningKeys as Keys
 import Mimir.LearningSchema as Items
@@ -459,8 +460,10 @@ module FinalBody (library : Library.Contract) (format : Encoding.Formatting) (da
   arguments : Wire.Value → Validation.Fault ⊎ Request
   arguments raw with D.readTool Tools.reviewExperience raw
   ... | inj₁ fault = inj₁ fault
-  ... | inj₂ (Public.learning (Operations.reviewExperience input expected)) = inj₂ (request input expected)
-  ... | inj₂ _ = inj₁ mismatch
+  ... | inj₂ (Public.learning (Operations.reviewExperience input expected)) with LearningWire.reviewHeader input
+  ... | inj₁ fault = inj₁ (Validation.prependPath (Validation.key "review") fault)
+  ... | inj₂ checked = inj₂ (request checked expected)
+  arguments raw | inj₂ _ = inj₁ mismatch
 
   original : ℕ → Step.Registration → Validation.Fault ⊎ (Request × ℤ)
   original token registration with Admission.originalPlan (toList "review_experience") token registration

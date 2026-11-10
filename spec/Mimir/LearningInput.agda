@@ -4,9 +4,16 @@
 -- remains omitted until the locked allocation operation observes PostgreSQL.
 module Mimir.LearningInput where
 
-open import Data.List using (List; _++_)
-open import Data.Maybe using (Maybe)
+open import Data.List using (List; []; _∷_; _++_; map; mapMaybe)
+open import Data.Maybe using (Maybe; nothing; just)
 open import Data.Nat using (ℕ)
+open import Data.Product using (_×_; _,_)
+open import Data.Unit using (⊤; tt)
+open import Data.Empty using (⊥)
+open import Data.List.Relation.Unary.All using (All)
+open import Mimir.Validation
+import Mimir.Collections as Collections
+open import Mimir.SourceReview using (_≟Text_)
 open import Data.Integer using (ℤ)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
@@ -100,3 +107,70 @@ reviewRetainsAssignments input assigned resolved = refl
 reviewRetainsResolvedReferences : ∀ input assigned resolved →
   R.Review.assessments (canonicalReview input assigned resolved) ≡ resolved
 reviewRetainsResolvedReferences input assigned resolved = refl
+
+-- These checks retain optional identities and local keys exactly as supplied.
+HasItemReference : Item → Set
+HasItemReference value with Item.identity value | Item.localKey value
+... | nothing | nothing = ⊥
+... | _ | _ = ⊤
+
+checkItemReference : ∀ value → Checked (HasItemReference value)
+checkItemReference value with Item.identity value | Item.localKey value
+... | nothing | nothing = rejected
+  (fault (key "key" ∷ []) missingReference "Supply a local item key or an existing item ID; do not invent a database identity.") (λ ())
+... | just _ | _ = accepted tt
+... | nothing | just _ = accepted tt
+
+OptionalKeyValid : Maybe Text → Set
+OptionalKeyValid nothing = ⊤
+OptionalKeyValid (just name) = Candidates.Trimmed name
+
+checkOptionalKey : ∀ name → Checked (OptionalKeyValid name)
+checkOptionalKey nothing = accepted tt
+checkOptionalKey (just name) = Candidates.checkTrimmed name
+
+ItemValid : Item → Set
+ItemValid value = HasItemReference value ×
+  (OptionalKeyValid (Item.localKey value) ×
+    L.ItemFieldsValid (Item.reference value) (Item.actor value)
+      (Item.statement value) (Item.conditions value) (Item.predictions value))
+
+validateItem : ∀ value → Checked (ItemValid value)
+validateItem value = combine (checkItemReference value)
+  (combine (at (key "key") (checkOptionalKey (Item.localKey value)))
+    (L.validateItemFields (Item.reference value) (Item.actor value)
+      (Item.statement value) (Item.conditions value) (Item.predictions value)))
+
+module TextKeys = Collections.Equality Text _≟Text_
+
+ItemsValid : List Item → Set
+ItemsValid values = L.UniqueIDs (mapMaybe Item.identity values) ×
+  (TextKeys.Unique (mapMaybe Item.localKey values) × All ItemValid values)
+
+validateItems : ∀ values → Checked (ItemsValid values)
+validateItems values = combine (L.checkIDs (mapMaybe Item.identity values))
+  (combine (TextKeys.checkUnique (mapMaybe Item.localKey values)) (allChecked validateItem values))
+
+AssessmentKeysValid : Assessment → Set
+AssessmentKeysValid value = All Candidates.Trimmed (Assessment.itemKeys value) ×
+  TextKeys.Unique (Assessment.itemKeys value)
+
+validateAssessmentKeys : ∀ value → Checked (AssessmentKeysValid value)
+validateAssessmentKeys value = at (key "item_keys")
+  (combine (allChecked Candidates.checkTrimmed (Assessment.itemKeys value))
+    (TextKeys.checkUnique (Assessment.itemKeys value)))
+
+-- The reused header/contribution validator never reads extracted-item IDs.
+-- Actual assessment values are retained, and their local keys are checked
+-- separately. This introduces no placeholder database identity.
+reviewHeaderView : Review → R.Review
+reviewHeaderView value = canonicalReview value [] (map Assessment.value (Review.assessments value))
+
+ReviewValid : Review → Set
+ReviewValid value = ItemsValid (Review.extracted value) ×
+  (All AssessmentKeysValid (Review.assessments value) × R.ReviewValid (reviewHeaderView value))
+
+validateReview : ∀ value → Checked (ReviewValid value)
+validateReview value = combine (at (key "extracted_items") (validateItems (Review.extracted value)))
+  (combine (at (key "assessments") (allChecked validateAssessmentKeys (Review.assessments value)))
+    (R.validateReview (reviewHeaderView value)))

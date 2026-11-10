@@ -4,7 +4,7 @@
 module Mimir.DefeatRecovery where
 
 open import Data.Empty using (⊥; ⊥-elim)
-open import Data.Bool using (true; false)
+open import Data.Bool using (Bool; true; false; _∧_)
 open import Data.Float.Base using (Float)
 open import Data.Integer using (ℤ)
 open import Data.List using (List; []; _∷_)
@@ -37,6 +37,11 @@ import Mimir.ToolCatalog as Tools
 import Mimir.Validation as Validation
 import Mimir.ApplicationFloat as FloatValue
 import Mimir.GraphNumerics as Numbers
+import Mimir.OperationControls as Controls
+import Mimir.ProjectDeletion as Project
+import Mimir.JsonObjects as Objects
+open import Mimir.SourceReview using (_≟Text_)
+open import Relation.Nullary using (yes; no)
 
 record Request : Set where
   constructor request
@@ -753,3 +758,410 @@ module Registered (conversion : Conversion.Contract)
   ... | first , final , observed = subst
     (λ outcome → Run.X.Completed (Run.script token) current (proj₁ outcome) (proj₂ outcome))
     (trans observed (cachedEvaluation first final token current raw packet present)) completion
+
+  -- The shared readback and this two-phase writer inspect the same immutable
+  -- raw plan. These local projections expose its two decoded addresses; they
+  -- prove no JSON/tokenization or formatting property.
+  module Journal (postgres : Controls.PostgreSQL) where
+    module Read = Controls.Readback conversion postgres using
+      (ExecutionContext; sameRight; noJust; admission; admitted; returned; completed;
+       admissionCompletedLookup; preserveAfterNext; finalPairCompletes;
+       afterBindingLookup; afterMatch; afterReadback; answer; cancelled; ordered; savedRows)
+    module Plan = Controls.Plan using (Step; step; Saved; saved; readStep; readBoundary; fieldNames; decode)
+    module J = Controls.OpaqueJournal using (Cursor; here; passed; Complete; cursorNext)
+    module Pair = Admission.PairPlan C.Binding.descriptor using (module First; module Second; pair; matches)
+
+    operationName = toList "record_defeat"
+    firstDescriptor = Admission.descriptor operationName (toList "store.insert_edge") (firstKey 0)
+    finalDescriptor = Admission.descriptor operationName (toList "store.propagate_locked") (secondKey 0)
+    firstStep = Plan.step (toList "store.insert_edge") nothing (firstKey 0)
+    finalStep = Plan.step (toList "store.propagate_locked") nothing (secondKey 0)
+
+    andLeft : ∀ first second → first ∧ second ≡ true → first ≡ true
+    andLeft false second ()
+    andLeft true second known = refl
+    andRight : ∀ first second → first ∧ second ≡ true → second ≡ true
+    andRight false second ()
+    andRight true second known = known
+
+    thirdTrue : ∀ first second third → first ∧ second ∧ third ≡ true → third ≡ true
+    thirdTrue first second third known = andRight second third (andRight first (second ∧ third) known)
+
+    sameRecordView : ∀ {A : Set} firstNames secondNames
+      (check : Wire.Object.View → Bool) (decode : Wire.Object.View → Validation.Fault ⊎ A) raw value →
+      Project.Registered.fields firstNames check raw ≡ true →
+      Decode.readRecord Objects.forbid Objects.rejectKnownRepeated secondNames decode raw ≡ inj₂ value →
+      Σ Wire.Object.View (λ view → check view ≡ true × decode view ≡ inj₂ value)
+    sameRecordView firstNames secondNames check decode raw value matched decoded with Wire.asObject raw
+    ... | inj₁ fault with matched
+    ... | ()
+    sameRecordView firstNames secondNames check decode raw value matched decoded | inj₂ fields
+      with Wire.Object.checkUnknowns Objects.forbid firstNames fields
+    ... | Validation.rejected fault invalid with matched
+    ... | ()
+    sameRecordView firstNames secondNames check decode raw value matched decoded | inj₂ fields | Validation.accepted known
+      with Wire.Object.checkDuplicates Objects.rejectKnownRepeated firstNames fields
+    ... | Validation.rejected fault invalid with matched
+    ... | ()
+    sameRecordView firstNames secondNames check decode raw value matched decoded | inj₂ fields | Validation.accepted known | Validation.accepted unique
+      with Wire.Object.checkUnknowns Objects.forbid secondNames fields
+    ... | Validation.rejected fault invalid with decoded
+    ... | ()
+    sameRecordView firstNames secondNames check decode raw value matched decoded | inj₂ fields | Validation.accepted known | Validation.accepted unique | Validation.accepted knownSecond
+      with Wire.Object.checkDuplicates Objects.rejectKnownRepeated secondNames fields
+    ... | Validation.rejected fault invalid with decoded
+    ... | ()
+    sameRecordView firstNames secondNames check decode raw value matched decoded | inj₂ fields | Validation.accepted known | Validation.accepted unique | Validation.accepted knownSecond | Validation.accepted uniqueSecond =
+      Wire.Object.normalize fields , matched , decoded
+
+    textField : ∀ expected observed → Project.Registered.fieldText expected observed ≡ true →
+      observed ≡ just (Wire.string expected)
+    textField expected (just (Wire.string actual)) accepted with actual ≟Text expected
+    ... | yes refl = refl
+    ... | no different with accepted
+    ... | ()
+    textField expected (just Wire.null) ()
+    textField expected (just (Wire.boolean _)) ()
+    textField expected (just (Wire.unsigned _)) ()
+    textField expected (just (Wire.signed _)) ()
+    textField expected (just (Wire.floating _)) ()
+    textField expected (just (Wire.array _)) ()
+    textField expected (just (Wire.object _)) ()
+    textField expected nothing ()
+
+    nullField : ∀ observed → Project.Registered.fieldNull observed ≡ true → observed ≡ just Wire.null
+    nullField (just Wire.null) accepted = refl
+    nullField (just (Wire.boolean _)) ()
+    nullField (just (Wire.unsigned _)) ()
+    nullField (just (Wire.signed _)) ()
+    nullField (just (Wire.floating _)) ()
+    nullField (just (Wire.string _)) ()
+    nullField (just (Wire.array _)) ()
+    nullField (just (Wire.object _)) ()
+    nullField nothing ()
+
+    stepFields : Wire.Object.View → Validation.Fault ⊎ Plan.Step
+    stepFields view = Decode._>>=_ (Wire.required (toList "site") Wire.asString view) λ site →
+      Decode._>>=_ (Wire.optional (toList "key") Wire.asString view) λ key →
+      Decode._>>=_ (Wire.required (toList "id") Wire.asString view) λ id → inj₂ (Plan.step site key id)
+
+    stepFieldsKnown : ∀ view site identity →
+      view (toList "site") ≡ just (Wire.string site) →
+      view (toList "key") ≡ just Wire.null →
+      view (toList "id") ≡ just (Wire.string identity) →
+      stepFields view ≡ inj₂ (Plan.step site nothing identity)
+    stepFieldsKnown view site identity siteKnown keyKnown idKnown rewrite siteKnown | keyKnown | idKnown = refl
+
+    stepDecoded : ∀ registered raw decodedStep → Admission.Plan.stepMatches registered raw ≡ true →
+      Plan.readStep raw ≡ inj₂ decodedStep → decodedStep ≡ Plan.step (Admission.Descriptor.site registered) nothing (Admission.Descriptor.key registered)
+    stepDecoded registered raw decodedStep matched decoded with sameRecordView
+      (toList "site" ∷ toList "key" ∷ toList "id" ∷ [])
+      (toList "site" ∷ toList "key" ∷ toList "id" ∷ [])
+      (λ view → Project.Registered.fieldText (Admission.Descriptor.site registered) (view (toList "site")) ∧
+        Project.Registered.fieldNull (view (toList "key")) ∧
+        Project.Registered.fieldText (Admission.Descriptor.key registered) (view (toList "id")))
+      stepFields raw decodedStep matched decoded
+    ... | view , checked , parsed = sym (Read.sameRight (trans (sym (stepFieldsKnown view
+      (Admission.Descriptor.site registered) (Admission.Descriptor.key registered)
+      (textField _ _ (andLeft a (b ∧ c) checked)) (nullField _ (andLeft b c (andRight a (b ∧ c) checked)))
+      (textField _ _ (andRight b c (andRight a (b ∧ c) checked))))) parsed))
+      where
+      a = Project.Registered.fieldText (Admission.Descriptor.site registered) (view (toList "site"))
+      b = Project.Registered.fieldNull (view (toList "key"))
+      c = Project.Registered.fieldText (Admission.Descriptor.key registered) (view (toList "id"))
+
+    pairValues : ∀ firstCheck secondCheck observed → Pair.pair firstCheck secondCheck observed ≡ true →
+      Σ Wire.Value (λ firstRaw → Σ Wire.Value (λ secondRaw →
+        observed ≡ just (Wire.array (firstRaw ∷ secondRaw ∷ [])) ×
+        firstCheck firstRaw ≡ true × secondCheck secondRaw ≡ true))
+    pairValues firstCheck secondCheck (just (Wire.array (firstRaw ∷ secondRaw ∷ []))) known =
+      firstRaw , secondRaw , refl , andLeft _ _ known , andRight _ _ known
+    pairValues firstCheck secondCheck (just (Wire.array [])) ()
+    pairValues firstCheck secondCheck (just (Wire.array (_ ∷ []))) ()
+    pairValues firstCheck secondCheck (just (Wire.array (_ ∷ _ ∷ _ ∷ _))) ()
+    pairValues firstCheck secondCheck (just Wire.null) ()
+    pairValues firstCheck secondCheck (just (Wire.boolean _)) ()
+    pairValues firstCheck secondCheck (just (Wire.unsigned _)) ()
+    pairValues firstCheck secondCheck (just (Wire.signed _)) ()
+    pairValues firstCheck secondCheck (just (Wire.floating _)) ()
+    pairValues firstCheck secondCheck (just (Wire.string _)) ()
+    pairValues firstCheck secondCheck (just (Wire.object _)) ()
+    pairValues firstCheck secondCheck nothing ()
+
+    planFields : Wire.Object.View → Validation.Fault ⊎ Plan.Saved
+    planFields view = Decode._>>=_ (Wire.required (toList "operation") Wire.asString view) λ operation →
+      Decode._>>=_ (Wire.required (toList "shape") (Decode.readArray Plan.readBoundary) view) λ shape →
+      Decode._>>=_ (Wire.required (toList "steps") (Decode.readArray Plan.readStep) view) λ steps →
+      inj₂ (Plan.saved operation shape steps (view (toList "capture")))
+
+    parsedSteps : ∀ view model → planFields view ≡ inj₂ model →
+      Wire.required (toList "steps") (Decode.readArray Plan.readStep) view ≡ inj₂ (Plan.Saved.steps model)
+    parsedSteps view model known with Wire.required (toList "operation") Wire.asString view
+    ... | inj₁ fault with known
+    ... | ()
+    parsedSteps view model known | inj₂ operation
+      with Wire.required (toList "shape") (Decode.readArray Plan.readBoundary) view
+    ... | inj₁ fault with known
+    ... | ()
+    parsedSteps view model known | inj₂ operation | inj₂ shape
+      with Wire.required (toList "steps") (Decode.readArray Plan.readStep) view
+    ... | inj₁ fault with known
+    ... | ()
+    parsedSteps view model known | inj₂ operation | inj₂ shape | inj₂ steps with known
+    ... | refl = refl
+
+    unfield : ∀ {A : Set} name (observed : Validation.Fault ⊎ A) value →
+      Wire.withField name observed ≡ inj₂ value → observed ≡ inj₂ value
+    unfield name (inj₁ fault) value ()
+    unfield name (inj₂ observed) value known = known
+
+    selectedPairRead : ∀ view firstRaw secondRaw steps →
+      view (toList "steps") ≡ just (Wire.array (firstRaw ∷ secondRaw ∷ [])) →
+      Wire.required (toList "steps") (Decode.readArray Plan.readStep) view ≡ inj₂ steps →
+      Decode.readArray Plan.readStep (Wire.array (firstRaw ∷ secondRaw ∷ [])) ≡ inj₂ steps
+    selectedPairRead view firstRaw secondRaw steps found decoded rewrite found = unfield (toList "steps") _ steps decoded
+
+    pairRead : ∀ firstRaw secondRaw steps →
+      Decode.readArray Plan.readStep (Wire.array (firstRaw ∷ secondRaw ∷ [])) ≡ inj₂ steps →
+      Σ Plan.Step (λ firstDecoded → Σ Plan.Step (λ secondDecoded →
+        Plan.readStep firstRaw ≡ inj₂ firstDecoded × Plan.readStep secondRaw ≡ inj₂ secondDecoded ×
+        steps ≡ (firstDecoded ∷ secondDecoded ∷ [])))
+    pairRead firstRaw secondRaw steps known with Plan.readStep firstRaw in firstRead
+    ... | inj₁ fault with known
+    ... | ()
+    pairRead firstRaw secondRaw steps known | inj₂ firstDecoded with Plan.readStep secondRaw in secondRead
+    ... | inj₁ fault with known
+    ... | ()
+    pairRead firstRaw secondRaw steps known | inj₂ firstDecoded | inj₂ secondDecoded with known
+    ... | refl = firstDecoded , secondDecoded , refl , refl , refl
+
+    planCheck : Wire.Object.View → Bool
+    planCheck view = Project.Registered.fieldText operationName (view (toList "operation")) ∧
+      Pair.pair Pair.First.shapeMatches Pair.Second.shapeMatches (view (toList "shape")) ∧
+      Pair.pair Pair.First.stepMatches Pair.Second.stepMatches (view (toList "steps"))
+
+    decodedPair : ∀ raw model → Pair.matches raw ≡ true → Plan.decode raw ≡ inj₂ model →
+      Plan.Saved.steps model ≡ (firstStep ∷ finalStep ∷ [])
+    decodedPair raw model matched decoded with sameRecordView
+      (toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ []) Plan.fieldNames
+      planCheck planFields raw model matched decoded
+    ... | view , checked , parsed with pairValues Pair.First.stepMatches Pair.Second.stepMatches
+      (view (toList "steps")) (thirdTrue
+        (Project.Registered.fieldText operationName (view (toList "operation")))
+        (Pair.pair Pair.First.shapeMatches Pair.Second.shapeMatches (view (toList "shape")))
+        (Pair.pair Pair.First.stepMatches Pair.Second.stepMatches (view (toList "steps"))) checked)
+    ... | firstRaw , secondRaw , found , firstMatched , secondMatched with pairRead firstRaw secondRaw
+      (Plan.Saved.steps model) (selectedPairRead view firstRaw secondRaw _ found (parsedSteps view model parsed))
+    ... | firstDecoded , secondDecoded , firstRead , secondRead , exact
+      with stepDecoded firstDescriptor firstRaw firstDecoded firstMatched firstRead
+        | stepDecoded finalDescriptor secondRaw secondDecoded secondMatched secondRead
+    ... | refl | refl = exact
+
+    originalPlanObserved : ∀ token before (context : Read.ExecutionContext operationName token before) →
+      Admission.originalPlan operationName token (Step.registration before) ≡ inj₂
+        (Read.ExecutionContext.reservationRow context , Read.ExecutionContext.bindingRow context , Read.ExecutionContext.rawPlan context)
+    originalPlanObserved token before context
+      rewrite Read.ExecutionContext.originalReservation context | Read.ExecutionContext.originalBinding context
+        | Read.ExecutionContext.requestedOperation context | Read.ExecutionContext.originalPlan context = refl
+
+    pairRefusal : ∀ token before (context : Read.ExecutionContext operationName token before) →
+      Pair.matches (Read.ExecutionContext.rawPlan context) ≡ false →
+      C.Binding.admit token (Step.registration before) ≡ just (G.requestFault Admission.planMismatch)
+    pairRefusal token before context unmatched rewrite originalPlanObserved token before context | unmatched = refl
+
+    matchedPair : ∀ token before (context : Read.ExecutionContext operationName token before) →
+      C.Binding.admit token (Step.registration before) ≡ nothing → Pair.matches (Read.ExecutionContext.rawPlan context) ≡ true
+    matchedPair token before context known with Pair.matches (Read.ExecutionContext.rawPlan context) in matched
+    ... | false = ⊥-elim (Read.noJust (trans (sym known) (pairRefusal token before context matched)))
+    ... | true = refl
+
+    contextSteps : ∀ token before (context : Read.ExecutionContext operationName token before) →
+      C.Binding.admit token (Step.registration before) ≡ nothing →
+      Plan.Saved.steps (Read.ExecutionContext.plan context) ≡ (firstStep ∷ finalStep ∷ [])
+    contextSteps token before context known = decodedPair (Read.ExecutionContext.rawPlan context)
+      (Read.ExecutionContext.plan context) (matchedPair token before context known)
+      (Read.ExecutionContext.decoded context)
+
+    ResumableOrCompleted : ℕ → Store.World → Set
+    ResumableOrCompleted token before =
+      (Σ (Read.ExecutionContext operationName token before) (λ context →
+        Read.admission operationName token before ≡ Read.admitted context)) ⊎
+      (Σ Store.BindingRow (λ binding → Σ Wire.Value (λ value →
+        Read.admission operationName token before ≡ Read.returned (Read.completed binding value))))
+
+    firstCursor : ∀ token before (context : Read.ExecutionContext operationName token before) →
+      C.Binding.admit token (Step.registration before) ≡ nothing →
+      J.Cursor token before (Plan.Saved.steps (Read.ExecutionContext.plan context)) (firstStep ∷ finalStep ∷ [])
+    firstCursor token before context known = subst
+      (λ steps → J.Cursor token before steps (firstStep ∷ finalStep ∷ []))
+      (sym (contextSteps token before context known)) (J.here _)
+
+    finalCursor : ∀ token before (context : Read.ExecutionContext operationName token before) saved →
+      C.Binding.admit token (Step.registration before) ≡ nothing →
+      Store.lookupSaved before token (firstKey token) ≡ just saved →
+      J.Cursor token before (Plan.Saved.steps (Read.ExecutionContext.plan context)) (finalStep ∷ [])
+    finalCursor token before context saved known firstSaved = subst
+      (λ steps → J.Cursor token before steps (finalStep ∷ []))
+      (sym (contextSteps token before context known))
+      (J.passed firstStep (finalStep ∷ []) (finalStep ∷ []) saved firstSaved (J.here _))
+
+    firstKeepsReadback : ∀ received token before → ResumableOrCompleted token before →
+      ResumableOrCompleted token (proj₁ (first received token before))
+    firstKeepsReadback received token before previous with firstClassification received token before
+    ... | inj₁ unchanged = subst (ResumableOrCompleted token) (sym unchanged) previous
+    ... | inj₂ (changed , reply , admitted , active , firstAbsent , nextAbsent , resultAbsent , accepted)
+      with previous
+    ... | inj₂ (binding , value , completed) = ⊥-elim (Read.noJust (trans (sym resultAbsent)
+      (Read.admissionCompletedLookup operationName token before binding value completed)))
+    ... | inj₁ (context , pending) = subst (ResumableOrCompleted token) (sym (cong proj₁ published))
+      (inj₁ (Read.preserveAfterNext operationName token before context firstStep finalStep [] reply changed
+        (J.cursorNext token before _ firstStep (finalStep ∷ [])
+          (J.Complete.prefix (Read.ExecutionContext.journal context)) cursor firstAbsent)
+        cursor active (C.edgeJournal (token , received) before changed reply accepted)))
+      where
+      cursor = firstCursor token before context admitted
+      published = freshPrefix received token before changed reply admitted active firstAbsent nextAbsent resultAbsent accepted
+
+    secondKeepsReadback : ∀ received token before → ResumableOrCompleted token before →
+      ResumableOrCompleted token (proj₁ (second received token before))
+    secondKeepsReadback received token before previous with secondClassification received token before
+    ... | inj₁ unchanged = subst (ResumableOrCompleted token) (sym unchanged) previous
+    ... | inj₂ (changed , reply , saved , admitted , active , firstSaved , nextAbsent , resultAbsent , accepted)
+      with previous
+    ... | inj₂ (binding , value , completed) = ⊥-elim (Read.noJust (trans (sym resultAbsent)
+      (Read.admissionCompletedLookup operationName token before binding value completed)))
+    ... | inj₁ (context , pending) = subst (ResumableOrCompleted token) (sym (cong proj₁ published))
+      (inj₂ (Read.ExecutionContext.bindingRow context , reply ,
+        Read.finalPairCompletes operationName token before context finalStep reply changed
+          (J.cursorNext token before _ finalStep []
+            (J.Complete.prefix (Read.ExecutionContext.journal context)) cursor nextAbsent)
+          cursor resultAbsent active (C.finalJournal (token , received) before changed reply accepted)))
+      where
+      cursor = finalCursor token before context saved admitted firstSaved
+      published = T.secondFresh received received token before saved changed reply admitted active firstSaved nextAbsent resultAbsent accepted
+
+    atomicKeepsReadback : ∀ token before after effect reply → Run.Owned token effect →
+      Run.Atomic before effect reply after → ResumableOrCompleted token before → ResumableOrCompleted token after
+    atomicKeepsReadback token before after .(Run.prefix token) (received , reply) Run.firstOwned physical old =
+      subst (ResumableOrCompleted token)
+        (sym (cong proj₁ (Run.First.atomicObservation received token before after reply physical)))
+        (firstKeepsReadback received token before old)
+    atomicKeepsReadback token before after .(Run.finish token) (received , reply) Run.secondOwned physical old =
+      subst (ResumableOrCompleted token)
+        (sym (cong proj₁ (Run.Second.atomicObservation received token before after reply physical)))
+        (secondKeepsReadback received token before old)
+
+    changesKeepReadback : ∀ token before events after → All (λ event → Run.Owned token (proj₁ event)) events →
+      Run.X.Changes before events after → ResumableOrCompleted token before → ResumableOrCompleted token after
+    changesKeepReadback token before [] .before [] (Run.X.unchanged _) old = old
+    changesKeepReadback token before ((effect , reply) ∷ events) after (owner ∷ owners)
+      (Run.X.changed _ _ _ middle physical later) old = changesKeepReadback token middle events after owners later
+        (atomicKeepsReadback token before middle effect reply owner physical old)
+
+    interruptedReadback : ∀ token before current (context : Read.ExecutionContext operationName token before) →
+      Read.admission operationName token before ≡ Read.admitted context →
+      Run.X.Interrupted (Run.script token) before current → ResumableOrCompleted token current
+    interruptedReadback token before current context admitted
+      (Run.X.atPrefix events residual .current observed physical) =
+      changesKeepReadback token before events current
+        (proj₁ (Run.prefixScoped token (Run.script token) events residual (Run.scriptScoped token) observed))
+        physical (inj₁ (context , admitted))
+    interruptedReadback token before current context admitted
+      (Run.X.beforeReply events effect continuation middle reply .current observed physical active)
+      with Run.prefixScoped token (Run.script token) events (Run.E.ask effect continuation) (Run.scriptScoped token) observed
+    ... | owners , scoped = atomicKeepsReadback token middle current effect reply
+      (Run.activeOwned token effect continuation scoped) active
+      (changesKeepReadback token before events middle owners physical (inj₁ (context , admitted)))
+
+    MetadataFrame : ℕ → Store.World → Store.World → Set
+    MetadataFrame token before after = Step.registration after ≡ Step.registration before ×
+      Store.lookupCancellation after token ≡ Store.lookupCancellation before token
+
+    composeFrame : ∀ token before middle after → MetadataFrame token before middle →
+      MetadataFrame token middle after → MetadataFrame token before after
+    composeFrame token before middle after earlier later =
+      trans (proj₁ later) (proj₁ earlier) , trans (proj₂ later) (proj₂ earlier)
+
+    firstFrame : ∀ received token before → MetadataFrame token before (proj₁ (first received token before))
+    firstFrame received token before with firstClassification received token before
+    ... | inj₁ unchanged = subst (MetadataFrame token before) (sym unchanged) (refl , refl)
+    ... | inj₂ (changed , reply , admitted , active , firstAbsent , nextAbsent , resultAbsent , accepted) =
+      trans (cong Step.registration (cong proj₁ published)) (C.Prefix.keepsRegistration input before changed reply accepted) ,
+      trans (cong (λ world → Store.lookupCancellation world token) (cong proj₁ published))
+        (C.Prefix.keepsCancellation input before changed reply accepted)
+      where
+      input = token , received
+      published = freshPrefix received token before changed reply admitted active firstAbsent nextAbsent resultAbsent accepted
+
+    secondFrame : ∀ received token before → MetadataFrame token before (proj₁ (second received token before))
+    secondFrame received token before with secondClassification received token before
+    ... | inj₁ unchanged = subst (MetadataFrame token before) (sym unchanged) (refl , refl)
+    ... | inj₂ (changed , reply , saved , admitted , active , firstSaved , nextAbsent , resultAbsent , accepted) =
+      trans (cong Step.registration (cong proj₁ published)) (C.Final.Kernel.publicationKeepsRegistration input before changed reply accepted) ,
+      trans (cong (λ world → Store.lookupCancellation world token) (cong proj₁ published))
+        (C.Final.Kernel.publicationKeepsCancellation input before changed reply accepted)
+      where
+      input = token , received
+      published = T.secondFresh received received token before saved changed reply admitted active firstSaved nextAbsent resultAbsent accepted
+
+    atomicFrame : ∀ token before after effect reply → Run.Owned token effect →
+      Run.Atomic before effect reply after → MetadataFrame token before after
+    atomicFrame token before after .(Run.prefix token) (received , reply) Run.firstOwned physical =
+      subst (MetadataFrame token before)
+        (sym (cong proj₁ (Run.First.atomicObservation received token before after reply physical)))
+        (firstFrame received token before)
+    atomicFrame token before after .(Run.finish token) (received , reply) Run.secondOwned physical =
+      subst (MetadataFrame token before)
+        (sym (cong proj₁ (Run.Second.atomicObservation received token before after reply physical)))
+        (secondFrame received token before)
+
+    changesFrame : ∀ token before events after → All (λ event → Run.Owned token (proj₁ event)) events →
+      Run.X.Changes before events after → MetadataFrame token before after
+    changesFrame token before [] .before [] (Run.X.unchanged _) = refl , refl
+    changesFrame token before ((effect , reply) ∷ events) after (owner ∷ owners)
+      (Run.X.changed _ _ _ middle physical later) = composeFrame token before middle after
+        (atomicFrame token before middle effect reply owner physical)
+        (changesFrame token middle events after owners later)
+
+    interruptedFrame : ∀ token before current → Run.X.Interrupted (Run.script token) before current → MetadataFrame token before current
+    interruptedFrame token before current (Run.X.atPrefix events residual .current observed physical) =
+      changesFrame token before events current
+        (proj₁ (Run.prefixScoped token (Run.script token) events residual (Run.scriptScoped token) observed)) physical
+    interruptedFrame token before current
+      (Run.X.beforeReply events effect continuation middle reply .current observed physical active)
+      with Run.prefixScoped token (Run.script token) events (Run.E.ask effect continuation) (Run.scriptScoped token) observed
+    ... | owners , scoped = composeFrame token before middle current (changesFrame token before events middle owners physical)
+      (atomicFrame token middle current effect reply (Run.activeOwned token effect continuation scoped) active)
+
+    cancelledReadback : ∀ token before (context : Read.ExecutionContext operationName token before) receipt →
+      Store.lookupCancellation before token ≡ just receipt →
+      Read.admission operationName token before ≡ Read.returned
+        (Read.cancelled receipt (just (Read.ExecutionContext.bindingRow context)) (Read.ordered (Read.savedRows token before)))
+    cancelledReadback token before context receipt known = trans
+      (Controls.alongObservation _ (Read.afterBindingLookup operationName token before)
+        (just (Read.ExecutionContext.bindingRow context)) (Read.ExecutionContext.originalBinding context))
+      (trans (Controls.alongObservation _ (Read.afterMatch operationName token before
+        (Read.ExecutionContext.bindingRow context) (Read.ExecutionContext.originalBinding context))
+        true (Read.ExecutionContext.requestedOperation context))
+        (cong (Read.afterReadback operationName token before (Read.ExecutionContext.bindingRow context)
+          (Read.ExecutionContext.originalBinding context) (Read.ExecutionContext.requestedOperation context)) cancelledAnswer))
+      where
+      cancelledAnswer : Read.answer token before ≡ Read.cancelled receipt
+        (just (Read.ExecutionContext.bindingRow context)) (Read.ordered (Read.savedRows token before))
+      cancelledAnswer rewrite Read.ExecutionContext.originalBinding context | known = refl
+
+    differentReadback : ∀ {token before} {context : Read.ExecutionContext operationName token before} {outcome} →
+      Read.admitted context ≡ Read.returned outcome → ⊥
+    differentReadback ()
+
+    admittedActive : ∀ token before (context : Read.ExecutionContext operationName token before) →
+      Read.admission operationName token before ≡ Read.admitted context → Store.lookupCancellation before token ≡ nothing
+    admittedActive token before context known with Store.lookupCancellation before token in observed
+    ... | nothing = refl
+    ... | just receipt = ⊥-elim (differentReadback (trans (sym known) (cancelledReadback token before context receipt observed)))
+
+    interruptedActive : ∀ token before current (context : Read.ExecutionContext operationName token before) →
+      Read.admission operationName token before ≡ Read.admitted context →
+      Run.X.Interrupted (Run.script token) before current → Store.lookupCancellation current token ≡ nothing
+    interruptedActive token before current context known cut = trans (proj₂ (interruptedFrame token before current cut))
+      (admittedActive token before context known)
