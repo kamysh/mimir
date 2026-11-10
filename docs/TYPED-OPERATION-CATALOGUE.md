@@ -78,14 +78,16 @@ writer immediately before and after its transaction commits. It is available
 to the CLI and MCP test binaries. Ordinary builds contain no controller code
 and do not inspect its environment variables.
 
-The controller selects a PostgreSQL-issued operation token, a declared
-publication site and `before_commit` or `after_commit`. The process reports its
+The shared driver in `tests/support/commit_boundary.rs` selects a
+PostgreSQL-issued operation token, a declared publication site, its exact
+saved-step name and `before_commit` or `after_commit`. Selecting the step also
+distinguishes individual records at a repeated site. The process reports its
 actual operation, site and saved-step name through a private Unix socket, then
 waits for the controller. Sending the byte `c` continues execution. The test
 can instead terminate that process while the socket remains open. There is no
 sleep, deadline, synthetic database reply or replacement business callback.
 The controller settings are `MIMIR_TEST_BOUNDARY_SOCKET`,
-`MIMIR_TEST_BOUNDARY_TOKEN`, `MIMIR_TEST_BOUNDARY_SITE` and
+`MIMIR_TEST_BOUNDARY_TOKEN`, `MIMIR_TEST_BOUNDARY_SITE`, `MIMIR_TEST_BOUNDARY_STEP` and
 `MIMIR_TEST_BOUNDARY_PHASE`. Keep the socket in a private directory with a path
 accepted by the operating system.
 

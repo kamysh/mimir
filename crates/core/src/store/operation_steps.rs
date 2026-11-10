@@ -263,6 +263,7 @@ mod boundary {
             .parse()?;
         if selected != step.token()
             || std::env::var("MIMIR_TEST_BOUNDARY_SITE")? != step.description().site
+            || std::env::var("MIMIR_TEST_BOUNDARY_STEP")? != step.id()
             || std::env::var("MIMIR_TEST_BOUNDARY_PHASE")? != phase.name()
         {
             return Ok(());

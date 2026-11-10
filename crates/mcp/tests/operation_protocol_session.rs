@@ -1,4 +1,7 @@
 //! Exercise the real operation protocol, including correction before binding.
+#[cfg(feature = "test-boundaries")]
+#[path = "../../../tests/support/commit_boundary.rs"]
+mod commit_boundary;
 #[allow(dead_code)]
 #[path = "../../../tests/support/isolation.rs"]
 mod isolation;
@@ -112,13 +115,13 @@ impl Session {
 #[cfg(feature = "test-boundaries")]
 #[tokio::test]
 async fn project_deletion_retries_after_real_process_exit_at_each_commit_side() -> Result<()> {
+    use commit_boundary::{Controller, Phase};
     use mimir_core::{
         documents::DocumentChunk,
         graph::MemoryType,
         operation_catalogue::{CommitSite, GraphOperation, Operation},
         store::AgeStore,
     };
-    use tokio::net::UnixListener;
     let fixture = isolation::fixture();
     let audit = db::connect(&fixture.database_config()).await?;
     let store = AgeStore::new(
@@ -134,9 +137,10 @@ async fn project_deletion_retries_after_real_process_exit_at_each_commit_side() 
         retirement: None,
     };
     let service = MimirService::connect(&config).await?;
-    let declared = Operation::Graph(GraphOperation::DeleteProject).committed_boundaries();
+    let operation = Operation::Graph(GraphOperation::DeleteProject);
+    let declared = operation.committed_boundaries();
     ensure!(declared.len() == 1 && declared[0].site == CommitSite::ProjectDeletion);
-    for phase in ["before_commit", "after_commit"] {
+    for phase in [Phase::BeforeCommit, Phase::AfterCommit] {
         let ids = audit
             .query_one(
                 "SELECT gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid()",
@@ -177,50 +181,29 @@ async fn project_deletion_retries_after_real_process_exit_at_each_commit_side() 
             .reserve_operation(&format!("named-boundary-{key}"))
             .await?;
         let token = reservation.operation_token;
-        // Unix socket paths have an OS-defined size. Keep this private
-        // controller alongside /tmp rather than inside the long fixture path.
-        use std::os::unix::fs::DirBuilderExt;
-        let controller = std::env::temp_dir().join(format!("mimir-boundary-{key}"));
-        std::fs::DirBuilder::new().mode(0o700).create(&controller)?;
-        let socket = controller.join("control.sock");
-        let listener = UnixListener::bind(&socket)?;
+        let step = mimir_json::to_string(&(declared[0].site.name(), Option::<String>::None))?;
+        let controller = Controller::new(token, operation, declared[0].site, step, phase)?;
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_mimir-mcp"));
-        command
-            .env("MIMIR_TEST_BOUNDARY_SOCKET", &socket)
-            .env("MIMIR_TEST_BOUNDARY_TOKEN", token.to_string())
-            .env("MIMIR_TEST_BOUNDARY_SITE", declared[0].site.name())
-            .env("MIMIR_TEST_BOUNDARY_PHASE", phase);
+        controller.configure(&mut command);
         let mut session = Session::launch(&fixture.root, killed_session_key, command)?;
         let original = json!({"operation_token":token,"project":project});
         let mut pending = Box::pin(session.tool("delete_project", original.clone()));
-        let transport = tokio::select! {
-            accepted = listener.accept() => accepted?.0,
-            early = &mut pending => anyhow::bail!("operation returned before its actual {phase} checkpoint: {early:?}"),
+        let checkpoint = tokio::select! {
+            reached = controller.reached() => reached?,
+            early = &mut pending => anyhow::bail!("operation returned before its actual {phase:?} checkpoint: {early:?}"),
         };
         drop(pending);
-        let mut line = String::new();
-        let mut checkpoint = BufReader::new(transport);
-        checkpoint.read_line(&mut line).await?;
-        let event = mimir_json::parse(&line)?;
-        ensure!(
-            event["operation_token"] == token.to_string()
-                && event["operation"] == "delete_project"
-                && event["site"] == declared[0].site.name()
-                && event["phase"] == phase
-        );
-        ensure!(event["step"].as_str().is_some_and(|name| !name.is_empty()));
-        std::fs::write(fixture.root.join(format!("boundary-{key}.json")), line)?;
-        // Terminate the real MCP process while it is held at the observed
-        // statement boundary. No fabricated receipt or wall-clock sleep.
-        session.child.kill().await?;
-        ensure!(!session.child.wait().await?.success());
-        drop(checkpoint);
+        let event = checkpoint.terminate(&mut session.child).await?;
+        std::fs::write(
+            fixture.root.join(format!("boundary-{key}.json")),
+            mimir_json::to_string(&event)?,
+        )?;
         session.input.take();
         let mut remaining = Vec::new();
         session.output.read_to_end(&mut remaining).await?;
         session.transcript.write_all(&remaining)?;
         session.transcript.flush()?;
-        let expected_before_retry = usize::from(phase == "before_commit");
+        let expected_before_retry = usize::from(phase == Phase::BeforeCommit);
         ensure!(service.list_beliefs(Some(&project)).await?.len() == expected_before_retry);
         let count = audit.query_one("SELECT (SELECT count(*) FROM belief_embeddings WHERE belief_id=$1), (SELECT count(*) FROM chunk_embeddings WHERE chunk_id=$2)",&[&belief.id,&chunk.id]).await?;
         ensure!(
