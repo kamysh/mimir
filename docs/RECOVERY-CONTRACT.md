@@ -446,6 +446,17 @@ result without new receipts. Unchanged parser and diagnostic definitions are
 shared locally so the adapter needs no fake clock or calculator. Complete
 public host/wire assembly remains unfinished.
 
+`IntendedPropagation.Evaluate.With.evaluate` composes `propagate_from` admission,
+original metadata, the independent checked posterior computation and both saved
+answers. It preserves the complete changed-belief list with the existing UUID
+and probability encoder, rather than substituting an acknowledgement. Fresh
+prepared work needs the actual locked clock and calculation report; missing
+seeds and invalid stored preparation need no invented report. Refused/rejected/
+repeated outcomes publish no business changes or completed answer. Replay
+preserves the current world and original list without new receipts. Shared
+parser/diagnostic definitions do not change business goals or runtime behavior.
+Complete public host/wire assembly remains unfinished.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |

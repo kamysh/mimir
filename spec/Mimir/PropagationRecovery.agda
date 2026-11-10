@@ -79,10 +79,7 @@ module Business (format : Encoding.Formatting)
       (subst (Selected.Goal publicationTime selected before) accepted
         (proj₂ (Selected.checked publicationTime selected before)))
 
-module Registered (format : Encoding.Formatting) (conversion : Conversion.Contract)
-  (databaseSum : List Float → Float) (calculator : P.Calculator)
-  (serverTime : ℕ → Store.World → ℤ) where
-  module B = Business format databaseSum calculator
+module Registration (conversion : Conversion.Contract) where
   module PublicDecode = Public.Decode conversion
 
   descriptor : Admission.Descriptor
@@ -112,6 +109,25 @@ module Registered (format : Encoding.Formatting) (conversion : Conversion.Contra
   ... | Wire.object [] = Decode.mapResult (λ requested → requested , Store.ReservationRow.reservedAt reserved)
     (request (Store.BindingRow.arguments binding))
   ... | _ = inj₁ mismatch
+
+module Registered (format : Encoding.Formatting) (conversion : Conversion.Contract)
+  (databaseSum : List Float → Float) (calculator : P.Calculator)
+  (serverTime : ℕ → Store.World → ℤ) where
+  module B = Business format databaseSum calculator
+  module Shared = Registration conversion
+  module PublicDecode = Public.Decode conversion
+  descriptor : Admission.Descriptor
+  descriptor = Shared.descriptor
+  key : ℕ → Text
+  key = Shared.key
+  distinct : ∀ token → key token ≡ Step.resultKey → ⊥
+  distinct = Shared.distinct
+  mismatch : Validation.Fault
+  mismatch = Shared.mismatch
+  request : Wire.Value → Validation.Fault ⊎ ℕ
+  request = Shared.request
+  original : ℕ → Step.Registration → Validation.Fault ⊎ (ℕ × ℤ)
+  original = Shared.original
 
   admit : ℕ → Step.Registration → Maybe B.Diagnostic
   admit token registration with original token registration

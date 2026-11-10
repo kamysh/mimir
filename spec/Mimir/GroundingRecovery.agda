@@ -70,7 +70,7 @@ intendedKeepsJournal (Ground.add chunk belief weight) before after observed | tr
 intendedKeepsJournal (Ground.add chunk belief weight) before after observed | true | just _ | just _ with observed
 ... | refl = refl
 
-module Business (databaseSum : List Float → Float) (calculator : P.Calculator) where
+module Diagnostics (databaseSum : List Float → Float) where
   module N = Inference.NumericalOutcome databaseSum
 
   data Diagnostic : Set where
@@ -78,6 +78,13 @@ module Business (databaseSum : List Float → Float) (calculator : P.Calculator)
     preparation : N.PreparationIssue → Diagnostic
     rejectedReport : P.CalculationReport → Diagnostic
     repeated : P.State → List P.State → Diagnostic
+
+module Business (databaseSum : List Float → Float) (calculator : P.Calculator) where
+  module N = Inference.NumericalOutcome databaseSum
+
+  Diagnostic : Set
+  Diagnostic = Diagnostics.Diagnostic databaseSum
+  open Diagnostics databaseSum public using (requestFault; preparation; rejectedReport; repeated)
 
   Outcome = Diagnostic ⊎ (Store.World × Wire.Value)
 
