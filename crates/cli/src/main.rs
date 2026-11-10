@@ -111,18 +111,17 @@ enum Command {
     #[command(subcommand)]
     Judge(judge::JudgeCommand),
 
-    /// Create a configuration file.
+    /// Create or edit a configuration file.
     ///
-    /// With no arguments: writes a commented template to
-    /// ~/.config/mimir/config.toml (or $XDG_CONFIG_HOME/mimir/config.toml) and
-    /// opens the existing config (or creates a template) in $EDITOR.
+    /// With no arguments: opens the selected configuration in $EDITOR,
+    /// creating a commented template first only when the file is absent.
     /// With KEY=VALUE arguments: writes a config built
     /// from those overrides non-interactively (no $EDITOR). Recognised keys:
     /// host, port, dbname, user, password, pgpassfile, ssl_mode, ssl_root_cert, ssl_client_cert,
     /// ssl_client_key, backend, model, api_key, cache_dir.
     /// An existing valid config is left unchanged when the explicit overrides
-    /// already match. Conflicting overrides ask for a decision. With no
-    /// arguments, the existing file opens in the editor so it can be repaired.
+    /// already match. Conflicting overrides ask for a decision. Interactive
+    /// editing also accepts an existing configuration that needs repair.
     Init {
         /// KEY=VALUE pairs (e.g. `host=localhost port=5450 backend=local`).
         /// Omit to get the interactive $EDITOR flow.
