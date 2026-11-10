@@ -244,3 +244,4 @@ module Registered (conversion : Conversion.Contract) (databaseSum : List Float â
   module Saved = Run.Saved
   Goal = Certified.Goal
   operation = Certified.operation
+  cachedReplay = Run.cachedReplay

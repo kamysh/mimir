@@ -385,6 +385,38 @@ pub enum ConfigCreation {
     AlreadyConfigured(std::path::PathBuf),
 }
 
+/// Interactive initialization preserves an existing file for the user's editor.
+/// Its contents need not already be valid: editing can be how the user repairs it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TemplatePreparation {
+    Created(std::path::PathBuf),
+    Existing(std::path::PathBuf),
+}
+
+/// Confirm a complete existing configuration after an unconfirmed publication.
+/// This never serializes, replaces, or changes permissions on the selected file.
+pub(crate) fn sync_published_configuration(path: &std::path::Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use anyhow::Context;
+        std::fs::File::open(path)
+            .context("unable to reopen configuration for synchronization")?
+            .sync_all()
+            .context("unable to synchronize the configuration file")?;
+        let parent = path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::File::open(parent)
+            .context("unable to open configuration directory for synchronization")?
+            .sync_all()
+            .context("unable to synchronize the configuration directory")?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 fn matching_existing_config(
     path: &std::path::Path,
     pairs: &[(String, String)],
@@ -412,15 +444,7 @@ fn matching_existing_config(
         path.display(), conflicts.into_iter().collect::<Vec<_>>().join(", "));
     // Also finishes directory durability if a previous successful publication
     // lost its acknowledgement. File contents and permissions stay untouched.
-    #[cfg(unix)]
-    {
-        std::fs::File::open(path)?.sync_all()?;
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| std::path::Path::new("."));
-        std::fs::File::open(parent)?.sync_all()?;
-    }
+    sync_published_configuration(path)?;
     Ok(ConfigCreation::AlreadyConfigured(path.to_owned()))
 }
 
@@ -481,16 +505,30 @@ impl Config {
         Ok((config, operations))
     }
 
-    /// Write a template config at the default path and return the path.
-    /// Fails if the file already exists.
-    pub fn create_template() -> anyhow::Result<std::path::PathBuf> {
+    /// Prepare a template or preserve the existing file for interactive editing.
+    pub fn create_template() -> anyhow::Result<TemplatePreparation> {
         let path = Self::config_path();
-        if path.exists() {
-            anyhow::bail!("config already exists at {}", path.display());
+        if std::fs::symlink_metadata(&path).is_ok() {
+            anyhow::ensure!(
+                std::fs::metadata(&path).is_ok_and(|value| value.is_file()),
+                "The configuration path {} does not name an existing file. No file was changed. Choose a configuration file path before opening the editor.",
+                path.display()
+            );
+            return Ok(TemplatePreparation::Existing(path));
         }
         let content = crate::operations::Operations::defaults()?.header()? + CONFIG_TEMPLATE;
-        write_private_config(&path, &content)?;
-        Ok(path)
+        match write_private_config(&path, &content) {
+            Ok(()) => Ok(TemplatePreparation::Created(path)),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|value| value.kind() == std::io::ErrorKind::AlreadyExists)
+                    && std::fs::metadata(&path).is_ok_and(|value| value.is_file()) =>
+            {
+                Ok(TemplatePreparation::Existing(path))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Build a config non-interactively from `KEY=VALUE` overrides on top of

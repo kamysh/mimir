@@ -117,17 +117,28 @@ async fn completed(service: &MimirService, step: &RegisteredStep) -> Result<Step
 // stored clock. Reservation time is deliberately not an input to this oracle.
 fn elapsed_charge(before: &Belief, after: &Belief) -> Result<usize> {
     let expected = mimir_core::inference::InferenceEngine::new().decay_all(
-        std::slice::from_ref(before), after.decay_accounted_at, 0.5,
+        std::slice::from_ref(before),
+        after.decay_accounted_at,
+        0.5,
         &std::collections::HashMap::new(),
     )?;
-    let counts = expected.first().map_or((before.alpha, before.beta), |(_, counts)| *counts);
+    let counts = expected
+        .first()
+        .map_or((before.alpha, before.beta), |(_, counts)| *counts);
     assert_eq!((after.alpha, after.beta), counts);
     assert_eq!(after.created_at, before.created_at);
     assert_eq!(after.last_activated_at, before.last_activated_at);
-    assert!(mimir_core::inference::InferenceEngine::new().decay_all(
-        std::slice::from_ref(after), after.decay_accounted_at, 0.5,
-        &std::collections::HashMap::new(),
-    )?.is_empty(), "a later calculation at the already-accounted clock charged twice");
+    assert!(
+        mimir_core::inference::InferenceEngine::new()
+            .decay_all(
+                std::slice::from_ref(after),
+                after.decay_accounted_at,
+                0.5,
+                &std::collections::HashMap::new(),
+            )?
+            .is_empty(),
+        "a later calculation at the already-accounted clock charged twice"
+    );
     Ok(expected.len())
 }
 
@@ -193,21 +204,35 @@ async fn different_tokens_charge_only_new_elapsed_time_and_retries_keep_original
         json!({"decay_factor":0.5,"project":project}),
     )
     .await?;
-    let not_before: DateTime<Utc> = audit.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
+    let not_before: DateTime<Utc> = audit
+        .query_one("SELECT clock_timestamp()", &[])
+        .await?
+        .get(0);
     let original = completed(&service, &first).await?;
     let after = store.get_belief(fact.id).await?.unwrap();
     assert!(after.decay_accounted_at >= not_before);
-    assert_eq!(original.reply, json!({"decayed":elapsed_charge(&fact, &after)?}));
-    let next_not_before: DateTime<Utc> = audit.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
+    assert_eq!(
+        original.reply,
+        json!({"decayed":elapsed_charge(&fact, &after)?})
+    );
+    let next_not_before: DateTime<Utc> = audit
+        .query_one("SELECT clock_timestamp()", &[])
+        .await?
+        .get(0);
     let second_reply = completed(&service, &second).await?;
     let second_after = store.get_belief(fact.id).await?.unwrap();
     assert!(second_after.decay_accounted_at >= next_not_before);
-    assert_eq!(second_reply.reply, json!({"decayed":elapsed_charge(&after, &second_after)?}));
+    assert_eq!(
+        second_reply.reply,
+        json!({"decayed":elapsed_charge(&after, &second_after)?})
+    );
     drop(service);
     let reopened = MimirService::connect(&config()).await?;
     assert_eq!(completed(&reopened, &first).await?, original);
-    assert_eq!(mimir_json::to_value(store.get_belief(fact.id).await?)?,
-        mimir_json::to_value(Some(second_after))?);
+    assert_eq!(
+        mimir_json::to_value(store.get_belief(fact.id).await?)?,
+        mimir_json::to_value(Some(second_after))?
+    );
     assert_eq!(
         mimir_json::to_value(store.get_belief(exempt.id).await?)?,
         exempt_before
@@ -257,11 +282,17 @@ async fn final_answer_rejection_restores_counts_baseline_and_pending_status() ->
         before
     );
     pending(&service, reserved.operation_token, &step).await?;
-    let not_before: DateTime<Utc> = audit.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
+    let not_before: DateTime<Utc> = audit
+        .query_one("SELECT clock_timestamp()", &[])
+        .await?
+        .get(0);
     let answer = completed(&service, &step).await?;
     let after = store.get_belief(belief.id).await?.unwrap();
     assert!(after.decay_accounted_at >= not_before);
-    assert_eq!(answer.reply, json!({"decayed":elapsed_charge(&belief, &after)?}));
+    assert_eq!(
+        answer.reply,
+        json!({"decayed":elapsed_charge(&belief, &after)?})
+    );
     store.delete_project(&project).await?;
     Ok(())
 }
@@ -289,12 +320,18 @@ async fn an_old_reserved_time_cannot_rewind_a_later_posterior_publication() -> R
     store.update_belief_beta(belief.id, 100.0, 10.0).await?;
     let current = store.get_belief(belief.id).await?.unwrap();
     assert!(current.decay_accounted_at >= reserved.reserved_at);
-    let not_before: DateTime<Utc> = db::connect(&config().database).await?
-        .query_one("SELECT clock_timestamp()", &[]).await?.get(0);
+    let not_before: DateTime<Utc> = db::connect(&config().database)
+        .await?
+        .query_one("SELECT clock_timestamp()", &[])
+        .await?
+        .get(0);
     let answer = completed(&service, &step).await?;
     let after = store.get_belief(belief.id).await?.unwrap();
     assert!(after.decay_accounted_at >= not_before);
-    assert_eq!(answer.reply, json!({"decayed":elapsed_charge(&current, &after)?}));
+    assert_eq!(
+        answer.reply,
+        json!({"decayed":elapsed_charge(&current, &after)?})
+    );
     store.delete_project(&project).await?;
     Ok(())
 }
@@ -328,8 +365,11 @@ async fn grounding_publication_and_removal_reconcile_the_time_of_their_new_count
         json!({"belief_id":belief.id,"chunk_id":chunk.id,"weight":1.0}),
     )
     .await?;
-    let not_before: DateTime<Utc> = db::connect(&config().database).await?
-        .query_one("SELECT clock_timestamp()", &[]).await?.get(0);
+    let not_before: DateTime<Utc> = db::connect(&config().database)
+        .await?
+        .query_one("SELECT clock_timestamp()", &[])
+        .await?
+        .get(0);
     assert!(matches!(
         service.change_evidence_operation(&step).await?,
         StepDecision::Done(_)

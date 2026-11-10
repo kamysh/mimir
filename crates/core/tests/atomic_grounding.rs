@@ -178,7 +178,10 @@ async fn removal_replays_without_removing_evidence_added_after_its_completion() 
         let child_before = f.store.get_belief(f.child).await?.unwrap();
         let (token, step) = f.plan("delete_evidence", f.args()).await?;
         let not_before: chrono::DateTime<chrono::Utc> = db::connect(&config().database)
-            .await?.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
+            .await?
+            .query_one("SELECT clock_timestamp()", &[])
+            .await?
+            .get(0);
         let StepDecision::Done(first) = f.service.change_evidence_operation(&step).await? else {
             panic!("no result")
         };

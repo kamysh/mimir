@@ -246,7 +246,10 @@ async fn standalone_propagation_replays_the_original_list_after_later_graph_chan
         let plan = f.plan("propagate_from", json!({"id":f.source})).await?;
         let step = &plan.steps()[0];
         let not_before: chrono::DateTime<chrono::Utc> = db::connect(&config().database)
-            .await?.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
+            .await?
+            .query_one("SELECT clock_timestamp()", &[])
+            .await?
+            .get(0);
         let StepDecision::Done(first) = f.service.propagate_operation(step).await? else {
             panic!("no propagation")
         };

@@ -43,6 +43,7 @@ import Mimir.DatabaseTransaction as DB
 import Mimir.OperationControls as Controls
 import Mimir.InferenceProtocol as Service
 import Mimir.McpErrors as Errors
+import Mimir.ProjectDeletion as Project
 open import Mimir.RecordDecoding using (_>>=_)
 
 -- The stored request supplies scope/threshold; grace comes only from the
@@ -479,6 +480,7 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
 
   operation : Recovery.RecoverableFor Store.World ℕ Saved.Reply Goal
   operation = record { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic; converges = converges; progress = progress }
+  Result = Saved.Reply
 
   -- A saved publication takes priority over every new configuration/clock
   -- observation. The exact original answer and complete current World survive.
@@ -528,6 +530,152 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
     replayed = trans (allowedAdmission token later current admittedCurrent)
       (trans (K.replay (token , later) current reply reply activeCurrent stepCurrent resultCurrent)
         (cong (λ value → current , Step.done value) (sameValue (trans (sym resultCurrent) present))))
+
+  -- A real interrupted sweep either changed nothing or has its complete final
+  -- pair. Changing the user policy can pause a fresh attempt; it cannot make
+  -- an already published answer depend on a later policy observation.
+  module Journal (postgres : Controls.PostgreSQL) where
+    module Read = Controls.Readback library postgres using
+      (ExecutionContext; admission; admitted; returned; completed; finalPairCompletes)
+    module Plan = Controls.Plan using
+      (Step; step; Saved; readStep; fieldNames; decode; readPlanFields; parsedSteps; stepDecoded)
+    module J = Controls.OpaqueJournal using (Cursor; here; Complete; cursorNext)
+    open Admission.RecordFields using (sameRecordView; thirdTrue; unfield)
+
+    operationName = toList "sweep_expired_defeated"
+    finalStep = Plan.step (Admission.Descriptor.site descriptor) nothing (key 0)
+
+    singletonValue : ∀ check observed → Project.Registered.singleton check observed ≡ true →
+      Σ Wire.Value (λ raw → observed ≡ just (Wire.array (raw ∷ [])) × check raw ≡ true)
+    singletonValue check (just (Wire.array (raw ∷ []))) known = raw , refl , known
+    singletonValue check (just (Wire.array [])) ()
+    singletonValue check (just (Wire.array (_ ∷ _ ∷ _))) ()
+    singletonValue check (just Wire.null) ()
+    singletonValue check (just (Wire.boolean _)) ()
+    singletonValue check (just (Wire.unsigned _)) ()
+    singletonValue check (just (Wire.signed _)) ()
+    singletonValue check (just (Wire.floating _)) ()
+    singletonValue check (just (Wire.string _)) ()
+    singletonValue check (just (Wire.object _)) ()
+    singletonValue check nothing ()
+
+    selectedRead : ∀ view raw steps → view (toList "steps") ≡ just (Wire.array (raw ∷ [])) →
+      Wire.required (toList "steps") (Decode.readArray Plan.readStep) view ≡ inj₂ steps →
+      Decode.readArray Plan.readStep (Wire.array (raw ∷ [])) ≡ inj₂ steps
+    selectedRead view raw steps found known rewrite found = unfield (toList "steps") _ steps known
+
+    singletonRead : ∀ raw steps → Decode.readArray Plan.readStep (Wire.array (raw ∷ [])) ≡ inj₂ steps →
+      Σ Plan.Step (λ decodedStep → Plan.readStep raw ≡ inj₂ decodedStep × steps ≡ (decodedStep ∷ []))
+    singletonRead raw steps known with Plan.readStep raw
+    ... | inj₁ fault with known
+    ... | ()
+    singletonRead raw steps known | inj₂ decodedStep with known
+    ... | refl = decodedStep , refl , refl
+
+    planCheck : Wire.Object.View → Bool
+    planCheck view = Project.Registered.fieldText operationName (view (toList "operation")) ∧
+      Project.Registered.singleton (Admission.Plan.shapeMatches descriptor) (view (toList "shape")) ∧
+      Project.Registered.singleton (Admission.Plan.stepMatches descriptor) (view (toList "steps"))
+
+    decodedSingle : ∀ raw model → Admission.Plan.matches descriptor raw ≡ true → Plan.decode raw ≡ inj₂ model →
+      Plan.Saved.steps model ≡ (finalStep ∷ [])
+    decodedSingle raw model matched decoded with sameRecordView
+      (toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ []) Plan.fieldNames
+      planCheck Plan.readPlanFields raw model matched decoded
+    ... | view , checked , parsed with singletonValue (Admission.Plan.stepMatches descriptor) (view (toList "steps"))
+      (thirdTrue (Project.Registered.fieldText operationName (view (toList "operation")))
+        (Project.Registered.singleton (Admission.Plan.shapeMatches descriptor) (view (toList "shape")))
+        (Project.Registered.singleton (Admission.Plan.stepMatches descriptor) (view (toList "steps"))) checked)
+    ... | saved , found , matchedStep with singletonRead saved (Plan.Saved.steps model)
+      (selectedRead view saved _ found (Plan.parsedSteps view model parsed))
+    ... | decodedStep , readStep , exact with Plan.stepDecoded descriptor saved decodedStep matchedStep readStep
+    ... | refl = exact
+
+    originalPlanObserved : ∀ token before (context : Read.ExecutionContext operationName token before) →
+      Admission.originalPlan operationName token (Step.registration before) ≡ inj₂
+        (Read.ExecutionContext.reservationRow context , Read.ExecutionContext.bindingRow context , Read.ExecutionContext.rawPlan context)
+    originalPlanObserved token before context rewrite Read.ExecutionContext.originalReservation context
+      | Read.ExecutionContext.originalBinding context | Read.ExecutionContext.requestedOperation context
+      | Read.ExecutionContext.originalPlan context = refl
+
+    matchedPlan : ∀ token metadata before (context : Read.ExecutionContext operationName token before) →
+      admit (token , metadata) (Step.registration before) ≡ nothing →
+      Admission.Plan.matches descriptor (Read.ExecutionContext.rawPlan context) ≡ true
+    matchedPlan token metadata before context rewrite originalPlanObserved token before context
+      with Admission.Plan.matches descriptor (Read.ExecutionContext.rawPlan context)
+    ... | false = λ ()
+    ... | true = λ _ → refl
+
+    contextStep : ∀ token metadata before (context : Read.ExecutionContext operationName token before) →
+      admit (token , metadata) (Step.registration before) ≡ nothing →
+      Plan.Saved.steps (Read.ExecutionContext.plan context) ≡ (finalStep ∷ [])
+    contextStep token metadata before context permitted = decodedSingle (Read.ExecutionContext.rawPlan context)
+      (Read.ExecutionContext.plan context) (matchedPlan token metadata before context permitted)
+      (Read.ExecutionContext.decoded context)
+
+    completes : ∀ token metadata before (context : Read.ExecutionContext operationName token before) changed reply →
+      admit (token , metadata) (Step.registration before) ≡ nothing →
+      Store.lookupCancellation before token ≡ nothing → Store.lookupSaved before token (key token) ≡ nothing →
+      Store.lookupSaved before token Step.resultKey ≡ nothing → decide (token , metadata) before ≡ inj₂ (changed , reply) →
+      Read.admission operationName token (K.publication (token , metadata) changed reply) ≡
+        Read.returned (Read.completed (Read.ExecutionContext.bindingRow context) reply)
+    completes token metadata before context changed reply permitted active stepAbsent resultAbsent accepted =
+      Read.finalPairCompletes operationName token before context finalStep reply changed
+        (J.cursorNext token before _ finalStep [] (J.Complete.prefix (Read.ExecutionContext.journal context)) cursor stepAbsent)
+        cursor resultAbsent active (keepsJournal (token , metadata) before changed reply accepted)
+      where
+      cursor : J.Cursor token before (Plan.Saved.steps (Read.ExecutionContext.plan context)) (finalStep ∷ [])
+      cursor = subst (λ steps → J.Cursor token before steps (finalStep ∷ []))
+        (sym (contextStep token metadata before context permitted)) (J.here _)
+
+    Completed : ℕ → Store.World → Set
+    Completed token current = Σ Store.BindingRow (λ binding → Σ Wire.Value (λ reply →
+      Read.admission operationName token current ≡ Read.returned (Read.completed binding reply)))
+
+    interruptedReadback : ∀ token before current (context : Read.ExecutionContext operationName token before) →
+      Read.admission operationName token before ≡ Read.admitted context →
+      X.Interrupted (script token) before current → current ≡ before ⊎ Completed token current
+    interruptedReadback token before current context known cut with interruptionState token before current cut
+    ... | inj₁ same = inj₁ same
+    ... | inj₂ (metadata , same) with classification token metadata before
+    ... | inj₁ unchanged = inj₁ (trans same unchanged)
+    ... | inj₂ (changed , reply , permitted , active , stepAbsent , resultAbsent , accepted) =
+      inj₂ (Read.ExecutionContext.bindingRow context , reply , subst
+        (λ world → Read.admission operationName token world ≡ Read.returned
+          (Read.completed (Read.ExecutionContext.bindingRow context) reply))
+        (sym samePublication)
+        (completes token metadata before context changed reply permitted active stepAbsent resultAbsent accepted))
+      where
+      samePublication = trans same (cong proj₁ (fresh token metadata before changed reply permitted active stepAbsent resultAbsent accepted))
+
+    ResumableOrCompleted : ℕ → Store.World → Set
+    ResumableOrCompleted token current =
+      (Σ (Read.ExecutionContext operationName token current) (λ context →
+        Read.admission operationName token current ≡ Read.admitted context)) ⊎ Completed token current
+
+    interruptedAdmission : ∀ token before current (context : Read.ExecutionContext operationName token before) →
+      Read.admission operationName token before ≡ Read.admitted context →
+      X.Interrupted (script token) before current → ResumableOrCompleted token current
+    interruptedAdmission token before current context known cut with interruptedReadback token before current context known cut
+    ... | inj₁ same = subst (ResumableOrCompleted token) (sym same) (inj₁ (context , known))
+    ... | inj₂ completed = inj₂ completed
+
+    MetadataFrame : ℕ → Store.World → Store.World → Set
+    MetadataFrame token before current = Step.registration current ≡ Step.registration before ×
+      Store.lookupCancellation current token ≡ Store.lookupCancellation before token
+
+    interruptedFrame : ∀ token before current → X.Interrupted (script token) before current → MetadataFrame token before current
+    interruptedFrame token before current cut with interruptionState token before current cut
+    ... | inj₁ same = cong Step.registration same , cong (λ world → Store.lookupCancellation world token) same
+    ... | inj₂ (metadata , same) with classification token metadata before
+    ... | inj₁ unchanged = cong Step.registration (trans same unchanged) ,
+      cong (λ world → Store.lookupCancellation world token) (trans same unchanged)
+    ... | inj₂ (changed , reply , permitted , active , stepAbsent , resultAbsent , accepted) =
+      trans (cong Step.registration samePublication) (K.publicationKeepsRegistration input before changed reply accepted) ,
+      trans (cong (λ world → Store.lookupCancellation world token) samePublication) (K.publicationKeepsCancellation input before changed reply accepted)
+      where
+      input = token , metadata
+      samePublication = trans same (cong proj₁ (fresh token metadata before changed reply permitted active stepAbsent resultAbsent accepted))
 
 -- The service resolves completed historical journals before checking current
 -- policy or admitting a new publication. This is the same exact, whole-World
