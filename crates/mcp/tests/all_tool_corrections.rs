@@ -200,6 +200,7 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
     let mut nested_cases = 0;
     let mut nested_missing_cases = 0;
     let mut nested_wrong_type_cases = 0;
+    let mut nested_invalid_value_cases = 0;
     for descriptor in tools {
         let name = descriptor["name"].as_str().context("tool without a name")?;
         let request = json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":{"unexpected_agent_field":true}}});
@@ -368,6 +369,39 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
                         .await?;
                         nested_wrong_type_cases += 1;
                     }
+                    if child["format"] == "uuid" {
+                        let mut value = serde_json::Map::new();
+                        value.insert(field.clone(), json!("not-a-uuid"));
+                        check_nested(
+                            &mut input,
+                            &mut output,
+                            name,
+                            &path,
+                            Value::Object(value),
+                            field,
+                            Code::MalformedInput,
+                        )
+                        .await?;
+                        nested_invalid_value_cases += 1;
+                    }
+                    if child["enum"].as_array().is_some_and(|choices| {
+                        choices.iter().all(Value::is_string)
+                            && !choices.contains(&json!("not-an-advertised-choice"))
+                    }) {
+                        let mut value = serde_json::Map::new();
+                        value.insert(field.clone(), json!("not-an-advertised-choice"));
+                        check_nested(
+                            &mut input,
+                            &mut output,
+                            name,
+                            &path,
+                            Value::Object(value),
+                            field,
+                            Code::MalformedInput,
+                        )
+                        .await?;
+                        nested_invalid_value_cases += 1;
+                    }
                 }
             }
         }
@@ -384,6 +418,11 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
         nested_cases != 0 && nested_missing_cases != 0 && nested_wrong_type_cases != 0,
         "tool catalogue produced incomplete nested-object cases"
     );
+    ensure!(
+        nested_invalid_value_cases != 0,
+        "tool catalogue produced no nested invalid-value cases"
+    );
+    println!("Checked {nested_invalid_value_cases} nested invalid-value cases");
     println!("Checked {missing_cases} missing-field, {wrong_type_cases} wrong-type, {invalid_uuid_cases} invalid UUID, {invalid_choice_cases} invalid choice, {zero_selection_cases} zero-selection, {nested_cases} nested unknown-field, {nested_missing_cases} nested missing-field and {nested_wrong_type_cases} nested wrong-type cases across {} advertised tools", tools.len());
     for name in [
         "list_beliefs",
