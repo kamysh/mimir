@@ -250,20 +250,43 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
         "tool catalogue produced no zero-selection cases"
     );
     println!("Checked {missing_cases} missing-field, {wrong_type_cases} wrong-type, {invalid_uuid_cases} invalid UUID, {invalid_choice_cases} invalid choice and {zero_selection_cases} zero-selection cases across {} advertised tools", tools.len());
-    let corrected = send(&mut input, &mut output, json!({"jsonrpc":"2.0","id":"corrected","method":"tools/call","params":{"name":"list_patterns","arguments":{}}})).await?;
-    ensure!(
-        corrected["id"] == "corrected" && corrected.get("error").is_none(),
-        "corrected request failed: {corrected}"
-    );
-    let value: Value = mimir_json::from_str(
-        corrected["result"]["content"][0]["text"]
-            .as_str()
-            .context("missing corrected result")?,
-    )?;
-    ensure!(
-        value.get("status") != Some(&json!("needs_input")),
-        "corrected request still needs input: {value}"
-    );
+    for name in [
+        "list_beliefs",
+        "list_patterns",
+        "get_contradictions",
+        "pending_experiences",
+        "learning_capabilities",
+    ] {
+        ensure!(
+            tools.iter().any(|tool| tool["name"] == name),
+            "{name} is not advertised"
+        );
+        check_field(
+            &mut input,
+            &mut output,
+            name,
+            json!({"unexpected_agent_field": true}),
+            "unexpected_agent_field",
+            Code::UnknownField,
+        )
+        .await?;
+        let corrected = send(&mut input, &mut output, json!({"jsonrpc":"2.0","id":"corrected","method":"tools/call","params":{"name":name,"arguments":{}}})).await?;
+        ensure!(
+            corrected["id"] == "corrected"
+                && corrected.get("error").is_none()
+                && corrected["result"]["isError"] != true,
+            "{name}: corrected request failed: {corrected}"
+        );
+        let value: Value = mimir_json::from_str(
+            corrected["result"]["content"][0]["text"]
+                .as_str()
+                .context("missing corrected result")?,
+        )?;
+        ensure!(
+            value.get("status") != Some(&json!("needs_input")),
+            "{name}: corrected request still needs input: {value}"
+        );
+    }
     let after = snapshot().await?;
     ensure!(
         before == after,
