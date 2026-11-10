@@ -117,16 +117,14 @@ module Bind (conversion : Conversion.Contract) (format : Encoding.Formatting)
         (H.inputCorrection (Correction.Certified.report proof)) →
       Dialogue tool args (inj₂ (Correction.emitCorrection proof))
     preparation : ∀ events actual report →
+      (unchanged : Store.businessSnapshot (A.reached actual) ≡
+        Store.businessSnapshot (A.Result.initial actual)) →
       H.Handled (Envelope.literal (Catalog.wireName tool)) args events
         (H.preparationDecision actual report) →
-      Dialogue tool args (inj₂ (Output.Encode.result environment format actual))
-    partial : ∀ {before after} events edge report →
+      Dialogue tool args (inj₂ (Correction.emitCorrection (Correction.certified report unchanged)))
+    partial : ∀ events actual edge report →
       H.Handled (Envelope.literal (Catalog.wireName tool)) args events
-        (H.partialDecision edge report) →
-      Mutation.StatementReceipt (Mutation.insertEdge
-        (Mutation.CommittedEdge.from edge) (Mutation.CommittedEdge.to edge)
-        Review.defeats (Mutation.CommittedEdge.weight edge)) before
-        (Mutation.receipt Database.committed) after →
+        (H.partialDecision actual edge report) →
       Dialogue tool args (inj₂ (H.P.partialValue edge report))
 
   record Receipt (id : ℕ) (tool : Catalog.Tool) (args : V.Value) (reply : Scope.Failure ⊎ V.Value) : Set where

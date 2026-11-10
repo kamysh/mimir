@@ -162,10 +162,14 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   module Defeating = Defeat.Registered library databaseSum calculator serverTime
   module Sweeping = Sweep.Registered library format databaseSum calculator sweepObservation
   module Recording = Source.Registered library format database databaseSum calculator sourcePostgres
-  module DocumentLoading = Loading.Registered library format utcTimestamp databaseSum calculator serverTime
-  module DocumentEntry = DocumentLoading.Entry configuration postgres
+  module DocumentEntry = Loading.Registered.Entry library format utcTimestamp databaseSum calculator serverTime configuration postgres
+    using (Outcome; inspected; executed; normalized; EntryGoal; Operation; fullOperation; toRecoverable)
   module Reviewing = ReviewOperation.Registered library format database databaseSum calculator
     reviewDependencies reviewCodec postgres reviewBackend
+    using (Result; Goal; operation)
+  ReviewEnvironment : Set
+  ReviewEnvironment = ReviewPreparation.Registered.Environment library format database databaseSum calculator
+    reviewDependencies reviewCodec postgres
   module Control = Controls.Controls library postgres
   module ControlFixed request input = Fixed (Control.operation request) input
   module ProjectIntent = Recovery.DeterministicContract Project.Registered.recoverable
@@ -392,7 +396,7 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   Certificate (documentLoading expected) = DocumentEntry.Operation
   Certificate kind = Recovery.RecoverableFor Store.World (Input kind) (Result kind) (Goal kind)
 
-  certificate : Reviewing.P.Environment → (kind : Kind) → Certificate kind
+  certificate : ReviewEnvironment → (kind : Kind) → Certificate kind
   certificate environment (basic request) = BasicFixed.operation request
   certificate environment (experiences request) = ExperienceFixed.operation request
   certificate environment (assessments request) = AssessmentFixed.operation request
@@ -491,9 +495,7 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   Success (sweep _) reply = stepSucceeded reply
   Success (sourceWrite _) reply = stepSucceeded reply
   Success (reviewWrite _) reply = stepSucceeded reply
-  Success (documentLoading _) (DocumentEntry.inspected (DocumentEntry.Journal.completed _ _)) = ⊤
-  Success (documentLoading _) (DocumentEntry.inspected _) = ⊥
-  Success (documentLoading _) (DocumentEntry.executed reply) = stepSucceeded (DocumentEntry.Body.Result.value reply)
+  Success (documentLoading _) reply = stepSucceeded (DocumentEntry.normalized reply)
   Success (control request _) reply = Control.Success request reply
 
   invalidPage : Validation.Fault
@@ -565,7 +567,7 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   classify (Public.operationOutcome token) = control Controls.readOutcome token
   classify (Public.cancelOperation token) = control Controls.cancel token
 
-  operation : (environment : Reviewing.P.Environment) → (request : Public.Request) → Certificate (classify request)
+  operation : (environment : ReviewEnvironment) → (request : Public.Request) → Certificate (classify request)
   operation environment request = certificate environment (classify request)
 
   data ReadRequest : Set where
@@ -633,9 +635,9 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
     (tokenForKind (Tools.kind tool) (Request.Invocation.operationToken invocation))
   resolve (privateRead request) = chooseInput (readKind request) nothing
 
-  selectedCertificate : Reviewing.P.Environment → (call : Call) → Certificate (Choice.kind (resolve call))
+  selectedCertificate : ReviewEnvironment → (call : Call) → Certificate (Choice.kind (resolve call))
   selectedCertificate environment call = certificate environment (Choice.kind (resolve call))
-  selectedOperation : (environment : Reviewing.P.Environment) → (call : Call) →
+  selectedOperation : (environment : ReviewEnvironment) → (call : Call) →
     Recovery.RecoverableFor Store.World (Input (Choice.kind (resolve call)))
       (Result (Choice.kind (resolve call))) (Goal (Choice.kind (resolve call)))
   selectedOperation environment call = executable (Choice.kind (resolve call)) (selectedCertificate environment call)

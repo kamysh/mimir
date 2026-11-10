@@ -64,7 +64,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
     failure : Diagnostic → Result
     inputCorrection : Correction.Claim → Result
     preparationDecision : A.Result → Correction.Claim → Result
-    partialDecision : Mutation.CommittedEdge → Correction.Claim → Result
+    partialDecision : A.Result → Mutation.CommittedEdge → Correction.Claim → Result
     completed : V.Value → Result
 
   unknownTool : Envelope.Text → Correction.Claim
@@ -85,7 +85,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   ... | P.success value = completed value
   ... | P.failure cause = failure (operationFailed cause)
   ... | P.decision report = preparationDecision result report
-  ... | P.partialDecision edge report = partialDecision edge report
+  ... | P.partialDecision edge report = partialDecision result edge report
 
   data Handled (name : Envelope.Text) (raw : V.Value) : List A.Event → Result → Set where
     unknown : lookup name ≡ nothing → Handled name raw [] (inputCorrection (unknownTool name))

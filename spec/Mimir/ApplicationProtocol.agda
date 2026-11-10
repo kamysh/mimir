@@ -142,6 +142,10 @@ module Run (environment : Environment) where
   resultState (terminalResult call initial terminal) =
     running call initial (Checked.stopped call terminal)
 
+  reached : Result → Store.World
+  reached (terminalResult call initial terminal) =
+    Checked.History.current call (Checked.Active.evidence call (Checked.Terminal.active call terminal))
+
   data Step : State → State → Set where
     observed : ∀ call initial (active : Checked.Active call (input call) initial) effect continuation →
       (exposed : Checked.Active.remaining call active ≡ O.E.ask call effect continuation) →

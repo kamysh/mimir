@@ -45,14 +45,12 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
       correction : ∀ {before after} (proof : Correction.Certified Store.World before after) →
         Materialized (H.inputCorrection (Correction.Certified.report proof)) (inj₂ (Correction.emitCorrection proof))
       preparation : ∀ actual report →
+        (unchanged : Store.businessSnapshot (A.reached actual) ≡
+          Store.businessSnapshot (A.Result.initial actual)) →
         Materialized (H.preparationDecision actual report)
-          (inj₂ (Output.Encode.result environment format actual))
-      partial : ∀ {before after} edge report →
-        Mutation.StatementReceipt (Mutation.insertEdge
-          (Mutation.CommittedEdge.from edge) (Mutation.CommittedEdge.to edge)
-          Review.defeats (Mutation.CommittedEdge.weight edge)) before
-          (Mutation.receipt Database.committed) after →
-        Materialized (H.partialDecision edge report) (inj₂ (H.P.partialValue edge report))
+          (inj₂ (Correction.emitCorrection (Correction.certified report unchanged)))
+      partial : ∀ actual edge report →
+        Materialized (H.partialDecision actual edge report) (inj₂ (H.P.partialValue edge report))
 
     data Event : Set where
       external : (effect : Exchange.Effect) → External effect → Exchange.Reply effect → Event
