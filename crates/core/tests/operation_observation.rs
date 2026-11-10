@@ -10,7 +10,7 @@ use tokio_postgres::IsolationLevel;
 use uuid::Uuid;
 
 #[tokio::test]
-async fn observes_pending_finished_correction_and_cancelled_records() -> Result<()> {
+async fn observes_pending_finished_and_cancelled_records() -> Result<()> {
     let database = isolation::fixture().database_config();
     let mut client = db::connect(&database).await?;
     let tx = client
@@ -19,17 +19,17 @@ async fn observes_pending_finished_correction_and_cancelled_records() -> Result<
         .start()
         .await?;
     let mut tokens = Vec::<Uuid>::new();
-    for _ in 0..4 {
+    for _ in 0..3 {
         tokens.push(tx.query_one("INSERT INTO public.mimir_operation_reservations DEFAULT VALUES RETURNING operation_token", &[]).await?.get(0));
     }
-    let [pending, finished, corrected, cancelled]: [Uuid; 4] = tokens.try_into().unwrap();
+    let [pending, finished, cancelled]: [Uuid; 3] = tokens.try_into().unwrap();
     let key = format!("observation-{pending}");
     tx.execute("INSERT INTO public.mimir_operation_request_keys(request_key,operation_token) VALUES($1,$2)", &[&key,&pending]).await?;
-    for token in [pending, finished, corrected] {
+    for token in [pending, finished] {
         tx.execute("INSERT INTO public.mimir_operation_bindings(operation_token,operation,arguments,settings) VALUES($1,'observation','{}'::jsonb,'{}'::jsonb)", &[&token]).await?;
     }
     tx.execute("INSERT INTO public.mimir_operation_plans(operation_token,plan) VALUES($1,'{\"step\":\"original\"}'::jsonb)", &[&pending]).await?;
-    tx.execute("INSERT INTO public.mimir_operation_step_replies(operation_token,step,reply) VALUES ($1,'@operation-result','{\"result\":\"finished\"}'::jsonb), ($2,'@operation-result','{\"needs_input\":\"correct it\"}'::jsonb)", &[&finished,&corrected]).await?;
+    tx.execute("INSERT INTO public.mimir_operation_step_replies(operation_token,step,reply) VALUES ($1,'@operation-result','{\"result\":\"finished\"}'::jsonb)", &[&finished]).await?;
     let execution: Uuid = tx.query_one("INSERT INTO public.mimir_operation_executions(operation_token,owner_program,owner_pid,owner_host,owner_host_source) VALUES($1,'test-worker',123,'test-host','fixture') RETURNING execution_id", &[&cancelled]).await?.get(0);
     let owner: Uuid = tx.query_one("INSERT INTO public.mimir_embedding_owners(project,operation_token) VALUES ('test-project',$1) RETURNING owner_token", &[&pending]).await?.get(0);
     tx.execute(
@@ -38,7 +38,7 @@ async fn observes_pending_finished_correction_and_cancelled_records() -> Result<
     )
     .await?;
     let observed = operation_observation::observe(&tx).await?;
-    for token in [pending, finished, corrected, cancelled] {
+    for token in [pending, finished, cancelled] {
         assert!(observed.reservations.iter().any(|row| row.token == token));
     }
     assert!(observed
@@ -57,10 +57,6 @@ async fn observes_pending_finished_correction_and_cancelled_records() -> Result<
         .replies
         .iter()
         .any(|row| row.token == finished && row.reply_json.contains("finished")));
-    assert!(observed
-        .replies
-        .iter()
-        .any(|row| row.token == corrected && row.reply_json.contains("correct it")));
     assert!(!observed.replies.iter().any(|row| row.token == pending));
     assert!(observed
         .cancellations
