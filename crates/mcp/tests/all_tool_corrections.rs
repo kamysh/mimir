@@ -125,6 +125,54 @@ fn value_at(path: &[Segment], mut value: Value) -> Value {
     value
 }
 
+fn array_items(schema: &Value, path: &mut Vec<Segment>, targets: &mut Vec<(Vec<Segment>, Value)>) {
+    if schema["type"] == "object" {
+        if let Some(properties) = schema["properties"].as_object() {
+            for (name, child) in properties {
+                path.push(Segment::Key(name.clone()));
+                array_items(child, path, targets);
+                path.pop();
+            }
+        }
+    } else if schema["type"] == "array" && schema.get("items").is_some() {
+        path.push(Segment::Index(0));
+        targets.push((path.clone(), schema["items"].clone()));
+        array_items(&schema["items"], path, targets);
+        path.pop();
+    }
+}
+
+async fn check_array_item(
+    input: &mut tokio::process::ChildStdin,
+    output: &mut BufReader<tokio::process::ChildStdout>,
+    name: &str,
+    path: &[Segment],
+    value: Value,
+    code: Code,
+) -> Result<()> {
+    let response = send(input, output, json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":value_at(path,value)}})).await?;
+    ensure!(
+        response["id"] == name && response.get("error").is_none(),
+        "{name}: array item correction became a protocol error: {response}"
+    );
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .context("missing array item correction")?;
+    let correction: NeedsInput = mimir_json::from_str(text)?;
+    let issue = correction
+        .issues()
+        .iter()
+        .find(|item| item.fault().code == code && item.fault().path == path)
+        .with_context(|| format!("{name}: array item {path:?} was not explained"))?;
+    ensure!(
+        !issue.fault().message.is_empty()
+            && !issue.expected().is_empty()
+            && !issue.suggested_correction().is_empty(),
+        "{name}: incomplete array item correction"
+    );
+    Ok(())
+}
+
 async fn check_nested(
     input: &mut tokio::process::ChildStdin,
     output: &mut BufReader<tokio::process::ChildStdout>,
@@ -201,6 +249,7 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
     let mut nested_missing_cases = 0;
     let mut nested_wrong_type_cases = 0;
     let mut nested_invalid_value_cases = 0;
+    let mut array_item_cases = 0;
     for descriptor in tools {
         let name = descriptor["name"].as_str().context("tool without a name")?;
         let request = json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":{"unexpected_agent_field":true}}});
@@ -315,6 +364,38 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
                 }
             }
         }
+        let mut item_targets = Vec::new();
+        array_items(
+            &descriptor["inputSchema"],
+            &mut Vec::new(),
+            &mut item_targets,
+        );
+        for (path, item) in item_targets {
+            if item["format"] == "uuid" {
+                check_array_item(
+                    &mut input,
+                    &mut output,
+                    name,
+                    &path,
+                    json!("not-a-uuid"),
+                    Code::MalformedInput,
+                )
+                .await?;
+                array_item_cases += 1;
+            }
+            if item["type"] == "integer" && item["minimum"].as_i64() == Some(0) {
+                check_array_item(
+                    &mut input,
+                    &mut output,
+                    name,
+                    &path,
+                    json!(-1),
+                    Code::InvalidNumber,
+                )
+                .await?;
+                array_item_cases += 1;
+            }
+        }
         let mut targets = Vec::new();
         nested_objects(&descriptor["inputSchema"], &mut Vec::new(), &mut targets);
         for (path, schema) in targets {
@@ -423,6 +504,11 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
         "tool catalogue produced no nested invalid-value cases"
     );
     println!("Checked {nested_invalid_value_cases} nested invalid-value cases");
+    ensure!(
+        array_item_cases != 0,
+        "tool catalogue produced no invalid array-item cases"
+    );
+    println!("Checked {array_item_cases} invalid array-item cases");
     println!("Checked {missing_cases} missing-field, {wrong_type_cases} wrong-type, {invalid_uuid_cases} invalid UUID, {invalid_choice_cases} invalid choice, {zero_selection_cases} zero-selection, {nested_cases} nested unknown-field, {nested_missing_cases} nested missing-field and {nested_wrong_type_cases} nested wrong-type cases across {} advertised tools", tools.len());
     for name in [
         "list_beliefs",
