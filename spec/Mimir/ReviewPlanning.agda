@@ -5,6 +5,7 @@
 module Mimir.ReviewPlanning where
 
 open import Data.Bool using (true; false)
+open import Data.Maybe using (Maybe; nothing)
 open import Data.List using ([]; _∷_; map)
 open import Data.List.Relation.Unary.All using (All)
 open import Data.Integer using (ℤ; +_)
@@ -20,6 +21,7 @@ open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.Validation using (Fault; fault; key; prependPath; staleRevision; wrongIdentity; accepted; rejected)
 open import Mimir.RevisionBounds using (i64Maximum)
 import Mimir.LearningKeys as Keys
+import Mimir.LearningInput as Input
 import Mimir.CandidateRegistry as Registry
 import Mimir.CandidateGraph as Graph
 import Mimir.CandidateBatch as Batch
@@ -31,18 +33,18 @@ import Mimir.ReviewPreparationPublication as Publication
 import Mimir.LearningContracts as Contracts
 open import Data.Empty using (⊥-elim)
 
-module For (before : Publication.World) (current : Experience) (requested : Review)
+module WithOriginal (original : Maybe Input.Review) (before : Publication.World) (current : Experience) (requested : Review)
   (clock : Candidate → ℤ)
   (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes before)))
   (expected : ℕ) where
 
-  module F = Publication.For before current requested clock unique
+  module F = Publication.WithOriginal original before current requested clock unique
   module Read = Replay.Read (Review.experienceID requested) (Publication.World.registry before)
 
   record Replayed : Set where
     constructor replayed
     field
-      same : Ledger.R.replay F.state expected (Keys.review requested) ≡ true
+      same : Ledger.R.replay F.state expected (Ledger.submissionKey requested original) ≡ true
       pinned : Admission.Pinned F.P.originalEnvironment requested
       declarations : All (Replay.Declared (Review.experienceID requested) (Publication.World.registry before))
         (Review.candidates requested)
@@ -61,7 +63,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
   ...     | rejected failure invalid = refused failure
   ...     | accepted pinned with Experience.project current ≟Text Ledger.R.Cell.project F.state
   ...       | no different = refused (fault [] wrongIdentity "experience project does not match its revision cell")
-  ...       | yes project with Ledger.R.replay F.state expected (Keys.review requested) in retry
+  ...       | yes project with Ledger.R.replay F.state expected (Ledger.submissionKey requested original) in retry
   ...         | true with Replay.check (Review.experienceID requested) (Publication.World.registry before) (Review.candidates requested)
   ...           | rejected failure invalid = refused failure
   ...           | accepted declarations = replay (replayed retry pinned declarations)
@@ -97,7 +99,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
   decisionValid (replay receipt) valid = valid
   decisionValid (fresh selected) valid = F.publicationValid selected (proj₁ valid)
 
-  replayCannotAppend : Ledger.R.replay F.state expected (Keys.review requested) ≡ true →
+  replayCannotAppend : Ledger.R.replay F.state expected (Ledger.submissionKey requested original) ≡ true →
     ∀ selected → proposed selected ≡ before
   replayCannotAppend same (refused failure) = refl
   replayCannotAppend same (replay receipt) = refl
@@ -118,6 +120,14 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
      (proj₂
       (Admission.For.Admitted.pinned
        (F.P.Prepared.admitted (F.Fresh.preparation selected)))))
+
+-- Legacy canonical callers are unchanged. Complete review operations pass
+-- the immutable original input through WithOriginal.
+module For (before : Publication.World) (current : Experience) (requested : Review)
+  (clock : Candidate → ℤ)
+  (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes before)))
+  (expected : ℕ) where
+  open WithOriginal nothing before current requested clock unique expected public
 
 -- The second plan is built from the actual first publication, including its
 -- prepared nodes, ownership, assessment rows and edges. Native locking and

@@ -12,7 +12,7 @@ import Data.List.Membership.Propositional.Properties as Membership
 open import Data.List.Relation.Unary.All using (All)
 open import Data.List.Relation.Unary.Any using (Any)
 open import Data.Sum using (_⊎_)
-open import Data.Maybe using (just) renaming (map to mapMaybe)
+open import Data.Maybe using (Maybe; just; nothing) renaming (map to mapMaybe)
 open import Data.Nat using (ℕ; suc; _<_)
 open import Data.Integer using (ℤ)
 open import Data.Product using (_×_; _,_; proj₁; proj₂)
@@ -23,6 +23,7 @@ import Mimir.ReviewSchema as Reviews
 open import Mimir.LearningCandidates using (Candidate)
 open import Mimir.RevisionBounds using (i64Maximum)
 import Mimir.LearningKeys as Keys
+import Mimir.LearningInput as Input
 import Mimir.CandidateRegistry as Registry
 import Mimir.CandidateReview as Candidates
 import Mimir.CandidateGraph as Graph
@@ -48,9 +49,11 @@ LedgerAndIdentityValid : World → Set
 LedgerAndIdentityValid before = Ledger.Consistent (World.ledger before) ×
   Registry.IDs.Unique (map Graph.nodeID (World.nodes before))
 
-module For (before : World) (current : Experience) (requested : Review)
+module WithOriginal (original : Maybe Input.Review) (before : World) (current : Experience) (requested : Review)
   (clock : Candidate → ℤ)
   (unique : Registry.IDs.Unique (map Graph.nodeID (World.nodes before))) where
+
+  module Submitted = Ledger.Submitted original
 
   identity = Experience.identity current
   state = Ledger.World.cells (World.ledger before) identity
@@ -69,7 +72,7 @@ module For (before : World) (current : Experience) (requested : Review)
     field
       projectMatches : Experience.project current ≡ Ledger.R.Cell.project state
       expectedMatches : expected ≡ Ledger.R.Cell.review state
-      notReplay : Ledger.R.replay state expected (Keys.review requested) ≡ false
+      notReplay : Ledger.R.replay state expected (Ledger.submissionKey requested original) ≡ false
       room : expected < i64Maximum
       preparation : P.Prepared
 
@@ -80,7 +83,7 @@ module For (before : World) (current : Experience) (requested : Review)
 
   publish : ∀ {expected} → Fresh expected → World
   publish selected = world
-    (Ledger.append identity (World.ledger before) requested (P.materialized (Fresh.preparation selected)))
+    (Submitted.append identity (World.ledger before) requested (P.materialized (Fresh.preparation selected)))
     (Candidates.Prepared.after (P.Prepared.reservation (Fresh.preparation selected)))
     (P.Prepared.afterOwners (Fresh.preparation selected))
     (P.proposedNodes (P.Prepared.reservation (Fresh.preparation selected)))
@@ -89,7 +92,7 @@ module For (before : World) (current : Experience) (requested : Review)
 
   publicationValid : ∀ {expected} (selected : Fresh expected) → Ledger.Consistent (World.ledger before) →
     LedgerAndIdentityValid (publish selected)
-  publicationValid selected consistent = Ledger.appendConsistent identity (World.ledger before) requested
+  publicationValid selected consistent = Submitted.appendConsistent identity (World.ledger before) requested
     (P.materialized (Fresh.preparation selected)) consistent
     ,
     P.proposedUnique
@@ -99,7 +102,7 @@ module For (before : World) (current : Experience) (requested : Review)
     Ledger.activeApplied (Ledger.World.cells (World.ledger (publish selected)) identity)
       (Ledger.World.histories (World.ledger (publish selected)) identity) ≡
     just (P.materialized (Fresh.preparation selected))
-  activeIsPrepared selected = Ledger.appendSelectsApplied identity (World.ledger before)
+  activeIsPrepared selected = Submitted.appendSelectsApplied identity (World.ledger before)
     requested (P.materialized (Fresh.preparation selected))
 
   priorOwnershipPreserved : ∀ {expected} (selected : Fresh expected) key old →
@@ -179,3 +182,10 @@ module For (before : World) (current : Experience) (requested : Review)
   publishedEdgeProvenance selected = Edges.replacementProvenance identity
     (Review.links (P.materialized (Fresh.preparation selected)))
     (World.edges before)
+
+-- Canonical-only callers keep their existing interface. Registered review
+-- publication uses WithOriginal with the actual pre-allocation request.
+module For (before : World) (current : Experience) (requested : Review)
+  (clock : Candidate → ℤ)
+  (unique : Registry.IDs.Unique (map Graph.nodeID (World.nodes before))) where
+  open WithOriginal nothing before current requested clock unique public
