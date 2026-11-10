@@ -28,6 +28,7 @@ import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
 import Mimir.McpErrors as Errors
 import Mimir.GraphMutationProtocol as Mutation
+import Mimir.ApplicationStore as Store
 module Correction = Errors.AgentCorrection
 
 all : List T.Tool
@@ -38,7 +39,8 @@ all = T.insertBelief ∷ T.deleteBelief ∷ T.deleteProject ∷ T.deletePattern 
   T.propagateFrom ∷ T.queryIntervention ∷ T.loadDocument ∷ T.queryDocument ∷ T.clearDocument ∷
   T.getLearningReview ∷ T.learningCapabilities ∷ T.getLessonAssessment ∷ T.lessonAssessmentHistory ∷
   T.explainBelief ∷ T.recordExperience ∷ T.pendingExperiences ∷ T.reviewExperience ∷
-  T.getExperience ∷ T.experienceHistory ∷ T.queryLearningContext ∷ []
+  T.getExperience ∷ T.experienceHistory ∷ T.queryLearningContext ∷
+  T.reserveOperation ∷ T.operationOutcome ∷ T.cancelOperation ∷ []
 
 find : Envelope.Text → List T.Tool → Maybe T.Tool
 find name [] = nothing
@@ -53,7 +55,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   (conversion : Conversion.Contract) where
   module A = Application.Run environment
   module P = Output.Project environment format
-  module D = Request.Decode conversion
+  module D = Request.Decode (Application.Environment.library environment)
 
   data Diagnostic : Set where
     operationFailed : A.Result → Diagnostic
@@ -61,7 +63,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   data Result : Set where
     failure : Diagnostic → Result
     inputCorrection : Correction.Claim → Result
-    preparationDecision : Correction.Claim → Result
+    preparationDecision : A.Result → Correction.Claim → Result
     partialDecision : Mutation.CommittedEdge → Correction.Claim → Result
     completed : V.Value → Result
 
@@ -82,36 +84,30 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   finish result with P.project result
   ... | P.success value = completed value
   ... | P.failure cause = failure (operationFailed cause)
-  ... | P.decision report = preparationDecision report
+  ... | P.decision report = preparationDecision result report
   ... | P.partialDecision edge report = partialDecision edge report
 
   data Handled (name : Envelope.Text) (raw : V.Value) : List A.Event → Result → Set where
     unknown : lookup name ≡ nothing → Handled name raw [] (inputCorrection (unknownTool name))
-    invalid : ∀ tool fault → lookup name ≡ just tool → D.readTool tool raw ≡ inj₁ fault →
+    invalid : ∀ tool fault → lookup name ≡ just tool → D.readInvocation tool raw ≡ inj₁ fault →
       Handled name raw [] (inputCorrection (invalidArguments fault))
-    configuration : ∀ tool request detail → lookup name ≡ just tool → D.readTool tool raw ≡ inj₂ request →
-      A.admission request ≡ inj₁ detail →
-      Handled name raw [] (inputCorrection (Application.configurationCorrection detail))
-    executed : ∀ tool request events result → lookup name ≡ just tool → D.readTool tool raw ≡ inj₂ request →
-      A.admission request ≡ inj₂ tt →
-      A.Runs (A.start request) events result → Handled name raw events (finish result)
+    executed : ∀ tool initial events result → lookup name ≡ just tool →
+      A.Runs (A.start tool raw initial) events result → Handled name raw events (finish result)
 
   record Operation (name : Envelope.Text) (raw : V.Value) (events : List A.Event) (value : V.Value) : Set where
     constructor operation
     field
       tool : T.Tool
-      request : Request.Request
+      initial : Store.World
       result : A.Result
       named : lookup name ≡ just tool
-      decoded : D.readTool tool raw ≡ inj₂ request
-      admitted : A.admission request ≡ inj₂ tt
-      execution : A.Runs (A.start request) events result
+      execution : A.Runs (A.start tool raw initial) events result
       projected : finish result ≡ completed value
 
   successWitness : ∀ name raw events reply value → Handled name raw events reply →
     reply ≡ completed value → Operation name raw events value
-  successWitness name raw events reply value (executed tool request events₁ result named decoded admitted ran) same =
-    operation tool request result named decoded admitted ran same
+  successWitness name raw events reply value (executed tool initial events₁ result named ran) same =
+    operation tool initial result named ran same
 
   successRequiresOperation : ∀ name raw events value → Handled name raw events (completed value) →
     Operation name raw events value
@@ -128,8 +124,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
     reply ≡ inputCorrection report → events ≡ []
   correctionWitness name raw events reply report (unknown named) same = refl
   correctionWitness name raw events reply report (invalid tool detail named decoded) same = refl
-  correctionWitness name raw events reply report (configuration tool request detail named decoded notAdmitted) same = refl
-  correctionWitness name raw events reply report (executed tool request events₁ result named decoded admitted ran) same =
+  correctionWitness name raw events reply report (executed tool initial events₁ result named ran) same =
     ⊥-elim (completionCannotRequestCorrection result report same)
 
   admissionCorrectionsHaveNoEvents : ∀ name raw events report →

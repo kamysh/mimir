@@ -28,6 +28,7 @@ import Mimir.McpClientWire as Wire
 import Mimir.McpToolExecution as Handler
 import Mimir.McpEnvelope as Envelope
 import Mimir.ApplicationProtocol as Application
+import Mimir.ApplicationOutput as Output
 import Mimir.StructuredValue as V
 import Mimir.Validation as Validation
 import Mimir.McpErrors as Errors
@@ -115,12 +116,10 @@ module Bind (conversion : Conversion.Contract) (format : Encoding.Formatting)
       H.Handled (Envelope.literal (Catalog.wireName tool)) args []
         (H.inputCorrection (Correction.Certified.report proof)) →
       Dialogue tool args (inj₂ (Correction.emitCorrection proof))
-    preparation : ∀ {before after : Store.World} events
-      (proof : Correction.Certified Store.BusinessSnapshot
-        (Store.businessSnapshot before) (Store.businessSnapshot after)) →
+    preparation : ∀ events actual report →
       H.Handled (Envelope.literal (Catalog.wireName tool)) args events
-        (H.preparationDecision (Correction.Certified.report proof)) →
-      Dialogue tool args (inj₂ (Correction.emitCorrection proof))
+        (H.preparationDecision actual report) →
+      Dialogue tool args (inj₂ (Output.Encode.result environment format actual))
     partial : ∀ {before after} events edge report →
       H.Handled (Envelope.literal (Catalog.wireName tool)) args events
         (H.partialDecision edge report) →

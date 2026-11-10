@@ -170,6 +170,27 @@ module Run (environment : Environment) where
   ... | Checked.retry = false
   ... | Checked.fatal _ = false
 
+  -- The public success flag is backed by the actual operation's whole-world
+  -- business goal and the exposed returned reply in its physical history.
+  Completed : Result → Set
+  Completed (terminalResult call initial terminal) =
+    Σ (C.Result (kind call)) (λ reply →
+      C.Goal (kind call) (input call) initial
+        (Checked.History.current call (Checked.Active.evidence call active)) reply ×
+      Checked.Active.remaining call active ≡ O.E.done call reply × C.Success (kind call) reply)
+    where active = Checked.Terminal.active call terminal
+
+  completedRequiresGoal : ∀ result → completed result ≡ true → Completed result
+  completedRequiresGoal (terminalResult call initial terminal) valid with Checked.Terminal.disposition call terminal
+  ... | Checked.done reply exposed successful = reply ,
+    Checked.doneMeetsGoal call (Checked.Terminal.active call terminal) reply exposed successful , exposed , successful
+  ... | Checked.correction _ with valid
+  ... | ()
+  completedRequiresGoal (terminalResult call initial terminal) valid | Checked.retry with valid
+  ... | ()
+  completedRequiresGoal (terminalResult call initial terminal) valid | Checked.fatal _ with valid
+  ... | ()
+
   data ReadView : Set where
     basicView : (request : C.Basic.Request) → C.Basic.View request → ReadView
     retrievalView : Search.Request → C.Retrieval.Result → ReadView
