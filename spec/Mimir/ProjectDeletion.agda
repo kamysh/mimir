@@ -503,6 +503,48 @@ module Registered where
   newReplyIsTheOriginalCount request before fresh rewrite fresh = refl
 
   module Checked = Recovery.Recoverable recoverable
+  module Physical = Recovery.Single.Semantics statement
+
+  noNewResultWithoutChange : ∀ request initial current raw →
+    Store.lookupSaved initial (Input.token request) resultKey ≡ nothing → current ≡ initial →
+    Store.lookupSaved current (Input.token request) resultKey ≡ just raw → ⊥
+  noNewResultWithoutChange request initial current raw absent same present
+    with trans (sym absent) (trans (sym (cong (λ state → Store.lookupSaved state (Input.token request) resultKey) same)) present)
+  ... | ()
+
+  sameSavedValue : ∀ {first second : Wire.Value} → just first ≡ just second → first ≡ second
+  sameSavedValue refl = refl
+
+  -- Initial absence excludes a legacy mismatched pair. If an interrupted
+  -- execution has since published a final answer, that execution wrote the
+  -- matching step answer in the same transaction.
+  cachedReplayMode : ∀ request initial current raw →
+    Store.lookupSaved initial (Input.token request) resultKey ≡ nothing →
+    Checked.X.Interrupted (Checked.script request) initial current →
+    Store.lookupSaved current (Input.token request) resultKey ≡ just raw → mode request current ≡ replay raw
+  cachedReplayMode request initial current raw absent crash present
+    with Physical.interruptionState request initial current crash
+  ... | inj₁ same = ⊥-elim (noNewResultWithoutChange request initial current raw absent same present)
+  ... | inj₂ changed with mode request initial in selected
+  ... | needsInput explanation = ⊥-elim (noNewResultWithoutChange request initial current raw absent changed present)
+  ... | replay previous = ⊥-elim (noNewResultWithoutChange request initial current raw absent changed present)
+  ... | publish = trans (cong (mode request) changed)
+    (trans (publishedMode request initial (newRequestWasAdmitted request initial selected))
+      (cong replay (sameSavedValue (trans (sym (publishedResultReadable request initial))
+        (trans (sym (cong (λ state → Store.lookupSaved state (Input.token request) resultKey) changed)) present)))))
+
+  cachedReplayExecution : ∀ request current raw → mode request current ≡ replay raw → execute request current ≡ (current , raw)
+  cachedReplayExecution request current raw selected rewrite selected = refl
+
+  cachedReplay : ∀ request initial current raw →
+    Store.lookupSaved initial (Input.token request) resultKey ≡ nothing →
+    Checked.X.Interrupted (Checked.script request) initial current →
+    Store.lookupSaved current (Input.token request) resultKey ≡ just raw →
+    Checked.X.Completed (Checked.script request) current current raw
+  cachedReplay request initial current raw absent crash present = subst
+    (λ outcome → Checked.X.Completed (Checked.script request) current (proj₁ outcome) (proj₂ outcome))
+    (cachedReplayExecution request current raw (cachedReplayMode request initial current raw absent crash present))
+    (proj₂ (proj₂ (Physical.progress request current)))
 
   completedRetryKeepsOriginalCount : ∀ request initial interrupted final reply → mode request initial ≡ publish →
     Checked.X.Interrupted (Checked.script request) initial interrupted →
