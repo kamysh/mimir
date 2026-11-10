@@ -10,6 +10,7 @@ open import Data.Integer using (ℤ; +_; ∣_∣) renaming (_-_ to _-ℤ_)
 import Data.Integer.Properties as Integer
 open import Data.List using (List; []; _∷_; map; _++_)
 open import Data.Maybe using (Maybe; just; nothing)
+import Data.Maybe.Properties as Maybes
 open import Data.Nat using (ℕ)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.String using (toList)
@@ -505,6 +506,34 @@ module Registered (conversion : Conversion.Contract) (format : Encoding.Formatti
     where
     metadata = Collected.metadata token before
     executionResult = Saved.execute (token , metadata) before
+
+  cachedReplay : ∀ token before current raw →
+    Store.lookupSaved before token Step.resultKey ≡ nothing →
+    Store.lookupSaved current token Step.resultKey ≡ just raw →
+    X.Interrupted (script token) before current →
+    X.Completed (script token) current current (Step.done raw)
+  cachedReplay token before current raw absent present cut
+    with interruptionState token before current cut
+  ... | unchanged same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | published metadata value valid execution
+    with Saved.doneOrigin (token , metadata) before current value (sym execution)
+  ... | inj₁ same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (_ , _ , final) = subst
+    (λ answer → X.Completed (script token) current current (Step.done answer))
+    (Maybes.just-injective (trans (sym final) present))
+    (subst (λ outcome → X.Completed (script token) current (proj₁ outcome) (proj₂ outcome))
+      (trans (cong (Saved.execute (token , Collected.metadata token current)) (cong proj₁ execution))
+        (trans (doneStable token metadata (Collected.metadata token current) before value
+          (sym (cong proj₂ execution))) (sym execution)))
+      (proj₂ (proj₂ (progress token current))))
 
   everyDatabaseReceiptCovered : ∀ token metadata before → Valid token metadata before → ∀ tag actual →
     DB.Atomic before (proj₁ (Saved.execute (token , metadata) before)) tag actual → X.Interrupted (script token) before actual
