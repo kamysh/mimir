@@ -4,7 +4,9 @@
 module Mimir.RecoverableStoreStep where
 
 open import Data.List using (List; []; _∷_)
+open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Maybe using (Maybe; just; nothing)
+import Data.Maybe.Properties as Maybes
 open import Data.Nat using (ℕ)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.String using (toList)
@@ -542,6 +544,37 @@ module Observed (Metadata Diagnostic : Set)
   readOnlyCompletion token before value observed = subst
     (λ outcome → X.Completed (script token) before (proj₁ outcome) (proj₂ outcome))
     observed (proj₂ (proj₂ (progress token before)))
+
+  -- The admitted public prefix had no final answer. If a later actual
+  -- readback finds one, this interrupted statement must have published it;
+  -- retrying reads that same answer without another business change.
+  cachedReplay : ∀ token before current raw →
+    Store.lookupSaved before token resultKey ≡ nothing →
+    Store.lookupSaved current token resultKey ≡ just raw →
+    X.Interrupted (script token) before current →
+    X.Completed (script token) current current (done raw)
+  cachedReplay token before current raw absent present cut
+    with interruptionState token before current cut
+  ... | unchanged same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | published metadata value observed
+    with Saved.doneOrigin (token , metadata) before current value (sym observed)
+  ... | inj₁ same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (active , step , final) = subst
+    (λ answer → X.Completed (script token) current current (done answer))
+    (Maybes.just-injective (trans (sym final) present))
+    (readOnlyCompletion token current value
+      (Saved.replay (token , available token current) current value value
+        (trans (cong (admit token) (interruptedKeepsRegistration token before current cut))
+          (Saved.doneIsAdmitted (token , metadata) before current value (sym observed)))
+        active step final))
 
   everyDatabaseReceiptCovered : ∀ token metadata before tag actual →
     DB.Atomic before (proj₁ (Saved.execute (token , metadata) before)) tag actual → X.Interrupted (script token) before actual
