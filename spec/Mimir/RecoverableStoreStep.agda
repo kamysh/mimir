@@ -451,6 +451,11 @@ module Admitted (Input Diagnostic : Set)
     admit input (registration before) ≡ just diagnostic → execute input before ≡ (before , needsInput diagnostic)
   admissionRefusalChangesNothing input before diagnostic refused rewrite refused = refl
 
+  registrationUnchanged : ∀ input before → registration (proj₁ (execute input before)) ≡ registration before
+  registrationUnchanged input before with admit input (registration before)
+  ... | just _ = refl
+  ... | nothing = Kernel.registrationUnchanged input before
+
   cancellationUnchanged : ∀ wanted input before →
     Store.lookupCancellation (proj₁ (execute input before)) wanted ≡ Store.lookupCancellation before wanted
   cancellationUnchanged wanted input before with admit input (registration before)
@@ -459,6 +464,23 @@ module Admitted (Input Diagnostic : Set)
 
   module Core = AtomicStep Input Diagnostic execute stable expectedPhysical
   open Core public hiding (Reply)
+
+  atomicKeepsRegistration : ∀ before input reply after → Atomic before input reply after →
+    registration after ≡ registration before
+  atomicKeepsRegistration before input reply after physical = trans
+    (cong (λ outcome → registration (proj₁ outcome)) (atomicObservation input before after reply physical))
+    (registrationUnchanged input before)
+
+  changesKeepRegistration : ∀ {before events after} → X.Changes before events after → registration after ≡ registration before
+  changesKeepRegistration (X.unchanged _) = refl
+  changesKeepRegistration (X.changed before input reply middle physical later) = trans
+    (changesKeepRegistration later) (atomicKeepsRegistration before input reply middle physical)
+
+  interruptedKeepsRegistration : ∀ input before after → X.Interrupted (script input) before after →
+    registration after ≡ registration before
+  interruptedKeepsRegistration input before after (X.atPrefix _ _ _ _ physical) = changesKeepRegistration physical
+  interruptedKeepsRegistration input before after (X.beforeReply _ effect _ middle reply _ _ previous physical) = trans
+    (atomicKeepsRegistration middle effect reply after physical) (changesKeepRegistration previous)
 
   atomicKeepsCancellation : ∀ wanted before input reply after → Atomic before input reply after →
     Store.lookupCancellation after wanted ≡ Store.lookupCancellation before wanted
