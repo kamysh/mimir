@@ -23,6 +23,11 @@ mod sweep_service;
 mod tls;
 pub mod validation;
 
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../tests/support/isolation.rs"]
+pub(crate) mod test_isolation;
+
 use anyhow::Result;
 use uuid::Uuid;
 
@@ -213,6 +218,10 @@ impl MimirService {
         .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit belief, provenance and grounding fields of the existing interface together"
+    )]
     pub async fn add_independent_belief(
         &self,
         content: &str,
@@ -235,6 +244,10 @@ impl MimirService {
         .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit belief, provenance and grounding fields of the existing interface together"
+    )]
     async fn add_prepared_belief(
         &self,
         content: &str,
@@ -259,6 +272,10 @@ impl MimirService {
         self.publish_prepared_belief(&prepared).await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the explicit belief, provenance and grounding fields of the existing interface together"
+    )]
     pub async fn prepare_belief(
         &self,
         content: &str,
@@ -1489,6 +1506,10 @@ impl MimirService {
         Ok(result)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The query and its grounding policy share this one database snapshot and cancellation owner"
+    )]
     async fn grounded_on<F, W>(
         &self,
         client: &tokio_postgres::Client,

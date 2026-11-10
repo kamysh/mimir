@@ -190,10 +190,8 @@ impl AgeStore {
                 let saved=match step {Some(step)=>tx.query_opt("SELECT reply::text FROM mimir_operation_step_replies WHERE operation_token=$1 AND step=$2",&[&plan.operation_token(),&step.id()]).await?,None=>None};
                 if let Some(row)=&saved {let raw:String=row.get(0);let _:Answer=mimir_json::from_str(&raw)?;}
                 let current=self.backfill_state_on(tx.client(),source).await?;
-                if source.already_embedded || saved.is_some() {
-                    if matches!(current,BackfillState::Pending) {
+                if (source.already_embedded || saved.is_some()) && matches!(current,BackfillState::Pending) {
                         return Err(dialogue(format!("Belief {} was already counted but its vector is no longer present. Its original receipt cannot authorize repeating old work.",source.id)));
-                    }
                 }
             }
             Ok(())

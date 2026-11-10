@@ -21,14 +21,8 @@ mod reservations;
 mod retirement;
 pub use retirement::{DefeatClock, RetirementMetadataIssue};
 mod sweep;
-pub use sweep::SweepPolicyIssue;
-pub(crate) use sweep::{
-    check_policy as check_sweep_policy, settings as sweep_settings, Arguments as SweepArguments,
-};
 #[cfg(test)]
-#[allow(dead_code)]
-#[path = "../../../tests/support/isolation.rs"]
-mod snapshot_test_isolation;
+use crate::test_isolation as snapshot_test_isolation;
 use anyhow::{bail, Context, Result};
 pub use cancellations::{CancellationDecision, CancellationReceipt};
 use chrono::DateTime;
@@ -43,6 +37,10 @@ pub use reservations::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+pub use sweep::SweepPolicyIssue;
+pub(crate) use sweep::{
+    check_policy as check_sweep_policy, settings as sweep_settings, Arguments as SweepArguments,
+};
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, GenericClient, Row, Transaction};
 use uuid::Uuid;

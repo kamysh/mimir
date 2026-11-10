@@ -61,7 +61,7 @@ struct Allocation {
 pub(crate) enum ReviewPublicationState {
     Resolved(StepDecision),
     Preparing {
-        review: Review,
+        review: Box<Review>,
         expected: i64,
         owners: HashMap<String, Belief>,
         final_step: RegisteredStep,
@@ -173,7 +173,7 @@ impl AgeStore {
             );
         }
         Ok(ReviewPublicationState::Preparing {
-            review: args.review,
+            review: Box::new(args.review),
             expected: args.expected_review_revision,
             owners,
             final_step,

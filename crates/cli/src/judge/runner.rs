@@ -616,11 +616,7 @@ async fn run_inner<B: Backend>(
                 )?;
             }
             let action = match backend
-                .next(
-                    selected,
-                    last.as_ref().map(|v| &**v),
-                    client.allowed_tools(),
-                )
+                .next(selected, last.as_deref(), client.allowed_tools())
                 .await
             {
                 Ok(action) => action,
@@ -1684,7 +1680,7 @@ mod tests {
                             let value =
                                 last.ok_or_else(|| anyhow!("missing correction feedback"))?;
                             let correction: mimir_core::interaction::NeedsInput =
-                                mimir_json::decode_ref(&value)?;
+                                mimir_json::decode_ref(value)?;
                             ensure!(
                                 correction.issues().iter().any(|item| item.fault().path
                                     == vec![mimir_core::validation::Segment::Key("limt".into())]),
@@ -1786,7 +1782,7 @@ mod tests {
                 Box::pin(async move {
                     if let Some(value) = last {
                         let correction: mimir_core::interaction::NeedsInput =
-                            mimir_json::decode_ref(&value)?;
+                            mimir_json::decode_ref(value)?;
                         ensure!(correction.issues()[0]
                             .suggested_correction()
                             .contains("Open a dialog"));

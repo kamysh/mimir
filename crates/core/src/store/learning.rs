@@ -988,15 +988,15 @@ impl AgeStore {
                 current.revision,
             ));
         }
-        let old_request = Self::active_request(&tx, review.experience_id).await?;
+        let old_request = Self::active_request(tx, review.experience_id).await?;
         if let Some(old) = old_request.as_ref() {
             if old == review
                 && (expected == current.review_revision || expected == current.review_revision - 1)
             {
                 let mut result = current;
                 result.candidate_ids =
-                    Self::candidate_ids(&tx, review.experience_id, &review.candidates).await?;
-                if let Some(applied) = Self::active_review(&tx, review.experience_id).await? {
+                    Self::candidate_ids(tx, review.experience_id, &review.candidates).await?;
+                if let Some(applied) = Self::active_review(tx, review.experience_id).await? {
                     result
                         .item_ids
                         .extend(local_item_ids(&applied.extracted_items));
@@ -1014,28 +1014,28 @@ impl AgeStore {
         let request = mimir_json::to_string(review)?;
         let references = review_references(review);
         let beliefs = self
-            .learning_beliefs_for_ids(&tx, &references.iter().map(|(id, _)| *id).collect())
+            .learning_beliefs_for_ids(tx, &references.iter().map(|(id, _)| *id).collect())
             .await?;
         validate_named_targets(&beliefs, &current.experience.project, references)?;
         let mut allocated = review.clone();
         Self::resolve_item_ids(
-            &tx,
+            tx,
             review.experience_id,
             &mut allocated.extracted_items,
             &["review", "extracted_items"],
         )
         .await?;
-        Self::resolve_item_references(&tx, &mut allocated).await?;
+        Self::resolve_item_references(tx, &mut allocated).await?;
         let review = &allocated;
         crate::learning_sources::validate_review(review, &current.experience)
             .map_err(RequestCorrection::review_source)
             .map_err(crate::validation::Refusal::validation)?;
-        Self::check_review_retention(&tx, review, current.review_revision).await?;
+        Self::check_review_retention(tx, review, current.review_revision).await?;
 
-        let old_review = Self::active_review(&tx, review.experience_id).await?;
+        let old_review = Self::active_review(tx, review.experience_id).await?;
         let candidate_ids = self
             .reserve_candidates(
-                &tx,
+                tx,
                 review.experience_id,
                 &current.experience.project,
                 &review.candidates,
@@ -1055,7 +1055,7 @@ impl AgeStore {
                 _ => None,
             }))
             .collect();
-        let beliefs = self.learning_beliefs_for_ids(&tx, &ids).await?;
+        let beliefs = self.learning_beliefs_for_ids(tx, &ids).await?;
         validate_targets(&beliefs, &current.experience.project, ids.iter().copied())?;
         let mut assessed = current.experience.clone();
         assessed
@@ -1094,7 +1094,7 @@ impl AgeStore {
             tx.execute("INSERT INTO mimir_assessment_contributions(experience_id,review_revision,belief_id,scope,rubric,positive,negative,benefit,benefit_weight,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::text::jsonb)",
                 &[&review.experience_id,&revision,&belief_id,&a.scope,&a.rubric,&positive,&negative,&benefit,&a.usefulness.weight,&payload]).await?;
         }
-        self.replace_review_edges(&tx, review.experience_id, &applied.links)
+        self.replace_review_edges(tx, review.experience_id, &applied.links)
             .await?;
         let publication_time = Self::posterior_time_on(tx.client()).await?;
         self.recompute_learning_at(

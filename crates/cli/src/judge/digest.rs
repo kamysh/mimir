@@ -106,7 +106,7 @@ where
         let now = clock();
         if reporting_day(&now, job.time)?.is_some() && admitted != Some(now.date_naive()) {
             pending
-                .send(super::notification::Job::Digest(job.clone()))
+                .send(super::notification::Job::Digest(Box::new(job.clone())))
                 .map_err(|_| anyhow!("notification worker is unavailable; restart the watcher"))?;
             admitted = Some(now.date_naive());
         }
