@@ -72,6 +72,9 @@ data Message : Set where
 
 module Run (environment : Application.Environment) where
   module A = Application.Run environment
+    using (ReadRequest; Result; Runs; startRead; readView; basicView; retrievalView; graphRead; relevantRead)
+  module Basic = Application.Run.C.Basic environment using (listBeliefs)
+  module RetrievalResults = Application.Run.C.Retrieval environment using (completed)
 
   data Effect : Set where
     stdinUTF8 : Effect
@@ -125,7 +128,7 @@ module Run (environment : Application.Environment) where
 
   afterInjection : CLI.HookCommand → A.Result → Script ℕ
   afterInjection kind result with A.readView result
-  ... | just (A.retrievalView request (A.C.Retrieval.completed _ _ _ _ (Search.plain capturedReport))) =
+  ... | just (A.retrievalView request (RetrievalResults.completed _ _ _ _ (Search.plain capturedReport))) =
     ask (stdout (message kind (Retrieval.Report.retrieval capturedReport) (Retrieval.Report.beliefs capturedReport))) (λ _ → done 0)
   ... | _ = done 0
 
@@ -136,8 +139,8 @@ module Run (environment : Application.Environment) where
 
   afterStop : A.Result → Script ℕ
   afterStop result with A.readView result
-  ... | just (A.basicView (A.C.Basic.listBeliefs _ _) []) = done 0
-  ... | just (A.basicView (A.C.Basic.listBeliefs _ _) beliefs@(_ ∷ _)) =
+  ... | just (A.basicView (Basic.listBeliefs _ _) []) = done 0
+  ... | just (A.basicView (Basic.listBeliefs _ _) beliefs@(_ ∷ _)) =
     ask (stderr (unconsolidated beliefs)) (λ _ → done 2)
   ... | _ = done 0
 
@@ -156,8 +159,8 @@ module Run (environment : Application.Environment) where
 
   afterProject : Text → A.Result → Script ℕ
   afterProject name result with A.readView result
-  ... | just (A.basicView (A.C.Basic.listBeliefs _ _) []) = done 0
-  ... | just (A.basicView (A.C.Basic.listBeliefs _ _) beliefs@(_ ∷ _)) =
+  ... | just (A.basicView (Basic.listBeliefs _ _) []) = done 0
+  ... | just (A.basicView (Basic.listBeliefs _ _) beliefs@(_ ∷ _)) =
     ask (stdout (preexisting name beliefs)) (λ _ → done 0)
   ... | _ = done 0
 

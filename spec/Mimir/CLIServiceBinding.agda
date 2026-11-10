@@ -287,8 +287,13 @@ module Run (environment : Application.Environment) where
   conversion = Application.Environment.library environment
   format = Application.Environment.format environment
   module A = Application.Run environment
-  module O = Output.Encode environment format
-  module B = A.C.Basic
+    using (ReadRequest; Result; readView; basicView; retrievalView; documentView
+      ; graphRead; relevantRead; evidenceRead; documentRead)
+  module O = Output.Encode environment format using (result)
+  module B = Application.Run.C.Basic environment
+    using (Request; View; listBeliefs; listPatterns; evidence)
+  module RetrievalResults = Application.Run.C.Retrieval environment using (Result; completed)
+  module DocumentResults = Application.Run.C.DocumentQuery environment using (value)
   module Args = CLI.Arguments format
   module D = DatabaseObservations databaseSum (Application.Environment.calculator environment)
   module Observed = Recovery.RecoverableFor D.operation
@@ -398,15 +403,15 @@ module Run (environment : Application.Environment) where
   basicOutput (evidenceList _) (B.evidence _) rows result = emit (evidenceOutput rows)
   basicOutput command request value result = publicOutput result
 
-  retrievalResponse : A.C.Retrieval.Result → Search.Response
-  retrievalResponse (A.C.Retrieval.completed _ _ _ _ value) = value
+  retrievalResponse : RetrievalResults.Result → Search.Response
+  retrievalResponse (RetrievalResults.completed _ _ _ _ value) = value
 
   readOutput : ServiceCommand → A.Result → Script (Failure ⊎ ⊤)
   readOutput command result with A.readView result
   ... | nothing = publicOutput result
   ... | just (A.basicView request value) = basicOutput command request value result
   ... | just (A.retrievalView request value) = emit (retrievalOutput (retrievalResponse value))
-  ... | just (A.documentView request value) = emit (documentOutput (A.C.DocumentQuery.value value))
+  ... | just (A.documentView request value) = emit (documentOutput (DocumentResults.value value))
 
   inputFault : Validation.Fault → Script (Failure ⊎ ⊤)
   inputFault detail = emit (inputDecision (Correction.claim
@@ -478,7 +483,7 @@ module Bound (environment : Application.Environment)
     module S = Service.Bound sizeMaximum path connectionEnvironment decimalPort certificateBlocks unix
     module M = Migration.Runtime Text Text
     module H = Hook.Run environment
-    module A = Application.Run environment
+    module A = Application.Run environment using (Runs; start; startRead)
 
   -- Error display is an ordinary anyhow/terminal boundary. It does not turn
   -- a configuration or startup failure into a successful connection receipt.
