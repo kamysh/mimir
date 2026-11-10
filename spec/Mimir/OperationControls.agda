@@ -34,6 +34,7 @@ import Mimir.ProjectDeletion as Project
 import Data.List.Relation.Unary.Any as Any
 import Mimir.RecoverableStoreStep as StoreStep
 import Mimir.PublicInput as PublicInput
+import Mimir.EmbeddingLifecycle as Lifecycle
 
 record RequestKey : Set where
   constructor requestKey
@@ -66,6 +67,7 @@ record PostgreSQL : Set₁ where
   field reservationDefault : ∀ before → DefaultReturning before
         cancellationTimestamp : ℕ → Store.World → ℤ
         storedStepBefore : Text → Text → Bool -- actual database ORDER BY step
+        storedExecutionBefore : ℕ → ℕ → Bool -- actual UUID ORDER BY execution_id
         -- Actual PostgreSQL jsonb equality: object order and numeric spelling
         -- are immaterial; omitted fields, null and array order remain distinct.
         -- This external database observation is not compact JSON byte equality.
@@ -349,6 +351,211 @@ module Cancellation (postgres : PostgreSQL) where
     ... | just diagnostic = refl
     ... | nothing rewrite trans (cong (Store.lookupCancellation after) same)
         (completedCancellationIsRecorded identity before after row completion) = refl
+
+-- Physical execution ownership is separate from revocable publication owners.
+-- Rows remain after cancellation; absence of a heartbeat is never an exit.
+module ExecutionOwnership where
+  rows : Store.World → List Store.ExecutionRow
+  rows before = Store.OperationTables.executions (Store.World.operations before)
+
+  pendingRow : ℕ → Store.ExecutionRow → Bool
+  pendingRow token row with token ≟ Store.ExecutionRow.token row
+  ... | no _ = false
+  ... | yes _ with Store.ExecutionRow.stoppedAt row
+  ... | nothing = true
+  ... | just _ = false
+
+  pending : ℕ → Store.World → List Store.ExecutionRow
+  pending token before = filterᵇ (pendingRow token) (rows before)
+
+  insertOrdered : PostgreSQL → Store.ExecutionRow → List Store.ExecutionRow → List Store.ExecutionRow
+  insertOrdered postgres row [] = row ∷ []
+  insertOrdered postgres row (first ∷ rest) with PostgreSQL.storedExecutionBefore postgres
+    (Store.ExecutionRow.identity row) (Store.ExecutionRow.identity first)
+  ... | true = row ∷ first ∷ rest
+  ... | false = first ∷ insertOrdered postgres row rest
+
+  ordered : PostgreSQL → List Store.ExecutionRow → List Store.ExecutionRow
+  ordered postgres [] = []
+  ordered postgres (first ∷ rest) = insertOrdered postgres first (ordered postgres rest)
+
+  AllStopped : ℕ → List Store.ExecutionRow → Set
+  AllStopped token = All (λ row → token ≡ Store.ExecutionRow.token row →
+    Σ ℤ (λ timestamp → Store.ExecutionRow.stoppedAt row ≡ just timestamp))
+
+  emptyPendingMeansAllStopped : ∀ token observed → filterᵇ (pendingRow token) observed ≡ [] → AllStopped token observed
+  emptyPendingMeansAllStopped token [] empty = []
+  emptyPendingMeansAllStopped token (row ∷ rest) empty with token ≟ Store.ExecutionRow.token row
+  ... | no other = (λ same → ⊥-elim (other same)) ∷ emptyPendingMeansAllStopped token rest empty
+  ... | yes same with Store.ExecutionRow.stoppedAt row in stopped
+  ... | nothing with empty
+  ... | ()
+  emptyPendingMeansAllStopped token (row ∷ rest) empty | yes same | just timestamp =
+    (λ _ → timestamp , stopped) ∷ emptyPendingMeansAllStopped token rest empty
+
+  data Cleanup (token : ℕ) (before : Store.World) : Set where
+    waiting : ∀ first rest → pending token before ≡ (first ∷ rest) → Cleanup token before
+    confirmed : AllStopped token (rows before) → Cleanup token before
+
+  cleanup : ∀ token before → Cleanup token before
+  cleanup token before with pending token before in observed
+  ... | [] = confirmed (emptyPendingMeansAllStopped token (rows before) observed)
+  ... | first ∷ rest = waiting first rest observed
+
+  -- Registration is acknowledged before any body/provider work starts. The
+  -- caller receives this ID from INSERT RETURNING before committing, so an
+  -- uncertain COMMIT can be read back under that same ID without new work.
+  data Registration : Set where
+    unknown : Registration
+    completed : Wire.Value → Registration
+    cancelled : Store.CancellationRow → Registration
+    registered : Store.ExecutionRow → Registration
+
+  register : Store.ExecutionRow → Store.World → Store.World × Registration
+  register received before with Recovery.Cancellation.reserved (Store.ExecutionRow.token received)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false = before , unknown
+  ... | true with Store.lookupSaved before (Store.ExecutionRow.token received) StoreStep.resultKey
+  ... | just value = before , completed value
+  ... | nothing with Store.lookupCancellation before (Store.ExecutionRow.token received)
+  ... | just receipt = before , cancelled receipt
+  ... | nothing = record before { operations = record (Store.World.operations before)
+      { executions = received ∷ rows before } } , registered received
+
+  cancellationPreventsRegistration : ∀ row before receipt →
+    Recovery.Cancellation.reserved (Store.ExecutionRow.token row)
+      (Store.OperationTables.reservations (Store.World.operations before)) ≡ true →
+    Store.lookupSaved before (Store.ExecutionRow.token row) StoreStep.resultKey ≡ nothing →
+    Store.lookupCancellation before (Store.ExecutionRow.token row) ≡ just receipt →
+    register row before ≡ (before , cancelled receipt)
+  cancellationPreventsRegistration row before receipt known absent revoked rewrite known | absent | revoked = refl
+
+  record MayStart (row : Store.ExecutionRow) (before : Store.World) : Set where
+    field registeredRow : Any.Any (row ≡_) (rows before)
+          notStopped : Store.ExecutionRow.stoppedAt row ≡ nothing
+          notCancelled : Store.lookupCancellation before (Store.ExecutionRow.token row) ≡ nothing
+          noFinalAnswer : Store.lookupSaved before (Store.ExecutionRow.token row) StoreStep.resultKey ≡ nothing
+
+  cancelledWorkCannotStart : ∀ row before receipt →
+    Store.lookupCancellation before (Store.ExecutionRow.token row) ≡ just receipt → MayStart row before → ⊥
+  cancelledWorkCannotStart row before receipt revoked allowed with trans (sym revoked) (MayStart.notCancelled allowed)
+  ... | ()
+
+  -- These are actual host observations, not caller assertions that a worker
+  -- should have stopped. Local workers owe their kill-then-wait exit traces;
+  -- a failed wait has no successful receipt and cannot acknowledge execution.
+  data BodyDestroyed (execution : ℕ) : Set where
+    observedBodyDestruction : BodyDestroyed execution
+
+  record WorkerExited (identity : ℕ) : Set where
+    field events : List Lifecycle.WorkerStop.E.Event
+          exited : Lifecycle.WorkerStop.E.Runs Lifecycle.WorkerStop.stop events (inj₂ tt)
+
+  record StopReceipt (execution : ℕ) (ownedWorkers : List ℕ) : Set where
+    field body : BodyDestroyed execution
+          workers : All WorkerExited ownedWorkers
+
+  data PhysicalStop (execution : ℕ) (ownedWorkers : List ℕ) : Set where
+    stopped : StopReceipt execution ownedWorkers → PhysicalStop execution ownedWorkers
+    unconfirmed : Text → PhysicalStop execution ownedWorkers
+
+  stoppedRows : ℕ → ℤ → List Store.ExecutionRow → List Store.ExecutionRow
+  stoppedRows identity timestamp [] = []
+  stoppedRows identity timestamp (row ∷ rest) with identity ≟ Store.ExecutionRow.identity row
+  ... | no _ = row ∷ stoppedRows identity timestamp rest
+  ... | yes _ with Store.ExecutionRow.stoppedAt row
+  ... | just _ = row ∷ rest
+  ... | nothing = record row { stoppedAt = just timestamp } ∷ rest
+
+  stoppedRowsStable : ∀ identity firstTime laterTime observed →
+    stoppedRows identity laterTime (stoppedRows identity firstTime observed) ≡ stoppedRows identity firstTime observed
+  stoppedRowsStable identity firstTime laterTime [] = refl
+  stoppedRowsStable identity firstTime laterTime (row ∷ rest) with identity ≟ Store.ExecutionRow.identity row in same
+  ... | no _ rewrite same = cong (row ∷_) (stoppedRowsStable identity firstTime laterTime rest)
+  ... | yes _ with Store.ExecutionRow.stoppedAt row in stopped
+  ... | just timestamp rewrite same | stopped = refl
+  ... | nothing rewrite same = refl
+
+  acknowledge : ∀ identity ownedWorkers → PhysicalStop identity ownedWorkers → ℤ → Store.World → Store.World
+  acknowledge identity ownedWorkers (unconfirmed _) timestamp before = before
+  acknowledge identity ownedWorkers (stopped receipt) timestamp before =
+    record before { operations = record (Store.World.operations before)
+      { executions = stoppedRows identity timestamp (rows before) } }
+
+  failedCleanupCannotAcknowledge : ∀ identity ownedWorkers reason timestamp before →
+    acknowledge identity ownedWorkers (unconfirmed reason) timestamp before ≡ before
+  failedCleanupCannotAcknowledge identity ownedWorkers reason timestamp before = refl
+
+  acknowledgementPreservesBusiness : ∀ identity ownedWorkers observed timestamp before →
+    Store.businessSnapshot (acknowledge identity ownedWorkers observed timestamp before) ≡ Store.businessSnapshot before
+  acknowledgementPreservesBusiness identity ownedWorkers (unconfirmed _) timestamp before = refl
+  acknowledgementPreservesBusiness identity ownedWorkers (stopped _) timestamp before = refl
+
+  acknowledgementRetryKeepsTime : ∀ identity firstWorkers laterWorkers firstReceipt laterReceipt firstTime laterTime before →
+    acknowledge identity laterWorkers (stopped laterReceipt) laterTime
+      (acknowledge identity firstWorkers (stopped firstReceipt) firstTime before) ≡
+    acknowledge identity firstWorkers (stopped firstReceipt) firstTime before
+  acknowledgementRetryKeepsTime identity firstWorkers laterWorkers firstReceipt laterReceipt firstTime laterTime before =
+    cong (λ observed → record before { operations = record (Store.World.operations before) { executions = observed } })
+      (stoppedRowsStable identity firstTime laterTime (rows before))
+
+  registerPreservesBusiness : ∀ row before →
+    Store.businessSnapshot (proj₁ (register row before)) ≡ Store.businessSnapshot before
+  registerPreservesBusiness row before with Recovery.Cancellation.reserved (Store.ExecutionRow.token row)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false = refl
+  ... | true with Store.lookupSaved before (Store.ExecutionRow.token row) StoreStep.resultKey
+  ... | just _ = refl
+  ... | nothing with Store.lookupCancellation before (Store.ExecutionRow.token row)
+  ... | just _ = refl
+  ... | nothing = refl
+
+  stoppedMember : ∀ token observed row → AllStopped token observed → Any.Any (row ≡_) observed →
+    token ≡ Store.ExecutionRow.token row → Σ ℤ (λ timestamp → Store.ExecutionRow.stoppedAt row ≡ just timestamp)
+  stoppedMember token (row ∷ rest) .row (first ∷ later) (Any.here refl) same = first same
+  stoppedMember token (first ∷ rest) row (_ ∷ later) (Any.there member) same = stoppedMember token rest row later member same
+
+  -- Either durable terminal fact fences fresh execution. A stored final row
+  -- still needs normal journal validation before claiming business success.
+  data Fence (token : ℕ) (before : Store.World) : Set where
+    cancelledFence : ∀ receipt → Store.lookupCancellation before token ≡ just receipt → Fence token before
+    finalAnswerFence : ∀ value → Store.lookupSaved before token StoreStep.resultKey ≡ just value → Fence token before
+
+  fencedWorkCannotStart : ∀ row before → Fence (Store.ExecutionRow.token row) before → MayStart row before → ⊥
+  fencedWorkCannotStart row before (cancelledFence receipt known) allowed = cancelledWorkCannotStart row before receipt known allowed
+  fencedWorkCannotStart row before (finalAnswerFence value known) allowed
+    with trans (sym known) (MayStart.noFinalAnswer allowed)
+  ... | ()
+
+  record FullConfirmation (token : ℕ) (before : Store.World) : Set where
+    field publicationFence : Fence token before
+          everyCopy : AllStopped token (rows before)
+
+  pendingCopyPreventsFullConfirmation : ∀ token before row → Any.Any (row ≡_) (rows before) →
+    token ≡ Store.ExecutionRow.token row → Store.ExecutionRow.stoppedAt row ≡ nothing →
+    FullConfirmation token before → ⊥
+  pendingCopyPreventsFullConfirmation token before row member same pending receipt
+    with stoppedMember token (rows before) row (FullConfirmation.everyCopy receipt) member same
+  ... | timestamp , known with trans (sym pending) known
+  ... | ()
+
+  -- The host may remain in waiting indefinitely. Neither disconnect nor an
+  -- event hint has a transition to fullyStopped. Reading all actual ACK rows
+  -- supplies the only successful completion evidence.
+  data HostState (token : ℕ) : Set where
+    waiting : Store.World → HostState token
+    fullyStopped : (before : Store.World) → FullConfirmation token before → HostState token
+
+  data HostStep (token : ℕ) : HostState token → HostState token → Set where
+    observedPhysicalStop : ∀ before identity ownedWorkers observed timestamp →
+      HostStep token (waiting before) (waiting (acknowledge identity ownedWorkers observed timestamp before))
+    confirmation : ∀ before (receipt : FullConfirmation token before) →
+      HostStep token (waiting before) (fullyStopped before receipt)
+    disconnected : ∀ before → HostStep token (waiting before) (waiting before)
+
+  completedHostHasEveryStopReceipt : ∀ token before (receipt : FullConfirmation token before) →
+    AllStopped token (rows before)
+  completedHostHasEveryStopReceipt token before receipt = FullConfirmation.everyCopy receipt
 
 module Plan where
   record Boundary : Set where

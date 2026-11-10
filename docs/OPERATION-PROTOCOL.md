@@ -48,15 +48,22 @@ The server never infers completion from one saved step.
 
 Only an explicit user decision invokes `cancel_operation`. The judge must not
 cancel automatically to escape a problem. Cancelling completed work returns
-its original completed answer. Cancelling unfinished work preserves earlier
+its original completed answer after stopping any duplicate work still running
+under that token. It adds no cancellation row or repeated business mutation.
+Cancelling unfinished work preserves earlier
 changes and answers and revokes permission for later publication. A cancel
 request can run while another request on the same MCP connection is waiting
-for embedding. The server drops its registered execution bodies, stops and
-reaps their active native workers, and waits for their stop receipts before
-replying with `worker_cleanup: confirmed_for_this_server`.
+for embedding. Every copy registers its execution in PostgreSQL before its
+body or provider starts. Cancellation stops the registered bodies, stops and
+reaps their active native workers, and waits for every copy's saved stop
+acknowledgement before replying with
+`worker_cleanup: confirmed_for_all_registered_copies`.
 
-That confirmation covers this server's registered work. Another server sees
-the database revocation, but its worker's exit is not confirmed by this reply.
+For example, if two Mimir servers are embedding under the same token, cancelling
+through either waits for both. A disconnected or crashed copy without an
+acknowledgement leaves confirmation pending. There is no expiry, heartbeat,
+retry quota or timeout that turns missing evidence into success. Original
+completed answers and earlier committed changes remain intact.
 If the operating system cannot confirm that a local worker exited, the reply
 instead says `worker_cleanup: unconfirmed_for_this_server` and
 `next_action: open_user_dialog`. It includes the worker's process ID, private
@@ -67,15 +74,36 @@ earlier business changes. Diagnostics and partial downloads remain available
 while cleanup is unconfirmed.
 An `operation_outcome` response reports
 `worker_cleanup: not_confirmed_by_this_receipt`: reading a database fact alone
-does not establish worker cleanup. If cancellation cannot be saved, this
+does not establish worker cleanup. Its complete `pending_executions` list
+identifies every copy still lacking a saved stop acknowledgement. The cancel
+call can remain waiting while another request reads this state. If cancellation cannot be saved, this
 server keeps its local work stopped and asks the caller to read the outcome
 and retry cancellation with the original token. It does not restart the work.
+
+The list includes `owner_program`, `owner_pid`, `owner_host`,
+`owner_host_source`, and `client_address`. The address is what PostgreSQL
+actually observed; a proxy or container network can make it different from
+the address supplied by the client. Linux host identity comes from the complete
+kernel hostname. An environment-only hint is labelled as such; missing identity
+is reported as null. Use these fields to find the program needing attention.
+They never prove that it stopped, and Mimir does not guess its log destination.
+Explicit outcome readback includes this information even after the business
+result completed, while ordinary completed write/replay answers remain unchanged.
 
 MCP replies may arrive in a different order from requests. Each reply retains
 its original request ID; response frames are written without interleaving.
 Closing the connection drops every active request and attempts to stop and reap
-its owned worker. A cleanup error is retained in private diagnostics; dropping
-the connection is not a confirmation of successful cleanup.
+its owned worker. The host then owns the acknowledgement writes; it does not
+detach cleanup and claim it finished. A cleanup or acknowledgement error is
+retained in private diagnostics; dropping the connection is not a confirmation
+of successful cleanup.
+
+All participating copies must be built with the compatible 2.3.0 registration protocol.
+Stop or upgrade older copies before relying on global confirmation: an old
+binary that never registered cannot be discovered by an empty execution query.
+A version string alone is insufficient if a build predates this protocol.
+This confirms Mimir-owned work and local worker exit. It does not claim that
+an independent hosted provider stopped computing after its HTTP request closed.
 
 The CLI uses the same operation identity and saved-answer format. For example:
 

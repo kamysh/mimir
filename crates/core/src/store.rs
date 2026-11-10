@@ -1,6 +1,8 @@
 mod backfill;
 pub(crate) use backfill::{BackfillSource, BackfillState};
 mod cancellations;
+pub(crate) mod executions;
+pub use executions::ExecutionReceipt;
 mod conformance;
 mod direct_graph;
 pub(crate) use direct_graph::admit_request as admit_direct_request;

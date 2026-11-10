@@ -14,6 +14,7 @@ open import Data.Product using (_×_; _,_)
 open import Data.String using (String; toList)
 open import Mimir.Text using (Text)
 import Mimir.StructuredValue as V
+import Mimir.ApplicationStore as Store
 import Mimir.Binary64 as Binary
 import Mimir.CandidateGraph as G
 import Mimir.CandidateWire as Candidate
@@ -94,6 +95,17 @@ module Encode (format : Formatting) where
   uuid id = V.string (Formatting.uuidText format id)
   timestamp : ℤ → V.Value
   timestamp time = V.string (Formatting.utcText format time)
+  executionReceipt : Store.ExecutionRow → V.Value
+  executionReceipt row = object
+    (("execution_id" , uuid (Store.ExecutionRow.identity row)) ∷
+     ("operation_token" , uuid (Store.ExecutionRow.token row)) ∷
+     ("registered_at" , timestamp (Store.ExecutionRow.registeredAt row)) ∷
+     ("stopped_at" , optional timestamp (Store.ExecutionRow.stoppedAt row)) ∷
+     ("owner_program" , V.string (Store.ExecutionRow.ownerProgram row)) ∷
+     ("owner_pid" , V.unsigned (Store.ExecutionRow.ownerPid row)) ∷
+     ("owner_host" , optional V.string (Store.ExecutionRow.ownerHost row)) ∷
+     ("owner_host_source" , optional V.string (Store.ExecutionRow.ownerHostSource row)) ∷
+     ("client_address" , optional V.string (Store.ExecutionRow.clientAddress row)) ∷ [])
   real : Float → V.Value
   real value with isNaN value ∨ isInfinite value
   ... | true = V.null

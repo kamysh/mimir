@@ -19,14 +19,14 @@ import Mimir.ItemOwners as Owners
 import Mimir.LearningStore as Learning
 import Mimir.DatabaseTransaction as Database
 open import Mimir.Migrations public
-  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys; candidateKeyContent; embeddingOwners; operationCancellations; decayAccounting; firstDefeatClock; backfillChangeEvents; beliefSources; reviewPreparationEvents)
+  using (Migration; initial; searchPath; evidenceEdges; betaBeliefs; reviewQueueNotifications; operationReservations; operationBindings; operationStepReplies; operationPlans; operationRequestKeys; candidateKeyContent; embeddingOwners; operationCancellations; decayAccounting; firstDefeatClock; backfillChangeEvents; beliefSources; reviewPreparationEvents; operationExecutionStops)
   renaming (name to migrationName; beliefEmbeddings to embeddingTable; learningLedger to learning;
     reviewCandidates to candidates; assessments to assessment; itemOwners to owners;
     postgresItemAllocation to allocation;
     predecessor to requires; manifest to ordered)
 
 data Type : Set where uuid text bigint timestamp jsonb double boolean vector : Type
-data Default : Set where noDefault now zero falseDefault postgresUUID : Default
+data Default : Set where noDefault now clockTimestamp postgresClientAddress zero falseDefault postgresUUID : Default
 record Column : Set where
   constructor column
   field name : String; type : Type; nullable : Bool; defaultValue : Default
@@ -167,6 +167,15 @@ cancellationTable = table "mimir_operation_cancellations"
   ("operation_token" ∷ []) []
   (references ("operation_token" ∷ []) "mimir_operation_reservations" ("operation_token" ∷ []) restrict ∷ []) []
 
+executionTable : Table
+executionTable = table "mimir_operation_executions"
+  (column "execution_id" uuid false postgresUUID ∷ required "operation_token" uuid ∷
+   required "owner_program" text ∷ required "owner_pid" bigint ∷
+   optional "owner_host" text ∷ optional "owner_host_source" text ∷ column "client_address" text true postgresClientAddress ∷
+   column "registered_at" timestamp false clockTimestamp ∷ optional "stopped_at" timestamp ∷ [])
+  ("execution_id" ∷ []) []
+  (references ("operation_token" ∷ []) "mimir_operation_reservations" ("operation_token" ∷ []) restrict ∷ []) []
+
 -- Label creation catches all PostgreSQL exceptions in the existing SQL; that
 -- native behavior is explicit and must not be confused with a label-exists proof.
 data DDL : Set where
@@ -184,6 +193,7 @@ data DDL : Set where
   dropCheckConstraint : String → String → DDL
   installReviewQueueNotifier installEmbeddingOwnerNotifier installImmutableOperationBindings installImmutableStepReplies installImmutableOperationPlans installImmutableRequestKeys : DDL
   installOperationCancellationGuards installBeliefVectorNotifier installReviewPreparationNotifier : DDL
+  installExecutionStopGuardsAndNotifications : DDL
   -- Fill this absent graph property at one observed PostgreSQL time. Existing
   -- values and every count/probability/prior remain untouched.
   initializeMissingBeliefTimestamp : String → Default → DDL
@@ -232,6 +242,9 @@ body firstDefeatClock = markExistingUndatedDefeatsExpired ∷ []
 body backfillChangeEvents = installBeliefVectorNotifier ∷ []
 body beliefSources = create beliefSourceTable ∷ []
 body reviewPreparationEvents = installReviewPreparationNotifier ∷ []
+body operationExecutionStops = create executionTable ∷
+  createIndex (index "mimir_operation_executions_pending" "mimir_operation_executions" ("operation_token" ∷ [])
+    (just (isNull (columnValue "stopped_at" ∷ [])))) ∷ installExecutionStopGuardsAndNotifications ∷ []
 body candidateKeyContent =
   dropCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_check" ∷
   addCheckConstraint "mimir_review_candidates" "mimir_review_candidates_candidate_key_nonempty"

@@ -1076,6 +1076,18 @@ module Cancellation where
   ... | just _ = refl
   ... | nothing = refl
 
+  executionsSurviveRevocation : ∀ request before →
+    Store.OperationTables.executions (Store.World.operations (proj₁ (execute request before))) ≡
+    Store.OperationTables.executions (Store.World.operations before)
+  executionsSurviveRevocation request before with reserved (Input.token request)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false = refl
+  ... | true with Store.lookupSaved before (Input.token request) resultKey
+  ... | just _ = refl
+  ... | nothing with Store.lookupCancellation before (Input.token request)
+  ... | just _ = refl
+  ... | nothing = refl
+
   originalInputsUnchanged : ∀ request before →
     let prior = Store.World.operations before
         after = Store.World.operations (proj₁ (execute request before))

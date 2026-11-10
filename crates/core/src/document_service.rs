@@ -185,7 +185,7 @@ impl MimirService {
             .iter()
             .map(|chunk| chunk.content.clone())
             .collect();
-        let job = self.operation_embedding_job(backend, &texts, Some(token))?;
+        let job = self.operation_embedding_job(backend, &texts, Some(token));
         tokio::pin!(job);
         loop {
             tokio::select! {
