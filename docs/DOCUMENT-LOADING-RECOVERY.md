@@ -26,3 +26,22 @@ answers and requires a user decision before separate corrected work starts.
 The registered service entry point is `load_document_operation`. Public MCP
 and CLI token routing is tracked separately in #85 and #86; the older direct
 service entry point does not establish that routing guarantee.
+
+The formal entry first inspects the actual saved request, plan and answers.
+Completed history is returned before checking today's embedding settings or
+reading the file. Missing, foreign or inconsistent saved work returns its
+readback or correction without publishing a document.
+
+For unfinished work, the proof binds file preparation to its actual
+canonical-path and UTF-8 read receipts, embedding to the saved complete chunk
+texts and configured backend, and final publication to its actual database
+time. Each write must also pass the database's check of the next original
+step. The proof covers interruption before and after either committed step:
+a completed retry reaches the complete document outcome or returns an
+explicit request for correction while preserving the earlier index. The
+original answer survives a lost acknowledgement.
+
+Public assembly must consume `DocumentLoadingRecovery.Registered.Entry`'s
+full `Operation`, including its observation proof. A private two-phase
+publication proof alone cannot justify dispatch. Creation of an initially
+absent binding and plan remains part of the public routing work above.

@@ -266,7 +266,7 @@
         "spec/Mimir/StorageSemantics.agda",
         "spec/Mimir/MigrationScriptBinding.agda"
       ],
-      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85\u2013#86. The concrete registered operation keeps the independently committed defeat prefix, resumes complete propagation, and saves completion only with all posterior updates; Rust correspondence is tested, not an extracted refinement theorem.",
+      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85–#86. The concrete registered operation keeps the independently committed defeat prefix, resumes complete propagation, and saves completion only with all posterior updates; Rust correspondence is tested, not an extracted refinement theorem.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects.",
       "retirement_clock_boundary": "First actual PostgreSQL defeat date is write-once; explicit legacy expiry bypasses only waiting. Missing new metadata asks for repair. Original sweep selection/policy recovery remains separate unfinished work."
     },
@@ -668,10 +668,13 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/DocumentReplacementRecovery.agda",
+        "spec/Mimir/DocumentLoadingRecovery.agda",
+        "spec/Mimir/OperationControls.agda"
       ],
-      "baseline_gap": "Compose path read/chunk/embed/paired replacement without automatic support assertions protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "baseline_gap": "Keep the original complete file and PostgreSQL chunk identities before embedding, replace one document and its saved answer atomically, and replay or explain every saved operation state before starting more work.",
+      "remaining": "Mandatory public dispatcher and MCP/CLI operation-token routing are tracked in #74, #76, #85 and #86. Primitive filesystem/provider/SQL implementations remain external contracts."
     },
     {
       "name": "query_document",

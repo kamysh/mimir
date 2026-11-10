@@ -18242,6 +18242,261 @@
         "spec/Mimir/MigrationScriptBinding.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
+    },
+    {
+      "path": "crates/core/src/document_service.rs",
+      "definitions": [
+        {
+          "kind": "fn",
+          "name": "problem",
+          "line": 19,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "fn",
+          "name": "backend_problem",
+          "line": 29,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "enum",
+          "name": "Work",
+          "line": 43,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "fn",
+          "name": "load_document_request",
+          "line": 49,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "fn",
+          "name": "load_document_operation",
+          "line": 63,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "fn",
+          "name": "document_stopped",
+          "line": 155,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "fn",
+          "name": "embed_original_document",
+          "line": 167,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        }
+      ],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/DocumentLoadingRecovery.agda",
+        "spec/Mimir/DocumentReplacementRecovery.agda",
+        "spec/Mimir/OperationControls.agda"
+      ],
+      "specification_status": "behavior-defined-and-aggregate-checked",
+      "proof_boundary_category": "application_protocol"
+    },
+    {
+      "path": "crates/core/src/document_service_tests.rs",
+      "definitions": [],
+      "status": "document-recovery-database-tests",
+      "classification": "verification-or-example-artifact"
+    },
+    {
+      "path": "crates/core/src/store/prepared_document.rs",
+      "definitions": [
+        {
+          "kind": "fn",
+          "name": "issue",
+          "line": 18,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "struct",
+          "name": "Arguments",
+          "line": 30,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "fn",
+          "name": "document_arguments",
+          "line": 35,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "struct",
+          "name": "DocumentDraft",
+          "line": 59,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "fn",
+          "name": "read",
+          "line": 66,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "struct",
+          "name": "DocumentPreparation",
+          "line": 91,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "fn",
+          "name": "document_snapshot_on",
+          "line": 103,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "fn",
+          "name": "reserve_document_operation",
+          "line": 120,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "fn",
+          "name": "document_preparation_is_current",
+          "line": 166,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        },
+        {
+          "kind": "fn",
+          "name": "publish_document_operation",
+          "line": 184,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/DocumentLoadingRecovery.agda",
+            "spec/Mimir/DocumentReplacementRecovery.agda",
+            "spec/Mimir/OperationControls.agda"
+          ],
+          "mapping_boundary": "The operation proof states the complete document outcome and saved-answer recovery; these locations identify the native implementation, not an extracted-code refinement."
+        }
+      ],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/DocumentLoadingRecovery.agda",
+        "spec/Mimir/DocumentReplacementRecovery.agda",
+        "spec/Mimir/OperationControls.agda"
+      ],
+      "specification_status": "behavior-defined-and-aggregate-checked",
+      "proof_boundary_category": "application_protocol"
     }
   ],
   "dependency_contracts": [
