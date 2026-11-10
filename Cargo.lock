@@ -1607,13 +1607,16 @@ name = "mimir-mcp"
 version = "2.3.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "futures-util",
  "mimir-core",
  "mimir-json",
+ "pgvector",
  "serde",
  "serde_json",
  "serde_stacker",
  "tokio",
+ "tokio-postgres",
  "tracing",
  "tracing-subscriber",
  "uuid",
