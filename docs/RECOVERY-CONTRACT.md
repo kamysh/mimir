@@ -332,6 +332,17 @@ keeps the body absent. The later public projection must use this control
 request and the returned world for its full pending-execution diagnostics;
 ordinary write-result formatting cannot substitute for that response.
 
+`IntendedPreparation.Evaluate.ReservationIntent.evaluate` computes
+`reserve_operation` from the admitted request key and saved reservation state.
+A new key requires its actual PostgreSQL identity/time receipt; reusing a key
+returns its original row and time without new observations. A captured fresh
+identity that already exists is invalid test input. Missing facts remain
+`ObservationError`, while malformed public requests keep the body absent.
+The internal `reservationReadback` outcome retains both the key and typed
+reservation result for later public projection; it introduces no new public
+response format. A broken existing key stays a recovery result without making
+up a replacement reservation. Whole-host and wire integration remain unfinished.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |

@@ -20,6 +20,7 @@ import Mimir.OperationControls as Controls
 import Mimir.PublicOperationBinding as Binding
 import Mimir.PublicRequest as Public
 import Mimir.PublicInput as PublicInput
+import Mimir.RecordDecoding as Record
 import Mimir.ProjectDeletion as Project
 import Mimir.StandardLibrary as Library
 import Mimir.PublicEncoding as Encoding
@@ -37,6 +38,7 @@ data ObservationError : Set where
 module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) where
   module C = Binding.Creating library postgres
   module Read = Controls.Readback library postgres
+  module Reserve = Controls.Reservation postgres
 
   -- These are external facts from the same attempted execution, not an
   -- expected world, a desired reply, an admission context or a recovery proof.
@@ -157,6 +159,7 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   data PublicOutcome : Set where
     requestCorrection : Validation.Fault → PublicOutcome
     operationReadback : Read.Result → PublicOutcome
+    reservationReadback : Controls.RequestKey → Reserve.Result → PublicOutcome
     directValue : Wire.Value → PublicOutcome
 
   record Expected (Body : Set) : Set where
@@ -165,6 +168,62 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
       world : Store.World
       body : Maybe Body
       publicOutcome : PublicOutcome
+
+  module ReservationIntent where
+    module Decode = Public.Decode library
+    ReservationEvaluation = ObservationError Data.Sum.⊎ Expected Reserve.Result
+
+    missingReceipt : ObservationError
+    missingReceipt = observationError (Validation.fault
+      (Validation.key "observations" Data.List.∷ Validation.key "reservation" Data.List.∷ Data.List.[])
+      Validation.missingField
+      "A fresh request_key needs its actual PostgreSQL reservation identity and time for this attempt. Capture the original returning receipt; do not invent a token or turn missing test input into a product correction. Reusing a saved key needs no new receipt.")
+
+    reusedIdentity : ObservationError
+    reusedIdentity = observationError (Validation.fault
+      (Validation.key "observations" Data.List.∷ Validation.key "reservation" Data.List.∷ Validation.key "operation_token" Data.List.∷ Data.List.[])
+      Validation.wrongIdentity
+      "The proposed fresh reservation token already exists in the starting world. Match the actual PostgreSQL returning receipt to this request_key and attempt; do not borrow another action's token.")
+
+    returned : Controls.RequestKey → Store.World → Reserve.Result → Expected Reserve.Result
+    returned key after reply = expected after (just reply) (reservationReadback key reply)
+
+    reserve : Controls.RequestKey → Store.World → Maybe Store.ReservationRow → ReservationEvaluation
+    reserve key before receipt with Reserve.inspect key before
+    ... | Reserve.original saved = inj₂ (returned key before (Reserve.reserved saved))
+    ... | Reserve.broken token = inj₂ (returned key before (Reserve.needsRecovery token))
+    ... | Reserve.vacant with receipt
+    ... | nothing = inj₁ missingReceipt
+    ... | just received with Controls.reservation (Store.ReservationRow.token received) before
+    ... | just _ = inj₁ reusedIdentity
+    ... | nothing = inj₂ (returned key (Reserve.publish key received before) (Reserve.reserved received))
+
+    afterKey : Validation.Fault Data.Sum.⊎ Controls.RequestKey → Store.World → Maybe Store.ReservationRow → ReservationEvaluation
+    afterKey (inj₁ fault) before receipt = inj₂ (expected before nothing (requestCorrection fault))
+    afterKey (inj₂ key) before receipt = reserve key before receipt
+
+    evaluate : Wire.Value → Store.World → Maybe Store.ReservationRow → ReservationEvaluation
+    evaluate raw before receipt with Decode.readInvocation Tools.reserveOperation raw
+    ... | inj₁ fault = inj₂ (expected before nothing (requestCorrection fault))
+    ... | inj₂ admitted = afterKey
+      (Record._>>=_ (PublicInput.required "request_key" Wire.asString
+        (Wire.Object.normalize (Decode.Invocation.suppliedFields admitted))) Controls.admitRequestKey)
+      before receipt
+
+    replayNeedsNoFreshReceipt : ∀ key before saved →
+      Reserve.inspect key before ≡ Reserve.original saved →
+      reserve key before nothing ≡ inj₂ (returned key before (Reserve.reserved saved))
+    replayNeedsNoFreshReceipt key before saved original rewrite original = refl
+
+    missingFreshReceiptIsOracleInputError : ∀ key before →
+      Reserve.inspect key before ≡ Reserve.vacant →
+      reserve key before nothing ≡ inj₁ missingReceipt
+    missingFreshReceiptIsOracleInputError key before absentKey rewrite absentKey = refl
+
+    malformedRequestDoesNotEnterBody : ∀ raw before receipt fault →
+      Decode.readInvocation Tools.reserveOperation raw ≡ inj₁ fault →
+      evaluate raw before receipt ≡ inj₂ (expected before nothing (requestCorrection fault))
+    malformedRequestDoesNotEnterBody raw before receipt fault rejected rewrite rejected = refl
 
   module OperationReadback where
     module Decode = Public.Decode library
