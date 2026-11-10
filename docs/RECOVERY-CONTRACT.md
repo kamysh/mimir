@@ -383,6 +383,16 @@ an invented default count. Every result preserves the complete starting world;
 malformed requests leave the business body absent. These adapters introduce
 neither external observations nor caller-supplied expected history.
 
+`IntendedDocumentQuery.Evaluate.evaluate` admits `query_document` and computes
+the existing pure document-query passage selection from the complete original
+world and actual configured provider response. A successful preparation requires
+the actual stable-read receipt; captured provider/read failures remain typed
+outcomes. Missing required receipts are oracle-input errors. Unconfigured and
+refused-preparation paths need no invented vector or successful database read.
+The original world is preserved, and malformed admission leaves the body
+absent. The internal `documentQueryReadback` retains the typed result for later
+public projection; full host/wire composition remains unfinished.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |

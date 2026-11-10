@@ -17,6 +17,7 @@ open import Data.Unit using (tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
+import Mimir.DocumentQuery as DocumentQuery
 import Mimir.OperationControls as Controls
 import Mimir.PublicOperationBinding as Binding
 import Mimir.PublicRequest as Public
@@ -166,6 +167,7 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     operationReadback : Read.Result → PublicOutcome
     reservationReadback : Controls.RequestKey → Reserve.Result → PublicOutcome
     cancellationReadback : ℕ → Cancel.Result → PublicOutcome
+    documentQueryReadback : DocumentQuery.Result → PublicOutcome
     assessmentReadback : (format : Encoding.Formatting) →
       LearningReads.AssessmentReads.Answer format → PublicOutcome
     directValue : Wire.Value → PublicOutcome
