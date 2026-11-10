@@ -1,4 +1,4 @@
-//! Exercise advertised tools with unexpected, missing and mistyped arguments.
+//! Exercise advertised tools with unexpected, missing, mistyped and invalid arguments.
 #[allow(dead_code)]
 #[path = "../../../tests/support/database_observation.rs"]
 mod database_observation;
@@ -114,6 +114,8 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
     let before = snapshot().await?;
     let mut missing_cases = 0;
     let mut wrong_type_cases = 0;
+    let mut invalid_uuid_cases = 0;
+    let mut invalid_choice_cases = 0;
     for descriptor in tools {
         let name = descriptor["name"].as_str().context("tool without a name")?;
         let request = json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":{"unexpected_agent_field":true}}});
@@ -176,6 +178,38 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
                     .await?;
                     wrong_type_cases += 1;
                 }
+                if schema["format"] == "uuid" {
+                    let mut arguments = serde_json::Map::new();
+                    arguments.insert(field.clone(), json!("not-a-uuid"));
+                    check_field(
+                        &mut input,
+                        &mut output,
+                        name,
+                        Value::Object(arguments),
+                        field,
+                        Code::MalformedInput,
+                    )
+                    .await?;
+                    invalid_uuid_cases += 1;
+                }
+                if schema["type"] == "string"
+                    && schema["enum"].as_array().is_some_and(|choices| {
+                        !choices.contains(&json!("not-an-advertised-choice"))
+                    })
+                {
+                    let mut arguments = serde_json::Map::new();
+                    arguments.insert(field.clone(), json!("not-an-advertised-choice"));
+                    check_field(
+                        &mut input,
+                        &mut output,
+                        name,
+                        Value::Object(arguments),
+                        field,
+                        Code::MalformedInput,
+                    )
+                    .await?;
+                    invalid_choice_cases += 1;
+                }
             }
         }
     }
@@ -183,7 +217,7 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
         missing_cases != 0 && wrong_type_cases != 0,
         "tool catalogue produced no missing-field or wrong-type cases"
     );
-    println!("Checked {missing_cases} missing-field and {wrong_type_cases} wrong-type cases across {} advertised tools", tools.len());
+    println!("Checked {missing_cases} missing-field, {wrong_type_cases} wrong-type, {invalid_uuid_cases} invalid UUID and {invalid_choice_cases} invalid choice cases across {} advertised tools", tools.len());
     let corrected = send(&mut input, &mut output, json!({"jsonrpc":"2.0","id":"corrected","method":"tools/call","params":{"name":"list_patterns","arguments":{}}})).await?;
     ensure!(
         corrected["id"] == "corrected" && corrected.get("error").is_none(),
