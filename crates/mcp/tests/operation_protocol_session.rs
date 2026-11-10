@@ -159,7 +159,8 @@ async fn writes_require_a_recoverable_identity_and_correct_input_before_binding(
         let reserved=session.tool("reserve_operation",json!({"request_key":format!("cancel-{key}")})).await?;
         let cancelled=reserved["operation_token"].as_str().context("missing issued token")?.to_owned();
         let answer=session.tool("cancel_operation",json!({"operation_token":cancelled})).await?;
-        ensure!(answer["status"]=="cancelled" && answer["worker_cleanup"]=="not_confirmed_by_this_receipt");
+        ensure!(answer["status"]=="cancelled" && answer["worker_cleanup"]=="confirmed_for_this_server");
+        ensure!(session.tool("operation_outcome",json!({"operation_token":cancelled})).await?["worker_cleanup"]=="not_confirmed_by_this_receipt");
         original["operation_token"]=json!(cancelled);
         ensure!(session.tool("insert_pattern",original).await?["status"]=="cancelled");
         ensure!(service.list_patterns(Some(&project)).await?.len()==1);

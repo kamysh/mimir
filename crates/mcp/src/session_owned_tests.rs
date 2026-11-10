@@ -7,8 +7,47 @@ mod isolation {
         "/../../tests/support/isolation.rs"
     ));
 }
-use anyhow::ensure;
+use anyhow::{ensure, Context};
 use std::{future::Future, os::unix::fs::PermissionsExt, task::Poll};
+
+async fn blocked_request(
+    service: &MimirService,
+    database: &mimir_core::config::DatabaseConfig,
+    project: &str,
+) -> Result<Value> {
+    let client = mimir_core::db::connect(database).await?;
+    let chunk_id: uuid::Uuid = client
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let path = format!("/private-fixture/{project}.md");
+    let passage = "The owned worker must stop when its request is cancelled.";
+    let store = mimir_core::store::AgeStore::new(client, database.dbname.clone())?;
+    store
+        .insert_document_chunk(&mimir_core::documents::DocumentChunk::with_id(
+            chunk_id,
+            path.clone(),
+            vec![],
+            passage.into(),
+            None,
+            Some(project.into()),
+        ))
+        .await?;
+    store
+        .insert_chunk_embedding(chunk_id, &[1.0, 0.0, 0.0])
+        .await?;
+    let token = service
+        .reserve_operation(&format!("blocked-{project}"))
+        .await?
+        .operation_token;
+    Ok(
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"insert_belief","arguments":{
+            "operation_token":token,"content":"blocked owned embedding","probability":0.5,"confidence":0.1,
+            "memory_type":"fact","project":project,"provenance":{"basis":"user_instruction","reference":"explicit isolated fixture"},
+            "grounding":[{"chunk_id":chunk_id,"document_path":path,"quotation":passage,"explanation":"The passage directly states the required cancellation behavior."}]
+        }}}),
+    )
+}
 
 #[tokio::test]
 async fn disconnect_drops_and_reaps_active_embedding_before_returning_or_starting_queued_work(
@@ -23,10 +62,10 @@ async fn disconnect_drops_and_reaps_active_embedding_before_returning_or_startin
     let ready = directory.join("r.sock");
     let listener = tokio::net::UnixListener::bind(&ready)?;
     let worker = directory.join("worker.py");
-    std::fs::write(&worker,format!("#!/usr/bin/env python3\nimport json,os,socket,sys\njson.loads(sys.stdin.readline())\nprint(json.dumps({{'status':'started','version':1}}),flush=True)\ns=socket.socket(socket.AF_UNIX)\ns.connect({:?})\ns.sendall((str(os.getpid())+'\\n').encode())\nwhile True: pass\n",ready.to_str().unwrap()))?;
+    std::fs::write(&worker,format!("#!/usr/bin/env python3\nimport json,os,socket,sys\nrequest=json.loads(sys.stdin.readline())\nprint(json.dumps({{'status':'started','version':request['version']}}),flush=True)\ns=socket.socket(socket.AF_UNIX)\ns.connect({:?})\ns.sendall((str(os.getpid())+'\\n').encode())\nwhile True: pass\n",ready.to_str().unwrap()))?;
     std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o700))?;
     let config = Config {
-        database,
+        database: database.clone(),
         embeddings: Some(mimir_json::from_value(
             json!({"backend":"local","cache_dir":directory.join("model-cache")}),
         )?),
@@ -46,25 +85,36 @@ async fn disconnect_drops_and_reaps_active_embedding_before_returning_or_startin
         MemoryType::Fact,
     )
     .await?;
-    let request=json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"insert_belief","arguments":{"content":"blocked owned embedding","probability":0.5,"confidence":0.1,"memory_type":"fact","project":project,"provenance":{"basis":"user_instruction","reference":"explicit isolated fixture"}}}}).to_string()+"\n";
+    let request = blocked_request(&service, &database, &project)
+        .await?
+        .to_string()
+        + "\n";
     // The in-memory connection holds this complete request; no production
     // quota, timer or fixed test sleep is involved.
-    let (mut client, server) = tokio::io::duplex(request.len());
-    client.write_all(request.as_bytes()).await?;
+    let (client, server) = tokio::io::duplex(request.len());
+    let (client_reader, mut input) = tokio::io::split(client);
+    let mut client_reader = BufReader::new(client_reader);
+    input.write_all(request.as_bytes()).await?;
     let (reader, writer) = tokio::io::split(server);
     let catalogue = operation_catalogue::Catalogue::new(tools_list())?;
     let mut session = Box::pin(serve(&service, &catalogue, BufReader::new(reader), writer));
+    let mut early = String::new();
     let (stream, _) = tokio::select! {
         ready=listener.accept()=>ready?,
+        reply=client_reader.read_line(&mut early)=>{reply?;anyhow::bail!("fixture request returned before starting its worker: {early}")},
         result=&mut session=>anyhow::bail!("session ended before its worker blocked: {result:?}"),
     };
     let mut ready = BufReader::new(stream);
     let mut pid = String::new();
     ready.read_line(&mut pid).await?;
     let pid: u32 = pid.trim().parse()?;
-    let queued=json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_belief","arguments":{"id":protected.id}}}).to_string()+"\n";
-    client.write_all(queued.as_bytes()).await?;
-    client.shutdown().await?;
+    let delete_token = service
+        .reserve_operation(&format!("delete-{id}"))
+        .await?
+        .operation_token;
+    let queued=json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_belief","arguments":{"operation_token":delete_token,"id":protected.id}}}).to_string()+"\n";
+    input.write_all(queued.as_bytes()).await?;
+    input.shutdown().await?;
     // Duplex EOF is immediately observable: one poll distinguishes the old
     // blocked handler from a server which watches disconnect during execution.
     let ended = std::future::poll_fn(|context| Poll::Ready(session.as_mut().poll(context))).await;
@@ -110,7 +160,124 @@ async fn disconnect_drops_and_reaps_active_embedding_before_returning_or_startin
 }
 
 #[tokio::test]
-async fn partial_input_survives_response_completion_and_queued_requests_keep_their_order(
+async fn cancellation_on_the_same_connection_stops_and_reaps_the_blocked_worker() -> Result<()> {
+    let fixture = isolation::fixture();
+    let database = fixture.database_config();
+    let audit = mimir_core::db::connect(&database).await?;
+    let id: uuid::Uuid = audit
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let directory = std::path::Path::new("/tmp").join(format!("mimir-cancel-session-{id}"));
+    std::fs::create_dir(&directory)?;
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+    let ready = directory.join("r.sock");
+    let listener = tokio::net::UnixListener::bind(&ready)?;
+    let worker = directory.join("worker.py");
+    std::fs::write(&worker,format!("#!/usr/bin/env python3\nimport json,os,socket,sys\nrequest=json.loads(sys.stdin.readline())\nprint(json.dumps({{'status':'started','version':request['version']}}),flush=True)\ns=socket.socket(socket.AF_UNIX)\ns.connect({:?})\ns.sendall((str(os.getpid())+'\\n').encode())\nwhile True: pass\n",ready.to_str().unwrap()))?;
+    std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o700))?;
+    let config = Config {
+        database: database.clone(),
+        embeddings: Some(mimir_json::from_value(
+            json!({"backend":"local","cache_dir":directory.join("model-cache")}),
+        )?),
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: None,
+    };
+    let service = MimirService::connect_with_worker(&config, worker).await?;
+    let project = format!("cancel-session-{id}");
+    let request = blocked_request(&service, &database, &project).await?;
+    let token = request["params"]["arguments"]["operation_token"]
+        .as_str()
+        .context("missing token")?
+        .to_owned();
+    let cancel=json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cancel_operation","arguments":{"operation_token":token}}}).to_string()+"\n";
+    let request = request.to_string() + "\n";
+    let (client, server) = tokio::io::duplex(request.len() + cancel.len());
+    let (client_reader, mut input) = tokio::io::split(client);
+    let mut client_reader = BufReader::new(client_reader);
+    input.write_all(request.as_bytes()).await?;
+    let (reader, writer) = tokio::io::split(server);
+    let catalogue = operation_catalogue::Catalogue::new(tools_list())?;
+    let mut session = Box::pin(serve(&service, &catalogue, BufReader::new(reader), writer));
+    let mut early = String::new();
+    let (stream, _) = tokio::select! {
+        ready=listener.accept()=>ready?,
+        reply=client_reader.read_line(&mut early)=>{reply?;anyhow::bail!("fixture request returned before starting its worker: {early}")},
+        result=&mut session=>anyhow::bail!("session ended before the worker blocked: {result:?}"),
+    };
+    let mut ready = BufReader::new(stream);
+    let mut pid = String::new();
+    ready.read_line(&mut pid).await?;
+    let pid: u32 = pid.trim().parse()?;
+    input.write_all(cancel.as_bytes()).await?;
+    let dialogue = async {
+        let mut output = client_reader;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut transcript = String::new();
+        for _ in [1, 2] {
+            let mut line = String::new();
+            ensure!(
+                output.read_line(&mut line).await? != 0,
+                "server closed before cancellation replied"
+            );
+            transcript.push_str(&line);
+            std::fs::write(directory.join("responses.jsonl"), &transcript)?;
+            let response = mimir_json::parse(&line)?;
+            let request_id = response["id"].as_u64().context("missing reply identity")?;
+            ensure!(
+                [1, 2].contains(&request_id) && seen.insert(request_id),
+                "unexpected reply: {response}"
+            );
+            ensure!(
+                response.get("error").is_none() && response["result"]["isError"] != true,
+                "cancellation must be a normal outcome: {response}"
+            );
+            let body = mimir_json::parse(
+                response["result"]["content"][0]["text"]
+                    .as_str()
+                    .context("missing tool reply")?,
+            )?;
+            ensure!(
+                body["status"] == "cancelled",
+                "the original execution must read back its cancellation: {body}"
+            );
+            if request_id == 2 {
+                ensure!(body["worker_cleanup"] == "confirmed_for_this_server");
+                #[cfg(target_os = "linux")]
+                ensure!(
+                    !std::path::PathBuf::from(format!("/proc/{pid}")).exists(),
+                    "cancel reply arrived before owned worker {pid} was reaped"
+                );
+            }
+        }
+        input.shutdown().await?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (served, dialogue) = tokio::join!(&mut session, dialogue);
+    served?;
+    dialogue?;
+    drop(session);
+    ensure!(
+        service
+            .list_beliefs(Some(&project))
+            .await?
+            .iter()
+            .all(|belief| belief.project.as_deref() != Some(project.as_str())),
+        "cancelled preparation published a belief"
+    );
+    service.delete_project(&project).await?;
+    eprintln!(
+        "Same-connection cancellation fixture retained at {}",
+        directory.display()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn partial_input_survives_response_completion_and_concurrent_replies_keep_their_ids(
 ) -> Result<()> {
     let fixture = isolation::fixture();
     let config = Config {
@@ -145,12 +312,16 @@ async fn partial_input_survives_response_completion_and_queued_requests_keep_the
         ensure!(response["id"] == 1 && response["result"]["tools"].is_array());
         input.write_all(&second.as_bytes()[split..]).await?;
         input.write_all(third.as_bytes()).await?;
-        for id in [2, 3] {
+        let mut received = std::collections::BTreeSet::new();
+        for _ in [2, 3] {
             line.clear();
             output.read_line(&mut line).await?;
             let response: Value = mimir_json::from_str(&line)?;
+            let id = response["id"]
+                .as_u64()
+                .context("missing request identity")?;
             ensure!(
-                response["id"] == id && response.get("error").is_none(),
+                [2, 3].contains(&id) && received.insert(id) && response.get("error").is_none(),
                 "partial or queued request changed: {response}"
             );
             let body: Value =

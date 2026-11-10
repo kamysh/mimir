@@ -21,8 +21,38 @@ async fn call(operation: Operation, service: &MimirService, input: &Input) -> Re
             .remove("operation_token");
         let result = service
             .execute_registered_write(writer, token, arguments)
-            .await?;
-        return super::operation_protocol::outcome(token, result);
+            .await;
+        match result {
+            Ok(result) => return super::operation_protocol::outcome(token, result),
+            Err(error) => {
+                // A stopped provider or lost reply is not evidence that the
+                // operation is unfinished. Read the matching original request;
+                // never report another operation's result for a wrong token.
+                if !error.is::<mimir_core::WriteAdmissionIssue>() {
+                    if let Ok(Some(original)) = service.read_operation_binding(token).await {
+                        let mut arguments =
+                            mimir_json::Document::new(mimir_json::clone_value(input));
+                        arguments
+                            .as_object_mut()
+                            .expect("admitted argument object")
+                            .remove("operation_token");
+                        let expected = mimir_core::store::OperationBindingRequest::new(
+                            operation.name().into(),
+                            arguments.into_value(),
+                            mimir_json::clone_value(original.request.settings()),
+                        )?;
+                        if let Ok(
+                            outcome @ (mimir_core::store::OperationOutcome::Completed { .. }
+                            | mimir_core::store::OperationOutcome::Cancelled { .. }),
+                        ) = service.read_operation_outcome(token, Some(&expected)).await
+                        {
+                            return super::operation_protocol::outcome(token, outcome);
+                        }
+                    }
+                }
+                return Err(error);
+            }
+        }
     }
     match operation {
         Operation::Graph(operation) => super::handle_graph_call(service, operation, input).await,

@@ -14,6 +14,11 @@ use uuid::Uuid;
 
 impl MimirService {
     pub async fn reembed_operation(&self, token: Uuid) -> Result<OperationOutcome> {
+        self.own_operation(token, self.reembed_operation_inner(token))
+            .await
+    }
+
+    async fn reembed_operation_inner(&self, token: Uuid) -> Result<OperationOutcome> {
         let plan = match self.prepare_reembed_operation(token).await? {
             PlanDecision::Ready(plan) => plan,
             PlanDecision::NeedsRecovery(reason) => return Err(anyhow!(reason)),

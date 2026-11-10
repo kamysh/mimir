@@ -3,7 +3,9 @@ mod backfill_service;
 pub mod config;
 pub mod db;
 mod document_service;
+mod operation_ownership;
 mod registered_dispatch;
+pub use operation_ownership::OperationCancellation;
 pub use registered_dispatch::WriteAdmissionIssue;
 pub mod documents;
 pub mod embed;
@@ -119,6 +121,7 @@ pub struct MimirService {
     embeddings: Option<OwnedEmbeddingBackend>,
     embedding_operation_settings: serde_json::Value,
     retirement: Option<toml::Value>,
+    operation_executions: std::sync::Arc<operation_ownership::OperationExecutions>,
 }
 
 impl MimirService {
@@ -150,6 +153,7 @@ impl MimirService {
             embeddings,
             embedding_operation_settings: preparation::operation_settings(cfg.embeddings.as_ref()),
             retirement: cfg.retirement.clone(),
+            operation_executions: Default::default(),
         })
     }
 

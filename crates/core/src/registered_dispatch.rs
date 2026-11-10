@@ -121,6 +121,19 @@ impl MimirService {
         token: Uuid,
         arguments: mimir_json::Document,
     ) -> Result<OperationOutcome> {
+        self.own_operation(
+            token,
+            self.execute_registered_write_inner(writer, token, arguments),
+        )
+        .await
+    }
+
+    async fn execute_registered_write_inner(
+        &self,
+        writer: RegisteredWrite,
+        token: Uuid,
+        arguments: mimir_json::Document,
+    ) -> Result<OperationOutcome> {
         let operation = writer.operation();
         let existing = self.read_operation_binding(token).await?;
         if existing.is_none() {

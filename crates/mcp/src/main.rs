@@ -8,6 +8,7 @@ mod operation_protocol;
 #[cfg(all(test, unix))]
 mod session_owned_tests;
 use anyhow::Result;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
 use serde_json::{json, Value};
@@ -702,46 +703,65 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     let mut partial = Vec::new();
-    let mut queued = std::collections::VecDeque::new();
+    let mut running = FuturesUnordered::new();
+    let mut replies = std::collections::VecDeque::new();
+    let mut outgoing: Option<Outgoing> = None;
     loop {
-        let line = match queued.pop_front() {
-            Some(line) => line,
-            None => {
-                if reader.read_until(b'\n', &mut partial).await? == 0 {
+        if outgoing.is_none() {
+            outgoing = replies
+                .pop_front()
+                .map(|bytes| Outgoing { bytes, written: 0 });
+        }
+        tokio::select! {
+            biased;
+            read = reader.read_until(b'\n', &mut partial) => {
+                if read? == 0 {
+                    // Drop every active request before returning. Each owned
+                    // native worker stops and is reaped synchronously on drop.
                     return Ok(());
                 }
-                std::mem::take(&mut partial)
+                let line=std::mem::take(&mut partial);
+                running.push(async move {
+                    let mut response=Vec::new();
+                    exchange_line(svc,catalogue,&line,&mut response).await?;
+                    Ok::<_, anyhow::Error>(response)
+                });
             }
-        };
-        let disconnected = {
-            let exchange = exchange_line(svc, catalogue, &line, &mut stdout);
-            tokio::pin!(exchange);
-            tokio::select! {
-                biased;
-                closed = read_ahead(&mut reader, &mut partial, &mut queued) => Some(closed),
-                result = &mut exchange => { result?; None },
+            written = write_response(&mut stdout,&mut outgoing), if outgoing.is_some() => {
+                written?;
+                outgoing=None;
             }
-            // Leaving this scope drops the active request future. Its owned
-            // local worker terminates and waits for exit before Drop returns.
-        };
-        if let Some(closed) = disconnected {
-            closed?;
-            return Ok(());
+            response = running.next(), if !running.is_empty() => {
+                let response=response.expect("an active request was present")?;
+                if !response.is_empty() { replies.push_back(response); }
+            }
         }
     }
 }
 
-async fn read_ahead<R: tokio::io::AsyncBufRead + Unpin>(
-    reader: &mut R,
-    partial: &mut Vec<u8>,
-    queued: &mut std::collections::VecDeque<Vec<u8>>,
-) -> std::io::Result<()> {
-    loop {
-        if reader.read_until(b'\n', partial).await? == 0 {
-            return Ok(());
+struct Outgoing {
+    bytes: Vec<u8>,
+    written: usize,
+}
+
+async fn write_response<W: tokio::io::AsyncWrite + Unpin>(
+    stdout: &mut W,
+    outgoing: &mut Option<Outgoing>,
+) -> Result<()> {
+    let response = outgoing
+        .as_mut()
+        .expect("the active response is owned by serve");
+    while response.written < response.bytes.len() {
+        let count = stdout.write(&response.bytes[response.written..]).await?;
+        if count == 0 {
+            return Err(std::io::Error::from(std::io::ErrorKind::WriteZero).into());
         }
-        queued.push_back(std::mem::take(partial));
+        response.written += count;
     }
+    // Keep the progress outside this future: serving new input can interrupt a
+    // blocked write without duplicating a prefix or interleaving JSON frames.
+    stdout.flush().await?;
+    Ok(())
 }
 
 async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(

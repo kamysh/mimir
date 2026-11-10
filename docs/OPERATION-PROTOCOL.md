@@ -49,11 +49,24 @@ The server never infers completion from one saved step.
 Only an explicit user decision invokes `cancel_operation`. The judge must not
 cancel automatically to escape a problem. Cancelling completed work returns
 its original completed answer. Cancelling unfinished work preserves earlier
-changes and answers and revokes permission for later publication. The current
-receipt explicitly reports `worker_cleanup: not_confirmed_by_this_receipt`:
-the database fact alone does not establish that every worker has finished
-stopping. Joining that cleanup remains #124; this interface does not claim it
-has happened.
+changes and answers and revokes permission for later publication. A cancel
+request can run while another request on the same MCP connection is waiting
+for embedding. The server drops its registered execution bodies, stops and
+reaps their active native workers, and waits for their stop receipts before
+replying with `worker_cleanup: confirmed_for_this_server`.
+
+That confirmation covers this server's registered work. Another server sees
+the database revocation, but its worker's exit is not confirmed by this reply.
+An `operation_outcome` response reports
+`worker_cleanup: not_confirmed_by_this_receipt`: reading a database fact alone
+does not establish worker cleanup. If cancellation cannot be saved, this
+server keeps its local work stopped and asks the caller to read the outcome
+and retry cancellation with the original token. It does not restart the work.
+
+MCP replies may arrive in a different order from requests. Each reply retains
+its original request ID; response frames are written without interleaving.
+Closing the connection drops every active request and its owned worker before
+the server returns.
 
 Public CLI and background routing is tracked in #86. Source changes do not
 upgrade installed binaries or configuration by themselves.
