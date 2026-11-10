@@ -224,5 +224,72 @@ class PublicToolCoverageTests(unittest.TestCase):
         self.assertTrue({'operation reserve', 'operation outcome', 'operation cancel'} <= set(commands))
 
 
+class ApplicationAssemblyTests(unittest.TestCase):
+    def setUp(self):
+        self.source = (REPO / 'spec/Mimir/ApplicationProtocol.agda').read_text()
+
+    def reject_mutation(self, old, new):
+        self.assertEqual(self.source.count(old), 1)
+        with self.assertRaises(AssertionError):
+            coverage.check_application_assembly(self.source.replace(old, new, 1))
+
+    def test_actual_assembly_selects_checked_state_and_terminal_history(self):
+        result = coverage.check_application_assembly(self.source)
+        self.assertEqual(result['state_constructors'], ['running'])
+        self.assertEqual(result['result_constructor'], 'terminalResult')
+
+    def test_extra_raw_script_state_constructor_is_rejected(self):
+        self.reject_mutation('      Checked.RunState call (input call) initial → State',
+                             '      Checked.RunState call (input call) initial → State\n'
+                             '    rawScript : O.E.Script call Wire.Value → State')
+
+    def test_raw_success_result_constructor_is_rejected(self):
+        self.reject_mutation('  record Result : Set where\n    constructor terminalResult',
+                             '  data Result : Set where\n    rawSuccess : Wire.Value → Result\n'
+                             '    constructor terminalResult')
+
+    def test_raw_result_cannot_replace_terminal_history(self):
+        self.reject_mutation('      terminal : Checked.Terminal call (input call) initial',
+                             '      terminal : Wire.Value')
+
+    def test_operation_cannot_skip_its_computed_certificate(self):
+        self.reject_mutation('  operation call = routeOperation (route call) (certificate call)',
+                             '  operation call = suppliedOperation call')
+
+    def test_state_checker_cannot_take_an_independent_operation(self):
+        self.reject_mutation('Recovery.CheckedFor (operation call) (RouteSuccess (route call))',
+                             'Recovery.CheckedFor suppliedOperation (RouteSuccess (route call))')
+
+    def test_writer_cannot_select_the_bare_body_route(self):
+        self.reject_mutation('... | Tools.businessWrite = registeredRoute (Creating.submittedWrite tool submitted)',
+                             '... | Tools.businessWrite = plainRoute (choice call)')
+
+    def test_registered_certificate_cannot_be_caller_selected(self):
+        self.reject_mutation('  routeCertificate (registeredRoute requested) = WriteFixed.operation requested',
+                             '  routeCertificate (registeredRoute requested) = suppliedCertificate requested')
+
+    def test_existing_expected_shape_in_comments_does_not_hide_an_escape(self):
+        old = '      Checked.RunState call (input call) initial → State'
+        self.reject_mutation(old, old + '\n    -- raw scripts are checked elsewhere\n'
+                             '    unchecked : O.E.Script call Wire.Value → State')
+
+    def test_matching_declarations_in_another_module_do_not_cover_run(self):
+        changed = self.source.replace('module Run (environment : Environment) where',
+                                      'module UnusedCheckedAssembly (environment : Environment) where', 1)
+        changed += '\nmodule Run (environment : Environment) where\n' \
+                   '  module Unchecked where\n' \
+                   '    data State : Set where\n' \
+                   '      rawScript : Wire.Value → State\n' \
+                   '  open Unchecked public\n'
+        with self.assertRaises(AssertionError):
+            coverage.check_application_assembly(changed)
+
+    def test_whitespace_and_line_comments_are_not_semantic_evidence(self):
+        changed = self.source.replace('    constructor terminalResult',
+                                      '    constructor    terminalResult -- retained checked history')
+        self.assertEqual(coverage.check_application_assembly(self.source),
+                         coverage.check_application_assembly(changed))
+
+
 if __name__ == '__main__':
     unittest.main()

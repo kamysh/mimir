@@ -15,6 +15,85 @@ def read(path):
     return (ROOT / path).read_text()
 
 
+def check_application_assembly(source):
+    """Guard the reviewed assembly declarations, not arbitrary Agda semantics.
+
+    This deliberately accepts only the maintained local declaration shapes.
+    A refactor needs review of this guard; comments/whitespace are not evidence.
+    Agda still establishes totality, dependent indices and the actual theorems.
+    No other specification modules are searched for purported implementations.
+    """
+    lines = [line.split('--', 1)[0].rstrip() for line in source.splitlines()]
+    assert lines.count('module Run (environment : Environment) where') == 1, 'missing or repeated application execution assembly'
+    first = lines.index('module Run (environment : Environment) where') + 1
+    end = next((index for index in range(first, len(lines))
+                if lines[index].strip() and not lines[index].startswith('  ')), len(lines))
+    lines = lines[first:end]
+
+    def declaration(name):
+        start = re.compile(r'^  (?:(?:data|record|module) )?' + re.escape(name) + r'(?=\s|:|$)')
+        matches = [index for index, line in enumerate(lines) if start.match(line)]
+        assert matches, ('missing application assembly declaration', name)
+        first = matches[0]
+        end = first + 1
+        while end < len(lines):
+            line = lines[end]
+            if line.strip() and not line.startswith(('    ', '  ... ')) and not start.match(line):
+                break
+            end += 1
+        assert all(first <= index < end for index in matches), ('split or repeated application assembly declaration', name)
+        return ' '.join(' '.join(lines[first:end]).split())
+
+    expected = {
+        'WriteFixed': 'module WriteFixed requested = Catalogue.Fixed Writes.recoverable requested using (operation)',
+        'Route': '''data Route : Set where
+          plainRoute : C.Choice → Route
+          registeredRoute : Creating.Request → Route''',
+        'route': '''route : Call → Route
+          route call@(C.toolCall tool submitted) with Tools.kind tool
+          ... | Tools.businessWrite = registeredRoute (Creating.submittedWrite tool submitted)
+          ... | Tools.readOnly = plainRoute (choice call)
+          ... | Tools.operationControl = plainRoute (choice call)
+          route call@(C.privateRead request) = plainRoute (choice call)''',
+        'RouteCertificate': '''RouteCertificate : (selected : Route) → Set₁
+          RouteCertificate (plainRoute selected) = C.Certificate (C.Choice.kind selected)
+          RouteCertificate (registeredRoute requested) = Recovery.RecoverableFor Store.World ⊤ Writes.Response
+            (λ _ → Writes.Meaning requested)''',
+        'routeCertificate': '''routeCertificate : (selected : Route) → RouteCertificate selected
+          routeCertificate (plainRoute selected) = C.certificate reviewEnvironment (C.Choice.kind selected)
+          routeCertificate (registeredRoute requested) = WriteFixed.operation requested''',
+        'routeOperation': '''routeOperation : (selected : Route) → RouteCertificate selected →
+          Recovery.RecoverableFor Store.World (RouteInput selected) (RouteValue selected) (RouteGoal selected)
+          routeOperation (plainRoute selected) proof = C.executable (C.Choice.kind selected) proof
+          routeOperation (registeredRoute requested) proof = proof''',
+        'certificate': '''certificate : (call : Call) → RouteCertificate (route call)
+          certificate call = routeCertificate (route call)''',
+        'operation': '''operation : (call : Call) → Recovery.RecoverableFor Store.World (RouteInput (route call))
+          (RouteValue (route call)) (RouteGoal (route call))
+          operation call = routeOperation (route call) (certificate call)''',
+        'Checked': '''module Checked (call : Call) = Recovery.CheckedFor (operation call) (RouteSuccess (route call))''',
+        'State': '''data State : Set where
+          running : (call : Call) (initial : Store.World) →
+            Checked.RunState call (input call) initial → State''',
+        'start': '''start : Tools.Tool → Wire.Value → Store.World → State
+          start tool submitted initial = running call initial (Checked.start call (input call) initial)
+            where call = C.toolCall tool submitted''',
+        'startRead': '''startRead : ReadRequest → Store.World → State
+          startRead request initial = running call initial (Checked.start call (input call) initial)
+            where call = C.privateRead request''',
+        'Result': '''record Result : Set where
+          constructor terminalResult
+          field
+            call : Call
+            initial : Store.World
+            terminal : Checked.Terminal call (input call) initial''',
+    }
+    for name, shape in expected.items():
+        assert declaration(name) == ' '.join(shape.split()), ('application execution assembly changed; review the fixed certificate boundary', name)
+    return {'state_constructors': ['running'], 'result_constructor': 'terminalResult',
+            'boundary': 'Reviewed local assembly shape only; Agda checking and Rust correspondence remain separate.'}
+
+
 def enum_variants(path, name):
     match = re.search(r'(?:pub(?:\([^)]*\))? )?enum ' + name + r' \{(.*?)\n\}', read(path), re.S)
     assert match, (path, name)
@@ -285,6 +364,7 @@ def check():
     inventory = json.loads(read('docs/FORMAL-INVENTORY.json'))
     public_count = check_public_tools(coverage)
     intended_count = check_intended_outcome_contract()
+    check_application_assembly(read('spec/Mimir/ApplicationProtocol.agda'))
 
     controls = read('spec/Mimir/OperationControls.agda')
     native_catalogue = read('crates/core/src/operation_catalogue.rs')
