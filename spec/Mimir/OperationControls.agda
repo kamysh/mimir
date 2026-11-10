@@ -1118,11 +1118,11 @@ module JournalRows where
   removeOther : ∀ key queried rows → key ≢ queried → find queried (remove key rows) ≡ find queried rows
   removeOther key queried [] different = refl
   removeOther key queried (row ∷ rows) different
-    with key ≟Text Store.SavedReplyRow.step row | queried ≟Text Store.SavedReplyRow.step row
+    with key ≟Text Store.SavedReplyRow.step row in keySeen | queried ≟Text Store.SavedReplyRow.step row in querySeen
   ... | yes same | yes other = ⊥-elim (different (trans same (sym other)))
   ... | yes same | no other = refl
-  ... | no same | yes other = refl
-  ... | no same | no other = removeOther key queried rows different
+  ... | no same | yes other rewrite querySeen = refl
+  ... | no same | no other rewrite querySeen = removeOther key queried rows different
 
   removePrefix : ∀ key steps rows → All (λ boundary → key ≢ Plan.Step.id boundary) steps →
     prefix steps (remove key rows) ≡ prefix steps rows
@@ -1394,9 +1394,8 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   ... | receipts , remaining with length (filterᵇ notFinal (savedRows token before)) ≟ length receipts
   ... | no _ with observed
   ... | ()
-  afterPlanJournal token before binding plan original next saved addresses observed | true | true | receipts , remaining | yes exact
-    with JournalRows.fromRows token before (Plan.Saved.steps plan) (savedRows token before) addresses
-      (rowsAgreement token before (Plan.Saved.steps plan)) receipts remaining selected fullCount
+  afterPlanJournal token before binding plan original next saved addresses observed | true | true | receipts , remaining | yes exact =
+    OpaqueJournal.complete (proj₁ journal) (trans fullCount (sym (proj₁ (proj₂ journal)))) (proj₂ (proj₂ journal))
     where
     missing = pendingHasNoResult binding plan receipts remaining (find StoreStep.resultKey (savedRows token before)) original next saved observed
     missingLookup : Store.lookupSaved before token StoreStep.resultKey ≡ nothing
@@ -1405,7 +1404,8 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
     unfiltered = withoutAbsentKey token StoreStep.resultKey (Store.OperationTables.savedReplies (Store.World.operations before)) missingLookup
     fullCount : length (savedRows token before) ≡ length receipts
     fullCount = trans (sym (cong length unfiltered)) exact
-  ... | journal , counted , declared = OpaqueJournal.complete journal (trans fullCount (sym counted)) declared
+    journal = JournalRows.fromRows token before (Plan.Saved.steps plan) (savedRows token before) addresses
+      (rowsAgreement token before (Plan.Saved.steps plan)) receipts remaining selected fullCount
 
   afterPlanCompletes : ∀ binding plan rows receipts result →
     Plan.textEqual (Store.BindingRow.operation binding) (Plan.Saved.operation plan) ≡ true →
@@ -1492,6 +1492,52 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   ... | nothing with reservation token before
   ... | nothing = unknownToken
   ... | just row = reserved
+
+  bindingOf : Result → Maybe Store.BindingRow
+  bindingOf unknownToken = nothing
+  bindingOf reserved = nothing
+  bindingOf (awaitingPlan original) = just original
+  bindingOf (awaitingCompletion original) = just original
+  bindingOf (pending original _ _) = just original
+  bindingOf (completed original _) = just original
+  bindingOf (cancelled _ original _) = original
+  bindingOf (needsRecovery original) = just original
+  bindingOf (inconsistent original _) = just original
+
+  prefixKeepsBinding : ∀ original plan receipts remaining result →
+    bindingOf (afterPrefix original plan receipts remaining result) ≡ just original
+  prefixKeepsBinding original plan receipts [] (just result) = refl
+  prefixKeepsBinding original plan receipts (_ ∷ _) (just result) = refl
+  prefixKeepsBinding original plan receipts (_ ∷ _) nothing = refl
+  prefixKeepsBinding original plan receipts [] nothing with Plan.Saved.steps plan
+  ... | [] = refl
+  ... | _ ∷ _ = refl
+
+  planKeepsBinding : ∀ original plan rows → bindingOf (afterPlan original plan rows) ≡ just original
+  planKeepsBinding original plan rows with Plan.textEqual (Store.BindingRow.operation original) (Plan.Saved.operation plan)
+  ... | false = refl
+  ... | true with Plan.valid library plan
+  ... | false = refl
+  ... | true with prefix (Plan.Saved.steps plan) rows
+  ... | receipts , remaining with length (filterᵇ notFinal rows) ≟ length receipts
+  ... | no _ = refl
+  ... | yes _ = prefixKeepsBinding original plan receipts remaining (find StoreStep.resultKey rows)
+
+  planPendingBinding : ∀ original plan rows returnedBinding next saved →
+    afterPlan original plan rows ≡ pending returnedBinding next saved → returnedBinding ≡ original
+  planPendingBinding original plan rows returnedBinding next saved observed = inject
+    (trans (sym (cong bindingOf observed)) (planKeepsBinding original plan rows))
+    where
+    inject : ∀ {first second : Store.BindingRow} → just first ≡ just second → first ≡ second
+    inject refl = refl
+
+  answerForKnownPlan : ∀ token before original raw plan →
+    Project.Registered.binding token (Store.OperationTables.bindings (Store.World.operations before)) ≡ just original →
+    Store.lookupCancellation before token ≡ nothing →
+    Project.Registered.plan token (Store.OperationTables.plans (Store.World.operations before)) ≡ just raw →
+    Plan.decode raw ≡ inj₂ plan → answer token before ≡ afterPlan original plan (savedRows token before)
+  answerForKnownPlan token before original raw plan bound active stored decoded
+    rewrite bound | active | stored | decoded = refl
 
   -- This execution context is built from actual rows. It is never an input
   -- supplied by an agent or a handler claiming that an arbitrary plan is safe.
