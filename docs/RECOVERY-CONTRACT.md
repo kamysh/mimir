@@ -312,11 +312,17 @@ actual pure validators and the existing diagnostic projection. Their body is
 Malformed outer protocol messages remain covered at the separate retained
 transport boundary, without inventing an operation constructor for them.
 
+`IntendedGraphWrites.Evaluate.With.evaluate` currently composes pattern deletion
+and direct support, cause and contradiction writes with that metadata boundary.
+It computes the complete expected world, typed body result and semantic public
+outcome. The remaining family adapters and public serialization are separate
+unfinished work; this is not a complete evaluator for all public tools.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |
-| `insert_pattern` | `GraphWrites.insertPattern`, `PatternPublicationRecovery.Registered.decide` | PostgreSQL identity and creation time. |
-| `delete_pattern` | `PublicPatternDeletionRecovery.Registered.decide` | Existing original request and saved result. |
+| `insert_pattern` | `PatternPublicationRecovery.createdPattern`, `GraphWrites.insertPattern` | PostgreSQL identity and creation time. |
+| `delete_pattern` | `GraphDeletion.PatternRecovery.desired`, `answer` | Existing original request and saved result. |
 | `record_support`, `record_cause`, `record_contradiction` | `DirectGraphRecovery.Business.checked` | Original endpoint/weight arguments. |
 | `delete_belief` | `BeliefDeletionRecovery.Business.checked` | Actual locked publication time and checked numerical report. |
 | `add_evidence` and library `delete_evidence` | `GroundingRecovery.Business.checked` | Actual locked publication time, stored chunk and numerical report. |
