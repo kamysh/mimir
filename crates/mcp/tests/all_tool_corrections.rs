@@ -1,4 +1,4 @@
-//! Exercise every advertised tool with an unexpected argument on one session.
+//! Exercise advertised tools with unexpected, missing and mistyped arguments.
 #[allow(dead_code)]
 #[path = "../../../tests/support/database_observation.rs"]
 mod database_observation;
@@ -46,8 +46,41 @@ async fn send(
     Ok(mimir_json::from_str(&line)?)
 }
 
+async fn check_field(
+    input: &mut tokio::process::ChildStdin,
+    output: &mut BufReader<tokio::process::ChildStdout>,
+    name: &str,
+    arguments: Value,
+    field: &str,
+    code: Code,
+) -> Result<()> {
+    let response = send(input, output, json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":arguments}})).await?;
+    ensure!(
+        response["id"] == name && response.get("error").is_none(),
+        "{name}: correction became a protocol error: {response}"
+    );
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .context("missing correction text")?;
+    let correction: NeedsInput = mimir_json::from_str(text)?;
+    let issue = correction
+        .issues()
+        .iter()
+        .find(|item| {
+            item.fault().code == code && item.fault().path == vec![Segment::Key(field.into())]
+        })
+        .with_context(|| format!("{name}: {field} did not receive {code:?} guidance"))?;
+    ensure!(
+        !issue.fault().message.is_empty()
+            && !issue.expected().is_empty()
+            && !issue.suggested_correction().is_empty(),
+        "{name}: incomplete correction for {field}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
-async fn every_advertised_tool_explains_an_unknown_field_without_changes() -> Result<()> {
+async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()> {
     let fixture = isolation::fixture();
     let database = fixture.database_config();
     let identity: Uuid = db::connect(&database)
@@ -79,6 +112,8 @@ async fn every_advertised_tool_explains_an_unknown_field_without_changes() -> Re
         .context("missing advertised tools")?;
     ensure!(!tools.is_empty(), "MCP server advertised no tools");
     let before = snapshot().await?;
+    let mut missing_cases = 0;
+    let mut wrong_type_cases = 0;
     for descriptor in tools {
         let name = descriptor["name"].as_str().context("tool without a name")?;
         let request = json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":{"unexpected_agent_field":true}}});
@@ -105,7 +140,50 @@ async fn every_advertised_tool_explains_an_unknown_field_without_changes() -> Re
                 && !issue.suggested_correction().is_empty(),
             "{name}: incomplete correction"
         );
+        if let Some(required) = descriptor["inputSchema"]["required"].as_array() {
+            for field in required {
+                let field = field.as_str().context("non-string required field")?;
+                check_field(
+                    &mut input,
+                    &mut output,
+                    name,
+                    json!({}),
+                    field,
+                    Code::MissingField,
+                )
+                .await?;
+                missing_cases += 1;
+            }
+        }
+        if let Some(properties) = descriptor["inputSchema"]["properties"].as_object() {
+            for (field, schema) in properties {
+                let wrong = match schema["type"].as_str() {
+                    Some("string" | "object" | "array" | "null") => Some(json!(false)),
+                    Some("integer" | "number" | "boolean") => Some(json!("wrong type")),
+                    _ => None,
+                };
+                if let Some(wrong) = wrong {
+                    let mut arguments = serde_json::Map::new();
+                    arguments.insert(field.clone(), wrong);
+                    check_field(
+                        &mut input,
+                        &mut output,
+                        name,
+                        Value::Object(arguments),
+                        field,
+                        Code::WrongType,
+                    )
+                    .await?;
+                    wrong_type_cases += 1;
+                }
+            }
+        }
     }
+    ensure!(
+        missing_cases != 0 && wrong_type_cases != 0,
+        "tool catalogue produced no missing-field or wrong-type cases"
+    );
+    println!("Checked {missing_cases} missing-field and {wrong_type_cases} wrong-type cases across {} advertised tools", tools.len());
     let corrected = send(&mut input, &mut output, json!({"jsonrpc":"2.0","id":"corrected","method":"tools/call","params":{"name":"list_patterns","arguments":{}}})).await?;
     ensure!(
         corrected["id"] == "corrected" && corrected.get("error").is_none(),
