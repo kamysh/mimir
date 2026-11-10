@@ -5,7 +5,7 @@
 module Mimir.SweepRecovery where
 
 open import Data.Bool using (Bool; true; false; _∧_)
-open import Data.Empty using (⊥)
+open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Float.Base using (Float; _≤ᵇ_)
 open import Data.Integer using (ℤ; +_)
 open import Data.List using (List; []; _∷_; map; concatMap; length)
@@ -490,6 +490,44 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
     Saved.execute (token , metadata) before ≡ (before , Step.done saved)
   completedReplayIgnoresCurrentPolicy token metadata before binding saved final bound active step result =
     trans (allowed token metadata before binding bound) (K.replay (token , metadata) before saved final active step result)
+
+  cachedReplay : ∀ token before current raw →
+    Store.lookupSaved before token Step.resultKey ≡ nothing →
+    Store.lookupSaved current token Step.resultKey ≡ just raw →
+    X.Interrupted (script token) before current → X.Completed (script token) current current (Step.done raw)
+  cachedReplay token before current raw absent present cut with interruptionState token before current cut
+  ... | inj₁ same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (metadata , same) with classification token metadata before
+  ... | inj₁ unchanged = ⊥-elim (impossible (trans same unchanged))
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (changed , reply , admitted , active , stepAbsent , resultAbsent , accepted) = subst
+    (λ outcome → X.Completed (script token) current (proj₁ outcome) (proj₂ outcome)) replayed
+    (proj₂ (proj₂ (progress token current)))
+    where
+    earlier = token , metadata
+    later = observe token current
+    samePublication = trans same (cong proj₁
+      (fresh token metadata before changed reply admitted active stepAbsent resultAbsent accepted))
+    admittedCurrent = trans (cong (admit (token , later)) (cong Step.registration samePublication))
+      (trans (cong (admit (token , later)) (K.publicationKeepsRegistration earlier before changed reply accepted)) admitted)
+    activeCurrent = trans (cong (λ state → Store.lookupCancellation state token) samePublication)
+      (trans (K.publicationKeepsCancellation earlier before changed reply accepted) active)
+    stepCurrent = trans (cong (λ state → Store.lookupSaved state token (key token)) samePublication)
+      (K.publishedStepReadable earlier before changed reply accepted stepAbsent)
+    resultCurrent = trans (cong (λ state → Store.lookupSaved state token Step.resultKey) samePublication)
+      (K.publishedResultReadable earlier before changed reply accepted resultAbsent)
+    sameValue : ∀ {first second : Wire.Value} → just first ≡ just second → first ≡ second
+    sameValue refl = refl
+    replayed = trans (allowedAdmission token later current admittedCurrent)
+      (trans (K.replay (token , later) current reply reply activeCurrent stepCurrent resultCurrent)
+        (cong (λ value → current , Step.done value) (sameValue (trans (sym resultCurrent) present))))
 
 -- The service resolves completed historical journals before checking current
 -- policy or admitting a new publication. This is the same exact, whole-World
