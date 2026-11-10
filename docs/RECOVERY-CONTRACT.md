@@ -119,8 +119,9 @@ observed world against a goal is an intended-outcome evaluator.
 The machine-readable envelope and complete family inventory are in
 [the version 1 schema](intended-outcome-contract.schema.json). Existing public
 and model decoders validate the complete row payloads; the schema does not copy
-their domain rules. The coverage check requires every advertised tool, the two
-internal entries below, and every top-level/nested shared World field.
+their domain rules. The coverage check requires every advertised tool, the
+internal writes below, the CLI statistics and core pattern reads, and every
+top-level/nested shared World field.
 This is contract-inventory coverage; it does not claim that the #152 executable
 adapters have been implemented or checked.
 
@@ -314,7 +315,7 @@ transport boundary, without inventing an operation constructor for them.
 | `record_experience` | `ExperienceSourceRecovery.Business.checked` | Actual item allocations, source-creation time and independent locked posterior-publication time. |
 | `review_experience` | `ReviewPublicationRecovery.Business.checked`, `ReviewPublicationIntent.Fresh.intended` | Original raw and canonical declarations, saved owners, item/pattern allocations, prepared indexed support/vectors, review-creation time and independent publication clock. |
 | CLI `reembed` | `BackfillRecovery.capture`, `itemIntent`, `finalItemIntent` | Original saved source selection/settings, each actual owned packet and concurrent-source/vector observation; count acknowledged writes and preserved concurrent vectors truthfully. |
-| `get_belief`, `list_beliefs`, `list_patterns`, `get_contradictions`, `get_evidence` | `StorageReadBinding.BasicReads.answer` | Actual consistent read view; preserve the whole world unchanged. |
+| `stats`, `get_pattern`, `get_belief`, `list_beliefs`, `list_patterns`, `get_contradictions`, `get_evidence` | `StorageReadBinding.BasicReads.answer` | Actual consistent read view; preserve the whole world unchanged. Statistics and pattern lookup also cover their CLI/core entries without advertising new MCP tools. |
 | `get_experience`, `get_learning_review`, `experience_history`, `pending_experiences` | `LearningQueryBinding.ExperienceReads.answer` | Actual consistent read view. |
 | `get_lesson_assessment`, `lesson_assessment_history`, `explain_belief` | `LearningQueryBinding.AssessmentReads.answer` | Actual consistent read view and existing result projection. |
 | `query_intervention` | `InferenceStorageBinding.InterventionRecovery.answer` | Actual consistent graph view and numerical report. |

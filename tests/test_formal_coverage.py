@@ -63,7 +63,7 @@ class IntendedOutcomeContractTests(unittest.TestCase):
             coverage.check_intended_outcome_contract()
 
     def test_every_current_entry_has_an_intent_obligation(self):
-        self.assertEqual(coverage.check_intended_outcome_contract(), 39)
+        self.assertEqual(coverage.check_intended_outcome_contract(), 41)
 
     def test_a_missing_operation_fails_coverage(self):
         with self.assertRaises(AssertionError):
@@ -89,6 +89,15 @@ class IntendedOutcomeContractTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.check_changed(lambda contract: contract['x-model-records'].remove(
                 {'definition': 'execution', 'module': 'ApplicationStore', 'record': 'ExecutionRow'}))
+
+    def test_cli_statistics_and_library_pattern_reads_cannot_be_skipped(self):
+        for name in ('stats', 'get_pattern'):
+            with self.subTest(name=name):
+                self.setUp()
+                family = next(item for item in self.contract['x-intent-adapters']
+                              if name in item['operations'])
+                with self.assertRaises(AssertionError):
+                    self.check_changed(lambda contract: family['operations'].remove(name))
 
     def test_observed_final_world_cannot_be_an_expected_input(self):
         with self.assertRaises(AssertionError):
