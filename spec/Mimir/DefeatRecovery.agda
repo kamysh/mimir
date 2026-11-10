@@ -767,7 +767,7 @@ module Registered (conversion : Conversion.Contract)
       (ExecutionContext; sameRight; noJust; admission; admitted; returned; completed;
        admissionCompletedLookup; preserveAfterNext; finalPairCompletes;
        afterBindingLookup; afterMatch; afterReadback; answer; cancelled; ordered; savedRows)
-    module Plan = Controls.Plan using (Step; step; Saved; saved; readStep; readBoundary; fieldNames; decode)
+    module Plan = Controls.Plan using (Step; step; Saved; saved; readStep; readBoundary; fieldNames; decode; stepDecoded; readPlanFields; parsedSteps)
     module J = Controls.OpaqueJournal using (Cursor; here; passed; Complete; cursorNext)
     module Pair = Admission.PairPlan C.Binding.descriptor using (module First; module Second; pair; matches)
 
@@ -777,98 +777,9 @@ module Registered (conversion : Conversion.Contract)
     firstStep = Plan.step (toList "store.insert_edge") nothing (firstKey 0)
     finalStep = Plan.step (toList "store.propagate_locked") nothing (secondKey 0)
 
-    andLeft : ∀ first second → first ∧ second ≡ true → first ≡ true
-    andLeft false second ()
-    andLeft true second known = refl
-    andRight : ∀ first second → first ∧ second ≡ true → second ≡ true
-    andRight false second ()
-    andRight true second known = known
-
-    thirdTrue : ∀ first second third → first ∧ second ∧ third ≡ true → third ≡ true
-    thirdTrue first second third known = andRight second third (andRight first (second ∧ third) known)
-
-    sameRecordView : ∀ {A : Set} firstNames secondNames
-      (check : Wire.Object.View → Bool) (decode : Wire.Object.View → Validation.Fault ⊎ A) raw value →
-      Project.Registered.fields firstNames check raw ≡ true →
-      Decode.readRecord Objects.forbid Objects.rejectKnownRepeated secondNames decode raw ≡ inj₂ value →
-      Σ Wire.Object.View (λ view → check view ≡ true × decode view ≡ inj₂ value)
-    sameRecordView firstNames secondNames check decode raw value matched decoded with Wire.asObject raw
-    ... | inj₁ fault with matched
-    ... | ()
-    sameRecordView firstNames secondNames check decode raw value matched decoded | inj₂ fields
-      with Wire.Object.checkUnknowns Objects.forbid firstNames fields
-    ... | Validation.rejected fault invalid with matched
-    ... | ()
-    sameRecordView firstNames secondNames check decode raw value matched decoded | inj₂ fields | Validation.accepted known
-      with Wire.Object.checkDuplicates Objects.rejectKnownRepeated firstNames fields
-    ... | Validation.rejected fault invalid with matched
-    ... | ()
-    sameRecordView firstNames secondNames check decode raw value matched decoded | inj₂ fields | Validation.accepted known | Validation.accepted unique
-      with Wire.Object.checkUnknowns Objects.forbid secondNames fields
-    ... | Validation.rejected fault invalid with decoded
-    ... | ()
-    sameRecordView firstNames secondNames check decode raw value matched decoded | inj₂ fields | Validation.accepted known | Validation.accepted unique | Validation.accepted knownSecond
-      with Wire.Object.checkDuplicates Objects.rejectKnownRepeated secondNames fields
-    ... | Validation.rejected fault invalid with decoded
-    ... | ()
-    sameRecordView firstNames secondNames check decode raw value matched decoded | inj₂ fields | Validation.accepted known | Validation.accepted unique | Validation.accepted knownSecond | Validation.accepted uniqueSecond =
-      Wire.Object.normalize fields , matched , decoded
-
-    textField : ∀ expected observed → Project.Registered.fieldText expected observed ≡ true →
-      observed ≡ just (Wire.string expected)
-    textField expected (just (Wire.string actual)) accepted with actual ≟Text expected
-    ... | yes refl = refl
-    ... | no different with accepted
-    ... | ()
-    textField expected (just Wire.null) ()
-    textField expected (just (Wire.boolean _)) ()
-    textField expected (just (Wire.unsigned _)) ()
-    textField expected (just (Wire.signed _)) ()
-    textField expected (just (Wire.floating _)) ()
-    textField expected (just (Wire.array _)) ()
-    textField expected (just (Wire.object _)) ()
-    textField expected nothing ()
-
-    nullField : ∀ observed → Project.Registered.fieldNull observed ≡ true → observed ≡ just Wire.null
-    nullField (just Wire.null) accepted = refl
-    nullField (just (Wire.boolean _)) ()
-    nullField (just (Wire.unsigned _)) ()
-    nullField (just (Wire.signed _)) ()
-    nullField (just (Wire.floating _)) ()
-    nullField (just (Wire.string _)) ()
-    nullField (just (Wire.array _)) ()
-    nullField (just (Wire.object _)) ()
-    nullField nothing ()
-
-    stepFields : Wire.Object.View → Validation.Fault ⊎ Plan.Step
-    stepFields view = Decode._>>=_ (Wire.required (toList "site") Wire.asString view) λ site →
-      Decode._>>=_ (Wire.optional (toList "key") Wire.asString view) λ key →
-      Decode._>>=_ (Wire.required (toList "id") Wire.asString view) λ id → inj₂ (Plan.step site key id)
-
-    stepFieldsKnown : ∀ view site identity →
-      view (toList "site") ≡ just (Wire.string site) →
-      view (toList "key") ≡ just Wire.null →
-      view (toList "id") ≡ just (Wire.string identity) →
-      stepFields view ≡ inj₂ (Plan.step site nothing identity)
-    stepFieldsKnown view site identity siteKnown keyKnown idKnown rewrite siteKnown | keyKnown | idKnown = refl
-
-    stepDecoded : ∀ registered raw decodedStep → Admission.Plan.stepMatches registered raw ≡ true →
-      Plan.readStep raw ≡ inj₂ decodedStep → decodedStep ≡ Plan.step (Admission.Descriptor.site registered) nothing (Admission.Descriptor.key registered)
-    stepDecoded registered raw decodedStep matched decoded with sameRecordView
-      (toList "site" ∷ toList "key" ∷ toList "id" ∷ [])
-      (toList "site" ∷ toList "key" ∷ toList "id" ∷ [])
-      (λ view → Project.Registered.fieldText (Admission.Descriptor.site registered) (view (toList "site")) ∧
-        Project.Registered.fieldNull (view (toList "key")) ∧
-        Project.Registered.fieldText (Admission.Descriptor.key registered) (view (toList "id")))
-      stepFields raw decodedStep matched decoded
-    ... | view , checked , parsed = sym (Read.sameRight (trans (sym (stepFieldsKnown view
-      (Admission.Descriptor.site registered) (Admission.Descriptor.key registered)
-      (textField _ _ (andLeft a (b ∧ c) checked)) (nullField _ (andLeft b c (andRight a (b ∧ c) checked)))
-      (textField _ _ (andRight b c (andRight a (b ∧ c) checked))))) parsed))
-      where
-      a = Project.Registered.fieldText (Admission.Descriptor.site registered) (view (toList "site"))
-      b = Project.Registered.fieldNull (view (toList "key"))
-      c = Project.Registered.fieldText (Admission.Descriptor.key registered) (view (toList "id"))
+    open Admission.RecordFields using
+      (andLeft; andRight; thirdTrue; sameRecordView; textField; nullField; unfield)
+    stepDecoded = Plan.stepDecoded
 
     pairValues : ∀ firstCheck secondCheck observed → Pair.pair firstCheck secondCheck observed ≡ true →
       Σ Wire.Value (λ firstRaw → Σ Wire.Value (λ secondRaw →
@@ -888,32 +799,8 @@ module Registered (conversion : Conversion.Contract)
     pairValues firstCheck secondCheck (just (Wire.object _)) ()
     pairValues firstCheck secondCheck nothing ()
 
-    planFields : Wire.Object.View → Validation.Fault ⊎ Plan.Saved
-    planFields view = Decode._>>=_ (Wire.required (toList "operation") Wire.asString view) λ operation →
-      Decode._>>=_ (Wire.required (toList "shape") (Decode.readArray Plan.readBoundary) view) λ shape →
-      Decode._>>=_ (Wire.required (toList "steps") (Decode.readArray Plan.readStep) view) λ steps →
-      inj₂ (Plan.saved operation shape steps (view (toList "capture")))
-
-    parsedSteps : ∀ view model → planFields view ≡ inj₂ model →
-      Wire.required (toList "steps") (Decode.readArray Plan.readStep) view ≡ inj₂ (Plan.Saved.steps model)
-    parsedSteps view model known with Wire.required (toList "operation") Wire.asString view
-    ... | inj₁ fault with known
-    ... | ()
-    parsedSteps view model known | inj₂ operation
-      with Wire.required (toList "shape") (Decode.readArray Plan.readBoundary) view
-    ... | inj₁ fault with known
-    ... | ()
-    parsedSteps view model known | inj₂ operation | inj₂ shape
-      with Wire.required (toList "steps") (Decode.readArray Plan.readStep) view
-    ... | inj₁ fault with known
-    ... | ()
-    parsedSteps view model known | inj₂ operation | inj₂ shape | inj₂ steps with known
-    ... | refl = refl
-
-    unfield : ∀ {A : Set} name (observed : Validation.Fault ⊎ A) value →
-      Wire.withField name observed ≡ inj₂ value → observed ≡ inj₂ value
-    unfield name (inj₁ fault) value ()
-    unfield name (inj₂ observed) value known = known
+    planFields = Plan.readPlanFields
+    parsedSteps = Plan.parsedSteps
 
     selectedPairRead : ∀ view firstRaw secondRaw steps →
       view (toList "steps") ≡ just (Wire.array (firstRaw ∷ secondRaw ∷ [])) →
