@@ -1569,9 +1569,9 @@ dependencies = [
 name = "mimir-core"
 version = "2.3.0"
 dependencies = [
- "futures-util",
  "anyhow",
  "chrono",
+ "futures-util",
  "include_dir",
  "indicatif",
  "kryzhen",

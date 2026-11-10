@@ -10,6 +10,21 @@ use mimir_core::{config::Config, MimirService};
 use serde_json::json;
 use uuid::Uuid;
 
+async fn saved_write(
+    service: &MimirService,
+    name: &str,
+    token: Uuid,
+    mut arguments: serde_json::Value,
+) -> Result<serde_json::Value> {
+    arguments["operation_token"] = json!(token);
+    let answer = handle_tool_call(service, name, &arguments).await?;
+    ensure!(
+        answer["status"] == "completed",
+        "{name} did not complete: {answer}"
+    );
+    Ok(mimir_json::clone_value(&answer["result"]))
+}
+
 #[path = "../../../tests/support/retrieval_preference.rs"]
 mod preference;
 
@@ -260,14 +275,33 @@ async fn pending_selection_has_no_default_and_invalid_counts_request_correction(
 
 #[tokio::test]
 async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> {
-    let service = MimirService::connect(&Config {
-        database: isolation::fixture().database_config(),
-        embeddings: None,
-        llm: None,
-        judge: None,
-        email: None,
-        retirement: None,
-    })
+    use std::os::unix::fs::PermissionsExt;
+    let database = isolation::fixture().database_config();
+    let audit = mimir_core::db::connect(&database).await?;
+    let case: Uuid = audit
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let directory = isolation::fixture()
+        .root
+        .join(format!("mcp-learning-worker-{case}"));
+    std::fs::create_dir(&directory)?;
+    let worker = directory.join("worker.py");
+    std::fs::write(&worker,"#!/usr/bin/env python3\nimport json,sys\nfor line in sys.stdin:\n request=json.loads(line)\n print(json.dumps({'status':'started','version':request['version']}),flush=True)\n print(json.dumps({'status':'complete','vectors':[[1.0]+[0.0]*767 for text in request['texts']]}),flush=True)\n")?;
+    std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o700))?;
+    let service = MimirService::connect_with_worker(
+        &Config {
+            database: database.clone(),
+            embeddings: Some(mimir_json::from_value(
+                json!({"backend":"local","cache_dir":directory.join("model-cache")}),
+            )?),
+            llm: None,
+            judge: None,
+            email: None,
+            retirement: None,
+        },
+        worker,
+    )
     .await?;
     let capabilities = handle_tool_call(&service, "learning_capabilities", &json!({})).await?;
     ensure!(
@@ -278,12 +312,21 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         capabilities["contract_version"] == 3,
         "PostgreSQL item allocation contract missing"
     );
-    let source_id = Uuid::new_v4();
-    let source = json!({"id":source_id,"project":"isolated-source-mcp","context":"source fixture","action":"extract all","outcome":"unknown","source":"agent_report","evidence":["event/1"],"source_records":[{"source_ref":"event/1","actor":"agent","provenance":"agent_report","text":"I suggest checking first."}]});
-    handle_tool_call(
+    let source_id: Uuid = audit
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let source_project = format!("isolated-source-mcp-{case}");
+    let source = json!({"id":source_id,"project":source_project,"context":"source fixture","action":"extract all","outcome":"unknown","source":"agent_report","evidence":["event/1"],"source_records":[{"source_ref":"event/1","actor":"agent","provenance":"agent_report","text":"I suggest checking first."}]});
+    let source_token = service
+        .reserve_operation(&format!("{case}-source"))
+        .await?
+        .operation_token;
+    saved_write(
         &service,
         "record_experience",
-        &json!({"experience":source,"expected_revision":0}),
+        source_token,
+        json!({"experience":source,"expected_revision":0}),
     )
     .await?;
     ensure!(
@@ -293,10 +336,15 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         "new source must await review"
     );
     let receipt = json!({"experience_id":source_id,"experience_revision":1,"reviewer":"offline-fixture","rationale":"retain suggestion without inferred outcome","extracted_items":[{"key":"checking-first","kind":"suggestion","source_ref":"event/1","actor":"agent","statement":"I suggest checking first.","conditions":"untried"}],"source_coverage":[{"source_ref":"event/1","status":"unresolved","reason":"Untried suggestion requires later outcome"}]});
-    let allocated = handle_tool_call(
+    let extraction_token = service
+        .reserve_operation(&format!("{case}-extraction"))
+        .await?
+        .operation_token;
+    let allocated = saved_write(
         &service,
         "review_experience",
-        &json!({"review":receipt,"expected_review_revision":0}),
+        extraction_token,
+        json!({"review":receipt,"expected_review_revision":0}),
     )
     .await?;
     let item_id = allocated["item_ids"]["checking-first"].clone();
@@ -306,10 +354,11 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
             .is_some_and(|id| Uuid::parse_str(id).is_ok()),
         "PostgreSQL item ID missing"
     );
-    let replay = handle_tool_call(
+    let replay = saved_write(
         &service,
         "review_experience",
-        &json!({"review":receipt,"expected_review_revision":0}),
+        extraction_token,
+        json!({"review":receipt,"expected_review_revision":0}),
     )
     .await?;
     ensure!(
@@ -348,17 +397,43 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         "insert_belief schema omits provenance"
     );
     let project = format!("mcp-learning-{}", Uuid::new_v4());
-    let id = Uuid::new_v4();
+    let id: Uuid = audit
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let chunk_id: Uuid = audit
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let passage="Check the configuration before restarting a stale keyboard-layout process, then verify its result. The user requires a verification step.";
+    let chunk = mimir_core::documents::DocumentChunk::with_id(
+        chunk_id,
+        format!("/mcp-learning/{case}.md"),
+        vec![],
+        passage.into(),
+        None,
+        Some(project.clone()),
+    );
+    let store = mimir_core::store::AgeStore::new(
+        mimir_core::db::connect(&database).await?,
+        database.dbname.clone(),
+    )?;
+    store.insert_document_chunk(&chunk).await?;
+    let mut vector = vec![0.0; 768];
+    vector[0] = 1.0;
+    store.insert_chunk_embedding(chunk_id, &vector).await?;
+    let grounding = json!([{"chunk_id":chunk_id,"document_path":chunk.document_path,"quotation":passage,"explanation":"The passage explicitly requires checking configuration, restarting the stale process and verifying the result."}]);
     let result: Result<()> = async {
         let experience = json!({
             "id":id,"project":project,"context":"stale keyboard indicator",
             "action":"restart layout process","outcome":"success","source":"tool_result",
             "evidence":["observed changed process and updated indicator"]
         });
-        let first = handle_tool_call(
+        let token=service.reserve_operation(&format!("{case}-observed-source")).await?.operation_token;
+        let first = saved_write(
             &service,
             "record_experience",
-            &json!({"experience":experience,"expected_revision":0}),
+            token,json!({"experience":experience,"expected_revision":0}),
         )
         .await?;
         ensure!(first["revision"] == 1, "source was not recorded");
@@ -376,24 +451,25 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
             "experience_id":id,"experience_revision":1,"reviewer":"rust-fixture",
             "rationale":"one observed incident, one owned candidate",
             "candidates":[
-                {"kind":"belief","key":"layout-lesson","content":"Restart stale keyboard layout process after checking configuration","memory_type":"Experiential"},
+                {"kind":"belief","key":"layout-lesson","content":"Restart stale keyboard layout process after checking configuration","memory_type":"Experiential","grounding":grounding},
                 {"kind":"pattern","key":"layout-procedure","situation":"stale keyboard layout indicator","approach":"check config, restart, and verify"}
             ],
             "candidate_feedback":[{"target":{"candidate_key":"layout-lesson"},"verdict":"support","weight":0.75}]
         });
-        let applied = handle_tool_call(
+        let review_token=service.reserve_operation(&format!("{case}-observed-review")).await?.operation_token;
+        let applied = saved_write(
             &service,
             "review_experience",
-            &json!({"review":review,"expected_review_revision":0}),
+            review_token,json!({"review":review,"expected_review_revision":0}),
         )
         .await?;
         let belief_id = applied["candidate_ids"]["layout-lesson"].clone();
         let pattern_id = applied["candidate_ids"]["layout-procedure"].clone();
         ensure!(belief_id.is_string(), "candidate ID missing");
-        let retry = handle_tool_call(
+        let retry = saved_write(
             &service,
             "review_experience",
-            &json!({"review":review,"expected_review_revision":0}),
+            review_token,json!({"review":review,"expected_review_revision":0}),
         )
         .await?;
         ensure!(
@@ -431,15 +507,16 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
             )),
             "retrieval alone counted as observed use"
         );
-        let later_id = Uuid::new_v4();
+        let later_id:Uuid=audit.query_one("SELECT gen_random_uuid()",&[]).await?.get(0);
         let mut later = json!({"id":later_id,"project":project,
             "context":"stale keyboard layout indicator",
             "action":"check config, restart, and verify",
             "outcome":"success","source":"tool_result",
             "evidence":["later process ID and indicator were verified"],
             "belief_ids":[belief_id],"pattern_id":pattern_id});
-        handle_tool_call(&service, "record_experience",
-            &json!({"experience":later,"expected_revision":0})).await?;
+        let later_token=service.reserve_operation(&format!("{case}-later-observation")).await?.operation_token;
+        saved_write(&service, "record_experience",later_token,
+            json!({"experience":later,"expected_revision":0})).await?;
         let observed = handle_tool_call(&service,"query_learning_context",
             &json!({"project":project,"context":"stale keyboard layout indicator","limit":20})).await?;
         ensure!(observed["patterns"].as_array().is_some_and(|patterns| patterns.iter().any(
@@ -448,8 +525,9 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         later["outcome"] = json!("failure");
         later["source"] = json!("user_feedback");
         later["evidence"] = json!(["user corrected the later outcome"]);
-        handle_tool_call(&service, "record_experience",
-            &json!({"experience":later,"expected_revision":1})).await?;
+        let corrected_token=service.reserve_operation(&format!("{case}-corrected-observation")).await?.operation_token;
+        saved_write(&service, "record_experience",corrected_token,
+            json!({"experience":later,"expected_revision":1})).await?;
         let corrected = handle_tool_call(&service,"query_learning_context",
             &json!({"project":project,"context":"stale keyboard layout indicator","limit":20})).await?;
         ensure!(corrected["patterns"].as_array().is_some_and(|patterns| patterns.iter().any(
@@ -458,34 +536,30 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         ensure!(handle_tool_call(&service,"learning_capabilities",&json!({})).await?["assessment_model_version"]==1,"missing assessment capability");
         let typed=json!({"experience_id":later_id,"experience_revision":2,"reviewer":"rust-fixture","rationale":"corrected later outcome",
             "assessments":[{"target":{"belief_id":belief_id},"scope":"keyboard-v1","rubric":"benefit-v1","correctness":{"value":0.0,"weight":1.0},"usefulness":{"value":-0.5,"weight":1.0},"evidence_indices":[0],"rationale":"explicit corrected observation"}]});
-        handle_tool_call(&service,"review_experience",&json!({"review":typed,"expected_review_revision":0})).await?;
+        let typed_token=service.reserve_operation(&format!("{case}-typed-assessment")).await?.operation_token;
+        saved_write(&service,"review_experience",typed_token,json!({"review":typed,"expected_review_revision":0})).await?;
         let args=json!({"project":project,"belief_id":belief_id,"scope":"keyboard-v1","rubric":"benefit-v1"});
         let scores=handle_tool_call(&service,"get_lesson_assessment",&args).await?;
         ensure!((scores["scores"]["correctness"].as_f64().unwrap()-1.0/3.0).abs()<1e-12,"incorrect numeric assessment");
         ensure!(scores["scores"]["usefulness"]==-0.25,"incorrect benefit assessment");
         let history=handle_tool_call(&service,"lesson_assessment_history",&args).await?;
         ensure!(history["entries"][0]["active"]==true,"assessment history missing current contribution");
-        let direct = json!({"content":"User requires a verification step", "probability":0.9,
-            "confidence":0.5,"project":project});
-        ensure!(
-            handle_tool_call(&service, "insert_belief", &direct)
-                .await
-                .is_err(),
-            "untagged direct belief was accepted"
-        );
+        let direct_token=service.reserve_operation(&format!("{case}-independent-instruction")).await?.operation_token;
+        let direct = json!({"operation_token":direct_token,"content":"User requires a verification step", "probability":0.9,
+            "confidence":0.5,"project":project,"grounding":grounding});
+        let refusal=handle_tool_call(&service,"insert_belief",&direct).await?;
+        let correction:mimir_core::interaction::NeedsInput=mimir_json::from_value(refusal)?;
+        ensure!(correction.issues().iter().any(|issue|issue.fault().path==vec![mimir_core::validation::Segment::Key("provenance".into())]),"missing independent provenance did not request correction");
         let mut incident_labeled = direct.clone();
         incident_labeled["provenance"] = json!({"basis":"agent_report",
             "reference":"the queued incident"});
-        ensure!(
-            handle_tool_call(&service, "insert_belief", &incident_labeled)
-                .await
-                .is_err(),
-            "incident report was accepted as independent provenance"
-        );
+        let refusal=handle_tool_call(&service,"insert_belief",&incident_labeled).await?;
+        let _:mimir_core::interaction::NeedsInput=mimir_json::from_value(refusal)?;
+        ensure!(service.read_operation_binding(direct_token).await?.is_none(),"incorrect provenance must remain correctable before binding");
         let mut independent = direct;
         independent["provenance"] = json!({"basis":"user_instruction",
             "reference":"fixture user requirement"});
-        let inserted = handle_tool_call(&service, "insert_belief", &independent).await?;
+        let inserted = saved_write(&service, "insert_belief",direct_token,independent.clone()).await?;
         let direct_explanation = handle_tool_call(
             &service,
             "explain_belief",
@@ -500,5 +574,6 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
     }
     .await;
     service.delete_project(&project).await?;
+    service.delete_project(&source_project).await?;
     result
 }

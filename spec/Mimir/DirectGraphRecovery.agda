@@ -5,11 +5,11 @@ module Mimir.DirectGraphRecovery where
 
 open import Data.Bool using (Bool; true; false)
 open import Data.Empty using (⊥)
-open import Data.List using (List; []; _∷_)
+open import Data.List using (List; []; _∷_; _++_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Product using (_×_; _,_; Σ; proj₁; proj₂)
-open import Data.String using (toList)
+open import Data.String using (String; toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; subst)
 open import Mimir.Text using (Text)
@@ -59,11 +59,23 @@ invalid : Validation.Fault
 invalid = Validation.fault (Validation.key "weight" ∷ []) Validation.invalidNumber
   "Supply a finite weight between 0 and 1 inclusive. Correct the request or ask the user; no relationship was saved."
 
-missing : Validation.Fault
-missing = Validation.fault [] Validation.missingReference
-  "A requested belief is absent. Read the current beliefs and correct the endpoint IDs or ask the user; no relationship was saved."
+endpointField : Kind → Bool → String
+endpointField support true = "from_id"
+endpointField support false = "to_id"
+endpointField cause true = "from_id"
+endpointField cause false = "to_id"
+endpointField contradiction true = "id_a"
+endpointField contradiction false = "id_b"
 
-module Business (kind : Kind) where
+-- Identity spelling is an existing standard-library boundary. Mimir chooses
+-- the actual missing endpoint and its public field, including the distinct
+-- contradiction field names; it does not blame an unspecified pair of IDs.
+missing : (ℕ → Text) → Kind → Bool → ℕ → Validation.Fault
+missing uuidText kind first identity = Validation.problem
+  (Validation.key (endpointField kind first) ∷ []) Validation.missingReference
+  (toList "The requested belief " ++ uuidText identity ++ toList " was not found in Mimir.")
+
+module Business (kind : Kind) (uuidText : ℕ → Text) where
   open Request
   Outcome = Validation.Fault ⊎ (Store.World × Wire.Value)
 
@@ -75,8 +87,8 @@ module Business (kind : Kind) where
   ... | just value with Numbers.probability value
   ... | false = outcome ≡ inj₁ invalid
   ... | true with Ranking.lookup (from input) (Store.beliefs before) | Ranking.lookup (to input) (Store.beliefs before)
-  ... | nothing | _ = outcome ≡ inj₁ missing
-  ... | just _ | nothing = outcome ≡ inj₁ missing
+  ... | nothing | _ = outcome ≡ inj₁ (missing uuidText kind true (from input))
+  ... | just _ | nothing = outcome ≡ inj₁ (missing uuidText kind false (to input))
   ... | just _ | just _ = outcome ≡ inj₂
     (Writes.addEdges (Writes.directEdges (from input) (to input) (relation kind) (weight input)) before , answer)
 
@@ -86,8 +98,8 @@ module Business (kind : Kind) where
   ... | just value with Numbers.probability value
   ... | false = inj₁ invalid , refl
   ... | true with Ranking.lookup (from input) (Store.beliefs before) | Ranking.lookup (to input) (Store.beliefs before)
-  ... | nothing | _ = inj₁ missing , refl
-  ... | just _ | nothing = inj₁ missing , refl
+  ... | nothing | _ = inj₁ (missing uuidText kind true (from input)) , refl
+  ... | just _ | nothing = inj₁ (missing uuidText kind false (to input)) , refl
   ... | just _ | just _ = inj₂
     (Writes.addEdges (Writes.directEdges (from input) (to input) (relation kind) (weight input)) before , answer) , refl
 
@@ -107,8 +119,8 @@ module Business (kind : Kind) where
   ... | ()
   journalUnchanged input before after reply refl | just value | true | just _ | just _ = refl
 
-module Registered (conversion : Conversion.Contract) (kind : Kind) where
-  module B = Business kind
+module Registered (conversion : Conversion.Contract) (uuidText : ℕ → Text) (kind : Kind) where
+  module B = Business kind uuidText
   module N = Public.Numbers conversion
   key : ℕ → Text
   key _ = Admission.Descriptor.key (descriptor kind)
@@ -206,3 +218,4 @@ module Registered (conversion : Conversion.Contract) (kind : Kind) where
 
   module Certified = Saved.Certified Goal meaning
   operation = Certified.operation
+  cachedReplay = Saved.cachedReplay

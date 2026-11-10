@@ -6,7 +6,7 @@ module Mimir.McpErrors where
 
 open import Data.Integer using (ℤ; -[1+_])
 import Data.Integer.Properties as Integer
-open import Data.List using (List; []; _∷_; map)
+open import Data.List using (List; []; _∷_; map; _++_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
@@ -193,6 +193,19 @@ module AgentCorrection where
     (toList "An identifier of the intended record that is currently stored in Mimir.")
     lookup
 
+  -- Values here are the original bound token/argument serialization observed
+  -- by the application projection, not replacement arguments from the caller.
+  boundRelationshipReference : Fault → Text → Text → Claim
+  boundRelationshipReference detail token originalArguments = claim
+    (item arguments detail
+      (toList "An identifier of the intended record that is currently stored in Mimir.")
+      (toList "Keep operation token " ++ token ++ toList " and its exact original arguments: " ++ originalArguments ++
+       toList ". Read operation_outcome with this token and use list_beliefs or query_relevant to inspect the intended stored records. The bound request is immutable. Retry only the unchanged original arguments after resolving the missing prerequisite. If an endpoint is wrong, explain this problem and ask the user whether to cancel the pending operation and reserve deliberately separate corrected work. Do not rewrite the bound endpoints, automatically cancel or reserve replacement work, or invent an identifier.")) []
+
+  boundRelationshipFaultPreserved : ∀ detail token originalArguments →
+    Item.failure (Claim.first (boundRelationshipReference detail token originalArguments)) ≡ detail
+  boundRelationshipFaultPreserved detail token originalArguments = refl
+
   staleRevisionItem : List Mimir.Validation.Segment → Text → Text → Item
   staleRevisionItem path explanation readback = item arguments
     (Mimir.Validation.problem path Mimir.Validation.staleRevision explanation)
@@ -255,6 +268,9 @@ module AgentCorrection where
   instruction : Text
   instruction = toList "Correct the indicated fields and retry. If a required value is not known, ask the user instead of guessing."
 
+  boundRelationshipInstruction : Text
+  boundRelationshipInstruction = toList "This operation token is already bound to its original request. Read its outcome and discuss the missing reference with the user before changing the intended work. No relationship was saved."
+
   private
     encodeItem : Item → Value
     encodeItem detail = object
@@ -266,14 +282,20 @@ module AgentCorrection where
   issues : Claim → Value
   issues report = array (map encodeItem (Claim.first report ∷ Claim.rest report))
 
+  private
+    correctionValue : Text → Claim → Value
+    correctionValue message report = object
+      ((toList "status" , string (toList "needs_input")) ∷
+       (toList "business_changes" , string (toList "none")) ∷
+       (toList "next_action" , string (toList "correct_request_or_ask_user")) ∷
+       (toList "message" , string message) ∷
+       (toList "issues" , issues report) ∷ [])
+
   emitCorrection : ∀ {World before after} → Certified World before after → Value
-  emitCorrection proof = object
-    ((toList "status" , string (toList "needs_input")) ∷
-     (toList "business_changes" , string (toList "none")) ∷
-     (toList "next_action" , string (toList "correct_request_or_ask_user")) ∷
-     (toList "message" , string instruction) ∷
-     (toList "issues" , issues report) ∷ [])
-    where report = Certified.report proof
+  emitCorrection proof = correctionValue instruction (Certified.report proof)
+
+  emitBoundRelationshipReference : ∀ {World before after} → Certified World before after → Value
+  emitBoundRelationshipReference proof = correctionValue boundRelationshipInstruction (Certified.report proof)
 
   -- Decode the application response, not JSON syntax. A tag alone cannot
   -- bypass the ordinary tool-result checks or certify the remote database.

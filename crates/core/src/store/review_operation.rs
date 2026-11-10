@@ -29,7 +29,9 @@ fn original(request: &OperationBindingRequest) -> Result<Arguments> {
 }
 
 pub(crate) fn admit_request(request: &OperationBindingRequest) -> Result<()> {
-    original(request).map(|_| ())
+    // This request is not bound yet. Keep typed pure-validation faults rather
+    // than converting them into a saved-request repair message.
+    decode_original(request).map(|_| ())
 }
 
 fn decode_original(request: &OperationBindingRequest) -> Result<Arguments> {
@@ -59,7 +61,7 @@ struct Allocation {
 pub(crate) enum ReviewPublicationState {
     Resolved(StepDecision),
     Preparing {
-        review: Review,
+        review: Box<Review>,
         expected: i64,
         owners: HashMap<String, Belief>,
         final_step: RegisteredStep,
@@ -171,7 +173,7 @@ impl AgeStore {
             );
         }
         Ok(ReviewPublicationState::Preparing {
-            review: args.review,
+            review: Box::new(args.review),
             expected: args.expected_review_revision,
             owners,
             final_step,

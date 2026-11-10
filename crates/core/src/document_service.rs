@@ -138,15 +138,12 @@ impl MimirService {
             Work::Stopped => return self.document_stopped(token).await,
             Work::Embedded(vectors) => vectors,
         };
-        match self
+        if let StepDecision::NeedsRecovery(reason) = self
             .store
             .publish_document_operation(first, final_step, &prepared, &vectors)
             .await?
         {
-            StepDecision::NeedsRecovery(reason) => {
-                return Err(problem(Code::MissingReference, reason))
-            }
-            _ => {}
+            return Err(problem(Code::MissingReference, reason));
         }
         self.read_operation_outcome(token, Some(&binding.request))
             .await
@@ -188,7 +185,7 @@ impl MimirService {
             .iter()
             .map(|chunk| chunk.content.clone())
             .collect();
-        let job = backend.embed(&texts);
+        let job = self.operation_embedding_job(backend, &texts, Some(token));
         tokio::pin!(job);
         loop {
             tokio::select! {

@@ -1,8 +1,6 @@
 //! Actual service retrieval with a deterministic provider and owned PostgreSQL.
-#[allow(dead_code)]
-#[path = "../../../../tests/support/isolation.rs"]
-mod isolation;
 use super::{EmbedFuture, EmbeddingCancellation, EmbeddingProvider, OwnedEmbeddingBackend};
+use crate::test_isolation as isolation;
 use crate::{
     config::Config,
     db,

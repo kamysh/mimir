@@ -5,7 +5,7 @@
 module Mimir.SweepRecovery where
 
 open import Data.Bool using (Bool; true; false; _∧_)
-open import Data.Empty using (⊥)
+open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Float.Base using (Float; _≤ᵇ_)
 open import Data.Integer using (ℤ; +_)
 open import Data.List using (List; []; _∷_; map; concatMap; length)
@@ -43,6 +43,7 @@ import Mimir.DatabaseTransaction as DB
 import Mimir.OperationControls as Controls
 import Mimir.InferenceProtocol as Service
 import Mimir.McpErrors as Errors
+import Mimir.ProjectDeletion as Project
 open import Mimir.RecordDecoding using (_>>=_)
 
 -- The stored request supplies scope/threshold; grace comes only from the
@@ -479,6 +480,7 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
 
   operation : Recovery.RecoverableFor Store.World ℕ Saved.Reply Goal
   operation = record { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic; converges = converges; progress = progress }
+  Result = Saved.Reply
 
   -- A saved publication takes priority over every new configuration/clock
   -- observation. The exact original answer and complete current World survive.
@@ -490,6 +492,145 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
     Saved.execute (token , metadata) before ≡ (before , Step.done saved)
   completedReplayIgnoresCurrentPolicy token metadata before binding saved final bound active step result =
     trans (allowed token metadata before binding bound) (K.replay (token , metadata) before saved final active step result)
+
+  cachedReplay : ∀ token before current raw →
+    Store.lookupSaved before token Step.resultKey ≡ nothing →
+    Store.lookupSaved current token Step.resultKey ≡ just raw →
+    X.Interrupted (script token) before current → X.Completed (script token) current current (Step.done raw)
+  cachedReplay token before current raw absent present cut with interruptionState token before current cut
+  ... | inj₁ same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (metadata , same) with classification token metadata before
+  ... | inj₁ unchanged = ⊥-elim (impossible (trans same unchanged))
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (changed , reply , admitted , active , stepAbsent , resultAbsent , accepted) = subst
+    (λ outcome → X.Completed (script token) current (proj₁ outcome) (proj₂ outcome)) replayed
+    (proj₂ (proj₂ (progress token current)))
+    where
+    earlier = token , metadata
+    later = observe token current
+    samePublication = trans same (cong proj₁
+      (fresh token metadata before changed reply admitted active stepAbsent resultAbsent accepted))
+    admittedCurrent = trans (cong (admit (token , later)) (cong Step.registration samePublication))
+      (trans (cong (admit (token , later)) (K.publicationKeepsRegistration earlier before changed reply accepted)) admitted)
+    activeCurrent = trans (cong (λ state → Store.lookupCancellation state token) samePublication)
+      (trans (K.publicationKeepsCancellation earlier before changed reply accepted) active)
+    stepCurrent = trans (cong (λ state → Store.lookupSaved state token (key token)) samePublication)
+      (K.publishedStepReadable earlier before changed reply accepted stepAbsent)
+    resultCurrent = trans (cong (λ state → Store.lookupSaved state token Step.resultKey) samePublication)
+      (K.publishedResultReadable earlier before changed reply accepted resultAbsent)
+    sameValue : ∀ {first second : Wire.Value} → just first ≡ just second → first ≡ second
+    sameValue refl = refl
+    replayed = trans (allowedAdmission token later current admittedCurrent)
+      (trans (K.replay (token , later) current reply reply activeCurrent stepCurrent resultCurrent)
+        (cong (λ value → current , Step.done value) (sameValue (trans (sym resultCurrent) present))))
+
+  -- A real interrupted sweep either changed nothing or has its complete final
+  -- pair. Changing the user policy can pause a fresh attempt; it cannot make
+  -- an already published answer depend on a later policy observation.
+  module Journal (postgres : Controls.PostgreSQL) where
+    module Read = Controls.Readback library postgres using
+      (ExecutionContext; admission; admitted; returned; completed; finalPairCompletes)
+    module Plan = Controls.Plan using
+      (Step; step; Saved; decode)
+    module J = Controls.OpaqueJournal using (Cursor; here; Complete; cursorNext)
+
+    operationName = toList "sweep_expired_defeated"
+    module Projection = Controls.Plan.SingletonProjection descriptor using (finalStep; decodedSingle)
+    finalStep = Projection.finalStep
+    decodedSingle = Projection.decodedSingle
+
+    originalPlanObserved : ∀ token before (context : Read.ExecutionContext operationName token before) →
+      Admission.originalPlan operationName token (Step.registration before) ≡ inj₂
+        (Read.ExecutionContext.reservationRow context , Read.ExecutionContext.bindingRow context , Read.ExecutionContext.rawPlan context)
+    originalPlanObserved token before context rewrite Read.ExecutionContext.originalReservation context
+      | Read.ExecutionContext.originalBinding context | Read.ExecutionContext.requestedOperation context
+      | Read.ExecutionContext.originalPlan context = refl
+
+    matchedPlan : ∀ token metadata before (context : Read.ExecutionContext operationName token before) →
+      admit (token , metadata) (Step.registration before) ≡ nothing →
+      Admission.Plan.matches descriptor (Read.ExecutionContext.rawPlan context) ≡ true
+    matchedPlan token metadata before context rewrite originalPlanObserved token before context
+      with Admission.Plan.matches descriptor (Read.ExecutionContext.rawPlan context)
+    ... | false = λ ()
+    ... | true = λ _ → refl
+
+    contextStep : ∀ token metadata before (context : Read.ExecutionContext operationName token before) →
+      admit (token , metadata) (Step.registration before) ≡ nothing →
+      Plan.Saved.steps (Read.ExecutionContext.plan context) ≡ (finalStep ∷ [])
+    contextStep token metadata before context permitted = decodedSingle (Read.ExecutionContext.rawPlan context)
+      (Read.ExecutionContext.plan context) (matchedPlan token metadata before context permitted)
+      (Read.ExecutionContext.decoded context)
+
+    completes : ∀ token metadata before (context : Read.ExecutionContext operationName token before) changed reply →
+      admit (token , metadata) (Step.registration before) ≡ nothing →
+      Store.lookupCancellation before token ≡ nothing → Store.lookupSaved before token (key token) ≡ nothing →
+      Store.lookupSaved before token Step.resultKey ≡ nothing → decide (token , metadata) before ≡ inj₂ (changed , reply) →
+      Read.admission operationName token (K.publication (token , metadata) changed reply) ≡
+        Read.returned (Read.completed (Read.ExecutionContext.bindingRow context) reply)
+    completes token metadata before context changed reply permitted active stepAbsent resultAbsent accepted =
+      Read.finalPairCompletes operationName token before context finalStep reply changed
+        (J.cursorNext token before _ finalStep [] (J.Complete.prefix (Read.ExecutionContext.journal context)) cursor stepAbsent)
+        cursor resultAbsent active (keepsJournal (token , metadata) before changed reply accepted)
+      where
+      cursor : J.Cursor token before (Plan.Saved.steps (Read.ExecutionContext.plan context)) (finalStep ∷ [])
+      cursor = subst (λ steps → J.Cursor token before steps (finalStep ∷ []))
+        (sym (contextStep token metadata before context permitted)) (J.here _)
+
+    Completed : ℕ → Store.World → Set
+    Completed token current = Σ Store.BindingRow (λ binding → Σ Wire.Value (λ reply →
+      Read.admission operationName token current ≡ Read.returned (Read.completed binding reply)))
+
+    interruptedReadback : ∀ token before current (context : Read.ExecutionContext operationName token before) →
+      Read.admission operationName token before ≡ Read.admitted context →
+      X.Interrupted (script token) before current → current ≡ before ⊎ Completed token current
+    interruptedReadback token before current context known cut with interruptionState token before current cut
+    ... | inj₁ same = inj₁ same
+    ... | inj₂ (metadata , same) with classification token metadata before
+    ... | inj₁ unchanged = inj₁ (trans same unchanged)
+    ... | inj₂ (changed , reply , permitted , active , stepAbsent , resultAbsent , accepted) =
+      inj₂ (Read.ExecutionContext.bindingRow context , reply , subst
+        (λ world → Read.admission operationName token world ≡ Read.returned
+          (Read.completed (Read.ExecutionContext.bindingRow context) reply))
+        (sym samePublication)
+        (completes token metadata before context changed reply permitted active stepAbsent resultAbsent accepted))
+      where
+      samePublication = trans same (cong proj₁ (fresh token metadata before changed reply permitted active stepAbsent resultAbsent accepted))
+
+    ResumableOrCompleted : ℕ → Store.World → Set
+    ResumableOrCompleted token current =
+      (Σ (Read.ExecutionContext operationName token current) (λ context →
+        Read.admission operationName token current ≡ Read.admitted context)) ⊎ Completed token current
+
+    interruptedAdmission : ∀ token before current (context : Read.ExecutionContext operationName token before) →
+      Read.admission operationName token before ≡ Read.admitted context →
+      X.Interrupted (script token) before current → ResumableOrCompleted token current
+    interruptedAdmission token before current context known cut with interruptedReadback token before current context known cut
+    ... | inj₁ same = subst (ResumableOrCompleted token) (sym same) (inj₁ (context , known))
+    ... | inj₂ completed = inj₂ completed
+
+    MetadataFrame : ℕ → Store.World → Store.World → Set
+    MetadataFrame token before current = Step.registration current ≡ Step.registration before ×
+      Store.lookupCancellation current token ≡ Store.lookupCancellation before token
+
+    interruptedFrame : ∀ token before current → X.Interrupted (script token) before current → MetadataFrame token before current
+    interruptedFrame token before current cut with interruptionState token before current cut
+    ... | inj₁ same = cong Step.registration same , cong (λ world → Store.lookupCancellation world token) same
+    ... | inj₂ (metadata , same) with classification token metadata before
+    ... | inj₁ unchanged = cong Step.registration (trans same unchanged) ,
+      cong (λ world → Store.lookupCancellation world token) (trans same unchanged)
+    ... | inj₂ (changed , reply , permitted , active , stepAbsent , resultAbsent , accepted) =
+      trans (cong Step.registration samePublication) (K.publicationKeepsRegistration input before changed reply accepted) ,
+      trans (cong (λ world → Store.lookupCancellation world token) samePublication) (K.publicationKeepsCancellation input before changed reply accepted)
+      where
+      input = token , metadata
+      samePublication = trans same (cong proj₁ (fresh token metadata before changed reply permitted active stepAbsent resultAbsent accepted))
 
 -- The service resolves completed historical journals before checking current
 -- policy or admitting a new publication. This is the same exact, whole-World

@@ -111,12 +111,20 @@ async fn retry_after_reconnect_keeps_original_true_and_unrelated_records() -> Re
         panic!("unrelated original answer missing")
     };
     let (token, step) = admitted(&service, "delete_belief", json!({"id": removed.id})).await?;
+    let not_before: chrono::DateTime<chrono::Utc> = db::connect(&config().database)
+        .await?
+        .query_one("SELECT clock_timestamp()", &[])
+        .await?
+        .get(0);
     let StepDecision::Done(first) = service.delete_belief_operation(&step).await? else {
         panic!("deletion missing")
     };
     assert_eq!(first.reply, json!({"deleted": true}));
     assert!(store.get_belief(removed.id).await?.is_none());
     let child_after = store.get_belief(child.id).await?.unwrap();
+    assert!(child_after.decay_accounted_at >= not_before);
+    assert_eq!(child_after.created_at, child.created_at);
+    assert_eq!(child_after.last_activated_at, child.last_activated_at);
     assert_eq!(child_after.alpha.to_bits(), child.alpha0.to_bits());
     assert_eq!(child_after.beta.to_bits(), child.beta0.to_bits());
     let audit = db::connect(&config().database).await?;

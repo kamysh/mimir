@@ -74,7 +74,10 @@ impl AgeStore {
             &[&token, &super::operation_plans::RESULT_KEY],
         ).await? {
             let saved = super::operation_steps::receipt(&row)?;
-            tx.rollback().await?;
+            // The business result wins unchanged, but duplicate preparation
+            // for this same action must still stop on an explicit user cancel.
+            tx.execute("SELECT pg_notify('mimir_operation_cancelled', $1)", &[&token.to_string()]).await?;
+            tx.commit().await?;
             return Ok(CancellationDecision::SavedResult(saved));
         }
         let receipt = match lookup(&tx, token).await? {

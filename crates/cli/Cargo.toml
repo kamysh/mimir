@@ -3,6 +3,9 @@ name = "mimir"
 version = "2.3.0"
 edition = "2021"
 
+[features]
+test-boundaries = ["mimir-core/test-boundaries"]
+
 [[bin]]
 name = "mimir"
 path = "src/main.rs"

@@ -1,6 +1,8 @@
 mod backfill;
 pub(crate) use backfill::{BackfillSource, BackfillState};
 mod cancellations;
+pub(crate) mod executions;
+pub use executions::ExecutionReceipt;
 mod conformance;
 mod direct_graph;
 pub(crate) use direct_graph::admit_request as admit_direct_request;
@@ -21,14 +23,8 @@ mod reservations;
 mod retirement;
 pub use retirement::{DefeatClock, RetirementMetadataIssue};
 mod sweep;
-pub use sweep::SweepPolicyIssue;
-pub(crate) use sweep::{
-    check_policy as check_sweep_policy, settings as sweep_settings, Arguments as SweepArguments,
-};
 #[cfg(test)]
-#[allow(dead_code)]
-#[path = "../../../tests/support/isolation.rs"]
-mod snapshot_test_isolation;
+use crate::test_isolation as snapshot_test_isolation;
 use anyhow::{bail, Context, Result};
 pub use cancellations::{CancellationDecision, CancellationReceipt};
 use chrono::DateTime;
@@ -43,6 +39,10 @@ pub use reservations::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+pub use sweep::SweepPolicyIssue;
+pub(crate) use sweep::{
+    check_policy as check_sweep_policy, settings as sweep_settings, Arguments as SweepArguments,
+};
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, GenericClient, Row, Transaction};
 use uuid::Uuid;
@@ -728,16 +728,14 @@ $$) AS (ok ag_catalog.agtype)"#
         // Validate before readback too: saved answers cannot hide malformed
         // arguments. The helper compares these with the immutable DB binding.
         identity(step.expected())?;
-        let token = step.token();
         let owner = AgeStore {
             client: self.client.clone(),
             graph_name: self.graph_name.clone(),
         };
         self.commit_final_operation_step(step, move |tx, original| {
             Box::pin(async move {
-                let publication_time = Self::reserved_publication_time(tx, token).await?;
                 let deleted = owner
-                    .delete_belief_in(tx, identity(original)?, Some(publication_time))
+                    .delete_belief_in(tx, identity(original)?, None)
                     .await?;
                 let reply = serde_json::json!({"deleted":deleted});
                 Ok((reply.clone(), reply))
@@ -845,19 +843,6 @@ $$) AS (id ag_catalog.agtype)"#
     ) -> Result<chrono::DateTime<chrono::Utc>> {
         Ok(client
             .query_one("SELECT clock_timestamp()", &[])
-            .await?
-            .get(0))
-    }
-
-    pub(super) async fn reserved_publication_time(
-        tx: &Transaction<'_>,
-        token: Uuid,
-    ) -> Result<chrono::DateTime<chrono::Utc>> {
-        Ok(tx
-            .query_one(
-                "SELECT reserved_at FROM mimir_operation_reservations WHERE operation_token=$1",
-                &[&token],
-            )
             .await?
             .get(0))
     }
@@ -2388,12 +2373,11 @@ $$) {CHUNK_RETURN_COLUMNS}"#
             client: self.client.clone(),
             graph_name: self.graph_name.clone(),
         };
-        let token = step.token();
         self.commit_final_operation_step(step, move |tx, binding| {
             Box::pin(async move {
                 tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
                     .await?;
-                let publication_time = Self::reserved_publication_time(tx, token).await?;
+                let publication_time = Self::posterior_time_on(tx.client()).await?;
                 match original(binding)? {
                     Change::Add(args, weight) => {
                         owner

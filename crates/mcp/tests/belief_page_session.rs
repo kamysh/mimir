@@ -48,7 +48,7 @@ async fn positive_selection_has_no_ten_record_ceiling_and_zero_is_a_correction()
     let stderr_path = fixture
         .root
         .join(format!("belief-page-{project_id}.stderr"));
-    let mut child = tokio::process::Command::new(&fixture.mcp)
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mimir-mcp"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(std::fs::File::create(stderr_path)?)
@@ -192,11 +192,11 @@ async fn positive_selection_has_no_ten_record_ceiling_and_zero_is_a_correction()
                 );
             }
             "retrieval-all" | "learning-all" => {
-                let beliefs = if name == "learning-all" {
-                    &result["beliefs"]
-                } else {
-                    &result
-                };
+                ensure!(
+                    result["retrieval"].is_object(),
+                    "matching coverage must be reported"
+                );
+                let beliefs = &result["beliefs"];
                 let ids = beliefs
                     .as_array()
                     .unwrap()
@@ -209,11 +209,11 @@ async fn positive_selection_has_no_ten_record_ceiling_and_zero_is_a_correction()
                 );
             }
             "retrieval-twelve" | "learning-twelve" | "usable-after-retrieval-corrections" => {
-                let beliefs = if name == "learning-twelve" {
-                    &result["beliefs"]
-                } else {
-                    &result
-                };
+                ensure!(
+                    result["retrieval"].is_object(),
+                    "matching coverage must be reported"
+                );
+                let beliefs = &result["beliefs"];
                 ensure!(
                     beliefs.as_array().unwrap().len() == 12,
                     "explicit selection was changed"

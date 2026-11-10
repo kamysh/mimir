@@ -30,10 +30,7 @@ fn config(hours: Option<f64>) -> Config {
 }
 async fn store() -> Result<AgeStore> {
     let cfg = config(None);
-    Ok(AgeStore::new(
-        db::connect(&cfg.database).await?,
-        cfg.database.dbname,
-    )?)
+    AgeStore::new(db::connect(&cfg.database).await?, cfg.database.dbname)
 }
 async fn identity() -> Result<Uuid> {
     Ok(db::connect(&config(None).database)

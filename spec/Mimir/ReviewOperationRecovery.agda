@@ -8,6 +8,7 @@ open import Data.List using (List; []; _∷_; map; _++_)
 open import Data.Maybe using (just; nothing)
 open import Data.Integer using (ℤ)
 import Data.List.Properties as Lists
+import Data.List.Relation.Unary.All
 import Mimir.LearningInput as LearningInput
 import Mimir.StructuredValue as Wire
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
@@ -237,6 +238,25 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
   script : Input → E.Script Result
   script request = E._>>=_ (liftPrefix (P.script request)) afterPreparation
 
+  -- Cached completion uses only the real owner-prefix inspection. The
+  -- observed host settings cannot restart owners, embedding or publication.
+  cachedReplay : ∀ (environment : P.Environment) token current binding raw →
+    P.Readback.admission (toList "review_experience") token current ≡
+      P.Readback.returned (P.Readback.completed binding raw) →
+    X.Completed (script token) current current (Step.done raw)
+  cachedReplay environment token current binding raw known = X.completed
+    ((prepare (P.inspectOwners token) , (settings , current)) ∷ [])
+    (E.bindRuns (prefixRuns prefixRun) (E.returned _))
+    (X.changed current _ _ current (refl , refl) (X.unchanged current))
+    where
+    settings = P.Environment.currentSettings environment token current
+    cachedOwners : P.E.Runs (P.afterInspection token (settings , current)) [] (P.stopped (Step.done raw))
+    cachedOwners = subst (λ program → P.E.Runs program [] (P.stopped (Step.done raw)))
+      (sym (P.afterCompletedReadback token settings current binding raw known)) (P.E.returned _)
+    prefixRun : P.E.Runs (P.script token) ((P.inspectOwners token , (settings , current)) ∷ [])
+      (P.stopped (Step.done raw))
+    prefixRun = P.E.replied _ _ _ cachedOwners
+
   -- An owner prefix may change only its owned metadata. A review outcome is
   -- then governed by the fixed full-store publication meaning, including every
   -- required prepared belief, its indexed support and numerical consequences.
@@ -442,11 +462,126 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
   ... | publishing baseline scope owners partial with B.interruptionCut scope baseline interrupted partial
   ... | B.noPublication unchanged = trans (cong Step.registration unchanged)
     (P.Frame.originalRegistration (P.completedFrame request original baseline (P.ready scope) owners))
+
   ... | B.published prepared packets metadata value captured ready observed = trans
     (trans (cong Step.registration (cong proj₁ observed))
       (F.executeKeepsRegistration (P.Context.token scope) (B.supplied scope packets metadata) baseline))
     (P.Frame.originalRegistration (P.completedFrame request original baseline (P.ready scope) owners))
 
+  interruptedKeepsCancellation : ∀ wanted request original interrupted →
+    X.Interrupted (script request) original interrupted →
+    Store.lookupCancellation interrupted wanted ≡ Store.lookupCancellation original wanted
+  interruptedKeepsCancellation wanted request original interrupted cut
+    with splitInterruptedPrefix (P.script request) original interrupted cut
+  ... | preparing partial = cong (λ world → Store.lookupCancellation world wanted)
+    (P.Frame.business (P.interruptedFrame request original interrupted partial))
+  ... | publishing baseline scope owners partial with B.interruptionCut scope baseline interrupted partial
+  ... | B.noPublication unchanged = trans (cong (λ world → Store.lookupCancellation world wanted) unchanged)
+    (cong (λ world → Store.lookupCancellation world wanted)
+      (P.Frame.business (P.completedFrame request original baseline (P.ready scope) owners)))
+
+  ... | B.published prepared packets metadata value captured ready observed = trans
+    (trans (cong (λ world → Store.lookupCancellation world wanted) (cong proj₁ observed))
+      (F.Saved.cancellationUnchanged wanted (P.Context.token scope , B.supplied scope packets metadata) baseline))
+    (cong (λ world → Store.lookupCancellation world wanted)
+      (P.Frame.business (P.completedFrame request original baseline (P.ready scope) owners)))
+
+  PendingContext : ℕ → Store.World → Set
+  PendingContext token current = Σ (P.Readback.ExecutionContext (toList "review_experience") token current) λ entry →
+    Σ Controls.Plan.Step λ next → Controls.OpaqueJournal.next
+      (Controls.OpaqueJournal.Complete.prefix (P.Readback.ExecutionContext.journal entry)) ≡ just next
+
+  ContextProgress : ℕ → Store.World → Store.World → Set
+  ContextProgress token before current = current ≡ before ⊎ PendingContext token current
+
+  contextAt : ∀ token before current → P.Readback.ExecutionContext (toList "review_experience") token before →
+    ContextProgress token before current → P.Readback.ExecutionContext (toList "review_experience") token current
+  contextAt token before current entry (inj₁ same) =
+    subst (P.Readback.ExecutionContext (toList "review_experience") token) (sym same) entry
+  contextAt token before current entry (inj₂ (currentEntry , _)) = currentEntry
+
+  composeContextProgress : ∀ token before middle current → ContextProgress token before middle →
+    ContextProgress token middle current → ContextProgress token before current
+  composeContextProgress token before middle .middle earlier (inj₁ refl) = earlier
+  composeContextProgress token before middle current earlier (inj₂ pendingContext) = inj₂ pendingContext
+
+  ownerChangeProgress : ∀ token before current → P.Readback.ExecutionContext (toList "review_experience") token before →
+    P.Change token before current → ContextProgress token before current
+  ownerChangeProgress token before .before entry P.stayed = inj₁ refl
+  ownerChangeProgress token before current entry change@(P.added requested time original journal addresses next selected receipt source) =
+    inj₂ (P.ownerJournalContext token before current entry frame requested time
+      (trans (cong (P.Final.original token) (P.Frame.originalRegistration frame)) original)
+      (P.Frame.validPrefix frame requested time original journal))
+    where frame = P.changeFrame token before current change
+
+  ownerAtomicProgress : ∀ token before effect reply current → P.effectToken effect ≡ token →
+    P.Readback.ExecutionContext (toList "review_experience") token before → P.Atomic before effect reply current →
+    ContextProgress token before current
+  ownerAtomicProgress token before (P.inspectOwners .token) (settings , .before) .before refl entry (refl , refl) = inj₁ refl
+  ownerAtomicProgress token before (P.reserve .token candidateKey) (observed , reply) current refl entry physical =
+    subst (ContextProgress token before)
+      (sym (cong proj₁ (P.ownerObservation token candidateKey observed reply before current physical)))
+      (ownerChangeProgress token before _ entry (P.executeChange observed token candidateKey before))
+
+  ownerChangesProgress : ∀ token before events current →
+    Data.List.Relation.Unary.All.All (λ event → P.effectToken (proj₁ event) ≡ token) events →
+    P.Readback.ExecutionContext (toList "review_experience") token before → P.X.Changes before events current →
+    ContextProgress token before current
+  ownerChangesProgress token before [] .before Data.List.Relation.Unary.All.[] entry (P.X.unchanged _) = inj₁ refl
+  ownerChangesProgress token before ((effect , reply) ∷ events) current (Data.List.Relation.Unary.All._∷_ owned owners) entry
+    (P.X.changed .before .effect .reply middle physical later) = composeContextProgress token before middle current first
+      (ownerChangesProgress token middle events current owners (contextAt token before middle entry first) later)
+    where first = ownerAtomicProgress token before effect reply middle owned entry physical
+
+  ownerPrefixProgress : ∀ token before current → P.Readback.ExecutionContext (toList "review_experience") token before →
+    P.X.Interrupted (P.script token) before current → ContextProgress token before current
+  ownerPrefixProgress token before current entry (P.X.atPrefix events residual .current prefix changes)
+    with P.prefixScoped token (P.script token) events residual (P.scriptScoped token) prefix
+  ... | owners , _ = ownerChangesProgress token before events current owners entry changes
+  ownerPrefixProgress token before current entry (P.X.beforeReply events effect continuation middle reply .current prefix changes physical)
+    with P.prefixScoped token (P.script token) events (P.E.ask effect continuation) (P.scriptScoped token) prefix
+  ... | owners , P.asked .effect .continuation owned later = composeContextProgress token before middle current first
+    (ownerAtomicProgress token middle effect reply current owned (contextAt token before middle entry first) physical)
+    where first = ownerChangesProgress token before events middle owners entry changes
+
+  ownerPrefixAdmission : ∀ token before current (entry : P.Readback.ExecutionContext (toList "review_experience") token before) →
+    P.Readback.admission (toList "review_experience") token before ≡ P.Readback.admitted entry →
+    P.X.Interrupted (P.script token) before current →
+    Σ (P.Readback.ExecutionContext (toList "review_experience") token current) λ actual →
+      P.Readback.admission (toList "review_experience") token current ≡ P.Readback.admitted actual
+  ownerPrefixAdmission token before current entry known cut with ownerPrefixProgress token before current entry cut
+  ... | inj₁ refl = entry , known
+  ... | inj₂ (derived , next , selected) = P.Readback.admissionFromPending (toList "review_experience") token current
+    derived next (proj₁ pending) (proj₂ pending)
+    where
+    active = trans (cong (λ world → Store.lookupCancellation world token)
+      (P.Frame.business (P.interruptedFrame token before current cut))) (P.entryActive token before entry known)
+    pending = P.Readback.pendingAnswer (toList "review_experience") token current derived next selected active
+
+  CompletedReadback : ℕ → Store.World → Set
+  CompletedReadback token current = Σ Store.BindingRow λ binding → Σ Wire.Value λ value →
+    P.Readback.admission (toList "review_experience") token current ≡ P.Readback.returned (P.Readback.completed binding value)
+
+  interruptedReadback : ∀ token before current (entry : P.Readback.ExecutionContext (toList "review_experience") token before) →
+    P.Readback.admission (toList "review_experience") token before ≡ P.Readback.admitted entry →
+    X.Interrupted (script token) before current →
+    (Σ (P.Readback.ExecutionContext (toList "review_experience") token current) λ actual →
+      P.Readback.admission (toList "review_experience") token current ≡ P.Readback.admitted actual) ⊎ CompletedReadback token current
+  interruptedReadback token before current entry known cut
+    with splitInterruptedPrefix (P.script token) before current cut
+  ... | preparing partial = inj₁ (ownerPrefixAdmission token before current entry known partial)
+  ... | publishing baseline scope owners partial with B.interruptionCut scope baseline current partial
+  ... | B.noPublication refl = inj₁ (ownerPrefixAdmission token before baseline entry known
+    (P.X.completedRunMayLoseFinalReply (P.script token) before baseline (P.ready scope) owners))
+  ... | B.published prepared packets metadata value captured ready observed
+    with P.completedMeaning token before baseline (P.ready scope) owners
+  ... | P.readyOwners .scope facts = inj₂ (proj₁ completed , value , proj₂ completed)
+    where
+    fixedTokenObservation = trans observed
+      (cong (λ identity → F.Saved.execute (identity , B.supplied scope packets metadata) baseline) (P.ReadyMeaning.ownToken facts))
+    completed = P.readyThenPublicationReadback token before baseline scope (B.supplied scope packets metadata) current value
+      owners (P.ReadyMeaning.originalTime facts) (P.ReadyMeaning.originalRequest facts)
+      (P.ReadyMeaning.completeJournal facts) (P.ReadyMeaning.completeCursor facts) fixedTokenObservation
   afterPublishedPreparation : ∀ request original baseline scope interrupted middle prepared final reply
     preparedBusiness packets metadata value →
     P.X.Completed (P.script request) original baseline (P.ready scope) →

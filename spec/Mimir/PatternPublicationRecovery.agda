@@ -4,11 +4,12 @@
 module Mimir.PatternPublicationRecovery where
 
 open import Data.Bool using (true; false)
-open import Data.Empty using (⊥)
+open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Float.Base using (Float)
 open import Data.Integer using (ℤ; +_)
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
+import Data.Maybe.Properties as Maybes
 open import Data.Nat using (ℕ)
 open import Data.Product using (_×_; _,_; Σ; proj₁; proj₂)
 open import Data.String using (toList)
@@ -251,6 +252,43 @@ module Registered (conversion : Conversion.Contract) (format : Encoding.Formatti
     metadata : Metadata
     metadata = 0 , + 0
     expected = Saved.execute (token , metadata) before
+
+  cachedReplay : ∀ token before current raw →
+    Store.lookupSaved before token Step.resultKey ≡ nothing →
+    Store.lookupSaved current token Step.resultKey ≡ just raw →
+    X.Interrupted (script token) before current →
+    X.Completed (script token) current current (Step.done raw)
+  cachedReplay token before current raw absent present cut
+    with interruptionState token before current cut
+  ... | inj₁ same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (metadata , same) with Saved.atomicDoneOrUnchanged (token , metadata) before
+      (proj₁ (Saved.execute (token , metadata) before))
+      (proj₂ (Saved.execute (token , metadata) before))
+      (refl , Saved.expectedPhysical (token , metadata) before)
+  ... | inj₁ unchanged = ⊥-elim (impossible (trans same unchanged))
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (value , observed) with Saved.doneOrigin (token , metadata) before current value
+      (sym (trans (cong (λ world → world , Step.done value) same) observed))
+  ... | inj₁ unchanged = ⊥-elim (impossible unchanged)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (_ , _ , final) = subst
+    (λ answer → X.Completed (script token) current current (Step.done answer))
+    (Maybes.just-injective (trans (sym final) present))
+    (subst (λ outcome → X.Completed (script token) current (proj₁ outcome) (proj₂ outcome))
+      (trans (cong (Saved.execute (token , (0 , + 0))) same)
+        (trans (crossStable token metadata (0 , + 0) before)
+          (sym (trans (cong (λ world → world , Step.done value) same) observed))))
+      (proj₂ (proj₂ (progress token current))))
 
   operation : Recovery.RecoverableFor Store.World ℕ Saved.Reply Goal
   operation = record { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic; converges = converges; progress = progress }

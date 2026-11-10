@@ -72,3 +72,54 @@ The shared module contains metadata; executable dispatch stays inside the MCP
 catalogue. Moving the declarations does not itself enforce stored step order or
 prove completion. Those guards remain #123, and public recovery binding remains
 #85–#86.
+
+## Stopping a test at an actual commit
+
+The explicit `test-boundaries` Cargo feature instruments the shared saved-step
+writer immediately before and after its transaction commits. It is available
+to the CLI and MCP test binaries. Ordinary builds contain no controller code
+and do not inspect its environment variables.
+
+The shared driver in `tests/support/commit_boundary.rs` selects a
+PostgreSQL-issued operation token, a declared publication site, its exact
+saved-step name and `before_commit` or `after_commit`. Selecting the step also
+distinguishes individual records at a repeated site. The process reports its
+actual operation, site and saved-step name through a private Unix socket, then
+waits for the controller. Sending the byte `c` continues execution. The test
+can instead terminate that process while the socket remains open. There is no
+sleep, deadline, synthetic database reply or replacement business callback.
+The controller settings are `MIMIR_TEST_BOUNDARY_SOCKET`,
+`MIMIR_TEST_BOUNDARY_TOKEN`, `MIMIR_TEST_BOUNDARY_SITE`, `MIMIR_TEST_BOUNDARY_STEP` and
+`MIMIR_TEST_BOUNDARY_PHASE`. Keep the socket in a private directory with a path
+accepted by the operating system.
+
+The project-deletion session test exercises both sides of its declared commit.
+Before commit, terminating the process preserves the project and its vectors.
+After commit, the project and vectors are gone even though the caller received
+no answer. A later real MCP process retries the original token and arguments:
+both cases finish with no project-owned rows or vectors, preserve another
+project, and return the original deleted count on subsequent retries.
+
+Run this selected test through the disposable-database test environment with
+`cargo test -p mimir-mcp --features test-boundaries --test operation_protocol_session
+project_deletion_retries_after_real_process_exit_at_each_commit_side`.
+This checks the real commit boundary and retry behavior for deletion. Extending
+the operation matrix and comparing observations with the Agda-owned intended
+functions remain the separate planned harness work.
+
+## When new belief counts take effect
+
+An operation's reservation time records when its token was issued. New belief
+counts use the database time observed after acquiring the publication lock.
+For example, reserving a request on Monday and completing it on Wednesday must
+give the new counts a Wednesday baseline. Otherwise a later decay could charge
+them for time before they existed. Original identities and creation dates keep
+their original meaning; changing the count baseline does not rewrite them.
+
+The baseline never moves backward if the database clock is earlier than an
+already stored baseline. Each successful transaction saves its business changes
+and original answers together. Retrying a completed token returns those answers
+and preserves the current database, including changes made by later operations.
+The Agda contracts bind the count calculation to the actual publication-time
+receipt; a timestamp supplier is used only to demonstrate that execution can
+make progress.

@@ -211,3 +211,51 @@ fn existing_interactive_file_requires_parent_sync_before_opening_the_editor() ->
     );
     Ok(())
 }
+
+#[test]
+fn unchanged_upgrade_requires_the_actual_parent_sync_before_reporting_success() -> Result<()> {
+    // Root can open this directory despite the ordinary-user permission
+    // restriction, so that environment cannot exercise this particular fault.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!(
+            "Unchanged-upgrade sync fault was not exercised: root bypasses directory permissions"
+        );
+        return Ok(());
+    }
+    let mut fixture = Fixture::new()?;
+    let selected = fixture.root.join("selected");
+    std::fs::create_dir(&selected)?;
+    fixture.config = selected.join("config.toml");
+    let original = format!(
+        "config_version=1\n[logging]\ndirectory={}\n[database]\nhost='localhost'\nport=5432\ndbname='offline'\nuser='offline'\n",
+        toml::Value::String(fixture.root.join("logs").display().to_string())
+    );
+    std::fs::write(&fixture.config, &original)?;
+    std::fs::set_permissions(&fixture.config, std::fs::Permissions::from_mode(0o600))?;
+    struct RestorePermissions(PathBuf);
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    let restore = RestorePermissions(selected.clone());
+    // Searching by known file name remains possible. Opening the directory
+    // for synchronization is denied, without modifying any shared fixture.
+    std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o100))?;
+    let output = fixture.run("unchanged-upgrade-parent-sync", &["config", "upgrade"])?;
+    std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o700))?;
+    drop(restore);
+    ensure!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr)?;
+    ensure!(
+        stderr.contains("unable to open configuration directory for synchronization"),
+        "{stderr}"
+    );
+    ensure!(!String::from_utf8(output.stdout)?.contains("Configuration compatible"));
+    ensure!(std::fs::read_to_string(&fixture.config)? == original);
+    eprintln!(
+        "Complete unchanged-upgrade sync evidence: {}",
+        fixture.root.display()
+    );
+    Ok(())
+}

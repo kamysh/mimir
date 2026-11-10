@@ -352,7 +352,7 @@ pub struct RegisteredStep {
 }
 impl OperationPlan {
     pub(crate) fn captured(&self) -> Option<&Value> {
-        self.inner.stored.capture.as_ref().map(|value| &**value)
+        self.inner.stored.capture.as_deref()
     }
     pub(crate) fn original_request(&self) -> &OperationBindingRequest {
         &self.inner.binding.request
@@ -446,6 +446,7 @@ pub enum OperationOutcome {
     Completed {
         binding: OperationBinding,
         outcome: CompletedOperation,
+        pending_executions: Vec<super::ExecutionReceipt>,
     },
     NeedsRecovery {
         binding: OperationBinding,
@@ -455,6 +456,7 @@ pub enum OperationOutcome {
         cancellation: super::CancellationReceipt,
         binding: Option<OperationBinding>,
         saved_replies: Vec<super::StepReceipt>,
+        pending_executions: Vec<super::ExecutionReceipt>,
     },
 }
 
@@ -561,12 +563,18 @@ impl AgeStore {
                 .await?
                 .is_some();
             let cancellation = super::cancellations::lookup(&tx, token).await?;
+            let pending_executions = if cancellation.is_some() {
+                super::executions::pending(&tx, token).await?
+            } else {
+                Vec::new()
+            };
             tx.rollback().await?;
             if let Some(cancellation) = cancellation {
                 return Ok(OperationOutcome::Cancelled {
                     cancellation,
                     binding: None,
                     saved_replies: vec![],
+                    pending_executions,
                 });
             }
             return Ok(if reserved {
@@ -585,11 +593,13 @@ impl AgeStore {
         }
         if let Some(cancellation) = super::cancellations::lookup(&tx, token).await? {
             let saved_replies = super::cancellations::saved_replies(&tx, token).await?;
+            let pending_executions = super::executions::pending(&tx, token).await?;
             tx.rollback().await?;
             return Ok(OperationOutcome::Cancelled {
                 cancellation,
                 binding: Some(original),
                 saved_replies,
+                pending_executions,
             });
         }
         let Some(plan) = load(&tx, token).await? else {
@@ -622,6 +632,7 @@ impl AgeStore {
                     operation_token: token,
                     reply,
                 },
+                pending_executions: super::executions::pending(&tx, token).await?,
             }
         } else if let Some(step) = plan.steps.get(next) {
             let saved_replies = plan

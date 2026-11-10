@@ -153,7 +153,7 @@ pub(super) async fn dispatch(cli: &Cli) -> Result<bool> {
                 }
                 Application::Operation(Command::Outcome) => {
                     let token = cli.operation_token.context("admitted operation token")?;
-                    print(operation_reporting::outcome(
+                    print(operation_reporting::readback(
                         token,
                         service.read_operation_outcome(token, None).await?,
                     )?)?;
@@ -161,16 +161,7 @@ pub(super) async fn dispatch(cli: &Cli) -> Result<bool> {
                 Application::Operation(Command::Cancel) => {
                     let token = cli.operation_token.context("admitted cancellation token")?;
                     let cancelled = service.cancel_operation(token).await?;
-                    let confirmed = cancelled.local_cleanup_confirmed();
-                    let mut response = mimir_json::Document::new(operation_reporting::outcome(
-                        token,
-                        cancelled.into_outcome(),
-                    )?);
-                    if confirmed {
-                        response["worker_cleanup"] = json!("confirmed_for_this_server");
-                        response["message"]=json!("Cancellation is durable. This CLI process stopped its own registered work before replying; cleanup in other processes is not confirmed. Earlier committed changes and saved answers remain.");
-                    }
-                    print(response.into_value())?;
+                    print(operation_reporting::cancellation(token, cancelled)?)?;
                 }
                 _ => unreachable!("the exhaustive route selects only operation controls"),
             }
@@ -192,6 +183,7 @@ pub(super) async fn dispatch(cli: &Cli) -> Result<bool> {
         }
     };
     let token = cli.operation_token.context("admitted write token")?;
+    service.finish_operation_host().await?;
     match result {
         Ok(outcome) => print(operation_reporting::outcome(token, outcome)?)?,
         Err(error) => {
@@ -245,10 +237,10 @@ async fn report_error(
         Some(value.correction())
     } else if let Some(value) = error.downcast_ref::<mimir_core::interaction::RequestCorrection>() {
         Some(value.correction())
-    } else if let Some(value) = error.downcast_ref::<mimir_core::config::RetirementIssue>() {
-        Some(value.correction())
     } else {
-        None
+        error
+            .downcast_ref::<mimir_core::config::RetirementIssue>()
+            .map(|value| value.correction())
     };
     if let Some(correction) = correction {
         return print(mimir_json::to_value(correction)?);

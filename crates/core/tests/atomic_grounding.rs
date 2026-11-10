@@ -139,9 +139,15 @@ async fn addition_replays_original_answer_without_duplicating_evidence_or_probab
     let checked=async {
         let before=f.state().await?;
         let (token,step)=f.plan("add_evidence",f.args()).await?;
+        let not_before: chrono::DateTime<chrono::Utc> = db::connect(&config().database)
+            .await?.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
         let StepDecision::Done(first)=f.service.change_evidence_operation(&step).await? else {panic!("no result")};
         ensure!(first.reply==json!({"ok":true}));
         let after=f.state().await?;
+        for id in [f.belief, f.child] {
+            ensure!(f.store.get_belief(id).await?.unwrap().decay_accounted_at >= not_before);
+        }
+        ensure!(after["belief"]["created_at"] == before["belief"]["created_at"]);
         ensure!(after["unrelated"]==before["unrelated"],"unrelated record changed");
         ensure!(after["grounds"].as_array().unwrap().len()==1);
         ensure!(after["belief"]["alpha"].as_f64().unwrap()>before["belief"]["alpha"].as_f64().unwrap());
@@ -171,9 +177,17 @@ async fn removal_replays_without_removing_evidence_added_after_its_completion() 
         }
         let child_before = f.store.get_belief(f.child).await?.unwrap();
         let (token, step) = f.plan("delete_evidence", f.args()).await?;
+        let not_before: chrono::DateTime<chrono::Utc> = db::connect(&config().database)
+            .await?
+            .query_one("SELECT clock_timestamp()", &[])
+            .await?
+            .get(0);
         let StepDecision::Done(first) = f.service.change_evidence_operation(&step).await? else {
             panic!("no result")
         };
+        for id in [f.belief, f.child] {
+            ensure!(f.store.get_belief(id).await?.unwrap().decay_accounted_at >= not_before);
+        }
         ensure!(f
             .store
             .get_evidence_for_beliefs(&[f.belief])

@@ -38,6 +38,25 @@ import Mimir.CandidateGraph as Graph
 import Mimir.Effects as Effects
 import Mimir.Validation as Validation
 import Mimir.McpErrors as Errors
+import Mimir.StandardLibrary as Library
+import Mimir.PublicEncoding as Encoding
+import Mimir.ConfigurationValues as Configuration
+import Mimir.StorageReadBinding as Storage
+import Mimir.OperationControls as Controls
+import Mimir.ExperienceSourceRecovery as Source
+import Mimir.SweepRecovery as Sweep
+import Mimir.IndependentBeliefRecovery as Independent
+import Mimir.ReviewPublicationRecovery as ReviewPublication
+import Mimir.ReviewPreparationRecovery as ReviewPreparation
+import Mimir.PublicOperationCatalogue as Catalogue
+import Mimir.PublicOperationRecovery as PublicRecovery
+import Mimir.PublicOperationBinding as Binding
+import Mimir.Recovery as Recovery
+import Mimir.StructuredValue as Wire
+import Mimir.ToolCatalog as Tools
+import Mimir.ApplicationStore as Store
+import Mimir.PublicRetrievalRecovery as Search
+import Mimir.PublicDocumentQueryRecovery as DocumentSearch
 module Correction = Errors.AgentCorrection
 
 configurationCorrection : Validation.Fault → Correction.Claim
@@ -48,6 +67,20 @@ configurationCorrection detail = Correction.claim
 
 record Environment : Set₁ where
   field
+    library : Library.Contract
+    format : Encoding.Formatting
+    configuration : Configuration.Config
+    databaseSum : List Float → Float
+    vectors : Storage.VectorOperations
+    postgres : Controls.PostgreSQL
+    writePreparation : Binding.Creating.Environment library postgres
+    serverTime : ℕ → Store.World → ℤ
+    utcTimestamp : Text → Validation.Fault ⊎ ℤ
+    allocateOwner : ℕ → Store.World → Independent.Allocation
+    sourcePostgres : Source.PostgreSQL
+    sweepObservation : ℕ → Store.World → Sweep.Metadata
+    reviewDependencies : ReviewPublication.Dependencies
+    reviewCodec : ReviewPreparation.AllocationEncoding.Codec format
     database dimension : ℕ
     calculator : Posterior.Calculator
     embeddingsEnabled : Bool
@@ -60,205 +93,206 @@ record Environment : Set₁ where
     candidateClock : Candidates.Candidate → ℤ
     candidateIdentity : Candidates.Candidate → ℕ
     chunkIdentity : ℕ → ℕ
+    reviewBackend : Store.World → ReviewPublication.Preparing.Claim → Text ⊎ List Store.Vector
+    reviewEnvironment : ReviewPreparation.Registered.Environment library format database databaseSum calculator
+      reviewDependencies reviewCodec postgres
 
 module Run (environment : Environment) where
   open Environment environment
-  module Delete = Deletion.Operation database calculator posteriorTime
-  module Forget = Project.Operation database
-  module Grounding = Ground.Operation database calculator posteriorTime
-  module Document = Documents.Operations database dimension
-  module Learn (q : Learning.Request) = Learning.Protocol database q candidateClock now candidateIdentity calculator posteriorTime
-  module Retrieve = Retrieval.Run f32 unicode
-  module LearningContext = Context.Run f32 unicode databaseTextBefore
+  module C = Catalogue.Run library format databaseSum calculator f32 unicode vectors configuration
+    databaseTextBefore allocateOwner database postgres serverTime utcTimestamp sourcePostgres sweepObservation
+    reviewDependencies reviewCodec reviewBackend using
+    (Call; toolCall; privateRead; Choice; resolve; Kind; Input; Result; Goal; Success; Certificate; certificate; executable
+    ; ReadRequest; graphCall; relevantCall; evidenceCall; documentCall
+    ; basic; experiences; assessments; intervention; retrieval; context; documentQuery; correction; control
+    ; patternWrite; patternRemoval; beliefRemoval; independentWrite; projectRemoval; relationship; grounding
+    ; propagation; decay; documentRemoval; defeat; sweep; sourceWrite; reviewWrite; documentLoading
+    ; module Basic; module Assessments; module Intervention; module Retrieval; module LearningContext; module DocumentQuery
+    ; module Control; module Creating; module IndependentPublic; module DocumentEntry
+    ; module PatternGuard; module PatternRemovalGuard; module BeliefRemovalGuard; module RelationshipGuard
+    ; module IndependentGuard; module GroundingGuard; module PropagationGuard; module DecayGuard; module ClearGuard)
+  open C public using (ReadRequest)
+    renaming (graphCall to graphRead; relevantCall to relevantRead; evidenceCall to evidenceRead; documentCall to documentRead)
 
-  admission : Public.Request → Validation.Fault ⊎ ⊤
-  admission (Public.sweepConfigured project threshold) with retirementPolicy
-  ... | inj₁ detail = inj₁ detail
-  ... | inj₂ period = inj₂ tt
-  admission _ = inj₂ tt
+  module Writes = PublicRecovery.Run.PublicWrites library format databaseSum calculator f32 unicode vectors configuration
+    databaseTextBefore allocateOwner database postgres serverTime utcTimestamp sourcePostgres sweepObservation
+    reviewDependencies reviewCodec reviewBackend reviewEnvironment writePreparation
+    using (Response; needsInput; returned; executed; Meaning; recoverable; Succeeded; bodyKind; bodyInput)
+  module WriteFixed requested = Catalogue.Fixed Writes.recoverable requested using (operation)
+  module Creating = Binding.Creating library postgres using (Request; submittedWrite)
 
-  missingPolicyRefusesAdmission : ∀ project threshold detail → retirementPolicy ≡ inj₁ detail →
-    admission (Public.sweepConfigured project threshold) ≡ inj₁ detail
-  missingPolicyRefusesAdmission project threshold detail missing rewrite missing = refl
+  Call = C.Call
+  choice : Call → C.Choice
+  choice = C.resolve
+  kind : Call → C.Kind
+  kind call = C.Choice.kind (choice call)
 
-  data Result : Set where
-    mutated : Mutation.Result → Result
-    readResult : Read.Result → Result
-    deleted : Delete.T.Outcome → Result
-    forgotten : Forget.Result → Result
-    inferred : Inference.Result → Result
-    grounded : Grounding.T.Outcome → Result
-    invalidGrounding : Result
-    evidenceResult : Text ⊎ List Evidence.Reference → Result
-    relevantResult : Retrieval.Report → Result
-    groundedResult : Retrieval.Coverage → Text ⊎ List Evidence.Grounded → Result
-    documentResult : Document.Result → Result
-    documentQueryResult : DocumentQuery.Result → Result
-    learned : (q : Learning.Request) → Learn.Outcome q → Result
-    learningQueryResult : Query.Result → Result
-    contextResult : Context.Output → Result
-    capabilitiesResult : Capabilities.Capabilities → Result
-    failed : Text → Result
-    invalidContext invalidAssessment : Result
+  -- This route is computed from the closed actual invocation. A caller can
+  -- never choose a bare writer body in place of its creating prefix.
+  data Route : Set where
+    plainRoute : C.Choice → Route
+    registeredRoute : Creating.Request → Route
 
+  route : Call → Route
+  route call@(C.toolCall tool submitted) with Tools.kind tool
+  ... | Tools.businessWrite = registeredRoute (Creating.submittedWrite tool submitted)
+  ... | Tools.readOnly = plainRoute (choice call)
+  ... | Tools.operationControl = plainRoute (choice call)
+  route call@(C.privateRead request) = plainRoute (choice call)
+
+  RouteInput : Route → Set
+  RouteInput (plainRoute selected) = C.Input (C.Choice.kind selected)
+  RouteInput (registeredRoute _) = ⊤
+  RouteValue : Route → Set
+  RouteValue (plainRoute selected) = C.Result (C.Choice.kind selected)
+  RouteValue (registeredRoute _) = Writes.Response
+  RouteGoal : (selected : Route) → RouteInput selected → Store.World → Store.World → RouteValue selected → Set
+  RouteGoal (plainRoute selected) = C.Goal (C.Choice.kind selected)
+  RouteGoal (registeredRoute requested) _ = Writes.Meaning requested
+  RouteSuccess : (selected : Route) → RouteValue selected → Set
+  RouteSuccess (plainRoute selected) = C.Success (C.Choice.kind selected)
+  RouteSuccess (registeredRoute _) = Writes.Succeeded
+
+  RouteCertificate : (selected : Route) → Set₁
+  RouteCertificate (plainRoute selected) = C.Certificate (C.Choice.kind selected)
+  RouteCertificate (registeredRoute requested) = Recovery.RecoverableFor Store.World ⊤ Writes.Response
+    (λ _ → Writes.Meaning requested)
+  routeCertificate : (selected : Route) → RouteCertificate selected
+  routeCertificate (plainRoute selected) = C.certificate reviewEnvironment (C.Choice.kind selected)
+  routeCertificate (registeredRoute requested) = WriteFixed.operation requested
+  routeOperation : (selected : Route) → RouteCertificate selected →
+    Recovery.RecoverableFor Store.World (RouteInput selected) (RouteValue selected) (RouteGoal selected)
+  routeOperation (plainRoute selected) proof = C.executable (C.Choice.kind selected) proof
+  routeOperation (registeredRoute requested) proof = proof
+  routeInput : (selected : Route) → RouteInput selected
+  routeInput (plainRoute selected) = C.Choice.input selected
+  routeInput (registeredRoute _) = tt
+
+  input : (call : Call) → RouteInput (route call)
+  input call = routeInput (route call)
+  certificate : (call : Call) → RouteCertificate (route call)
+  certificate call = routeCertificate (route call)
+  operation : (call : Call) → Recovery.RecoverableFor Store.World (RouteInput (route call))
+    (RouteValue (route call)) (RouteGoal (route call))
+  operation call = routeOperation (route call) (certificate call)
+  module O (call : Call) = Recovery.RecoverableFor (operation call)
+  module Checked (call : Call) = Recovery.CheckedFor (operation call) (RouteSuccess (route call))
+
+  -- There is one state constructor. Its operation is selected above by the
+  -- actual closed invocation; no script, goal, physical relation or result can
+  -- be supplied to this constructor independently of that operation.
   data State : Set where
-    finished : Result → State
-    mutationState : Mutation.E.Script Mutation.Result → State
-    readState : Read.E.Script Read.Result → State
-    deleteState : Delete.T.E.Script Delete.T.Outcome → State
-    forgetState : Forget.E.Script Forget.Result → State
-    inferenceState : Inference.E.Script Inference.Result → State
-    groundState : Grounding.T.E.Script Grounding.T.Outcome → State
-    evidenceState : Evidence.E.Script (Text ⊎ List Evidence.Reference) → State
-    groundedState : Retrieval.Coverage → Evidence.E.Script (Text ⊎ List Evidence.Grounded) → State
-    documentState : Document.E.Script Document.Result → State
-    documentQueryState : DocumentQuery.E.Script DocumentQuery.Result → State
-    learningState : (q : Learning.Request) → Learn.E.Script q (Learn.Outcome q) → State
-    queryState : Query.E.Script Query.Result → State
-    retrievalState : Bool → Ranking.Selection → Retrieval.State → State
-    contextState : Context.State → State
+    running : (call : Call) (initial : Store.World) →
+      Checked.RunState call (input call) initial → State
 
-  data Effect : Set where
-    mutationEffect : Mutation.Effect → Effect
-    readEffect : Read.Effect → Effect
-    deleteEffect : Delete.T.Effect → Effect
-    forgetEffect : Forget.Effect → Effect
-    inferenceEffect : Inference.Effect → Effect
-    groundEffect : Grounding.T.Effect → Effect
-    evidenceEffect : Evidence.Effect → Effect
-    documentEffect : Document.Effect → Effect
-    documentQueryEffect : DocumentQuery.Effect → Effect
-    learningEffect : (q : Learning.Request) → Learn.Effect q → Effect
-    queryEffect : Query.Effect → Effect
-    retrievalEffect : Retrieval.State → Effect
-    contextEffect : Context.State → Effect
+  start : Tools.Tool → Wire.Value → Store.World → State
+  start tool submitted initial = running call initial (Checked.start call (input call) initial)
+    where call = C.toolCall tool submitted
+  startRead : ReadRequest → Store.World → State
+  startRead request initial = running call initial (Checked.start call (input call) initial)
+    where call = C.privateRead request
 
-  Reply : Effect → Set
-  Reply (mutationEffect e) = Mutation.Reply e
-  Reply (readEffect e) = Read.Reply e
-  Reply (deleteEffect e) = Delete.T.Reply e
-  Reply (forgetEffect e) = Forget.Reply e
-  Reply (inferenceEffect e) = Inference.Reply e
-  Reply (groundEffect e) = Grounding.T.Reply e
-  Reply (evidenceEffect e) = Evidence.Reply e
-  Reply (documentEffect e) = Document.Reply e
-  Reply (documentQueryEffect e) = DocumentQuery.Reply e
-  Reply (learningEffect q e) = Learn.Reply q e
-  Reply (queryEffect e) = Query.Reply e
-  Reply (retrievalEffect s) = Retrieval.Reply s
-  Reply (contextEffect s) = Context.Reply s
+  record Result : Set where
+    constructor terminalResult
+    field
+      call : Call
+      initial : Store.World
+      terminal : Checked.Terminal call (input call) initial
 
-  data Next : Set where
-    complete : Result → Next
-    perform : (effect : Effect) → (Reply effect → State) → Next
+  resultState : Result → State
+  resultState (terminalResult call initial finishedState) =
+    running call initial (Checked.stopped {call = call} finishedState)
 
-  groundedNext : Retrieval.Coverage → Evidence.E.Script (Text ⊎ List Evidence.Grounded) → Next
-  groundedNext observedCoverage (Evidence.E.done result) = complete (groundedResult observedCoverage result)
-  groundedNext observedCoverage (Evidence.E.ask e k) = perform (evidenceEffect e) (λ r → groundedState observedCoverage (k r))
+  reached : Result → Store.World
+  reached (terminalResult call initial finishedState) =
+    Checked.History.current {call = call} (Checked.Active.evidence {call = call} (Checked.Terminal.active {call = call} finishedState))
 
-  next : State → Next
-  next (finished result) = complete result
-  next (mutationState (Mutation.E.done result)) = complete (mutated result)
-  next (mutationState (Mutation.E.ask e k)) = perform (mutationEffect e) (λ r → mutationState (k r))
-  next (readState (Read.E.done result)) = complete (readResult result)
-  next (readState (Read.E.ask e k)) = perform (readEffect e) (λ r → readState (k r))
-  next (deleteState (Delete.T.E.done result)) = complete (deleted result)
-  next (deleteState (Delete.T.E.ask e k)) = perform (deleteEffect e) (λ r → deleteState (k r))
-  next (forgetState (Forget.E.done result)) = complete (forgotten result)
-  next (forgetState (Forget.E.ask e k)) = perform (forgetEffect e) (λ r → forgetState (k r))
-  next (inferenceState (Inference.E.done result)) = complete (inferred result)
-  next (inferenceState (Inference.E.ask e k)) = perform (inferenceEffect e) (λ r → inferenceState (k r))
-  next (groundState (Grounding.T.E.done result)) = complete (grounded result)
-  next (groundState (Grounding.T.E.ask e k)) = perform (groundEffect e) (λ r → groundState (k r))
-  next (evidenceState (Evidence.E.done result)) = complete (evidenceResult result)
-  next (evidenceState (Evidence.E.ask e k)) = perform (evidenceEffect e) (λ r → evidenceState (k r))
-  next (groundedState observedCoverage (Evidence.E.done result)) = complete (groundedResult observedCoverage result)
-  next (groundedState observedCoverage (Evidence.E.ask e k)) = perform (evidenceEffect e) (λ r → groundedState observedCoverage (k r))
-  next (documentState (Document.E.done result)) = complete (documentResult result)
-  next (documentState (Document.E.ask e k)) = perform (documentEffect e) (λ r → documentState (k r))
-  next (documentQueryState (DocumentQuery.E.done result)) = complete (documentQueryResult result)
-  next (documentQueryState (DocumentQuery.E.ask e k)) = perform (documentQueryEffect e) (λ r → documentQueryState (k r))
-  next (learningState q (Learn.E.done result)) = complete (learned q result)
-  next (learningState q (Learn.E.ask e k)) = perform (learningEffect q e) (λ r → learningState q (k r))
-  next (queryState (Query.E.done result)) = complete (learningQueryResult result)
-  next (queryState (Query.E.ask e k)) = perform (queryEffect e) (λ r → queryState (k r))
-  next (retrievalState false per (Retrieval.finished result)) = complete (relevantResult result)
-  next (retrievalState true per (Retrieval.finished result)) = groundedNext (Retrieval.Report.retrieval result)
-    (Evidence.many per (Retrieval.Report.beliefs result))
-  next (retrievalState include per (Retrieval.failed error)) = complete (failed error)
-  next (retrievalState include per s@(Retrieval.overlay _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))
-  next (retrievalState include per s@(Retrieval.beliefs _ _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))
-  next (retrievalState include per s@(Retrieval.embedding _ _ _ _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))
-  next (retrievalState include per s@(Retrieval.vectorQuery _ _ _ _ _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))
-  next (retrievalState include per s@(Retrieval.closure _ _ _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))
-  next (retrievalState include per s@(Retrieval.neighbors _ _ _ _ _ _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))
-  next (contextState (Context.finished result)) = complete (contextResult result)
-  next (contextState (Context.failed error)) = complete (failed error)
-  next (contextState Context.invalidInput) = complete invalidContext
-  next (contextState Context.invalidAssessment) = complete invalidAssessment
-  next (contextState s@(Context.opening _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
-  next (contextState s@(Context.owned _ _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
-  next (contextState s@(Context.closing _ _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
-  next (contextState s@(Context.retrieving _ _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
-  next (contextState s@(Context.listPatterns _ _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
-  next (contextState s@(Context.countPattern _ _ _ _ _ _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
-  next (contextState s@(Context.patternOrigin _ _ _ _ _ _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
-  next (contextState s@(Context.assessmentGroups _ _ _)) = perform (contextEffect s) (λ r → contextState (LearningContext.advance s r))
+  data Step : State → State → Set where
+    observed : ∀ call initial (active : Checked.Active call (input call) initial) effect continuation →
+      (exposed : Checked.Active.remaining {call = call} active ≡ O.E.ask {call = call} effect continuation) →
+      (reply : O.Reply call effect) (after : Store.World) →
+      (physical : O.Atomic call (Checked.History.current {call = call} (Checked.Active.evidence {call = call} active)) effect reply after) →
+      Step (running call initial (Checked.running {call = call} active))
+        (running call initial (Checked.continue call active effect continuation exposed reply after physical))
+    stopped : ∀ call initial (active : Checked.Active call (input call) initial) →
+      (disposition : Checked.Disposition call active) →
+      Step (running call initial (Checked.running {call = call} active))
+        (running call initial (Checked.finish call active disposition))
 
-  groundStart : ℕ → ℕ → Float → State
-  groundStart belief chunk weight with Grounding.Run.start (Ground.add chunk belief weight)
-  ... | nothing = finished invalidGrounding
-  ... | just program = groundState program
-
-  start : Public.Request → State
-  start (Public.mutation q) = mutationState (Mutation.start embeddingsEnabled q)
-  start (Public.read q) = readState (Read.start q)
-  start (Public.delete kind id) = deleteState (Delete.Run.start kind id)
-  start (Public.deleteProject project) = forgetState (Forget.start project)
-  start (Public.inference q) = inferenceState (Inference.start q)
-  start (Public.sweepConfigured project threshold) with retirementPolicy
-  ... | inj₁ detail = finished (failed (Validation.Fault.explanation detail))
-  ... | inj₂ period = inferenceState (Inference.start (Inference.sweep project threshold period))
-  start (Public.relevant query limit project prefer include per) = retrievalState include per
-    (Retrieval.overlay (Retrieval.request query limit project prefer embeddingsEnabled))
-  start (Public.addEvidence belief chunk weight) = groundStart belief chunk weight
-  start (Public.removeEvidence belief chunk) = groundState (Grounding.Run.P.start (Ground.remove chunk belief))
-  start (Public.evidence belief) = evidenceState (Evidence.one belief nothing)
-  start (Public.loadDocument path project) = documentState (Document.load embeddingsEnabled chunkIdentity path project)
-  start (Public.queryDocument query project limit) = documentQueryState (DocumentQuery.start embeddingsEnabled query limit project)
-  start (Public.clearDocument path) = documentState (Document.clear path)
-  start (Public.learning q) = learningState q (Learn.start q)
-  start (Public.learningQuery q) = queryState (Query.start q)
-  start (Public.learningContext query project limit) = contextState
-    (LearningContext.begin (Context.contextRequest query project limit embeddingsEnabled))
-  start Public.capabilities = finished (capabilitiesResult Capabilities.current)
-
-  -- Adding supporting passages must preserve the caller's complete search.
-  -- In particular, it must not silently discard the requested memory type.
-  retrievalCore : State → Maybe Retrieval.State
-  retrievalCore (retrievalState _ _ search) = just search
-  retrievalCore _ = nothing
-
-  requestedSearchIsPreserved : ∀ query limit project prefer include per →
-    retrievalCore (start (Public.relevant query limit project prefer include per)) ≡
-      just (Retrieval.overlay
-        (Retrieval.request query limit project prefer embeddingsEnabled))
-  requestedSearchIsPreserved query limit project prefer include per = refl
-
-  Event = Σ Effect Reply
+  record Event : Set where
+    constructor event
+    field before after : State; physical : Step before after
 
   data Runs : State → List Event → Result → Set where
-    returned : ∀ state result → next state ≡ complete result → Runs state [] result
-    replied : ∀ state effect continuation reply events result →
-      next state ≡ perform effect continuation → Runs (continuation reply) events result →
-      Runs state ((effect , reply) ∷ events) result
+    returned : ∀ result → Runs (resultState result) [] result
+    advanced : ∀ before after physical events result → Runs after events result →
+      Runs before (event before after physical ∷ events) result
 
-  data Prefix : State → List Event → State → Set where
-    stopped : ∀ state → Prefix state [] state
-    replied : ∀ state effect continuation reply events residual →
-      next state ≡ perform effect continuation → Prefix (continuation reply) events residual →
-      Prefix state ((effect , reply) ∷ events) residual
+  completed : Result → Bool
+  completed (terminalResult call initial finishedState) with Checked.Terminal.disposition {call = call} finishedState
+  ... | Checked.done reply exposed success = true
+  ... | Checked.correction _ = false
+  ... | Checked.retry = false
+  ... | Checked.fatal _ = false
 
-  finishedHasNoEffects : ∀ result events observed → Runs (finished result) events observed →
-    events ≡ [] × observed ≡ result
-  finishedHasNoEffects result events observed (returned state result₁ refl) = refl , refl
+  -- The public success flag is backed by the actual operation's whole-world
+  -- business goal and the exposed returned reply in its physical history.
+  Completed : Result → Set
+  Completed (terminalResult call initial finishedState) =
+    Σ (RouteValue (route call)) (λ reply →
+      RouteGoal (route call) (input call) initial
+        (Checked.History.current {call = call} (Checked.Active.evidence {call = call} active)) reply ×
+      Checked.Active.remaining {call = call} active ≡ O.E.done {call = call} reply × RouteSuccess (route call) reply)
+    where active = Checked.Terminal.active {call = call} finishedState
+
+  completedRequiresGoal : ∀ result → completed result ≡ true → Completed result
+  completedRequiresGoal (terminalResult call initial finishedState) valid with Checked.Terminal.disposition {call = call} finishedState
+  ... | Checked.done reply exposed successful = reply ,
+    Checked.doneMeetsGoal call (Checked.Terminal.active {call = call} finishedState) reply exposed successful , exposed , successful
+  ... | Checked.correction _ with valid
+  ... | ()
+  completedRequiresGoal (terminalResult call initial finishedState) valid | Checked.retry with valid
+  ... | ()
+  completedRequiresGoal (terminalResult call initial finishedState) valid | Checked.fatal _ with valid
+  ... | ()
+
+  data ReadView : Set where
+    basicView : (request : C.Basic.Request) → C.Basic.View request → ReadView
+    retrievalView : Search.Request → C.Retrieval.Result → ReadView
+    documentView : DocumentSearch.Request → C.DocumentQuery.Result → ReadView
+
+  payloadReadView : (call : Call) → RouteValue (route call) → Store.World → Maybe ReadView
+  payloadReadView call reply initial with route call
+  ... | registeredRoute requested = nothing
+  ... | plainRoute selected with C.Choice.kind selected
+  ... | C.basic request = just (basicView request (C.Basic.view request initial))
+  ... | C.retrieval request = just (retrievalView request reply)
+  ... | C.documentQuery request = just (documentView request reply)
+  ... | C.experiences request = nothing
+  ... | C.assessments request = nothing
+  ... | C.intervention request = nothing
+  ... | C.context request = nothing
+  ... | C.projectRemoval request = nothing
+  ... | C.correction request = nothing
+  ... | C.patternWrite request = nothing
+  ... | C.patternRemoval request = nothing
+  ... | C.beliefRemoval request = nothing
+  ... | C.independentWrite request = nothing
+  ... | C.propagation request = nothing
+  ... | C.decay request = nothing
+  ... | C.documentRemoval request = nothing
+  ... | C.relationship relation request = nothing
+  ... | C.grounding relation request = nothing
+  ... | C.defeat request = nothing
+  ... | C.sweep request = nothing
+  ... | C.sourceWrite request = nothing
+  ... | C.reviewWrite request = nothing
+  ... | C.documentLoading request = nothing
+  ... | C.control request input = nothing
+
+  readView : Result → Maybe ReadView
+  readView (terminalResult call initial finishedState) with Checked.Terminal.disposition {call = call} finishedState
+  ... | Checked.done reply exposed success = payloadReadView call reply initial
+  ... | Checked.correction _ = nothing
+  ... | Checked.retry = nothing
+  ... | Checked.fatal _ = nothing

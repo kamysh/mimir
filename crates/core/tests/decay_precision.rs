@@ -53,8 +53,13 @@ fn a_changed_representable_count_is_not_hidden_by_an_epsilon_allowance() -> Resu
 fn accounted_counts_remain_exact_at_the_same_or_an_earlier_clock() -> Result<()> {
     let now = clock();
     let value = fact(now - Duration::days(1), 100.0, 10.0)?;
-    let (alpha, beta) =
-        InferenceEngine::new().decay_all(&[value.clone()], now, 0.5, &HashMap::new())?[0].1;
+    let (alpha, beta) = InferenceEngine::new().decay_all(
+        std::slice::from_ref(&value),
+        now,
+        0.5,
+        &HashMap::new(),
+    )?[0]
+        .1;
     assert_eq!((alpha, beta), (50.5, 5.5));
     let mut published = value;
     published.alpha = alpha;

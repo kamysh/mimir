@@ -94,15 +94,23 @@ async fn cli_reserves_replays_reads_and_cancels_the_original_action() -> Result<
         completed == command(&root, "delete-replay", &arguments, false)?,
         "retry lost the original true deletion result"
     );
-    ensure!(
-        completed
-            == command(
-                &root,
-                "read",
-                &["operation", "outcome", "--operation-token", token],
-                false
-            )?
-    );
+    let readback = command(
+        &root,
+        "read",
+        &["operation", "outcome", "--operation-token", token],
+        false,
+    )?;
+    for field in ["operation_token", "status", "original_request", "result"] {
+        ensure!(
+            readback[field] == completed[field],
+            "readback changed original {field}"
+        );
+    }
+    ensure!(readback["pending_executions"]
+        .as_array()
+        .context("readback execution list")?
+        .is_empty());
+    ensure!(readback["worker_cleanup"] == "not_confirmed_by_this_receipt");
     ensure!(
         completed
             == command(
@@ -149,7 +157,7 @@ async fn cli_reserves_replays_reads_and_cancels_the_original_action() -> Result<
     )?;
     ensure!(
         cancelled["status"] == "cancelled"
-            && cancelled["worker_cleanup"] == "confirmed_for_this_server"
+            && cancelled["worker_cleanup"] == "confirmed_for_all_registered_copies"
     );
     let revoked = command(
         &root,

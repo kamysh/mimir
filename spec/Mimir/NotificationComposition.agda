@@ -149,12 +149,12 @@ module Bound (conversion : Conversion.Contract) (library : Codec.JSONLibrary)
           (buildMessage (SMTP.alertMessage cfg (SMTP.computer hostname) alert)))
     digestBuilt : ∀ lock previous hostname value →
       Receipt (held lock previous) (digest (Digest.buildMessage value))
-        (buildMessage (SMTP.digestMessage cfg (SMTP.computer hostname) value))
-        (built lock (SMTP.computer hostname) (SMTP.digestMessage cfg (SMTP.computer hostname) value)
-          (buildMessage (SMTP.digestMessage cfg (SMTP.computer hostname) value)))
+        (buildMessage (SMTP.digestMessage conversion cfg (SMTP.computer hostname) value))
+        (built lock (SMTP.computer hostname) (SMTP.digestMessage conversion cfg (SMTP.computer hostname) value)
+          (buildMessage (SMTP.digestMessage conversion cfg (SMTP.computer hostname) value)))
     alertSent : ∀ lock host mailMessage alert reply → mailMessage ≡ SMTP.alertMessage cfg host alert → M.Sent lock cfg mailMessage reply →
       Receipt (held lock (just (host , mailMessage))) (notification (N.send alert)) reply (held lock (just (host , mailMessage)))
-    digestSent : ∀ lock host mailMessage value reply → mailMessage ≡ SMTP.digestMessage cfg host value → M.Sent lock cfg mailMessage reply →
+    digestSent : ∀ lock host mailMessage value reply → mailMessage ≡ SMTP.digestMessage conversion cfg host value → M.Sent lock cfg mailMessage reply →
       Receipt (held lock (just (host , mailMessage))) (digest (Digest.sendMessage value)) reply (held lock (just (host , mailMessage)))
 
   data Runs {A : Set} : State → Script A → List Event → State → A → Set where

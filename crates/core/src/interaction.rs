@@ -152,6 +152,12 @@ impl NeedsInput {
     pub fn message(&self) -> &str {
         &self.0.message
     }
+    /// Only the initial pure admission path may certify that no immutable
+    /// request was bound. Preserve each domain fault and its repair guidance.
+    pub(crate) fn before_binding(mut self) -> Self {
+        self.0.message="Correct the indicated fields and retry using the same reserved operation token. No request was bound and no business data changed. Ask the user if an intended value is unknown.".into();
+        self
+    }
 
     fn checked(wire: WireResponse) -> Result<Self> {
         ensure!(
@@ -225,6 +231,34 @@ impl RequestCorrection {
         }
         correction.into()
     }
+
+    /// Only the registered relationship transaction may call this, after its
+    /// error path has confirmed rollback. An uncertain rollback/commit error
+    /// has no RequestCorrection in its chain and must remain an ordinary error.
+    pub(crate) fn bound_relationship_reference(
+        error: anyhow::Error,
+        token: uuid::Uuid,
+        original_arguments: &str,
+    ) -> anyhow::Error {
+        let mut correction = match error.downcast::<Self>() {
+            Ok(correction) => correction,
+            Err(error) => return error,
+        };
+        let mut repaired = false;
+        for issue in &mut correction.correction.0.issues {
+            if issue.fault.code == Code::MissingReference {
+                issue.suggested_correction = format!(
+                    "Keep operation token {token} and its exact original arguments: {original_arguments}. Read operation_outcome with this token and use list_beliefs or query_relevant to inspect the intended stored records. The bound request is immutable. Retry only the unchanged original arguments after resolving the missing prerequisite. If an endpoint is wrong, explain this problem and ask the user whether to cancel the pending operation and reserve deliberately separate corrected work. Do not rewrite the bound endpoints, automatically cancel or reserve replacement work, or invent an identifier."
+                );
+                repaired = true;
+            }
+        }
+        if repaired {
+            correction.correction.0.message = "This operation token is already bound to its original request. Read its outcome and discuss the missing reference with the user before changing the intended work. No relationship was saved.".into();
+        }
+        correction.into()
+    }
+
     pub(crate) fn bound_graph_request(
         field: &str,
         code: Code,

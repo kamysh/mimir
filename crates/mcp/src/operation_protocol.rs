@@ -16,13 +16,13 @@ pub fn descriptors() -> Vec<Value> {
         }),
         json!({
             "name":"operation_outcome",
-            "description":"Read the original operation request and saved outcome without rerunning its business changes. A completed response contains the original result. A pending or needs_input response explains which original work remains; keep the token and discuss an uncertain correction with the user. A cancellation record prevents further publication but does not by itself confirm worker cleanup.",
+            "description":"Read the original operation request and saved outcome without rerunning its business changes. A completed response contains the original result. Terminal readback also lists executions still lacking physical-stop acknowledgements, with their automatic host/address, program and process identity; completed business data alone does not prove duplicate workers stopped. A pending or needs_input response explains which original work remains; keep the token and discuss an uncertain correction with the user. A cancellation record prevents further publication but does not by itself confirm worker cleanup.",
             "inputSchema":{"type":"object","properties":{
                 "operation_token":{"type":"string","format":"uuid","description":"The exact PostgreSQL-issued token returned by reserve_operation."}},"required":["operation_token"]}
         }),
         json!({
             "name":"cancel_operation",
-            "description":"Explicitly request cancellation of an unfinished operation only after the user decides to cancel it. Preserve committed changes and saved answers, revoke preparation ownership and block further publication under this token. A completed operation keeps its original result. Never cancel automatically to bypass a problem. A durable cancellation receipt does not confirm that every worker has finished cleanup; the response states that distinction.",
+            "description":"Cancel only after the user explicitly decides to stop this action. Preserve committed changes and saved answers, revoke unfinished publication, and wait for every registered copy to confirm physical cleanup. A disconnected copy remains pending without a deadline; another request can inspect its owner using operation_outcome. A completed action stops any duplicate work and returns its exact original completed answer without a cancellation row. Never cancel automatically to bypass a problem. A durable cancellation record alone is not physical-stop confirmation.",
             "inputSchema":{"type":"object","properties":{
                 "operation_token":{"type":"string","format":"uuid","description":"The exact token whose unfinished work the user explicitly decided to cancel."}},"required":["operation_token"]}
         }),
@@ -64,18 +64,15 @@ pub async fn call(
         }
         ControlOperation::OperationOutcome => {
             let token = token(input)?;
-            outcome(token, service.read_operation_outcome(token, None).await?)
+            mimir_core::operation_reporting::readback(
+                token,
+                service.read_operation_outcome(token, None).await?,
+            )
         }
         ControlOperation::CancelOperation => {
             let token = token(input)?;
             let cancelled = service.cancel_operation(token).await?;
-            let confirmed = cancelled.local_cleanup_confirmed();
-            let mut reply = mimir_json::Document::new(outcome(token, cancelled.into_outcome())?);
-            if confirmed {
-                reply["worker_cleanup"] = json!("confirmed_for_this_server");
-                reply["message"]=json!("Cancellation is durable and further publication under this token is blocked. This server stopped its owned execution before replying. Other servers receive publication revocation, but their cleanup is not confirmed by this receipt. Earlier committed changes and saved answers remain.");
-            }
-            Ok(reply.into_value())
+            mimir_core::operation_reporting::cancellation(token, cancelled)
         }
     }
 }

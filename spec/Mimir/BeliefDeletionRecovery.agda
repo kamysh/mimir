@@ -122,7 +122,8 @@ module Business (databaseSum : List Float → Float) (calculator : P.Calculator)
     (subst (Goal publicationTime identity before) accepted (proj₂ (checked publicationTime identity before)))
 
 module Registered (conversion : Conversion.Contract)
-  (databaseSum : List Float → Float) (calculator : P.Calculator) where
+  (databaseSum : List Float → Float) (calculator : P.Calculator)
+  (serverTime : ℕ → Store.World → ℤ) where
   module B = Business databaseSum calculator
 
   descriptor : Admission.Descriptor
@@ -153,62 +154,111 @@ module Registered (conversion : Conversion.Contract)
   ... | inj₁ fault = just (B.requestFault fault)
   ... | inj₂ _ = nothing
 
-  decide : ℕ → Store.World → B.Outcome
-  decide token before with original token (Step.registration before)
-  ... | inj₁ fault = inj₁ (B.requestFault fault)
-  ... | inj₂ (identity , publicationTime) = proj₁ (B.checked publicationTime identity before)
+  module AtReceipt (observedTime : ℤ) where
+    decide : ℕ → Store.World → B.Outcome
+    decide token before with original token (Step.registration before)
+    ... | inj₁ fault = inj₁ (B.requestFault fault)
+    ... | inj₂ (identity , publicationTime) = proj₁ (B.checked observedTime identity before)
 
-  keepsJournal : ∀ token before after reply → decide token before ≡ inj₂ (after , reply) →
+    keepsJournal : ∀ token before after reply → decide token before ≡ inj₂ (after , reply) →
+      Store.World.operations after ≡ Store.World.operations before
+    keepsJournal token before after reply accepted with original token (Step.registration before)
+    ... | inj₁ fault with accepted
+    ... | ()
+    keepsJournal token before after reply accepted | inj₂ (identity , publicationTime) =
+      B.journalUnchanged observedTime identity before after reply accepted
+
+    module Saved = Step.Admitted ℕ B.Diagnostic (λ token → token) key distinct decide keepsJournal admit
+
+    -- Publication adds both immutable original answers to the complete world
+    -- whose independent business condition was established above.
+    FreshGoal : ℕ → ℕ → ℤ → Store.World → Store.World → Saved.Reply → Set
+    FreshGoal token identity publicationTime before after (Step.done reply) = Σ Store.World (λ changed →
+      B.Goal publicationTime identity before (inj₂ (changed , reply)) × after ≡ Saved.Kernel.publication token changed reply)
+    FreshGoal token identity publicationTime before after (Step.needsInput diagnostic) =
+      after ≡ before × B.Goal publicationTime identity before (inj₁ diagnostic)
+    FreshGoal token identity publicationTime before after _ = ⊥
+
+    originalDecides : ∀ token before identity publicationTime → original token (Step.registration before) ≡ inj₂ (identity , publicationTime) →
+      decide token before ≡ proj₁ (B.checked observedTime identity before)
+    originalDecides token before identity publicationTime bound rewrite bound = refl
+
+    freshMeaning : ∀ token identity publicationTime before → original token (Step.registration before) ≡ inj₂ (identity , publicationTime) →
+      FreshGoal token identity observedTime before (proj₁ (Saved.Kernel.fresh token before)) (proj₂ (Saved.Kernel.fresh token before))
+    freshMeaning token identity publicationTime before bound rewrite originalDecides token before identity publicationTime bound
+      with B.checked observedTime identity before
+    ... | inj₁ diagnostic , correct = refl , correct
+    ... | inj₂ (changed , reply) , correct = changed , correct , refl
+
+    Goal : ℕ → Store.World → Store.World → Saved.Reply → Set
+    Goal token before after reply with original token (Step.registration before)
+    ... | inj₁ fault = after ≡ before × reply ≡ Step.needsInput (B.requestFault fault)
+    ... | inj₂ (identity , publicationTime) with Store.lookupCancellation before token
+    ... | just cancelled = after ≡ before × reply ≡ Step.cancelled cancelled
+    ... | nothing with Store.lookupSaved before token (key token) | Store.lookupSaved before token Step.resultKey
+    ... | just saved | just _ = after ≡ before × reply ≡ Step.done saved
+    ... | just _ | nothing = after ≡ before × reply ≡ Step.needsRecovery
+    ... | nothing | just _ = after ≡ before × reply ≡ Step.needsRecovery
+    ... | nothing | nothing = FreshGoal token identity observedTime before after reply
+
+    meaning : ∀ token before → Goal token before (proj₁ (Saved.execute token before)) (proj₂ (Saved.execute token before))
+    meaning token before with original token (Step.registration before) in bound
+    ... | inj₁ fault = refl , refl
+    ... | inj₂ (identity , publicationTime) with Store.lookupCancellation before token
+    ... | just cancelled = refl , refl
+    ... | nothing with Store.lookupSaved before token (key token) | Store.lookupSaved before token Step.resultKey
+    ... | just saved | just _ = refl , refl
+    ... | just _ | nothing = refl , refl
+    ... | nothing | just _ = refl , refl
+    ... | nothing | nothing = freshMeaning token identity publicationTime before bound
+
+
+  Internal = ℕ × ℤ
+  decide : Internal → Store.World → B.Outcome
+  decide (token , time) = AtReceipt.decide time token
+  keepsJournal : ∀ input before after reply → decide input before ≡ inj₂ (after , reply) →
     Store.World.operations after ≡ Store.World.operations before
-  keepsJournal token before after reply accepted with original token (Step.registration before)
-  ... | inj₁ fault with accepted
-  ... | ()
-  keepsJournal token before after reply accepted | inj₂ (identity , publicationTime) =
-    B.journalUnchanged publicationTime identity before after reply accepted
+  keepsJournal (token , time) = AtReceipt.keepsJournal time token
 
-  module Saved = Step.Admitted ℕ B.Diagnostic (λ token → token) key distinct decide keepsJournal admit
+  module Run = Step.Observed ℤ B.Diagnostic key distinct
+    (λ token time → AtReceipt.decide time token)
+    (λ token time → AtReceipt.keepsJournal time token) admit serverTime
 
-  -- Publication adds both immutable original answers to the complete world
-  -- whose independent business condition was established above.
-  FreshGoal : ℕ → ℕ → ℤ → Store.World → Store.World → Saved.Reply → Set
-  FreshGoal token identity publicationTime before after (Step.done reply) = Σ Store.World (λ changed →
-    B.Goal publicationTime identity before (inj₂ (changed , reply)) × after ≡ Saved.Kernel.publication token changed reply)
-  FreshGoal token identity publicationTime before after (Step.needsInput diagnostic) =
-    after ≡ before × B.Goal publicationTime identity before (inj₁ diagnostic)
-  FreshGoal token identity publicationTime before after _ = ⊥
-
-  originalDecides : ∀ token before identity publicationTime → original token (Step.registration before) ≡ inj₂ (identity , publicationTime) →
-    decide token before ≡ proj₁ (B.checked publicationTime identity before)
-  originalDecides token before identity publicationTime bound rewrite bound = refl
-
-  freshMeaning : ∀ token identity publicationTime before → original token (Step.registration before) ≡ inj₂ (identity , publicationTime) →
-    FreshGoal token identity publicationTime before (proj₁ (Saved.Kernel.fresh token before)) (proj₂ (Saved.Kernel.fresh token before))
-  freshMeaning token identity publicationTime before bound rewrite originalDecides token before identity publicationTime bound
-    with B.checked publicationTime identity before
-  ... | inj₁ diagnostic , correct = refl , correct
-  ... | inj₂ (changed , reply) , correct = changed , correct , refl
-
-  Goal : ℕ → Store.World → Store.World → Saved.Reply → Set
-  Goal token before after reply with original token (Step.registration before)
-  ... | inj₁ fault = after ≡ before × reply ≡ Step.needsInput (B.requestFault fault)
-  ... | inj₂ (identity , publicationTime) with Store.lookupCancellation before token
-  ... | just cancelled = after ≡ before × reply ≡ Step.cancelled cancelled
+  receiptMatches : ∀ token time before →
+    Run.Saved.execute (token , time) before ≡ AtReceipt.Saved.execute time token before
+  receiptMatches token time before with admit token (Step.registration before)
+  ... | just _ = refl
+  ... | nothing with Store.lookupCancellation before token
+  ... | just _ = refl
   ... | nothing with Store.lookupSaved before token (key token) | Store.lookupSaved before token Step.resultKey
-  ... | just saved | just _ = after ≡ before × reply ≡ Step.done saved
-  ... | just _ | nothing = after ≡ before × reply ≡ Step.needsRecovery
-  ... | nothing | just _ = after ≡ before × reply ≡ Step.needsRecovery
-  ... | nothing | nothing = FreshGoal token identity publicationTime before after reply
+  ... | just _ | just _ = refl
+  ... | just _ | nothing = refl
+  ... | nothing | just _ = refl
+  ... | nothing | nothing with AtReceipt.decide time token before
+  ... | inj₁ _ = refl
+  ... | inj₂ _ = refl
 
-  meaning : ∀ token before → Goal token before (proj₁ (Saved.execute token before)) (proj₂ (Saved.execute token before))
-  meaning token before with original token (Step.registration before) in bound
-  ... | inj₁ fault = refl , refl
-  ... | inj₂ (identity , publicationTime) with Store.lookupCancellation before token
-  ... | just cancelled = refl , refl
-  ... | nothing with Store.lookupSaved before token (key token) | Store.lookupSaved before token Step.resultKey
-  ... | just saved | just _ = refl , refl
-  ... | just _ | nothing = refl , refl
-  ... | nothing | just _ = refl , refl
-  ... | nothing | nothing = freshMeaning token identity publicationTime before bound
+  receiptMeaning : ∀ token time before → AtReceipt.Goal time token before
+    (proj₁ (Run.Saved.execute (token , time) before)) (proj₂ (Run.Saved.execute (token , time) before))
+  receiptMeaning token time before = subst
+    (λ outcome → AtReceipt.Goal time token before (proj₁ outcome) (proj₂ outcome))
+    (Relation.Binary.PropositionalEquality.sym (receiptMatches token time before)) (AtReceipt.meaning time token before)
 
-  module Certified = Saved.Certified Goal meaning
+  module Certified = Run.Certified (λ token time → AtReceipt.Goal time token)
+    receiptMeaning
+  Effect = Run.Effect
+  Reply = Run.Reply
+  Atomic = Run.Atomic
+  script = Run.script
+  completedObservation = Run.completedObservation
+  interruptionState = Run.interruptionState
+  interruptedKeepsRegistration = Run.interruptedKeepsRegistration
+  interruptedKeepsCancellation = Run.interruptedKeepsCancellation
+  progress = Run.progress
+  everyDatabaseReceiptCovered = Run.everyDatabaseReceiptCovered
+  module X = Run.X
+  module E = Run.E
+  module Saved = Run.Saved
+  Goal = Certified.Goal
   operation = Certified.operation
+  cachedReplay = Run.cachedReplay

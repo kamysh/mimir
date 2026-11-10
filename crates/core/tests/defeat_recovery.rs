@@ -157,15 +157,18 @@ async fn retry_after_edge_commit_preserves_one_defeat_and_original_completed_ans
         ensure!(f.edges().await?==1 && f.state().await?==before,"prefix changed posteriors or lost its edge");
         // A new owner resumes after the first owner's committed reply was lost.
         let reopened=MimirService::connect(&config()).await?;
+        let not_before: chrono::DateTime<chrono::Utc> = db::connect(&config().database)
+            .await?.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
         let StepDecision::Done(first)=reopened.record_defeat_operation(&plan).await? else {panic!("no completion")};
         ensure!(first.reply==json!({"ok":true}));
         let after=f.state().await?;
         ensure!(after["source"]==before["source"] && after["unrelated"]==before["unrelated"]);
         ensure!(after["target"]["probability"]!=before["target"]["probability"]);
         ensure!(after["child"]["probability"]!=before["child"]["probability"],"descendant not recomputed");
-        let time=reopened.read_operation_reservation(plan.operation_token()).await?.expect("reservation").reserved_at;
-        ensure!(f.store.get_belief(f.target).await?.unwrap().decay_accounted_at==time);
-        ensure!(f.store.get_belief(f.child).await?.unwrap().decay_accounted_at==time);
+        for id in [f.target, f.child] {
+            ensure!(f.store.get_belief(id).await?.unwrap().decay_accounted_at >= not_before);
+        }
+        ensure!(after["target"]["created_at"] == before["target"]["created_at"]);
         // Completion readback and later retries must return the original reply.
         ensure!(matches!(reopened.read_operation_outcome(plan.operation_token(),None).await?,OperationOutcome::Completed{outcome,..} if outcome.reply()==&first.reply));
         let StepDecision::Done(replayed)=reopened.record_defeat_operation(&plan).await? else {panic!("no replay")};
@@ -242,9 +245,17 @@ async fn standalone_propagation_replays_the_original_list_after_later_graph_chan
             .await?;
         let plan = f.plan("propagate_from", json!({"id":f.source})).await?;
         let step = &plan.steps()[0];
+        let not_before: chrono::DateTime<chrono::Utc> = db::connect(&config().database)
+            .await?
+            .query_one("SELECT clock_timestamp()", &[])
+            .await?
+            .get(0);
         let StepDecision::Done(first) = f.service.propagate_operation(step).await? else {
             panic!("no propagation")
         };
+        for id in [f.target, f.child] {
+            ensure!(f.store.get_belief(id).await?.unwrap().decay_accounted_at >= not_before);
+        }
         ensure!(first
             .reply
             .as_array()

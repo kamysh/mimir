@@ -13,6 +13,7 @@ open import Data.Nat using (ℕ; _≟_; _<?_; zero; suc)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.String using (String; toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
+import Data.Sum.Properties as Sums
 open import Data.Unit using (⊤; tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; cong₂; sym; trans; subst)
 open import Relation.Nullary using (Dec; ¬_; yes; no; does)
@@ -31,8 +32,11 @@ import Mimir.CharacterRules as Characters
 import Mimir.Text as Text
 import Mimir.ProjectDeletion as Project
 import Data.List.Relation.Unary.Any as Any
+import Data.Nat.Properties as Nat
 import Mimir.RecoverableStoreStep as StoreStep
 import Mimir.PublicInput as PublicInput
+import Mimir.ToolCatalog as Tools
+import Mimir.EmbeddingLifecycle as Lifecycle
 
 record RequestKey : Set where
   constructor requestKey
@@ -65,6 +69,12 @@ record PostgreSQL : Set₁ where
   field reservationDefault : ∀ before → DefaultReturning before
         cancellationTimestamp : ℕ → Store.World → ℤ
         storedStepBefore : Text → Text → Bool -- actual database ORDER BY step
+        storedExecutionBefore : ℕ → ℕ → Bool -- actual UUID ORDER BY execution_id
+        -- Actual PostgreSQL jsonb equality: object order and numeric spelling
+        -- are immaterial; omitted fields, null and array order remain distinct.
+        -- This external database observation is not compact JSON byte equality.
+        jsonbEqual : Wire.Value → Wire.Value → Bool
+        jsonbReflexive : ∀ value → jsonbEqual value value ≡ true
 
 -- Both mutating controls have one committed publication with metadata selected
 -- by its observed database reply. Goal is fixed by concrete control assembly.
@@ -344,6 +354,266 @@ module Cancellation (postgres : PostgreSQL) where
     ... | nothing rewrite trans (cong (Store.lookupCancellation after) same)
         (completedCancellationIsRecorded identity before after row completion) = refl
 
+-- Physical execution ownership is separate from revocable publication owners.
+-- Rows remain after cancellation; absence of a heartbeat is never an exit.
+module ExecutionOwnership where
+  rows : Store.World → List Store.ExecutionRow
+  rows before = Store.OperationTables.executions (Store.World.operations before)
+
+  pendingRow : ℕ → Store.ExecutionRow → Bool
+  pendingRow token row with token ≟ Store.ExecutionRow.token row
+  ... | no _ = false
+  ... | yes _ with Store.ExecutionRow.stoppedAt row
+  ... | nothing = true
+  ... | just _ = false
+
+  pending : ℕ → Store.World → List Store.ExecutionRow
+  pending token before = filterᵇ (pendingRow token) (rows before)
+
+  insertOrdered : PostgreSQL → Store.ExecutionRow → List Store.ExecutionRow → List Store.ExecutionRow
+  insertOrdered postgres row [] = row ∷ []
+  insertOrdered postgres row (first ∷ rest) with PostgreSQL.storedExecutionBefore postgres
+    (Store.ExecutionRow.identity row) (Store.ExecutionRow.identity first)
+  ... | true = row ∷ first ∷ rest
+  ... | false = first ∷ insertOrdered postgres row rest
+
+  ordered : PostgreSQL → List Store.ExecutionRow → List Store.ExecutionRow
+  ordered postgres [] = []
+  ordered postgres (first ∷ rest) = insertOrdered postgres first (ordered postgres rest)
+
+  AllStopped : ℕ → List Store.ExecutionRow → Set
+  AllStopped token = All (λ row → token ≡ Store.ExecutionRow.token row →
+    Σ ℤ (λ timestamp → Store.ExecutionRow.stoppedAt row ≡ just timestamp))
+
+  emptyPendingMeansAllStopped : ∀ token observed → filterᵇ (pendingRow token) observed ≡ [] → AllStopped token observed
+  emptyPendingMeansAllStopped token [] empty = []
+  emptyPendingMeansAllStopped token (row ∷ rest) empty with token ≟ Store.ExecutionRow.token row
+  ... | no other = (λ same → ⊥-elim (other same)) ∷ emptyPendingMeansAllStopped token rest empty
+  ... | yes same with Store.ExecutionRow.stoppedAt row in stopped
+  ... | nothing with empty
+  ... | ()
+  emptyPendingMeansAllStopped token (row ∷ rest) empty | yes same | just timestamp =
+    (λ _ → timestamp , stopped) ∷ emptyPendingMeansAllStopped token rest empty
+
+  data Cleanup (token : ℕ) (before : Store.World) : Set where
+    waiting : ∀ first rest → pending token before ≡ (first ∷ rest) → Cleanup token before
+    confirmed : AllStopped token (rows before) → Cleanup token before
+
+  cleanup : ∀ token before → Cleanup token before
+  cleanup token before with pending token before in observed
+  ... | [] = confirmed (emptyPendingMeansAllStopped token (rows before) observed)
+  ... | first ∷ rest = waiting first rest observed
+
+  -- Registration is acknowledged before any body/provider work starts. The
+  -- caller receives this ID from INSERT RETURNING before committing, so an
+  -- uncertain COMMIT can be read back under that same ID without new work.
+  data Registration : Set where
+    unknown : Registration
+    completed : Wire.Value → Registration
+    cancelled : Store.CancellationRow → Registration
+    registered : Store.ExecutionRow → Registration
+
+  register : Store.ExecutionRow → Store.World → Store.World × Registration
+  register received before with Recovery.Cancellation.reserved (Store.ExecutionRow.token received)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false = before , unknown
+  ... | true with Store.lookupSaved before (Store.ExecutionRow.token received) StoreStep.resultKey
+  ... | just value = before , completed value
+  ... | nothing with Store.lookupCancellation before (Store.ExecutionRow.token received)
+  ... | just receipt = before , cancelled receipt
+  ... | nothing = record before { operations = record (Store.World.operations before)
+      { executions = received ∷ rows before } } , registered received
+
+  cancellationPreventsRegistration : ∀ row before receipt →
+    Recovery.Cancellation.reserved (Store.ExecutionRow.token row)
+      (Store.OperationTables.reservations (Store.World.operations before)) ≡ true →
+    Store.lookupSaved before (Store.ExecutionRow.token row) StoreStep.resultKey ≡ nothing →
+    Store.lookupCancellation before (Store.ExecutionRow.token row) ≡ just receipt →
+    register row before ≡ (before , cancelled receipt)
+  cancellationPreventsRegistration row before receipt known absent revoked rewrite known | absent | revoked = refl
+
+  record MayStart (row : Store.ExecutionRow) (before : Store.World) : Set where
+    field registeredRow : Any.Any (row ≡_) (rows before)
+          notStopped : Store.ExecutionRow.stoppedAt row ≡ nothing
+          notCancelled : Store.lookupCancellation before (Store.ExecutionRow.token row) ≡ nothing
+          noFinalAnswer : Store.lookupSaved before (Store.ExecutionRow.token row) StoreStep.resultKey ≡ nothing
+
+  cancelledWorkCannotStart : ∀ row before receipt →
+    Store.lookupCancellation before (Store.ExecutionRow.token row) ≡ just receipt → MayStart row before → ⊥
+  cancelledWorkCannotStart row before receipt revoked allowed with trans (sym revoked) (MayStart.notCancelled allowed)
+  ... | ()
+
+  -- These are actual host observations, not caller assertions that a worker
+  -- should have stopped. Local workers owe their kill-then-wait exit traces;
+  -- a failed wait has no successful receipt and cannot acknowledge execution.
+  data BodyDestroyed (execution : ℕ) : Set where
+    observedBodyDestruction : BodyDestroyed execution
+
+  record WorkerExited (identity : ℕ) : Set where
+    field events : List Lifecycle.WorkerStop.E.Event
+          exited : Lifecycle.WorkerStop.E.Runs Lifecycle.WorkerStop.stop events (inj₂ tt)
+
+  record StopReceipt (execution : ℕ) (ownedWorkers : List ℕ) : Set where
+    field body : BodyDestroyed execution
+          workers : All WorkerExited ownedWorkers
+
+  data PhysicalStop (execution : ℕ) (ownedWorkers : List ℕ) : Set where
+    stopped : StopReceipt execution ownedWorkers → PhysicalStop execution ownedWorkers
+    unconfirmed : Text → PhysicalStop execution ownedWorkers
+
+  stoppedRows : ℕ → ℤ → List Store.ExecutionRow → List Store.ExecutionRow
+  stoppedRows identity timestamp [] = []
+  stoppedRows identity timestamp (row ∷ rest) with identity ≟ Store.ExecutionRow.identity row
+  ... | no _ = row ∷ stoppedRows identity timestamp rest
+  ... | yes _ with Store.ExecutionRow.stoppedAt row
+  ... | just _ = row ∷ rest
+  ... | nothing = record row { stoppedAt = just timestamp } ∷ rest
+
+  stoppedRowsStable : ∀ identity firstTime laterTime observed →
+    stoppedRows identity laterTime (stoppedRows identity firstTime observed) ≡ stoppedRows identity firstTime observed
+  stoppedRowsStable identity firstTime laterTime [] = refl
+  stoppedRowsStable identity firstTime laterTime (row ∷ rest) with identity ≟ Store.ExecutionRow.identity row in same
+  ... | no _ rewrite same = cong (row ∷_) (stoppedRowsStable identity firstTime laterTime rest)
+  ... | yes _ with Store.ExecutionRow.stoppedAt row in stopped
+  ... | just timestamp rewrite same | stopped = refl
+  ... | nothing rewrite same = refl
+
+  acknowledge : ∀ identity ownedWorkers → PhysicalStop identity ownedWorkers → ℤ → Store.World → Store.World
+  acknowledge identity ownedWorkers (unconfirmed _) timestamp before = before
+  acknowledge identity ownedWorkers (stopped receipt) timestamp before =
+    record before { operations = record (Store.World.operations before)
+      { executions = stoppedRows identity timestamp (rows before) } }
+
+  failedCleanupCannotAcknowledge : ∀ identity ownedWorkers reason timestamp before →
+    acknowledge identity ownedWorkers (unconfirmed reason) timestamp before ≡ before
+  failedCleanupCannotAcknowledge identity ownedWorkers reason timestamp before = refl
+
+  acknowledgementPreservesBusiness : ∀ identity ownedWorkers observed timestamp before →
+    Store.businessSnapshot (acknowledge identity ownedWorkers observed timestamp before) ≡ Store.businessSnapshot before
+  acknowledgementPreservesBusiness identity ownedWorkers (unconfirmed _) timestamp before = refl
+  acknowledgementPreservesBusiness identity ownedWorkers (stopped _) timestamp before = refl
+
+  acknowledgementRetryKeepsTime : ∀ identity firstWorkers laterWorkers firstReceipt laterReceipt firstTime laterTime before →
+    acknowledge identity laterWorkers (stopped laterReceipt) laterTime
+      (acknowledge identity firstWorkers (stopped firstReceipt) firstTime before) ≡
+    acknowledge identity firstWorkers (stopped firstReceipt) firstTime before
+  acknowledgementRetryKeepsTime identity firstWorkers laterWorkers firstReceipt laterReceipt firstTime laterTime before =
+    cong (λ observed → record before { operations = record (Store.World.operations before) { executions = observed } })
+      (stoppedRowsStable identity firstTime laterTime (rows before))
+
+  registerPreservesBusiness : ∀ row before →
+    Store.businessSnapshot (proj₁ (register row before)) ≡ Store.businessSnapshot before
+  registerPreservesBusiness row before with Recovery.Cancellation.reserved (Store.ExecutionRow.token row)
+    (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false = refl
+  ... | true with Store.lookupSaved before (Store.ExecutionRow.token row) StoreStep.resultKey
+  ... | just _ = refl
+  ... | nothing with Store.lookupCancellation before (Store.ExecutionRow.token row)
+  ... | just _ = refl
+  ... | nothing = refl
+
+  stoppedMember : ∀ token observed row → AllStopped token observed → Any.Any (row ≡_) observed →
+    token ≡ Store.ExecutionRow.token row → Σ ℤ (λ timestamp → Store.ExecutionRow.stoppedAt row ≡ just timestamp)
+  stoppedMember token (row ∷ rest) .row (first ∷ later) (Any.here refl) same = first same
+  stoppedMember token (first ∷ rest) row (_ ∷ later) (Any.there member) same = stoppedMember token rest row later member same
+
+  -- Either durable terminal fact fences fresh execution. A stored final row
+  -- still needs normal journal validation before claiming business success.
+  data Fence (token : ℕ) (before : Store.World) : Set where
+    cancelledFence : ∀ receipt → Store.lookupCancellation before token ≡ just receipt → Fence token before
+    finalAnswerFence : ∀ value → Store.lookupSaved before token StoreStep.resultKey ≡ just value → Fence token before
+
+  -- Only the enclosing request inserts an execution row. Provider children
+  -- borrow that request's real ownership and check MayStart without changing
+  -- World; its body-destruction receipt includes joining all those children.
+  -- Failed entry does not invent an allocated PostgreSQL identity.
+  data Entry (token : ℕ) : Store.World → Store.World → Set where
+    startedCopy : ∀ row before after → Store.ExecutionRow.token row ≡ token →
+      Store.ExecutionRow.stoppedAt row ≡ nothing →
+      register row before ≡ (after , registered row) → Entry token before after
+    fencedCopy : ∀ before → Fence token before → Entry token before before
+    unknownCopy : ∀ before → Recovery.Cancellation.reserved token
+      (Store.OperationTables.reservations (Store.World.operations before)) ≡ false → Entry token before before
+
+  registeredMayStart : ∀ row before after → Store.ExecutionRow.stoppedAt row ≡ nothing →
+    register row before ≡ (after , registered row) → MayStart row after
+  registeredMayStart row before after notStoppedYet observed with Recovery.Cancellation.reserved
+    (Store.ExecutionRow.token row) (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false with observed
+  ... | ()
+  registeredMayStart row before after notStoppedYet observed | true with
+    Store.lookupSaved before (Store.ExecutionRow.token row) StoreStep.resultKey in noFinal
+  ... | just value with observed
+  ... | ()
+  registeredMayStart row before after notStoppedYet observed | true | nothing with
+    Store.lookupCancellation before (Store.ExecutionRow.token row) in notCancelled
+  ... | just receipt with observed
+  ... | ()
+  registeredMayStart row before after notStoppedYet observed | true | nothing | nothing =
+    subst (MayStart row) (cong proj₁ observed) record
+      { registeredRow = Any.here refl; notStopped = notStoppedYet
+      ; notCancelled = notCancelled; noFinalAnswer = noFinal }
+
+  entryPreservesBusiness : ∀ token before after → Entry token before after →
+    Store.businessSnapshot after ≡ Store.businessSnapshot before
+  entryPreservesBusiness token before after (startedCopy row .before .after same notStoppedYet observed) =
+    trans (cong Store.businessSnapshot (sym (cong proj₁ observed))) (registerPreservesBusiness row before)
+  entryPreservesBusiness token before .before (fencedCopy .before fence) = refl
+  entryPreservesBusiness token before .before (unknownCopy .before missing) = refl
+
+  fencedWorkCannotStart : ∀ row before → Fence (Store.ExecutionRow.token row) before → MayStart row before → ⊥
+  fencedWorkCannotStart row before (cancelledFence receipt known) allowed = cancelledWorkCannotStart row before receipt known allowed
+  fencedWorkCannotStart row before (finalAnswerFence value known) allowed
+    with trans (sym known) (MayStart.noFinalAnswer allowed)
+  ... | ()
+
+  record FullConfirmation (token : ℕ) (before : Store.World) : Set where
+    field publicationFence : Fence token before
+          everyCopy : AllStopped token (rows before)
+
+  pendingCopyPreventsFullConfirmation : ∀ token before row → Any.Any (row ≡_) (rows before) →
+    token ≡ Store.ExecutionRow.token row → Store.ExecutionRow.stoppedAt row ≡ nothing →
+    FullConfirmation token before → ⊥
+  pendingCopyPreventsFullConfirmation token before row member same pending receipt
+    with stoppedMember token (rows before) row (FullConfirmation.everyCopy receipt) member same
+  ... | timestamp , known with trans (sym pending) known
+  ... | ()
+
+  -- The host may remain in waiting indefinitely. Neither disconnect nor an
+  -- event hint has a transition to fullyStopped. Reading all actual ACK rows
+  -- supplies the only successful completion evidence.
+  data HostState (token : ℕ) : Set where
+    waiting : Store.World → HostState token
+    fullyStopped : (before : Store.World) → FullConfirmation token before → HostState token
+
+  data HostStep (token : ℕ) : HostState token → HostState token → Set where
+    observedEntry : ∀ before after → Entry token before after →
+      HostStep token (waiting before) (waiting after)
+    observedPhysicalStop : ∀ before identity ownedWorkers observed timestamp →
+      HostStep token (waiting before) (waiting (acknowledge identity ownedWorkers observed timestamp before))
+    confirmation : ∀ before (receipt : FullConfirmation token before) →
+      HostStep token (waiting before) (fullyStopped before receipt)
+    disconnected : ∀ before → HostStep token (waiting before) (waiting before)
+
+  completedHostHasEveryStopReceipt : ∀ token before (receipt : FullConfirmation token before) →
+    AllStopped token (rows before)
+  completedHostHasEveryStopReceipt token before receipt = FullConfirmation.everyCopy receipt
+
+  -- Database cancellation returns before its owners can acknowledge stopping.
+  -- The public host therefore records the actual later acknowledgements from
+  -- that reached database world, rather than attaching a certificate about an
+  -- unrelated or caller-selected snapshot.
+  data HostRuns (token : ℕ) : HostState token → HostState token → Set where
+    returned : ∀ state → HostRuns token state state
+    advanced : ∀ {before middle after} → HostStep token before middle →
+      HostRuns token middle after → HostRuns token before after
+
+  record StoppedAfter (token : ℕ) (databaseTerminal : Store.World) : Set where
+    field
+      final : Store.World
+      certifiedStop : FullConfirmation token final
+      observed : HostRuns token (waiting databaseTerminal) (fullyStopped final certifiedStop)
+
 module Plan where
   record Boundary : Set where
     constructor boundary
@@ -458,13 +728,40 @@ module Plan where
     Decode._>>=_ (Wire.required (toList "may_repeat") Wire.asBoolean view) λ repeat →
     inj₂ (boundary site repeat)
 
+  readStepFields : Wire.Object.View → Validation.Fault ⊎ Step
+  readStepFields view = Decode._>>=_ (Wire.required (toList "site") Wire.asString view) λ site →
+    Decode._>>=_ (Wire.optional (toList "key") Wire.asString view) λ key →
+    Decode._>>=_ (Wire.required (toList "id") Wire.asString view) λ id → inj₂ (step site key id)
+
   readStep : Wire.Value → Validation.Fault ⊎ Step
   readStep = Decode.readRecord Objects.forbid Objects.rejectKnownRepeated
-    (toList "site" ∷ toList "key" ∷ toList "id" ∷ []) λ view →
-    Decode._>>=_ (Wire.required (toList "site") Wire.asString view) λ site →
-    Decode._>>=_ (Wire.optional (toList "key") Wire.asString view) λ key →
-    Decode._>>=_ (Wire.required (toList "id") Wire.asString view) λ id →
-    inj₂ (step site key id)
+    (toList "site" ∷ toList "key" ∷ toList "id" ∷ []) readStepFields
+
+  readStepFieldsKnown : ∀ view site identity →
+    view (toList "site") ≡ just (Wire.string site) →
+    view (toList "key") ≡ just Wire.null →
+    view (toList "id") ≡ just (Wire.string identity) →
+    readStepFields view ≡ inj₂ (step site nothing identity)
+  readStepFieldsKnown view site identity siteKnown keyKnown idKnown rewrite siteKnown | keyKnown | idKnown = refl
+
+  stepDecoded : ∀ registered raw decodedStep → Admission.Plan.stepMatches registered raw ≡ true →
+    readStep raw ≡ inj₂ decodedStep → decodedStep ≡ step (Admission.Descriptor.site registered) nothing (Admission.Descriptor.key registered)
+  stepDecoded registered raw decodedStep matched decoded with Admission.RecordFields.sameRecordView
+    (toList "site" ∷ toList "key" ∷ toList "id" ∷ [])
+    (toList "site" ∷ toList "key" ∷ toList "id" ∷ [])
+    (λ view → Project.Registered.fieldText (Admission.Descriptor.site registered) (view (toList "site")) ∧
+      Project.Registered.fieldNull (view (toList "key")) ∧
+      Project.Registered.fieldText (Admission.Descriptor.key registered) (view (toList "id")))
+    readStepFields raw decodedStep matched decoded
+  ... | view , checked , parsed = sym (Sums.inj₂-injective (trans (sym (readStepFieldsKnown view
+    (Admission.Descriptor.site registered) (Admission.Descriptor.key registered)
+    (Admission.RecordFields.textField _ _ (Admission.RecordFields.andLeft a (b ∧ c) checked)) (Admission.RecordFields.nullField _ (Admission.RecordFields.andLeft b c (Admission.RecordFields.andRight a (b ∧ c) checked)))
+    (Admission.RecordFields.textField _ _ (Admission.RecordFields.andRight b c (Admission.RecordFields.andRight a (b ∧ c) checked))))) parsed))
+    where
+    a = Project.Registered.fieldText (Admission.Descriptor.site registered) (view (toList "site"))
+    b = Project.Registered.fieldNull (view (toList "key"))
+    c = Project.Registered.fieldText (Admission.Descriptor.key registered) (view (toList "id"))
+
 
   fieldNames : List Text
   fieldNames = toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ toList "capture" ∷ []
@@ -475,13 +772,157 @@ module Plan where
   sourceFieldNames : List Text
   sourceFieldNames = toList "id" ∷ toList "content" ∷ toList "project" ∷ toList "already_embedded" ∷ []
 
-  decode : Wire.Value → Validation.Fault ⊎ Saved
-  decode = Decode.readRecord Objects.forbid Objects.rejectKnownRepeated
-    fieldNames λ view →
-    Decode._>>=_ (Wire.required (toList "operation") Wire.asString view) λ operation →
+  readPlanFields : Wire.Object.View → Validation.Fault ⊎ Saved
+  readPlanFields view = Decode._>>=_ (Wire.required (toList "operation") Wire.asString view) λ operation →
     Decode._>>=_ (Wire.required (toList "shape") (Decode.readArray readBoundary) view) λ shape →
     Decode._>>=_ (Wire.required (toList "steps") (Decode.readArray readStep) view) λ steps →
     inj₂ (saved operation shape steps (view (toList "capture")))
+
+  decode : Wire.Value → Validation.Fault ⊎ Saved
+  decode = Decode.readRecord Objects.forbid Objects.rejectKnownRepeated fieldNames readPlanFields
+
+  parsedSteps : ∀ view model → readPlanFields view ≡ inj₂ model →
+    Wire.required (toList "steps") (Decode.readArray readStep) view ≡ inj₂ (Saved.steps model)
+  parsedSteps view model known with Wire.required (toList "operation") Wire.asString view
+  ... | inj₁ fault with known
+  ... | ()
+  parsedSteps view model known | inj₂ operation
+    with Wire.required (toList "shape") (Decode.readArray readBoundary) view
+  ... | inj₁ fault with known
+  ... | ()
+  parsedSteps view model known | inj₂ operation | inj₂ shape
+    with Wire.required (toList "steps") (Decode.readArray readStep) view
+  ... | inj₁ fault with known
+  ... | ()
+  parsedSteps view model known | inj₂ operation | inj₂ shape | inj₂ steps with known
+  ... | refl = refl
+
+
+  -- Both the defeat and prepared-belief protocols use this same actual
+  -- two-step saved plan. Only its typed record fields are projected here.
+  -- A registered one-statement plan decodes to its exact sole boundary.
+  -- The source is the shared typed record view, not a parser/formatter model.
+  module SingletonProjection (registered : Admission.Descriptor) where
+    open Admission.RecordFields using (sameRecordView; thirdTrue; unfield)
+    operationName = Admission.Descriptor.operation registered
+    finalStep = step (Admission.Descriptor.site registered) nothing (Admission.Descriptor.key registered)
+
+    singletonValue : ∀ check observed → Project.Registered.singleton check observed ≡ true →
+      Σ Wire.Value (λ raw → observed ≡ just (Wire.array (raw ∷ [])) × check raw ≡ true)
+    singletonValue check (just (Wire.array (raw ∷ []))) known = raw , refl , known
+    singletonValue check (just (Wire.array [])) ()
+    singletonValue check (just (Wire.array (_ ∷ _ ∷ _))) ()
+    singletonValue check (just Wire.null) ()
+    singletonValue check (just (Wire.boolean _)) ()
+    singletonValue check (just (Wire.unsigned _)) ()
+    singletonValue check (just (Wire.signed _)) ()
+    singletonValue check (just (Wire.floating _)) ()
+    singletonValue check (just (Wire.string _)) ()
+    singletonValue check (just (Wire.object _)) ()
+    singletonValue check nothing ()
+
+    selectedRead : ∀ view raw steps → view (toList "steps") ≡ just (Wire.array (raw ∷ [])) →
+      Wire.required (toList "steps") (Decode.readArray readStep) view ≡ inj₂ steps →
+      Decode.readArray readStep (Wire.array (raw ∷ [])) ≡ inj₂ steps
+    selectedRead view raw steps found known rewrite found = unfield (toList "steps") _ steps known
+
+    singletonRead : ∀ raw steps → Decode.readArray readStep (Wire.array (raw ∷ [])) ≡ inj₂ steps →
+      Σ Step (λ decodedStep → readStep raw ≡ inj₂ decodedStep × steps ≡ (decodedStep ∷ []))
+    singletonRead raw steps known with readStep raw
+    ... | inj₁ fault with known
+    ... | ()
+    singletonRead raw steps known | inj₂ decodedStep with known
+    ... | refl = decodedStep , refl , refl
+
+    planCheck : Wire.Object.View → Bool
+    planCheck view = Project.Registered.fieldText operationName (view (toList "operation")) ∧
+      Project.Registered.singleton (Admission.Plan.shapeMatches registered) (view (toList "shape")) ∧
+      Project.Registered.singleton (Admission.Plan.stepMatches registered) (view (toList "steps"))
+
+    decodedSingle : ∀ raw model → Admission.Plan.matches registered raw ≡ true → decode raw ≡ inj₂ model →
+      Saved.steps model ≡ (finalStep ∷ [])
+    decodedSingle raw model matched decoded with sameRecordView
+      (toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ []) fieldNames
+      planCheck readPlanFields raw model matched decoded
+    ... | view , checked , parsed with singletonValue (Admission.Plan.stepMatches registered) (view (toList "steps"))
+      (thirdTrue (Project.Registered.fieldText operationName (view (toList "operation")))
+        (Project.Registered.singleton (Admission.Plan.shapeMatches registered) (view (toList "shape")))
+        (Project.Registered.singleton (Admission.Plan.stepMatches registered) (view (toList "steps"))) checked)
+    ... | storedValue , found , matchedStep with singletonRead storedValue (Saved.steps model)
+      (selectedRead view storedValue _ found (parsedSteps view model parsed))
+    ... | decodedStep , readStep , exact with stepDecoded registered storedValue decodedStep matchedStep readStep
+    ... | refl = exact
+
+  module PairProjection (registered : Admission.PairDescriptor) where
+    module Pair = Admission.PairPlan registered using (module First; module Second; pair; matches)
+    open Admission.RecordFields using (andLeft; andRight; thirdTrue; sameRecordView; unfield)
+    operationName = Admission.PairDescriptor.operation registered
+    firstDescriptor = Admission.descriptor operationName
+      (Admission.PairDescriptor.firstSite registered) (Admission.PairDescriptor.firstKey registered)
+    finalDescriptor = Admission.descriptor operationName
+      (Admission.PairDescriptor.secondSite registered) (Admission.PairDescriptor.secondKey registered)
+    firstStep = step (Admission.PairDescriptor.firstSite registered) nothing (Admission.PairDescriptor.firstKey registered)
+    finalStep = step (Admission.PairDescriptor.secondSite registered) nothing (Admission.PairDescriptor.secondKey registered)
+
+    pairValues : ∀ firstCheck secondCheck observed → Pair.pair firstCheck secondCheck observed ≡ true →
+      Σ Wire.Value (λ firstRaw → Σ Wire.Value (λ secondRaw →
+        observed ≡ just (Wire.array (firstRaw ∷ secondRaw ∷ [])) ×
+        firstCheck firstRaw ≡ true × secondCheck secondRaw ≡ true))
+    pairValues firstCheck secondCheck (just (Wire.array (firstRaw ∷ secondRaw ∷ []))) known =
+      firstRaw , secondRaw , refl , andLeft _ _ known , andRight _ _ known
+    pairValues firstCheck secondCheck (just (Wire.array [])) ()
+    pairValues firstCheck secondCheck (just (Wire.array (_ ∷ []))) ()
+    pairValues firstCheck secondCheck (just (Wire.array (_ ∷ _ ∷ _ ∷ _))) ()
+    pairValues firstCheck secondCheck (just Wire.null) ()
+    pairValues firstCheck secondCheck (just (Wire.boolean _)) ()
+    pairValues firstCheck secondCheck (just (Wire.unsigned _)) ()
+    pairValues firstCheck secondCheck (just (Wire.signed _)) ()
+    pairValues firstCheck secondCheck (just (Wire.floating _)) ()
+    pairValues firstCheck secondCheck (just (Wire.string _)) ()
+    pairValues firstCheck secondCheck (just (Wire.object _)) ()
+    pairValues firstCheck secondCheck nothing ()
+
+    selectedPairRead : ∀ view firstRaw secondRaw steps →
+      view (toList "steps") ≡ just (Wire.array (firstRaw ∷ secondRaw ∷ [])) →
+      Wire.required (toList "steps") (Decode.readArray readStep) view ≡ inj₂ steps →
+      Decode.readArray readStep (Wire.array (firstRaw ∷ secondRaw ∷ [])) ≡ inj₂ steps
+    selectedPairRead view firstRaw secondRaw steps found decoded rewrite found = unfield (toList "steps") _ steps decoded
+
+    pairRead : ∀ firstRaw secondRaw steps →
+      Decode.readArray readStep (Wire.array (firstRaw ∷ secondRaw ∷ [])) ≡ inj₂ steps →
+      Σ Step (λ firstDecoded → Σ Step (λ secondDecoded →
+        readStep firstRaw ≡ inj₂ firstDecoded × readStep secondRaw ≡ inj₂ secondDecoded ×
+        steps ≡ (firstDecoded ∷ secondDecoded ∷ [])))
+    pairRead firstRaw secondRaw steps known with readStep firstRaw in firstRead
+    ... | inj₁ fault with known
+    ... | ()
+    pairRead firstRaw secondRaw steps known | inj₂ firstDecoded with readStep secondRaw in secondRead
+    ... | inj₁ fault with known
+    ... | ()
+    pairRead firstRaw secondRaw steps known | inj₂ firstDecoded | inj₂ secondDecoded with known
+    ... | refl = firstDecoded , secondDecoded , refl , refl , refl
+
+    planCheck : Wire.Object.View → Bool
+    planCheck view = Project.Registered.fieldText operationName (view (toList "operation")) ∧
+      Pair.pair Pair.First.shapeMatches Pair.Second.shapeMatches (view (toList "shape")) ∧
+      Pair.pair Pair.First.stepMatches Pair.Second.stepMatches (view (toList "steps"))
+
+    decodedPair : ∀ raw model → Pair.matches raw ≡ true → decode raw ≡ inj₂ model →
+      Saved.steps model ≡ (firstStep ∷ finalStep ∷ [])
+    decodedPair raw model matched decoded with sameRecordView
+      (toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ []) fieldNames
+      planCheck readPlanFields raw model matched decoded
+    ... | view , checked , parsed with pairValues Pair.First.stepMatches Pair.Second.stepMatches
+      (view (toList "steps")) (thirdTrue
+        (Project.Registered.fieldText operationName (view (toList "operation")))
+        (Pair.pair Pair.First.shapeMatches Pair.Second.shapeMatches (view (toList "shape")))
+        (Pair.pair Pair.First.stepMatches Pair.Second.stepMatches (view (toList "steps"))) checked)
+    ... | firstRaw , secondRaw , found , firstMatched , secondMatched with pairRead firstRaw secondRaw
+      (Saved.steps model) (selectedPairRead view firstRaw secondRaw _ found (parsedSteps view model parsed))
+    ... | firstDecoded , secondDecoded , firstRead , secondRead , exact
+      with stepDecoded firstDescriptor firstRaw firstDecoded firstMatched firstRead
+        | stepDecoded finalDescriptor secondRaw secondDecoded secondMatched secondRead
+    ... | refl | refl = exact
 
   readIdentity : Library.Contract → Wire.Value → Validation.Fault ⊎ (Text × ℕ)
   readIdentity library raw = Decode._>>=_ (Wire.asString raw) λ text → inspect text
@@ -605,6 +1046,104 @@ module Plan where
 
   executable : Library.Contract → Saved → Bool
   executable library plan = currentlyRegistered library plan ∧ captureMatches library plan
+
+  -- Every public write has an actual fixed boundary in the registered table.
+  -- In particular, zero review-owned preparations still precede publication.
+  hasFixedBoundary : List Boundary → Bool
+  hasFixedBoundary [] = false
+  hasFixedBoundary (boundary site false ∷ rest) = true
+  hasFixedBoundary (boundary site true ∷ rest) = hasFixedBoundary rest
+
+  registeredHasFixedBoundary : Maybe (List Boundary) → Bool
+  registeredHasFixedBoundary nothing = false
+  registeredHasFixedBoundary (just boundaries) = hasFixedBoundary boundaries
+
+  publicWriterHasFixedBoundary : (tool : Tools.Tool) → Tools.kind tool ≡ Tools.businessWrite →
+    registeredHasFixedBoundary (lookup (toList (Tools.wireName tool)) registered) ≡ true
+  publicWriterHasFixedBoundary Tools.insertBelief refl = refl
+  publicWriterHasFixedBoundary Tools.deleteBelief refl = refl
+  publicWriterHasFixedBoundary Tools.deleteProject refl = refl
+  publicWriterHasFixedBoundary Tools.deletePattern refl = refl
+  publicWriterHasFixedBoundary Tools.insertPattern refl = refl
+  publicWriterHasFixedBoundary Tools.recordSupport refl = refl
+  publicWriterHasFixedBoundary Tools.recordCause refl = refl
+  publicWriterHasFixedBoundary Tools.recordDefeat refl = refl
+  publicWriterHasFixedBoundary Tools.recordContradiction refl = refl
+  publicWriterHasFixedBoundary Tools.getBelief ()
+  publicWriterHasFixedBoundary Tools.listBeliefs ()
+  publicWriterHasFixedBoundary Tools.listPatterns ()
+  publicWriterHasFixedBoundary Tools.getContradictions ()
+  publicWriterHasFixedBoundary Tools.decayAll refl = refl
+  publicWriterHasFixedBoundary Tools.sweepExpiredDefeated refl = refl
+  publicWriterHasFixedBoundary Tools.queryRelevant ()
+  publicWriterHasFixedBoundary Tools.addEvidence refl = refl
+  publicWriterHasFixedBoundary Tools.getEvidence ()
+  publicWriterHasFixedBoundary Tools.propagateFrom refl = refl
+  publicWriterHasFixedBoundary Tools.queryIntervention ()
+  publicWriterHasFixedBoundary Tools.loadDocument refl = refl
+  publicWriterHasFixedBoundary Tools.queryDocument ()
+  publicWriterHasFixedBoundary Tools.clearDocument refl = refl
+  publicWriterHasFixedBoundary Tools.getLearningReview ()
+  publicWriterHasFixedBoundary Tools.learningCapabilities ()
+  publicWriterHasFixedBoundary Tools.getLessonAssessment ()
+  publicWriterHasFixedBoundary Tools.lessonAssessmentHistory ()
+  publicWriterHasFixedBoundary Tools.explainBelief ()
+  publicWriterHasFixedBoundary Tools.recordExperience refl = refl
+  publicWriterHasFixedBoundary Tools.pendingExperiences ()
+  publicWriterHasFixedBoundary Tools.reviewExperience refl = refl
+  publicWriterHasFixedBoundary Tools.getExperience ()
+  publicWriterHasFixedBoundary Tools.experienceHistory ()
+  publicWriterHasFixedBoundary Tools.queryLearningContext ()
+  publicWriterHasFixedBoundary Tools.reserveOperation ()
+  publicWriterHasFixedBoundary Tools.operationOutcome ()
+  publicWriterHasFixedBoundary Tools.cancelOperation ()
+
+  rebuildFixedIsNonempty : ∀ library boundaries expected →
+    hasFixedBoundary boundaries ≡ true → rebuild library boundaries [] ≡ just expected → expected ≢ []
+  rebuildFixedIsNonempty library [] expected () rebuilt
+  rebuildFixedIsNonempty library (boundary site false ∷ rest) expected fixed rebuilt
+    with rebuild library rest []
+  ... | nothing with rebuilt
+  ... | ()
+  rebuildFixedIsNonempty library (boundary site false ∷ rest) expected fixed rebuilt | just tail
+    with rebuilt
+  ... | refl = λ ()
+  rebuildFixedIsNonempty library (boundary site true ∷ rest) expected fixed rebuilt
+    with rebuild library rest [] in observed
+  ... | nothing with rebuilt
+  ... | ()
+  rebuildFixedIsNonempty library (boundary site true ∷ rest) expected fixed rebuilt | just tail
+    with rebuilt
+  ... | refl = rebuildFixedIsNonempty library rest tail fixed observed
+
+  fixedEmptyCannotMatch : ∀ library operation shape capture boundaries →
+    hasFixedBoundary boundaries ≡ true →
+    matchesBoundaries library (saved operation shape [] capture) boundaries ≡ true → ⊥
+  fixedEmptyCannotMatch library operation shape capture boundaries fixed
+    with shapeEqual boundaries shape
+  ... | false = λ ()
+  ... | true with rebuild library boundaries [] in observed
+  ... | nothing = λ ()
+  ... | just [] = λ _ → rebuildFixedIsNonempty library boundaries [] fixed observed refl
+  ... | just (_ ∷ _) = λ ()
+
+  publicWriterEmptyCannotExecute : ∀ library tool shape capture → Tools.kind tool ≡ Tools.businessWrite →
+    executable library (saved (toList (Tools.wireName tool)) shape [] capture) ≡ true → ⊥
+  publicWriterEmptyCannotExecute library tool shape capture writer accepted
+    with lookup (toList (Tools.wireName tool)) registered in observed
+  ... | nothing with accepted
+  ... | ()
+  publicWriterEmptyCannotExecute library tool shape capture writer accepted | just boundaries =
+    fixedEmptyCannotMatch library (toList (Tools.wireName tool)) shape capture boundaries
+      (trans (sym (cong registeredHasFixedBoundary observed)) (publicWriterHasFixedBoundary tool writer))
+      (Admission.RecordFields.andLeft _ _ accepted)
+
+  publicWriterStepsNonempty : (library : Library.Contract) (tool : Tools.Tool) (plan : Saved) →
+    Tools.kind tool ≡ Tools.businessWrite → Saved.operation plan ≡ toList (Tools.wireName tool) →
+    executable library plan ≡ true → Saved.steps plan ≢ []
+  publicWriterStepsNonempty library tool (saved operation shape [] capture) writer refl accepted refl =
+    publicWriterEmptyCannotExecute library tool shape capture writer accepted
+  publicWriterStepsNonempty library tool (saved operation shape (_ ∷ _) capture) writer same accepted ()
 
   obsoletePlanCannotResume : ∀ library plan → currentlyRegistered library plan ≡ false → executable library plan ≡ false
   obsoletePlanCannotResume library plan obsolete rewrite obsolete = refl
@@ -1031,6 +1570,112 @@ module PrefixJournal (Payload : Set) (readPayload : Wire.Value → Validation.Fa
 
 module OpaqueJournal = PrefixJournal Wire.Value inj₂
 
+-- One actual row lookup/prefix calculation shared by public readback and
+-- its finite-journal agreement proof. No model, formatter or Goal is supplied.
+module JournalRows where
+  find : Text → List Store.SavedReplyRow → Maybe Store.SavedReplyRow
+  find key [] = nothing
+  find key (row ∷ rest) with key ≟Text Store.SavedReplyRow.step row
+  ... | yes _ = just row
+  ... | no _ = find key rest
+
+  replyValue : Maybe Store.SavedReplyRow → Maybe Wire.Value
+  replyValue nothing = nothing
+  replyValue (just row) = just (Store.SavedReplyRow.reply row)
+
+  prefix : List Plan.Step → List Store.SavedReplyRow → List Store.SavedReplyRow × List Plan.Step
+  prefix [] rows = [] , []
+  prefix steps@(first ∷ rest) rows with find (Plan.Step.id first) rows
+  ... | nothing = [] , steps
+  ... | just receipt with prefix rest rows
+  ... | earlier , remaining = receipt ∷ earlier , remaining
+
+  remove : Text → List Store.SavedReplyRow → List Store.SavedReplyRow
+  remove key [] = []
+  remove key (row ∷ rows) with key ≟Text Store.SavedReplyRow.step row
+  ... | yes _ = rows
+  ... | no _ = row ∷ remove key rows
+
+  removeLength : ∀ key rows found → find key rows ≡ just found → length rows ≡ suc (length (remove key rows))
+  removeLength key [] found ()
+  removeLength key (row ∷ rows) found known with key ≟Text Store.SavedReplyRow.step row
+  ... | yes _ = refl
+  ... | no _ = cong suc (removeLength key rows found known)
+
+  removeOther : ∀ key queried rows → key ≢ queried → find queried (remove key rows) ≡ find queried rows
+  removeOther key queried [] different = refl
+  removeOther key queried (row ∷ rows) different
+    with key ≟Text Store.SavedReplyRow.step row in keySeen | queried ≟Text Store.SavedReplyRow.step row in querySeen
+  ... | yes same | yes other = ⊥-elim (different (trans same (sym other)))
+  ... | yes same | no other = refl
+  ... | no same | yes other rewrite querySeen = refl
+  ... | no same | no other rewrite querySeen = removeOther key queried rows different
+
+  removePrefix : ∀ key steps rows → All (λ boundary → key ≢ Plan.Step.id boundary) steps →
+    prefix steps (remove key rows) ≡ prefix steps rows
+  removePrefix key [] rows [] = refl
+  removePrefix key (first ∷ rest) rows (different ∷ distinct)
+    rewrite removeOther key (Plan.Step.id first) rows different with find (Plan.Step.id first) rows
+  ... | nothing = refl
+  ... | just row rewrite removePrefix key rest rows distinct = refl
+
+  Agreement : ℕ → Store.World → List Store.SavedReplyRow → List Plan.Step → Set
+  Agreement token before rows steps = All (λ boundary →
+    replyValue (find (Plan.Step.id boundary) rows) ≡ Store.lookupSaved before token (Plan.Step.id boundary)) steps
+
+  removeAgreement : ∀ token before key rows steps → All (λ boundary → key ≢ Plan.Step.id boundary) steps →
+    Agreement token before rows steps → Agreement token before (remove key rows) steps
+  removeAgreement token before key rows [] [] [] = []
+  removeAgreement token before key rows (first ∷ rest) (different ∷ distinct) (known ∷ later) =
+    trans (cong replyValue (removeOther key (Plan.Step.id first) rows different)) known ∷
+      removeAgreement token before key rows rest distinct later
+
+  emptyRows : ∀ (rows : List Store.SavedReplyRow) → length rows ≡ zero → rows ≡ []
+  emptyRows [] known = refl
+  emptyRows (_ ∷ _) ()
+
+  missingFromEmpty : ∀ token before steps → Agreement token before [] steps →
+    All (λ boundary → Store.lookupSaved before token (Plan.Step.id boundary) ≡ nothing) steps
+  missingFromEmpty token before [] [] = []
+  missingFromEmpty token before (first ∷ rest) (known ∷ later) = sym known ∷ missingFromEmpty token before rest later
+
+  Declared : List Plan.Step → Store.SavedReplyRow → Set
+  Declared steps row = Any.Any (λ boundary → Store.SavedReplyRow.step row ≡ Plan.Step.id boundary) steps
+
+  weakenDeclared : ∀ first rest rows → All (Declared rest) rows → All (Declared (first ∷ rest)) rows
+  weakenDeclared first rest [] [] = []
+  weakenDeclared first rest (row ∷ rows) (known ∷ later) = Any.there known ∷ weakenDeclared first rest rows later
+
+  restoreDeclared : ∀ first rest rows → All (Declared rest) (remove (Plan.Step.id first) rows) →
+    All (Declared (first ∷ rest)) rows
+  restoreDeclared first rest [] [] = []
+  restoreDeclared first rest (row ∷ rows) known with Plan.Step.id first ≟Text Store.SavedReplyRow.step row
+  ... | yes same = Any.here (sym same) ∷ weakenDeclared first rest rows known
+  ... | no different with known
+  ... | head ∷ later = Any.there head ∷ restoreDeclared first rest rows later
+
+  fromRows : ∀ token before steps rows → Addressing steps → Agreement token before rows steps →
+    ∀ receipts remaining → prefix steps rows ≡ (receipts , remaining) → length rows ≡ length receipts →
+    Σ (OpaqueJournal.Prefix token before steps) (λ observed →
+      OpaqueJournal.count observed ≡ length receipts × All (Declared steps) rows)
+  fromRows token before [] [] empty [] .[] .[] refl size = OpaqueJournal.waiting [] , refl , []
+  fromRows token before [] (row ∷ rows) empty [] .[] .[] refl ()
+  fromRows token before (first ∷ rest) rows (more distinct addresses) (known ∷ lookups) receipts remaining computed size
+    with find (Plan.Step.id first) rows in found
+  ... | nothing with computed
+  ... | refl with emptyRows rows size
+  ... | refl = OpaqueJournal.waiting (missingFromEmpty token before (first ∷ rest) (known ∷ lookups)) , refl , []
+  fromRows token before (first ∷ rest) rows (more distinct addresses) (known ∷ lookups) receipts remaining computed size | just row
+    with prefix rest rows in tailPrefix
+  ... | later , pending with computed
+  ... | refl with fromRows token before rest (remove (Plan.Step.id first) rows) addresses
+    (removeAgreement token before (Plan.Step.id first) rows rest distinct lookups) later pending
+    (trans (removePrefix (Plan.Step.id first) rest rows distinct) tailPrefix)
+    (Nat.suc-injective (trans (sym (removeLength (Plan.Step.id first) rows row found)) size))
+  ... | observed , counted , declared =
+    OpaqueJournal.saved (Store.SavedReplyRow.reply row) (Store.SavedReplyRow.reply row) (sym known) refl observed ,
+    cong suc counted , restoreDeclared first rest rows declared
+
 module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   data Problem : Set where
     malformedPlan : Validation.Fault → Problem
@@ -1060,15 +1705,8 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   ordered [] = []
   ordered (row ∷ rest) = insertOrdered row (ordered rest)
 
-  find : Text → List Store.SavedReplyRow → Maybe Store.SavedReplyRow
-  find key [] = nothing
-  find key (row ∷ rest) with key ≟Text Store.SavedReplyRow.step row
-  ... | yes _ = just row
-  ... | no _ = find key rest
-
-  replyValue : Maybe Store.SavedReplyRow → Maybe Wire.Value
-  replyValue nothing = nothing
-  replyValue (just row) = just (Store.SavedReplyRow.reply row)
+  find = JournalRows.find
+  replyValue = JournalRows.replyValue
 
   doesTrue : ∀ {P : Set} (decision : Dec P) → P → does decision ≡ true
   doesTrue (yes _) known = refl
@@ -1147,12 +1785,7 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   ... | yes _ = refl
   ... | no impossible = ⊥-elim (impossible refl)
 
-  prefix : List Plan.Step → List Store.SavedReplyRow → List Store.SavedReplyRow × List Plan.Step
-  prefix [] rows = [] , []
-  prefix steps@(first ∷ rest) rows with find (Plan.Step.id first) rows
-  ... | nothing = [] , steps
-  ... | just receipt with prefix rest rows
-  ... | earlier , remaining = receipt ∷ earlier , remaining
+  prefix = JournalRows.prefix
 
   prefixComplete : ∀ token before steps (journal : OpaqueJournal.Prefix token before steps) →
     OpaqueJournal.next journal ≡ nothing →
@@ -1216,6 +1849,50 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   ... | receipts , remaining with length (filterᵇ notFinal rows) ≟ length receipts
   ... | no _ = inconsistent binding undeclaredOrNonprefixAnswers
   ... | yes _ = afterPrefix binding plan receipts remaining (find Recovery.Cancellation.resultKey rows)
+
+  rowsAgreement : ∀ token before steps → JournalRows.Agreement token before (savedRows token before) steps
+  rowsAgreement token before [] = []
+  rowsAgreement token before (first ∷ rest) =
+    findReply token (Plan.Step.id first) (Store.OperationTables.savedReplies (Store.World.operations before)) ∷
+      rowsAgreement token before rest
+
+  pendingHasNoResult : ∀ binding plan receipts remaining result original next saved →
+    afterPrefix binding plan receipts remaining result ≡ pending original next saved → result ≡ nothing
+  pendingHasNoResult binding plan receipts remaining nothing original next saved observed = refl
+  pendingHasNoResult binding plan receipts [] (just result) original next saved ()
+  pendingHasNoResult binding plan receipts (_ ∷ _) (just result) original next saved ()
+
+  -- The public prefix count is the same finite journal checked at execution.
+  -- Every row and lookup here comes from this actual World/token.
+  afterPlanJournal : ∀ token before binding plan original next saved →
+    Addressing (Plan.Saved.steps plan) →
+    afterPlan binding plan (savedRows token before) ≡ pending original next saved →
+    OpaqueJournal.Complete token before (Plan.Saved.steps plan)
+  afterPlanJournal token before binding plan original next saved addresses observed
+    with Plan.textEqual (Store.BindingRow.operation binding) (Plan.Saved.operation plan)
+  ... | false with observed
+  ... | ()
+  afterPlanJournal token before binding plan original next saved addresses observed | true
+    with Plan.valid library plan
+  ... | false with observed
+  ... | ()
+  afterPlanJournal token before binding plan original next saved addresses observed | true | true
+    with prefix (Plan.Saved.steps plan) (savedRows token before) in selected
+  ... | receipts , remaining with length (filterᵇ notFinal (savedRows token before)) ≟ length receipts
+  ... | no _ with observed
+  ... | ()
+  afterPlanJournal token before binding plan original next saved addresses observed | true | true | receipts , remaining | yes exact =
+    OpaqueJournal.complete (proj₁ journal) (trans fullCount (sym (proj₁ (proj₂ journal)))) (proj₂ (proj₂ journal))
+    where
+    missing = pendingHasNoResult binding plan receipts remaining (find StoreStep.resultKey (savedRows token before)) original next saved observed
+    missingLookup : Store.lookupSaved before token StoreStep.resultKey ≡ nothing
+    missingLookup = trans (sym (findReply token StoreStep.resultKey (Store.OperationTables.savedReplies (Store.World.operations before))))
+      (cong replyValue missing)
+    unfiltered = withoutAbsentKey token StoreStep.resultKey (Store.OperationTables.savedReplies (Store.World.operations before)) missingLookup
+    fullCount : length (savedRows token before) ≡ length receipts
+    fullCount = trans (sym (cong length unfiltered)) exact
+    journal = JournalRows.fromRows token before (Plan.Saved.steps plan) (savedRows token before) addresses
+      (rowsAgreement token before (Plan.Saved.steps plan)) receipts remaining selected fullCount
 
   afterPlanCompletes : ∀ binding plan rows receipts result →
     Plan.textEqual (Store.BindingRow.operation binding) (Plan.Saved.operation plan) ≡ true →
@@ -1303,6 +1980,52 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   ... | nothing = unknownToken
   ... | just row = reserved
 
+  bindingOf : Result → Maybe Store.BindingRow
+  bindingOf unknownToken = nothing
+  bindingOf reserved = nothing
+  bindingOf (awaitingPlan original) = just original
+  bindingOf (awaitingCompletion original) = just original
+  bindingOf (pending original _ _) = just original
+  bindingOf (completed original _) = just original
+  bindingOf (cancelled _ original _) = original
+  bindingOf (needsRecovery original) = just original
+  bindingOf (inconsistent original _) = just original
+
+  prefixKeepsBinding : ∀ original plan receipts remaining result →
+    bindingOf (afterPrefix original plan receipts remaining result) ≡ just original
+  prefixKeepsBinding original plan receipts [] (just result) = refl
+  prefixKeepsBinding original plan receipts (_ ∷ _) (just result) = refl
+  prefixKeepsBinding original plan receipts (_ ∷ _) nothing = refl
+  prefixKeepsBinding original plan receipts [] nothing with Plan.Saved.steps plan
+  ... | [] = refl
+  ... | _ ∷ _ = refl
+
+  planKeepsBinding : ∀ original plan rows → bindingOf (afterPlan original plan rows) ≡ just original
+  planKeepsBinding original plan rows with Plan.textEqual (Store.BindingRow.operation original) (Plan.Saved.operation plan)
+  ... | false = refl
+  ... | true with Plan.valid library plan
+  ... | false = refl
+  ... | true with prefix (Plan.Saved.steps plan) rows
+  ... | receipts , remaining with length (filterᵇ notFinal rows) ≟ length receipts
+  ... | no _ = refl
+  ... | yes _ = prefixKeepsBinding original plan receipts remaining (find StoreStep.resultKey rows)
+
+  planPendingBinding : ∀ original plan rows returnedBinding next saved →
+    afterPlan original plan rows ≡ pending returnedBinding next saved → returnedBinding ≡ original
+  planPendingBinding original plan rows returnedBinding next saved observed = inject
+    (trans (sym (cong bindingOf observed)) (planKeepsBinding original plan rows))
+    where
+    inject : ∀ {first second : Store.BindingRow} → just first ≡ just second → first ≡ second
+    inject refl = refl
+
+  answerForKnownPlan : ∀ token before original raw plan →
+    Project.Registered.binding token (Store.OperationTables.bindings (Store.World.operations before)) ≡ just original →
+    Store.lookupCancellation before token ≡ nothing →
+    Project.Registered.plan token (Store.OperationTables.plans (Store.World.operations before)) ≡ just raw →
+    Plan.decode raw ≡ inj₂ plan → answer token before ≡ afterPlan original plan (savedRows token before)
+  answerForKnownPlan token before original raw plan bound active stored decoded
+    rewrite bound | active | stored | decoded = refl
+
   -- This execution context is built from actual rows. It is never an input
   -- supplied by an agent or a handler claiming that an arbitrary plan is safe.
   record ExecutionContext (operation : Text) (token : ℕ) (before : Store.World) : Set where
@@ -1352,12 +2075,16 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   knownPlan operation token before context raw plan observed decoded = sameRight
     (trans (sym (ExecutionContext.decoded context)) (trans (cong Plan.decode (knownRaw operation token before context raw observed)) decoded))
 
+  notCompletion : Result → Set
+  notCompletion (completed _ _) = ⊥
+  notCompletion _ = ⊤
+
   data PendingCheck (operation : Text) (token : ℕ) (before : Store.World) : Set where
-    blockedPending : Result → ¬ ExecutionContext operation token before → PendingCheck operation token before
+    blockedPending : (result : Result) → notCompletion result → ¬ ExecutionContext operation token before → PendingCheck operation token before
     validPending : ExecutionContext operation token before → PendingCheck operation token before
 
   pendingDecision : ∀ {operation token before} → PendingCheck operation token before → ExecutionAdmission operation token before
-  pendingDecision (blockedPending result _) = returned result
+  pendingDecision (blockedPending result _ _) = returned result
   pendingDecision (validPending context) = admitted context
 
   pendingAdmission : ∀ operation token before binding →
@@ -1369,29 +2096,29 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   pendingAdmission operation token before binding foundBinding matchingExpected =
     pendingDecision (checkPending operation token before binding foundBinding matchingExpected)
   checkPending operation token before binding foundBinding matchingExpected with reservation token before in foundReservation
-  ... | nothing = blockedPending unknownToken (λ context → noJust (trans (sym foundReservation) (ExecutionContext.originalReservation context)))
+  ... | nothing = blockedPending unknownToken tt (λ context → noJust (trans (sym foundReservation) (ExecutionContext.originalReservation context)))
   ... | just reservedRow with Project.Registered.plan token (Store.OperationTables.plans (Store.World.operations before)) in foundPlan
-  ... | nothing = blockedPending (needsRecovery binding) (λ context → noJust (trans (sym foundPlan) (ExecutionContext.originalPlan context)))
+  ... | nothing = blockedPending (needsRecovery binding) tt (λ context → noJust (trans (sym foundPlan) (ExecutionContext.originalPlan context)))
   ... | just raw with Plan.decode raw in decoded
-  ... | inj₁ fault = blockedPending (inconsistent binding (malformedPlan fault)) (λ context → differentSummands
+  ... | inj₁ fault = blockedPending (inconsistent binding (malformedPlan fault)) tt (λ context → differentSummands
     (trans (sym (ExecutionContext.decoded context)) (trans (cong Plan.decode (knownRaw operation token before context raw foundPlan)) decoded)))
   ... | inj₂ plan with Plan.textEqual (Store.BindingRow.operation binding) (Plan.Saved.operation plan) in matching
-  ... | false = blockedPending (inconsistent binding differentOperation) (λ context → falseTrue (trans (sym matching)
+  ... | false = blockedPending (inconsistent binding differentOperation) tt (λ context → falseTrue (trans (sym matching)
     (trans (sym (cong₂ (λ current stored → Plan.textEqual (Store.BindingRow.operation current) (Plan.Saved.operation stored))
       (sameJust (trans (sym (ExecutionContext.originalBinding context)) foundBinding)) (knownPlan operation token before context raw plan foundPlan decoded)))
       (ExecutionContext.matchingOperation context))))
   ... | true with Plan.executable library plan in executable
-  ... | false = blockedPending (needsRecovery binding) (λ context → falseTrue (trans (sym executable)
+  ... | false = blockedPending (needsRecovery binding) tt (λ context → falseTrue (trans (sym executable)
     (trans (sym (cong (Plan.executable library) (knownPlan operation token before context raw plan foundPlan decoded))) (ExecutionContext.executable context))))
   ... | true with addressing? (Plan.Saved.steps plan)
-  ... | no invalid = blockedPending (inconsistent binding invalidRegisteredPlan) (λ context → invalid
+  ... | no invalid = blockedPending (inconsistent binding invalidRegisteredPlan) tt (λ context → invalid
     (subst Addressing (cong Plan.Saved.steps (knownPlan operation token before context raw plan foundPlan decoded)) (ExecutionContext.addresses context)))
   ... | yes addresses with all? (λ declared → different? (Plan.Step.id declared) StoreStep.resultKey) (Plan.Saved.steps plan)
-  ... | no invalid = blockedPending (inconsistent binding invalidRegisteredPlan) (λ context → invalid
+  ... | no invalid = blockedPending (inconsistent binding invalidRegisteredPlan) tt (λ context → invalid
     (subst (All (λ declared → Plan.Step.id declared ≢ StoreStep.resultKey))
       (cong Plan.Saved.steps (knownPlan operation token before context raw plan foundPlan decoded)) (ExecutionContext.separateResult context)))
   ... | yes separate with OpaqueJournal.check token before (Plan.Saved.steps plan) in checked
-  ... | inj₁ fault = blockedPending (inconsistent binding undeclaredOrNonprefixAnswers) (λ context →
+  ... | inj₁ fault = blockedPending (inconsistent binding undeclaredOrNonprefixAnswers) tt (λ context →
     OpaqueJournal.checkCannotFail token before _
       (subst (OpaqueJournal.Complete token before) (cong Plan.Saved.steps (knownPlan operation token before context raw plan foundPlan decoded)) (ExecutionContext.journal context)) fault checked)
   ... | inj₂ journal = validPending (executionContext reservedRow foundReservation binding foundBinding matchingExpected raw foundPlan plan decoded matching executable addresses separate journal)
@@ -1446,6 +2173,118 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
       (trans (alongObservation _ (afterMatch operation token before binding original) true matching)
         (cong (afterReadback operation token before binding original matching) completedOutcome))
 
+  -- A completed readback exposes the actual durable answer. Inverting this
+  -- computed path does not assume a handler-provided replay capability.
+  afterPrefixCompletedValue : ∀ binding plan receipts remaining found original value →
+    afterPrefix binding plan receipts remaining found ≡ completed original value → replyValue found ≡ just value
+  afterPrefixCompletedValue binding plan receipts [] (just result) .binding .(Store.SavedReplyRow.reply result) refl = refl
+  afterPrefixCompletedValue binding plan receipts (_ ∷ _) (just result) original value ()
+  afterPrefixCompletedValue binding plan receipts (_ ∷ _) nothing original value ()
+  afterPrefixCompletedValue binding plan receipts [] nothing original value completedOutcome with Plan.Saved.steps plan
+  ... | [] with completedOutcome
+  ... | ()
+  afterPrefixCompletedValue binding plan receipts [] nothing original value completedOutcome | _ ∷ _ with completedOutcome
+  ... | ()
+
+  afterPlanCompletedValue : ∀ binding plan rows original value →
+    afterPlan binding plan rows ≡ completed original value → replyValue (find StoreStep.resultKey rows) ≡ just value
+  afterPlanCompletedValue binding plan rows original value completedOutcome
+    with Plan.textEqual (Store.BindingRow.operation binding) (Plan.Saved.operation plan)
+  ... | false with completedOutcome
+  ... | ()
+  afterPlanCompletedValue binding plan rows original value completedOutcome | true with Plan.valid library plan
+  ... | false with completedOutcome
+  ... | ()
+  afterPlanCompletedValue binding plan rows original value completedOutcome | true | true
+    with prefix (Plan.Saved.steps plan) rows
+  ... | receipts , remaining with length (filterᵇ notFinal rows) ≟ length receipts
+  ... | no _ with completedOutcome
+  ... | ()
+  afterPlanCompletedValue binding plan rows original value completedOutcome | true | true | receipts , remaining | yes _ =
+    afterPrefixCompletedValue binding plan receipts remaining
+    (find StoreStep.resultKey rows) original value completedOutcome
+
+  answerCompletedLookup : ∀ token before original value → answer token before ≡ completed original value →
+    Store.lookupSaved before token StoreStep.resultKey ≡ just value
+  answerCompletedLookup token before original value completedOutcome
+    with Project.Registered.binding token (Store.OperationTables.bindings (Store.World.operations before))
+  ... | just binding with Store.lookupCancellation before token
+  ... | just _ with completedOutcome
+  ... | ()
+  answerCompletedLookup token before original value completedOutcome | just binding | nothing
+    with Project.Registered.plan token (Store.OperationTables.plans (Store.World.operations before))
+  ... | nothing with savedRows token before
+  ... | [] with completedOutcome
+  ... | ()
+  answerCompletedLookup token before original value completedOutcome | just binding | nothing | nothing | _ ∷ _ with completedOutcome
+  ... | ()
+  answerCompletedLookup token before original value completedOutcome | just binding | nothing | just raw
+    with Plan.decode raw
+  ... | inj₁ _ with completedOutcome
+  ... | ()
+  answerCompletedLookup token before original value completedOutcome | just binding | nothing | just raw | inj₂ plan = trans
+    (sym (findReply token StoreStep.resultKey (Store.OperationTables.savedReplies (Store.World.operations before))))
+    (afterPlanCompletedValue binding plan (savedRows token before) original value completedOutcome)
+  answerCompletedLookup token before original value completedOutcome | nothing with Store.lookupCancellation before token
+  ... | just _ with completedOutcome
+  ... | ()
+  answerCompletedLookup token before original value completedOutcome | nothing | nothing with reservation token before
+  ... | just _ with completedOutcome
+  ... | ()
+  answerCompletedLookup token before original value completedOutcome | nothing | nothing | nothing with completedOutcome
+  ... | ()
+
+  pendingCannotComplete : ∀ operation token before binding found matching original value →
+    pendingAdmission operation token before binding found matching ≡ returned (completed original value) → ⊥
+  pendingCannotComplete operation token before binding found matching original value completedOutcome
+    with checkPending operation token before binding found matching
+  ... | blockedPending result impossible _ with completedOutcome
+  ... | refl = impossible
+  pendingCannotComplete operation token before binding found matching original value completedOutcome | validPending context with completedOutcome
+  ... | ()
+
+  returnedInjective : ∀ {operation token before} {first second : Result} →
+    returned {operation} {token} {before} first ≡ returned second → first ≡ second
+  returnedInjective refl = refl
+
+  afterReadbackCompletedLookup : ∀ operation token before binding found matching observed original value →
+    answer token before ≡ observed →
+    afterReadback operation token before binding found matching observed ≡ returned (completed original value) →
+    Store.lookupSaved before token StoreStep.resultKey ≡ just value
+  afterReadbackCompletedLookup operation token before binding found matching (pending _ _ _) original value known completedOutcome =
+    ⊥-elim (pendingCannotComplete operation token before binding found matching original value completedOutcome)
+  afterReadbackCompletedLookup operation token before binding found matching (completed _ _) original value known completedOutcome =
+    answerCompletedLookup token before original value (trans known (returnedInjective completedOutcome))
+  afterReadbackCompletedLookup operation token before binding found matching (cancelled _ _ _) original value known ()
+  afterReadbackCompletedLookup operation token before binding found matching (inconsistent _ _) original value known ()
+  afterReadbackCompletedLookup operation token before binding found matching (needsRecovery _) original value known ()
+  afterReadbackCompletedLookup operation token before binding found matching (awaitingPlan _) original value known ()
+  afterReadbackCompletedLookup operation token before binding found matching (awaitingCompletion _) original value known ()
+  afterReadbackCompletedLookup operation token before binding found matching unknownToken original value known ()
+  afterReadbackCompletedLookup operation token before binding found matching reserved original value known ()
+
+  afterMatchCompletedLookup : ∀ operation token before binding found matched matching original value →
+    afterMatch operation token before binding found matched matching ≡ returned (completed original value) →
+    Store.lookupSaved before token StoreStep.resultKey ≡ just value
+  afterMatchCompletedLookup operation token before binding found false matching original value ()
+  afterMatchCompletedLookup operation token before binding found true matching original value completedOutcome =
+    afterReadbackCompletedLookup operation token before binding found matching (answer token before) original value refl completedOutcome
+
+  afterLookupCompletedLookup : ∀ operation token before observed found original value →
+    afterBindingLookup operation token before observed found ≡ returned (completed original value) →
+    Store.lookupSaved before token StoreStep.resultKey ≡ just value
+  afterLookupCompletedLookup operation token before nothing found original value completedOutcome =
+    answerCompletedLookup token before original value (returnedInjective completedOutcome)
+  afterLookupCompletedLookup operation token before (just binding) found original value completedOutcome =
+    afterMatchCompletedLookup operation token before binding found
+      (Plan.textEqual (Store.BindingRow.operation binding) operation) refl original value completedOutcome
+
+  admissionCompletedLookup : ∀ operation token before original value →
+    admission operation token before ≡ returned (completed original value) →
+    Store.lookupSaved before token StoreStep.resultKey ≡ just value
+  admissionCompletedLookup operation token before original value = afterLookupCompletedLookup operation token before
+    (Project.Registered.binding token (Store.OperationTables.bindings (Store.World.operations before))) refl original value
+
   contextAfterNext : ∀ operation token before (context : ExecutionContext operation token before) next value changed →
     OpaqueJournal.next (OpaqueJournal.Complete.prefix (ExecutionContext.journal context)) ≡ just next →
     Store.World.operations changed ≡ Store.World.operations before →
@@ -1495,7 +2334,7 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
       (ExecutionContext.bindingRow context) (ExecutionContext.originalBinding context) (ExecutionContext.requestedOperation context) ≡ admitted actual)
   pendingAdmissionExists operation token before context with checkPending operation token before
     (ExecutionContext.bindingRow context) (ExecutionContext.originalBinding context) (ExecutionContext.requestedOperation context)
-  ... | blockedPending result impossible = ⊥-elim (impossible context)
+  ... | blockedPending result _ impossible = ⊥-elim (impossible context)
   ... | validPending actual = actual , refl
 
   admissionFromPending : ∀ operation token before (context : ExecutionContext operation token before) next receipts →
@@ -1613,6 +2452,386 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
 
 -- Internal request family: adding a control requires a concrete instance in
 -- this total function. It does not advertise an MCP tool or accept raw scripts.
+  afterReadbackCompletedAnswer : ∀ operation token before binding found matching observed original value →
+    answer token before ≡ observed →
+    afterReadback operation token before binding found matching observed ≡ returned (completed original value) →
+    answer token before ≡ completed original value
+  afterReadbackCompletedAnswer operation token before binding found matching (pending _ _ _) original value known completedOutcome =
+    ⊥-elim (pendingCannotComplete operation token before binding found matching original value completedOutcome)
+  afterReadbackCompletedAnswer operation token before binding found matching (completed _ _) original value known completedOutcome =
+    trans known (returnedInjective completedOutcome)
+  afterReadbackCompletedAnswer operation token before binding found matching (cancelled _ _ _) original value known ()
+  afterReadbackCompletedAnswer operation token before binding found matching (inconsistent _ _) original value known ()
+  afterReadbackCompletedAnswer operation token before binding found matching (needsRecovery _) original value known ()
+  afterReadbackCompletedAnswer operation token before binding found matching (awaitingPlan _) original value known ()
+  afterReadbackCompletedAnswer operation token before binding found matching (awaitingCompletion _) original value known ()
+  afterReadbackCompletedAnswer operation token before binding found matching unknownToken original value known ()
+  afterReadbackCompletedAnswer operation token before binding found matching reserved original value known ()
+
+  afterMatchCompletedAnswer : ∀ operation token before binding found matched matching original value →
+    afterMatch operation token before binding found matched matching ≡ returned (completed original value) →
+    answer token before ≡ completed original value
+  afterMatchCompletedAnswer operation token before binding found false matching original value ()
+  afterMatchCompletedAnswer operation token before binding found true matching original value completedOutcome =
+    afterReadbackCompletedAnswer operation token before binding found matching (answer token before) original value refl completedOutcome
+
+  afterLookupCompletedAnswer : ∀ operation token before observed found original value →
+    afterBindingLookup operation token before observed found ≡ returned (completed original value) →
+    answer token before ≡ completed original value
+  afterLookupCompletedAnswer operation token before nothing found original value completedOutcome = returnedInjective completedOutcome
+  afterLookupCompletedAnswer operation token before (just binding) found original value completedOutcome =
+    afterMatchCompletedAnswer operation token before binding found
+      (Plan.textEqual (Store.BindingRow.operation binding) operation) refl original value completedOutcome
+
+  admissionCompletedAnswer : ∀ operation token before original value →
+    admission operation token before ≡ returned (completed original value) → answer token before ≡ completed original value
+  admissionCompletedAnswer operation token before original value = afterLookupCompletedAnswer operation token before
+    (Project.Registered.binding token (Store.OperationTables.bindings (Store.World.operations before))) refl original value
+
+  -- Actual execution admission is possible only for an actual pending
+  -- readback. These inversions share the computed dispatcher, not a caller's
+  -- assertion that an arbitrary context is pending.
+  PendingReadback : ℕ → Store.World → Set
+  PendingReadback token before = Σ Store.BindingRow λ binding → Σ Plan.Step λ next →
+    Σ (List Store.SavedReplyRow) λ replies → answer token before ≡ pending binding next replies
+
+  admittedAfterReadback : ∀ operation token before binding found matched observed context →
+    answer token before ≡ observed →
+    afterReadback operation token before binding found matched observed ≡ admitted context → PendingReadback token before
+  admittedAfterReadback operation token before binding found matched (pending original next replies) context known accepted =
+    original , next , replies , known
+  admittedAfterReadback operation token before binding found matched (completed _ _) context known ()
+  admittedAfterReadback operation token before binding found matched (cancelled _ _ _) context known ()
+  admittedAfterReadback operation token before binding found matched (inconsistent _ _) context known ()
+  admittedAfterReadback operation token before binding found matched (needsRecovery _) context known ()
+  admittedAfterReadback operation token before binding found matched (awaitingPlan _) context known ()
+  admittedAfterReadback operation token before binding found matched (awaitingCompletion _) context known ()
+  admittedAfterReadback operation token before binding found matched unknownToken context known ()
+  admittedAfterReadback operation token before binding found matched reserved context known ()
+
+  admittedAfterMatch : ∀ operation token before binding found matched same context →
+    afterMatch operation token before binding found matched same ≡ admitted context → PendingReadback token before
+  admittedAfterMatch operation token before binding found false same context ()
+  admittedAfterMatch operation token before binding found true same context accepted =
+    admittedAfterReadback operation token before binding found same (answer token before) context refl accepted
+
+  admittedAfterLookup : ∀ operation token before observed found context →
+    afterBindingLookup operation token before observed found ≡ admitted context → PendingReadback token before
+  admittedAfterLookup operation token before nothing found context ()
+  admittedAfterLookup operation token before (just binding) found context accepted =
+    admittedAfterMatch operation token before binding found
+      (Plan.textEqual (Store.BindingRow.operation binding) operation) refl context accepted
+
+  admittedHasPending : ∀ operation token before context → admission operation token before ≡ admitted context → PendingReadback token before
+  admittedHasPending operation token before context = admittedAfterLookup operation token before
+    (Project.Registered.binding token (Store.OperationTables.bindings (Store.World.operations before))) refl context
+
+  answerWhenCancelled : ∀ token before binding cancellation →
+    Project.Registered.binding token (Store.OperationTables.bindings (Store.World.operations before)) ≡ just binding →
+    Store.lookupCancellation before token ≡ just cancellation →
+    answer token before ≡ cancelled cancellation (just binding) (ordered (savedRows token before))
+  answerWhenCancelled token before binding cancellation found active rewrite found | active = refl
+
+  admittedIsActive : ∀ operation token before (context : ExecutionContext operation token before) →
+    admission operation token before ≡ admitted context → Store.lookupCancellation before token ≡ nothing
+  admittedIsActive operation token before context known with Store.lookupCancellation before token in active
+  ... | nothing = refl
+  ... | just cancellation with admittedHasPending operation token before context known
+  ... | binding , next , replies , pendingAnswer = ⊥-elim (impossible
+    (trans (sym (answerWhenCancelled token before (ExecutionContext.bindingRow context) cancellation
+      (ExecutionContext.originalBinding context) active)) pendingAnswer))
+    where
+    impossible : cancelled cancellation (just (ExecutionContext.bindingRow context)) (ordered (savedRows token before)) ≢
+      pending binding next replies
+    impossible ()
+
+  finishedCannotBePending : ∀ binding plan receipts result original next replies →
+    afterPrefix binding plan receipts [] result ≢ pending original next replies
+  finishedCannotBePending binding plan receipts (just result) original next replies ()
+  finishedCannotBePending binding plan receipts nothing original next replies known with Plan.Saved.steps plan
+  ... | [] with known
+  ... | ()
+  finishedCannotBePending binding plan receipts nothing original next replies known | _ ∷ _ with known
+  ... | ()
+
+  finishedPlanCannotBePending : ∀ binding plan rows receipts original next replies →
+    prefix (Plan.Saved.steps plan) rows ≡ (receipts , []) → afterPlan binding plan rows ≢ pending original next replies
+  finishedPlanCannotBePending binding plan rows receipts original next replies full observed
+    with Plan.textEqual (Store.BindingRow.operation binding) (Plan.Saved.operation plan)
+  ... | false with observed
+  ... | ()
+  finishedPlanCannotBePending binding plan rows receipts original next replies full observed | true with Plan.valid library plan
+  ... | false with observed
+  ... | ()
+  finishedPlanCannotBePending binding plan rows receipts original next replies full observed | true | true
+    rewrite full with length (filterᵇ notFinal rows) ≟ length receipts
+  ... | no _ with observed
+  ... | ()
+  finishedPlanCannotBePending binding plan rows receipts original next replies full observed | true | true | yes _ =
+    finishedCannotBePending binding plan receipts (find Recovery.Cancellation.resultKey rows) original next replies observed
+
+  singletonFinished : ∀ token before last (journal : OpaqueJournal.Prefix token before (last ∷ [])) raw →
+    Store.lookupSaved before token (Plan.Step.id last) ≡ just raw → OpaqueJournal.next journal ≡ nothing
+  singletonFinished token before last (OpaqueJournal.waiting (missing ∷ [])) raw known with trans (sym missing) known
+  ... | ()
+  singletonFinished token before last (OpaqueJournal.saved original value known decoded (OpaqueJournal.waiting [])) raw present = refl
+
+  prefixNextReindexed : ∀ token before first second (same : first ≡ second)
+    (journal : OpaqueJournal.Prefix token before first) →
+    OpaqueJournal.next (subst (OpaqueJournal.Prefix token before) same journal) ≡ OpaqueJournal.next journal
+  prefixNextReindexed token before first .first refl journal = refl
+
+  singleStepIsNext : ∀ operation token before (context : ExecutionContext operation token before) last →
+    admission operation token before ≡ admitted context → Plan.Saved.steps (ExecutionContext.plan context) ≡ (last ∷ []) →
+    OpaqueJournal.next (OpaqueJournal.Complete.prefix (ExecutionContext.journal context)) ≡ just last
+  singleStepIsNext operation token before context last admittedBefore steps
+    with Store.lookupSaved before token (Plan.Step.id last) in present
+  ... | nothing = OpaqueJournal.cursorNext token before _ last []
+    (OpaqueJournal.Complete.prefix (ExecutionContext.journal context)) cursor present
+    where
+    cursor = subst (λ declared → OpaqueJournal.Cursor token before declared (last ∷ [])) (sym steps) (OpaqueJournal.here (last ∷ []))
+  ... | just raw with admittedHasPending operation token before context admittedBefore
+  ... | original , next , replies , pendingAnswer = ⊥-elim
+    (finishedPlanCannotBePending (ExecutionContext.bindingRow context) (ExecutionContext.plan context) (savedRows token before)
+      (proj₁ complete) original next replies (proj₁ (proj₂ complete))
+      (trans (sym currentAnswer) pendingAnswer))
+    where
+    currentAnswer = answerForKnownPlan token before (ExecutionContext.bindingRow context) (ExecutionContext.rawPlan context)
+      (ExecutionContext.plan context) (ExecutionContext.originalBinding context)
+      (admittedIsActive operation token before context admittedBefore) (ExecutionContext.originalPlan context) (ExecutionContext.decoded context)
+    journal = subst (OpaqueJournal.Prefix token before) steps (OpaqueJournal.Complete.prefix (ExecutionContext.journal context))
+    finished = singletonFinished token before last journal raw present
+    finishedOriginal = trans (sym (prefixNextReindexed token before _ _ steps
+      (OpaqueJournal.Complete.prefix (ExecutionContext.journal context)))) finished
+    complete = prefixComplete token before _ (OpaqueJournal.Complete.prefix (ExecutionContext.journal context)) finishedOriginal
+
+  singlePublicationCompletes : ∀ operation token before (context : ExecutionContext operation token before) last value changed →
+    admission operation token before ≡ admitted context → Plan.Saved.steps (ExecutionContext.plan context) ≡ (last ∷ []) →
+    Store.World.operations changed ≡ Store.World.operations before →
+    admission operation token (Store.saveAnswer (Store.saveAnswer changed token (Plan.Step.id last) value) token StoreStep.resultKey value) ≡
+      returned (completed (ExecutionContext.bindingRow context) value)
+  singlePublicationCompletes operation token before context last value changed admittedBefore steps sameOperations =
+    finalPairCompletes operation token before context last value changed
+      (singleStepIsNext operation token before context last admittedBefore steps) cursor
+      (undeclaredAbsent token before _ (ExecutionContext.journal context) StoreStep.resultKey (ExecutionContext.separateResult context))
+      (admittedIsActive operation token before context admittedBefore) sameOperations
+    where
+    cursor = subst (λ declared → OpaqueJournal.Cursor token before declared (last ∷ [])) (sym steps) (OpaqueJournal.here (last ∷ []))
+
+  ResumableOrCompleted : Text → ℕ → Store.World → Set
+  ResumableOrCompleted operation token current =
+    (Σ (ExecutionContext operation token current) λ context → admission operation token current ≡ admitted context) ⊎
+    (Σ Store.BindingRow λ binding → Σ Wire.Value λ value → admission operation token current ≡ returned (completed binding value))
+
+  -- Reuse the actual one-statement kernel. Parameters are the statement's
+  -- concrete business decision and journal frame, never a recovery callback.
+  module SingleKernel (StatementInput Diagnostic : Set)
+    (token : StatementInput → ℕ) (key : StatementInput → Text)
+    (distinct : ∀ input → ¬ (key input ≡ StoreStep.resultKey))
+    (decide : StatementInput → Store.World → Diagnostic ⊎ (Store.World × Wire.Value))
+    (keepsJournal : ∀ input before changed reply → decide input before ≡ inj₂ (changed , reply) →
+      Store.World.operations changed ≡ Store.World.operations before)
+    (admit : StatementInput → StoreStep.Registration → Maybe Diagnostic) where
+    module Saved = StoreStep.Admitted StatementInput Diagnostic token key distinct decide keepsJournal admit
+      using (execute; script; module X; interruptedDoneOrUnchanged; doneIsAdmitted; progress
+      ; registrationUnchanged; cancellationUnchanged; interruptedKeepsRegistration; interruptedKeepsCancellation)
+    module K = StoreStep.For StatementInput Diagnostic token key distinct decide keepsJournal using (publication)
+
+    donePublication : ∀ input before current value → (current , StoreStep.done value) ≡ Saved.execute input before →
+      current ≡ before ⊎ (Σ Store.World λ changed → decide input before ≡ inj₂ (changed , value) ×
+        current ≡ K.publication input changed value)
+    donePublication input before current value observed with admit input (StoreStep.registration before)
+    ... | just _ with observed
+    ... | ()
+    donePublication input before current value observed | nothing with Store.lookupCancellation before (token input)
+    ... | just _ with observed
+    ... | ()
+    donePublication input before current value observed | nothing | nothing
+      with Store.lookupSaved before (token input) (key input) | Store.lookupSaved before (token input) StoreStep.resultKey
+    ... | just original | just final with observed
+    ... | refl = inj₁ refl
+    donePublication input before current value () | nothing | nothing | just _ | nothing
+    donePublication input before current value () | nothing | nothing | nothing | just _
+    donePublication input before current value observed | nothing | nothing | nothing | nothing with decide input before in accepted
+    ... | inj₁ _ with observed
+    ... | ()
+    donePublication input before current value observed | nothing | nothing | nothing | nothing | inj₂ (changed , reply) with observed
+    ... | refl = inj₂ (changed , refl , refl)
+
+    executeReadback : ∀ operation input before current (context : ExecutionContext operation (token input) before) last value →
+      admission operation (token input) before ≡ admitted context →
+      Plan.Saved.steps (ExecutionContext.plan context) ≡ (last ∷ []) → Plan.Step.id last ≡ key input →
+      (current , StoreStep.done value) ≡ Saved.execute input before → ResumableOrCompleted operation (token input) current
+    executeReadback operation input before current context last value admittedBefore steps sameKey observed
+      with donePublication input before current value observed
+    ... | inj₁ refl = inj₁ (context , admittedBefore)
+    ... | inj₂ (changed , accepted , published) = inj₂ (ExecutionContext.bindingRow context , value ,
+      subst (λ world → admission operation (token input) world ≡ returned (completed (ExecutionContext.bindingRow context) value)) (sym shape)
+        (singlePublicationCompletes operation (token input) before context last value changed admittedBefore steps
+          (keepsJournal input before changed value accepted)))
+      where
+      shape = trans published (cong (λ identity → Store.saveAnswer
+        (Store.saveAnswer changed (token input) identity value) (token input) StoreStep.resultKey value) (sym sameKey))
+
+    interruptedReadback : ∀ operation input before current (context : ExecutionContext operation (token input) before) last →
+      admission operation (token input) before ≡ admitted context →
+      Plan.Saved.steps (ExecutionContext.plan context) ≡ (last ∷ []) → Plan.Step.id last ≡ key input →
+      Saved.X.Interrupted (Saved.script input) before current → ResumableOrCompleted operation (token input) current
+    interruptedReadback operation input before current context last admittedBefore steps sameKey cut
+      with Saved.interruptedDoneOrUnchanged input before current cut
+    ... | inj₁ refl = inj₁ (context , admittedBefore)
+    ... | inj₂ (value , observed) = executeReadback operation input before current context last value admittedBefore steps sameKey observed
+
+    expectedCut : ∀ input before → Saved.X.Interrupted (Saved.script input) before (proj₁ (Saved.execute input before))
+    expectedCut input before = Saved.X.completedRunMayLoseFinalReply (Saved.script input) before
+      (proj₁ (Saved.execute input before)) (proj₂ (Saved.execute input before)) (proj₂ (proj₂ (Saved.progress input before)))
+
+    executeStateOutcome : ∀ input before current → current ≡ proj₁ (Saved.execute input before) →
+      current ≡ before ⊎ (Σ Wire.Value λ value → (current , StoreStep.done value) ≡ Saved.execute input before)
+    executeStateOutcome input before current observed = Saved.interruptedDoneOrUnchanged input before current
+      (subst (Saved.X.Interrupted (Saved.script input) before) (sym observed) (expectedCut input before))
+
+    executeStateReadback : ∀ operation input before current (context : ExecutionContext operation (token input) before) last →
+      admission operation (token input) before ≡ admitted context →
+      Plan.Saved.steps (ExecutionContext.plan context) ≡ (last ∷ []) → Plan.Step.id last ≡ key input →
+      current ≡ proj₁ (Saved.execute input before) → ResumableOrCompleted operation (token input) current
+    executeStateReadback operation input before current context last admittedBefore steps sameKey observed =
+      interruptedReadback operation input before current context last admittedBefore steps sameKey
+        (subst (Saved.X.Interrupted (Saved.script input) before) (sym observed) (expectedCut input before))
+
+
+  -- Project deletion has its independently specified deletion intent and
+  -- Recovery.Single statement. It is not an Admitted-kernel operation.
+  module ProjectJournal where
+    module P = Project.Registered using
+      (Input; operationName; boundaryName; stepKey; resultKey; planMatches; blockedBy; blocked;
+       Mode; mode; needsInput; replay; publish; finalWorld; answer; execute; newRequestWasAdmitted;
+       module Checked; module Physical)
+    descriptor = Admission.descriptor P.operationName P.boundaryName P.stepKey
+    module Shape = Plan.SingletonProjection descriptor using (finalStep; decodedSingle)
+
+    blockedByMatched : ∀ request bindings plans binding raw →
+      Project.Registered.binding (P.Input.token request) bindings ≡ just binding →
+      Project.Registered.plan (P.Input.token request) plans ≡ just raw →
+      P.blockedBy request bindings plans ≡ nothing → P.planMatches raw ≡ true
+    blockedByMatched request bindings plans binding raw found stored allowed rewrite found
+      with does (Store.BindingRow.operation binding ≟Text P.operationName) ∧
+        Project.Registered.argumentsMatch (P.Input.project request) (Store.BindingRow.arguments binding) ∧
+        Project.Registered.settingsMatch (Store.BindingRow.settings binding)
+    ... | false with allowed
+    ... | ()
+    blockedByMatched request bindings plans binding raw found stored allowed | true rewrite stored with P.planMatches raw
+    ... | false with allowed
+    ... | ()
+    blockedByMatched request bindings plans binding raw found stored allowed | true | true = refl
+
+    blockedGivesBy : ∀ request before → P.blocked request before ≡ nothing →
+      P.blockedBy request (Store.OperationTables.bindings (Store.World.operations before))
+        (Store.OperationTables.plans (Store.World.operations before)) ≡ nothing
+    blockedGivesBy request before allowed with Store.lookupCancellation before (P.Input.token request)
+    ... | just _ with allowed
+    ... | ()
+    blockedGivesBy request before allowed | nothing = allowed
+
+    matchedPlan : ∀ request before (context : ExecutionContext P.operationName (P.Input.token request) before) →
+      P.mode request before ≡ P.publish → P.planMatches (ExecutionContext.rawPlan context) ≡ true
+    matchedPlan request before context fresh = blockedByMatched request
+      (Store.OperationTables.bindings (Store.World.operations before)) (Store.OperationTables.plans (Store.World.operations before))
+      (ExecutionContext.bindingRow context)
+      (ExecutionContext.rawPlan context) (ExecutionContext.originalBinding context) (ExecutionContext.originalPlan context)
+      (blockedGivesBy request before (P.newRequestWasAdmitted request before fresh))
+
+    freshAnswers : ∀ request before → P.mode request before ≡ P.publish →
+      Store.lookupSaved before (P.Input.token request) P.stepKey ≡ nothing ×
+      Store.lookupSaved before (P.Input.token request) P.resultKey ≡ nothing
+    freshAnswers request before fresh with P.blocked request before
+    ... | just _ with fresh
+    ... | ()
+    freshAnswers request before fresh | nothing
+      with Store.lookupSaved before (P.Input.token request) P.stepKey | Store.lookupSaved before (P.Input.token request) P.resultKey
+    ... | nothing | nothing = refl , refl
+    freshAnswers request before () | nothing | just _ | just _
+    freshAnswers request before () | nothing | just _ | nothing
+    freshAnswers request before () | nothing | nothing | just _
+
+    secondIsAbsent : ∀ request before → Store.lookupSaved before (P.Input.token request) P.resultKey ≡ nothing →
+      Store.lookupSaved (Store.saveAnswer (Project.eraseProject (P.Input.project request) before)
+        (P.Input.token request) P.stepKey (P.answer request before)) (P.Input.token request) P.resultKey ≡ nothing
+    secondIsAbsent request before missing = trans
+      (Store.otherSavedAnswerPreserved (Project.eraseProject (P.Input.project request) before)
+        (P.Input.token request) P.stepKey (P.answer request before) (P.Input.token request) P.resultKey
+        (λ { (_ , ()) })) missing
+
+    appendAnswer : Store.World → ℕ → Text → Wire.Value → Store.World
+    appendAnswer before token step value = record before
+      { operations = record (Store.World.operations before)
+        { savedReplies = Store.savedReplyRow token step value ∷ Store.OperationTables.savedReplies (Store.World.operations before) } }
+
+    saveAbsent : ∀ before token step value → Store.lookupSaved before token step ≡ nothing →
+      Store.saveAnswer before token step value ≡ appendAnswer before token step value
+    saveAbsent before token step value absent rewrite absent = refl
+
+    publishedPairAt : ∀ request before →
+      Store.lookupSaved before (P.Input.token request) P.stepKey ≡ nothing →
+      Store.lookupSaved before (P.Input.token request) P.resultKey ≡ nothing →
+      P.finalWorld request before ≡ Store.saveAnswer
+        (Store.saveAnswer (Project.eraseProject (P.Input.project request) before) (P.Input.token request) P.stepKey (P.answer request before))
+        (P.Input.token request) P.resultKey (P.answer request before)
+    publishedPairAt request before firstAbsent finalAbsent = sym (trans
+      (saveAbsent (Store.saveAnswer erased token P.stepKey value) token P.resultKey value (secondIsAbsent request before finalAbsent))
+      (cong (λ world → appendAnswer world token P.resultKey value) (saveAbsent erased token P.stepKey value firstAbsent)))
+      where
+      erased = Project.eraseProject (P.Input.project request) before
+      token = P.Input.token request
+      value = P.answer request before
+
+    publishedPair : ∀ request before → P.mode request before ≡ P.publish →
+      P.finalWorld request before ≡ Store.saveAnswer
+        (Store.saveAnswer (Project.eraseProject (P.Input.project request) before) (P.Input.token request) P.stepKey (P.answer request before))
+        (P.Input.token request) P.resultKey (P.answer request before)
+    publishedPair request before fresh = publishedPairAt request before
+      (proj₁ (freshAnswers request before fresh)) (proj₂ (freshAnswers request before fresh))
+
+    executeFrame : ∀ request before →
+      StoreStep.registration (proj₁ (P.execute request before)) ≡ StoreStep.registration before ×
+      Store.lookupCancellation (proj₁ (P.execute request before)) (P.Input.token request) ≡ Store.lookupCancellation before (P.Input.token request)
+    executeFrame request before with P.mode request before
+    ... | P.needsInput _ = refl , refl
+    ... | P.replay _ = refl , refl
+    ... | P.publish = refl , refl
+
+    interruptedFrame : ∀ request before current → P.Checked.X.Interrupted (P.Checked.script request) before current →
+      StoreStep.registration current ≡ StoreStep.registration before ×
+      Store.lookupCancellation current (P.Input.token request) ≡ Store.lookupCancellation before (P.Input.token request)
+    interruptedFrame request before current cut with P.Physical.interruptionState request before current cut
+    ... | inj₁ same = cong StoreStep.registration same , cong (λ world → Store.lookupCancellation world (P.Input.token request)) same
+    ... | inj₂ same = trans (cong StoreStep.registration same) (proj₁ (executeFrame request before)) ,
+      trans (cong (λ world → Store.lookupCancellation world (P.Input.token request)) same) (proj₂ (executeFrame request before))
+
+    publicationReadback : ∀ request before current (context : ExecutionContext P.operationName (P.Input.token request) before) →
+      admission P.operationName (P.Input.token request) before ≡ admitted context → P.mode request before ≡ P.publish →
+      current ≡ P.finalWorld request before → ResumableOrCompleted P.operationName (P.Input.token request) current
+    publicationReadback request before current context known fresh published = inj₂
+      (ExecutionContext.bindingRow context , P.answer request before ,
+       subst (λ world → admission P.operationName (P.Input.token request) world ≡
+         returned (completed (ExecutionContext.bindingRow context) (P.answer request before)))
+         (sym (trans published (publishedPair request before fresh)))
+         (singlePublicationCompletes P.operationName (P.Input.token request) before context Shape.finalStep (P.answer request before)
+           (Project.eraseProject (P.Input.project request) before) known steps refl))
+      where
+      steps = Shape.decodedSingle (ExecutionContext.rawPlan context) (ExecutionContext.plan context)
+        (matchedPlan request before context fresh) (ExecutionContext.decoded context)
+
+    interruptedReadback : ∀ request before current (context : ExecutionContext P.operationName (P.Input.token request) before) →
+      admission P.operationName (P.Input.token request) before ≡ admitted context →
+      P.Checked.X.Interrupted (P.Checked.script request) before current → ResumableOrCompleted P.operationName (P.Input.token request) current
+    interruptedReadback request before current context known cut with P.Physical.interruptionState request before current cut
+    ... | inj₁ refl = inj₁ (context , known)
+    ... | inj₂ observed with P.mode request before in selected
+    ... | P.needsInput _ = subst (ResumableOrCompleted P.operationName (P.Input.token request)) (sym observed) (inj₁ (context , known))
+    ... | P.replay _ = subst (ResumableOrCompleted P.operationName (P.Input.token request)) (sym observed) (inj₁ (context , known))
+    ... | P.publish = publicationReadback request before current context known selected observed
+
 data Request : Set where reserve readOutcome cancel : Request
 
 Input : Request → Set

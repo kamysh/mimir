@@ -1,6 +1,4 @@
-#[allow(dead_code)]
-#[path = "../../../../tests/support/isolation.rs"]
-mod isolation;
+use crate::test_isolation as isolation;
 
 use super::*;
 use crate::{
@@ -152,7 +150,7 @@ async fn indexed_citation_validation_checks_the_actual_reference_and_quotation()
     // needed to check the integrity of an explicitly supplied citation.
     let validated = service
         .store
-        .validate_indexed_support(Some(&project), &[original.clone()])
+        .validate_indexed_support(Some(&project), std::slice::from_ref(&original))
         .await?;
     assert_eq!(validated.len(), 1);
     assert_eq!(validated[0].chunk, chunk);

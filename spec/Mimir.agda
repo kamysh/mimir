@@ -22,6 +22,8 @@ import Mimir.JudgeBackendComposition
 import Mimir.NotificationConfigurationWire
 
 import Mimir.ConfigurationProtocol
+import Mimir.IntendedPreparation
+import Mimir.OperationEncoding
 import Mimir.EmbeddingLifecycle
 import Mimir.MigrationSchema
 import Mimir.CLI
@@ -68,6 +70,7 @@ import Mimir.DirectGraphRecovery
 import Mimir.PatternPublicationRecovery
 import Mimir.IndependentBeliefRecovery
 import Mimir.IndependentPublicationRecovery
+import Mimir.PublicOperationBinding
 import Mimir.ExperienceSourceIntent
 import Mimir.ExperienceSourceRecovery
 import Mimir.DecayRecovery
@@ -77,6 +80,7 @@ import Mimir.SweepRecovery
 import Mimir.PropagationRecovery
 import Mimir.DocumentRemovalRecovery
 import Mimir.DocumentReplacementRecovery
+import Mimir.DocumentLoadingRecovery
 import Mimir.AtomicFile
 import Mimir.CharacterRules
 import Mimir.OAuthCache
@@ -403,6 +407,7 @@ import Mimir.GraphMutationProtocol
 import Mimir.PublicInput
 import Mimir.LearningWire
 import Mimir.PublicRequest
+import Mimir.PublicOperationRecovery
 import Mimir.ApplicationProtocol
 import Mimir.PublicEncoding
 import Mimir.ApplicationOutput
