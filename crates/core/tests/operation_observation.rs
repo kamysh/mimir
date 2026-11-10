@@ -31,6 +31,8 @@ async fn observes_pending_finished_correction_and_cancelled_records() -> Result<
     tx.execute("INSERT INTO public.mimir_operation_plans(operation_token,plan) VALUES($1,'{\"step\":\"original\"}'::jsonb)", &[&pending]).await?;
     tx.execute("INSERT INTO public.mimir_operation_step_replies(operation_token,step,reply) VALUES ($1,'@operation-result','{\"result\":\"finished\"}'::jsonb), ($2,'@operation-result','{\"needs_input\":\"correct it\"}'::jsonb)", &[&finished,&corrected]).await?;
     let execution: Uuid = tx.query_one("INSERT INTO public.mimir_operation_executions(operation_token,owner_program,owner_pid,owner_host,owner_host_source) VALUES($1,'test-worker',123,'test-host','fixture') RETURNING execution_id", &[&cancelled]).await?.get(0);
+    let stopped: Uuid = tx.query_one("INSERT INTO public.mimir_operation_executions(operation_token,owner_program,owner_pid,owner_host,owner_host_source) VALUES($1,'test-worker',124,'other-host','fixture') RETURNING execution_id", &[&cancelled]).await?.get(0);
+    tx.execute("UPDATE public.mimir_operation_executions SET stopped_at=clock_timestamp() WHERE execution_id=$1", &[&stopped]).await?;
     let owner: Uuid = tx.query_one("INSERT INTO public.mimir_embedding_owners(project,operation_token) VALUES ('test-project',$1) RETURNING owner_token", &[&pending]).await?.get(0);
     tx.execute(
         "INSERT INTO public.mimir_operation_cancellations(operation_token) VALUES($1)",
@@ -73,6 +75,10 @@ async fn observes_pending_finished_correction_and_cancelled_records() -> Result<
             && row.token == cancelled
             && row.stopped_at.is_none()
             && row.host.as_deref() == Some("test-host")));
+    assert!(observed.executions.iter().any(|row| row.identity == stopped
+        && row.token == cancelled
+        && row.stopped_at.is_some()
+        && row.host.as_deref() == Some("other-host")));
     assert!(observed
         .embedding_owners
         .iter()
