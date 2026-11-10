@@ -46,6 +46,10 @@ import Mimir.JsonObjects as Objects
 import Mimir.RecoverableStoreStep as Step
 import Mimir.Recovery as Recovery
 import Mimir.Effects as Effects
+import Mimir.OperationControls as Controls
+import Mimir.DatabaseTransaction as DB
+import Mimir.RegisteredStoreAdmission as AdmissionStore
+import Data.Fin as Fin
 open import Mimir.RecordDecoding using (_>>=_)
 
 sameText : Text → Text → Bool
@@ -157,7 +161,7 @@ data Source : Set where
 
 sourceName : Source → Text
 sourceName (advertised tool) = toList (Tools.wireName tool)
-sourceName evidenceRemoval = toList "remove_evidence"
+sourceName evidenceRemoval = toList "delete_evidence"
 
 missingBinding changedRequest : Validation.Fault
 missingBinding = Validation.fault (Validation.key "operation_token" ∷ []) Validation.missingReference
@@ -464,3 +468,190 @@ module Decode (library : Library.Contract) where
     progress = progressWith O.progress
     operation : Recovery.RecoverableFor Store.World ℕ Result Goal
     operation = operationWith O.converges O.progress
+
+-- Native execute_registered_write creates this metadata before its concrete
+-- writer runs. The input is the actual public object, never an expected plan,
+-- reconstructed argument object, success flag or caller-selected goal.
+module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) where
+  module D = Public.Decode library
+  module P = Controls.Plan
+  module Read = Controls.Readback library postgres
+
+  record Request : Set where
+    constructor submittedWrite
+    field tool : Tools.Tool; submitted : Wire.Value
+
+  writerToken : ∀ tool → Tools.kind tool ≡ Tools.businessWrite → Public.TokenFor tool → ℕ
+  writerToken tool known token with Tools.kind tool
+  ... | Tools.businessWrite = token
+  writerToken tool () token | Tools.readOnly
+  writerToken tool () token | Tools.operationControl
+
+  record Call : Set where
+    constructor admittedWrite
+    field tool : Tools.Tool
+          submitted : Wire.Value
+          writer : Tools.kind tool ≡ Tools.businessWrite
+          invocation : D.Invocation tool submitted
+    token : ℕ
+    token = writerToken tool writer (D.Invocation.operationToken invocation)
+    arguments : Wire.Value
+    arguments = D.Invocation.arguments invocation
+    request : Public.Request
+    request = D.Invocation.request invocation
+    name : Text
+    name = toList (Tools.wireName tool)
+
+  wrongWriter : Validation.Fault
+  wrongWriter = Validation.fault [] Validation.wrongIdentity
+    "Use the advertised read-only or operation-control entry for this tool. Only an admitted business write creates a binding and plan. No business data changed."
+
+  decode : Request → Validation.Fault ⊎ Call
+  decode (submittedWrite tool raw) with Tools.kind tool in kind
+  ... | Tools.readOnly = inj₁ wrongWriter
+  ... | Tools.operationControl = inj₁ wrongWriter
+  ... | Tools.businessWrite with D.readInvocation tool raw
+  ... | inj₁ fault = inj₁ fault
+  ... | inj₂ observedCall = inj₂ (admittedWrite tool raw kind observedCall)
+
+  -- This is the existing external canonical Value boundary used for native
+  -- jsonb matching: object order/numeric spelling are normalized; omission,
+  -- explicit null, field values and array order remain different. It compares
+  -- the actual submitted object after removing only operation_token.
+  signature : Text → Wire.Value → Wire.Value → Wire.Value
+  signature name arguments settings = Wire.array (Wire.string name ∷ arguments ∷ settings ∷ [])
+
+  matches : Call → Wire.Value → Store.BindingRow → Bool
+  matches call settings original = does (Lists.≡-dec Fin._≟_
+    (Library.Contract.compactJSON library (signature (Call.name call) (Call.arguments call) settings))
+    (Library.Contract.compactJSON library (signature (Store.BindingRow.operation original)
+      (Store.BindingRow.arguments original) (Store.BindingRow.settings original))))
+
+  tables = Store.World.operations
+  binding : ℕ → Store.World → Maybe Store.BindingRow
+  binding token before = Project.Registered.binding token (Store.OperationTables.bindings (tables before))
+  plan : ℕ → Store.World → Maybe Wire.Value
+  plan token before = Project.Registered.plan token (Store.OperationTables.plans (tables before))
+
+  protected : Store.World → Store.World
+  protected before = record before { operations = record (tables before) { bindings = []; plans = [] } }
+
+  putBinding : Store.BindingRow → Store.World → Store.World
+  putBinding row before = record before { operations = record (tables before)
+    { bindings = row ∷ Store.OperationTables.bindings (tables before) } }
+  putPlan : ℕ → Wire.Value → Store.World → Store.World
+  putPlan token raw before = record before { operations = record (tables before)
+    { plans = Store.planRow token raw ∷ Store.OperationTables.plans (tables before) } }
+
+  newBinding : Call → Wire.Value → ℤ → Store.BindingRow
+  newBinding call settings observedTime = Store.bindingRow (Call.token call) (Call.name call)
+    (Call.arguments call) settings observedTime
+
+  data BindingResult : Set where
+    bound changed : Store.BindingRow → BindingResult
+    unknown : BindingResult
+    cancelled : Store.CancellationRow → BindingResult
+
+  bind : Call → Wire.Value → ℤ → Store.World → Store.World × BindingResult
+  bind call settings observedTime before with Controls.reservation (Call.token call) before
+  ... | nothing = before , unknown
+  ... | just _ with Store.lookupCancellation before (Call.token call)
+  ... | just receipt = before , cancelled receipt
+  ... | nothing with binding (Call.token call) before
+  ... | nothing = putBinding (newBinding call settings observedTime) before , bound (newBinding call settings observedTime)
+  ... | just original with matches call settings original
+  ... | false = before , changed original
+  ... | true = before , bound original
+
+  bindingPreservesBusiness : ∀ call settings observedTime before →
+    protected (proj₁ (bind call settings observedTime before)) ≡ protected before
+  bindingPreservesBusiness call settings observedTime before with Controls.reservation (Call.token call) before
+  ... | nothing = refl
+  ... | just _ with Store.lookupCancellation before (Call.token call)
+  ... | just _ = refl
+  ... | nothing with binding (Call.token call) before
+  ... | nothing = refl
+  ... | just original with matches call settings original
+  ... | false = refl
+  ... | true = refl
+
+  -- Only the original declared belief keys repeat. Other advertised writers
+  -- have fixed registered boundaries. Document/sweep service methods perform
+  -- the same fixed-plan writes before their captured business work.
+  reviewSteps : List Candidates.Candidate → List P.Step
+  reviewSteps [] = []
+  reviewSteps (Candidates.patternCandidate _ _ _ ∷ rest) = reviewSteps rest
+  reviewSteps (Candidates.belief key _ _ _ ∷ rest) =
+    P.canonicalStep library (toList "store.reserve_belief_preparation") (just key) ∷ reviewSteps rest
+
+  selected : Public.Request → List P.Step
+  selected (Public.learning (Learning.reviewExperience input expected)) = reviewSteps (Input.Review.candidates input)
+  selected _ = []
+
+  badPlan : Validation.Fault
+  badPlan = Validation.fault (Validation.key "operation_token" ∷ []) Validation.wrongIdentity
+    "Read the original binding, registered plan and saved answers. Resolve incompatible or incomplete metadata with the user; do not replace the token, invent a plan or repeat confirmed work."
+
+  computedPlan : Call → Validation.Fault ⊎ P.Saved
+  computedPlan call with P.lookup (Call.name call) P.registered
+  ... | nothing = inj₁ badPlan
+  ... | just shape with P.rebuild library shape (selected (Call.request call))
+  ... | nothing = inj₁ badPlan
+  ... | just steps with P.valid library (P.saved (Call.name call) shape steps nothing)
+  ... | false = inj₁ badPlan
+  ... | true = inj₂ (P.saved (Call.name call) shape steps nothing)
+
+  -- A receipt from serialization of the server-computed plan. This is the
+  -- external Serde boundary, not a client plan or normalization theorem.
+  data PlanEncoding (call : Call) : Set where
+    encoded : ∀ planned → computedPlan call ≡ inj₂ planned →
+      (raw : Wire.Value) → P.decode raw ≡ inj₂ planned → PlanEncoding call
+    encodingFailed : Validation.Fault → PlanEncoding call
+
+  data PlanResult : Set where
+    planned : Store.BindingRow → P.Saved → Wire.Value → PlanResult
+    planRefused : Validation.Fault → PlanResult
+    planCancelled : Store.CancellationRow → PlanResult
+    planUnknown : PlanResult
+
+  existingPlan : Store.BindingRow → Wire.Value → PlanResult
+  existingPlan original raw with P.decode raw
+  ... | inj₁ fault = planRefused fault
+  ... | inj₂ stored with P.textEqual (Store.BindingRow.operation original) (P.Saved.operation stored)
+  ... | false = planRefused badPlan
+  ... | true with P.valid library stored
+  ... | false = planRefused badPlan
+  ... | true = planned original stored raw
+
+  saveNewPlan : (call : Call) → Store.BindingRow → PlanEncoding call → Store.World → Store.World × PlanResult
+  saveNewPlan call original (encodingFailed fault) before = before , planRefused fault
+  saveNewPlan call original (encoded model computed raw decoded) before = putPlan (Call.token call) raw before , planned original model raw
+
+  prepare : (call : Call) → Wire.Value → PlanEncoding call → Store.World → Store.World × PlanResult
+  prepare call settings encodedPlan before with binding (Call.token call) before
+  ... | nothing = before , planUnknown
+  ... | just original with matches call settings original
+  ... | false = before , planRefused changedRequest
+  ... | true with Store.lookupCancellation before (Call.token call)
+  ... | just receipt = before , planCancelled receipt
+  ... | nothing with plan (Call.token call) before
+  ... | just raw = before , existingPlan original raw
+  ... | nothing with Read.savedRows (Call.token call) before
+  ... | _ ∷ _ = before , planRefused badPlan
+  ... | [] = saveNewPlan call original encodedPlan before
+
+  planPreservesBusiness : ∀ call settings encodedPlan before →
+    protected (proj₁ (prepare call settings encodedPlan before)) ≡ protected before
+  planPreservesBusiness call settings encodedPlan before with binding (Call.token call) before
+  ... | nothing = refl
+  ... | just original with matches call settings original
+  ... | false = refl
+  ... | true with Store.lookupCancellation before (Call.token call)
+  ... | just _ = refl
+  ... | nothing with plan (Call.token call) before
+  ... | just _ = refl
+  ... | nothing with Read.savedRows (Call.token call) before
+  ... | _ ∷ _ = refl
+  ... | [] with encodedPlan
+  ... | encodingFailed _ = refl
+  ... | encoded model computed raw decoded = refl
