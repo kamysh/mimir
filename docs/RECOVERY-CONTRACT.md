@@ -220,6 +220,11 @@ it does not claim to serialize arbitrary infinite Agda functions. Proof fields
 are checked or reconstructed by the existing model adapter, not supplied as
 caller assertions.
 
+Execution IDs and operation tokens use the same UUID strings as other
+identities. Registration and stop times use the existing UTC timestamp format.
+All execution rows must be retained, including acknowledged rows. A missing
+stop time means that stopping remains unconfirmed.
+
 Acknowledged execution rows remain in the snapshot. A missing stop timestamp
 means that physical stop is unconfirmed; neither a host label, a PID, a client
 address nor elapsed time can substitute for that acknowledgement. Cancellation
@@ -271,6 +276,7 @@ unacknowledged commit is not automatically classified as rollback.
 | Database snapshot | The complete actual read-only snapshot and its scope, including concurrent changes seen by that read. A caller's desired snapshot is not a receipt. |
 | File read | Requested/canonical path, project, complete source text or precise filesystem failure, tied to the fixed file-read protocol. |
 | Provider | Bound backend/model/vector identity, original input and scope/owner, complete returned vectors or exact unavailability/failure. No expected vector or deterministic-provider assumption is permitted. |
+| Owned worker stop | The actual wait receipt or precise failure, tied by the test harness to the execution, token, attempt and worker. An application status label, elapsed time or final database row is not a substitute. |
 | Indexed support | The actual supplied citation and explanation plus the indexed passage observed at commit; use existing scope/quotation checks, without a similarity acceptance cutoff. |
 | Numeric calculation | The actual report data required by the existing numerical semantic boundary. Existing checked numerical functions validate it; the observed new posteriors are not accepted as an expected answer. |
 | Database vector/text services | The actual configured pgvector and Unicode operations required by retrieval, preserving their existing precision and tie-breaking boundaries. |
@@ -284,6 +290,11 @@ outputs. Missing or surplus observations, wrong keys/models/scopes, or an
 unconsumed receipt fail adapter validation with the exact boundary identified.
 An observed final database state is never reclassified as an external snapshot
 receipt to obtain the expected output without computing the intent.
+
+The current worker-stop model does not put the token, attempt and worker ID in
+its raw event values. The harness must record and verify that association. The
+native worker currently discards a successful exit status, so capturing that
+receipt remains future harness work; this contract does not claim it exists.
 
 ### Required pure adapters
 

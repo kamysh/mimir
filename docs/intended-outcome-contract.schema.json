@@ -271,10 +271,10 @@
     "execution": {
       "type": "object",
       "properties": {
-        "identity": {"type": "integer", "minimum": 0},
-        "token": {"type": "integer", "minimum": 0},
-        "registeredAt": {"type": "integer"},
-        "stoppedAt": {"type": ["integer", "null"]},
+        "identity": {"$ref": "#/$defs/uuid"},
+        "token": {"$ref": "#/$defs/uuid"},
+        "registeredAt": {"$ref": "#/$defs/timestamp"},
+        "stoppedAt": {"type": ["string", "null"], "format": "date-time"},
         "ownerProgram": {"type": "string"},
         "ownerPid": {"type": "integer", "minimum": 0},
         "ownerHost": {"type": ["string", "null"]},
@@ -409,6 +409,7 @@
             "database_snapshot",
             "file_read",
             "provider",
+            "owned_worker_stop",
             "indexed_support",
             "numeric_calculation",
             "database_vector_text",
