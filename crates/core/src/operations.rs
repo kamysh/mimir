@@ -153,6 +153,10 @@ pub fn upgrade(path: &Path, directory: Option<&Path>) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("invalid application configuration; no changes made"))?;
     check_retired_limits(&config)?;
     if content == original {
+        // A previous replacement may have reached the selected path before
+        // its directory-sync reply was received. Readback alone is not that
+        // acknowledgement, even when the desired bytes already match.
+        crate::config::sync_published_configuration(path)?;
         return Ok(());
     }
     let parent = path

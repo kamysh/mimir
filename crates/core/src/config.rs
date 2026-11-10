@@ -393,6 +393,30 @@ pub enum TemplatePreparation {
     Existing(std::path::PathBuf),
 }
 
+/// Confirm a complete existing configuration after an unconfirmed publication.
+/// This never serializes, replaces, or changes permissions on the selected file.
+pub(crate) fn sync_published_configuration(path: &std::path::Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use anyhow::Context;
+        std::fs::File::open(path)
+            .context("unable to reopen configuration for synchronization")?
+            .sync_all()
+            .context("unable to synchronize the configuration file")?;
+        let parent = path
+            .parent()
+            .filter(|value| !value.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::File::open(parent)
+            .context("unable to open configuration directory for synchronization")?
+            .sync_all()
+            .context("unable to synchronize the configuration directory")?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 fn matching_existing_config(
     path: &std::path::Path,
     pairs: &[(String, String)],
@@ -420,15 +444,7 @@ fn matching_existing_config(
         path.display(), conflicts.into_iter().collect::<Vec<_>>().join(", "));
     // Also finishes directory durability if a previous successful publication
     // lost its acknowledgement. File contents and permissions stay untouched.
-    #[cfg(unix)]
-    {
-        std::fs::File::open(path)?.sync_all()?;
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| std::path::Path::new("."));
-        std::fs::File::open(parent)?.sync_all()?;
-    }
+    sync_published_configuration(path)?;
     Ok(ConfigCreation::AlreadyConfigured(path.to_owned()))
 }
 
