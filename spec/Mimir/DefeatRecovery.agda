@@ -3,11 +3,12 @@
 -- Retries reuse the original answers at both independently committed phases.
 module Mimir.DefeatRecovery where
 
-open import Data.Empty using (⊥)
+open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Bool using (true; false)
 open import Data.Float.Base using (Float)
 open import Data.Integer using (ℤ)
 open import Data.List using (List; []; _∷_)
+open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
@@ -656,3 +657,98 @@ module Registered (conversion : Conversion.Contract)
 
   module Certified = Run.Certified firstFamilyPreserved secondKeepsFamily Goal meaning
   operation = Certified.operation
+
+  record CacheReceipts (token : ℕ) (before : Store.World) : Set where
+    field cachedFirstValue cachedFinalValue : Wire.Value
+          cachedAdmitted : C.Binding.admit token (Step.registration before) ≡ nothing
+          cachedActive : Store.lookupCancellation before token ≡ nothing
+          cachedFirst : Store.lookupSaved before token (firstKey token) ≡ just cachedFirstValue
+          cachedSecond : Store.lookupSaved before token (secondKey token) ≡ just cachedFinalValue
+          cachedResult : Store.lookupSaved before token Step.resultKey ≡ just cachedFinalValue
+
+  CacheInvariant : ℕ → Store.World → Set
+  CacheInvariant token before = (Store.lookupSaved before token Step.resultKey ≡ nothing) ⊎ CacheReceipts token before
+
+  firstKeepsCache : ∀ received token before → CacheInvariant token before →
+    CacheInvariant token (proj₁ (first received token before))
+  firstKeepsCache received token before old with firstClassification received token before
+  ... | inj₁ unchanged = subst (CacheInvariant token) (sym unchanged) old
+  ... | inj₂ (changed , reply , admitted , active , firstAbsent , nextAbsent , resultAbsent , accepted) = inj₁ (trans
+    (cong (λ outcome → Store.lookupSaved (proj₁ outcome) token Step.resultKey)
+      (freshPrefix received token before changed reply admitted active firstAbsent nextAbsent resultAbsent accepted))
+    (C.Prefix.Base.firstHasNoResult (token , received) before changed reply accepted resultAbsent))
+
+  secondKeepsCache : ∀ received token before → CacheInvariant token before →
+    CacheInvariant token (proj₁ (second received token before))
+  secondKeepsCache received token before old with secondClassification received token before
+  ... | inj₁ unchanged = subst (CacheInvariant token) (sym unchanged) old
+  ... | inj₂ (changed , reply , saved , admitted , active , firstSaved , nextAbsent , resultAbsent , accepted) =
+    inj₂ (subst (CacheReceipts token) (sym (cong proj₁ actualFinal)) packet)
+    where
+    input = token , received
+    published = C.Final.Kernel.publication input changed reply
+    actualFinal = T.secondFresh received received token before saved changed reply admitted active firstSaved nextAbsent resultAbsent accepted
+    packet : CacheReceipts token published
+    packet = record
+      { cachedFirstValue = saved; cachedFinalValue = reply
+      ; cachedAdmitted = trans (cong (C.Binding.admit token)
+          (C.Final.Kernel.publicationKeepsRegistration input before changed reply accepted)) admitted
+      ; cachedActive = trans (C.Final.Kernel.publicationKeepsCancellation input before changed reply accepted) active
+      ; cachedFirst = trans (T.publishedFirst received received token before changed reply accepted) firstSaved
+      ; cachedSecond = C.Final.Kernel.publishedStepReadable input before changed reply accepted nextAbsent
+      ; cachedResult = C.Final.Kernel.publishedResultReadable input before changed reply accepted resultAbsent }
+
+  atomicKeepsCache : ∀ token before after effect reply → Run.Owned token effect →
+    Run.Atomic before effect reply after → CacheInvariant token before → CacheInvariant token after
+  atomicKeepsCache token before after .(Run.prefix token) (received , reply) Run.firstOwned physical old =
+    subst (CacheInvariant token)
+      (sym (cong proj₁ (Run.First.atomicObservation received token before after reply physical)))
+      (firstKeepsCache received token before old)
+  atomicKeepsCache token before after .(Run.finish token) (received , reply) Run.secondOwned physical old =
+    subst (CacheInvariant token)
+      (sym (cong proj₁ (Run.Second.atomicObservation received token before after reply physical)))
+      (secondKeepsCache received token before old)
+
+  changesKeepCache : ∀ token before events after → All (λ event → Run.Owned token (proj₁ event)) events →
+    Run.X.Changes before events after → CacheInvariant token before → CacheInvariant token after
+  changesKeepCache token before [] .before [] (Run.X.unchanged _) old = old
+  changesKeepCache token before ((effect , reply) ∷ events) after (owner ∷ owners)
+    (Run.X.changed _ _ _ middle physical later) old = changesKeepCache token middle events after owners later
+      (atomicKeepsCache token before middle effect reply owner physical old)
+
+  interruptedCache : ∀ token initial current → Store.lookupSaved initial token Step.resultKey ≡ nothing →
+    Run.X.Interrupted (Run.script token) initial current → CacheInvariant token current
+  interruptedCache token initial current absent (Run.X.atPrefix events residual .current observed physical) =
+    changesKeepCache token initial events current
+      (proj₁ (Run.prefixScoped token (Run.script token) events residual (Run.scriptScoped token) observed)) physical (inj₁ absent)
+  interruptedCache token initial current absent
+    (Run.X.beforeReply events effect continuation middle reply .current observed physical active)
+    with Run.prefixScoped token (Run.script token) events (Run.E.ask effect continuation) (Run.scriptScoped token) observed
+  ... | owners , scoped = atomicKeepsCache token middle current effect reply
+    (Run.activeOwned token effect continuation scoped) active
+    (changesKeepCache token initial events middle owners physical (inj₁ absent))
+
+  cachedEvaluation : ∀ initial final token before raw → CacheReceipts token before →
+    Store.lookupSaved before token Step.resultKey ≡ just raw →
+    Run.evaluate initial final token before ≡ (before , Step.done raw)
+  cachedEvaluation initial final token before raw packet present = trans
+    (fullReplay initial final token before (CacheReceipts.cachedFirstValue packet)
+      (CacheReceipts.cachedFinalValue packet) (CacheReceipts.cachedFinalValue packet)
+      (CacheReceipts.cachedAdmitted packet) (CacheReceipts.cachedActive packet)
+      (CacheReceipts.cachedFirst packet) (CacheReceipts.cachedSecond packet) (CacheReceipts.cachedResult packet))
+    (cong (λ value → before , Step.done value) (sameValue (trans (sym (CacheReceipts.cachedResult packet)) present)))
+    where
+    sameValue : ∀ {first second : Wire.Value} → just first ≡ just second → first ≡ second
+    sameValue refl = refl
+
+  cachedReplay : ∀ token initial current raw → Store.lookupSaved initial token Step.resultKey ≡ nothing →
+    Run.X.Interrupted (Run.script token) initial current → Store.lookupSaved current token Step.resultKey ≡ just raw →
+    Run.X.Completed (Run.script token) current current (Step.done raw)
+  cachedReplay token initial current raw absent crash present with interruptedCache token initial current absent crash
+  ... | inj₁ missing with trans (sym missing) present
+  ... | ()
+  cachedReplay token initial current raw absent crash present | inj₂ packet with Certified.progress token current
+  ... | after , reply , completion with Run.completedObservation token current after reply completion
+  ... | first , final , observed = subst
+    (λ outcome → Run.X.Completed (Run.script token) current (proj₁ outcome) (proj₂ outcome))
+    (trans observed (cachedEvaluation first final token current raw packet present)) completion
