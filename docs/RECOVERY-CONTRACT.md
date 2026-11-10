@@ -415,6 +415,16 @@ required before any necessary embedding response. Missing receipts are exterior
 input errors, and the full world stays unchanged. As with retrieval, outer
 snapshot failures and public host/wire composition remain unfinished.
 
+`IntendedIntervention.Evaluate.evaluate` admits `query_intervention`, prepares
+its actual numerical context from the original graph and validates the captured
+calculation report with the existing intervention report checker. It preserves
+the full calculated list, rejected raw reports and repeated-state decisions;
+there is no assumed solver correctness, invented probability or convergence
+threshold. Missing required snapshot/report receipts are exterior input errors,
+while missing targets or invalid stored inputs retain their existing typed
+outcomes without an invented report. The entire world stays unchanged.
+Outer snapshot failures and complete public host/wire assembly remain unfinished.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |

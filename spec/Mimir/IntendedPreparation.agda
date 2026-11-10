@@ -7,6 +7,7 @@ module Mimir.IntendedPreparation where
 open import Data.Bool using (true; false)
 open import Data.Integer using (ℤ)
 import Data.List
+import Data.Float.Base as Float
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; pred)
 open import Data.Product using (_×_; _,_; proj₁)
@@ -18,6 +19,7 @@ open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
 import Mimir.DocumentQuery as DocumentQuery
+import Mimir.InferenceStorageBinding as Numerical
 import Mimir.OperationControls as Controls
 import Mimir.PublicOperationBinding as Binding
 import Mimir.PublicRequest as Public
@@ -175,6 +177,8 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     learningContextReadback : LearningContext.Output → PublicOutcome
     invalidContextAssessment : PublicOutcome
     agentDecision : Errors.AgentCorrection.Claim → PublicOutcome
+    numericalReadback : (databaseSum : Data.List.List Float.Float → Float.Float) →
+      Numerical.NumericalOutcome.Result databaseSum → PublicOutcome
     assessmentReadback : (format : Encoding.Formatting) →
       LearningReads.AssessmentReads.Answer format → PublicOutcome
     directValue : Wire.Value → PublicOutcome
