@@ -393,6 +393,17 @@ The original world is preserved, and malformed admission leaves the body
 absent. The internal `documentQueryReadback` retains the typed result for later
 public projection; full host/wire composition remains unfinished.
 
+`IntendedRetrieval.Evaluate.evaluate` admits `query_relevant` and computes the
+existing ranked plain/grounded response from the complete original world and
+actual configured provider response. The acknowledged consistent-read receipt
+is required first; empty candidate sets and an unconfigured backend need no
+invented embedding. Provider failures remain the existing factual availability
+and coverage result, without dropping selected beliefs, evidence or provenance.
+Missing receipts are oracle-input errors, malformed requests leave no body,
+and the full world stays unchanged. Its current certified snapshot effect has
+no database-failure reply: outer read failures and full host/wire assembly are
+explicitly outside this acknowledged-read adapter and remain unfinished.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |

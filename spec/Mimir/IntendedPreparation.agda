@@ -22,6 +22,7 @@ import Mimir.OperationControls as Controls
 import Mimir.PublicOperationBinding as Binding
 import Mimir.PublicRequest as Public
 import Mimir.PublicInput as PublicInput
+import Mimir.PublicRetrievalRecovery as PublicRetrieval
 import Mimir.RecordDecoding as Record
 import Mimir.Recovery as Recovery
 import Mimir.RetrievalRanking as Ranking
@@ -168,6 +169,7 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     reservationReadback : Controls.RequestKey → Reserve.Result → PublicOutcome
     cancellationReadback : ℕ → Cancel.Result → PublicOutcome
     documentQueryReadback : DocumentQuery.Result → PublicOutcome
+    retrievalReadback : PublicRetrieval.Response → PublicOutcome
     assessmentReadback : (format : Encoding.Formatting) →
       LearningReads.AssessmentReads.Answer format → PublicOutcome
     directValue : Wire.Value → PublicOutcome
