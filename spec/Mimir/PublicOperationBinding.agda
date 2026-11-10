@@ -1955,3 +1955,26 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     X.Completed (script requested) before after (ready context) → Reserved call after
   completedReadyReservation requested call before after context decoded completion rewrite decoded =
     startReadyReserved call before after context completion
+
+
+  existingPlanKnown : ∀ call current scope → ReadyMeaning call current scope →
+    existingPlan (Context.original scope) (Context.raw scope) ≡
+      planned (Context.original scope) (Context.model scope) (Context.raw scope)
+  existingPlanKnown call current scope known rewrite ReadyMeaning.decodedPlan known |
+    ReadyMeaning.planOperationMatches known | ReadyMeaning.executable known = refl
+
+  prepareKnown : ∀ call current scope encoding → ReadyMeaning call current scope →
+    prepare call (Store.BindingRow.settings (Context.original scope)) encoding current ≡
+      (current , planned (Context.original scope) (Context.model scope) (Context.raw scope))
+  prepareKnown call current scope encoding known rewrite ReadyMeaning.boundRequest known |
+    matchesOriginalSettings call (proj₁ (ReadyMeaning.originalArguments known)) (Context.original scope)
+      (proj₂ (ReadyMeaning.originalArguments known)) |
+    ReadyMeaning.uncancelled known | ReadyMeaning.savedPlan known | existingPlanKnown call current scope known = refl
+
+  bindKnown : ∀ call current scope observedTime → Reserved call current → ReadyMeaning call current scope →
+    bind call (Store.BindingRow.settings (Context.original scope)) observedTime current ≡
+      (current , bound (Context.original scope))
+  bindKnown call current scope observedTime (row , present) known rewrite present |
+    ReadyMeaning.uncancelled known | ReadyMeaning.boundRequest known |
+    matchesOriginalSettings call (proj₁ (ReadyMeaning.originalArguments known)) (Context.original scope)
+      (proj₂ (ReadyMeaning.originalArguments known)) = refl
