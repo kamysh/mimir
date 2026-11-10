@@ -98,16 +98,7 @@ where
 {
     let (program, pid, host, source) = owner_identity()?;
     let tx = client.transaction().await?;
-    if !cancellations::lock_token(&tx, token).await?
-        || cancellations::lookup(&tx, token).await?.is_some()
-        || tx
-            .query_opt(
-                "SELECT 1 FROM mimir_operation_step_replies WHERE operation_token=$1 AND step=$2",
-                &[&token, &RESULT_KEY],
-            )
-            .await?
-            .is_some()
-    {
+    if !active_token(&tx, token).await? {
         tx.rollback().await?;
         return Ok(None);
     }
@@ -122,6 +113,27 @@ where
         return Err(RegistrationUnconfirmed { execution, cause }.into());
     }
     Ok(Some((execution, guard)))
+}
+
+async fn active_token(tx: &tokio_postgres::Transaction<'_>, token: Uuid) -> Result<bool> {
+    Ok(cancellations::lock_token(tx, token).await?
+        && cancellations::lookup(tx, token).await?.is_none()
+        && tx
+            .query_opt(
+                "SELECT 1 FROM mimir_operation_step_replies WHERE operation_token=$1 AND step=$2",
+                &[&token, &RESULT_KEY],
+            )
+            .await?
+            .is_none())
+}
+
+/// A child borrows its actual enclosing execution, but still checks the same
+/// durable publication fence before starting. This transaction writes no row.
+pub(crate) async fn permits_child(client: &mut Client, token: Uuid) -> Result<bool> {
+    let tx = client.transaction().await?;
+    let permitted = active_token(&tx, token).await?;
+    tx.rollback().await?;
+    Ok(permitted)
 }
 
 pub(crate) async fn acknowledge(

@@ -50,8 +50,17 @@ Cancellation records, original bindings, plans and answers remain immutable.
 mean every worker stopped. The MCP and CLI cancellation handlers separately
 wait for every registered execution's actual stop acknowledgement.
 
-Each token-associated body and provider call registers a PostgreSQL-issued
-execution ID before starting. Registration and cancellation lock the same
+Each enclosing public request registers one PostgreSQL-issued execution ID
+before starting. Its provider jobs borrow a private capability belonging to
+that exact request and service. They remain owned children: the request cannot
+acknowledge stopping until every child future is destroyed and its physical
+cleanup is confirmed. Finding another active call with the same token grants
+no capability. A standalone token-associated provider call registers its own
+execution; it cannot borrow another service's request. Starting a child still
+checks the durable completion/cancellation fence without adding metadata rows
+inside the business operation.
+
+Registration and cancellation lock the same
 reservation row, so registration either becomes part of the wait or is refused
 before work starts. The ID is read from INSERT RETURNING before COMMIT. If the
 commit reply or the request itself is lost, the original owner retains that

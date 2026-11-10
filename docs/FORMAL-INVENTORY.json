@@ -18841,8 +18841,34 @@
         },
         {
           "kind": "fn",
+          "name": "active_token",
+          "line": 118,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "permits_child",
+          "line": 132,
+          "specification": [],
+          "status": "behavioral-area-mapped-rust-correspondence-open",
+          "behavioral_area": [
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/ApplicationStore.agda",
+            "spec/Mimir/MigrationSchema.agda"
+          ],
+          "mapping_boundary": "Source navigation and contract review, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
           "name": "acknowledge",
-          "line": 127,
+          "line": 139,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -18855,7 +18881,7 @@
         {
           "kind": "fn",
           "name": "pending",
-          "line": 156,
+          "line": 168,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
@@ -18868,7 +18894,7 @@
         {
           "kind": "fn",
           "name": "pending_execution_stops",
-          "line": 167,
+          "line": 179,
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [

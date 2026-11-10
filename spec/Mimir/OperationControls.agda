@@ -521,6 +521,44 @@ module ExecutionOwnership where
     cancelledFence : ∀ receipt → Store.lookupCancellation before token ≡ just receipt → Fence token before
     finalAnswerFence : ∀ value → Store.lookupSaved before token StoreStep.resultKey ≡ just value → Fence token before
 
+  -- Only the enclosing request inserts an execution row. Provider children
+  -- borrow that request's real ownership and check MayStart without changing
+  -- World; its body-destruction receipt includes joining all those children.
+  -- Failed entry does not invent an allocated PostgreSQL identity.
+  data Entry (token : ℕ) : Store.World → Store.World → Set where
+    startedCopy : ∀ row before after → Store.ExecutionRow.token row ≡ token →
+      Store.ExecutionRow.stoppedAt row ≡ nothing →
+      register row before ≡ (after , registered row) → Entry token before after
+    fencedCopy : ∀ before → Fence token before → Entry token before before
+    unknownCopy : ∀ before → Recovery.Cancellation.reserved token
+      (Store.OperationTables.reservations (Store.World.operations before)) ≡ false → Entry token before before
+
+  registeredMayStart : ∀ row before after → Store.ExecutionRow.stoppedAt row ≡ nothing →
+    register row before ≡ (after , registered row) → MayStart row after
+  registeredMayStart row before after notStoppedYet observed with Recovery.Cancellation.reserved
+    (Store.ExecutionRow.token row) (Store.OperationTables.reservations (Store.World.operations before))
+  ... | false with observed
+  ... | ()
+  registeredMayStart row before after notStoppedYet observed | true with
+    Store.lookupSaved before (Store.ExecutionRow.token row) StoreStep.resultKey in noFinal
+  ... | just value with observed
+  ... | ()
+  registeredMayStart row before after notStoppedYet observed | true | nothing with
+    Store.lookupCancellation before (Store.ExecutionRow.token row) in notCancelled
+  ... | just receipt with observed
+  ... | ()
+  registeredMayStart row before after notStoppedYet observed | true | nothing | nothing =
+    subst (MayStart row) (cong proj₁ observed) record
+      { registeredRow = Any.here refl; notStopped = notStoppedYet
+      ; notCancelled = notCancelled; noFinalAnswer = noFinal }
+
+  entryPreservesBusiness : ∀ token before after → Entry token before after →
+    Store.businessSnapshot after ≡ Store.businessSnapshot before
+  entryPreservesBusiness token before after (startedCopy row .before .after same notStoppedYet observed) =
+    trans (cong Store.businessSnapshot (sym (cong proj₁ observed))) (registerPreservesBusiness row before)
+  entryPreservesBusiness token before .before (fencedCopy .before fence) = refl
+  entryPreservesBusiness token before .before (unknownCopy .before missing) = refl
+
   fencedWorkCannotStart : ∀ row before → Fence (Store.ExecutionRow.token row) before → MayStart row before → ⊥
   fencedWorkCannotStart row before (cancelledFence receipt known) allowed = cancelledWorkCannotStart row before receipt known allowed
   fencedWorkCannotStart row before (finalAnswerFence value known) allowed
@@ -547,6 +585,8 @@ module ExecutionOwnership where
     fullyStopped : (before : Store.World) → FullConfirmation token before → HostState token
 
   data HostStep (token : ℕ) : HostState token → HostState token → Set where
+    observedEntry : ∀ before after → Entry token before after →
+      HostStep token (waiting before) (waiting after)
     observedPhysicalStop : ∀ before identity ownedWorkers observed timestamp →
       HostStep token (waiting before) (waiting (acknowledge identity ownedWorkers observed timestamp before))
     confirmation : ∀ before (receipt : FullConfirmation token before) →
@@ -556,6 +596,21 @@ module ExecutionOwnership where
   completedHostHasEveryStopReceipt : ∀ token before (receipt : FullConfirmation token before) →
     AllStopped token (rows before)
   completedHostHasEveryStopReceipt token before receipt = FullConfirmation.everyCopy receipt
+
+  -- Database cancellation returns before its owners can acknowledge stopping.
+  -- The public host therefore records the actual later acknowledgements from
+  -- that reached database world, rather than attaching a certificate about an
+  -- unrelated or caller-selected snapshot.
+  data HostRuns (token : ℕ) : HostState token → HostState token → Set where
+    returned : ∀ state → HostRuns token state state
+    advanced : ∀ {before middle after} → HostStep token before middle →
+      HostRuns token middle after → HostRuns token before after
+
+  record StoppedAfter (token : ℕ) (databaseTerminal : Store.World) : Set where
+    field
+      final : Store.World
+      certifiedStop : FullConfirmation token final
+      observed : HostRuns token (waiting databaseTerminal) (fullyStopped final certifiedStop)
 
 module Plan where
   record Boundary : Set where

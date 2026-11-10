@@ -612,7 +612,15 @@ mod tests {
         let job = tokio::spawn(async move {
             let texts = ["complete original content".to_owned()];
             source
-                .operation_embedding_job(source.embeddings.as_ref().unwrap(), &texts, Some(token))
+                .own_operation(token, async {
+                    source
+                        .operation_embedding_job(
+                            source.embeddings.as_ref().unwrap(),
+                            &texts,
+                            Some(token),
+                        )
+                        .await
+                })
                 .await
         });
         let diagnostics = received.await?;
