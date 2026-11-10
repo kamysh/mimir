@@ -361,6 +361,14 @@ adapter must still compose this result with the selected operation's
 independent business intent and its public response encoding; the metadata
 adapter alone does not satisfy any of the remaining whole-operation entries.
 
+Its receipt fields are optional because an existing binding and plan need no
+fresh timestamp or plan encoding. The evaluator uses the stored values on
+those paths. If a genuinely new binding or plan lacks its required capture,
+the evaluator returns a separate `ObservationError`. This is a test-input
+failure: the runner must identify and capture the missing fact. It is never
+encoded as Mimir asking the user to correct a valid product request, and no
+zero timestamp, guessed ID or invented plan fills the gap.
+
 The project-deletion composition is
 `IntendedPreparation.Evaluate.ProjectDeletion.evaluate`. It takes the original
 submitted value, decodes its token and project, prepares its metadata and then

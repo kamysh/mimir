@@ -6,9 +6,11 @@ module Mimir.IntendedPreparation where
 
 open import Data.Bool using (true; false)
 open import Data.Integer using (ℤ)
+import Data.List
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Product using (_×_; _,_; proj₁)
 open import Data.Sum using (inj₁; inj₂)
+open import Data.String using (String)
 open import Data.Unit using (tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
@@ -25,6 +27,11 @@ import Mimir.StructuredValue as Wire
 import Mimir.ToolCatalog as Tools
 import Mimir.Validation as Validation
 
+-- Missing test observations are not application outcomes. In particular, a
+-- missing capture must not manufacture a product request for user input.
+data ObservationError : Set where
+  observationError : Validation.Fault → ObservationError
+
 module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) where
   module C = Binding.Creating library postgres
   module Read = Controls.Readback library postgres
@@ -36,76 +43,111 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   record Observations (call : C.Call) : Set where
     field
       currentSettings : C.Settings
-      bindingTime : ℤ
-      planEncoding : C.PlanEncoding call
+      bindingTime : Maybe ℤ
+      planEncoding : Maybe (C.PlanEncoding call)
 
   Outcome = Store.World × C.Result
+  Evaluation = ObservationError Data.Sum.⊎ Outcome
 
   module With (observed : (call : C.Call) → Observations call) where
-    publishPlan : C.Call → Wire.Value → Store.World → Outcome
-    publishPlan call settings before with
-      C.prepare call settings (Observations.planEncoding (observed call)) before
-    ... | after , C.planned binding model raw =
-      after , C.ready (C.preparedWrite call binding model raw)
-    ... | after , C.planRefused fault = after , C.needsInput fault
-    ... | after , C.planCancelled receipt =
-      after , C.returned (Read.answer (C.Call.token call) after)
-    ... | after , C.planUnknown =
-      after , C.returned (Read.answer (C.Call.token call) after)
+    missing : String → String → ObservationError
+    missing kind explanation = observationError (Validation.fault
+      (Validation.key "observations" Data.List.∷ Validation.key kind Data.List.∷ Data.List.[])
+      Validation.missingField explanation)
 
-    currentPolicy : C.Call → Wire.Value → C.Settings → Store.World → Outcome
-    currentPolicy call original (C.unavailable fault) before = before , C.needsInput fault
+    finishPlan : C.Call → Store.World × C.PlanResult → Evaluation
+    finishPlan call (after , C.planned binding model raw) =
+      inj₂ (after , C.ready (C.preparedWrite call binding model raw))
+    finishPlan call (after , C.planRefused fault) = inj₂ (after , C.needsInput fault)
+    finishPlan call (after , C.planCancelled receipt) =
+      inj₂ (after , C.returned (Read.answer (C.Call.token call) after))
+    finishPlan call (after , C.planUnknown) =
+      inj₂ (after , C.returned (Read.answer (C.Call.token call) after))
+
+    -- A stored plan is enough on retry. A new codec observation is required
+    -- only when this invocation actually has to publish a new plan.
+    publishPlan : C.Call → Wire.Value → Store.World → Evaluation
+    publishPlan call settings before with C.binding (C.Call.token call) before
+    ... | nothing = finishPlan call (before , C.planUnknown)
+    ... | just original with C.matches call settings original
+    ... | false = finishPlan call (before , C.planRefused Binding.changedRequest)
+    ... | true with Store.lookupCancellation before (C.Call.token call)
+    ... | just receipt = finishPlan call (before , C.planCancelled receipt)
+    ... | nothing with C.plan (C.Call.token call) before
+    ... | just raw = finishPlan call (before , C.existingPlan original raw)
+    ... | nothing with Read.savedRows (C.Call.token call) before
+    ... | _ Data.List.∷ _ = finishPlan call (before , C.planRefused C.badPlan)
+    ... | Data.List.[] with Observations.planEncoding (observed call)
+    ... | nothing = inj₁ (missing "plan_encoding"
+      "The oracle needs the actual validated standard plan encoding for this new plan. Capture that encoding for the same operation and attempt; do not invent it or report a product correction. Existing saved plans need no fresh encoding receipt.")
+    ... | just codecReceipt = finishPlan call (C.saveNewPlan call original codecReceipt before)
+
+    currentPolicy : C.Call → Wire.Value → C.Settings → Store.World → Evaluation
+    currentPolicy call original (C.unavailable fault) before = inj₂ (before , C.needsInput fault)
     currentPolicy call original (C.configured current) before with
       Controls.PostgreSQL.jsonbEqual postgres original current
-    ... | false = before , C.needsInput C.changedPolicy
+    ... | false = inj₂ (before , C.needsInput C.changedPolicy)
     ... | true = publishPlan call original before
 
-    preparePlan : C.Call → Wire.Value → Store.World → Outcome
+    preparePlan : C.Call → Wire.Value → Store.World → Evaluation
     preparePlan call settings before with C.needsPolicy (C.Call.tool call)
     ... | false = publishPlan call settings before
     ... | true = currentPolicy call settings
       (Observations.currentSettings (observed call)) before
 
-    resume : C.Call → Wire.Value → Store.World → Read.Result → Outcome
+    resume : C.Call → Wire.Value → Store.World → Read.Result → Evaluation
     resume call settings before (Read.awaitingPlan _) = preparePlan call settings before
     resume call settings before (Read.awaitingCompletion _) = preparePlan call settings before
     resume call settings before (Read.pending _ _ _) = preparePlan call settings before
-    resume call settings before outcome = before , C.returned outcome
+    resume call settings before outcome = inj₂ (before , C.returned outcome)
 
-    bind : C.Call → Wire.Value → Store.World → Outcome
-    bind call settings before with
-      C.bind call settings (Observations.bindingTime (observed call)) before
-    ... | after , C.bound original =
+    finishBinding : C.Call → Wire.Value → Store.World × C.BindingResult → Evaluation
+    finishBinding call settings (after , C.bound original) =
       resume call settings after (Read.answer (C.Call.token call) after)
-    ... | after , C.changed original = after , C.needsInput Binding.changedRequest
-    ... | after , C.unknown = after , C.returned (Read.answer (C.Call.token call) after)
-    ... | after , C.cancelled receipt = after , C.returned (Read.answer (C.Call.token call) after)
+    finishBinding call settings (after , C.changed original) = inj₂ (after , C.needsInput Binding.changedRequest)
+    finishBinding call settings (after , C.unknown) = inj₂ (after , C.returned (Read.answer (C.Call.token call) after))
+    finishBinding call settings (after , C.cancelled receipt) = inj₂ (after , C.returned (Read.answer (C.Call.token call) after))
 
-    freshSettings : C.Call → C.Settings → Store.World → Outcome
-    freshSettings call (C.unavailable fault) before = before , C.needsInput fault
+    -- Existing binding time is already part of the original world. A fresh
+    -- PostgreSQL time must be captured only for a genuinely new binding.
+    bind : C.Call → Wire.Value → Store.World → Evaluation
+    bind call settings before with C.binding (C.Call.token call) before
+    ... | just original = finishBinding call settings
+      (C.bind call settings (Store.BindingRow.boundAt original) before)
+    ... | nothing with Controls.reservation (C.Call.token call) before
+    ... | nothing = finishBinding call settings (before , C.unknown)
+    ... | just reservation with Store.lookupCancellation before (C.Call.token call)
+    ... | just receipt = finishBinding call settings (before , C.cancelled receipt)
+    ... | nothing with Observations.bindingTime (observed call)
+    ... | nothing = inj₁ (missing "postgres_writer_clock"
+      "The oracle needs the PostgreSQL time actually used for this new binding. Capture it for the same operation and attempt; do not invent a timestamp or turn a missing test observation into a product correction.")
+    ... | just time = finishBinding call settings (C.bind call settings time before)
+
+    freshSettings : C.Call → C.Settings → Store.World → Evaluation
+    freshSettings call (C.unavailable fault) before = inj₂ (before , C.needsInput fault)
     freshSettings call (C.configured settings) before with
       Public.freshLearningAdmission (C.Call.request call)
-    ... | inj₁ fault = before , C.needsInput fault
+    ... | inj₁ fault = inj₂ (before , C.needsInput fault)
     ... | inj₂ tt = bind call settings before
 
-    unbound : C.Call → Store.World → Read.Result → Outcome
+    unbound : C.Call → Store.World → Read.Result → Evaluation
     unbound call before Read.reserved =
       freshSettings call (Observations.currentSettings (observed call)) before
-    unbound call before outcome = before , C.returned outcome
+    unbound call before outcome = inj₂ (before , C.returned outcome)
 
-    admitted : C.Call → Store.World → Outcome
+    admitted : C.Call → Store.World → Evaluation
     admitted call before with C.binding (C.Call.token call) before
     ... | just original = bind call (Store.BindingRow.settings original) before
     ... | nothing = unbound call before (Read.answer (C.Call.token call) before)
 
-    evaluate : C.Request → Store.World → Outcome
+    evaluate : C.Request → Store.World → Evaluation
     evaluate requested before with C.decode requested
-    ... | inj₁ fault = before , C.needsInput fault
+    ... | inj₁ fault = inj₂ (before , C.needsInput fault)
     ... | inj₂ call = admitted call before
 
     malformedInputUnchanged : ∀ requested before fault →
       C.decode requested ≡ inj₁ fault →
-      evaluate requested before ≡ (before , C.needsInput fault)
+      evaluate requested before ≡ inj₂ (before , C.needsInput fault)
     malformedInputUnchanged requested before fault rejected rewrite rejected = refl
 
   -- Typed semantic output for the public adapter. A returned null body stays
@@ -156,9 +198,10 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
       final = Project.Registered.intended request before
       answer = Project.Registered.expectedReply request before
 
-    evaluate : Wire.Value → Store.World → Expected Wire.Value
+    evaluate : Wire.Value → Store.World → ObservationError Data.Sum.⊎ Expected Wire.Value
     evaluate raw before with Decode.readInvocation Tools.deleteProject raw
-    ... | inj₁ fault = expected before nothing (requestCorrection fault)
-    ... | inj₂ call = prepared
-      (Project.Registered.input (Decode.Invocation.operationToken call) (project call))
-      (Metadata.admitted (C.admittedWrite Tools.deleteProject raw refl call) before)
+    ... | inj₁ fault = inj₂ (expected before nothing (requestCorrection fault))
+    ... | inj₂ call with Metadata.admitted (C.admittedWrite Tools.deleteProject raw refl call) before
+    ... | inj₁ missing = inj₁ missing
+    ... | inj₂ outcome = inj₂ (prepared
+      (Project.Registered.input (Decode.Invocation.operationToken call) (project call)) outcome)
