@@ -2085,3 +2085,71 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
       ; addresses = ReadyMeaning.addresses known; separateResult = ReadyMeaning.separateResult known
       ; journal = Read.afterPlanJournal (Call.token call) current (Context.original scope) (Context.model scope)
           returnedBinding next saved (ReadyMeaning.addresses known) atPlan }
+
+
+  operationTextEqual : ∀ first second → P.textEqual first second ≡ true → first ≡ second
+  operationTextEqual first second known with first ≟Text second
+  ... | yes same = same
+  ... | no different with known
+  ... | ()
+
+  readyNonempty : ∀ call current scope → ReadyMeaning call current scope → P.Saved.steps (Context.model scope) ≢ []
+  readyNonempty call current scope known = P.publicWriterStepsNonempty library (Call.tool call) (Context.model scope)
+    (Call.writer call) (trans (sym (operationTextEqual _ _ (ReadyMeaning.planOperationMatches known)))
+      (readyOperation call current scope known)) (ReadyMeaning.executable known)
+
+  PendingValue : Read.Result → Set
+  PendingValue observed = Σ Store.BindingRow (λ original → Σ P.Step (λ next →
+    Σ (List Store.SavedReplyRow) (λ saved → observed ≡ Read.pending original next saved)))
+
+  afterPrefixPendingValue : ∀ original model receipts remaining result → P.Saved.steps model ≢ [] →
+    Resumable (Read.afterPrefix original model receipts remaining result) →
+    PendingValue (Read.afterPrefix original model receipts remaining result)
+  afterPrefixPendingValue original model receipts [] (just result) nonempty ()
+  afterPrefixPendingValue original model receipts (_ ∷ _) (just result) nonempty ()
+  afterPrefixPendingValue original model receipts (next ∷ rest) nothing nonempty possible = original , next , receipts , refl
+  afterPrefixPendingValue original model receipts [] nothing nonempty possible with P.Saved.steps model in steps
+  ... | [] = ⊥-elim (nonempty refl)
+  ... | _ ∷ _ = ⊥-elim possible
+
+  afterPlanPendingValue : ∀ original model rows → P.Saved.steps model ≢ [] → Resumable (Read.afterPlan original model rows) →
+    PendingValue (Read.afterPlan original model rows)
+  afterPlanPendingValue original model rows nonempty possible
+    with P.textEqual (Store.BindingRow.operation original) (P.Saved.operation model)
+  ... | false = ⊥-elim possible
+  ... | true with P.valid library model
+  ... | false = ⊥-elim possible
+  ... | true with Read.prefix (P.Saved.steps model) rows
+  ... | receipts , remaining with Data.List.length (Data.List.filterᵇ Read.notFinal rows) ≟ Data.List.length receipts
+  ... | no _ = ⊥-elim possible
+  ... | yes _ = afterPrefixPendingValue original model receipts remaining (Read.find Step.resultKey rows) nonempty possible
+
+  preparedResumablePending : ∀ call current scope → ReadyMeaning call current scope → Resumable (Read.answer (Call.token call) current) →
+    PendingReadback (Call.token call) current
+  preparedResumablePending call current scope known possible = fromPlan
+    (afterPlanPendingValue (Context.original scope) (Context.model scope) (Read.savedRows (Call.token call) current)
+      (readyNonempty call current scope known) (subst Resumable planObserved possible))
+    where
+    planObserved = Read.answerForKnownPlan (Call.token call) current (Context.original scope) (Context.raw scope)
+      (Context.model scope) (ReadyMeaning.boundRequest known) (ReadyMeaning.uncancelled known)
+      (ReadyMeaning.savedPlan known) (ReadyMeaning.decodedPlan known)
+    fromPlan : PendingValue (Read.afterPlan (Context.original scope) (Context.model scope) (Read.savedRows (Call.token call) current)) →
+      PendingReadback (Call.token call) current
+    fromPlan (original , next , saved , actual) = original , next , saved , trans planObserved actual
+
+  preparedEmptyPending : ∀ call current scope → ReadyMeaning call current scope → Read.savedRows (Call.token call) current ≡ [] →
+    PendingReadback (Call.token call) current
+  preparedEmptyPending call current scope known emptyRows with P.Saved.steps (Context.model scope) in steps
+  ... | [] = ⊥-elim (readyNonempty call current scope known steps)
+  ... | next ∷ rest = Context.original scope , next , [] , trans planObserved pendingPlan
+    where
+    planObserved = Read.answerForKnownPlan (Call.token call) current (Context.original scope) (Context.raw scope)
+      (Context.model scope) (ReadyMeaning.boundRequest known) (ReadyMeaning.uncancelled known)
+      (ReadyMeaning.savedPlan known) (ReadyMeaning.decodedPlan known)
+    pendingPlan : Read.afterPlan (Context.original scope) (Context.model scope) (Read.savedRows (Call.token call) current) ≡
+      Read.pending (Context.original scope) next []
+    pendingPlan rewrite emptyRows | ReadyMeaning.planOperationMatches known |
+      P.currentPlanRemainsReadable library (Context.model scope) (ReadyMeaning.executable known) | steps = refl
+
+  prefixKeepsRows : ∀ call before after token → Frame call before after → Read.savedRows token after ≡ Read.savedRows token before
+  prefixKeepsRows call before after token frame = cong (Read.savedRows token) (Frame.business frame)
