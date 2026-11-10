@@ -160,3 +160,54 @@ fn failed_editor_reports_the_actual_exit_and_repair_without_claiming_completion(
     );
     Ok(())
 }
+
+#[test]
+fn existing_interactive_file_requires_parent_sync_before_opening_the_editor() -> Result<()> {
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!(
+            "Interactive-init sync fault was not exercised: root bypasses directory permissions"
+        );
+        return Ok(());
+    }
+    let mut fixture = Fixture::new()?;
+    let selected = fixture.root.join("selected");
+    std::fs::create_dir(&selected)?;
+    fixture.config = selected.join("config.toml");
+    let original = b"# preserve even an invalid existing configuration\nnot TOML\n";
+    std::fs::write(&fixture.config, original)?;
+    std::fs::set_permissions(&fixture.config, std::fs::Permissions::from_mode(0o600))?;
+    struct RestorePermissions(PathBuf);
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    let restore = RestorePermissions(selected.clone());
+    // The known file remains readable, but opening its parent to acknowledge
+    // directory durability is denied. All evidence stays in the outer fixture.
+    std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o100))?;
+    let output = fixture.run("existing-parent-sync", &["init"])?;
+    std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o700))?;
+    drop(restore);
+    ensure!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr)?;
+    ensure!(
+        stderr.contains("unable to open configuration directory for synchronization"),
+        "{stderr}"
+    );
+    ensure!(
+        stderr.contains(&fixture.config.display().to_string()) && stderr.contains("mimir init"),
+        "{stderr}"
+    );
+    ensure!(!String::from_utf8(output.stdout)?.contains("Restart Claude Code"));
+    ensure!(
+        !fixture.record.exists(),
+        "editor was invoked before directory acknowledgement"
+    );
+    ensure!(std::fs::read(&fixture.config)? == original);
+    eprintln!(
+        "Complete interactive-init sync-refusal evidence: {}",
+        fixture.root.display()
+    );
+    Ok(())
+}

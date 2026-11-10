@@ -28,6 +28,11 @@ the user's editor changes them. Retrying after template publication therefore
 reaches the editor instead of refusing the file. Use the `KEY=VALUE` form for
 agent setup.
 
+Before handing an existing file to the editor, Mimir acknowledges file and
+directory durability. If that acknowledgement fails, it preserves the file and
+reports the filesystem cause, selected path and retry command before starting
+the editor.
+
 If the editor fails, Mimir reports its status, the selected file and how to
 reopen it or choose a working editor. It does not report successful completion
 or replace/remove the configuration after that editor failure. The editor may

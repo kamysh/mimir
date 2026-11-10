@@ -1077,7 +1077,7 @@ async fn cmd_reembed() -> Result<()> {
         }
         confirmed.push(belief.id);
         embedded += 1;
-        println!("  embedded {}  {}", belief.id, &belief.content);
+        println!("  embedded {}  {}", belief.id, belief.content);
     }
 
     println!(
