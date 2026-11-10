@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use mimir_core::{config::Config, MimirService};
@@ -515,7 +515,15 @@ fn cmd_init(pairs: Vec<(String, String)>) -> Result<()> {
         };
         println!("Opening in $EDITOR… (save and close to finish)");
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-        std::process::Command::new(&editor).arg(&path).status()?;
+        let status = std::process::Command::new(&editor)
+            .arg(&path)
+            .status()
+            .with_context(|| format!("Unable to start the editor for {}. Choose a working EDITOR and rerun `mimir init`; the configuration was not replaced or removed by Mimir.", path.display()))?;
+        anyhow::ensure!(
+            status.success(),
+            "The editor did not finish successfully ({status}) for {}. Mimir did not replace or remove the configuration. Inspect that file and rerun `mimir init` to reopen it, or choose a working EDITOR.",
+            path.display()
+        );
     } else {
         match Config::create_from_kv(&pairs)? {
             mimir_core::config::ConfigCreation::Created(path) => {
