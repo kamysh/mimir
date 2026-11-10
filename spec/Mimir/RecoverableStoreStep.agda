@@ -108,6 +108,25 @@ module AtomicStep (Input Diagnostic : Set)
     inj₂ (cong proj₁ (atomicObservation input initial interrupted _ physical))
   interruptionState input initial interrupted (X.beforeReply _ _ _ _ _ _ (E.replied _ _ _ ()) physical active)
 
+  atomicDoneOrUnchanged : ∀ input before after reply → Atomic before input reply after →
+    after ≡ before ⊎ Σ Wire.Value (λ value → (after , done value) ≡ execute input before)
+  atomicDoneOrUnchanged input before after (done value) physical =
+    inj₂ (value , atomicObservation input before after (done value) physical)
+  atomicDoneOrUnchanged input before .before (needsInput _) (observed , DB.abortedNone) = inj₁ refl
+  atomicDoneOrUnchanged input before .before needsRecovery (observed , DB.abortedNone) = inj₁ refl
+  atomicDoneOrUnchanged input before .before (cancelled _) (observed , DB.abortedNone) = inj₁ refl
+
+  interruptedDoneOrUnchanged : ∀ input before after → X.Interrupted (script input) before after →
+    after ≡ before ⊎ Σ Wire.Value (λ value → (after , done value) ≡ execute input before)
+  interruptedDoneOrUnchanged input before after (X.atPrefix _ _ _ (E.stopped _) (X.unchanged _)) = inj₁ refl
+  interruptedDoneOrUnchanged input before after
+    (X.atPrefix _ _ _ (E.replied _ _ reply (E.stopped _))
+      (X.changed _ _ _ _ physical (X.unchanged _))) = atomicDoneOrUnchanged input before after reply physical
+  interruptedDoneOrUnchanged input before after
+    (X.beforeReply _ _ _ _ reply _ (E.stopped _) (X.unchanged _) physical) =
+    atomicDoneOrUnchanged input before after reply physical
+  interruptedDoneOrUnchanged input before after (X.beforeReply _ _ _ _ _ _ (E.replied _ _ _ ()) _ _)
+
   everyDatabaseReceiptCovered : ∀ input before tag actual →
     DB.Atomic before (proj₁ (execute input before)) tag actual → X.Interrupted (script input) before actual
   everyDatabaseReceiptCovered input before .DB.committed _ DB.committedAll =
@@ -396,6 +415,31 @@ module Admitted (Input Diagnostic : Set)
 
   module Core = AtomicStep Input Diagnostic execute stable expectedPhysical
   open Core public hiding (Reply)
+
+  cachedReplay : ∀ input before current raw →
+    Store.lookupSaved before (token input) resultKey ≡ nothing →
+    Store.lookupSaved current (token input) resultKey ≡ just raw →
+    X.Interrupted (script input) before current →
+    X.Completed (script input) current current (done raw)
+  cachedReplay input before current raw absent present cut
+    with interruptedDoneOrUnchanged input before current cut
+  ... | inj₁ same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (value , observed) with doneOrigin input before current value (sym observed)
+  ... | inj₁ same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (_ , _ , final) = subst
+    (λ answer → X.Completed (script input) current current (done answer))
+    (Maybes.just-injective (trans (sym final) present))
+    (readOnlyCompletion input current value
+      (trans (cong (execute input) (cong proj₁ observed))
+        (trans (stable input before) (sym observed))))
 
 -- The same saved final step with metadata observed by the committing statement,
 -- rather than supplied in the public request. Admission, address and original
