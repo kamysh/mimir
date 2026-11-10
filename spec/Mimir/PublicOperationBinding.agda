@@ -2354,3 +2354,109 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   ... | originalPlan .scope known = contextForPending call after scope
     (startReadyReserved call before after scope completion) known
     (startReadyPending call before after scope completion)
+
+
+  CompletedValue : Read.Result → Set
+  CompletedValue outcome = Σ Store.BindingRow (λ original → Σ Wire.Value (λ raw → outcome ≡ Read.completed original raw))
+
+  data KnownResult (call : Call) (current : Store.World) : Result → Set where
+    knownReady : ∀ scope → KnownResult call current (ready scope)
+    knownCompleted : ∀ original raw → Read.answer (Call.token call) current ≡ Read.completed original raw →
+      KnownResult call current (returned (Read.completed original raw))
+    knownPolicyDialogue : ∀ fault → needsPolicy (Call.tool call) ≡ true →
+      Resumable (Read.answer (Call.token call) current) → KnownResult call current (needsInput fault)
+
+  createPlanKnownResult : ∀ call current scope after result → ReadyMeaning call current scope →
+    X.Completed (createPlan call (Store.BindingRow.settings (Context.original scope))) current after result →
+    KnownResult call current result
+  createPlanKnownResult call current scope after result known completion
+    with createPlanKnownCompletion call current scope after result known completion
+  ... | refl , refl = knownReady _
+
+  afterPolicyKnownResult : ∀ call current scope observed after result → ReadyMeaning call current scope →
+    needsPolicy (Call.tool call) ≡ true → Resumable (Read.answer (Call.token call) current) →
+    X.Completed (afterPolicy call (Store.BindingRow.settings (Context.original scope)) observed) current after result →
+    KnownResult call current result
+  afterPolicyKnownResult call current scope (unavailable fault) .current .(needsInput fault) known policy possible
+    (X.completed [] (E.returned _) (X.unchanged _)) = knownPolicyDialogue fault policy possible
+  afterPolicyKnownResult call current scope (configured settings) after result known policy possible completion
+    with Controls.PostgreSQL.jsonbEqual postgres (Store.BindingRow.settings (Context.original scope)) settings
+  ... | true = createPlanKnownResult call current scope after result known completion
+  ... | false with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = knownPolicyDialogue changedPolicy policy possible
+
+  beforePlanKnownResult : ∀ call current scope after result → ReadyMeaning call current scope →
+    Resumable (Read.answer (Call.token call) current) →
+    X.Completed (beforePlan call (Store.BindingRow.settings (Context.original scope))) current after result →
+    KnownResult call current result
+  beforePlanKnownResult call current scope after result known possible completion with needsPolicy (Call.tool call) in policy
+  ... | false = createPlanKnownResult call current scope after result known completion
+  ... | true with completion
+  ... | X.completed _ (E.replied _ _ observed execution) (X.changed _ _ _ .current refl changes) =
+    afterPolicyKnownResult call current scope observed after result known policy possible (X.completed _ execution changes)
+
+  resumeResumable : ∀ call settings outcome → Resumable outcome → resume call settings outcome ≡ beforePlan call settings
+  resumeResumable call settings (Read.awaitingPlan _) possible = refl
+  resumeResumable call settings (Read.awaitingCompletion _) possible = refl
+  resumeResumable call settings (Read.pending _ _ _) possible = refl
+  resumeResumable call settings Read.unknownToken ()
+  resumeResumable call settings Read.reserved ()
+  resumeResumable call settings (Read.completed _ _) ()
+  resumeResumable call settings (Read.cancelled _ _ _) ()
+  resumeResumable call settings (Read.needsRecovery _) ()
+  resumeResumable call settings (Read.inconsistent _ _) ()
+
+  resumeKnownResult : ∀ call current scope outcome after result → ReadyMeaning call current scope →
+    Read.answer (Call.token call) current ≡ outcome → Resumable outcome ⊎ CompletedValue outcome →
+    X.Completed (resume call (Store.BindingRow.settings (Context.original scope)) outcome) current after result →
+    KnownResult call current result
+  resumeKnownResult call current scope outcome after result known observed (inj₁ possible) completion =
+    beforePlanKnownResult call current scope after result known (subst Resumable (sym observed) possible)
+      (subst (λ program → X.Completed program current after result)
+        (resumeResumable call (Store.BindingRow.settings (Context.original scope)) outcome possible) completion)
+  resumeKnownResult call current scope .(Read.completed original raw) .current .(returned (Read.completed original raw)) known observed
+    (inj₂ (original , raw , refl)) (X.completed [] (E.returned _) (X.unchanged _)) = knownCompleted original raw observed
+
+  readOutcomeKnownResult : ∀ call current scope after result → ReadyMeaning call current scope →
+    Resumable (Read.answer (Call.token call) current) ⊎ CompletedValue (Read.answer (Call.token call) current) →
+    X.Completed (readOutcome call (Store.BindingRow.settings (Context.original scope))) current after result →
+    KnownResult call current result
+  readOutcomeKnownResult call current scope after result known possible
+    (X.completed _ (E.replied _ _ .current execution) (X.changed _ _ _ .current (refl , refl) changes)) =
+    resumeKnownResult call current scope (Read.answer (Call.token call) current) after result known refl possible
+      (X.completed _ execution changes)
+
+  bindRequestKnownResult : ∀ call current scope after result → Reserved call current → ReadyMeaning call current scope →
+    Resumable (Read.answer (Call.token call) current) ⊎ CompletedValue (Read.answer (Call.token call) current) →
+    X.Completed (bindRequest call (Store.BindingRow.settings (Context.original scope))) current after result →
+    KnownResult call current result
+  bindRequestKnownResult call current scope after result reserved known possible
+    (X.completed _ (E.replied _ _ (time , observed) execution) (X.changed _ _ _ middle physical changes))
+    with bindKnownObservation call current scope time observed middle reserved known physical
+  ... | refl , refl = readOutcomeKnownResult call current scope after result known possible (X.completed _ execution changes)
+
+  afterOriginalKnownScript : ∀ call current scope → ReadyMeaning call current scope →
+    afterOriginal call current ≡ bindRequest call (Store.BindingRow.settings (Context.original scope))
+  afterOriginalKnownScript call current scope known rewrite ReadyMeaning.boundRequest known = refl
+
+  afterOriginalKnownResult : ∀ call current scope after result → Reserved call current → ReadyMeaning call current scope →
+    Resumable (Read.answer (Call.token call) current) ⊎ CompletedValue (Read.answer (Call.token call) current) →
+    X.Completed (afterOriginal call current) current after result → KnownResult call current result
+  afterOriginalKnownResult call current scope after result reserved known possible completion =
+    bindRequestKnownResult call current scope after result reserved known possible
+      (subst (λ program → X.Completed program current after result)
+        (afterOriginalKnownScript call current scope known) completion)
+
+  startKnownResult : ∀ call current scope after result → Reserved call current → ReadyMeaning call current scope →
+    Resumable (Read.answer (Call.token call) current) ⊎ CompletedValue (Read.answer (Call.token call) current) →
+    X.Completed (start call) current after result → KnownResult call current result
+  startKnownResult call current scope after result reserved known possible
+    (X.completed _ (E.replied _ _ .current execution) (X.changed _ _ _ .current (refl , refl) changes)) =
+    afterOriginalKnownResult call current scope after result reserved known possible (X.completed _ execution changes)
+
+  completedKnownResult : ∀ requested call current scope after result → decode requested ≡ inj₂ call →
+    Reserved call current → ReadyMeaning call current scope →
+    Resumable (Read.answer (Call.token call) current) ⊎ CompletedValue (Read.answer (Call.token call) current) →
+    X.Completed (script requested) current after result → KnownResult call current result
+  completedKnownResult requested call current scope after result decoded reserved known possible completion rewrite decoded =
+    startKnownResult call current scope after result reserved known possible completion
