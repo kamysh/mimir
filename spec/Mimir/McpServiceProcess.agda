@@ -33,10 +33,10 @@ module Process (sizeMaximum : ℕ) (configurationPath : Path.Path)
   module C = Configuration.Run
   module S config = Startup.Run (Config.Config.core config) connectionEnvironment decimalPort certificateBlocks unix
   module M = Migration.Runtime Text Text
-  module R = Runtime.Run environment format conversion
+  module R = Runtime.Run environment format conversion using (module R; module C; module WithDiagnostic)
 
   module WithDiagnostic (render : R.C.H.Diagnostic → Text) where
-    module Loop = R.WithDiagnostic render
+    module Loop = R.WithDiagnostic render using (State; start; exited; Event; Step)
 
     data Exit : Set where
       help version usage : Exit
@@ -48,7 +48,7 @@ module Process (sizeMaximum : ℕ) (configurationPath : Path.Path)
       unstarted : (args : List Arguments.Argument) → Arguments.ApplicationEntry args → State
       loading : Configuration.P.Script (Configuration.Failure Data.Sum.⊎ Config.Config) → State
       starting : (config : Config.Config) → S.State config → State
-      serving : (config : Config.Config) → S.Service config → R.R.State → State
+      serving : (config : Config.Config) → S.Service config → Loop.State → State
       exited : Exit → State
 
     data Event : Set where
@@ -74,10 +74,10 @@ module Process (sizeMaximum : ℕ) (configurationPath : Path.Path)
         Step migrations (starting config before) (service config event) (starting config after)
       failed : ∀ config failure → Step migrations (starting config (S.failed {config = config} failure)) serviceReturned (exited (serviceFailure config failure))
       ready : ∀ config service → CoreConnection.Compatible config environment →
-        Step migrations (starting config (S.ready {config = config} service)) serviceReturned (serving config service (R.R.reading []))
+        Step migrations (starting config (S.ready {config = config} service)) serviceReturned (serving config service Loop.start)
       request : ∀ config service before event after → Loop.Step before event after →
         Step migrations (serving config service before) (exchange event) (serving config service after)
-      finished : ∀ config service reason → Step migrations (serving config service (R.R.exited reason)) serviceReturned (exited (runtimeExit reason))
+      finished : ∀ config service reason → Step migrations (serving config service (Loop.exited reason)) serviceReturned (exited (runtimeExit reason))
 
     data Trace (migrations : M.Inputs) : State → List Event → State → Set where
       empty : ∀ state → Trace migrations state [] state

@@ -28,12 +28,15 @@ enabled configurationValue with Values.Config.embed configurationValue
 ... | nothing = false
 ... | just _ = true
 
-Compatible : Library.Contract → Config.Config → Application.Environment → Set
-Compatible conversion configurationValue environment =
+-- The actual loaded core configuration fixes execution settings. Backend
+-- dimensions are observed by the concrete operations; there is no global
+-- 768-dimensional precondition or independently chosen parser instance.
+Compatible : Config.Config → Application.Environment → Set
+Compatible configurationValue environment =
+  Application.Environment.configuration environment ≡ Config.Config.core configurationValue ×
   Application.Environment.embeddingsEnabled environment ≡ enabled (Config.Config.core configurationValue) ×
-  Application.Environment.dimension environment ≡ 768 ×
   Application.Environment.retirementPolicy environment ≡
-    Config.Retirement.resolve conversion (Config.Config.retirement configurationValue)
+    Config.Retirement.resolve (Application.Environment.library environment) (Config.Config.retirement configurationValue)
 
 module Bound (sizeMaximum : ℕ) (path : Path.Path) (environment : Connection.Environment)
   (decimalPort : ℕ → Text) (certificateBlocks : Text → List Text) (unix : Bool) where

@@ -35,7 +35,8 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
   (conversion : Conversion.Contract) where
   module H = Handler.Run environment format conversion using
     (Diagnostic; Result; failure; completed; inputCorrection; preparationDecision;
-     partialDecision; boundReferenceDecision; Handled; module P)
+     partialDecision; boundReferenceDecision; Handled; InFlight; module InFlight;
+     finishHosted; module Physical; module P)
   private
     module A = Application.Run environment using (Result; module Result; Event; reached)
     module Wire = Output.Encode environment format using (boundReferenceValue)
