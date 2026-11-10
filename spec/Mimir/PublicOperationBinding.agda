@@ -10,6 +10,7 @@ open import Agda.Builtin.Float using (primFloatEquality)
 open import Data.Integer using (ℤ)
 import Data.Integer.Properties as Integer
 open import Data.List using (List; []; _∷_; map)
+open import Data.List.Relation.Unary.All using (All)
 import Data.List.Properties as Lists
 open import Data.Maybe using (Maybe; just; nothing)
 import Data.Maybe.Properties as Maybes
@@ -20,7 +21,7 @@ open import Data.Sum using (_⊎_; inj₁; inj₂)
 import Data.Sum.Properties as Sum
 open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (does; ¬_; yes; no)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; trans; subst; sym)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; trans; subst; sym)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.ApplicationStore as Store
@@ -708,6 +709,15 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     planCancelled : Store.CancellationRow → PlanResult
     planUnknown : PlanResult
 
+  -- External canonical-address codec evidence for the actual returned plan.
+  -- Native build/load uses canonical serde JSON-array step IDs. This is
+  -- neither a business goal nor a claim about an arbitrary formatter.
+  PlanValidation : PlanResult → Set
+  PlanValidation (planned original model raw) = P.executable library model ≡ true ×
+    Controls.Addressing (P.Saved.steps model) ×
+    All (λ boundary → P.Step.id boundary ≢ Step.resultKey) (P.Saved.steps model)
+  PlanValidation _ = ⊤
+
   existingPlan : Store.BindingRow → Wire.Value → PlanResult
   existingPlan original raw with P.decode raw
   ... | inj₁ fault = planRefused fault
@@ -885,7 +895,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   Reply (currentSettings _) = Settings
   Reply (bindOriginal _ _) = ℤ × BindingResult
   Reply (readResult _) = Store.World
-  Reply (publishPlan call _) = PlanEncoding call × PlanResult
+  Reply (publishPlan call _) = PlanEncoding call × Σ PlanResult PlanValidation
 
   bindingReceipt : BindingResult → DB.Receipt
   bindingReceipt (bound _) = DB.committed
@@ -903,7 +913,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     reply ≡ proj₂ (bind call settings observedTime before) ×
     DB.Atomic before (proj₁ (bind call settings observedTime before)) (bindingReceipt reply) after
   Atomic before (readResult _) observed after = observed ≡ before × after ≡ before
-  Atomic before (publishPlan call settings) (encodedPlan , reply) after =
+  Atomic before (publishPlan call settings) (encodedPlan , reply , validated) after =
     reply ≡ proj₂ (prepare call settings encodedPlan before) ×
     DB.Atomic before (proj₁ (prepare call settings encodedPlan before)) (planReceipt reply) after
 
@@ -919,7 +929,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     (λ observed → E.done (returned (Read.answer (Call.token call) observed)))
 
   createPlan : Call → Wire.Value → E.Script Result
-  createPlan call settings = E.ask (publishPlan call settings) (λ observed → afterPlan call (proj₂ observed))
+  createPlan call settings = E.ask (publishPlan call settings) (λ observed → afterPlan call (proj₁ (proj₂ observed)))
 
   changedPolicy : Validation.Fault
   changedPolicy = Validation.fault (Validation.key "retirement" ∷ []) Validation.wrongIdentity
@@ -997,7 +1007,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     subst (Frame call before) (sym unchanged) (identityFrame call before)
   atomicFrame before (bindOriginal call settings) (observedTime , reply) after (same , publication) =
     DB.invariantPreserved (Frame call before) publication (identityFrame call before) (bindFrame call settings observedTime before)
-  atomicFrame before (publishPlan call settings) (encodedPlan , reply) after (same , publication) =
+  atomicFrame before (publishPlan call settings) (encodedPlan , reply , validated) after (same , publication) =
     DB.invariantPreserved (Frame call before) publication (identityFrame call before) (planFrame call settings encodedPlan before)
 
   data Scoped (call : Call) : E.Script Result → Set where
@@ -1012,7 +1022,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterPlanScoped call planUnknown = asked _ _ refl (λ _ → finished _)
 
   createPlanScoped : ∀ call settings → Scoped call (createPlan call settings)
-  createPlanScoped call settings = asked _ _ refl (λ observed → afterPlanScoped call (proj₂ observed))
+  createPlanScoped call settings = asked _ _ refl (λ observed → afterPlanScoped call (proj₁ (proj₂ observed)))
 
   afterPolicyScoped : ∀ call settings observed → Scoped call (afterPolicy call settings observed)
   afterPolicyScoped call settings (unavailable fault) = finished _
@@ -1142,6 +1152,8 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
             (P.Saved.operation (Context.model context)) ≡ true
           executable : P.executable library (Context.model context) ≡ true
           uncancelled : Store.lookupCancellation after (Call.token call) ≡ nothing
+          addresses : Controls.Addressing (P.Saved.steps (Context.model context))
+          separateResult : All (λ boundary → P.Step.id boundary ≢ Step.resultKey) (P.Saved.steps (Context.model context))
 
   readyOperation : ∀ call after context → ReadyMeaning call after context →
     Store.BindingRow.operation (Context.original context) ≡ Call.name call
@@ -1244,10 +1256,10 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     Store.lookupSaved before (Call.token call) Step.resultKey ≡ nothing →
     X.Completed (createPlan call settings) before after result → AbsentWhenReady call after result
   createPlanReadyAbsent call settings before after result absent
-    (X.completed _ (E.replied _ _ (encoding , planResult) execution) (X.changed _ _ _ middle physical changes)) =
+    (X.completed _ (E.replied _ _ (encoding , planResult , validated) execution) (X.changed _ _ _ middle physical changes)) =
     afterPlanReadyAbsent call planResult middle after result
       (trans (prefixKeepsAnswer call before middle (Call.token call) Step.resultKey
-        (atomicFrame before (publishPlan call settings) (encoding , planResult) middle physical)) absent)
+        (atomicFrame before (publishPlan call settings) (encoding , planResult , validated) middle physical)) absent)
       (X.completed _ execution changes)
 
   afterPolicyReadyAbsent : ∀ call settings observed before after result →
@@ -1372,74 +1384,79 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     plan (Call.token call) before ≡ just raw →
     Store.lookupCancellation before (Call.token call) ≡ nothing →
     existingPlan original raw ≡ planned returnedOriginal returnedModel returnedRaw →
+    PlanValidation (planned returnedOriginal returnedModel returnedRaw) →
     ReadyMeaning call before (preparedWrite call returnedOriginal returnedModel returnedRaw)
-  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted validated
     with P.decode raw in decoded
   ... | inj₁ _ with accepted
   ... | ()
-  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted | inj₂ model
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted validated | inj₂ model
     with P.textEqual (Store.BindingRow.operation original) (P.Saved.operation model) in sameName
   ... | false with accepted
   ... | ()
-  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted | inj₂ model | true
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted validated | inj₂ model | true
     with P.executable library model in valid
   ... | false with accepted
   ... | ()
-  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted | inj₂ model | true | true
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted validated | inj₂ model | true | true
     with accepted
   ... | refl = record
     { actualCall = refl; boundRequest = known; originalArguments = settings , matched
-    ; savedPlan = stored; decodedPlan = decoded; planOperationMatches = sameName; executable = valid; uncancelled = active }
+    ; savedPlan = stored; decodedPlan = decoded; planOperationMatches = sameName; executable = valid; uncancelled = active
+    ; addresses = proj₁ (proj₂ validated); separateResult = proj₂ (proj₂ validated) }
 
   newPlanReady : ∀ call settings original encoding before after returnedOriginal returnedModel returnedRaw →
     binding (Call.token call) before ≡ just original → matches call settings original ≡ true →
     Store.lookupCancellation before (Call.token call) ≡ nothing →
     (after , planned returnedOriginal returnedModel returnedRaw) ≡ saveNewPlan call original encoding before →
+    PlanValidation (planned returnedOriginal returnedModel returnedRaw) →
     ReadyMeaning call after (preparedWrite call returnedOriginal returnedModel returnedRaw)
-  newPlanReady call settings original (encodingFailed fault) before after returnedOriginal returnedModel returnedRaw known matched active ()
-  newPlanReady call settings original (encoded model computed raw decoded) before after returnedOriginal returnedModel returnedRaw known matched active accepted
+  newPlanReady call settings original (encodingFailed fault) before after returnedOriginal returnedModel returnedRaw known matched active () validated
+  newPlanReady call settings original (encoded model computed raw decoded) before after returnedOriginal returnedModel returnedRaw known matched active accepted validated
     with accepted
   ... | refl = record
     { actualCall = refl; boundRequest = known; originalArguments = settings , matched
     ; savedPlan = headPlan call raw before; decodedPlan = decoded
     ; planOperationMatches = trans (cong (λ name → P.textEqual name (P.Saved.operation model)) (matchingOperation call settings original matched))
         (trans (cong (P.textEqual (Call.name call)) (computedOperation call model computed)) (sameOperation (Call.name call)))
-    ; executable = computedExecutable call model computed; uncancelled = active }
+    ; executable = computedExecutable call model computed; uncancelled = active
+    ; addresses = proj₁ (proj₂ validated); separateResult = proj₂ (proj₂ validated) }
 
   prepareReady : ∀ call settings encoding before after original model raw →
     (after , planned original model raw) ≡ prepare call settings encoding before →
+    PlanValidation (planned original model raw) →
     ReadyMeaning call after (preparedWrite call original model raw)
-  prepareReady call settings encoding before after original model raw accepted
+  prepareReady call settings encoding before after original model raw accepted validated
     with binding (Call.token call) before in known
   ... | nothing with accepted
   ... | ()
-  prepareReady call settings encoding before after original model raw accepted | just boundRow
+  prepareReady call settings encoding before after original model raw accepted validated | just boundRow
     with matches call settings boundRow in matched
   ... | false with accepted
   ... | ()
-  prepareReady call settings encoding before after original model raw accepted | just boundRow | true
+  prepareReady call settings encoding before after original model raw accepted validated | just boundRow | true
     with Store.lookupCancellation before (Call.token call) in active
   ... | just _ with accepted
   ... | ()
-  prepareReady call settings encoding before after original model raw accepted | just boundRow | true | nothing
+  prepareReady call settings encoding before after original model raw accepted validated | just boundRow | true | nothing
     with plan (Call.token call) before in stored
   ... | just old = subst (λ state → ReadyMeaning call state (preparedWrite call original model raw))
     (sym (cong proj₁ accepted))
-    (existingReady call settings before boundRow old original model raw known matched stored active (sym (cong proj₂ accepted)))
-  prepareReady call settings encoding before after original model raw accepted | just boundRow | true | nothing | nothing
+    (existingReady call settings before boundRow old original model raw known matched stored active (sym (cong proj₂ accepted)) validated)
+  prepareReady call settings encoding before after original model raw accepted validated | just boundRow | true | nothing | nothing
     with Read.savedRows (Call.token call) before
   ... | _ ∷ _ with accepted
   ... | ()
-  prepareReady call settings encoding before after original model raw accepted | just boundRow | true | nothing | nothing | [] =
-    newPlanReady call settings boundRow encoding before after original model raw known matched active accepted
+  prepareReady call settings encoding before after original model raw accepted validated | just boundRow | true | nothing | nothing | [] =
+    newPlanReady call settings boundRow encoding before after original model raw known matched active accepted validated
 
-  prepareAtomicReady : ∀ call settings encoding reply before after →
-    Atomic before (publishPlan call settings) (encoding , reply) after →
+  prepareAtomicReady : ∀ call settings encoding reply (validated : PlanValidation reply) before after →
+    Atomic before (publishPlan call settings) (encoding , reply , validated) after →
     ∀ original model raw → reply ≡ planned original model raw →
     ReadyMeaning call after (preparedWrite call original model raw)
-  prepareAtomicReady call settings encoding .(planned original model raw) before ._ (accepted , DB.committedAll)
+  prepareAtomicReady call settings encoding .(planned original model raw) validated before ._ (accepted , DB.committedAll)
     original model raw refl = prepareReady call settings encoding before _ original model raw
-      (cong (λ result → proj₁ (prepare call settings encoding before) , result) accepted)
+      (cong (λ result → proj₁ (prepare call settings encoding before) , result) accepted) validated
 
   readbackCompletion : ∀ call before after reply →
     X.Completed (E.ask (readResult call) (λ observed → E.done (returned (Read.answer (Call.token call) observed)))) before after reply →
@@ -1460,9 +1477,9 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
 
   createPlanMeaning : ∀ call settings before after reply → X.Completed (createPlan call settings) before after reply → ReplyMeaning call after reply
   createPlanMeaning call settings before after reply
-    (X.completed _ (E.replied _ _ (encoding , result) execution) (X.changed _ _ _ middle physical changes)) =
+    (X.completed _ (E.replied _ _ (encoding , result , validated) execution) (X.changed _ _ _ middle physical changes)) =
     afterPlanMeaning call result middle after reply
-      (prepareAtomicReady call settings encoding result before middle physical) (X.completed _ execution changes)
+      (prepareAtomicReady call settings encoding result validated before middle physical) (X.completed _ execution changes)
 
   afterPolicyMeaning : ∀ call settings observed before after reply →
     X.Completed (afterPolicy call settings observed) before after reply → ReplyMeaning call after reply
@@ -1631,6 +1648,10 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     field settings : Call → Store.World → Settings
           bindingTime : Call → Store.World → ℤ
           encodePlan : ∀ call → Store.World → PlanEncoding call
+          -- Actual host codec/build guarantees for this returned model,
+          -- including a current executable plan read from existing metadata.
+          validatePlan : ∀ call settings encoding before →
+            PlanValidation (proj₂ (prepare call settings encoding before))
 
   doneProgress : ∀ result before → Σ Store.World (λ after → Σ Result (λ reply → X.Completed (E.done result) before after reply))
   doneProgress result before = before , result , X.completed [] (E.returned _) (X.unchanged _)
@@ -1654,10 +1675,11 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
       (proj₂ (prepare call settings (Environment.encodePlan environment call before) before))
       (proj₁ (prepare call settings (Environment.encodePlan environment call before) before))
   ... | after , reply , X.completed events execution changes = after , reply , X.completed
-    ((publishPlan call settings , encoding , proj₂ expected) ∷ events) (E.replied _ _ _ execution)
+    ((publishPlan call settings , encoding , proj₂ expected , validated) ∷ events) (E.replied _ _ _ execution)
     (X.changed before _ _ _ (refl , preparePhysical call settings encoding before) changes)
     where encoding = Environment.encodePlan environment call before
           expected = prepare call settings encoding before
+          validated = Environment.validatePlan environment call settings encoding before
 
   afterPolicyProgress : Environment → ∀ call settings observed before → Σ Store.World (λ after → Σ Result
     (λ reply → X.Completed (afterPolicy call settings observed) before after reply))
@@ -1813,7 +1835,8 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     ; savedPlan = trans samePlan (ReadyMeaning.savedPlan earlier)
     ; decodedPlan = ReadyMeaning.decodedPlan earlier; planOperationMatches = ReadyMeaning.planOperationMatches earlier
     ; executable = ReadyMeaning.executable earlier
-    ; uncancelled = trans sameCancellation (ReadyMeaning.uncancelled earlier) }
+    ; uncancelled = trans sameCancellation (ReadyMeaning.uncancelled earlier)
+    ; addresses = ReadyMeaning.addresses earlier; separateResult = ReadyMeaning.separateResult earlier }
 
   contextSame : ∀ first second → Context.call first ≡ Context.call second →
     Context.original first ≡ Context.original second → Context.model first ≡ Context.model second →
