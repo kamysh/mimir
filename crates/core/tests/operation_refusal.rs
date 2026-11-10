@@ -2,6 +2,9 @@
 #[allow(dead_code)]
 #[path = "../../../tests/support/isolation.rs"]
 mod isolation;
+#[allow(dead_code)]
+#[path = "../../../tests/support/operation_observation.rs"]
+mod operation_observation;
 use anyhow::Result;
 use mimir_core::{config::Config, db, graph::Pattern, store::*, MimirService};
 use serde_json::json;
@@ -111,6 +114,19 @@ async fn acknowledged_refusal_keeps_the_original_diagnostic_and_stores_no_comple
         "rollback must release the transaction's lock before the no-change diagnostic returns"
     );
     remains_pending(&service, token, &step).await?;
+    let mut connection = db::connect(&config().database).await?;
+    let snapshot = connection
+        .build_transaction()
+        .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+        .read_only(true)
+        .start()
+        .await?;
+    let observed = operation_observation::observe(&snapshot).await?;
+    assert!(observed.reservations.iter().any(|row| row.token == token));
+    assert!(observed.bindings.iter().any(|row| row.token == token));
+    assert!(!observed.replies.iter().any(|row| row.token == token));
+    assert!(!observed.cancellations.iter().any(|row| row.token == token));
+    snapshot.commit().await?;
     store.delete_pattern(id).await?;
     Ok(())
 }
