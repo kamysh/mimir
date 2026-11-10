@@ -78,6 +78,7 @@ impl EmbeddingCancellation {
 pub struct EmbeddingStopHandle {
     state: tokio::sync::watch::Sender<EmbeddingStatus>,
     cleanup: Arc<local_worker::Cleanup>,
+    body_destroyed: Arc<std::sync::atomic::AtomicBool>,
 }
 impl EmbeddingStopHandle {
     /// Request cancellation of a running job. This return value is not a
@@ -102,6 +103,11 @@ impl EmbeddingStopHandle {
 
     pub(crate) fn cleanup_pending(&self) -> bool {
         self.cleanup.pending()
+    }
+
+    pub(crate) fn body_destroyed(&self) -> bool {
+        self.body_destroyed
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -139,6 +145,16 @@ impl Drop for EmbeddingOwner {
 pub struct EmbeddingJob<'a> {
     future: EmbedFuture<'a>,
     control: EmbeddingStopHandle,
+    // Fields drop in declaration order. The future, including its worker's
+    // kill/wait guard, must drop before this marker can confirm destruction.
+    _body: EmbeddingBody,
+}
+
+struct EmbeddingBody(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for EmbeddingBody {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 impl EmbeddingJob<'_> {
     pub fn stop_handle(&self) -> EmbeddingStopHandle {
@@ -168,9 +184,11 @@ impl OwnedEmbeddingBackend {
     pub fn embed<'a>(&'a self, texts: &'a [String]) -> EmbeddingJob<'a> {
         let (state, received) = tokio::sync::watch::channel(EmbeddingStatus::Running);
         let cleanup = Arc::new(local_worker::Cleanup::default());
+        let body_destroyed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let control = EmbeddingStopHandle {
             state,
             cleanup: cleanup.clone(),
+            body_destroyed: body_destroyed.clone(),
         };
         let owner = EmbeddingOwner {
             control: control.clone(),
@@ -213,7 +231,11 @@ impl OwnedEmbeddingBackend {
                 Err(EmbeddingCancelled.into())
             }
         });
-        EmbeddingJob { future, control }
+        EmbeddingJob {
+            future,
+            control,
+            _body: EmbeddingBody(body_destroyed),
+        }
     }
 }
 

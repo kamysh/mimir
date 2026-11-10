@@ -1073,7 +1073,10 @@ impl MimirService {
         // unavailable semantic leg remains visible in the returned report.
         let (vector_ranked, semantic): (Vec<Uuid>, SemanticObservation) =
             if let Some(embedder) = &self.embeddings {
-                match embedder.embed(&[query.to_string()]).await {
+                match self
+                    .operation_embedding_job(embedder, &[query.to_string()], None)
+                    .await
+                {
                     Ok(mut vecs)
                         if vecs.len() == 1
                             && !vecs[0].is_empty()
@@ -1399,8 +1402,7 @@ impl MimirService {
         })?;
 
         let mut vecs =
-            embedder
-                .embed(&[context.to_string()])
+            self.operation_embedding_job(embedder, &[context.to_string()], None)
                 .await
                 .map_err(|error| {
                     RequestCorrection::document_query_embedding(Code::UnsupportedCombination,

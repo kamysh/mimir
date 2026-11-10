@@ -91,6 +91,7 @@ struct State {
     active: HashMap<Uuid, Vec<Arc<Active>>>,
     stopping: HashMap<Uuid, watch::Sender<bool>>,
     embedding_cleanup: HashMap<Uuid, Vec<EmbeddingStopHandle>>,
+    unregistered_embedding_cleanup: Vec<EmbeddingStopHandle>,
     awaiting_ack: HashMap<Uuid, PendingAcknowledgement>,
 }
 #[derive(Default)]
@@ -184,6 +185,41 @@ impl Stopping {
     }
 }
 impl OperationExecutions {
+    fn track_unregistered_embedding(&self, handle: EmbeddingStopHandle) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("embedding cleanup registry is unavailable"))?;
+        state
+            .unregistered_embedding_cleanup
+            .retain(|job| !job.body_destroyed() || job.cleanup_pending());
+        state.unregistered_embedding_cleanup.push(handle);
+        Ok(())
+    }
+
+    fn confirm_unregistered_embeddings(&self) -> Result<Vec<WorkerCleanupIssue>> {
+        let handles = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("embedding cleanup registry is unavailable"))?
+            .unregistered_embedding_cleanup
+            .clone();
+        let mut issues = Vec::new();
+        for handle in handles {
+            anyhow::ensure!(
+                handle.body_destroyed(),
+                "An embedding request body is still active; its physical cleanup is unconfirmed. Stop its owning request before finalizing this host."
+            );
+            issues.extend(handle.confirm_cleanup());
+        }
+        self.state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("embedding cleanup registry is unavailable"))?
+            .unregistered_embedding_cleanup
+            .retain(|job| !job.body_destroyed() || job.cleanup_pending());
+        Ok(issues)
+    }
+
     fn track_embedding(&self, token: Uuid, handle: EmbeddingStopHandle) -> Result<()> {
         self.state
             .lock()
@@ -381,6 +417,9 @@ impl MimirService {
                 if let Some(token) = token {
                     self.operation_executions
                         .track_embedding(token, job.stop_handle())?;
+                } else {
+                    self.operation_executions
+                        .track_unregistered_embedding(job.stop_handle())?;
                 }
                 job.await
             };
@@ -574,7 +613,13 @@ impl MimirService {
     }
 
     pub async fn finish_operation_host(&self) -> Result<()> {
-        ensure_physical_cleanup(&self.confirm_stopped_executions().await?)
+        // Ordinary reads have no operation token/PG row. Their exact job
+        // handles still outlive dropped futures and retain failed waits.
+        let ordinary = self.operation_executions.confirm_unregistered_embeddings();
+        let registered = self.confirm_stopped_executions().await;
+        let mut issues = ordinary?;
+        issues.extend(registered?);
+        ensure_physical_cleanup(&issues)
     }
     /// Stop owned calls before waiting for database revocation. A blocked
     /// database query must not keep a cancelled native provider running.

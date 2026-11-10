@@ -577,6 +577,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn document_query_stop_kills_its_blocked_embedding() -> anyhow::Result<()> {
+        use crate::{config::Config, test_isolation as isolation, MimirService};
+        let cfg = Config {
+            database: isolation::fixture().database_config(),
+            embeddings: None,
+            llm: None,
+            judge: None,
+            email: None,
+            retirement: None,
+        };
+        let directory =
+            PathBuf::from("/tmp").join(format!("mimir-read-stop-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory)?;
+        let socket = directory.join("ready.sock");
+        let listener = tokio::net::UnixListener::bind(&socket)?;
+        let (program_directory, program) = fixture(&format!("import socket,os\njson.loads(sys.stdin.readline())\nprint(json.dumps({{'status':'started','version':2}}),flush=True)\ns=socket.socket(socket.AF_UNIX)\ns.connect({:?})\ns.sendall((str(os.getpid())+'\\n').encode())\nwhile True: pass", socket.to_str().unwrap()));
+        let service = Arc::new(
+            MimirService::connect_with_embeddings(
+                &cfg,
+                Some(OwnedEmbeddingBackend {
+                    provider: Box::new(LocalBackend::new(
+                        Some(directory.join("cache").display().to_string()),
+                        Some(program),
+                    )),
+                }),
+            )
+            .await?,
+        );
+        let reader = service.clone();
+        let query = tokio::spawn(async move {
+            reader
+                .query_document("find relevant text", None, None)
+                .await
+        });
+        let (stream, _) = listener.accept().await?;
+        let mut pid = String::new();
+        BufReader::new(stream).read_line(&mut pid).await?;
+        query.abort();
+        assert!(query.await.unwrap_err().is_cancelled());
+        service.finish_operation_host().await?;
+        #[cfg(target_os = "linux")]
+        assert!(!PathBuf::from(format!("/proc/{}", pid.trim())).exists());
+        std::fs::remove_dir_all(program_directory)?;
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn document_query_stop_retains_unconfirmed_worker_cleanup() -> anyhow::Result<()> {
+        use crate::{config::Config, test_isolation as isolation, MimirService};
+        let cfg = Config {
+            database: isolation::fixture().database_config(),
+            embeddings: None,
+            llm: None,
+            judge: None,
+            email: None,
+            retirement: None,
+        };
+        let (directory, program) = fixture("sys.stdin.read()");
+        let (ready, received) = tokio::sync::oneshot::channel();
+        let service = Arc::new(
+            MimirService::connect_with_embeddings(
+                &cfg,
+                Some(OwnedEmbeddingBackend::for_test(Box::new(MissingReceipt {
+                    program,
+                    ready: Mutex::new(Some(ready)),
+                }))),
+            )
+            .await?,
+        );
+        let reader = service.clone();
+        let query = tokio::spawn(async move {
+            reader
+                .query_document("find relevant text", None, None)
+                .await
+        });
+        let diagnostics = received.await?;
+        query.abort();
+        assert!(query.await.unwrap_err().is_cancelled());
+        let error = service.finish_operation_host().await.unwrap_err();
+        assert!(format!("{error:#}").contains(diagnostics.to_str().unwrap()));
+        println!(
+            "retained missing-receipt artifacts: {} {}",
+            directory.display(),
+            diagnostics.display()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn global_confirmation_keeps_missing_physical_receipts_pending() -> anyhow::Result<()> {
         use crate::{config::Config, db, test_isolation as isolation, MimirService};
         let cfg = Config {
