@@ -2371,7 +2371,8 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
       Store.World.operations changed ≡ Store.World.operations before)
     (admit : StatementInput → StoreStep.Registration → Maybe Diagnostic) where
     module Saved = StoreStep.Admitted StatementInput Diagnostic token key distinct decide keepsJournal admit
-      using (execute; script; module X; interruptedDoneOrUnchanged; doneIsAdmitted; progress)
+      using (execute; script; module X; interruptedDoneOrUnchanged; doneIsAdmitted; progress
+      ; registrationUnchanged; cancellationUnchanged; interruptedKeepsRegistration; interruptedKeepsCancellation)
     module K = StoreStep.For StatementInput Diagnostic token key distinct decide keepsJournal using (publication)
 
     donePublication : ∀ input before current value → (current , StoreStep.done value) ≡ Saved.execute input before →
