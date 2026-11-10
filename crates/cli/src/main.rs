@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use mimir_core::{config::Config, MimirService};
@@ -108,7 +108,8 @@ enum Command {
     ///
     /// With no arguments: writes a commented template to
     /// ~/.config/mimir/config.toml (or $XDG_CONFIG_HOME/mimir/config.toml) and
-    /// opens it in $EDITOR. With KEY=VALUE arguments: writes a config built
+    /// opens the existing config (or creates a template) in $EDITOR.
+    /// With KEY=VALUE arguments: writes a config built
     /// from those overrides non-interactively (no $EDITOR). Recognised keys:
     /// host, port, dbname, user, password, pgpassfile, ssl_mode, ssl_root_cert, ssl_client_cert,
     /// ssl_client_key, backend, model, api_key, cache_dir.
@@ -488,11 +489,27 @@ async fn connect() -> Result<MimirService> {
 
 fn cmd_init(pairs: Vec<(String, String)>) -> Result<()> {
     if pairs.is_empty() {
-        let path = Config::create_template()?;
-        println!("Created: {}", path.display());
+        let path = match Config::create_template()? {
+            mimir_core::config::TemplatePreparation::Created(path) => {
+                println!("Created: {}", path.display());
+                path
+            }
+            mimir_core::config::TemplatePreparation::Existing(path) => {
+                println!("Opening existing configuration: {}", path.display());
+                path
+            }
+        };
         println!("Opening in $EDITOR… (save and close to finish)");
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-        std::process::Command::new(&editor).arg(&path).status()?;
+        let status = std::process::Command::new(&editor)
+            .arg(&path)
+            .status()
+            .with_context(|| format!("Unable to start the editor for {}. Choose a working EDITOR and rerun `mimir init`; the configuration was not replaced or removed by Mimir.", path.display()))?;
+        anyhow::ensure!(
+            status.success(),
+            "The editor did not finish successfully ({status}) for {}. Mimir did not replace or remove the configuration. Inspect that file and rerun `mimir init` to reopen it, or choose a working EDITOR.",
+            path.display()
+        );
     } else {
         match Config::create_from_kv(&pairs)? {
             mimir_core::config::ConfigCreation::Created(path) => {
@@ -575,7 +592,7 @@ async fn cmd_list(project: Option<String>, limit: mimir_core::Selection) -> Resu
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            &b.content,
+            b.content,
             mt,
             proj,
         );
@@ -614,8 +631,8 @@ async fn cmd_patterns(project: Option<String>, limit: mimir_core::Selection) -> 
             "{}  rate={:.3}  [{}] → [{}]",
             p.id,
             p.success_rate.value(),
-            &p.situation,
-            &p.approach,
+            p.situation,
+            p.approach,
         );
     }
 
@@ -660,7 +677,7 @@ async fn cmd_query(
                 b.id,
                 b.probability.value(),
                 b.confidence.value(),
-                &b.content,
+                b.content,
                 proj,
             );
             for e in &gb.evidence {
@@ -670,7 +687,7 @@ async fn cmd_query(
                     format!(" § {}", e.section_path.join(" > "))
                 };
                 println!("    ↳ w={:.2}  {}{}", e.weight, e.document_path, section,);
-                println!("        {}", &e.snippet);
+                println!("        {}", e.snippet);
             }
         }
         return Ok(());
@@ -700,7 +717,7 @@ async fn cmd_query(
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            &b.content,
+            b.content,
             proj,
         );
     }
@@ -750,7 +767,7 @@ async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
                     "{}  w={:.2}  {}{}",
                     e.chunk_id, e.weight, e.document_path, section
                 );
-                println!("    {}", &e.snippet);
+                println!("    {}", e.snippet);
             }
         }
     }
@@ -1151,7 +1168,7 @@ async fn cmd_hook_set_project(name: &str) -> Result<()> {
                     working.len()
                 );
                 for b in &working {
-                    println!("  {}  {}", b.id, &b.content);
+                    println!("  {}  {}", b.id, b.content);
                 }
             }
         }
@@ -1259,7 +1276,7 @@ async fn cmd_hook_stop(project: Option<&str>) -> Result<()> {
         working.len()
     );
     for b in &working {
-        msg.push_str(&format!("  {}  {}\n", b.id, &b.content));
+        msg.push_str(&format!("  {}  {}\n", b.id, b.content));
     }
     eprintln!("{}", msg.trim_end());
     std::process::exit(2);
@@ -1356,7 +1373,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            &b.content,
+            b.content,
             proj,
         ));
     }

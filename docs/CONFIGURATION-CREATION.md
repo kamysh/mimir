@@ -22,12 +22,25 @@ a partial configuration at the selected path. An interrupted publication can lea
 the complete file there; repeating the request reads it back. A directory-sync
 failure reports uncertain durability rather than claiming the target was unchanged.
 
-Bare `mimir init` creates a new template and opens the editor. It still refuses
-an existing path. Use the `KEY=VALUE` form for agent setup.
+Bare `mimir init` opens the selected configuration in the editor, creating a
+template first when the file is absent. Existing bytes stay untouched until
+the user's editor changes them. Retrying after template publication therefore
+reaches the editor instead of refusing the file. Use the `KEY=VALUE` form for
+agent setup.
 
-`Mimir.ConfigurationIO.Publication.Run.completedRetryConverges` checks the file
-publication goal using the shared interruption relation, including a lost reply.
-It preserves an existing complete file and all other files. The configuration
-protocol separately checks that an existing file matches explicit settings before
-reporting it ready. These file laws do not claim that the unfinished application
-dispatcher integration is complete.
+If the editor fails, Mimir reports its status, the selected file and how to
+reopen it or choose a working editor. It does not report successful completion
+or replace/remove the configuration after that editor failure. The editor may
+have changed the file itself; inspect it before retrying.
+
+`Mimir.ConfigurationProtocol.Initialization.Execution.operation` certifies the
+complete initialization sequence: request parsing, host defaults, preparation,
+private file publication and durable readback. Retrying from any interruption
+reaches the original file outcome and preserves unrelated files. Only explicitly
+requested fields are compared, so later defaults cannot change a published file.
+
+Interactive readiness means the selected file can be handed to the editor; it
+does not claim that an existing malformed configuration is valid. The editor's
+actual exit status determines whether the command reports success. The editor
+itself may change the file. These laws do not claim that the unfinished complete
+CLI dispatcher integration is complete.
