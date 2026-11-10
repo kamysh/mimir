@@ -539,17 +539,20 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ observedCall = inj₂ (admittedWrite tool raw kind observedCall)
 
-  -- Match through the actual external database jsonb comparison. Compact JSON
-  -- bytes do not have these semantics (for example, 1 and 1.0 compare equal in
-  -- PostgreSQL). The stored object still removes only operation_token.
-  signature : Text → Wire.Value → Wire.Value → Wire.Value
-  signature name arguments settings = Wire.array (Wire.string name ∷ arguments ∷ settings ∷ [])
-
+  -- The SQL predicate compares the operation name as text, and independently
+  -- compares arguments and settings as jsonb (where 1 and 1.0 are equal).
+  -- The supplied object still removes only operation_token.
   matches : Call → Wire.Value → Store.BindingRow → Bool
-  matches call settings original = Controls.PostgreSQL.jsonbEqual postgres
-    (signature (Call.name call) (Call.arguments call) settings)
-    (signature (Store.BindingRow.operation original)
-      (Store.BindingRow.arguments original) (Store.BindingRow.settings original))
+  matches call settings original = does (Store.BindingRow.operation original ≟Text Call.name call) ∧
+    Controls.PostgreSQL.jsonbEqual postgres (Store.BindingRow.arguments original) (Call.arguments call) ∧
+    Controls.PostgreSQL.jsonbEqual postgres (Store.BindingRow.settings original) settings
+
+  matchingOperation : ∀ call settings original → matches call settings original ≡ true →
+    Store.BindingRow.operation original ≡ Call.name call
+  matchingOperation call settings original matched with Store.BindingRow.operation original ≟Text Call.name call
+  ... | yes same = same
+  ... | no different with matched
+  ... | ()
 
   tables = Store.World.operations
   binding : ℕ → Store.World → Maybe Store.BindingRow
@@ -1047,6 +1050,12 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
           savedPlan : plan (Call.token call) after ≡ just (Context.raw context)
           decodedPlan : P.decode (Context.raw context) ≡ inj₂ (Context.model context)
           executable : P.valid library (Context.model context) ≡ true
+
+  readyOperation : ∀ call after context → ReadyMeaning call after context →
+    Store.BindingRow.operation (Context.original context) ≡ Call.name call
+  readyOperation call after context meaning = matchingOperation call
+    (proj₁ (ReadyMeaning.originalArguments meaning)) (Context.original context)
+    (proj₂ (ReadyMeaning.originalArguments meaning))
 
   data ReplyMeaning (call : Call) (after : Store.World) : Result → Set where
     dialogue : ∀ fault → ReplyMeaning call after (needsInput fault)
