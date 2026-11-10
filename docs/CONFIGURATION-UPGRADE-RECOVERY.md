@@ -16,6 +16,11 @@ success, the next invocation reads the complete upgraded file. It cannot remove
 another setting or restore the retired limits. If preparation stops before
 replacement, the original file remains available for the retry.
 
+An unchanged retry still confirms the file and its containing directory on
+disk. Matching bytes alone do not prove that a previous replacement finished
+that confirmation. If either confirmation fails, the command reports the real
+error and does not announce success; it keeps the selected bytes untouched.
+
 The certificate follows the selected-file read, private preparation, complete
 replacement and directory sync. Private preparation includes writing and syncing
 the owned temporary file and checking that the selected original is unchanged.

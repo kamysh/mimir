@@ -254,7 +254,10 @@ async fn source_correction_retracts_active_review_once_and_preserves_history_and
     correction.action = "correct the observation".into();
     let p = plan(&service, &correction, 1).await?;
     let not_before: chrono::DateTime<chrono::Utc> = db::connect(&config().database)
-        .await?.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
+        .await?
+        .query_one("SELECT clock_timestamp()", &[])
+        .await?
+        .get(0);
     let reply = done(&service, &p).await?;
     let state: ExperienceState = mimir_json::from_value(reply.reply.clone())?;
     ensure!(state.revision == 2 && state.review_revision == 1 && state.reviewed_revision == 1);

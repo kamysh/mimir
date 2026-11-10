@@ -112,7 +112,10 @@ async fn retry_after_reconnect_keeps_original_true_and_unrelated_records() -> Re
     };
     let (token, step) = admitted(&service, "delete_belief", json!({"id": removed.id})).await?;
     let not_before: chrono::DateTime<chrono::Utc> = db::connect(&config().database)
-        .await?.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
+        .await?
+        .query_one("SELECT clock_timestamp()", &[])
+        .await?
+        .get(0);
     let StepDecision::Done(first) = service.delete_belief_operation(&step).await? else {
         panic!("deletion missing")
     };

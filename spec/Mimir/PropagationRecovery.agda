@@ -222,3 +222,4 @@ module Registered (format : Encoding.Formatting) (conversion : Conversion.Contra
   module Saved = Run.Saved
   Goal = Certified.Goal
   operation = Certified.operation
+  cachedReplay = Run.cachedReplay

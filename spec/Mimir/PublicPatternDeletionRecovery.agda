@@ -107,3 +107,4 @@ module Registered (library : Library.Contract) where
 
   module Certified = Saved.Certified Goal meaning
   operation = Certified.operation
+  cachedReplay = Saved.cachedReplay

@@ -479,6 +479,7 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
 
   operation : Recovery.RecoverableFor Store.World ℕ Saved.Reply Goal
   operation = record { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic; converges = converges; progress = progress }
+  Result = Saved.Reply
 
   -- A saved publication takes priority over every new configuration/clock
   -- observation. The exact original answer and complete current World survive.

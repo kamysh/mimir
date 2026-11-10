@@ -206,3 +206,4 @@ module Registered (conversion : Conversion.Contract) (kind : Kind) where
 
   module Certified = Saved.Certified Goal meaning
   operation = Certified.operation
+  cachedReplay = Saved.cachedReplay
