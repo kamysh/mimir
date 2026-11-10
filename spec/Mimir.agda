@@ -23,6 +23,7 @@ import Mimir.NotificationConfigurationWire
 
 import Mimir.ConfigurationProtocol
 import Mimir.IntendedPreparation
+import Mimir.OperationEncoding
 import Mimir.EmbeddingLifecycle
 import Mimir.MigrationSchema
 import Mimir.CLI

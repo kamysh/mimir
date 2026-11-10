@@ -41,7 +41,6 @@ import Mimir.AssessmentWrites as Contributions
 import Mimir.LearningHistory as History
 import Mimir.GraphRecords as Records
 import Mimir.LearningHistoryWire as RawHistory
-import Mimir.ApplicationStore as Store
 
 record Formatting : Set where
   field
@@ -107,32 +106,6 @@ module Encode (format : Formatting) where
      ("owner_host" , optional V.string (Store.ExecutionRow.ownerHost row)) ∷
      ("owner_host_source" , optional V.string (Store.ExecutionRow.ownerHostSource row)) ∷
      ("client_address" , optional V.string (Store.ExecutionRow.clientAddress row)) ∷ [])
-
-  -- Shared semantic operation envelopes. These constructors are also used by
-  -- the actual application output, so test oracles cannot invent a smaller
-  -- successful response that omits the original binding.
-  originalRequest : Store.BindingRow → V.Value
-  originalRequest binding = object
-    (("operation_token" , uuid (Store.BindingRow.token binding)) ∷
-     ("bound_at" , timestamp (Store.BindingRow.boundAt binding)) ∷
-     ("request" , object (("operation" , V.string (Store.BindingRow.operation binding)) ∷
-       ("arguments" , Store.BindingRow.arguments binding) ∷
-       ("settings" , Store.BindingRow.settings binding) ∷ [])) ∷ [])
-
-  savedReply : Store.SavedReplyRow → V.Value
-  savedReply row = object (("operation_token" , uuid (Store.SavedReplyRow.token row)) ∷
-    ("step" , V.string (Store.SavedReplyRow.step row)) ∷
-    ("reply" , Store.SavedReplyRow.reply row) ∷ [])
-
-  nextStep : Text → Maybe Text → Text → V.Value
-  nextStep site name identity = object (("site" , V.string site) ∷
-    ("key" , optional V.string name) ∷ ("id" , V.string identity) ∷ [])
-
-  completedReadback : ℕ → Store.BindingRow → V.Value → V.Value
-  completedReadback token binding value = object
-    (("operation_token" , uuid token) ∷ ("status" , V.string (toList "completed")) ∷
-     ("original_request" , originalRequest binding) ∷ ("result" , value) ∷ [])
-
   real : Float → V.Value
   real value with isNaN value ∨ isInfinite value
   ... | true = V.null
