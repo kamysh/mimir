@@ -129,3 +129,34 @@ fn bare_init_retry_after_template_publication_reaches_the_editor_without_replaci
     );
     Ok(())
 }
+
+#[test]
+fn failed_editor_reports_the_actual_exit_and_repair_without_claiming_completion() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let original = b"# user configuration kept by Mimir\n";
+    std::fs::write(&fixture.config, original)?;
+    std::fs::write(
+        &fixture.editor,
+        b"#!/bin/sh\nprintf '%s\\n' \"$1\" >>\"$MIMIR_INIT_EDITOR_RECORD\"\nexit 23\n",
+    )?;
+    let failed = fixture.run("editor-exit-23", &["init"])?;
+    ensure!(!failed.status.success());
+    let stderr = String::from_utf8(failed.stderr)?;
+    ensure!(stderr.contains("exit status: 23"), "{stderr}");
+    ensure!(
+        stderr.contains(&fixture.config.display().to_string()),
+        "{stderr}"
+    );
+    ensure!(
+        stderr.contains("mimir init") && stderr.contains("EDITOR"),
+        "{stderr}"
+    );
+    ensure!(!String::from_utf8(failed.stdout)?.contains("Restart Claude Code"));
+    ensure!(std::fs::read(&fixture.config)? == original);
+    ensure!(fixture.editor_calls()? == vec![fixture.config.clone()]);
+    eprintln!(
+        "Complete failed-editor evidence: {}",
+        fixture.root.display()
+    );
+    Ok(())
+}
