@@ -34,6 +34,7 @@ import Mimir.ProjectDeletion as Project
 import Data.List.Relation.Unary.Any as Any
 import Mimir.RecoverableStoreStep as StoreStep
 import Mimir.PublicInput as PublicInput
+import Mimir.ToolCatalog as Tools
 
 record RequestKey : Set where
   constructor requestKey
@@ -729,6 +730,104 @@ module Plan where
 
   executable : Library.Contract → Saved → Bool
   executable library plan = currentlyRegistered library plan ∧ captureMatches library plan
+
+  -- Every public write has an actual fixed boundary in the registered table.
+  -- In particular, zero review-owned preparations still precede publication.
+  hasFixedBoundary : List Boundary → Bool
+  hasFixedBoundary [] = false
+  hasFixedBoundary (boundary site false ∷ rest) = true
+  hasFixedBoundary (boundary site true ∷ rest) = hasFixedBoundary rest
+
+  registeredHasFixedBoundary : Maybe (List Boundary) → Bool
+  registeredHasFixedBoundary nothing = false
+  registeredHasFixedBoundary (just boundaries) = hasFixedBoundary boundaries
+
+  publicWriterHasFixedBoundary : (tool : Tools.Tool) → Tools.kind tool ≡ Tools.businessWrite →
+    registeredHasFixedBoundary (lookup (toList (Tools.wireName tool)) registered) ≡ true
+  publicWriterHasFixedBoundary Tools.insertBelief refl = refl
+  publicWriterHasFixedBoundary Tools.deleteBelief refl = refl
+  publicWriterHasFixedBoundary Tools.deleteProject refl = refl
+  publicWriterHasFixedBoundary Tools.deletePattern refl = refl
+  publicWriterHasFixedBoundary Tools.insertPattern refl = refl
+  publicWriterHasFixedBoundary Tools.recordSupport refl = refl
+  publicWriterHasFixedBoundary Tools.recordCause refl = refl
+  publicWriterHasFixedBoundary Tools.recordDefeat refl = refl
+  publicWriterHasFixedBoundary Tools.recordContradiction refl = refl
+  publicWriterHasFixedBoundary Tools.getBelief ()
+  publicWriterHasFixedBoundary Tools.listBeliefs ()
+  publicWriterHasFixedBoundary Tools.listPatterns ()
+  publicWriterHasFixedBoundary Tools.getContradictions ()
+  publicWriterHasFixedBoundary Tools.decayAll refl = refl
+  publicWriterHasFixedBoundary Tools.sweepExpiredDefeated refl = refl
+  publicWriterHasFixedBoundary Tools.queryRelevant ()
+  publicWriterHasFixedBoundary Tools.addEvidence refl = refl
+  publicWriterHasFixedBoundary Tools.getEvidence ()
+  publicWriterHasFixedBoundary Tools.propagateFrom refl = refl
+  publicWriterHasFixedBoundary Tools.queryIntervention ()
+  publicWriterHasFixedBoundary Tools.loadDocument refl = refl
+  publicWriterHasFixedBoundary Tools.queryDocument ()
+  publicWriterHasFixedBoundary Tools.clearDocument refl = refl
+  publicWriterHasFixedBoundary Tools.getLearningReview ()
+  publicWriterHasFixedBoundary Tools.learningCapabilities ()
+  publicWriterHasFixedBoundary Tools.getLessonAssessment ()
+  publicWriterHasFixedBoundary Tools.lessonAssessmentHistory ()
+  publicWriterHasFixedBoundary Tools.explainBelief ()
+  publicWriterHasFixedBoundary Tools.recordExperience refl = refl
+  publicWriterHasFixedBoundary Tools.pendingExperiences ()
+  publicWriterHasFixedBoundary Tools.reviewExperience refl = refl
+  publicWriterHasFixedBoundary Tools.getExperience ()
+  publicWriterHasFixedBoundary Tools.experienceHistory ()
+  publicWriterHasFixedBoundary Tools.queryLearningContext ()
+  publicWriterHasFixedBoundary Tools.reserveOperation ()
+  publicWriterHasFixedBoundary Tools.operationOutcome ()
+  publicWriterHasFixedBoundary Tools.cancelOperation ()
+
+  rebuildFixedIsNonempty : ∀ library boundaries expected →
+    hasFixedBoundary boundaries ≡ true → rebuild library boundaries [] ≡ just expected → expected ≢ []
+  rebuildFixedIsNonempty library [] expected () rebuilt
+  rebuildFixedIsNonempty library (boundary site false ∷ rest) expected fixed rebuilt
+    with rebuild library rest []
+  ... | nothing with rebuilt
+  ... | ()
+  rebuildFixedIsNonempty library (boundary site false ∷ rest) expected fixed rebuilt | just tail
+    with rebuilt
+  ... | refl = λ ()
+  rebuildFixedIsNonempty library (boundary site true ∷ rest) expected fixed rebuilt
+    with rebuild library rest [] in observed
+  ... | nothing with rebuilt
+  ... | ()
+  rebuildFixedIsNonempty library (boundary site true ∷ rest) expected fixed rebuilt | just tail
+    with rebuilt
+  ... | refl = rebuildFixedIsNonempty library rest tail fixed observed
+
+  fixedEmptyCannotMatch : ∀ library operation shape capture boundaries →
+    hasFixedBoundary boundaries ≡ true →
+    matchesBoundaries library (saved operation shape [] capture) boundaries ≡ true → ⊥
+  fixedEmptyCannotMatch library operation shape capture boundaries fixed
+    with shapeEqual boundaries shape
+  ... | false = λ ()
+  ... | true with rebuild library boundaries [] in observed
+  ... | nothing = λ ()
+  ... | just [] = λ _ → rebuildFixedIsNonempty library boundaries [] fixed observed refl
+  ... | just (_ ∷ _) = λ ()
+
+  publicWriterEmptyCannotExecute : ∀ library tool shape capture → Tools.kind tool ≡ Tools.businessWrite →
+    executable library (saved (toList (Tools.wireName tool)) shape [] capture) ≡ true → ⊥
+  publicWriterEmptyCannotExecute library tool shape capture writer accepted
+    with lookup (toList (Tools.wireName tool)) registered in observed
+  ... | nothing with accepted
+  ... | ()
+  publicWriterEmptyCannotExecute library tool shape capture writer accepted | just boundaries =
+    fixedEmptyCannotMatch library (toList (Tools.wireName tool)) shape capture boundaries
+      (trans (sym (cong registeredHasFixedBoundary observed)) (publicWriterHasFixedBoundary tool writer))
+      (Admission.RecordFields.andLeft _ _ accepted)
+
+  publicWriterStepsNonempty : (library : Library.Contract) (tool : Tools.Tool) (plan : Saved) →
+    Tools.kind tool ≡ Tools.businessWrite → Saved.operation plan ≡ toList (Tools.wireName tool) →
+    executable library plan ≡ true → Saved.steps plan ≢ []
+  publicWriterStepsNonempty library tool (saved operation shape [] capture) writer refl accepted refl =
+    publicWriterEmptyCannotExecute library tool shape capture writer accepted
+  publicWriterStepsNonempty library tool (saved operation shape (_ ∷ _) capture) writer same accepted ()
 
   obsoletePlanCannotResume : ∀ library plan → currentlyRegistered library plan ≡ false → executable library plan ≡ false
   obsoletePlanCannotResume library plan obsolete rewrite obsolete = refl
