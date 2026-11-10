@@ -15,6 +15,9 @@ open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (String; toList)
 import Data.Vec as Vec
 open import Relation.Nullary using (yes; no)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
+open import Data.Empty using (⊥-elim)
+import Data.List.Relation.Unary.Any as Any
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.Validation using (Fault; fault; malformedInput; invalidNumber; result)
@@ -71,6 +74,42 @@ defaulted name = V.defaulted (toList name)
 
 optional : ∀ {A : Set} → String → (V.Value → Fault ⊎ A) → V.Object.View → Fault ⊎ Maybe A
 optional name = V.optional (toList name)
+
+-- MCP removes only the explicit operation-token field before binding a
+-- business request. All other submitted fields/values remain as supplied;
+-- omission is not replaced by a decoded default or an explicit null.
+withoutFields : Text → V.Object.Fields → V.Object.Fields
+withoutFields removed [] = []
+withoutFields removed ((name , value) ∷ rest) with name ≟Text removed
+... | yes _ = withoutFields removed rest
+... | no _ = (name , value) ∷ withoutFields removed rest
+
+withoutField : Text → V.Value → V.Value
+withoutField removed (V.object fields) = V.object (withoutFields removed fields)
+withoutField removed value = value
+
+-- Retrying with an omitted field and retrying with an explicit default are
+-- different bindings. Removing the token retains every other exact value.
+withoutFieldsKeepsOther : ∀ removed name value fields → name ≢ removed →
+  Any.Any (λ entry → entry ≡ (name , value)) fields →
+  Any.Any (λ entry → entry ≡ (name , value)) (withoutFields removed fields)
+withoutFieldsKeepsOther removed name value [] different ()
+withoutFieldsKeepsOther removed name value ((entry , supplied) ∷ rest) different known with entry ≟Text removed
+... | yes same with known
+... | Any.here refl = ⊥-elim (different same)
+... | Any.there later = withoutFieldsKeepsOther removed name value rest different later
+withoutFieldsKeepsOther removed name value ((entry , supplied) ∷ rest) different known | no _ with known
+... | Any.here refl = Any.here refl
+... | Any.there later = Any.there (withoutFieldsKeepsOther removed name value rest different later)
+
+withoutFieldsCannotInvent : ∀ removed pair fields → Any.Any (λ entry → entry ≡ pair) (withoutFields removed fields) →
+  Any.Any (λ entry → entry ≡ pair) fields
+withoutFieldsCannotInvent removed pair [] ()
+withoutFieldsCannotInvent removed pair ((entry , supplied) ∷ rest) known with entry ≟Text removed
+... | yes _ = Any.there (withoutFieldsCannotInvent removed pair rest known)
+... | no _ with known
+... | Any.here same = Any.here same
+... | Any.there later = Any.there (withoutFieldsCannotInvent removed pair rest later)
 
 -- Hand-written MCP args.get(...).map(decode) rejects explicit null, unlike an
 -- Option<T> field decoded by serde. Loose accessors use their fallback on any
