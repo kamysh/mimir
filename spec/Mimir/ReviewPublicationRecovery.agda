@@ -1095,6 +1095,14 @@ module AfterOwners (library : Library.Contract) (format : Encoding.Formatting) (
     published : ∀ prepared packets metadata value → P.Captured before prepared → Ready prepared packets →
       (after , Step.done value) ≡ F.Saved.execute (token , supplied packets metadata) before → Cut before after
 
+  publishedGoal : ∀ prepared packets metadata value before after → P.Captured before prepared → Ready prepared packets →
+    (after , Step.done value) ≡ F.Saved.execute (token , supplied packets metadata) before →
+    Goal before after (Step.done value)
+  publishedGoal prepared packets metadata value before after captured ready observed =
+    reviewAttempted prepared packets metadata (Step.done value) captured ready
+      (subst (λ result → F.MetaGoal token (supplied packets metadata) before (proj₁ result) (proj₂ result))
+        (sym observed) (F.meaning token (supplied packets metadata) before))
+
   finishAtomicCut : ∀ prepared packets before after metadata reply → P.Captured before prepared → Ready prepared packets →
     Atomic before (finish packets) (metadata , reply) after → Cut before after
   finishAtomicCut prepared packets before after metadata (Step.done value) captured ready physical =
