@@ -19,7 +19,7 @@ async fn observes_old_history_and_exact_stored_numbers() -> Result<()> {
         .start()
         .await?;
     let id: Uuid = tx.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
-    tx.execute("INSERT INTO public.mimir_experiences (id, project, revision, review_revision, reviewed_revision) VALUES ($1, 'history-test', 2, 1, 1)", &[&id]).await?;
+    tx.execute("INSERT INTO public.mimir_experiences (id, project, revision, review_revision, reviewed_revision, updated_at) VALUES ($1, 'history-test', 2, 1, 1, '2026-01-04T00:00:00Z')", &[&id]).await?;
     let legacy =
         r#"{"legacy_only": ["old", null], "large": 123456789012345678901234567890123456789}"#;
     let latest = r#"{"current": true}"#;
@@ -41,6 +41,7 @@ async fn observes_old_history_and_exact_stored_numbers() -> Result<()> {
         ),
         ("history-test", 2, 1, 1)
     );
+    assert_eq!(head.updated_at.to_rfc3339(), "2026-01-04T00:00:00+00:00");
     let sources: Vec<_> = history
         .source_rows
         .iter()

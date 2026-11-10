@@ -10,6 +10,7 @@ pub struct Head {
     pub revision: i64,
     pub review_revision: i64,
     pub reviewed_revision: i64,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -47,9 +48,9 @@ async fn rows(tx: &Transaction<'_>, sql: &str) -> Result<Vec<HistoryRow>, Error>
 }
 
 pub async fn observe(tx: &Transaction<'_>) -> Result<History, Error> {
-    let heads = tx.query("SELECT id, project, revision, review_revision, reviewed_revision FROM public.mimir_experiences ORDER BY id", &[])
+    let heads = tx.query("SELECT id, project, revision, review_revision, reviewed_revision, updated_at FROM public.mimir_experiences ORDER BY id", &[])
         .await?.into_iter().map(|row| Ok(Head { identity: row.try_get(0)?, project: row.try_get(1)?,
-            revision: row.try_get(2)?, review_revision: row.try_get(3)?, reviewed_revision: row.try_get(4)? })).collect::<Result<_, Error>>()?;
+            revision: row.try_get(2)?, review_revision: row.try_get(3)?, reviewed_revision: row.try_get(4)?, updated_at: row.try_get(5)? })).collect::<Result<_, Error>>()?;
     Ok(History {
         heads,
         source_rows: rows(tx, "SELECT experience_id, revision, revision, created_at, payload::text FROM public.mimir_experience_versions ORDER BY experience_id, revision").await?,
