@@ -81,6 +81,49 @@ resolve registered token registration with originalPlan (Descriptor.operation re
   "The saved plan does not match the registered final step. Read the original plan and outcome and ask the user to resolve the mismatch. Do not repeat changes or invent an answer.")
 ... | true = inj₂ (reserved , original)
 
+planRows : Step.Registration → List Store.PlanRow
+planRows (reservations , requestKeys , bindings , plans) = plans
+
+originalPlanStored : ∀ operation token registration reserved original raw →
+  originalPlan operation token registration ≡ inj₂ (reserved , original , raw) →
+  Project.Registered.plan token (planRows registration) ≡ just raw
+originalPlanStored operation token (reservations , requestKeys , bindings , plans) reserved original raw accepted
+  with reservation token reservations
+... | nothing with accepted
+... | ()
+originalPlanStored operation token (reservations , requestKeys , bindings , plans) reserved original raw accepted | just actualReservation
+  with Project.Registered.binding token bindings
+... | nothing with accepted
+... | ()
+originalPlanStored operation token (reservations , requestKeys , bindings , plans) reserved original raw accepted | just actualReservation | just actualBinding
+  with does (Store.BindingRow.operation actualBinding ≟Text operation)
+... | false with accepted
+... | ()
+originalPlanStored operation token (reservations , requestKeys , bindings , plans) reserved original raw accepted | just actualReservation | just actualBinding | true
+  with Project.Registered.plan token plans in stored
+... | nothing with accepted
+... | ()
+originalPlanStored operation token (reservations , requestKeys , bindings , plans) reserved original raw accepted | just actualReservation | just actualBinding | true | just actualRaw
+  with accepted
+... | refl = refl
+
+-- A successful domain admission retains the actual saved plan that was
+-- checked. This exposes no caller-selected plan or reconstructed argument.
+resolveMatched : ∀ registered token registration returned →
+  resolve registered token registration ≡ inj₂ returned →
+  Σ Wire.Value (λ raw → Project.Registered.plan token (planRows registration) ≡ just raw ×
+    Plan.matches registered raw ≡ true)
+resolveMatched registered token registration returned accepted
+  with originalPlan (Descriptor.operation registered) token registration in original
+... | inj₁ fault with accepted
+... | ()
+resolveMatched registered token registration returned accepted | inj₂ (reserved , binding , raw)
+  with Plan.matches registered raw in matched
+... | false with accepted
+... | ()
+resolveMatched registered token registration returned accepted | inj₂ (reserved , binding , raw) | true =
+  raw , originalPlanStored (Descriptor.operation registered) token registration reserved binding raw original , matched
+
 -- A defeat has two independently durable boundaries. Its complete original
 -- plan is checked before either boundary or a saved answer can be used.
 record PairDescriptor : Set where
