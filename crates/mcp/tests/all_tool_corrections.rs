@@ -76,6 +76,15 @@ async fn check_field(
             && !issue.suggested_correction().is_empty(),
         "{name}: incomplete correction for {field}"
     );
+    if code == Code::InvalidNumber && matches!(field, "limit" | "evidence_per_belief") {
+        let guidance =
+            format!("{} {}", issue.expected(), issue.suggested_correction()).to_lowercase();
+        ensure!(
+            guidance.contains("omit")
+                && (guidance.contains("positive") || guidance.contains("at least 1")),
+            "{name}: zero selection did not explain the available corrections: {guidance}"
+        );
+    }
     Ok(())
 }
 
@@ -116,6 +125,7 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
     let mut wrong_type_cases = 0;
     let mut invalid_uuid_cases = 0;
     let mut invalid_choice_cases = 0;
+    let mut zero_selection_cases = 0;
     for descriptor in tools {
         let name = descriptor["name"].as_str().context("tool without a name")?;
         let request = json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":{"unexpected_agent_field":true}}});
@@ -210,6 +220,24 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
                     .await?;
                     invalid_choice_cases += 1;
                 }
+                if matches!(field.as_str(), "limit" | "evidence_per_belief")
+                    && schema["minimum"]
+                        .as_i64()
+                        .is_some_and(|minimum| minimum >= 1)
+                {
+                    let mut arguments = serde_json::Map::new();
+                    arguments.insert(field.clone(), json!(0));
+                    check_field(
+                        &mut input,
+                        &mut output,
+                        name,
+                        Value::Object(arguments),
+                        field,
+                        Code::InvalidNumber,
+                    )
+                    .await?;
+                    zero_selection_cases += 1;
+                }
             }
         }
     }
@@ -217,7 +245,11 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
         missing_cases != 0 && wrong_type_cases != 0,
         "tool catalogue produced no missing-field or wrong-type cases"
     );
-    println!("Checked {missing_cases} missing-field, {wrong_type_cases} wrong-type, {invalid_uuid_cases} invalid UUID and {invalid_choice_cases} invalid choice cases across {} advertised tools", tools.len());
+    ensure!(
+        zero_selection_cases != 0,
+        "tool catalogue produced no zero-selection cases"
+    );
+    println!("Checked {missing_cases} missing-field, {wrong_type_cases} wrong-type, {invalid_uuid_cases} invalid UUID, {invalid_choice_cases} invalid choice and {zero_selection_cases} zero-selection cases across {} advertised tools", tools.len());
     let corrected = send(&mut input, &mut output, json!({"jsonrpc":"2.0","id":"corrected","method":"tools/call","params":{"name":"list_patterns","arguments":{}}})).await?;
     ensure!(
         corrected["id"] == "corrected" && corrected.get("error").is_none(),
