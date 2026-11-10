@@ -101,14 +101,22 @@ module Run (environment : Environment) where
   open Environment environment
   module C = Catalogue.Run library format databaseSum calculator f32 unicode vectors configuration
     databaseTextBefore allocateOwner database postgres serverTime utcTimestamp sourcePostgres sweepObservation
-    reviewDependencies reviewCodec reviewBackend
+    reviewDependencies reviewCodec reviewBackend using
+    (Call; toolCall; privateRead; Choice; resolve; Kind; Input; Result; Goal; Success; Certificate; certificate; executable
+    ; ReadRequest; graphCall; relevantCall; evidenceCall; documentCall
+    ; basic; experiences; assessments; intervention; retrieval; context; documentQuery; correction; control
+    ; patternWrite; patternRemoval; beliefRemoval; independentWrite; projectRemoval; relationship; grounding
+    ; propagation; decay; documentRemoval; defeat; sweep; sourceWrite; reviewWrite; documentLoading
+    ; module Basic; module Assessments; module Intervention; module Retrieval; module LearningContext; module DocumentQuery
+    ; module Control; module Creating; module IndependentPublic; module DocumentEntry
+    ; module PatternGuard; module PatternRemovalGuard; module BeliefRemovalGuard; module RelationshipGuard
+    ; module IndependentGuard; module GroundingGuard; module PropagationGuard; module DecayGuard; module ClearGuard)
   open C public using (ReadRequest)
     renaming (graphCall to graphRead; relevantCall to relevantRead; evidenceCall to evidenceRead; documentCall to documentRead)
 
-  module PublicWrites = PublicRecovery.Run library format databaseSum calculator f32 unicode vectors configuration
+  module Writes = PublicRecovery.Run.PublicWrites library format databaseSum calculator f32 unicode vectors configuration
     databaseTextBefore allocateOwner database postgres serverTime utcTimestamp sourcePostgres sweepObservation
-    reviewDependencies reviewCodec reviewBackend
-  module Writes = PublicWrites.PublicWrites reviewEnvironment writePreparation
+    reviewDependencies reviewCodec reviewBackend reviewEnvironment writePreparation
     using (Response; needsInput; returned; executed; Meaning; recoverable; Succeeded; bodyKind; bodyInput)
   module WriteFixed requested = Catalogue.Fixed Writes.recoverable requested using (operation)
   module Creating = Binding.Creating library postgres using (Request; submittedWrite)
@@ -192,23 +200,23 @@ module Run (environment : Environment) where
       terminal : Checked.Terminal call (input call) initial
 
   resultState : Result → State
-  resultState (terminalResult call initial terminal) =
-    running call initial (Checked.stopped call terminal)
+  resultState (terminalResult call initial finishedState) =
+    running call initial (Checked.stopped {call = call} finishedState)
 
   reached : Result → Store.World
-  reached (terminalResult call initial terminal) =
-    Checked.History.current call (Checked.Active.evidence call (Checked.Terminal.active call terminal))
+  reached (terminalResult call initial finishedState) =
+    Checked.History.current {call = call} (Checked.Active.evidence {call = call} (Checked.Terminal.active {call = call} finishedState))
 
   data Step : State → State → Set where
     observed : ∀ call initial (active : Checked.Active call (input call) initial) effect continuation →
-      (exposed : Checked.Active.remaining call active ≡ O.E.ask call effect continuation) →
+      (exposed : Checked.Active.remaining {call = call} active ≡ O.E.ask {call = call} effect continuation) →
       (reply : O.Reply call effect) (after : Store.World) →
-      (physical : O.Atomic call (Checked.History.current call (Checked.Active.evidence call active)) effect reply after) →
-      Step (running call initial (Checked.running call active))
+      (physical : O.Atomic call (Checked.History.current {call = call} (Checked.Active.evidence {call = call} active)) effect reply after) →
+      Step (running call initial (Checked.running {call = call} active))
         (running call initial (Checked.continue call active effect continuation exposed reply after physical))
     stopped : ∀ call initial (active : Checked.Active call (input call) initial) →
       (disposition : Checked.Disposition call active) →
-      Step (running call initial (Checked.running call active))
+      Step (running call initial (Checked.running {call = call} active))
         (running call initial (Checked.finish call active disposition))
 
   record Event : Set where
@@ -221,7 +229,7 @@ module Run (environment : Environment) where
       Runs before (event before after physical ∷ events) result
 
   completed : Result → Bool
-  completed (terminalResult call initial terminal) with Checked.Terminal.disposition call terminal
+  completed (terminalResult call initial finishedState) with Checked.Terminal.disposition {call = call} finishedState
   ... | Checked.done reply exposed success = true
   ... | Checked.correction _ = false
   ... | Checked.retry = false
@@ -230,22 +238,22 @@ module Run (environment : Environment) where
   -- The public success flag is backed by the actual operation's whole-world
   -- business goal and the exposed returned reply in its physical history.
   Completed : Result → Set
-  Completed (terminalResult call initial terminal) =
+  Completed (terminalResult call initial finishedState) =
     Σ (RouteValue (route call)) (λ reply →
       RouteGoal (route call) (input call) initial
-        (Checked.History.current call (Checked.Active.evidence call active)) reply ×
-      Checked.Active.remaining call active ≡ O.E.done call reply × RouteSuccess (route call) reply)
-    where active = Checked.Terminal.active call terminal
+        (Checked.History.current {call = call} (Checked.Active.evidence {call = call} active)) reply ×
+      Checked.Active.remaining {call = call} active ≡ O.E.done {call = call} reply × RouteSuccess (route call) reply)
+    where active = Checked.Terminal.active {call = call} finishedState
 
   completedRequiresGoal : ∀ result → completed result ≡ true → Completed result
-  completedRequiresGoal (terminalResult call initial terminal) valid with Checked.Terminal.disposition call terminal
+  completedRequiresGoal (terminalResult call initial finishedState) valid with Checked.Terminal.disposition {call = call} finishedState
   ... | Checked.done reply exposed successful = reply ,
-    Checked.doneMeetsGoal call (Checked.Terminal.active call terminal) reply exposed successful , exposed , successful
+    Checked.doneMeetsGoal call (Checked.Terminal.active {call = call} finishedState) reply exposed successful , exposed , successful
   ... | Checked.correction _ with valid
   ... | ()
-  completedRequiresGoal (terminalResult call initial terminal) valid | Checked.retry with valid
+  completedRequiresGoal (terminalResult call initial finishedState) valid | Checked.retry with valid
   ... | ()
-  completedRequiresGoal (terminalResult call initial terminal) valid | Checked.fatal _ with valid
+  completedRequiresGoal (terminalResult call initial finishedState) valid | Checked.fatal _ with valid
   ... | ()
 
   data ReadView : Set where
@@ -283,7 +291,7 @@ module Run (environment : Environment) where
   ... | C.control request input = nothing
 
   readView : Result → Maybe ReadView
-  readView (terminalResult call initial terminal) with Checked.Terminal.disposition call terminal
+  readView (terminalResult call initial finishedState) with Checked.Terminal.disposition {call = call} finishedState
   ... | Checked.done reply exposed success = payloadReadView call reply initial
   ... | Checked.correction _ = nothing
   ... | Checked.retry = nothing
