@@ -69,6 +69,7 @@ record PostgreSQL : Set₁ where
         -- are immaterial; omitted fields, null and array order remain distinct.
         -- This external database observation is not compact JSON byte equality.
         jsonbEqual : Wire.Value → Wire.Value → Bool
+        jsonbReflexive : ∀ value → jsonbEqual value value ≡ true
 
 -- Both mutating controls have one committed publication with metadata selected
 -- by its observed database reply. Goal is fixed by concrete control assembly.

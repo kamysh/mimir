@@ -554,6 +554,19 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   ... | no different with matched
   ... | ()
 
+  matchesOriginalSettings : ∀ call earlierSettings original → matches call earlierSettings original ≡ true →
+    matches call (Store.BindingRow.settings original) original ≡ true
+  matchesOriginalSettings call earlierSettings original matched
+    with Store.BindingRow.operation original ≟Text Call.name call
+  ... | no _ with matched
+  ... | ()
+  matchesOriginalSettings call earlierSettings original matched | yes _
+    with Controls.PostgreSQL.jsonbEqual postgres (Store.BindingRow.arguments original) (Call.arguments call)
+  ... | false with matched
+  ... | ()
+  matchesOriginalSettings call earlierSettings original matched | yes _ | true
+    rewrite Controls.PostgreSQL.jsonbReflexive postgres (Store.BindingRow.settings original) = refl
+
   tables = Store.World.operations
   binding : ℕ → Store.World → Maybe Store.BindingRow
   binding token before = Project.Registered.binding token (Store.OperationTables.bindings (tables before))
