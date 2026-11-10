@@ -4,7 +4,9 @@
 module Mimir.RecoverableStoreStep where
 
 open import Data.List using (List; []; _∷_)
+open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Maybe using (Maybe; just; nothing)
+import Data.Maybe.Properties as Maybes
 open import Data.Nat using (ℕ)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.String using (toList)
@@ -106,6 +108,25 @@ module AtomicStep (Input Diagnostic : Set)
     inj₂ (cong proj₁ (atomicObservation input initial interrupted _ physical))
   interruptionState input initial interrupted (X.beforeReply _ _ _ _ _ _ (E.replied _ _ _ ()) physical active)
 
+  atomicDoneOrUnchanged : ∀ input before after reply → Atomic before input reply after →
+    after ≡ before ⊎ Σ Wire.Value (λ value → (after , done value) ≡ execute input before)
+  atomicDoneOrUnchanged input before after (done value) physical =
+    inj₂ (value , atomicObservation input before after (done value) physical)
+  atomicDoneOrUnchanged input before .before (needsInput _) (observed , DB.abortedNone) = inj₁ refl
+  atomicDoneOrUnchanged input before .before needsRecovery (observed , DB.abortedNone) = inj₁ refl
+  atomicDoneOrUnchanged input before .before (cancelled _) (observed , DB.abortedNone) = inj₁ refl
+
+  interruptedDoneOrUnchanged : ∀ input before after → X.Interrupted (script input) before after →
+    after ≡ before ⊎ Σ Wire.Value (λ value → (after , done value) ≡ execute input before)
+  interruptedDoneOrUnchanged input before after (X.atPrefix _ _ _ (E.stopped _) (X.unchanged _)) = inj₁ refl
+  interruptedDoneOrUnchanged input before after
+    (X.atPrefix _ _ _ (E.replied _ _ reply (E.stopped _))
+      (X.changed _ _ _ _ physical (X.unchanged _))) = atomicDoneOrUnchanged input before after reply physical
+  interruptedDoneOrUnchanged input before after
+    (X.beforeReply _ _ _ _ reply _ (E.stopped _) (X.unchanged _) physical) =
+    atomicDoneOrUnchanged input before after reply physical
+  interruptedDoneOrUnchanged input before after (X.beforeReply _ _ _ _ _ _ (E.replied _ _ _ ()) _ _)
+
   everyDatabaseReceiptCovered : ∀ input before tag actual →
     DB.Atomic before (proj₁ (execute input before)) tag actual → X.Interrupted (script input) before actual
   everyDatabaseReceiptCovered input before .DB.committed _ DB.committedAll =
@@ -125,6 +146,14 @@ module AtomicStep (Input Diagnostic : Set)
       (E.replied input E.done (proj₂ expected) (E.returned _))
       (X.changed initial input _ _ (refl , expectedPhysical input initial) (X.unchanged _))
     where expected = execute input initial
+
+  -- A cached answer must admit an actual read-only execution of this fixed
+  -- statement. The equation is about the real executor and complete World.
+  readOnlyCompletion : ∀ input before value → execute input before ≡ (before , done value) →
+    X.Completed (script input) before before (done value)
+  readOnlyCompletion input before value observed = subst
+    (λ outcome → X.Completed (script input) before (proj₁ outcome) (proj₂ outcome))
+    observed (proj₂ (proj₂ (progress input before)))
 
   module Certified (Goal : Input → Store.World → Store.World → Reply → Set)
     (meaning : ∀ input initial → Goal input initial (proj₁ (execute input initial)) (proj₂ (execute input initial))) where
@@ -233,6 +262,35 @@ module For (Input Diagnostic : Set)
       (cong (λ tables → Store.lookupCancellationRows (token input) (Store.OperationTables.cancellations tables))
         (keepsJournal input before changed reply accepted)))
 
+  -- A returned answer either read the existing World or published both of
+  -- its matching immutable answers. A later readback cannot invent a third
+  -- value for a newly completed operation.
+  doneOrigin : ∀ input before after value → execute input before ≡ (after , done value) →
+    after ≡ before ⊎
+    (Store.lookupCancellation after (token input) ≡ nothing ×
+      Store.lookupSaved after (token input) (key input) ≡ just value ×
+      Store.lookupSaved after (token input) resultKey ≡ just value)
+  doneOrigin input before after value observed with Store.lookupCancellation before (token input) in active
+  ... | just _ with observed
+  ... | ()
+  doneOrigin input before after value observed | nothing
+    with Store.lookupSaved before (token input) (key input) in step
+      | Store.lookupSaved before (token input) resultKey in final
+  ... | just saved | just result with observed
+  ... | refl = inj₁ refl
+  doneOrigin input before after value () | nothing | just _ | nothing
+  doneOrigin input before after value () | nothing | nothing | just _
+  doneOrigin input before after value observed | nothing | nothing | nothing
+    with decide input before in accepted
+  ... | inj₁ _ with observed
+  ... | ()
+  doneOrigin input before after value observed | nothing | nothing | nothing | inj₂ (changed , reply)
+    with observed
+  ... | refl = inj₂
+    (trans (publicationKeepsCancellation input before changed reply accepted) active ,
+      publishedStepReadable input before changed reply accepted step ,
+      publishedResultReadable input before changed reply accepted final)
+
   stable : ∀ input before → execute input (proj₁ (execute input before)) ≡ execute input before
   stable input before with Store.lookupCancellation before (token input) in active
   ... | just original rewrite active = refl
@@ -314,6 +372,32 @@ module Admitted (Input Diagnostic : Set)
   ... | just diagnostic = before , needsInput diagnostic
   ... | nothing = Kernel.execute input before
 
+  replay : ∀ input before saved final →
+    admit input (registration before) ≡ nothing →
+    Store.lookupCancellation before (token input) ≡ nothing →
+    Store.lookupSaved before (token input) (key input) ≡ just saved →
+    Store.lookupSaved before (token input) resultKey ≡ just final →
+    execute input before ≡ (before , done saved)
+  replay input before saved final admitted active step result rewrite admitted =
+    Kernel.replay input before saved final active step result
+
+  doneOrigin : ∀ input before after value → execute input before ≡ (after , done value) →
+    after ≡ before ⊎
+    (Store.lookupCancellation after (token input) ≡ nothing ×
+      Store.lookupSaved after (token input) (key input) ≡ just value ×
+      Store.lookupSaved after (token input) resultKey ≡ just value)
+  doneOrigin input before after value observed with admit input (registration before)
+  ... | just _ with observed
+  ... | ()
+  doneOrigin input before after value observed | nothing = Kernel.doneOrigin input before after value observed
+
+  doneIsAdmitted : ∀ input before after value → execute input before ≡ (after , done value) →
+    admit input (registration before) ≡ nothing
+  doneIsAdmitted input before after value observed with admit input (registration before)
+  ... | just _ with observed
+  ... | ()
+  doneIsAdmitted input before after value observed | nothing = refl
+
   stable : ∀ input before → execute input (proj₁ (execute input before)) ≡ execute input before
   stable input before with admit input (registration before) in admitted
   ... | just diagnostic rewrite admitted = refl
@@ -331,6 +415,31 @@ module Admitted (Input Diagnostic : Set)
 
   module Core = AtomicStep Input Diagnostic execute stable expectedPhysical
   open Core public hiding (Reply)
+
+  cachedReplay : ∀ input before current raw →
+    Store.lookupSaved before (token input) resultKey ≡ nothing →
+    Store.lookupSaved current (token input) resultKey ≡ just raw →
+    X.Interrupted (script input) before current →
+    X.Completed (script input) current current (done raw)
+  cachedReplay input before current raw absent present cut
+    with interruptedDoneOrUnchanged input before current cut
+  ... | inj₁ same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (value , observed) with doneOrigin input before current value (sym observed)
+  ... | inj₁ same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (_ , _ , final) = subst
+    (λ answer → X.Completed (script input) current current (done answer))
+    (Maybes.just-injective (trans (sym final) present))
+    (readOnlyCompletion input current value
+      (trans (cong (execute input) (cong proj₁ observed))
+        (trans (stable input before) (sym observed))))
 
 -- The same saved final step with metadata observed by the committing statement,
 -- rather than supplied in the public request. Admission, address and original
@@ -472,6 +581,44 @@ module Observed (Metadata Diagnostic : Set)
     (X.changed before token _ _ (refl , Saved.expectedPhysical (token , metadata) before) (X.unchanged _))
     where metadata = available token before
           outcome = Saved.execute (token , metadata) before
+
+  readOnlyCompletion : ∀ token before value →
+    Saved.execute (token , available token before) before ≡ (before , done value) →
+    X.Completed (script token) before before (done value)
+  readOnlyCompletion token before value observed = subst
+    (λ outcome → X.Completed (script token) before (proj₁ outcome) (proj₂ outcome))
+    observed (proj₂ (proj₂ (progress token before)))
+
+  -- The admitted public prefix had no final answer. If a later actual
+  -- readback finds one, this interrupted statement must have published it;
+  -- retrying reads that same answer without another business change.
+  cachedReplay : ∀ token before current raw →
+    Store.lookupSaved before token resultKey ≡ nothing →
+    Store.lookupSaved current token resultKey ≡ just raw →
+    X.Interrupted (script token) before current →
+    X.Completed (script token) current current (done raw)
+  cachedReplay token before current raw absent present cut
+    with interruptionState token before current cut
+  ... | unchanged same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | published metadata value observed
+    with Saved.doneOrigin (token , metadata) before current value (sym observed)
+  ... | inj₁ same = ⊥-elim (impossible same)
+    where
+    impossible : current ≡ before → ⊥
+    impossible refl with trans (sym absent) present
+    ... | ()
+  ... | inj₂ (active , step , final) = subst
+    (λ answer → X.Completed (script token) current current (done answer))
+    (Maybes.just-injective (trans (sym final) present))
+    (readOnlyCompletion token current value
+      (Saved.replay (token , available token current) current value value
+        (trans (cong (admit token) (interruptedKeepsRegistration token before current cut))
+          (Saved.doneIsAdmitted (token , metadata) before current value (sym observed)))
+        active step final))
 
   everyDatabaseReceiptCovered : ∀ token metadata before tag actual →
     DB.Atomic before (proj₁ (Saved.execute (token , metadata) before)) tag actual → X.Interrupted (script token) before actual
