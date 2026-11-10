@@ -525,7 +525,8 @@ module Decode (library : Library.Contract) where
 module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) where
   module D = Public.Decode library
   module P = Controls.Plan
-  module Read = Controls.Readback library postgres
+  module Read = Controls.Readback library postgres using
+    (ExecutionContext; Result; admission; admissionFromPending; admitted; afterBindingLookup; afterMatch; afterPlan; afterPlanJournal; afterPrefix; afterReadback; answer; answerForKnownPlan; awaitingCompletion; awaitingPlan; cancelled; completed; find; findReply; inconsistent; inspectBound; needsRecovery; notFinal; pending; planPendingBinding; prefix; replyValue; reserved; savedRows; unknownToken)
 
   record Request : Set where
     constructor submittedWrite
@@ -2153,3 +2154,203 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
 
   prefixKeepsRows : ∀ call before after token → Frame call before after → Read.savedRows token after ≡ Read.savedRows token before
   prefixKeepsRows call before after token frame = cong (Read.savedRows token) (Frame.business frame)
+
+
+  prepareUnchangedOrEmpty : ∀ call settings encoding before after original model raw →
+    (after , planned original model raw) ≡ prepare call settings encoding before →
+    (after ≡ before) ⊎ (Read.savedRows (Call.token call) after ≡ [])
+  prepareUnchangedOrEmpty call settings encoding before after original model raw accepted
+    with binding (Call.token call) before
+  ... | nothing with accepted
+  ... | ()
+  prepareUnchangedOrEmpty call settings encoding before after original model raw accepted | just boundRow
+    with matches call settings boundRow
+  ... | false with accepted
+  ... | ()
+  prepareUnchangedOrEmpty call settings encoding before after original model raw accepted | just boundRow | true
+    with Store.lookupCancellation before (Call.token call)
+  ... | just _ with accepted
+  ... | ()
+  prepareUnchangedOrEmpty call settings encoding before after original model raw accepted | just boundRow | true | nothing
+    with plan (Call.token call) before
+  ... | just old = inj₁ (cong proj₁ accepted)
+  prepareUnchangedOrEmpty call settings encoding before after original model raw accepted | just boundRow | true | nothing | nothing
+    with Read.savedRows (Call.token call) before in emptyRows
+  ... | _ ∷ _ with accepted
+  ... | ()
+  prepareUnchangedOrEmpty call settings encoding before after original model raw accepted | just boundRow | true | nothing | nothing | []
+    with encoding
+  ... | encodingFailed _ with accepted
+  ... | ()
+  prepareUnchangedOrEmpty call settings encoding before after original model raw accepted | just boundRow | true | nothing | nothing | []
+    | encoded newModel computed newRaw decoded with accepted
+  ... | refl = inj₂ emptyRows
+
+  preparePending : ∀ call settings encoding before after original model raw →
+    (after , planned original model raw) ≡ prepare call settings encoding before →
+    ReadyMeaning call after (preparedWrite call original model raw) →
+    Resumable (Read.answer (Call.token call) before) → PendingReadback (Call.token call) after
+  preparePending call settings encoding before after original model raw accepted known possible
+    with prepareUnchangedOrEmpty call settings encoding before after original model raw accepted
+  ... | inj₁ unchanged = preparedResumablePending call after (preparedWrite call original model raw) known
+    (subst (λ state → Resumable (Read.answer (Call.token call) state)) (sym unchanged) possible)
+  ... | inj₂ emptyRows = preparedEmptyPending call after (preparedWrite call original model raw) known emptyRows
+
+  PendingWhenReady : Call → Store.World → Result → Set
+  PendingWhenReady call after (ready _) = PendingReadback (Call.token call) after
+  PendingWhenReady call after _ = ⊤
+
+  readbackReadyPending : ∀ call before after result →
+    X.Completed (E.ask (readResult call) (λ observed → E.done (returned (Read.answer (Call.token call) observed)))) before after result →
+    PendingWhenReady call after result
+  readbackReadyPending call before .before .(returned (Read.answer (Call.token call) before))
+    (X.completed _ (E.replied _ _ .before (E.returned _))
+      (X.changed _ _ _ .before (refl , refl) (X.unchanged _))) = tt
+
+  afterPlanReadyPending : ∀ call planResult before after result →
+    (∀ original model raw → planResult ≡ planned original model raw → PendingReadback (Call.token call) before) →
+    X.Completed (afterPlan call planResult) before after result → PendingWhenReady call after result
+  afterPlanReadyPending call (planned original model raw) before .before .(ready (preparedWrite call original model raw)) pending
+    (X.completed [] (E.returned _) (X.unchanged _)) = pending original model raw refl
+  afterPlanReadyPending call (planRefused fault) before .before .(needsInput fault) pending
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  afterPlanReadyPending call (planCancelled receipt) before .before .(returned (Read.answer (Call.token call) before)) pending
+    (X.completed _ (E.replied _ _ .before (E.returned _)) (X.changed _ _ _ .before (refl , refl) (X.unchanged _))) = tt
+  afterPlanReadyPending call planUnknown before .before .(returned (Read.answer (Call.token call) before)) pending
+    (X.completed _ (E.replied _ _ .before (E.returned _)) (X.changed _ _ _ .before (refl , refl) (X.unchanged _))) = tt
+
+  prepareAtomicPending : ∀ call settings encoding reply (validated : PlanValidation reply) before after →
+    Atomic before (publishPlan call settings) (encoding , reply , validated) after →
+    Resumable (Read.answer (Call.token call) before) →
+    ∀ original model raw → reply ≡ planned original model raw → PendingReadback (Call.token call) after
+  prepareAtomicPending call settings encoding .(planned original model raw) validated before ._ (accepted , DB.committedAll)
+    possible original model raw refl = preparePending call settings encoding before _ original model raw equality
+      (prepareReady call settings encoding before _ original model raw equality validated) possible
+    where
+    equality = cong (λ result → proj₁ (prepare call settings encoding before) , result) accepted
+
+  createPlanReadyPending : ∀ call settings before after result →
+    Resumable (Read.answer (Call.token call) before) →
+    X.Completed (createPlan call settings) before after result → PendingWhenReady call after result
+  createPlanReadyPending call settings before after result possible
+    (X.completed _ (E.replied _ _ (encoding , planResult , validated) execution) (X.changed _ _ _ middle physical changes)) =
+    afterPlanReadyPending call planResult middle after result
+      (prepareAtomicPending call settings encoding planResult validated before middle physical possible)
+      (X.completed _ execution changes)
+  afterPolicyReadyPending : ∀ call settings observed before after result →
+    Resumable (Read.answer (Call.token call) before) →
+    X.Completed (afterPolicy call settings observed) before after result → PendingWhenReady call after result
+  afterPolicyReadyPending call settings (unavailable fault) before .before .(needsInput fault) absent
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  afterPolicyReadyPending call settings (configured current) before after result absent completion
+    with Controls.PostgreSQL.jsonbEqual postgres settings current
+  ... | true = createPlanReadyPending call settings before after result absent completion
+  ... | false with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = tt
+
+  beforePlanReadyPending : ∀ call settings before after result →
+    Resumable (Read.answer (Call.token call) before) →
+    X.Completed (beforePlan call settings) before after result → PendingWhenReady call after result
+  beforePlanReadyPending call settings before after result absent completion with needsPolicy (Call.tool call)
+  ... | false = createPlanReadyPending call settings before after result absent completion
+  ... | true with completion
+  ... | X.completed _ (E.replied _ _ observed execution) (X.changed _ _ _ .before refl changes) =
+    afterPolicyReadyPending call settings observed before after result absent (X.completed _ execution changes)
+
+  resumeReadyPending : ∀ call settings outcome before after result → Read.answer (Call.token call) before ≡ outcome →
+    X.Completed (resume call settings outcome) before after result → PendingWhenReady call after result
+  resumeReadyPending call settings (Read.awaitingPlan original) before after result observed completion =
+    beforePlanReadyPending call settings before after result
+      (subst Resumable (sym observed) tt) completion
+  resumeReadyPending call settings (Read.awaitingCompletion original) before after result observed completion =
+    beforePlanReadyPending call settings before after result
+      (subst Resumable (sym observed) tt) completion
+  resumeReadyPending call settings (Read.pending original nextStep replies) before after result observed completion =
+    beforePlanReadyPending call settings before after result
+      (subst Resumable (sym observed) tt) completion
+  resumeReadyPending call settings Read.unknownToken before .before .(returned Read.unknownToken) observed
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  resumeReadyPending call settings Read.reserved before .before .(returned Read.reserved) observed
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  resumeReadyPending call settings (Read.completed original value) before .before .(returned (Read.completed original value)) observed
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  resumeReadyPending call settings (Read.cancelled receipt original replies) before .before .(returned (Read.cancelled receipt original replies)) observed
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  resumeReadyPending call settings (Read.needsRecovery original) before .before .(returned (Read.needsRecovery original)) observed
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  resumeReadyPending call settings (Read.inconsistent original problem) before .before .(returned (Read.inconsistent original problem)) observed
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+
+  readOutcomeReadyPending : ∀ call settings before after result →
+    X.Completed (readOutcome call settings) before after result → PendingWhenReady call after result
+  readOutcomeReadyPending call settings before after result
+    (X.completed _ (E.replied _ _ .before execution) (X.changed _ _ _ .before (refl , refl) changes)) =
+    resumeReadyPending call settings (Read.answer (Call.token call) before) before after result refl (X.completed _ execution changes)
+
+  afterBindingReadyPending : ∀ call settings observed before after result →
+    X.Completed (afterBinding call settings observed) before after result → PendingWhenReady call after result
+  afterBindingReadyPending call settings (time , bound original) before after result completion = readOutcomeReadyPending call settings before after result completion
+  afterBindingReadyPending call settings (time , unknown) before after result completion = readbackReadyPending call before after result completion
+  afterBindingReadyPending call settings (time , cancelled receipt) before after result completion = readbackReadyPending call before after result completion
+  afterBindingReadyPending call settings (time , changed original) before .before .(needsInput changedRequest)
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+
+  bindRequestReadyPending : ∀ call settings before after result →
+    X.Completed (bindRequest call settings) before after result → PendingWhenReady call after result
+  bindRequestReadyPending call settings before after result
+    (X.completed _ (E.replied _ _ observed execution) (X.changed _ _ _ middle physical changes)) =
+    afterBindingReadyPending call settings observed middle after result (X.completed _ execution changes)
+
+  afterSettingsReadyPending : ∀ call observed before after result →
+    X.Completed (afterSettings call observed) before after result → PendingWhenReady call after result
+  afterSettingsReadyPending call (configured settings) before after result completion with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = tt
+  afterSettingsReadyPending call (configured settings) before after result completion | inj₂ tt =
+    bindRequestReadyPending call settings before after result completion
+  afterSettingsReadyPending call (unavailable fault) before .before .(needsInput fault)
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+
+  unboundReadyPending : ∀ call outcome observed before after result →
+    X.Completed (unbound call observed outcome) before after result → PendingWhenReady call after result
+  unboundReadyPending call Read.reserved observed before after result
+    (X.completed _ (E.replied _ _ settings execution) (X.changed _ _ _ .before refl changes)) =
+    afterSettingsReadyPending call settings before after result (X.completed _ execution changes)
+  unboundReadyPending call Read.unknownToken observed before .before .(returned Read.unknownToken) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyPending call (Read.awaitingPlan original) observed before .before .(returned (Read.awaitingPlan original)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyPending call (Read.awaitingCompletion original) observed before .before .(returned (Read.awaitingCompletion original)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyPending call (Read.pending original nextStep replies) observed before .before .(returned (Read.pending original nextStep replies)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyPending call (Read.completed original value) observed before .before .(returned (Read.completed original value)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyPending call (Read.cancelled receipt original replies) observed before .before .(returned (Read.cancelled receipt original replies)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyPending call (Read.needsRecovery original) observed before .before .(returned (Read.needsRecovery original)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyPending call (Read.inconsistent original problem) observed before .before .(returned (Read.inconsistent original problem)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+
+  afterOriginalReadyPending : ∀ call observed before after result →
+    X.Completed (afterOriginal call observed) before after result → PendingWhenReady call after result
+  afterOriginalReadyPending call observed before after result completion with binding (Call.token call) observed
+  ... | just original = bindRequestReadyPending call (Store.BindingRow.settings original) before after result completion
+  ... | nothing = unboundReadyPending call (Read.answer (Call.token call) observed) observed before after result completion
+
+  startReadyPending : ∀ call before after context →
+    X.Completed (start call) before after (ready context) →
+    PendingReadback (Call.token call) after
+  startReadyPending call before after context
+    (X.completed _ (E.replied _ _ .before execution) (X.changed _ _ _ .before (refl , refl) changes)) =
+    afterOriginalReadyPending call before before after (ready context) (X.completed _ execution changes)
+
+  completedReadyPending : ∀ requested call before after context → decode requested ≡ inj₂ call →
+    X.Completed (script requested) before after (ready context) →
+    PendingReadback (Call.token call) after
+  completedReadyPending requested call before after context decoded completion rewrite decoded =
+    startReadyPending call before after context completion
+
+
+  completedReadyAdmission : ∀ requested call before after scope → decode requested ≡ inj₂ call →
+    X.Completed (script requested) before after (ready scope) →
+    Σ (Read.ExecutionContext (Call.name call) (Call.token call) after) (λ actual →
+      Read.admission (Call.name call) (Call.token call) after ≡ Read.admitted actual)
+  completedReadyAdmission requested call before after scope decoded completion rewrite decoded
+    with completedMeaning call before after (ready scope) completion
+  ... | originalPlan .scope known = contextForPending call after scope
+    (startReadyReserved call before after scope completion) known
+    (startReadyPending call before after scope completion)
