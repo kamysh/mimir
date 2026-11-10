@@ -249,6 +249,12 @@
           "items": {
             "$ref": "#/$defs/modelRecord"
           }
+        },
+        "executions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/execution"
+          }
         }
       },
       "required": [
@@ -257,7 +263,27 @@
         "bindings",
         "plans",
         "savedReplies",
-        "cancellations"
+        "cancellations",
+        "executions"
+      ],
+      "additionalProperties": false
+    },
+    "execution": {
+      "type": "object",
+      "properties": {
+        "identity": {"type": "integer", "minimum": 0},
+        "token": {"type": "integer", "minimum": 0},
+        "registeredAt": {"type": "integer"},
+        "stoppedAt": {"type": ["integer", "null"]},
+        "ownerProgram": {"type": "string"},
+        "ownerPid": {"type": "integer", "minimum": 0},
+        "ownerHost": {"type": ["string", "null"]},
+        "ownerHostSource": {"type": ["string", "null"]},
+        "clientAddress": {"type": ["string", "null"]}
+      },
+      "required": [
+        "identity", "token", "registeredAt", "stoppedAt", "ownerProgram",
+        "ownerPid", "ownerHost", "ownerHostSource", "clientAddress"
       ],
       "additionalProperties": false
     },
@@ -556,6 +582,11 @@
       "definition": "operations",
       "module": "ApplicationStore",
       "record": "OperationTables"
+    },
+    {
+      "definition": "execution",
+      "module": "ApplicationStore",
+      "record": "ExecutionRow"
     }
   ],
   "x-intent-adapters": [

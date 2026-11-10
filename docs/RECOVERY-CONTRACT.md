@@ -207,6 +207,7 @@ values, rather than introduce a smaller test-specific belief or experience.
 | `operations.plans` | Token and complete original raw plan, including captured selection when present. |
 | `operations.savedReplies` | Token, exact step ID and complete raw saved answer, including the final operation result. |
 | `operations.cancellations` | Token and first cancellation timestamp. |
+| `operations.executions` | Every execution, including executions whose stop is acknowledged: PostgreSQL execution ID, owning operation token, registration and optional stop timestamps, program, PID, optional host label and its source, and actual PostgreSQL client address. |
 | `embeddingOwners` | Owner token, project, original reservation timestamp and optional owning operation token. |
 | `retirementClocks` | Every belief's first-defeat timestamp or explicit legacy-expired state. This is independent of source/activation time. |
 
@@ -217,6 +218,11 @@ stored key, including dangling rows. This represents finite database snapshots;
 it does not claim to serialize arbitrary infinite Agda functions. Proof fields
 are checked or reconstructed by the existing model adapter, not supplied as
 caller assertions.
+
+Acknowledged execution rows remain in the snapshot. A missing stop timestamp
+means that physical stop is unconfirmed; neither a host label, a PID, a client
+address nor elapsed time can substitute for that acknowledgement. Cancellation
+tests compare those stored facts as well as the unchanged business result.
 
 Private row fields use their existing model record names, and nested public
 records use their existing public encoding. A keyed row is `{"key":...,"value":...}`;

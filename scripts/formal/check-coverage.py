@@ -242,7 +242,21 @@ def check_intended_outcome_contract():
         'world', 'body_result', 'public_payload'}, 'complete intended observation is required'
     assert set(definitions['nativeObservation']['properties']) == {
         'world', 'body_result', 'public_payload', 'exchange'}, 'native exchange must remain separate from oracle input'
-    for binding in contract['x-model-records']:
+    record_bindings = contract['x-model-records']
+    expected_bindings = {
+        ('world', 'ApplicationStore', 'World'),
+        ('learning', 'LearningStore', 'World'),
+        ('publication', 'ReviewPreparationPublication', 'World'),
+        ('ledger', 'ReviewLedger', 'World'),
+        ('history', 'LearningHistoryWire', 'Database'),
+        ('operations', 'ApplicationStore', 'OperationTables'),
+        ('execution', 'ApplicationStore', 'ExecutionRow'),
+    }
+    actual_bindings = [(item['definition'], item['module'], item['record'])
+                       for item in record_bindings]
+    assert len(actual_bindings) == len(expected_bindings) and set(actual_bindings) == expected_bindings, (
+        'complete snapshot record bindings are required', actual_bindings)
+    for binding in record_bindings:
         expected = record_field_names(read('spec/Mimir/' + binding['module'] + '.agda'), binding['record'])
         observed = definitions[binding['definition']]
         assert set(observed['properties']) == set(observed['required']) == expected, binding
