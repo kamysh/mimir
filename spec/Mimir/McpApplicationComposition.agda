@@ -33,8 +33,12 @@ data External : Exchange.Effect → Set where
 
 module Compose (environment : Application.Environment) (format : Encoding.Formatting)
   (conversion : Conversion.Contract) where
-  module H = Handler.Run environment format conversion
-  module A = Application.Run environment
+  module H = Handler.Run environment format conversion using
+    (Diagnostic; Result; failure; completed; inputCorrection; preparationDecision;
+     partialDecision; boundReferenceDecision; Handled; module P)
+  private
+    module A = Application.Run environment using (Result; module Result; Event; reached)
+    module Wire = Output.Encode environment format using (boundReferenceValue)
 
   -- Diagnostic rendering is the approved standard formatter boundary. It
   -- receives the retained typed cause; it cannot select application success.
@@ -51,6 +55,9 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
           (inj₂ (Correction.emitCorrection (Correction.certified report unchanged)))
       partial : ∀ actual edge report →
         Materialized (H.partialDecision actual edge report) (inj₂ (H.P.partialValue edge report))
+      boundReference : ∀ actual binding detail →
+        Materialized (H.boundReferenceDecision actual binding detail)
+          (inj₂ (Wire.boundReferenceValue actual binding detail))
 
     data Event : Set where
       external : (effect : Exchange.Effect) → External effect → Exchange.Reply effect → Event
