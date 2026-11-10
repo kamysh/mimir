@@ -994,20 +994,24 @@ async fn learning_references_keep_exact_paths_and_refuse_before_preparation_or_p
     let mut client = Client::start(id)?;
     let checked = async {
         let source = json!({"id":id,"project":project,"context":"reference fixture","action":"explicit isolated observation","outcome":"unknown","source":"agent_report","evidence":["isolated fixture receipt"]});
+        let before_references = business_snapshot().await?;
         for (belief, code) in [(missing, Code::MissingReference), (foreign.id, Code::WrongIdentity), (global.id, Code::WrongIdentity), (working.id, Code::UnsupportedCombination)] {
             let mut invalid = source.clone(); invalid["belief_ids"] = json!([belief]);
             reference_correction(client.independent_case("record_experience", json!({"experience":invalid,"expected_revision":0})).await?, json!(["experience","belief_ids",0]), code)?;
             ensure!(service.get_experience(id).await?.is_none(), "refused reference published an experience");
             reference_correction(client.independent_case("get_lesson_assessment", json!({"project":project,"belief_id":belief,"scope":"fixture","rubric":"fixture"})).await?, json!(["belief_id"]), code)?;
+            ensure!(business_snapshot().await? == before_references, "invalid belief reference changed business data");
         }
         for (pattern_id, code) in [(missing, Code::MissingReference), (pattern.id, Code::WrongIdentity)] {
             let mut invalid = source.clone(); invalid["pattern_id"] = json!(pattern_id);
             reference_correction(client.independent_case("record_experience", json!({"experience":invalid,"expected_revision":0})).await?, json!(["experience","pattern_id"]), code)?;
             ensure!(service.get_experience(id).await?.is_none());
+            ensure!(business_snapshot().await? == before_references, "invalid pattern reference changed business data");
         }
         let mut valid_source = source.clone(); valid_source["belief_ids"] = json!([local.id]);
         ensure!(client.independent_case("record_experience", json!({"experience":valid_source,"expected_revision":0})).await?["revision"] == 1);
         let history = service.experience_history(id).await?;
+        let before_reviews = business_snapshot().await?;
         let review = json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"no fabricated observation"});
         let absent = json!({"belief_id":missing});
         let present = json!({"belief_id":local.id});
@@ -1028,6 +1032,7 @@ async fn learning_references_keep_exact_paths_and_refuse_before_preparation_or_p
             invalid["candidates"] = json!([{"kind":"belief","key":"prepared-later","content":"complete candidate fixture","memory_type":"Fact"}]);
             reference_correction(client.independent_case("review_experience", json!({"review":invalid,"expected_review_revision":0})).await?, path, Code::MissingReference)?;
             ensure!(service.experience_history(id).await? == history && service.get_experience(id).await?.unwrap().review_revision == 0);
+            ensure!(business_snapshot().await? == before_reviews, "invalid review reference changed business data");
         }
         ensure!(client.independent_case("review_experience", json!({"review":review,"expected_review_revision":0})).await?["review_revision"] == 1);
         let score = client.independent_case("get_lesson_assessment", json!({"project":project,"belief_id":local.id,"scope":"fixture","rubric":"fixture"})).await?;
