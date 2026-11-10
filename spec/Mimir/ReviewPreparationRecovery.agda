@@ -912,6 +912,86 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
   reviewFinal : Plan.Step
   reviewFinal = Plan.step (toList "store.review_experience_prepared") nothing (Final.key 0)
 
+  missingWithFinal : ∀ token before steps final →
+    All (λ declared → Store.lookupSaved before token (Plan.Step.id declared) ≡ nothing) steps →
+    Store.lookupSaved before token (Plan.Step.id final) ≡ nothing →
+    All (λ declared → Store.lookupSaved before token (Plan.Step.id declared) ≡ nothing) (steps ++ (final ∷ []))
+  missingWithFinal token before [] final [] absent = absent ∷ []
+  missingWithFinal token before (_ ∷ rest) final (first ∷ missing) absent =
+    first ∷ missingWithFinal token before rest final missing absent
+
+  appendPendingFinalPrefix : ∀ token before steps (prefix : Controls.OpaqueJournal.Prefix token before steps) final →
+    Store.lookupSaved before token (Plan.Step.id final) ≡ nothing →
+    Σ (Controls.OpaqueJournal.Prefix token before (steps ++ (final ∷ []))) (λ extended →
+      Controls.OpaqueJournal.count extended ≡ Controls.OpaqueJournal.count prefix ×
+      Σ Plan.Step (λ next → Controls.OpaqueJournal.next extended ≡ just next))
+  appendPendingFinalPrefix token before [] (Controls.OpaqueJournal.waiting []) final absent =
+    Controls.OpaqueJournal.waiting (absent ∷ []) , refl , final , refl
+  appendPendingFinalPrefix token before (first ∷ rest) (Controls.OpaqueJournal.waiting missing) final absent =
+    Controls.OpaqueJournal.waiting (missingWithFinal token before (first ∷ rest) final missing absent) , refl , first , refl
+  appendPendingFinalPrefix token before (first ∷ rest) (Controls.OpaqueJournal.saved raw value known decoded prefix) final absent
+    with appendPendingFinalPrefix token before rest prefix final absent
+  ... | extended , sameCount , next , selected =
+    Controls.OpaqueJournal.saved raw value known decoded extended , cong suc sameCount , next , selected
+
+  -- An unfinished owner prefix is still an executable prefix of the original
+  -- full review plan. This derives its Context from the real stored binding,
+  -- decoded request and saved owner rows; no semantic decode is assumed for a
+  -- legacy request which has not actually published an owner.
+  ownerJournalContext : ∀ token initial current (entry : Readback.ExecutionContext (toList "review_experience") token initial)
+    (frame : Frame token initial current) requested time →
+    Final.original token (Step.registration current) ≡ inj₂ (requested , time) →
+    J.Complete token current (Final.ownerSteps (Input.Review.candidates (Review.Request.original requested))) →
+    Σ (Readback.ExecutionContext (toList "review_experience") token current) (λ derived →
+      Σ Plan.Step (λ next → Controls.OpaqueJournal.next
+        (Controls.OpaqueJournal.Complete.prefix (Readback.ExecutionContext.journal derived)) ≡ just next))
+  ownerJournalContext token initial current entry frame requested time original journal = derived , next , nextPending
+    where
+    facts = Final.originalFacts token (Step.registration current) requested time original
+    bound = Final.OriginalFacts.bound facts
+    plan = Final.OriginalFacts.storedPlan facts
+    binding = Final.OriginalFacts.binding facts
+    owners = Final.ownerSteps (Input.Review.candidates (Review.Request.original requested))
+    initialBindingAtCurrent = trans (cong (λ stored → Project.Registered.binding token (proj₁ (proj₂ (proj₂ stored))))
+      (Frame.originalRegistration frame)) (Readback.ExecutionContext.originalBinding entry)
+    initialPlanAtCurrent = trans (cong (λ stored → Project.Registered.plan token (proj₂ (proj₂ (proj₂ stored))))
+      (Frame.originalRegistration frame)) (Readback.ExecutionContext.originalPlan entry)
+    bindingSame = Readback.sameJust (trans (sym initialBindingAtCurrent) (Final.BoundFacts.bindingKnown bound))
+    rawSame = Readback.sameJust (trans (sym initialPlanAtCurrent) (Final.BoundFacts.planKnown bound))
+    planSame = Readback.sameRight (trans (sym (Readback.ExecutionContext.decoded entry))
+      (trans (cong Plan.decode rawSame) (Final.OriginalFacts.decoded facts)))
+    stepsSame = trans (cong Plan.Saved.steps planSame) (Final.OriginalFacts.originalSteps facts)
+    expectedAddresses = subst Controls.Addressing stepsSame (Readback.ExecutionContext.addresses entry)
+    rawOwners = proj₁ (opaqueJournal token current owners journal)
+    noFinal = Readback.undeclaredAbsent token current owners rawOwners (Final.key token)
+      (ownersDifferent owners reviewFinal expectedAddresses)
+    extended = appendPendingFinalPrefix token current owners (Controls.OpaqueJournal.Complete.prefix rawOwners) reviewFinal noFinal
+    full = Controls.OpaqueJournal.complete (proj₁ extended)
+      (trans (Controls.OpaqueJournal.Complete.exactRows rawOwners) (sym (proj₁ (proj₂ extended))))
+      (includeOwnerRows owners reviewFinal _ (Controls.OpaqueJournal.Complete.declaredRows rawOwners))
+    fullSteps = sym (Final.OriginalFacts.originalSteps facts)
+    rawJournal = subst (Controls.OpaqueJournal.Complete token current) fullSteps full
+    next = proj₁ (proj₂ (proj₂ extended))
+    nextPending = trans (nextReindexed token current _ _ fullSteps full) (proj₂ (proj₂ (proj₂ extended)))
+    derived : Readback.ExecutionContext (toList "review_experience") token current
+    derived = record
+      { reservationRow = Final.OriginalFacts.reserved facts
+      ; originalReservation = Final.BoundFacts.reservationKnown bound
+      ; bindingRow = binding
+      ; originalBinding = Final.BoundFacts.bindingKnown bound
+      ; requestedOperation = Final.BoundFacts.bindingOperation bound
+      ; rawPlan = Final.OriginalFacts.rawPlan facts
+      ; originalPlan = Final.BoundFacts.planKnown bound
+      ; plan = plan
+      ; decoded = Final.OriginalFacts.decoded facts
+      ; matchingOperation = trans (sym (cong₂ (λ current stored → Plan.textEqual (Store.BindingRow.operation current) (Plan.Saved.operation stored)) bindingSame planSame))
+          (Readback.ExecutionContext.matchingOperation entry)
+      ; executable = trans (sym (cong (Plan.executable library) planSame)) (Readback.ExecutionContext.executable entry)
+      ; addresses = subst Controls.Addressing (cong Plan.Saved.steps planSame) (Readback.ExecutionContext.addresses entry)
+      ; separateResult = subst (All (λ declared → Plan.Step.id declared ≢ Step.resultKey)) (cong Plan.Saved.steps planSame)
+          (Readback.ExecutionContext.separateResult entry)
+      ; journal = rawJournal }
+
   readyContext : ∀ token initial baseline scope → X.Completed (script token) initial baseline (ready scope) →
     ∀ time → Final.original token (Step.registration baseline) ≡ inj₂ (Context.request scope , time) →
     J.Complete token baseline (Final.ownerSteps (Input.Review.candidates (Review.Request.original (Context.request scope)))) →

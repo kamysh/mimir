@@ -556,17 +556,63 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ observedCall = inj₂ (admittedWrite tool raw kind observedCall)
 
-  -- Match through the actual external database jsonb comparison. Compact JSON
-  -- bytes do not have these semantics (for example, 1 and 1.0 compare equal in
-  -- PostgreSQL). The stored object still removes only operation_token.
-  signature : Text → Wire.Value → Wire.Value → Wire.Value
-  signature name arguments settings = Wire.array (Wire.string name ∷ arguments ∷ settings ∷ [])
+  -- This project value comes from the actual admitted object, rather than
+  -- a second parse, a default project or reconstructed request arguments.
+  decodedProject : ∀ fields requested → D.decode Tools.deleteProject fields ≡ inj₂ requested →
+    Σ Text (λ project → requested ≡ Public.deleteProject project)
+  decodedProject fields requested accepted with Record.bindSuccess
+    (Fields.required "project" Wire.asString fields) (λ project → inj₂ (Public.deleteProject project)) requested accepted
+  ... | project , observed , same = project , sym (Sum.inj₂-injective same)
 
+  admittedProject : ∀ fields requested → D.admittedFields Tools.deleteProject fields ≡ inj₂ requested →
+    Σ Text (λ project → requested ≡ Public.deleteProject project)
+  admittedProject fields requested accepted = Record.afterSuccess (D.suppliedTypes fields)
+    (λ _ → D.decode Tools.deleteProject fields) requested
+    (λ _ _ decoded → decodedProject fields requested decoded) accepted
+
+  readProject : ∀ raw requested → D.readTool Tools.deleteProject raw ≡ inj₂ requested →
+    Σ Text (λ project → requested ≡ Public.deleteProject project)
+  readProject (Wire.object fields) requested accepted
+    with Wire.Object.checkUnknowns Objects.forbid (Public.acceptedFields Tools.deleteProject) fields
+  ... | Validation.rejected detail invalid with accepted
+  ... | ()
+  readProject (Wire.object fields) requested accepted | Validation.accepted known =
+    admittedProject (Wire.Object.normalize fields) requested accepted
+  readProject (Wire.string _) requested ()
+  readProject (Wire.signed _) requested ()
+  readProject (Wire.unsigned _) requested ()
+  readProject (Wire.floating _) requested ()
+  readProject (Wire.boolean _) requested ()
+  readProject Wire.null requested ()
+  readProject (Wire.array _) requested ()
+
+  -- The SQL predicate compares the operation name as text, and independently
+  -- compares arguments and settings as jsonb (where 1 and 1.0 are equal).
+  -- The supplied object still removes only operation_token.
   matches : Call → Wire.Value → Store.BindingRow → Bool
-  matches call settings original = Controls.PostgreSQL.jsonbEqual postgres
-    (signature (Call.name call) (Call.arguments call) settings)
-    (signature (Store.BindingRow.operation original)
-      (Store.BindingRow.arguments original) (Store.BindingRow.settings original))
+  matches call settings original = does (Store.BindingRow.operation original ≟Text Call.name call) ∧
+    Controls.PostgreSQL.jsonbEqual postgres (Store.BindingRow.arguments original) (Call.arguments call) ∧
+    Controls.PostgreSQL.jsonbEqual postgres (Store.BindingRow.settings original) settings
+
+  matchingOperation : ∀ call settings original → matches call settings original ≡ true →
+    Store.BindingRow.operation original ≡ Call.name call
+  matchingOperation call settings original matched with Store.BindingRow.operation original ≟Text Call.name call
+  ... | yes same = same
+  ... | no different with matched
+  ... | ()
+
+  matchesOriginalSettings : ∀ call earlierSettings original → matches call earlierSettings original ≡ true →
+    matches call (Store.BindingRow.settings original) original ≡ true
+  matchesOriginalSettings call earlierSettings original matched
+    with Store.BindingRow.operation original ≟Text Call.name call
+  ... | no _ with matched
+  ... | ()
+  matchesOriginalSettings call earlierSettings original matched | yes _
+    with Controls.PostgreSQL.jsonbEqual postgres (Store.BindingRow.arguments original) (Call.arguments call)
+  ... | false with matched
+  ... | ()
+  matchesOriginalSettings call earlierSettings original matched | yes _ | true
+    rewrite Controls.PostgreSQL.jsonbReflexive postgres (Store.BindingRow.settings original) = refl
 
   tables = Store.World.operations
   binding : ℕ → Store.World → Maybe Store.BindingRow
@@ -638,7 +684,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   ... | nothing = inj₁ badPlan
   ... | just shape with P.rebuild library shape (selected (Call.request call))
   ... | nothing = inj₁ badPlan
-  ... | just steps with P.valid library (P.saved (Call.name call) shape steps nothing)
+  ... | just steps with P.executable library (P.saved (Call.name call) shape steps nothing)
   ... | false = inj₁ badPlan
   ... | true = inj₂ (P.saved (Call.name call) shape steps nothing)
 
@@ -660,7 +706,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   ... | inj₁ fault = planRefused fault
   ... | inj₂ stored with P.textEqual (Store.BindingRow.operation original) (P.Saved.operation stored)
   ... | false = planRefused badPlan
-  ... | true with P.valid library stored
+  ... | true with P.executable library stored
   ... | false = planRefused badPlan
   ... | true = planned original stored raw
 
@@ -899,15 +945,17 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterBinding : Call → Wire.Value → ℤ × BindingResult → E.Script Result
   afterBinding call settings (observedTime , bound _) = readOutcome call settings
   afterBinding call settings (observedTime , changed _) = E.done (needsInput changedRequest)
-  afterBinding call settings (observedTime , unknown) = readOutcome call settings
-  afterBinding call settings (observedTime , cancelled _) = readOutcome call settings
+  afterBinding call settings (observedTime , unknown) = E.ask (readResult call) (λ observed → E.done (returned (Read.answer (Call.token call) observed)))
+  afterBinding call settings (observedTime , cancelled _) = E.ask (readResult call) (λ observed → E.done (returned (Read.answer (Call.token call) observed)))
 
   bindRequest : Call → Wire.Value → E.Script Result
   bindRequest call settings = E.ask (bindOriginal call settings) (afterBinding call settings)
 
   afterSettings : Call → Settings → E.Script Result
   afterSettings call (unavailable fault) = E.done (needsInput fault)
-  afterSettings call (configured settings) = bindRequest call settings
+  afterSettings call (configured settings) with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault = E.done (needsInput fault)
+  ... | inj₂ tt = bindRequest call settings
 
   unbound : Call → Store.World → Read.Result → E.Script Result
   unbound call observed Read.reserved = E.ask (currentSettings call) (afterSettings call)
@@ -987,15 +1035,17 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterBindingScoped : ∀ call settings observed → Scoped call (afterBinding call settings observed)
   afterBindingScoped call settings (observedTime , bound _) = readOutcomeScoped call settings
   afterBindingScoped call settings (observedTime , changed _) = finished _
-  afterBindingScoped call settings (observedTime , unknown) = readOutcomeScoped call settings
-  afterBindingScoped call settings (observedTime , cancelled _) = readOutcomeScoped call settings
+  afterBindingScoped call settings (observedTime , unknown) = asked _ _ refl (λ observed → finished _)
+  afterBindingScoped call settings (observedTime , cancelled _) = asked _ _ refl (λ observed → finished _)
 
   bindRequestScoped : ∀ call settings → Scoped call (bindRequest call settings)
   bindRequestScoped call settings = asked _ _ refl (afterBindingScoped call settings)
 
   afterSettingsScoped : ∀ call observed → Scoped call (afterSettings call observed)
   afterSettingsScoped call (unavailable fault) = finished _
-  afterSettingsScoped call (configured settings) = bindRequestScoped call settings
+  afterSettingsScoped call (configured settings) with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault = finished _
+  ... | inj₂ tt = bindRequestScoped call settings
 
   unboundScoped : ∀ call before outcome → Scoped call (unbound call before outcome)
   unboundScoped call before Read.reserved = asked _ _ refl (afterSettingsScoped call)
@@ -1039,17 +1089,17 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   completedStartFrame call before after reply completedRun = interruptedStartFrame call before after
     (X.completedRunMayLoseFinalReply (start call) before after reply completedRun)
 
-  computedValid : ∀ call model → computedPlan call ≡ inj₂ model → P.valid library model ≡ true
-  computedValid call model accepted with P.lookup (Call.name call) P.registered
+  computedExecutable : ∀ call model → computedPlan call ≡ inj₂ model → P.executable library model ≡ true
+  computedExecutable call model accepted with P.lookup (Call.name call) P.registered
   ... | nothing with accepted
   ... | ()
-  computedValid call model accepted | just shape with P.rebuild library shape (selected (Call.request call))
+  computedExecutable call model accepted | just shape with P.rebuild library shape (selected (Call.request call))
   ... | nothing with accepted
   ... | ()
-  computedValid call model accepted | just shape | just steps with P.valid library (P.saved (Call.name call) shape steps nothing) in valid
+  computedExecutable call model accepted | just shape | just steps with P.executable library (P.saved (Call.name call) shape steps nothing) in valid
   ... | false with accepted
   ... | ()
-  computedValid call model accepted | just shape | just steps | true with accepted
+  computedExecutable call model accepted | just shape | just steps | true with accepted
   ... | refl = valid
 
   headPlan : ∀ call raw before → plan (Call.token call) (putPlan (Call.token call) raw before) ≡ just raw
@@ -1063,7 +1113,222 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
           originalArguments : Σ Wire.Value (λ settings → matches call settings (Context.original context) ≡ true)
           savedPlan : plan (Call.token call) after ≡ just (Context.raw context)
           decodedPlan : P.decode (Context.raw context) ≡ inj₂ (Context.model context)
-          executable : P.valid library (Context.model context) ≡ true
+          executable : P.executable library (Context.model context) ≡ true
+          uncancelled : Store.lookupCancellation after (Call.token call) ≡ nothing
+
+  readyOperation : ∀ call after context → ReadyMeaning call after context →
+    Store.BindingRow.operation (Context.original context) ≡ Call.name call
+  readyOperation call after context meaning = matchingOperation call
+    (proj₁ (ReadyMeaning.originalArguments meaning)) (Context.original context)
+    (proj₂ (ReadyMeaning.originalArguments meaning))
+
+  -- Resumption is different from inspecting a completed saved answer. The
+  -- body's recovery proof starts only where no final answer has been saved.
+  Resumable : Read.Result → Set
+  Resumable (Read.awaitingPlan _) = ⊤
+  Resumable (Read.awaitingCompletion _) = ⊤
+  Resumable (Read.pending _ _ _) = ⊤
+  Resumable _ = ⊥
+
+  afterPrefixResumable : ∀ original model receipts remaining saved →
+    Resumable (Read.afterPrefix original model receipts remaining saved) → saved ≡ nothing
+  afterPrefixResumable original model receipts [] (just saved) ()
+  afterPrefixResumable original model receipts (_ ∷ _) (just saved) ()
+  afterPrefixResumable original model receipts remaining nothing possible = refl
+
+  afterPlanResumable : ∀ original model rows → Resumable (Read.afterPlan original model rows) →
+    Read.find Step.resultKey rows ≡ nothing
+  afterPlanResumable original model rows possible with P.textEqual (Store.BindingRow.operation original) (P.Saved.operation model)
+  ... | false with possible
+  ... | ()
+  afterPlanResumable original model rows possible | true with P.valid library model
+  ... | false with possible
+  ... | ()
+  afterPlanResumable original model rows possible | true | true with Read.prefix (P.Saved.steps model) rows
+  ... | receipts , remaining with Data.List.length (Data.List.filterᵇ Read.notFinal rows) ≟ Data.List.length receipts
+  ... | no _ with possible
+  ... | ()
+  afterPlanResumable original model rows possible | true | true | receipts , remaining | yes _ =
+    afterPrefixResumable original model receipts remaining (Read.find Step.resultKey rows) possible
+
+  emptySavedRowsAbsent : ∀ token before → Read.savedRows token before ≡ [] →
+    Store.lookupSaved before token Step.resultKey ≡ nothing
+  emptySavedRowsAbsent token before emptyRows = trans
+    (sym (Read.findReply token Step.resultKey (Store.OperationTables.savedReplies (Store.World.operations before))))
+    (cong (λ rows → Read.replyValue (Read.find Step.resultKey rows)) emptyRows)
+
+  inspectResumableAbsent : ∀ token original before → Resumable (Read.inspectBound token original before) →
+    Store.lookupSaved before token Step.resultKey ≡ nothing
+  inspectResumableAbsent token original before possible with Store.lookupCancellation before token
+  ... | just _ with possible
+  ... | ()
+  inspectResumableAbsent token original before possible | nothing with plan token before
+  ... | nothing with Read.savedRows token before in rows
+  ... | [] = emptySavedRowsAbsent token before rows
+  ... | _ ∷ _ with possible
+  ... | ()
+  inspectResumableAbsent token original before possible | nothing | just raw with P.decode raw
+  ... | inj₁ _ with possible
+  ... | ()
+  inspectResumableAbsent token original before possible | nothing | just raw | inj₂ model = trans
+    (sym (Read.findReply token Step.resultKey (Store.OperationTables.savedReplies (Store.World.operations before))))
+    (cong Read.replyValue (afterPlanResumable original model (Read.savedRows token before) possible))
+
+  resumableAbsent : ∀ token before → Resumable (Read.answer token before) →
+    Store.lookupSaved before token Step.resultKey ≡ nothing
+  resumableAbsent token before possible with binding token before
+  ... | just original = inspectResumableAbsent token original before possible
+  ... | nothing with Store.lookupCancellation before token
+  ... | just _ with possible
+  ... | ()
+  resumableAbsent token before possible | nothing | nothing with Controls.reservation token before
+  ... | just _ with possible
+  ... | ()
+  resumableAbsent token before possible | nothing | nothing | nothing with possible
+  ... | ()
+
+  prefixKeepsAnswer : ∀ call before after token key → Frame call before after →
+    Store.lookupSaved after token key ≡ Store.lookupSaved before token key
+  prefixKeepsAnswer call before after token key framed =
+    cong (λ state → Store.lookupSaved state token key) (Frame.business framed)
+
+  AbsentWhenReady : Call → Store.World → Result → Set
+  AbsentWhenReady call after (ready _) = Store.lookupSaved after (Call.token call) Step.resultKey ≡ nothing
+  AbsentWhenReady call after _ = ⊤
+
+  readbackReadyAbsent : ∀ call before after result →
+    X.Completed (E.ask (readResult call) (λ observed → E.done (returned (Read.answer (Call.token call) observed)))) before after result →
+    AbsentWhenReady call after result
+  readbackReadyAbsent call before .before .(returned (Read.answer (Call.token call) before))
+    (X.completed _ (E.replied _ _ .before (E.returned _))
+      (X.changed _ _ _ .before (refl , refl) (X.unchanged _))) = tt
+
+  afterPlanReadyAbsent : ∀ call planResult before after result →
+    Store.lookupSaved before (Call.token call) Step.resultKey ≡ nothing →
+    X.Completed (afterPlan call planResult) before after result → AbsentWhenReady call after result
+  afterPlanReadyAbsent call (planned original model raw) before .before .(ready (preparedWrite call original model raw)) absent
+    (X.completed [] (E.returned _) (X.unchanged _)) = absent
+  afterPlanReadyAbsent call (planRefused fault) before .before .(needsInput fault) absent
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  afterPlanReadyAbsent call (planCancelled receipt) before after result absent completion = readbackReadyAbsent call before after result completion
+  afterPlanReadyAbsent call planUnknown before after result absent completion = readbackReadyAbsent call before after result completion
+
+  createPlanReadyAbsent : ∀ call settings before after result →
+    Store.lookupSaved before (Call.token call) Step.resultKey ≡ nothing →
+    X.Completed (createPlan call settings) before after result → AbsentWhenReady call after result
+  createPlanReadyAbsent call settings before after result absent
+    (X.completed _ (E.replied _ _ (encoding , planResult) execution) (X.changed _ _ _ middle physical changes)) =
+    afterPlanReadyAbsent call planResult middle after result
+      (trans (prefixKeepsAnswer call before middle (Call.token call) Step.resultKey
+        (atomicFrame before (publishPlan call settings) (encoding , planResult) middle physical)) absent)
+      (X.completed _ execution changes)
+
+  afterPolicyReadyAbsent : ∀ call settings observed before after result →
+    Store.lookupSaved before (Call.token call) Step.resultKey ≡ nothing →
+    X.Completed (afterPolicy call settings observed) before after result → AbsentWhenReady call after result
+  afterPolicyReadyAbsent call settings (unavailable fault) before .before .(needsInput fault) absent
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  afterPolicyReadyAbsent call settings (configured current) before after result absent completion
+    with Controls.PostgreSQL.jsonbEqual postgres settings current
+  ... | true = createPlanReadyAbsent call settings before after result absent completion
+  ... | false with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = tt
+
+  beforePlanReadyAbsent : ∀ call settings before after result →
+    Store.lookupSaved before (Call.token call) Step.resultKey ≡ nothing →
+    X.Completed (beforePlan call settings) before after result → AbsentWhenReady call after result
+  beforePlanReadyAbsent call settings before after result absent completion with needsPolicy (Call.tool call)
+  ... | false = createPlanReadyAbsent call settings before after result absent completion
+  ... | true with completion
+  ... | X.completed _ (E.replied _ _ observed execution) (X.changed _ _ _ .before refl changes) =
+    afterPolicyReadyAbsent call settings observed before after result absent (X.completed _ execution changes)
+
+  resumeReadyAbsent : ∀ call settings outcome before after result → Read.answer (Call.token call) before ≡ outcome →
+    X.Completed (resume call settings outcome) before after result → AbsentWhenReady call after result
+  resumeReadyAbsent call settings (Read.awaitingPlan original) before after result observed completion =
+    beforePlanReadyAbsent call settings before after result
+      (resumableAbsent (Call.token call) before (subst Resumable (sym observed) tt)) completion
+  resumeReadyAbsent call settings (Read.awaitingCompletion original) before after result observed completion =
+    beforePlanReadyAbsent call settings before after result
+      (resumableAbsent (Call.token call) before (subst Resumable (sym observed) tt)) completion
+  resumeReadyAbsent call settings (Read.pending original nextStep replies) before after result observed completion =
+    beforePlanReadyAbsent call settings before after result
+      (resumableAbsent (Call.token call) before (subst Resumable (sym observed) tt)) completion
+  resumeReadyAbsent call settings Read.unknownToken before .before .(returned Read.unknownToken) observed
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  resumeReadyAbsent call settings Read.reserved before .before .(returned Read.reserved) observed
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  resumeReadyAbsent call settings (Read.completed original value) before .before .(returned (Read.completed original value)) observed
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  resumeReadyAbsent call settings (Read.cancelled receipt original replies) before .before .(returned (Read.cancelled receipt original replies)) observed
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  resumeReadyAbsent call settings (Read.needsRecovery original) before .before .(returned (Read.needsRecovery original)) observed
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  resumeReadyAbsent call settings (Read.inconsistent original problem) before .before .(returned (Read.inconsistent original problem)) observed
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+
+  readOutcomeReadyAbsent : ∀ call settings before after result →
+    X.Completed (readOutcome call settings) before after result → AbsentWhenReady call after result
+  readOutcomeReadyAbsent call settings before after result
+    (X.completed _ (E.replied _ _ .before execution) (X.changed _ _ _ .before (refl , refl) changes)) =
+    resumeReadyAbsent call settings (Read.answer (Call.token call) before) before after result refl (X.completed _ execution changes)
+
+  afterBindingReadyAbsent : ∀ call settings observed before after result →
+    X.Completed (afterBinding call settings observed) before after result → AbsentWhenReady call after result
+  afterBindingReadyAbsent call settings (time , bound original) before after result completion = readOutcomeReadyAbsent call settings before after result completion
+  afterBindingReadyAbsent call settings (time , unknown) before after result completion = readbackReadyAbsent call before after result completion
+  afterBindingReadyAbsent call settings (time , cancelled receipt) before after result completion = readbackReadyAbsent call before after result completion
+  afterBindingReadyAbsent call settings (time , changed original) before .before .(needsInput changedRequest)
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+
+  bindRequestReadyAbsent : ∀ call settings before after result →
+    X.Completed (bindRequest call settings) before after result → AbsentWhenReady call after result
+  bindRequestReadyAbsent call settings before after result
+    (X.completed _ (E.replied _ _ observed execution) (X.changed _ _ _ middle physical changes)) =
+    afterBindingReadyAbsent call settings observed middle after result (X.completed _ execution changes)
+
+  afterSettingsReadyAbsent : ∀ call observed before after result →
+    X.Completed (afterSettings call observed) before after result → AbsentWhenReady call after result
+  afterSettingsReadyAbsent call (configured settings) before after result completion with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = tt
+  afterSettingsReadyAbsent call (configured settings) before after result completion | inj₂ tt =
+    bindRequestReadyAbsent call settings before after result completion
+  afterSettingsReadyAbsent call (unavailable fault) before .before .(needsInput fault)
+    (X.completed [] (E.returned _) (X.unchanged _)) = tt
+
+  unboundReadyAbsent : ∀ call outcome observed before after result →
+    X.Completed (unbound call observed outcome) before after result → AbsentWhenReady call after result
+  unboundReadyAbsent call Read.reserved observed before after result
+    (X.completed _ (E.replied _ _ settings execution) (X.changed _ _ _ .before refl changes)) =
+    afterSettingsReadyAbsent call settings before after result (X.completed _ execution changes)
+  unboundReadyAbsent call Read.unknownToken observed before .before .(returned Read.unknownToken) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyAbsent call (Read.awaitingPlan original) observed before .before .(returned (Read.awaitingPlan original)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyAbsent call (Read.awaitingCompletion original) observed before .before .(returned (Read.awaitingCompletion original)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyAbsent call (Read.pending original nextStep replies) observed before .before .(returned (Read.pending original nextStep replies)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyAbsent call (Read.completed original value) observed before .before .(returned (Read.completed original value)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyAbsent call (Read.cancelled receipt original replies) observed before .before .(returned (Read.cancelled receipt original replies)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyAbsent call (Read.needsRecovery original) observed before .before .(returned (Read.needsRecovery original)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+  unboundReadyAbsent call (Read.inconsistent original problem) observed before .before .(returned (Read.inconsistent original problem)) (X.completed [] (E.returned _) (X.unchanged _)) = tt
+
+  afterOriginalReadyAbsent : ∀ call observed before after result →
+    X.Completed (afterOriginal call observed) before after result → AbsentWhenReady call after result
+  afterOriginalReadyAbsent call observed before after result completion with binding (Call.token call) observed
+  ... | just original = bindRequestReadyAbsent call (Store.BindingRow.settings original) before after result completion
+  ... | nothing = unboundReadyAbsent call (Read.answer (Call.token call) observed) observed before after result completion
+
+  startReadyAbsent : ∀ call before after context →
+    X.Completed (start call) before after (ready context) →
+    Store.lookupSaved after (Call.token call) Step.resultKey ≡ nothing
+  startReadyAbsent call before after context
+    (X.completed _ (E.replied _ _ .before execution) (X.changed _ _ _ .before (refl , refl) changes)) =
+    afterOriginalReadyAbsent call before before after (ready context) (X.completed _ execution changes)
+
+  completedReadyResultAbsent : ∀ requested call before after context → decode requested ≡ inj₂ call →
+    X.Completed (script requested) before after (ready context) →
+    Store.lookupSaved after (Call.token call) Step.resultKey ≡ nothing
+  completedReadyResultAbsent requested call before after context decoded completion rewrite decoded =
+    startReadyAbsent call before after context completion
 
   data ReplyMeaning (call : Call) (after : Store.World) : Result → Set where
     dialogue : ∀ fault → ReplyMeaning call after (needsInput fault)
@@ -1078,36 +1343,39 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   existingReady : ∀ call settings before original raw returnedOriginal returnedModel returnedRaw →
     binding (Call.token call) before ≡ just original → matches call settings original ≡ true →
     plan (Call.token call) before ≡ just raw →
+    Store.lookupCancellation before (Call.token call) ≡ nothing →
     existingPlan original raw ≡ planned returnedOriginal returnedModel returnedRaw →
     ReadyMeaning call before (preparedWrite call returnedOriginal returnedModel returnedRaw)
-  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored accepted
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted
     with P.decode raw in decoded
   ... | inj₁ _ with accepted
   ... | ()
-  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored accepted | inj₂ model
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted | inj₂ model
     with P.textEqual (Store.BindingRow.operation original) (P.Saved.operation model)
   ... | false with accepted
   ... | ()
-  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored accepted | inj₂ model | true
-    with P.valid library model in valid
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted | inj₂ model | true
+    with P.executable library model in valid
   ... | false with accepted
   ... | ()
-  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored accepted | inj₂ model | true | true
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted | inj₂ model | true | true
     with accepted
   ... | refl = record
     { actualCall = refl; boundRequest = known; originalArguments = settings , matched
-    ; savedPlan = stored; decodedPlan = decoded; executable = valid }
+    ; savedPlan = stored; decodedPlan = decoded; executable = valid; uncancelled = active }
 
   newPlanReady : ∀ call settings original encoding before after returnedOriginal returnedModel returnedRaw →
     binding (Call.token call) before ≡ just original → matches call settings original ≡ true →
+    Store.lookupCancellation before (Call.token call) ≡ nothing →
     (after , planned returnedOriginal returnedModel returnedRaw) ≡ saveNewPlan call original encoding before →
     ReadyMeaning call after (preparedWrite call returnedOriginal returnedModel returnedRaw)
-  newPlanReady call settings original (encodingFailed fault) before after returnedOriginal returnedModel returnedRaw known matched ()
-  newPlanReady call settings original (encoded model computed raw decoded) before after returnedOriginal returnedModel returnedRaw known matched accepted
+  newPlanReady call settings original (encodingFailed fault) before after returnedOriginal returnedModel returnedRaw known matched active ()
+  newPlanReady call settings original (encoded model computed raw decoded) before after returnedOriginal returnedModel returnedRaw known matched active accepted
     with accepted
   ... | refl = record
     { actualCall = refl; boundRequest = known; originalArguments = settings , matched
-    ; savedPlan = headPlan call raw before; decodedPlan = decoded; executable = computedValid call model computed }
+    ; savedPlan = headPlan call raw before; decodedPlan = decoded; executable = computedExecutable call model computed
+    ; uncancelled = active }
 
   prepareReady : ∀ call settings encoding before after original model raw →
     (after , planned original model raw) ≡ prepare call settings encoding before →
@@ -1121,20 +1389,20 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   ... | false with accepted
   ... | ()
   prepareReady call settings encoding before after original model raw accepted | just boundRow | true
-    with Store.lookupCancellation before (Call.token call)
+    with Store.lookupCancellation before (Call.token call) in active
   ... | just _ with accepted
   ... | ()
   prepareReady call settings encoding before after original model raw accepted | just boundRow | true | nothing
     with plan (Call.token call) before in stored
   ... | just old = subst (λ state → ReadyMeaning call state (preparedWrite call original model raw))
     (sym (cong proj₁ accepted))
-    (existingReady call settings before boundRow old original model raw known matched stored (sym (cong proj₂ accepted)))
+    (existingReady call settings before boundRow old original model raw known matched stored active (sym (cong proj₂ accepted)))
   prepareReady call settings encoding before after original model raw accepted | just boundRow | true | nothing | nothing
     with Read.savedRows (Call.token call) before
   ... | _ ∷ _ with accepted
   ... | ()
   prepareReady call settings encoding before after original model raw accepted | just boundRow | true | nothing | nothing | [] =
-    newPlanReady call settings boundRow encoding before after original model raw known matched accepted
+    newPlanReady call settings boundRow encoding before after original model raw known matched active accepted
 
   prepareAtomicReady : ∀ call settings encoding reply before after →
     Atomic before (publishPlan call settings) (encoding , reply) after →
@@ -1211,8 +1479,8 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterBindingMeaning : ∀ call settings observed before after reply →
     X.Completed (afterBinding call settings observed) before after reply → ReplyMeaning call after reply
   afterBindingMeaning call settings (observedTime , bound _) before after reply completion = readOutcomeMeaning call settings before after reply completion
-  afterBindingMeaning call settings (observedTime , unknown) before after reply completion = readOutcomeMeaning call settings before after reply completion
-  afterBindingMeaning call settings (observedTime , cancelled _) before after reply completion = readOutcomeMeaning call settings before after reply completion
+  afterBindingMeaning call settings (observedTime , unknown) before after reply completion = readbackCompletion call before after reply completion
+  afterBindingMeaning call settings (observedTime , cancelled _) before after reply completion = readbackCompletion call before after reply completion
   afterBindingMeaning call settings (observedTime , changed _) before .before .(needsInput changedRequest)
     (X.completed [] (E.returned _) (X.unchanged _)) = dialogue changedRequest
 
@@ -1223,7 +1491,11 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
 
   afterSettingsMeaning : ∀ call observed before after reply →
     X.Completed (afterSettings call observed) before after reply → ReplyMeaning call after reply
-  afterSettingsMeaning call (configured settings) before after reply completion = bindRequestMeaning call settings before after reply completion
+  afterSettingsMeaning call (configured settings) before after reply completion with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = dialogue fault
+  afterSettingsMeaning call (configured settings) before after reply completion | inj₂ tt =
+    bindRequestMeaning call settings before after reply completion
   afterSettingsMeaning call (unavailable fault) before .before .(needsInput fault)
     (X.completed [] (E.returned _) (X.unchanged _)) = dialogue fault
 
@@ -1396,8 +1668,8 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterBindingProgress : Environment → ∀ call settings observed before → Σ Store.World (λ after → Σ Result
     (λ reply → X.Completed (afterBinding call settings observed) before after reply))
   afterBindingProgress environment call settings (observedTime , bound _) before = readOutcomeProgress environment call settings before
-  afterBindingProgress environment call settings (observedTime , unknown) before = readOutcomeProgress environment call settings before
-  afterBindingProgress environment call settings (observedTime , cancelled _) before = readOutcomeProgress environment call settings before
+  afterBindingProgress environment call settings (observedTime , unknown) before = readbackProgress call before
+  afterBindingProgress environment call settings (observedTime , cancelled _) before = readbackProgress call before
   afterBindingProgress environment call settings (observedTime , changed _) before = doneProgress _ before
 
   bindRequestProgress : Environment → ∀ call settings before → Σ Store.World (λ after → Σ Result
@@ -1415,7 +1687,9 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterSettingsProgress : Environment → ∀ call observed before → Σ Store.World (λ after → Σ Result
     (λ reply → X.Completed (afterSettings call observed) before after reply))
   afterSettingsProgress environment call (unavailable fault) before = doneProgress _ before
-  afterSettingsProgress environment call (configured settings) before = bindRequestProgress environment call settings before
+  afterSettingsProgress environment call (configured settings) before with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault = doneProgress _ before
+  ... | inj₂ tt = bindRequestProgress environment call settings before
 
   unboundProgress : Environment → ∀ call before outcome → Σ Store.World (λ after → Σ Result
     (λ reply → X.Completed (unbound call before outcome) before after reply))
@@ -1501,13 +1775,15 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   transportReady : ∀ call before after context →
     binding (Call.token call) after ≡ binding (Call.token call) before →
     plan (Call.token call) after ≡ plan (Call.token call) before →
+    Store.lookupCancellation after (Call.token call) ≡ Store.lookupCancellation before (Call.token call) →
     ReadyMeaning call before context → ReadyMeaning call after context
-  transportReady call before after context sameBinding samePlan earlier = record
+  transportReady call before after context sameBinding samePlan sameCancellation earlier = record
     { actualCall = ReadyMeaning.actualCall earlier
     ; boundRequest = trans sameBinding (ReadyMeaning.boundRequest earlier)
     ; originalArguments = ReadyMeaning.originalArguments earlier
     ; savedPlan = trans samePlan (ReadyMeaning.savedPlan earlier)
-    ; decodedPlan = ReadyMeaning.decodedPlan earlier; executable = ReadyMeaning.executable earlier }
+    ; decodedPlan = ReadyMeaning.decodedPlan earlier; executable = ReadyMeaning.executable earlier
+    ; uncancelled = trans sameCancellation (ReadyMeaning.uncancelled earlier) }
 
   contextSame : ∀ first second → Context.call first ≡ Context.call second →
     Context.original first ≡ Context.original second → Context.model first ≡ Context.model second →
@@ -1550,3 +1826,79 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     (subst (λ state → ReadyMeaning call state second) sameWorld later))
     where sameWorld = completedDecodedExistingUnchanged requested call before after (ready second)
             (Context.original first) (Context.raw first) decoded (ReadyMeaning.boundRequest earlier) (ReadyMeaning.savedPlan earlier) completion
+
+
+  -- Reservation presence is read from the actual successful bind receipt.
+  -- No global foreign-key invariant on arbitrary modeled Worlds is assumed.
+  Reserved : Call → Store.World → Set
+  Reserved call current = Σ Store.ReservationRow (λ row → Controls.reservation (Call.token call) current ≡ just row)
+
+  boundReserved : ∀ call settings observedTime before original →
+    bound original ≡ proj₂ (bind call settings observedTime before) → Reserved call before
+  boundReserved call settings observedTime before original accepted
+    with Controls.reservation (Call.token call) before in present
+  ... | nothing with accepted
+  ... | ()
+  boundReserved call settings observedTime before original accepted | just row = row , refl
+
+  changesKeepReservation : ∀ token before events after → X.Changes before events after →
+    Controls.reservation token after ≡ Controls.reservation token before
+  changesKeepReservation token before [] .before (X.unchanged _) = refl
+  changesKeepReservation token before ((effect , reply) ∷ events) after
+    (X.changed .before .effect .reply middle physical later) = trans
+      (changesKeepReservation token middle events after later)
+      (cong (Controls.reservation token) (Frame.business (atomicFrame before effect reply middle physical)))
+
+  bindRequestReadyReserved : ∀ call settings before after context →
+    X.Completed (bindRequest call settings) before after (ready context) → Reserved call after
+  bindRequestReadyReserved call settings before after context
+    (X.completed events (E.replied _ _ (observedTime , bound original) execution)
+      changes@(X.changed _ _ _ middle (accepted , physical) later))
+    with boundReserved call settings observedTime before original accepted
+  ... | row , present = row , trans (changesKeepReservation (Call.token call) before events after changes) present
+  bindRequestReadyReserved call settings before after context
+    (X.completed events (E.replied _ _ (observedTime , changed original) ()) changes)
+  bindRequestReadyReserved call settings before after context
+    (X.completed events (E.replied _ _ (observedTime , unknown) (E.replied _ _ _ ())) changes)
+  bindRequestReadyReserved call settings before after context
+    (X.completed events (E.replied _ _ (observedTime , cancelled receipt) (E.replied _ _ _ ())) changes)
+
+  afterSettingsReadyReserved : ∀ call observed before after context →
+    X.Completed (afterSettings call observed) before after (ready context) → Reserved call after
+  afterSettingsReadyReserved call (unavailable fault) before after context (X.completed [] () changes)
+  afterSettingsReadyReserved call (configured settings) before after context completion
+    with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault with completion
+  ... | X.completed [] () changes
+  afterSettingsReadyReserved call (configured settings) before after context completion | inj₂ tt =
+    bindRequestReadyReserved call settings before after context completion
+
+  unboundReadyReserved : ∀ call observed outcome before after context →
+    X.Completed (unbound call observed outcome) before after (ready context) → Reserved call after
+  unboundReadyReserved call observed Read.reserved before after context
+    (X.completed _ (E.replied _ _ settings execution) (X.changed _ _ _ middle physical later)) =
+    afterSettingsReadyReserved call settings middle after context (X.completed _ execution later)
+  unboundReadyReserved call observed Read.unknownToken before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.awaitingPlan _) before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.awaitingCompletion _) before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.pending _ _ _) before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.completed _ _) before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.cancelled _ _ _) before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.needsRecovery _) before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.inconsistent _ _) before after context (X.completed [] () changes)
+
+  afterOriginalReadyReserved : ∀ call observed before after context →
+    X.Completed (afterOriginal call observed) before after (ready context) → Reserved call after
+  afterOriginalReadyReserved call observed before after context completion with binding (Call.token call) observed
+  ... | just original = bindRequestReadyReserved call (Store.BindingRow.settings original) before after context completion
+  ... | nothing = unboundReadyReserved call observed (Read.answer (Call.token call) observed) before after context completion
+
+  startReadyReserved : ∀ call before after context → X.Completed (start call) before after (ready context) → Reserved call after
+  startReadyReserved call before after context
+    (X.completed _ (E.replied _ _ .before execution) (X.changed _ _ _ .before (refl , refl) later)) =
+    afterOriginalReadyReserved call before before after context (X.completed _ execution later)
+
+  completedReadyReservation : ∀ requested call before after context → decode requested ≡ inj₂ call →
+    X.Completed (script requested) before after (ready context) → Reserved call after
+  completedReadyReservation requested call before after context decoded completion rewrite decoded =
+    startReadyReserved call before after context completion

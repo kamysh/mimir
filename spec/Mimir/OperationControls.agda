@@ -13,6 +13,7 @@ open import Data.Nat using (ℕ; _≟_; _<?_; zero; suc)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.String using (String; toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
+import Data.Sum.Properties as Sums
 open import Data.Unit using (⊤; tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; cong₂; sym; trans; subst)
 open import Relation.Nullary using (Dec; ¬_; yes; no; does)
@@ -69,6 +70,7 @@ record PostgreSQL : Set₁ where
         -- are immaterial; omitted fields, null and array order remain distinct.
         -- This external database observation is not compact JSON byte equality.
         jsonbEqual : Wire.Value → Wire.Value → Bool
+        jsonbReflexive : ∀ value → jsonbEqual value value ≡ true
 
 -- Both mutating controls have one committed publication with metadata selected
 -- by its observed database reply. Goal is fixed by concrete control assembly.
@@ -462,13 +464,40 @@ module Plan where
     Decode._>>=_ (Wire.required (toList "may_repeat") Wire.asBoolean view) λ repeat →
     inj₂ (boundary site repeat)
 
+  readStepFields : Wire.Object.View → Validation.Fault ⊎ Step
+  readStepFields view = Decode._>>=_ (Wire.required (toList "site") Wire.asString view) λ site →
+    Decode._>>=_ (Wire.optional (toList "key") Wire.asString view) λ key →
+    Decode._>>=_ (Wire.required (toList "id") Wire.asString view) λ id → inj₂ (step site key id)
+
   readStep : Wire.Value → Validation.Fault ⊎ Step
   readStep = Decode.readRecord Objects.forbid Objects.rejectKnownRepeated
-    (toList "site" ∷ toList "key" ∷ toList "id" ∷ []) λ view →
-    Decode._>>=_ (Wire.required (toList "site") Wire.asString view) λ site →
-    Decode._>>=_ (Wire.optional (toList "key") Wire.asString view) λ key →
-    Decode._>>=_ (Wire.required (toList "id") Wire.asString view) λ id →
-    inj₂ (step site key id)
+    (toList "site" ∷ toList "key" ∷ toList "id" ∷ []) readStepFields
+
+  readStepFieldsKnown : ∀ view site identity →
+    view (toList "site") ≡ just (Wire.string site) →
+    view (toList "key") ≡ just Wire.null →
+    view (toList "id") ≡ just (Wire.string identity) →
+    readStepFields view ≡ inj₂ (step site nothing identity)
+  readStepFieldsKnown view site identity siteKnown keyKnown idKnown rewrite siteKnown | keyKnown | idKnown = refl
+
+  stepDecoded : ∀ registered raw decodedStep → Admission.Plan.stepMatches registered raw ≡ true →
+    readStep raw ≡ inj₂ decodedStep → decodedStep ≡ step (Admission.Descriptor.site registered) nothing (Admission.Descriptor.key registered)
+  stepDecoded registered raw decodedStep matched decoded with Admission.RecordFields.sameRecordView
+    (toList "site" ∷ toList "key" ∷ toList "id" ∷ [])
+    (toList "site" ∷ toList "key" ∷ toList "id" ∷ [])
+    (λ view → Project.Registered.fieldText (Admission.Descriptor.site registered) (view (toList "site")) ∧
+      Project.Registered.fieldNull (view (toList "key")) ∧
+      Project.Registered.fieldText (Admission.Descriptor.key registered) (view (toList "id")))
+    readStepFields raw decodedStep matched decoded
+  ... | view , checked , parsed = sym (Sums.inj₂-injective (trans (sym (readStepFieldsKnown view
+    (Admission.Descriptor.site registered) (Admission.Descriptor.key registered)
+    (Admission.RecordFields.textField _ _ (Admission.RecordFields.andLeft a (b ∧ c) checked)) (Admission.RecordFields.nullField _ (Admission.RecordFields.andLeft b c (Admission.RecordFields.andRight a (b ∧ c) checked)))
+    (Admission.RecordFields.textField _ _ (Admission.RecordFields.andRight b c (Admission.RecordFields.andRight a (b ∧ c) checked))))) parsed))
+    where
+    a = Project.Registered.fieldText (Admission.Descriptor.site registered) (view (toList "site"))
+    b = Project.Registered.fieldNull (view (toList "key"))
+    c = Project.Registered.fieldText (Admission.Descriptor.key registered) (view (toList "id"))
+
 
   fieldNames : List Text
   fieldNames = toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ toList "capture" ∷ []
@@ -479,13 +508,31 @@ module Plan where
   sourceFieldNames : List Text
   sourceFieldNames = toList "id" ∷ toList "content" ∷ toList "project" ∷ toList "already_embedded" ∷ []
 
-  decode : Wire.Value → Validation.Fault ⊎ Saved
-  decode = Decode.readRecord Objects.forbid Objects.rejectKnownRepeated
-    fieldNames λ view →
-    Decode._>>=_ (Wire.required (toList "operation") Wire.asString view) λ operation →
+  readPlanFields : Wire.Object.View → Validation.Fault ⊎ Saved
+  readPlanFields view = Decode._>>=_ (Wire.required (toList "operation") Wire.asString view) λ operation →
     Decode._>>=_ (Wire.required (toList "shape") (Decode.readArray readBoundary) view) λ shape →
     Decode._>>=_ (Wire.required (toList "steps") (Decode.readArray readStep) view) λ steps →
     inj₂ (saved operation shape steps (view (toList "capture")))
+
+  decode : Wire.Value → Validation.Fault ⊎ Saved
+  decode = Decode.readRecord Objects.forbid Objects.rejectKnownRepeated fieldNames readPlanFields
+
+  parsedSteps : ∀ view model → readPlanFields view ≡ inj₂ model →
+    Wire.required (toList "steps") (Decode.readArray readStep) view ≡ inj₂ (Saved.steps model)
+  parsedSteps view model known with Wire.required (toList "operation") Wire.asString view
+  ... | inj₁ fault with known
+  ... | ()
+  parsedSteps view model known | inj₂ operation
+    with Wire.required (toList "shape") (Decode.readArray readBoundary) view
+  ... | inj₁ fault with known
+  ... | ()
+  parsedSteps view model known | inj₂ operation | inj₂ shape
+    with Wire.required (toList "steps") (Decode.readArray readStep) view
+  ... | inj₁ fault with known
+  ... | ()
+  parsedSteps view model known | inj₂ operation | inj₂ shape | inj₂ steps with known
+  ... | refl = refl
+
 
   readIdentity : Library.Contract → Wire.Value → Validation.Fault ⊎ (Text × ℕ)
   readIdentity library raw = Decode._>>=_ (Wire.asString raw) λ text → inspect text
