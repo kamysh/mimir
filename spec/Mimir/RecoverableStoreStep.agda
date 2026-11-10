@@ -241,6 +241,35 @@ module For (Input Diagnostic : Set)
       (cong (λ tables → Store.lookupCancellationRows (token input) (Store.OperationTables.cancellations tables))
         (keepsJournal input before changed reply accepted)))
 
+  -- A returned answer either read the existing World or published both of
+  -- its matching immutable answers. A later readback cannot invent a third
+  -- value for a newly completed operation.
+  doneOrigin : ∀ input before after value → execute input before ≡ (after , done value) →
+    after ≡ before ⊎
+    (Store.lookupCancellation after (token input) ≡ nothing ×
+      Store.lookupSaved after (token input) (key input) ≡ just value ×
+      Store.lookupSaved after (token input) resultKey ≡ just value)
+  doneOrigin input before after value observed with Store.lookupCancellation before (token input) in active
+  ... | just _ with observed
+  ... | ()
+  doneOrigin input before after value observed | nothing
+    with Store.lookupSaved before (token input) (key input) in step
+      | Store.lookupSaved before (token input) resultKey in final
+  ... | just saved | just result with observed
+  ... | refl = inj₁ refl
+  doneOrigin input before after value () | nothing | just _ | nothing
+  doneOrigin input before after value () | nothing | nothing | just _
+  doneOrigin input before after value observed | nothing | nothing | nothing
+    with decide input before in accepted
+  ... | inj₁ _ with observed
+  ... | ()
+  doneOrigin input before after value observed | nothing | nothing | nothing | inj₂ (changed , reply)
+    with observed
+  ... | refl = inj₂
+    (trans (publicationKeepsCancellation input before changed reply accepted) active ,
+      publishedStepReadable input before changed reply accepted step ,
+      publishedResultReadable input before changed reply accepted final)
+
   stable : ∀ input before → execute input (proj₁ (execute input before)) ≡ execute input before
   stable input before with Store.lookupCancellation before (token input) in active
   ... | just original rewrite active = refl
@@ -330,6 +359,23 @@ module Admitted (Input Diagnostic : Set)
     execute input before ≡ (before , done saved)
   replay input before saved final admitted active step result rewrite admitted =
     Kernel.replay input before saved final active step result
+
+  doneOrigin : ∀ input before after value → execute input before ≡ (after , done value) →
+    after ≡ before ⊎
+    (Store.lookupCancellation after (token input) ≡ nothing ×
+      Store.lookupSaved after (token input) (key input) ≡ just value ×
+      Store.lookupSaved after (token input) resultKey ≡ just value)
+  doneOrigin input before after value observed with admit input (registration before)
+  ... | just _ with observed
+  ... | ()
+  doneOrigin input before after value observed | nothing = Kernel.doneOrigin input before after value observed
+
+  doneIsAdmitted : ∀ input before after value → execute input before ≡ (after , done value) →
+    admit input (registration before) ≡ nothing
+  doneIsAdmitted input before after value observed with admit input (registration before)
+  ... | just _ with observed
+  ... | ()
+  doneIsAdmitted input before after value observed | nothing = refl
 
   stable : ∀ input before → execute input (proj₁ (execute input before)) ≡ execute input before
   stable input before with admit input (registration before) in admitted
@@ -489,6 +535,13 @@ module Observed (Metadata Diagnostic : Set)
     (X.changed before token _ _ (refl , Saved.expectedPhysical (token , metadata) before) (X.unchanged _))
     where metadata = available token before
           outcome = Saved.execute (token , metadata) before
+
+  readOnlyCompletion : ∀ token before value →
+    Saved.execute (token , available token before) before ≡ (before , done value) →
+    X.Completed (script token) before before (done value)
+  readOnlyCompletion token before value observed = subst
+    (λ outcome → X.Completed (script token) before (proj₁ outcome) (proj₂ outcome))
+    observed (proj₂ (proj₂ (progress token before)))
 
   everyDatabaseReceiptCovered : ∀ token metadata before tag actual →
     DB.Atomic before (proj₁ (Saved.execute (token , metadata) before)) tag actual → X.Interrupted (script token) before actual

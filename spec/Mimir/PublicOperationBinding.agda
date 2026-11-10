@@ -321,6 +321,29 @@ module Decode (library : Library.Contract) where
     liftChanges (O.X.changed before effect reply middle physical later) =
       X.changed before (perform effect) reply middle physical (liftChanges later)
 
+    -- This is the actual binding read followed by the actual existing body
+    -- trace; it neither runs a new write nor supplies an arbitrary receipt.
+    liftReadOnlyCompletion : ∀ token before response →
+      admit source expected token (bindings before) ≡ inj₂ tt →
+      O.X.Completed (O.script token) before before response →
+      X.Completed (script token) before before (executed response)
+    admittedBranch : ∀ token before → admit source expected token (bindings before) ≡ inj₂ tt →
+      afterBinding token before ≡ lift (O.script token)
+    admittedBranch token before admitted with admit source expected token (bindings before)
+    ... | inj₁ fault with admitted
+    ... | ()
+    admittedBranch token before admitted | inj₂ tt = refl
+
+    liftReadOnlyCompletion token before response admitted
+      (O.X.completed events execution changes) = X.completed
+        ((readBinding token , before) ∷ map liftEvent events)
+        (E.replied (readBinding token) (afterBinding token) before
+          (subst (λ branch → E.Runs branch (map liftEvent events) (executed response))
+            (sym (admittedBranch token before admitted))
+            (liftRun (O.script token) events response execution)))
+        (X.changed before (readBinding token) before before (refl , refl)
+          (liftChanges changes))
+
     eraseCompletion : ∀ program before after result events → E.Runs (lift program) events result →
       X.Changes before events after → Σ Response (λ response → result ≡ executed response × O.X.Completed program before after response)
     eraseCompletion (O.E.done response) before .before ._ .[] (E.returned _) (X.unchanged _) =
