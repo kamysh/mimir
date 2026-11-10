@@ -49,6 +49,7 @@ import Mimir.IndependentBeliefRecovery as Independent
 import Mimir.ReviewPublicationRecovery as ReviewPublication
 import Mimir.ReviewPreparationRecovery as ReviewPreparation
 import Mimir.PublicOperationCatalogue as Catalogue
+import Mimir.PublicOperationBinding as Binding
 import Mimir.Recovery as Recovery
 import Mimir.StructuredValue as Wire
 import Mimir.ToolCatalog as Tools
@@ -71,6 +72,7 @@ record Environment : Set₁ where
     databaseSum : List Float → Float
     vectors : Storage.VectorOperations
     postgres : Controls.PostgreSQL
+    writePreparation : Binding.Creating.Environment library postgres
     serverTime : ℕ → Store.World → ℤ
     utcTimestamp : Text → Validation.Fault ⊎ ℤ
     allocateOwner : ℕ → Store.World → Independent.Allocation
