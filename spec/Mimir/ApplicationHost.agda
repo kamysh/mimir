@@ -9,7 +9,7 @@ module Mimir.ApplicationHost where
 open import Data.Integer using (ℤ)
 open import Data.Bool using (false)
 open import Data.Empty using (⊥-elim)
-open import Data.List using (List; []; _∷_)
+open import Data.List using (List; []; _∷_; _++_)
 open import Data.Maybe using (nothing)
 open import Data.Nat using (ℕ)
 open import Data.Product using (Σ; _×_; _,_)
@@ -89,6 +89,14 @@ module Run (environment : Application.Environment) where
   prefixFromRun before events result (A.advanced .before middle physical rest .result later) =
     next before middle (A.resultState result) physical rest (prefixFromRun middle rest result later)
 
+  appendRun : ∀ before prefix middle remaining result → DatabasePrefix before prefix middle →
+    A.Runs middle remaining result → A.Runs before (prefix ++ remaining) result
+  appendRun before .[] .before remaining result (here .before) tail = tail
+  appendRun before .(A.event before middle physical ∷ events) after remaining result
+    (next .before middle .after physical events prefix) tail =
+      A.advanced before middle physical (events ++ remaining) result
+        (appendRun middle events after remaining result prefix tail)
+
   stateWorld : A.State → Store.World
   stateWorld (A.running call initial (A.Checked.running active)) =
     A.Checked.History.current {call = call} (A.Checked.Active.evidence {call = call} active)
@@ -161,6 +169,28 @@ module Run (environment : Application.Environment) where
     cleanupPending : ∀ initial entered (entry : Entry (mode tool submitted) initial entered)
       databaseResult → A.Runs (A.start tool submitted entered) events databaseResult →
       ∀ final → Pending (A.reached databaseResult) (mode tool submitted) final → Result tool submitted events
+
+  -- A returning task continues its actual tracked prefix. It cannot exchange
+  -- the registered owner for a new independent Execution at response time.
+  finishActive : ∀ {tool submitted} (active : Active tool submitted) remaining result →
+    A.Runs (Active.current active) remaining result → ∀ final →
+    Exit (Active.entry active) (A.reached result) final →
+    Execution tool submitted (Active.events active ++ remaining)
+  finishActive active remaining result ran final exited = record
+    { initial = Active.initial active; entered = Active.entered active
+    ; entry = Active.entry active; databaseResult = result
+    ; databaseRun = appendRun _ (Active.events active) (Active.current active) remaining result
+        (Active.observed active) ran
+    ; final = final; exited = exited }
+
+  pendingActive : ∀ {tool submitted} (active : Active tool submitted) remaining result →
+    A.Runs (Active.current active) remaining result → ∀ final →
+    Pending (A.reached result) (mode tool submitted) final →
+    Result tool submitted (Active.events active ++ remaining)
+  pendingActive active remaining result ran final pending = cleanupPending
+    (Active.initial active) (Active.entered active) (Active.entry active) result
+    (appendRun _ (Active.events active) (Active.current active) remaining result
+      (Active.observed active) ran) final pending
 
   -- This is an explicit execution witness, not an unused output projector.
   -- Every successful host result contains the actual entered application run.
