@@ -210,7 +210,11 @@ impl AgeStore {
         }
         // A failed acknowledgement requires readback, not an invented success
         // or a second application of the business change.
+        #[cfg(feature = "test-boundaries")]
+        boundary::observe(registered, boundary::Phase::BeforeCommit).await?;
         tx.commit().await?;
+        #[cfg(feature = "test-boundaries")]
+        boundary::observe(registered, boundary::Phase::AfterCommit).await?;
         Ok(StepDecision::Done(saved))
     }
 
@@ -225,5 +229,63 @@ impl AgeStore {
             "SELECT operation_token,step,reply::text AS reply FROM mimir_operation_step_replies WHERE operation_token=$1 AND step=$2",
             &[&token, &step],
         ).await?.as_ref().map(receipt).transpose()
+    }
+}
+
+/// The test controller owns the decision to continue or terminate this exact
+/// process. The checkpoint only observes an actual registered publication;
+/// it cannot supply a replacement statement, answer, or database mutation.
+#[cfg(feature = "test-boundaries")]
+mod boundary {
+    use super::RegisteredStep;
+    use anyhow::{ensure, Context, Result};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    pub(super) enum Phase {
+        BeforeCommit,
+        AfterCommit,
+    }
+    impl Phase {
+        fn name(&self) -> &'static str {
+            match self {
+                Self::BeforeCommit => "before_commit",
+                Self::AfterCommit => "after_commit",
+            }
+        }
+    }
+
+    pub(super) async fn observe(step: &RegisteredStep, phase: Phase) -> Result<()> {
+        let Some(socket) = std::env::var_os("MIMIR_TEST_BOUNDARY_SOCKET") else {
+            return Ok(());
+        };
+        let selected: uuid::Uuid = std::env::var("MIMIR_TEST_BOUNDARY_TOKEN")
+            .context("the test controller must select its PostgreSQL-issued token")?
+            .parse()?;
+        if selected != step.token()
+            || std::env::var("MIMIR_TEST_BOUNDARY_SITE")? != step.description().site
+            || std::env::var("MIMIR_TEST_BOUNDARY_PHASE")? != phase.name()
+        {
+            return Ok(());
+        }
+        let mut stream = tokio::net::UnixStream::connect(socket).await?;
+        let event = serde_json::json!({
+            "operation_token": step.token(),
+            "operation": step.expected().operation(),
+            "site": step.description().site,
+            "step": step.id(),
+            "phase": phase.name(),
+        });
+        stream
+            .write_all(mimir_json::to_string(&event)?.as_bytes())
+            .await?;
+        stream.write_all(b"\n").await?;
+        stream.flush().await?;
+        let mut command = [0];
+        stream.read_exact(&mut command).await?;
+        ensure!(
+            command == *b"c",
+            "test controller did not release this checkpoint"
+        );
+        Ok(())
     }
 }
