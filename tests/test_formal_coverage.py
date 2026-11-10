@@ -2,6 +2,8 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import json
+from unittest.mock import patch
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -93,6 +95,79 @@ class OperationControlCatalogueTests(unittest.TestCase):
                          coverage.formal_field_names(self.formal, 'sourceFieldNames'))
         self.assertEqual(coverage.native_struct_fields(capture, 'Capture'),
                          coverage.formal_field_names(self.formal, 'captureFieldNames'))
+
+
+class PublicToolCoverageTests(unittest.TestCase):
+    def setUp(self):
+        self.native = (REPO / 'crates/core/src/operation_catalogue.rs').read_text()
+        self.formal = (REPO / 'spec/Mimir/ToolCatalog.agda').read_text()
+        self.controls = (REPO / 'spec/Mimir/OperationControls.agda').read_text()
+        self.manifest = json.loads((REPO / 'docs/FORMAL-BEHAVIOR-COVERAGE.json').read_text())
+
+    def test_every_advertised_control_has_its_concrete_certificate(self):
+        native = coverage.native_public_operations(self.native)
+        controls = {name for name, (group, _) in native.items() if group == 'control'}
+        self.assertEqual(controls, set(coverage.concrete_control_certificates(self.controls)))
+        self.assertEqual(coverage.check_public_tools(self.manifest), len(native))
+
+    def test_controls_do_not_become_business_saved_plans(self):
+        public = coverage.native_public_operations(self.native)
+        registered = coverage.native_registered_operations(self.native)
+        for name, (group, _) in public.items():
+            self.assertEqual(name in registered, group != 'control')
+        changed = self.native.replace('!matches!(operation, Operation::Control(_))', 'true')
+        with self.assertRaises(AssertionError):
+            coverage.native_registered_operations(changed)
+
+    def test_missing_control_descriptor_is_not_covered_by_its_native_registration(self):
+        original_read = coverage.read
+        def without_controls(path):
+            return '' if path == 'crates/mcp/src/operation_protocol.rs' else original_read(path)
+        with patch.object(coverage, 'read', without_controls), self.assertRaises(AssertionError):
+            coverage.check_public_tools(self.manifest)
+
+    def test_unused_control_descriptors_do_not_count_as_advertised(self):
+        original_read = coverage.read
+        def disconnected(path):
+            source = original_read(path)
+            return source.replace('.extend(operation_protocol::descriptors())', '') if path == 'crates/mcp/src/main.rs' else source
+        with patch.object(coverage, 'read', disconnected), self.assertRaises(AssertionError):
+            coverage.check_public_tools(self.manifest)
+
+    def test_missing_concrete_control_proof_is_rejected(self):
+        changed = self.controls.replace('  operation cancel = Cancel.operation\n', '')
+        self.assertNotEqual(changed, self.controls)
+        with self.assertRaises(AssertionError):
+            coverage.concrete_control_certificates(changed)
+
+    def test_repeated_concrete_control_proof_is_rejected(self):
+        changed = self.controls.replace('  operation cancel = Cancel.operation',
+                                        '  operation cancel = Cancel.operation\n  operation cancel = Cancel.operation')
+        with self.assertRaises(AssertionError):
+            coverage.concrete_control_certificates(changed)
+
+    def test_new_native_group_is_not_silently_ignored(self):
+        changed = self.native.replace('    control {', '    administration {')
+        with self.assertRaises(AssertionError):
+            coverage.native_public_operations(changed)
+
+    def test_changed_writer_token_role_is_rejected(self):
+        original_read = coverage.read
+        def changed_role(path):
+            source = original_read(path)
+            return source.replace('kind insertBelief = businessWrite', 'kind insertBelief = readOnly') if path == 'spec/Mimir/ToolCatalog.agda' else source
+        with patch.object(coverage, 'read', changed_role), self.assertRaises(AssertionError):
+            coverage.check_public_tools(self.manifest)
+
+    def test_closed_tool_without_wire_or_kind_clause_is_rejected(self):
+        changed = self.formal.replace('queryLearningContext : Tool', 'queryLearningContext forgottenTool : Tool')
+        with self.assertRaises(AssertionError):
+            coverage.formal_public_operations(changed)
+
+    def test_cli_control_leaves_are_discovered_without_treating_group_as_leaf(self):
+        commands = coverage.native_cli_commands()
+        self.assertNotIn('operation', commands)
+        self.assertTrue({'operation reserve', 'operation outcome', 'operation cancel'} <= set(commands))
 
 
 if __name__ == '__main__':

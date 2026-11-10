@@ -2,7 +2,7 @@
   "generated_at": "2026-10-30T23:15:09.123259+00:00",
   "scope": "Application behavior, with standard libraries supplied externally; see the current value audit and historical verification receipt separately.",
   "counts": {
-    "mcp": 34,
+    "mcp": 37,
     "cli_leaves": 30,
     "lifecycle_groups": 7
   },
@@ -40,7 +40,8 @@
         "spec/Mimir/RecoverableStoreSequence.agda"
       ],
       "remaining": "Mandatory public dispatcher and token-interface integration remain #74/#76 and #85\u2013#86. The concrete operation fixes the complete source-only publication and original result, with PostgreSQL allocation and observed preparation receipts; this is not a compiled Rust refinement theorem.",
-      "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/explicit indexed support success and failure sequences."
+      "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/explicit indexed support success and failure sequences.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "delete_belief",
@@ -71,7 +72,8 @@
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
       "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered storage deletion has a whole-world posterior goal and isolated database checks; this is not a compiled Rust refinement theorem.",
-      "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
+      "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "delete_project",
@@ -99,7 +101,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
-      "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
+      "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "delete_pattern",
@@ -127,7 +130,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
-      "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
+      "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "insert_pattern",
@@ -162,7 +166,8 @@
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
       "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
-      "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/explicit indexed support success and failure sequences."
+      "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/explicit indexed support success and failure sequences.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "record_support",
@@ -195,7 +200,8 @@
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
       "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
-      "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
+      "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "record_cause",
@@ -228,7 +234,8 @@
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
       "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
-      "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
+      "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "record_defeat",
@@ -268,7 +275,8 @@
       ],
       "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85–#86. The concrete registered operation keeps the independently committed defeat prefix, resumes complete propagation, and saves completion only with all posterior updates; Rust correspondence is tested, not an extracted refinement theorem.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects.",
-      "retirement_clock_boundary": "First actual PostgreSQL defeat date is write-once; explicit legacy expiry bypasses only waiting. Missing new metadata asks for repair. SweepRecovery additionally binds the original user policy and publishes the complete eligible set, dependent cleanup, survivor equations and both original answers atomically."
+      "retirement_clock_boundary": "First actual PostgreSQL defeat date is write-once; explicit legacy expiry bypasses only waiting. Missing new metadata asks for repair. SweepRecovery additionally binds the original user policy and publishes the complete eligible set, dependent cleanup, survivor equations and both original answers atomically.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "record_contradiction",
@@ -301,7 +309,8 @@
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
       "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered direct graph writes have concrete whole-world and original-answer recovery goals with isolated database checks; this is not a compiled Rust refinement theorem.",
-      "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
+      "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "get_belief",
@@ -329,7 +338,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
-      "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes."
+      "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "list_beliefs",
@@ -357,7 +367,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
-      "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes."
+      "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "list_patterns",
@@ -385,7 +396,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
-      "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes."
+      "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "get_contradictions",
@@ -415,7 +427,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
-      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
+      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "decay_all",
@@ -449,7 +462,8 @@
         "spec/Mimir/EvidenceValidity.agda"
       ],
       "remaining": "Public mandatory recoverable dispatch and token interface integration remain #74/#76 and #85\u2013#86. Registered storage decay has an original-time whole-world goal and isolated database checks; this is not a compiled Rust refinement theorem.",
-      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
+      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "sweep_expired_defeated",
@@ -487,7 +501,8 @@
       ],
       "remaining": "Mandatory public proof-backed dispatch and token routing remain #74/#76 and #85\u2013#86. Current registered publication has whole-world retry convergence; native checks are not an extracted Rust refinement theorem.",
       "baseline_gap": "Original scope and user policy bind before one atomic deletion of the whole eligible set, dependent cleanup, exact survivor equations and saved IDs/count. Actual PostgreSQL clocks; legacy-expired waits preserved.",
-      "retirement_clock_boundary": "First actual PostgreSQL defeat date remains write-once; explicit old-data expiry bypasses waiting only. Unfinished original-policy mismatch pauses for the user; completed historical answers replay unchanged, unfinished historical plans cannot execute."
+      "retirement_clock_boundary": "First actual PostgreSQL defeat date remains write-once; explicit old-data expiry bypasses waiting only. Unfinished original-policy mismatch pauses for the user; completed historical answers replay unchanged, unfinished historical plans cannot execute.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "query_relevant",
@@ -520,7 +535,8 @@
         "spec/Mimir/PublicRetrievalRecovery.agda"
       ],
       "remaining": "Public recovery certificate derives preference-aware responses and optional evidence from the whole stored world and the actual configured-backend/query receipt. Mandatory dispatcher registration (#74) and Rust correspondence remain open.",
-      "baseline_gap": "Executable candidate selection, weighted RRF (k=60), memory preference, deterministic ordering/limits, project scope and evidence joins; comments and percentage sorting are insufficient."
+      "baseline_gap": "Executable candidate selection, weighted RRF (k=60), memory preference, deterministic ordering/limits, project scope and evidence joins; comments and percentage sorting are insufficient.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "add_evidence",
@@ -550,7 +566,8 @@
         "spec/Mimir/GroundingRecovery.agda"
       ],
       "baseline_gap": "Concrete evidence lookup/add admission, result fields, grounding association and numerical recomputation/failure composition.",
-      "remaining": "Public token admission and mandatory dispatcher integration remain under #85/#74/#76. Registered evidence completion proves the requested contribution and all resulting posterior equations, preserves the complete world outside those changes, and replays original answers without another contribution."
+      "remaining": "Public token admission and mandatory dispatcher integration remain under #85/#74/#76. Registered evidence completion proves the requested contribution and all resulting posterior equations, preserves the complete world outside those changes, and replays original answers without another contribution.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "get_evidence",
@@ -579,7 +596,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Concrete evidence lookup/add admission, result fields, grounding association and numerical recomputation/failure composition.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "propagate_from",
@@ -612,7 +630,8 @@
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
       "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85\u2013#86. The concrete registered operation specifies complete numerical consequences and the actual original changed-probability list, with same-token readback and replay. Rust correspondence is tested, not an extracted refinement theorem.",
-      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
+      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "query_intervention",
@@ -642,7 +661,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
-      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution."
+      "baseline_gap": "Finite ordered iteration with seed/external parents, thresholds, 50-iteration exit, update selection, current decay and sweep rules; keep ideal rational laws distinct from floating execution.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "load_document",
@@ -676,7 +696,8 @@
         "spec/Mimir/OperationControls.agda"
       ],
       "baseline_gap": "Keep the original complete file and PostgreSQL chunk identities before embedding, replace one document and its saved answer atomically, and replay or explain every saved operation state before starting more work.",
-      "remaining": "Mandatory public dispatcher and MCP/CLI operation-token routing are tracked in #74, #76, #85 and #86. Primitive filesystem/provider/SQL implementations remain external contracts."
+      "remaining": "Mandatory public dispatcher and MCP/CLI operation-token routing are tracked in #74, #76, #85 and #86. Primitive filesystem/provider/SQL implementations remain external contracts.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "query_document",
@@ -707,7 +728,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Compose path read/chunk/embed/paired replacement without automatic support assertions protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "clear_document",
@@ -741,7 +763,8 @@
         "spec/Mimir/RegisteredStoreAdmission.agda"
       ],
       "baseline_gap": "Compose path read/chunk/embed/paired replacement without automatic support assertions protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
-      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85\u2013#86, including server-owned path preparation. The concrete registered operation removes chunks/vectors/evidence with complete surviving-belief updates and original saved count, retaining unrelated data and replaying without clearing a later replacement. Rust correspondence is tested rather than extracted."
+      "remaining": "Mandatory public dispatch and token admission remain #74/#76 and #85\u2013#86, including server-owned path preparation. The concrete registered operation removes chunks/vectors/evidence with complete surviving-belief updates and original saved count, retaining unrelated data and replaying without clearing a later replacement. Rust correspondence is tested rather than extracted.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "get_learning_review",
@@ -782,7 +805,8 @@
         "spec/Mimir/ItemAllocation.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "learning_capabilities",
@@ -807,7 +831,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Bind the server result to the exact current capability document and catalog, with complete wire argument/result semantics.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "get_lesson_assessment",
@@ -848,7 +873,8 @@
         "spec/Mimir/ItemAllocation.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "lesson_assessment_history",
@@ -883,7 +909,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "explain_belief",
@@ -915,7 +942,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "record_experience",
@@ -955,7 +983,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "pending_experiences",
@@ -984,7 +1013,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "review_experience",
@@ -1029,7 +1059,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "The earlier review model did not connect original owner allocations, complete required preparation and the saved final result in one whole-store recovery operation.",
-      "remaining": "Public MCP/CLI token routing remains in the separately planned dispatcher integration."
+      "remaining": "Public MCP/CLI token routing remains in the separately planned dispatcher integration.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "get_experience",
@@ -1068,7 +1099,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "experience_history",
@@ -1107,7 +1139,8 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "remaining": "Rust implementation correspondence; outside the completed bounded specification task.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
     },
     {
       "name": "query_learning_context",
@@ -1142,7 +1175,65 @@
         "spec/Mimir/PublicLearningContextRecovery.agda"
       ],
       "remaining": "Public whole-world context recovery composes the required complete retrieval certificate and concrete same-view procedure/outcome/assessment assembly; blank project requests correction before work. Mandatory dispatcher registration (#74) and Rust statement correspondence remain open.",
-      "baseline_gap": "Pattern statistics and provenance defined; ranking and belief/assessment assembly compose in step 3."
+      "baseline_gap": "Pattern statistics and provenance defined; ranking and belief/assessment assembly compose in step 3.",
+      "public_arguments": "PublicRequest.Decode.readInvocation checks the actual submitted object. Business writes require operation_token; the immutable binding retains exactly the other submitted fields and values, including omitted-versus-explicit defaults. Read-only tools accept no operation token."
+    },
+    {
+      "name": "reserve_operation",
+      "source": "crates/mcp/src/operation_protocol.rs",
+      "group": "operation-control",
+      "interface_evidence": "Require a nonblank request_key. Repeating the same exact key reads back the original PostgreSQL-issued token and timestamp; reservation does not execute a business write.",
+      "existing_modules": [
+        "spec/Mimir/OperationControls.agda"
+      ],
+      "status": "concrete-control-certificate-and-public-decoder-checked-routing-integration-pending",
+      "recovery_certificate": "Mimir.OperationControls.Controls.operation reserve",
+      "rust_correspondence": "Source-side catalogue and request contract checks; no machine-checked Rust refinement is claimed.",
+      "completion_modules": [
+        "spec/Mimir/ToolCatalog.agda",
+        "spec/Mimir/PublicInput.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/OperationControls.agda"
+      ],
+      "remaining": "Mandatory public assembly is #74/#76 and native routing integration is #85. Actual worker-stop acknowledgement is #124; the database cancellation certificate alone does not establish it."
+    },
+    {
+      "name": "operation_outcome",
+      "source": "crates/mcp/src/operation_protocol.rs",
+      "group": "operation-control",
+      "interface_evidence": "Require operation_token as a UUID. Read the actual saved binding, plan, committed prefix and original final answer, distinguishing unknown, pending, cancelled and inconsistent journals.",
+      "existing_modules": [
+        "spec/Mimir/OperationControls.agda"
+      ],
+      "status": "concrete-control-certificate-and-public-decoder-checked-routing-integration-pending",
+      "recovery_certificate": "Mimir.OperationControls.Controls.operation readOutcome",
+      "rust_correspondence": "Source-side catalogue and request contract checks; no machine-checked Rust refinement is claimed.",
+      "completion_modules": [
+        "spec/Mimir/ToolCatalog.agda",
+        "spec/Mimir/PublicInput.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/OperationControls.agda"
+      ],
+      "remaining": "Mandatory public assembly is #74/#76 and native routing integration is #85. Actual worker-stop acknowledgement is #124; the database cancellation certificate alone does not establish it."
+    },
+    {
+      "name": "cancel_operation",
+      "source": "crates/mcp/src/operation_protocol.rs",
+      "group": "operation-control",
+      "interface_evidence": "Require operation_token as a UUID and an explicit user cancellation decision. Preserve completed results and already committed work, revoke unfinished writes, and report worker cleanup separately from database cancellation.",
+      "existing_modules": [
+        "spec/Mimir/OperationControls.agda"
+      ],
+      "status": "concrete-control-certificate-and-public-decoder-checked-routing-integration-pending",
+      "recovery_certificate": "Mimir.OperationControls.Controls.operation cancel",
+      "rust_correspondence": "Source-side catalogue and request contract checks; no machine-checked Rust refinement is claimed.",
+      "completion_modules": [
+        "spec/Mimir/ToolCatalog.agda",
+        "spec/Mimir/PublicInput.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/OperationControls.agda"
+      ],
+      "remaining": "Mandatory public assembly is #74/#76 and native routing integration is #85. Actual worker-stop acknowledgement is #124; the database cancellation certificate alone does not establish it."
     }
   ],
   "cli": [
@@ -1989,5 +2080,12 @@
   "updated_at": "2026-10-31T03:50:09.149598+00:00",
   "completed_utc": "2026-10-31T03:59:41.624081+00:00",
   "operational_update_checked_at": "2026-10-31T20:24:20.743313+00:00",
-  "library_boundary": "Standard JSON/UTF-8/UUID/numeric parsing, formatting and hashing are supplied operations. Their implementations are outside the application specification. See FORMAL-VALUE-AUDIT.md. JSON input/output adapters in crates/json preserve that syntax boundary while protecting deep-value copying, formatting and cleanup; native checks cover those lifetimes. See JSON-INPUTS.md. The separate TOML parser guard remains part of issue160."
+  "library_boundary": "Standard JSON/UTF-8/UUID/numeric parsing, formatting and hashing are supplied operations. Their implementations are outside the application specification. See FORMAL-VALUE-AUDIT.md. JSON input/output adapters in crates/json preserve that syntax boundary while protecting deep-value copying, formatting and cleanup; native checks cover those lifetimes. See JSON-INPUTS.md. The separate TOML parser guard remains part of issue160.",
+  "public_control_interface_update": {
+    "native_tools": 37,
+    "native_cli_leaves": 33,
+    "documented_cli_leaves": 30,
+    "boundary": "Tool admission and concrete control certificates are checked separately from mandatory execution routing. The CLI operation reserve/outcome/cancel model integration remains #151/#86; the full coverage check must refuse that gap until those entries and semantics are integrated.",
+    "request_binding": "The invocation is indexed by its exact submitted JSON value. Its arguments are computed by removing only operation_token for business writers; all other supplied fields and values are preserved."
+  }
 }

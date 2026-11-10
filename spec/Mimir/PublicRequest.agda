@@ -9,12 +9,13 @@ open import Data.Integer using (ℤ; +_) renaming (_*_ to _*ℤ_)
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; zero; suc; s≤s; z≤n)
-open import Data.Product using (_,_)
+open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (String; toList)
 open import Data.Unit using (⊤; tt)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
-open import Relation.Nullary using (yes; no)
+open import Data.Empty using (⊥)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; trans; sym; subst)
+open import Relation.Nullary using (¬_; yes; no)
 open import Mimir.Text using (Text)
 import Mimir.Text as Text
 open import Mimir.Validation using (Fault)
@@ -40,7 +41,8 @@ import Mimir.AssessmentSelection as Assessment
 import Mimir.IndependentProvenance as Origin
 import Mimir.Validation as Validation
 import Mimir.CandidateWire as Candidate
-open import Mimir.JsonObjects using (forbid)
+import Mimir.OperationControls as Controls
+open import Mimir.JsonObjects using (forbid; rejectKnownRepeated)
 
 data Request : Set where
   mutation : Mutation.Request → Request
@@ -60,6 +62,8 @@ data Request : Set where
   learningQuery : Query.Request → Request
   learningContext : Text → Text → Ranking.Selection → Request
   capabilities : Request
+  reserveOperation : Controls.RequestKey → Request
+  operationOutcome cancelOperation : ℕ → Request
 
 memory : V.Value → Fault ⊎ C.Memory
 memory = enum (("fact" , C.fact) ∷ ("experiential" , C.experiential) ∷ ("working" , C.working) ∷ [])
@@ -111,6 +115,44 @@ acceptedFields Tools.reviewExperience = Data.List.map toList ("expected_review_r
 acceptedFields Tools.getExperience = Data.List.map toList ("id" ∷ [])
 acceptedFields Tools.experienceHistory = Data.List.map toList ("id" ∷ [])
 acceptedFields Tools.queryLearningContext = Data.List.map toList ("context" ∷ "limit" ∷ "project" ∷ [])
+acceptedFields Tools.reserveOperation = Data.List.map toList ("request_key" ∷ [])
+acceptedFields Tools.operationOutcome = Data.List.map toList ("operation_token" ∷ [])
+acceptedFields Tools.cancelOperation = Data.List.map toList ("operation_token" ∷ [])
+
+TokenForKind : Tools.Kind → Set
+TokenForKind Tools.businessWrite = ℕ
+TokenForKind Tools.readOnly = ⊤
+TokenForKind Tools.operationControl = ⊤
+
+TokenFor : Tools.Tool → Set
+TokenFor tool = TokenForKind (Tools.kind tool)
+
+publicFields : Tools.Tool → List Text
+publicFields tool with Tools.kind tool
+... | Tools.businessWrite = toList "operation_token" ∷ acceptedFields tool
+... | Tools.readOnly = acceptedFields tool
+... | Tools.operationControl = acceptedFields tool
+
+businessArguments : Tools.Tool → V.Value → V.Value
+businessArguments tool raw with Tools.kind tool
+... | Tools.businessWrite = withoutField (toList "operation_token") raw
+... | Tools.readOnly = raw
+... | Tools.operationControl = raw
+
+writerArgumentsRemoveOnlyToken : ∀ tool raw → Tools.kind tool ≡ Tools.businessWrite →
+  businessArguments tool raw ≡ withoutField (toList "operation_token") raw
+writerArgumentsRemoveOnlyToken tool raw known with Tools.kind tool
+... | Tools.businessWrite = refl
+writerArgumentsRemoveOnlyToken tool raw () | Tools.readOnly
+writerArgumentsRemoveOnlyToken tool raw () | Tools.operationControl
+
+nonWritersRetainArguments : ∀ tool raw → Tools.kind tool ≡ Tools.readOnly ⊎ Tools.kind tool ≡ Tools.operationControl →
+  businessArguments tool raw ≡ raw
+nonWritersRetainArguments tool raw known with Tools.kind tool
+... | Tools.readOnly = refl
+... | Tools.operationControl = refl
+nonWritersRetainArguments tool raw (inj₁ ()) | Tools.businessWrite
+nonWritersRetainArguments tool raw (inj₂ ()) | Tools.businessWrite
 
 module Decode (conversion : Conversion.Contract) where
   open Numbers conversion
@@ -256,6 +298,10 @@ module Decode (conversion : Conversion.Contract) where
   decode Tools.queryLearningContext fields = required "context" V.asString fields >>= λ context →
     required "project" V.asString fields >>= λ project → selection "limit" fields >>= λ limit →
     inj₂ (learningContext context project limit)
+  decode Tools.reserveOperation fields = required "request_key" V.asString fields >>= λ key →
+    mapResult reserveOperation (Controls.admitRequestKey key)
+  decode Tools.operationOutcome fields = mapResult operationOutcome (required "operation_token" uuid fields)
+  decode Tools.cancelOperation fields = mapResult cancelOperation (required "operation_token" uuid fields)
 
   -- A supplied optional value must pass its decoder before any loose
   -- legacy accessor can select a fallback. Omission retains the advertised
@@ -311,6 +357,72 @@ module Decode (conversion : Conversion.Contract) where
   ... | Validation.rejected detail invalid = inj₁ detail
   ... | Validation.accepted known = boundFields tool (V.Object.normalize fields)
   readBoundTool tool _ = inj₁ (Validation.fault [] Validation.wrongType "Stored operation arguments must be an object")
+
+  readTokenKind : (kind : Tools.Kind) → V.Value → Fault ⊎ TokenForKind kind
+  readTokenKind Tools.businessWrite raw = required "operation_token" uuid (view raw)
+  readTokenKind Tools.readOnly raw = inj₂ tt
+  readTokenKind Tools.operationControl raw = inj₂ tt
+
+  readToken : ∀ tool → V.Value → Fault ⊎ TokenFor tool
+  readToken tool raw = readTokenKind (Tools.kind tool) raw
+
+  -- This is indexed by the actual submitted value. The binding arguments
+  -- are a projection of that value, never a reconstruction from defaults.
+  record Invocation (tool : Tools.Tool) (submitted : V.Value) : Set where
+    constructor invocation
+    field
+      suppliedFields : V.Object.Fields
+      objectInput : submitted ≡ V.object suppliedFields
+      knownFields : V.Object.UnknownsAllowed forbid (publicFields tool) suppliedFields
+      uniqueFields : V.Object.DuplicatesAllowed rejectKnownRepeated (publicFields tool) suppliedFields
+      operationToken : TokenFor tool
+      tokenRead : readToken tool submitted ≡ inj₂ operationToken
+      request : Request
+    arguments : V.Value
+    arguments = businessArguments tool submitted
+    field decoded : readTool tool arguments ≡ inj₂ request
+
+  readInvocation : ∀ tool submitted → Fault ⊎ Invocation tool submitted
+  readInvocation tool (V.object fields) with V.Object.checkUnknowns forbid (publicFields tool) fields
+  ... | Validation.rejected detail invalid = inj₁ detail
+  ... | Validation.accepted known with V.Object.checkDuplicates rejectKnownRepeated (publicFields tool) fields
+  ... | Validation.rejected detail invalid = inj₁ detail
+  ... | Validation.accepted unique with readToken tool (V.object fields) in tokenRead
+  ... | inj₁ detail = inj₁ detail
+  ... | inj₂ token with readTool tool (businessArguments tool (V.object fields)) in decoded
+  ... | inj₁ detail = inj₁ detail
+  ... | inj₂ requested = inj₂ record
+    { suppliedFields = fields; objectInput = refl; knownFields = known; uniqueFields = unique
+    ; operationToken = token; tokenRead = tokenRead; request = requested; decoded = decoded }
+  readInvocation tool _ = inj₁ (Validation.fault [] Validation.wrongType
+    "Tool arguments must be an object; use the advertised fields and ask the user when a required value is unknown")
+
+  invocationRetainsSubmittedArguments : ∀ tool submitted (call : Invocation tool submitted) →
+    Invocation.arguments call ≡ businessArguments tool submitted
+  invocationRetainsSubmittedArguments tool submitted call = refl
+
+  invalidTokenPreventsInvocation : ∀ tool submitted detail → readToken tool submitted ≡ inj₁ detail →
+    Invocation tool submitted → ⊥
+  invalidTokenPreventsInvocation tool submitted detail rejected call with trans (sym (Invocation.tokenRead call)) rejected
+  ... | ()
+
+  invalidRequestPreventsInvocation : ∀ tool submitted detail →
+    readTool tool (businessArguments tool submitted) ≡ inj₁ detail → Invocation tool submitted → ⊥
+  invalidRequestPreventsInvocation tool submitted detail rejected call with trans (sym (Invocation.decoded call)) rejected
+  ... | ()
+
+  objectFieldsSame : ∀ {first second} → V.object first ≡ V.object second → first ≡ second
+  objectFieldsSame refl = refl
+
+  unknownFieldPreventsInvocation : ∀ tool fields → ¬ V.Object.UnknownsAllowed forbid (publicFields tool) fields →
+    Invocation tool (V.object fields) → ⊥
+  unknownFieldPreventsInvocation tool fields invalid call = invalid
+    (subst (V.Object.UnknownsAllowed forbid (publicFields tool)) (sym (objectFieldsSame (Invocation.objectInput call))) (Invocation.knownFields call))
+
+  repeatedFieldPreventsInvocation : ∀ tool fields → ¬ V.Object.DuplicatesAllowed rejectKnownRepeated (publicFields tool) fields →
+    Invocation tool (V.object fields) → ⊥
+  repeatedFieldPreventsInvocation tool fields invalid call = invalid
+    (subst (V.Object.DuplicatesAllowed rejectKnownRepeated (publicFields tool)) (sym (objectFieldsSame (Invocation.objectInput call))) (Invocation.uniqueFields call))
 
   successfulRequestHasKnownFields : ∀ tool fields requestValue →
     readTool tool (V.object fields) ≡ inj₂ requestValue →

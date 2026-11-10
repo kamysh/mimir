@@ -18730,6 +18730,20 @@
       ],
       "specification_status": "behavior-defined-and-aggregate-checked",
       "proof_boundary_category": "application_protocol"
+    },
+    {
+      "path": "crates/mcp/src/operation_protocol.rs",
+      "definitions": [],
+      "status": "concrete-control-and-request-interface-mapped-routing-integration-pending",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/OperationControls.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/ToolCatalog.agda"
+      ],
+      "specification_status": "targeted-safe-interface-checked",
+      "proof_boundary_category": "application_protocol",
+      "mapping_boundary": "The three database control certificates and exact public argument decoder are modeled. Mandatory application dispatch and actual worker cleanup remain separate integration obligations."
     }
   ],
   "dependency_contracts": [
@@ -19653,5 +19667,20 @@
     "boundary": "The completed Agda specification receipt is retained. Implementation contracts are reviewed and tested; no machine-checked Rust refinement is claimed.",
     "verification_receipt": "docs/RUST-CONFORMANCE-VERIFICATION.json"
   },
-  "library_boundary": "Standard JSON/UTF-8/UUID/numeric parsing, formatting and hashing are supplied operations. Their implementations are outside the application specification. See FORMAL-VALUE-AUDIT.md."
+  "library_boundary": "Standard JSON/UTF-8/UUID/numeric parsing, formatting and hashing are supplied operations. Their implementations are outside the application specification. See FORMAL-VALUE-AUDIT.md.",
+  "public_control_interface_update": {
+    "scope": "Existing #85/#150: closed advertised tools, explicit write-token admission and exact submitted-argument preservation.",
+    "count_source": "The coverage checker compares closed Tool constructors, wire names, roles, native operation groups, MCP advertisements and manifest entries; it does not use a fixed expected tool count.",
+    "separate_control_certificates": [
+      "Mimir.OperationControls.Controls.operation reserve",
+      "Mimir.OperationControls.Controls.operation readOutcome",
+      "Mimir.OperationControls.Controls.operation cancel"
+    ],
+    "not_claimed": [
+      "Mandatory ApplicationProtocol integration (#74/#76).",
+      "CLI operation controls (#151/#86).",
+      "Worker cleanup from database cancellation alone (#124).",
+      "A compiled Rust refinement proof."
+    ]
+  }
 }

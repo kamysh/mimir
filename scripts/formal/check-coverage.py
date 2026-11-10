@@ -16,7 +16,7 @@ def read(path):
 
 
 def enum_variants(path, name):
-    match = re.search(r'(?:pub )?enum ' + name + r' \{(.*?)\n\}', read(path), re.S)
+    match = re.search(r'(?:pub(?:\([^)]*\))? )?enum ' + name + r' \{(.*?)\n\}', read(path), re.S)
     assert match, (path, name)
     return re.findall(r'^    ([A-Z][A-Za-z]+)\b', match.group(1), re.M)
 
@@ -59,29 +59,125 @@ def embedded_sql_body(source):
     raise ValueError('Unterminated migration header')
 
 
-def native_registered_operations(source):
-    """Read the maintained closed catalogue, including non-MCP operations."""
+def native_public_operations(source):
+    """Read every declaration in the maintained closed public macro."""
     sites = dict(re.findall(r'Self::(\w+)\s*=>\s*"(store\.[^"]+)"', source))
+    macro = source.split('operations! {', 1)[1].split('\n}\n', 1)[0]
+    groups = re.findall(r'^    (\w+) \{(.*?)^    \}', macro, re.M | re.S)
+    assert {name for name, _ in groups} == {'graph', 'learning', 'control'}, 'unsupported public operation group'
+    assert len(groups) == len({name for name, _ in groups}), 'repeated public operation group'
+    remainder = re.sub(r'^    \w+ \{.*?^    \}', '', macro, flags=re.M | re.S)
+    assert not remainder.strip(), 'unparsed public operation declaration'
+    operations = {}
+    for group, body in groups:
+        for line in body.splitlines():
+            if not line.strip():
+                continue
+            entry = re.fullmatch(r'\s*\w+\s*=>\s*"([a-z_]+)"\s*\[([^\n]*)\],?\s*', line)
+            assert entry, ('unsupported public operation declaration', line)
+            name, boundary_body = entry.groups()
+            assert name not in operations, ('repeated public operation', name)
+            operations[name] = (group, native_boundaries(boundary_body, sites))
+    assert operations, 'missing public operation declarations'
+    return operations
 
-    def boundaries(body):
-        calls = re.findall(r'(once|repeated)\((\w+)\)', body)
-        remainder = re.sub(r'(once|repeated)\(\w+\)', '', body)
-        assert not remainder.strip(' ,\t\r\n'), ('unsupported boundary declaration', body)
-        return [(sites[site], mode == 'repeated') for mode, site in calls]
 
-    entries = re.findall(r'^\s*\w+\s*=>\s*"([a-z_]+)"\s*\[([^\n]*)\]', source, re.M)
-    operations = {name: boundaries(body) for name, body in entries}
-    assert operations and len(operations) == len(entries), 'missing or repeated operation declarations'
+def native_boundaries(body, sites):
+    calls = re.findall(r'(once|repeated)\((\w+)\)', body)
+    remainder = re.sub(r'(once|repeated)\(\w+\)', '', body)
+    assert not remainder.strip(' ,\t\r\n'), ('unsupported boundary declaration', body)
+    assert all(site in sites for _, site in calls), ('unknown commit site', body)
+    return [(sites[site], mode == 'repeated') for mode, site in calls]
+
+
+def native_registered_operations(source):
+    """Business plans exclude controls, which own separate certificates."""
+    sites = dict(re.findall(r'Self::(\w+)\s*=>\s*"(store\.[^"]+)"', source))
+    operations = {name: boundaries for name, (group, boundaries)
+                  in native_public_operations(source).items() if group != 'control'}
     private = source.split('impl RegisteredOperation {', 1)[1]
     names = dict(re.findall(r'Self::(\w+)\s*=>\s*"([a-z_]+)"', private))
     named = private.split('pub fn named', 1)[1].split('pub fn name(', 1)[0]
+    assert '!matches!(operation, Operation::Control(_))' in named, 'controls must not enter business saved plans'
     assert set(re.findall(r'"([a-z_]+)"', named)) == set(names.values()), 'unmodelled named internal operation'
     for variant, name in names.items():
         match = re.search(r'Self::' + variant + r'\s*=>\s*\{\s*const PLAN:[^=]+=\s*&\[([^\]]*)\]', private)
         assert match, ('unsupported internal boundary declaration', variant)
         assert name not in operations, ('duplicate registered operation', name)
-        operations[name] = boundaries(match.group(1))
+        operations[name] = native_boundaries(match.group(1), sites)
     return operations
+
+
+def formal_public_operations(source):
+    body = source.split('data Tool : Set where', 1)[1].split('data Kind', 1)[0]
+    constructors = []
+    for line in body.splitlines():
+        line = line.split('--', 1)[0].strip()
+        if not line:
+            continue
+        declaration = re.fullmatch(r'([A-Za-z ]+) : Tool', line)
+        assert declaration, ('unsupported closed tool constructor', line)
+        constructors.extend(declaration.group(1).split())
+    names = re.findall(r'^wireName\s+(\w+)\s*=\s*"([a-z_]+)"$', source, re.M)
+    kinds = re.findall(r'^kind\s+(\w+)\s*=\s*(businessWrite|readOnly|operationControl)$', source, re.M)
+    assert len(constructors) == len(set(constructors)), 'repeated closed tool constructor'
+    assert len(names) == len(dict(names)) == len({name for _, name in names}), 'repeated wire name'
+    assert len(kinds) == len(dict(kinds)), 'repeated tool kind'
+    assert set(constructors) == set(dict(names)) == set(dict(kinds)), 'closed tools, wire names and kinds disagree'
+    return {name: dict(kinds)[constructor] for constructor, name in names}
+
+
+def concrete_control_certificates(source):
+    # These clauses assemble the actual reservation/readback/cancellation
+    # certificates. Merely listing a control name is not coverage.
+    body = source.split('module Controls ', 1)[1]
+    assert re.search(r'operation : .*Recovery\.RecoverableFor Store\.World', body), 'control dispatch lacks required recovery certificate'
+    clauses = re.findall(r'^  operation (\w+) = (\w+)\.operation$', body, re.M)
+    expected = {'reserve': 'Reserve', 'readOutcome': 'Read', 'cancel': 'Cancel'}
+    assert len(clauses) == len(expected) and dict(clauses) == expected, 'missing or repeated concrete control certificate'
+    return {'reserve_operation': 'reserve', 'operation_outcome': 'readOutcome', 'cancel_operation': 'cancel'}
+
+
+def check_public_tools(coverage):
+    formal = formal_public_operations(read('spec/Mimir/ToolCatalog.agda'))
+    native = native_public_operations(read('crates/core/src/operation_catalogue.rs'))
+    dispatcher = read('crates/mcp/src/main.rs')
+    assert '.extend(learning::tools())' in dispatcher, 'learning descriptors are not advertised'
+    assert '.extend(operation_protocol::descriptors())' in dispatcher, 'control descriptors are not advertised'
+    advertised = []
+    for source in ['crates/mcp/src/main.rs', 'crates/mcp/src/learning.rs',
+                   'crates/mcp/src/operation_protocol.rs']:
+        advertised += re.findall(r'"name"\s*:\s*"([a-z_]+)"\s*,\s*"description"\s*:', read(source))
+    documented = [item['name'] for item in coverage['mcp']]
+    assert len(advertised) == len(set(advertised)), 'repeated advertised tool'
+    assert len(documented) == len(set(documented)), 'repeated documented tool'
+    assert set(documented) == set(formal) == set(native) == set(advertised), 'public tool sets disagree'
+    assert coverage['counts']['mcp'] == len(native), 'documented public tool count is stale'
+    for name, (group, boundaries) in native.items():
+        expected = 'operationControl' if group == 'control' else ('businessWrite' if boundaries else 'readOnly')
+        assert formal[name] == expected, ('public token/dispatch role disagrees', name)
+    certificates = concrete_control_certificates(read('spec/Mimir/OperationControls.agda'))
+    assert set(certificates) == {name for name, (group, _) in native.items() if group == 'control'}, 'control certificates disagree with public controls'
+    entries = {item['name']: item for item in coverage['mcp']}
+    for name, request in certificates.items():
+        assert entries[name]['recovery_certificate'] == 'Mimir.OperationControls.Controls.operation ' + request, ('missing concrete control coverage', name)
+    return len(native)
+
+
+def native_cli_commands():
+    main = 'crates/cli/src/main.rs'
+    commands = [kebab(name) for name in enum_variants(main, 'Command')
+                if name not in ['Operation', 'Config', 'Judge', 'Evidence', 'Delete', 'Doc', 'Hook']]
+    for prefix, enum, source in [
+        ('operation', 'Command', 'crates/cli/src/operations.rs'),
+        ('config', 'Command', 'crates/cli/src/configuration.rs'),
+        ('evidence', 'EvidenceCmd', main), ('delete', 'DeleteCmd', main),
+        ('doc', 'DocCmd', main), ('hook', 'HookEvent', main),
+        ('judge', 'JudgeCommand', 'crates/cli/src/judge/mod.rs'),
+    ]:
+        commands += [prefix + ' ' + kebab(name) for name in enum_variants(source, enum)]
+    assert len(commands) == len(set(commands)), 'repeated CLI leaf'
+    return commands
 
 
 def formal_control_operations(source):
@@ -111,13 +207,7 @@ def formal_field_names(source, name):
 def check():
     coverage = json.loads(read('docs/FORMAL-BEHAVIOR-COVERAGE.json'))
     inventory = json.loads(read('docs/FORMAL-INVENTORY.json'))
-    formal_names = re.findall(r'^wireName\s+\w+\s*=\s*"([a-z_]+)"', read('spec/Mimir/ToolCatalog.agda'), re.M)
-    advertised = []
-    for source in ['crates/mcp/src/main.rs', 'crates/mcp/src/learning.rs']:
-        advertised += re.findall(r'"name"\s*:\s*"([a-z_]+)"\s*,\s*"description"\s*:', read(source))
-    operation_names = [item['name'] for item in coverage['mcp']]
-    assert len(operation_names) == len(set(operation_names)) == 34
-    assert set(operation_names) == set(formal_names) == set(advertised)
+    public_count = check_public_tools(coverage)
 
     controls = read('spec/Mimir/OperationControls.agda')
     native_catalogue = read('crates/core/src/operation_catalogue.rs')
@@ -127,19 +217,13 @@ def check():
     assert native_struct_fields(capture_source, 'Capture') == formal_field_names(controls, 'captureFieldNames'), 'captured-selection fields disagree with native storage'
     assert native_struct_fields(capture_source, 'BackfillSource') == formal_field_names(controls, 'sourceFieldNames'), 'captured-source fields disagree with native storage'
 
-    main = 'crates/cli/src/main.rs'
-    commands = [kebab(name) for name in enum_variants(main, 'Command')
-                if name not in ['Config', 'Judge', 'Evidence', 'Delete', 'Doc', 'Hook']]
-    for prefix, enum, source in [
-        ('config', 'Command', 'crates/cli/src/configuration.rs'),
-        ('evidence', 'EvidenceCmd', main), ('delete', 'DeleteCmd', main),
-        ('doc', 'DocCmd', main), ('hook', 'HookEvent', main),
-        ('judge', 'JudgeCommand', 'crates/cli/src/judge/mod.rs'),
-    ]:
-        commands += [prefix + ' ' + kebab(name) for name in enum_variants(source, enum)]
+    commands = native_cli_commands()
     cli_names = [item['name'] for item in coverage['cli']]
-    assert len(commands) == len(set(commands)) == len(cli_names) == coverage['counts']['cli_leaves']
-    assert set(commands) == set(cli_names)
+    assert len(cli_names) == len(set(cli_names)) == coverage['counts']['cli_leaves'], 'documented CLI count is stale'
+    assert set(commands) == set(cli_names), {
+        'unmapped_native_cli': sorted(set(commands) - set(cli_names)),
+        'missing_native_cli': sorted(set(cli_names) - set(commands)),
+    }
 
     files = list((ROOT / 'spec').rglob('*.agda'))
     module_paths = {'.'.join(p.relative_to(ROOT / 'spec').with_suffix('').parts): p for p in files}
@@ -191,7 +275,7 @@ def check():
         assert embedded_sql_body(path.read_text()) == bound_sources[key], path
 
     return {
-        'result': 'passed', 'mcp_operations': len(operation_names),
+        'result': 'passed', 'mcp_operations': public_count,
         'cli_leaves': len(cli_names), 'lifecycle_groups': len(coverage['lifecycles']),
         'source_artifacts': len(inventory['files']),
         'production_artifacts': sum(x['classification'] == 'production-behavior' for x in inventory['files']),
