@@ -71,20 +71,29 @@ sourceProjection : LearningItem → Item
 sourceProjection i = item (LearningItem.identity i) (LearningItem.reference i)
   (LearningItem.actor i) (LearningItem.statement i)
 
+-- This contract does not depend on a database identity. Incoming items use
+-- the same checks before PostgreSQL allocates their omitted identities.
+ItemFieldsValid : Text → Text → Text → Text → List Prediction → Set
+ItemFieldsValid reference actor statement conditions predictions = NamedText reference ×
+  (NamedText actor × (NamedText statement ×
+  (NamedText conditions × All PredictionValid predictions)))
+
+validateItemFields : ∀ reference actor statement conditions predictions →
+  Checked (ItemFieldsValid reference actor statement conditions predictions)
+validateItemFields reference actor statement conditions predictions = combine
+  (at (key "source_ref") (checkNamed reference))
+  (combine (at (key "actor") (checkNamed actor))
+  (combine (at (key "statement") (checkNamed statement))
+  (combine (at (key "conditions") (checkNamed conditions))
+    (at (key "predictions") (allChecked validatePrediction predictions)))))
+
 ItemValid : LearningItem → Set
-ItemValid i = NamedText (LearningItem.reference i) ×
-  (NamedText (LearningItem.actor i) ×
-  (NamedText (LearningItem.statement i) ×
-  (NamedText (LearningItem.conditions i) ×
-  All PredictionValid (LearningItem.predictions i))))
+ItemValid i = ItemFieldsValid (LearningItem.reference i) (LearningItem.actor i)
+  (LearningItem.statement i) (LearningItem.conditions i) (LearningItem.predictions i)
 
 validateItem : ∀ i → Checked (ItemValid i)
-validateItem i = combine
-  (at (key "source_ref") (checkNamed (LearningItem.reference i)))
-  (combine (at (key "actor") (checkNamed (LearningItem.actor i)))
-  (combine (at (key "statement") (checkNamed (LearningItem.statement i)))
-  (combine (at (key "conditions") (checkNamed (LearningItem.conditions i)))
-  (at (key "predictions") (allChecked validatePrediction (LearningItem.predictions i))))))
+validateItem i = validateItemFields (LearningItem.reference i) (LearningItem.actor i)
+  (LearningItem.statement i) (LearningItem.conditions i) (LearningItem.predictions i)
 
 ItemsValid : List LearningItem → Set
 ItemsValid items = Fresh [] (map sourceProjection items) × All ItemValid items
