@@ -222,13 +222,7 @@ module Registered (conversion : Conversion.Contract) (format : Encoding.Formatti
   distinct token ()
 
   sourceHeader : Input.Experience → Validation.Fault ⊎ Input.Experience
-  sourceHeader value = Decode.mapResult (λ _ → value) (Validation.result
-    (Validation.combine (Sources.validateSources (Input.Experience.sources value))
-      (Validation.combine (Source.checkEvidenceReferences (Input.Experience.sources value) (Input.Experience.evidence value))
-      (Validation.combine (Validation.at (Validation.key "project") (Candidates.checkNonblank (Input.Experience.project value)))
-      (Validation.combine (Validation.at (Validation.key "context") (Candidates.checkNonblank (Input.Experience.context value)))
-      (Validation.combine (Validation.at (Validation.key "action") (Candidates.checkNonblank (Input.Experience.action value)))
-        (Source.checkOutcomeEvidence (Input.Experience.outcome value) (Input.Experience.evidence value))))))))
+  sourceHeader = LearningWire.sourceHeader
 
   expected : ℤ → Validation.Fault ⊎ ℤ
   expected value with Operations.expectedValid value
