@@ -262,6 +262,14 @@ module For (Input Diagnostic : Set)
       (cong (λ tables → Store.lookupCancellationRows (token input) (Store.OperationTables.cancellations tables))
         (keepsJournal input before changed reply accepted)))
 
+  publicationKeepsCancellations : ∀ wanted input before changed reply → decide input before ≡ inj₂ (changed , reply) →
+    Store.lookupCancellation (publication input changed reply) wanted ≡ Store.lookupCancellation before wanted
+  publicationKeepsCancellations wanted input before changed reply accepted = trans
+    (Store.savingAnswerPreservesCancellation (firstPublication input changed reply) (token input) resultKey reply wanted)
+    (trans (Store.savingAnswerPreservesCancellation changed (token input) (key input) reply wanted)
+      (cong (λ tables → Store.lookupCancellationRows wanted (Store.OperationTables.cancellations tables))
+        (keepsJournal input before changed reply accepted)))
+
   -- A returned answer either read the existing World or published both of
   -- its matching immutable answers. A later readback cannot invent a third
   -- value for a newly completed operation.
@@ -351,8 +359,38 @@ module For (Input Diagnostic : Set)
   ... | inj₁ _ = refl
   ... | inj₂ (changed , reply) = publicationKeepsRegistration input before changed reply accepted
 
+  cancellationUnchanged : ∀ wanted input before →
+    Store.lookupCancellation (proj₁ (execute input before)) wanted ≡ Store.lookupCancellation before wanted
+  cancellationUnchanged wanted input before with Store.lookupCancellation before (token input)
+  ... | just _ = refl
+  ... | nothing with Store.lookupSaved before (token input) (key input) | Store.lookupSaved before (token input) resultKey
+  ... | just _ | just _ = refl
+  ... | just _ | nothing = refl
+  ... | nothing | just _ = refl
+  ... | nothing | nothing with decide input before in accepted
+  ... | inj₁ _ = refl
+  ... | inj₂ (changed , reply) = publicationKeepsCancellations wanted input before changed reply accepted
+
   module Core = AtomicStep Input Diagnostic execute stable expectedPhysical
   open Core public hiding (Reply; receipt)
+
+  atomicKeepsCancellation : ∀ wanted before input reply after → Atomic before input reply after →
+    Store.lookupCancellation after wanted ≡ Store.lookupCancellation before wanted
+  atomicKeepsCancellation wanted before input reply after physical = trans
+    (cong (λ outcome → Store.lookupCancellation (proj₁ outcome) wanted) (atomicObservation input before after reply physical))
+    (cancellationUnchanged wanted input before)
+
+  changesKeepCancellation : ∀ wanted {before events after} → X.Changes before events after →
+    Store.lookupCancellation after wanted ≡ Store.lookupCancellation before wanted
+  changesKeepCancellation wanted (X.unchanged _) = refl
+  changesKeepCancellation wanted (X.changed before input reply middle physical later) = trans
+    (changesKeepCancellation wanted later) (atomicKeepsCancellation wanted before input reply middle physical)
+
+  interruptedKeepsCancellation : ∀ wanted input before after → X.Interrupted (script input) before after →
+    Store.lookupCancellation after wanted ≡ Store.lookupCancellation before wanted
+  interruptedKeepsCancellation wanted input before after (X.atPrefix _ _ _ _ physical) = changesKeepCancellation wanted physical
+  interruptedKeepsCancellation wanted input before after (X.beforeReply _ effect _ middle reply _ _ previous physical) = trans
+    (atomicKeepsCancellation wanted middle effect reply after physical) (changesKeepCancellation wanted previous)
 
 -- Metadata admission precedes cancellation/readback as well as fresh execution.
 -- A stored answer cannot hide an invalid binding or a mismatched saved plan.
@@ -413,8 +451,32 @@ module Admitted (Input Diagnostic : Set)
     admit input (registration before) ≡ just diagnostic → execute input before ≡ (before , needsInput diagnostic)
   admissionRefusalChangesNothing input before diagnostic refused rewrite refused = refl
 
+  cancellationUnchanged : ∀ wanted input before →
+    Store.lookupCancellation (proj₁ (execute input before)) wanted ≡ Store.lookupCancellation before wanted
+  cancellationUnchanged wanted input before with admit input (registration before)
+  ... | just _ = refl
+  ... | nothing = Kernel.cancellationUnchanged wanted input before
+
   module Core = AtomicStep Input Diagnostic execute stable expectedPhysical
   open Core public hiding (Reply)
+
+  atomicKeepsCancellation : ∀ wanted before input reply after → Atomic before input reply after →
+    Store.lookupCancellation after wanted ≡ Store.lookupCancellation before wanted
+  atomicKeepsCancellation wanted before input reply after physical = trans
+    (cong (λ outcome → Store.lookupCancellation (proj₁ outcome) wanted) (atomicObservation input before after reply physical))
+    (cancellationUnchanged wanted input before)
+
+  changesKeepCancellation : ∀ wanted {before events after} → X.Changes before events after →
+    Store.lookupCancellation after wanted ≡ Store.lookupCancellation before wanted
+  changesKeepCancellation wanted (X.unchanged _) = refl
+  changesKeepCancellation wanted (X.changed before input reply middle physical later) = trans
+    (changesKeepCancellation wanted later) (atomicKeepsCancellation wanted before input reply middle physical)
+
+  interruptedKeepsCancellation : ∀ wanted input before after → X.Interrupted (script input) before after →
+    Store.lookupCancellation after wanted ≡ Store.lookupCancellation before wanted
+  interruptedKeepsCancellation wanted input before after (X.atPrefix _ _ _ _ physical) = changesKeepCancellation wanted physical
+  interruptedKeepsCancellation wanted input before after (X.beforeReply _ effect _ middle reply _ _ previous physical) = trans
+    (atomicKeepsCancellation wanted middle effect reply after physical) (changesKeepCancellation wanted previous)
 
   cachedReplay : ∀ input before current raw →
     Store.lookupSaved before (token input) resultKey ≡ nothing →
@@ -573,6 +635,25 @@ module Observed (Metadata Diagnostic : Set)
   interruptedKeepsRegistration token before after (X.atPrefix _ _ _ _ physical) = changesKeepRegistration physical
   interruptedKeepsRegistration token before after (X.beforeReply _ effect _ middle observed _ _ previous active) =
     trans (atomicKeepsRegistration middle effect observed after active) (changesKeepRegistration previous)
+
+  atomicKeepsCancellation : ∀ wanted before token observed after → Atomic before token observed after →
+    Store.lookupCancellation after wanted ≡ Store.lookupCancellation before wanted
+  atomicKeepsCancellation wanted before token (metadata , reply) after physical = trans
+    (cong (λ outcome → Store.lookupCancellation (proj₁ outcome) wanted)
+      (Saved.atomicObservation (token , metadata) before after reply physical))
+    (Saved.cancellationUnchanged wanted (token , metadata) before)
+
+  changesKeepCancellation : ∀ wanted {before events after} → X.Changes before events after →
+    Store.lookupCancellation after wanted ≡ Store.lookupCancellation before wanted
+  changesKeepCancellation wanted (X.unchanged _) = refl
+  changesKeepCancellation wanted (X.changed before token observed middle physical later) = trans
+    (changesKeepCancellation wanted later) (atomicKeepsCancellation wanted before token observed middle physical)
+
+  interruptedKeepsCancellation : ∀ wanted token before after → X.Interrupted (script token) before after →
+    Store.lookupCancellation after wanted ≡ Store.lookupCancellation before wanted
+  interruptedKeepsCancellation wanted token before after (X.atPrefix _ _ _ _ physical) = changesKeepCancellation wanted physical
+  interruptedKeepsCancellation wanted token before after (X.beforeReply _ effect _ middle observed _ _ previous physical) = trans
+    (atomicKeepsCancellation wanted middle effect observed after physical) (changesKeepCancellation wanted previous)
 
   progress : ∀ token before → Σ Store.World (λ after → Σ (Result Diagnostic) (λ reply → X.Completed (script token) before after reply))
   progress token before = proj₁ outcome , proj₂ outcome , X.completed
