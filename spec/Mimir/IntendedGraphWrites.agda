@@ -123,8 +123,8 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL)
     where request = PatternIntent.input token identity
 
   module Relationship (kind : Direct.Kind) where
-    module R = Direct.Registered library kind using (original; key)
-    module B = Direct.Business kind using (checked)
+    module R = Direct.Registered library (Encoding.Formatting.uuidText format) kind using (original; key)
+    module B = Direct.Business kind (Encoding.Formatting.uuidText format) using (checked)
 
     evaluate : ℕ → Store.World → Evaluation
     evaluate token before with R.original token (Step.registration before)
