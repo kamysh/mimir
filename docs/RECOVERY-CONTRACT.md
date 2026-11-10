@@ -312,8 +312,12 @@ actual pure validators and the existing diagnostic projection. Their body is
 Malformed outer protocol messages remain covered at the separate retained
 transport boundary, without inventing an operation constructor for them.
 
-`IntendedGraphWrites.Evaluate.With.evaluate` currently composes pattern deletion
-and direct support, cause and contradiction writes with that metadata boundary.
+`IntendedGraphWrites.Evaluate.With.evaluate` currently composes pattern creation
+and deletion and direct support, cause and contradiction writes with that
+metadata boundary. A fresh pattern needs its actual PostgreSQL identity and
+creation-time receipt; a completed replay needs no new allocation. Missing
+required test observations return `ObservationError`, not a product correction
+or an invented identity.
 It computes the complete expected world at that database boundary, the typed
 body result and semantic public outcome. Host execution registration and stop
 acknowledgements must still be composed around it. The remaining family
