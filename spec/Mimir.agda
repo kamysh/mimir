@@ -405,6 +405,7 @@ import Mimir.GraphMutationProtocol
 import Mimir.PublicInput
 import Mimir.LearningWire
 import Mimir.PublicRequest
+import Mimir.PublicOperationRecovery
 import Mimir.ApplicationProtocol
 import Mimir.PublicEncoding
 import Mimir.ApplicationOutput

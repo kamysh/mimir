@@ -474,18 +474,33 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   payload original (C.control Controls.readOutcome token) input reply final = readback original token reply
   payload original (C.control Controls.cancel token) input reply final = finalReadback original token final
 
+  writePayload : A.Result → C.Creating.Request → A.Writes.Response → Store.World → Projection
+  writePayload original requested (A.Writes.needsInput detail) final = decision (argumentCorrection detail)
+  writePayload original requested (A.Writes.returned outcome) final
+    with C.Creating.decode requested
+  ... | inj₁ detail = decision (argumentCorrection detail)
+  ... | inj₂ call = readback original
+    (C.Creating.Call.token call) outcome
+  writePayload original requested (A.Writes.executed scope reply) final =
+    payload original (A.Writes.bodyKind scope) (A.Writes.bodyInput scope) reply final
+
+  routePayload : A.Result → (call : A.Call) → A.RouteValue (A.route call) → Store.World → Projection
+  routePayload original call reply final with A.route call
+  ... | A.plainRoute selected = payload original (C.Choice.kind selected) (C.Choice.input selected) reply final
+  ... | A.registeredRoute requested = writePayload original requested reply final
+
   -- A non-successful completed script retains its actual typed diagnostic.
   -- Stopping before a returned reply never manufactures a successful value.
   retryProjection : (original : A.Result) → Projection
   retryProjection original@(A.terminalResult call initial terminal) with
     A.Checked.Active.remaining call (A.Checked.Terminal.active call terminal)
-  ... | A.O.E.done reply = payload original (A.kind call) (A.input call) reply
+  ... | A.O.E.done reply = routePayload original call reply
     (A.Checked.History.current call (A.Checked.Active.evidence call (A.Checked.Terminal.active call terminal)))
   ... | A.O.E.ask effect continuation = failure original
 
   project : A.Result → Projection
   project original@(A.terminalResult call initial terminal) with A.Checked.Terminal.disposition call terminal
-  ... | A.Checked.done reply exposed successful = payload original (A.kind call) (A.input call) reply
+  ... | A.Checked.done reply exposed successful = routePayload original call reply
     (A.Checked.History.current call (A.Checked.Active.evidence call (A.Checked.Terminal.active call terminal)))
   ... | A.Checked.correction certified = retryProjection original
   ... | A.Checked.retry = retryProjection original

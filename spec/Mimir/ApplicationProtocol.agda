@@ -49,6 +49,7 @@ import Mimir.IndependentBeliefRecovery as Independent
 import Mimir.ReviewPublicationRecovery as ReviewPublication
 import Mimir.ReviewPreparationRecovery as ReviewPreparation
 import Mimir.PublicOperationCatalogue as Catalogue
+import Mimir.PublicOperationRecovery as PublicRecovery
 import Mimir.PublicOperationBinding as Binding
 import Mimir.Recovery as Recovery
 import Mimir.StructuredValue as Wire
@@ -104,20 +105,70 @@ module Run (environment : Environment) where
   open C public using (ReadRequest)
     renaming (graphCall to graphRead; relevantCall to relevantRead; evidenceCall to evidenceRead; documentCall to documentRead)
 
+  module PublicWrites = PublicRecovery.Run library format databaseSum calculator f32 unicode vectors configuration
+    databaseTextBefore allocateOwner database postgres serverTime utcTimestamp sourcePostgres sweepObservation
+    reviewDependencies reviewCodec reviewBackend
+  module Writes = PublicWrites.PublicWrites reviewEnvironment writePreparation
+    using (Response; needsInput; returned; executed; Meaning; recoverable; Succeeded; bodyKind; bodyInput)
+  module WriteFixed requested = Catalogue.Fixed Writes.recoverable requested using (operation)
+  module Creating = Binding.Creating library postgres using (Request; submittedWrite)
+
   Call = C.Call
   choice : Call → C.Choice
   choice = C.resolve
   kind : Call → C.Kind
   kind call = C.Choice.kind (choice call)
-  input : (call : Call) → C.Input (kind call)
-  input call = C.Choice.input (choice call)
-  certificate : (call : Call) → C.Certificate (kind call)
-  certificate = C.selectedCertificate reviewEnvironment
-  operation : (call : Call) → Recovery.RecoverableFor Store.World (C.Input (kind call))
-    (C.Result (kind call)) (C.Goal (kind call))
-  operation call = C.executable (kind call) (certificate call)
+
+  -- This route is computed from the closed actual invocation. A caller can
+  -- never choose a bare writer body in place of its creating prefix.
+  data Route : Set where
+    plainRoute : C.Choice → Route
+    registeredRoute : Creating.Request → Route
+
+  route : Call → Route
+  route call@(C.toolCall tool submitted) with Tools.kind tool
+  ... | Tools.businessWrite = registeredRoute (Creating.submittedWrite tool submitted)
+  ... | Tools.readOnly = plainRoute (choice call)
+  ... | Tools.operationControl = plainRoute (choice call)
+  route call@(C.privateRead request) = plainRoute (choice call)
+
+  RouteInput : Route → Set
+  RouteInput (plainRoute selected) = C.Input (C.Choice.kind selected)
+  RouteInput (registeredRoute _) = ⊤
+  RouteValue : Route → Set
+  RouteValue (plainRoute selected) = C.Result (C.Choice.kind selected)
+  RouteValue (registeredRoute _) = Writes.Response
+  RouteGoal : (selected : Route) → RouteInput selected → Store.World → Store.World → RouteValue selected → Set
+  RouteGoal (plainRoute selected) = C.Goal (C.Choice.kind selected)
+  RouteGoal (registeredRoute requested) _ = Writes.Meaning requested
+  RouteSuccess : (selected : Route) → RouteValue selected → Set
+  RouteSuccess (plainRoute selected) = C.Success (C.Choice.kind selected)
+  RouteSuccess (registeredRoute _) = Writes.Succeeded
+
+  RouteCertificate : (selected : Route) → Set₁
+  RouteCertificate (plainRoute selected) = C.Certificate (C.Choice.kind selected)
+  RouteCertificate (registeredRoute requested) = Recovery.RecoverableFor Store.World ⊤ Writes.Response
+    (λ _ → Writes.Meaning requested)
+  routeCertificate : (selected : Route) → RouteCertificate selected
+  routeCertificate (plainRoute selected) = C.certificate reviewEnvironment (C.Choice.kind selected)
+  routeCertificate (registeredRoute requested) = WriteFixed.operation requested
+  routeOperation : (selected : Route) → RouteCertificate selected →
+    Recovery.RecoverableFor Store.World (RouteInput selected) (RouteValue selected) (RouteGoal selected)
+  routeOperation (plainRoute selected) proof = C.executable (C.Choice.kind selected) proof
+  routeOperation (registeredRoute requested) proof = proof
+  routeInput : (selected : Route) → RouteInput selected
+  routeInput (plainRoute selected) = C.Choice.input selected
+  routeInput (registeredRoute _) = tt
+
+  input : (call : Call) → RouteInput (route call)
+  input call = routeInput (route call)
+  certificate : (call : Call) → RouteCertificate (route call)
+  certificate call = routeCertificate (route call)
+  operation : (call : Call) → Recovery.RecoverableFor Store.World (RouteInput (route call))
+    (RouteValue (route call)) (RouteGoal (route call))
+  operation call = routeOperation (route call) (certificate call)
   module O (call : Call) = Recovery.RecoverableFor (operation call)
-  module Checked (call : Call) = Recovery.CheckedFor (operation call) (C.Success (kind call))
+  module Checked (call : Call) = Recovery.CheckedFor (operation call) (RouteSuccess (route call))
 
   -- There is one state constructor. Its operation is selected above by the
   -- actual closed invocation; no script, goal, physical relation or result can
@@ -180,10 +231,10 @@ module Run (environment : Environment) where
   -- business goal and the exposed returned reply in its physical history.
   Completed : Result → Set
   Completed (terminalResult call initial terminal) =
-    Σ (C.Result (kind call)) (λ reply →
-      C.Goal (kind call) (input call) initial
+    Σ (RouteValue (route call)) (λ reply →
+      RouteGoal (route call) (input call) initial
         (Checked.History.current call (Checked.Active.evidence call active)) reply ×
-      Checked.Active.remaining call active ≡ O.E.done call reply × C.Success (kind call) reply)
+      Checked.Active.remaining call active ≡ O.E.done call reply × RouteSuccess (route call) reply)
     where active = Checked.Terminal.active call terminal
 
   completedRequiresGoal : ∀ result → completed result ≡ true → Completed result
@@ -202,12 +253,34 @@ module Run (environment : Environment) where
     retrievalView : Search.Request → C.Retrieval.Result → ReadView
     documentView : DocumentSearch.Request → C.DocumentQuery.Result → ReadView
 
-  payloadReadView : (call : Call) → C.Result (kind call) → Store.World → Maybe ReadView
-  payloadReadView call reply initial with kind call
+  payloadReadView : (call : Call) → RouteValue (route call) → Store.World → Maybe ReadView
+  payloadReadView call reply initial with route call
+  ... | registeredRoute requested = nothing
+  ... | plainRoute selected with C.Choice.kind selected
   ... | C.basic request = just (basicView request (C.Basic.view request initial))
   ... | C.retrieval request = just (retrievalView request reply)
   ... | C.documentQuery request = just (documentView request reply)
-  ... | _ = nothing
+  ... | C.experiences request = nothing
+  ... | C.assessments request = nothing
+  ... | C.intervention request = nothing
+  ... | C.context request = nothing
+  ... | C.projectRemoval request = nothing
+  ... | C.correction request = nothing
+  ... | C.patternWrite request = nothing
+  ... | C.patternRemoval request = nothing
+  ... | C.beliefRemoval request = nothing
+  ... | C.independentWrite request = nothing
+  ... | C.propagation request = nothing
+  ... | C.decay request = nothing
+  ... | C.documentRemoval request = nothing
+  ... | C.relationship relation request = nothing
+  ... | C.grounding relation request = nothing
+  ... | C.defeat request = nothing
+  ... | C.sweep request = nothing
+  ... | C.sourceWrite request = nothing
+  ... | C.reviewWrite request = nothing
+  ... | C.documentLoading request = nothing
+  ... | C.control request input = nothing
 
   readView : Result → Maybe ReadView
   readView (terminalResult call initial terminal) with Checked.Terminal.disposition call terminal
