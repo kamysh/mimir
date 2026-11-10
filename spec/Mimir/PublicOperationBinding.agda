@@ -923,7 +923,9 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
 
   afterSettings : Call → Settings → E.Script Result
   afterSettings call (unavailable fault) = E.done (needsInput fault)
-  afterSettings call (configured settings) = bindRequest call settings
+  afterSettings call (configured settings) with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault = E.done (needsInput fault)
+  ... | inj₂ tt = bindRequest call settings
 
   unbound : Call → Store.World → Read.Result → E.Script Result
   unbound call observed Read.reserved = E.ask (currentSettings call) (afterSettings call)
@@ -1011,7 +1013,9 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
 
   afterSettingsScoped : ∀ call observed → Scoped call (afterSettings call observed)
   afterSettingsScoped call (unavailable fault) = finished _
-  afterSettingsScoped call (configured settings) = bindRequestScoped call settings
+  afterSettingsScoped call (configured settings) with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault = finished _
+  ... | inj₂ tt = bindRequestScoped call settings
 
   unboundScoped : ∀ call before outcome → Scoped call (unbound call before outcome)
   unboundScoped call before Read.reserved = asked _ _ refl (afterSettingsScoped call)
@@ -1254,7 +1258,11 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
 
   afterSettingsReadyAbsent : ∀ call observed before after result →
     X.Completed (afterSettings call observed) before after result → AbsentWhenReady call after result
-  afterSettingsReadyAbsent call (configured settings) before after result completion = bindRequestReadyAbsent call settings before after result completion
+  afterSettingsReadyAbsent call (configured settings) before after result completion with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = tt
+  afterSettingsReadyAbsent call (configured settings) before after result completion | inj₂ tt =
+    bindRequestReadyAbsent call settings before after result completion
   afterSettingsReadyAbsent call (unavailable fault) before .before .(needsInput fault)
     (X.completed [] (E.returned _) (X.unchanged _)) = tt
 
@@ -1449,7 +1457,11 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
 
   afterSettingsMeaning : ∀ call observed before after reply →
     X.Completed (afterSettings call observed) before after reply → ReplyMeaning call after reply
-  afterSettingsMeaning call (configured settings) before after reply completion = bindRequestMeaning call settings before after reply completion
+  afterSettingsMeaning call (configured settings) before after reply completion with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = dialogue fault
+  afterSettingsMeaning call (configured settings) before after reply completion | inj₂ tt =
+    bindRequestMeaning call settings before after reply completion
   afterSettingsMeaning call (unavailable fault) before .before .(needsInput fault)
     (X.completed [] (E.returned _) (X.unchanged _)) = dialogue fault
 
@@ -1641,7 +1653,9 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterSettingsProgress : Environment → ∀ call observed before → Σ Store.World (λ after → Σ Result
     (λ reply → X.Completed (afterSettings call observed) before after reply))
   afterSettingsProgress environment call (unavailable fault) before = doneProgress _ before
-  afterSettingsProgress environment call (configured settings) before = bindRequestProgress environment call settings before
+  afterSettingsProgress environment call (configured settings) before with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault = doneProgress _ before
+  ... | inj₂ tt = bindRequestProgress environment call settings before
 
   unboundProgress : Environment → ∀ call before outcome → Σ Store.World (λ after → Σ Result
     (λ reply → X.Completed (unbound call before outcome) before after reply))
