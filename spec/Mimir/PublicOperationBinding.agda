@@ -2055,3 +2055,33 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     with prepareKnownObservation call current scope encoding reply validated middle known physical
   ... | refl , refl with execution | later
   ... | E.returned _ | X.unchanged _ = refl , refl
+
+
+  contextForPending : ∀ call current scope → Reserved call current → ReadyMeaning call current scope →
+    PendingReadback (Call.token call) current →
+    Σ (Read.ExecutionContext (Call.name call) (Call.token call) current) (λ actual →
+      Read.admission (Call.name call) (Call.token call) current ≡ Read.admitted actual)
+  contextForPending call current scope (reserved , reservedAt) known (returnedBinding , next , saved , observed) =
+    Read.admissionFromPending (Call.name call) (Call.token call) current context next saved exactPending
+    where
+    atPlan : Read.afterPlan (Context.original scope) (Context.model scope) (Read.savedRows (Call.token call) current) ≡
+      Read.pending returnedBinding next saved
+    atPlan = trans (sym (Read.answerForKnownPlan (Call.token call) current (Context.original scope) (Context.raw scope)
+      (Context.model scope) (ReadyMeaning.boundRequest known) (ReadyMeaning.uncancelled known)
+      (ReadyMeaning.savedPlan known) (ReadyMeaning.decodedPlan known))) observed
+    exactBinding = Read.planPendingBinding (Context.original scope) (Context.model scope)
+      (Read.savedRows (Call.token call) current) returnedBinding next saved atPlan
+    exactPending : Read.answer (Call.token call) current ≡ Read.pending (Context.original scope) next saved
+    exactPending = trans observed (cong (λ row → Read.pending row next saved) exactBinding)
+    context : Read.ExecutionContext (Call.name call) (Call.token call) current
+    context = record
+      { reservationRow = reserved; originalReservation = reservedAt
+      ; bindingRow = Context.original scope; originalBinding = ReadyMeaning.boundRequest known
+      ; requestedOperation = trans (cong (λ name → P.textEqual name (Call.name call)) (readyOperation call current scope known))
+          (sameOperation (Call.name call))
+      ; rawPlan = Context.raw scope; originalPlan = ReadyMeaning.savedPlan known
+      ; plan = Context.model scope; decoded = ReadyMeaning.decodedPlan known
+      ; matchingOperation = ReadyMeaning.planOperationMatches known; executable = ReadyMeaning.executable known
+      ; addresses = ReadyMeaning.addresses known; separateResult = ReadyMeaning.separateResult known
+      ; journal = Read.afterPlanJournal (Call.token call) current (Context.original scope) (Context.model scope)
+          returnedBinding next saved (ReadyMeaning.addresses known) atPlan }
