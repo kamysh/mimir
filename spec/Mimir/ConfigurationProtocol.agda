@@ -343,24 +343,30 @@ module Initialization (Frame : Set) (parser : Unsigned.Parser)
   preparedFile observed cfg = validFile (Metadata.source observed)
     (Schema.config (Metadata.operations observed) cfg nothing nothing nothing nothing)
 
+  data Readiness : Set where
+    configurationReady : File → Readiness
+    editorReady : File → Readiness
   data Result : Set where
-    ready : File → Result
+    ready : Readiness → Result
     needsDecision : Failure → Result
+  readinessFor : Input → File → Readiness
+  readinessFor interactive document = editorReady document
+  readinessFor (explicit _) document = configurationReady document
 
   matchingExisting : Input → Values.Config → File → Result
   matchingExisting input desired document@(invalidFile _ failure) = needsDecision failure
   matchingExisting input desired document@(validFile source current)
     with compareFields (pairs input) (Schema.Config.core current) desired
-  ... | yes same = ready document
+  ... | yes same = ready (configurationReady document)
   ... | no different = needsDecision conflictingSettings
 
   existing : Input → Values.Config → File → Result
-  existing interactive desired document = ready document
+  existing interactive desired document = ready (editorReady document)
   existing input@(explicit _) desired document = matchingExisting input desired document
 
   chosenOutcome : Metadata → Input → Values.Config → World → World × Result
   chosenOutcome observed input desired before with Storage.World.target before
-  ... | nothing = Storage.intended (preparedFile observed desired) before , ready (preparedFile observed desired)
+  ... | nothing = Storage.intended (preparedFile observed desired) before , ready (readinessFor input (preparedFile observed desired))
   ... | just current = before , existing input desired current
 
   outcome : Metadata → Input → World → World × Result
@@ -371,18 +377,18 @@ module Initialization (Frame : Set) (parser : Unsigned.Parser)
   data CommandEffect : Set where
     inspect : CommandEffect
     defaults : CommandEffect
-    encode : Operations.Admitted → Values.Config → CommandEffect
+    encode : Input → Operations.Admitted → Values.Config → CommandEffect
     preparePrivate linkAbsent : File → CommandEffect
     syncParent : CommandEffect
-    announceReady : File → CommandEffect
+    announceReady : Readiness → CommandEffect
   CommandReply : CommandEffect → Set
   CommandReply inspect = Maybe File
   CommandReply defaults = Operations.Admitted
-  CommandReply (encode _ _) = Text
+  CommandReply (encode _ _ _) = Text
   CommandReply _ = ⊤
   module E = Effects.Protocol CommandEffect CommandReply
 
-  announce : File → E.Script Result
+  announce : Readiness → E.Script Result
   announce document = E.ask syncParent (λ _ → E.ask (announceReady document) (λ _ → E.done (ready document)))
   checkedExisting : Input → Values.Config → File → E.Script Result
   checkedExisting input desired current with existing input desired current
@@ -390,9 +396,9 @@ module Initialization (Frame : Set) (parser : Unsigned.Parser)
   ... | needsDecision failure = E.done (needsDecision failure)
   afterInspect : Input → Values.Config → Maybe File → E.Script Result
   afterInspect input desired (just current) = checkedExisting input desired current
-  afterInspect input desired nothing = E.ask defaults (λ operations → E.ask (encode operations desired) (λ source →
+  afterInspect input desired nothing = E.ask defaults (λ operations → E.ask (encode input operations desired) (λ source →
     let document = preparedFile (metadata operations source) desired in
-    E.ask (preparePrivate document) (λ _ → E.ask (linkAbsent document) (λ _ → announce document))))
+    E.ask (preparePrivate document) (λ _ → E.ask (linkAbsent document) (λ _ → announce (readinessFor input document)))))
   script : Input → E.Script Result
   script input with Overrides.create (pairs input)
   ... | inj₁ error = E.done (needsDecision (override error))
@@ -404,7 +410,7 @@ module Initialization (Frame : Set) (parser : Unsigned.Parser)
   data Atomic : World → (effect : CommandEffect) → CommandReply effect → World → Set where
     inspected : ∀ before → Atomic before inspect (Storage.World.target before) before
     suppliedDefaults : ∀ before operations → Atomic before defaults operations before
-    encoded : ∀ before operations desired source → Atomic before (encode operations desired) source before
+    encoded : ∀ before input operations desired source → Atomic before (encode input operations desired) source before
     privatelyPrepared : ∀ before document → Atomic before (preparePrivate document) tt before
     linked : ∀ before document → Atomic before (linkAbsent document) tt (Storage.intended document before)
     synced : ∀ before → Atomic before syncParent tt before
@@ -433,7 +439,7 @@ module Initialization (Frame : Set) (parser : Unsigned.Parser)
   data Owned (input : Input) : CommandEffect → Set where
     inspectOwned : Owned input inspect
     defaultsOwned : Owned input defaults
-    encodeOwned : ∀ operations cfg → Owned input (encode operations cfg)
+    encodeOwned : ∀ operations cfg → Owned input (encode input operations cfg)
     privateOwned : ∀ document → Owned input (preparePrivate document)
     linkOwned : ∀ observed cfg → Overrides.create (pairs input) ≡ inj₂ cfg →
       Owned input (linkAbsent (preparedFile observed cfg))
@@ -458,7 +464,7 @@ module Initialization (Frame : Set) (parser : Unsigned.Parser)
   inspectScoped input desired accepted nothing = asked _ _ defaultsOwned (λ operations →
     asked _ _ (encodeOwned operations desired) (λ source →
       asked _ _ (privateOwned _) (λ _ →
-        asked _ _ (linkOwned (metadata operations source) desired accepted) (λ _ → announceScoped input _))))
+        asked _ _ (linkOwned (metadata operations source) desired accepted) (λ _ → announceScoped input (readinessFor input _)))))
   scriptScoped : ∀ input → Scoped input (script input)
   scriptScoped input with Overrides.create (pairs input) in accepted
   ... | inj₁ error = returned _
@@ -481,7 +487,7 @@ module Initialization (Frame : Set) (parser : Unsigned.Parser)
     Atomic before effect reply after → Invariant input initial before → Invariant input initial after
   atomicInvariant input initial before .before .inspect ._ inspectOwned (inspected .before) old = old
   atomicInvariant input initial before .before .defaults operations defaultsOwned (suppliedDefaults .before .operations) old = old
-  atomicInvariant input initial before .before .(encode operations cfg) source (encodeOwned operations cfg) (encoded .before .operations .cfg .source) old = old
+  atomicInvariant input initial before .before .(encode input operations cfg) source (encodeOwned operations cfg) (encoded .before .input .operations .cfg .source) old = old
   atomicInvariant input initial before .before .(preparePrivate document) .tt (privateOwned document) (privatelyPrepared .before .document) old = old
   atomicInvariant input initial before ._ .(linkAbsent (preparedFile observed cfg)) .tt (linkOwned observed cfg accepted)
     (linked .before ._) old wanted with outcomeAfterLink wanted input before observed cfg accepted
@@ -513,7 +519,7 @@ module Initialization (Frame : Set) (parser : Unsigned.Parser)
 
   -- Availability builds a successful physical execution. Actual receipts
   -- still admit every observed defaults/serialization value on each attempt.
-  module Execution (available : World → Metadata) where
+  module Execution (available : Input → Values.Config → World → Metadata) where
     announceObservation : ∀ document before after reply events →
       E.Runs (announce document) events reply → X.Changes before events after →
       (after , reply) ≡ (before , ready document)
@@ -535,10 +541,10 @@ module Initialization (Frame : Set) (parser : Unsigned.Parser)
       X.Changes before events after → Data.Product.Σ Metadata (λ observed →
         (after , reply) ≡ chosenOutcome observed input desired before)
     readObservation input desired before@(Storage.world (just current) frame) after reply events execution physical =
-      available before , existingObservation input desired current before after reply events execution physical
+      available input desired before , existingObservation input desired current before after reply events execution physical
     readObservation input desired before@(Storage.world nothing frame) after reply ._
       (E.replied _ _ operations (E.replied _ _ source (E.replied _ _ tt (E.replied _ _ tt execution))))
-      (X.changed _ _ _ _ (suppliedDefaults _ _) (X.changed _ _ _ _ (encoded _ _ _ _)
+      (X.changed _ _ _ _ (suppliedDefaults _ _) (X.changed _ _ _ _ (encoded _ _ _ _ _)
         (X.changed _ _ _ _ (privatelyPrepared _ _) (X.changed _ _ _ _ (linked _ _) physical))))
       = metadata operations source , announceObservation _ _ after reply _ execution physical
 
@@ -546,7 +552,7 @@ module Initialization (Frame : Set) (parser : Unsigned.Parser)
       Goal input before after reply
     completedObservation input before after reply complete with Overrides.create (pairs input) in accepted
     ... | inj₁ error with complete
-    ... | X.completed .[] (E.returned _) (X.unchanged _) = available before , refl
+    ... | X.completed .[] (E.returned _) (X.unchanged _) = available input Values.defaultConfig before , refl
     completedObservation input before after reply complete | inj₂ desired with complete
     ... | X.completed _ (E.replied _ _ .(Storage.World.target before) execution)
       (X.changed _ _ _ .before (inspected .before) physical) =
@@ -568,17 +574,17 @@ module Initialization (Frame : Set) (parser : Unsigned.Parser)
     readProgress input desired before@(Storage.world (just current) frame) =
       before , existing input desired current , existingProgress input desired current before
     readProgress input desired before@(Storage.world nothing frame) =
-      Storage.intended document before , ready document , X.completed
-        ((defaults , Metadata.operations observed) ∷ (encode (Metadata.operations observed) desired , Metadata.source observed) ∷
+      Storage.intended document before , ready (readinessFor input document) , X.completed
+        ((defaults , Metadata.operations observed) ∷ (encode input (Metadata.operations observed) desired , Metadata.source observed) ∷
          (preparePrivate document , tt) ∷ (linkAbsent document , tt) ∷
-         (syncParent , tt) ∷ (announceReady document , tt) ∷ [])
+         (syncParent , tt) ∷ (announceReady (readinessFor input document) , tt) ∷ [])
         (E.replied _ _ _ (E.replied _ _ _ (E.replied _ _ tt (E.replied _ _ tt
           (E.replied _ _ tt (E.replied _ _ tt (E.returned _)))))))
-        (X.changed _ _ _ _ (suppliedDefaults _ _) (X.changed _ _ _ _ (encoded _ _ _ _)
+        (X.changed _ _ _ _ (suppliedDefaults _ _) (X.changed _ _ _ _ (encoded _ _ _ _ _)
           (X.changed _ _ _ _ (privatelyPrepared _ _) (X.changed _ _ _ _ (linked _ _)
             (X.changed _ _ _ _ (synced _) (X.changed _ _ _ _ (announced _ _) (X.unchanged _)))))))
       where
-      observed = available before
+      observed = available input desired before
       document = preparedFile observed desired
 
     progress : ∀ input before → Data.Product.Σ World (λ after → Data.Product.Σ Result (λ reply →
