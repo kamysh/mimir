@@ -1237,6 +1237,25 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
     Atomic before (body effect) reply after = Body.Atomic before effect reply after × CommitAdmission before effect reply
     module X = Recovery.Execution Store.World Effect Reply Atomic
 
+    -- A completed journal is read back before file/configuration/provider
+    -- preparation. This is an actual one-read execution, with no store change.
+    cachedReplay : ∀ token current binding raw →
+      Journal.admission operationName token current ≡ Journal.returned (Journal.completed binding raw) →
+      X.Completed (script token) current current (inspected (Journal.completed binding raw))
+    cachedReplay token current binding raw known = X.completed
+      ((inspect token , current) ∷ [])
+      (E.replied _ _ current cachedBranchRun)
+      (X.changed current _ _ current (refl , refl) (X.unchanged current))
+      where
+      cachedBranchRun : E.Runs (branch token current) [] (inspected (Journal.completed binding raw))
+      cachedBranchRun rewrite known = E.returned _
+
+    cachedReplayValue : ∀ token current binding raw →
+      Journal.admission operationName token current ≡ Journal.returned (Journal.completed binding raw) →
+      Σ Outcome (λ reply → X.Completed (script token) current current reply × normalized reply ≡ Step.done raw)
+    cachedReplayValue token current binding raw known =
+      inspected (Journal.completed binding raw) , cachedReplay token current binding raw known , refl
+
     -- Cached history and a malformed/foreign journal preserve the whole store.
     -- A running request instead owes the independent publication goal, even
     -- when a completed retry returns its original answer through readback.
