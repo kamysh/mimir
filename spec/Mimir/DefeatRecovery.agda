@@ -767,82 +767,15 @@ module Registered (conversion : Conversion.Contract)
       (ExecutionContext; sameRight; noJust; admission; admitted; returned; completed;
        admissionCompletedLookup; preserveAfterNext; finalPairCompletes;
        afterBindingLookup; afterMatch; afterReadback; answer; cancelled; ordered; savedRows)
-    module Plan = Controls.Plan using (Step; step; Saved; saved; readStep; readBoundary; fieldNames; decode; stepDecoded; readPlanFields; parsedSteps)
+    module Plan = Controls.Plan using (Step; step; Saved)
     module J = Controls.OpaqueJournal using (Cursor; here; passed; Complete; cursorNext)
-    module Pair = Admission.PairPlan C.Binding.descriptor using (module First; module Second; pair; matches)
+    module Pair = Admission.PairPlan C.Binding.descriptor using (matches)
 
     operationName = toList "record_defeat"
-    firstDescriptor = Admission.descriptor operationName (toList "store.insert_edge") (firstKey 0)
-    finalDescriptor = Admission.descriptor operationName (toList "store.propagate_locked") (secondKey 0)
-    firstStep = Plan.step (toList "store.insert_edge") nothing (firstKey 0)
-    finalStep = Plan.step (toList "store.propagate_locked") nothing (secondKey 0)
-
-    open Admission.RecordFields using
-      (andLeft; andRight; thirdTrue; sameRecordView; textField; nullField; unfield)
-    stepDecoded = Plan.stepDecoded
-
-    pairValues : ∀ firstCheck secondCheck observed → Pair.pair firstCheck secondCheck observed ≡ true →
-      Σ Wire.Value (λ firstRaw → Σ Wire.Value (λ secondRaw →
-        observed ≡ just (Wire.array (firstRaw ∷ secondRaw ∷ [])) ×
-        firstCheck firstRaw ≡ true × secondCheck secondRaw ≡ true))
-    pairValues firstCheck secondCheck (just (Wire.array (firstRaw ∷ secondRaw ∷ []))) known =
-      firstRaw , secondRaw , refl , andLeft _ _ known , andRight _ _ known
-    pairValues firstCheck secondCheck (just (Wire.array [])) ()
-    pairValues firstCheck secondCheck (just (Wire.array (_ ∷ []))) ()
-    pairValues firstCheck secondCheck (just (Wire.array (_ ∷ _ ∷ _ ∷ _))) ()
-    pairValues firstCheck secondCheck (just Wire.null) ()
-    pairValues firstCheck secondCheck (just (Wire.boolean _)) ()
-    pairValues firstCheck secondCheck (just (Wire.unsigned _)) ()
-    pairValues firstCheck secondCheck (just (Wire.signed _)) ()
-    pairValues firstCheck secondCheck (just (Wire.floating _)) ()
-    pairValues firstCheck secondCheck (just (Wire.string _)) ()
-    pairValues firstCheck secondCheck (just (Wire.object _)) ()
-    pairValues firstCheck secondCheck nothing ()
-
-    planFields = Plan.readPlanFields
-    parsedSteps = Plan.parsedSteps
-
-    selectedPairRead : ∀ view firstRaw secondRaw steps →
-      view (toList "steps") ≡ just (Wire.array (firstRaw ∷ secondRaw ∷ [])) →
-      Wire.required (toList "steps") (Decode.readArray Plan.readStep) view ≡ inj₂ steps →
-      Decode.readArray Plan.readStep (Wire.array (firstRaw ∷ secondRaw ∷ [])) ≡ inj₂ steps
-    selectedPairRead view firstRaw secondRaw steps found decoded rewrite found = unfield (toList "steps") _ steps decoded
-
-    pairRead : ∀ firstRaw secondRaw steps →
-      Decode.readArray Plan.readStep (Wire.array (firstRaw ∷ secondRaw ∷ [])) ≡ inj₂ steps →
-      Σ Plan.Step (λ firstDecoded → Σ Plan.Step (λ secondDecoded →
-        Plan.readStep firstRaw ≡ inj₂ firstDecoded × Plan.readStep secondRaw ≡ inj₂ secondDecoded ×
-        steps ≡ (firstDecoded ∷ secondDecoded ∷ [])))
-    pairRead firstRaw secondRaw steps known with Plan.readStep firstRaw in firstRead
-    ... | inj₁ fault with known
-    ... | ()
-    pairRead firstRaw secondRaw steps known | inj₂ firstDecoded with Plan.readStep secondRaw in secondRead
-    ... | inj₁ fault with known
-    ... | ()
-    pairRead firstRaw secondRaw steps known | inj₂ firstDecoded | inj₂ secondDecoded with known
-    ... | refl = firstDecoded , secondDecoded , refl , refl , refl
-
-    planCheck : Wire.Object.View → Bool
-    planCheck view = Project.Registered.fieldText operationName (view (toList "operation")) ∧
-      Pair.pair Pair.First.shapeMatches Pair.Second.shapeMatches (view (toList "shape")) ∧
-      Pair.pair Pair.First.stepMatches Pair.Second.stepMatches (view (toList "steps"))
-
-    decodedPair : ∀ raw model → Pair.matches raw ≡ true → Plan.decode raw ≡ inj₂ model →
-      Plan.Saved.steps model ≡ (firstStep ∷ finalStep ∷ [])
-    decodedPair raw model matched decoded with sameRecordView
-      (toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ []) Plan.fieldNames
-      planCheck planFields raw model matched decoded
-    ... | view , checked , parsed with pairValues Pair.First.stepMatches Pair.Second.stepMatches
-      (view (toList "steps")) (thirdTrue
-        (Project.Registered.fieldText operationName (view (toList "operation")))
-        (Pair.pair Pair.First.shapeMatches Pair.Second.shapeMatches (view (toList "shape")))
-        (Pair.pair Pair.First.stepMatches Pair.Second.stepMatches (view (toList "steps"))) checked)
-    ... | firstRaw , secondRaw , found , firstMatched , secondMatched with pairRead firstRaw secondRaw
-      (Plan.Saved.steps model) (selectedPairRead view firstRaw secondRaw _ found (parsedSteps view model parsed))
-    ... | firstDecoded , secondDecoded , firstRead , secondRead , exact
-      with stepDecoded firstDescriptor firstRaw firstDecoded firstMatched firstRead
-        | stepDecoded finalDescriptor secondRaw secondDecoded secondMatched secondRead
-    ... | refl | refl = exact
+    module Layout = Controls.Plan.PairProjection C.Binding.descriptor using (firstStep; finalStep; decodedPair)
+    firstStep = Layout.firstStep
+    finalStep = Layout.finalStep
+    decodedPair = Layout.decodedPair
 
     originalPlanObserved : ∀ token before (context : Read.ExecutionContext operationName token before) →
       Admission.originalPlan operationName token (Step.registration before) ≡ inj₂

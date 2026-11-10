@@ -35,6 +35,7 @@ import Data.List.Relation.Unary.Any as Any
 import Data.Nat.Properties as Nat
 import Mimir.RecoverableStoreStep as StoreStep
 import Mimir.PublicInput as PublicInput
+import Mimir.ToolCatalog as Tools
 
 record RequestKey : Set where
   constructor requestKey
@@ -535,6 +536,79 @@ module Plan where
   ... | refl = refl
 
 
+  -- Both the defeat and prepared-belief protocols use this same actual
+  -- two-step saved plan. Only its typed record fields are projected here.
+  module PairProjection (registered : Admission.PairDescriptor) where
+    module Pair = Admission.PairPlan registered using (module First; module Second; pair; matches)
+    open Admission.RecordFields using (andLeft; andRight; thirdTrue; sameRecordView; unfield)
+    operationName = Admission.PairDescriptor.operation registered
+    firstDescriptor = Admission.descriptor operationName
+      (Admission.PairDescriptor.firstSite registered) (Admission.PairDescriptor.firstKey registered)
+    finalDescriptor = Admission.descriptor operationName
+      (Admission.PairDescriptor.secondSite registered) (Admission.PairDescriptor.secondKey registered)
+    firstStep = step (Admission.PairDescriptor.firstSite registered) nothing (Admission.PairDescriptor.firstKey registered)
+    finalStep = step (Admission.PairDescriptor.secondSite registered) nothing (Admission.PairDescriptor.secondKey registered)
+
+    pairValues : ∀ firstCheck secondCheck observed → Pair.pair firstCheck secondCheck observed ≡ true →
+      Σ Wire.Value (λ firstRaw → Σ Wire.Value (λ secondRaw →
+        observed ≡ just (Wire.array (firstRaw ∷ secondRaw ∷ [])) ×
+        firstCheck firstRaw ≡ true × secondCheck secondRaw ≡ true))
+    pairValues firstCheck secondCheck (just (Wire.array (firstRaw ∷ secondRaw ∷ []))) known =
+      firstRaw , secondRaw , refl , andLeft _ _ known , andRight _ _ known
+    pairValues firstCheck secondCheck (just (Wire.array [])) ()
+    pairValues firstCheck secondCheck (just (Wire.array (_ ∷ []))) ()
+    pairValues firstCheck secondCheck (just (Wire.array (_ ∷ _ ∷ _ ∷ _))) ()
+    pairValues firstCheck secondCheck (just Wire.null) ()
+    pairValues firstCheck secondCheck (just (Wire.boolean _)) ()
+    pairValues firstCheck secondCheck (just (Wire.unsigned _)) ()
+    pairValues firstCheck secondCheck (just (Wire.signed _)) ()
+    pairValues firstCheck secondCheck (just (Wire.floating _)) ()
+    pairValues firstCheck secondCheck (just (Wire.string _)) ()
+    pairValues firstCheck secondCheck (just (Wire.object _)) ()
+    pairValues firstCheck secondCheck nothing ()
+
+    selectedPairRead : ∀ view firstRaw secondRaw steps →
+      view (toList "steps") ≡ just (Wire.array (firstRaw ∷ secondRaw ∷ [])) →
+      Wire.required (toList "steps") (Decode.readArray readStep) view ≡ inj₂ steps →
+      Decode.readArray readStep (Wire.array (firstRaw ∷ secondRaw ∷ [])) ≡ inj₂ steps
+    selectedPairRead view firstRaw secondRaw steps found decoded rewrite found = unfield (toList "steps") _ steps decoded
+
+    pairRead : ∀ firstRaw secondRaw steps →
+      Decode.readArray readStep (Wire.array (firstRaw ∷ secondRaw ∷ [])) ≡ inj₂ steps →
+      Σ Step (λ firstDecoded → Σ Step (λ secondDecoded →
+        readStep firstRaw ≡ inj₂ firstDecoded × readStep secondRaw ≡ inj₂ secondDecoded ×
+        steps ≡ (firstDecoded ∷ secondDecoded ∷ [])))
+    pairRead firstRaw secondRaw steps known with readStep firstRaw in firstRead
+    ... | inj₁ fault with known
+    ... | ()
+    pairRead firstRaw secondRaw steps known | inj₂ firstDecoded with readStep secondRaw in secondRead
+    ... | inj₁ fault with known
+    ... | ()
+    pairRead firstRaw secondRaw steps known | inj₂ firstDecoded | inj₂ secondDecoded with known
+    ... | refl = firstDecoded , secondDecoded , refl , refl , refl
+
+    planCheck : Wire.Object.View → Bool
+    planCheck view = Project.Registered.fieldText operationName (view (toList "operation")) ∧
+      Pair.pair Pair.First.shapeMatches Pair.Second.shapeMatches (view (toList "shape")) ∧
+      Pair.pair Pair.First.stepMatches Pair.Second.stepMatches (view (toList "steps"))
+
+    decodedPair : ∀ raw model → Pair.matches raw ≡ true → decode raw ≡ inj₂ model →
+      Saved.steps model ≡ (firstStep ∷ finalStep ∷ [])
+    decodedPair raw model matched decoded with sameRecordView
+      (toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ []) fieldNames
+      planCheck readPlanFields raw model matched decoded
+    ... | view , checked , parsed with pairValues Pair.First.stepMatches Pair.Second.stepMatches
+      (view (toList "steps")) (thirdTrue
+        (Project.Registered.fieldText operationName (view (toList "operation")))
+        (Pair.pair Pair.First.shapeMatches Pair.Second.shapeMatches (view (toList "shape")))
+        (Pair.pair Pair.First.stepMatches Pair.Second.stepMatches (view (toList "steps"))) checked)
+    ... | firstRaw , secondRaw , found , firstMatched , secondMatched with pairRead firstRaw secondRaw
+      (Saved.steps model) (selectedPairRead view firstRaw secondRaw _ found (parsedSteps view model parsed))
+    ... | firstDecoded , secondDecoded , firstRead , secondRead , exact
+      with stepDecoded firstDescriptor firstRaw firstDecoded firstMatched firstRead
+        | stepDecoded finalDescriptor secondRaw secondDecoded secondMatched secondRead
+    ... | refl | refl = exact
+
   readIdentity : Library.Contract → Wire.Value → Validation.Fault ⊎ (Text × ℕ)
   readIdentity library raw = Decode._>>=_ (Wire.asString raw) λ text → inspect text
     where
@@ -657,6 +731,104 @@ module Plan where
 
   executable : Library.Contract → Saved → Bool
   executable library plan = currentlyRegistered library plan ∧ captureMatches library plan
+
+  -- Every public write has an actual fixed boundary in the registered table.
+  -- In particular, zero review-owned preparations still precede publication.
+  hasFixedBoundary : List Boundary → Bool
+  hasFixedBoundary [] = false
+  hasFixedBoundary (boundary site false ∷ rest) = true
+  hasFixedBoundary (boundary site true ∷ rest) = hasFixedBoundary rest
+
+  registeredHasFixedBoundary : Maybe (List Boundary) → Bool
+  registeredHasFixedBoundary nothing = false
+  registeredHasFixedBoundary (just boundaries) = hasFixedBoundary boundaries
+
+  publicWriterHasFixedBoundary : (tool : Tools.Tool) → Tools.kind tool ≡ Tools.businessWrite →
+    registeredHasFixedBoundary (lookup (toList (Tools.wireName tool)) registered) ≡ true
+  publicWriterHasFixedBoundary Tools.insertBelief refl = refl
+  publicWriterHasFixedBoundary Tools.deleteBelief refl = refl
+  publicWriterHasFixedBoundary Tools.deleteProject refl = refl
+  publicWriterHasFixedBoundary Tools.deletePattern refl = refl
+  publicWriterHasFixedBoundary Tools.insertPattern refl = refl
+  publicWriterHasFixedBoundary Tools.recordSupport refl = refl
+  publicWriterHasFixedBoundary Tools.recordCause refl = refl
+  publicWriterHasFixedBoundary Tools.recordDefeat refl = refl
+  publicWriterHasFixedBoundary Tools.recordContradiction refl = refl
+  publicWriterHasFixedBoundary Tools.getBelief ()
+  publicWriterHasFixedBoundary Tools.listBeliefs ()
+  publicWriterHasFixedBoundary Tools.listPatterns ()
+  publicWriterHasFixedBoundary Tools.getContradictions ()
+  publicWriterHasFixedBoundary Tools.decayAll refl = refl
+  publicWriterHasFixedBoundary Tools.sweepExpiredDefeated refl = refl
+  publicWriterHasFixedBoundary Tools.queryRelevant ()
+  publicWriterHasFixedBoundary Tools.addEvidence refl = refl
+  publicWriterHasFixedBoundary Tools.getEvidence ()
+  publicWriterHasFixedBoundary Tools.propagateFrom refl = refl
+  publicWriterHasFixedBoundary Tools.queryIntervention ()
+  publicWriterHasFixedBoundary Tools.loadDocument refl = refl
+  publicWriterHasFixedBoundary Tools.queryDocument ()
+  publicWriterHasFixedBoundary Tools.clearDocument refl = refl
+  publicWriterHasFixedBoundary Tools.getLearningReview ()
+  publicWriterHasFixedBoundary Tools.learningCapabilities ()
+  publicWriterHasFixedBoundary Tools.getLessonAssessment ()
+  publicWriterHasFixedBoundary Tools.lessonAssessmentHistory ()
+  publicWriterHasFixedBoundary Tools.explainBelief ()
+  publicWriterHasFixedBoundary Tools.recordExperience refl = refl
+  publicWriterHasFixedBoundary Tools.pendingExperiences ()
+  publicWriterHasFixedBoundary Tools.reviewExperience refl = refl
+  publicWriterHasFixedBoundary Tools.getExperience ()
+  publicWriterHasFixedBoundary Tools.experienceHistory ()
+  publicWriterHasFixedBoundary Tools.queryLearningContext ()
+  publicWriterHasFixedBoundary Tools.reserveOperation ()
+  publicWriterHasFixedBoundary Tools.operationOutcome ()
+  publicWriterHasFixedBoundary Tools.cancelOperation ()
+
+  rebuildFixedIsNonempty : ∀ library boundaries expected →
+    hasFixedBoundary boundaries ≡ true → rebuild library boundaries [] ≡ just expected → expected ≢ []
+  rebuildFixedIsNonempty library [] expected () rebuilt
+  rebuildFixedIsNonempty library (boundary site false ∷ rest) expected fixed rebuilt
+    with rebuild library rest []
+  ... | nothing with rebuilt
+  ... | ()
+  rebuildFixedIsNonempty library (boundary site false ∷ rest) expected fixed rebuilt | just tail
+    with rebuilt
+  ... | refl = λ ()
+  rebuildFixedIsNonempty library (boundary site true ∷ rest) expected fixed rebuilt
+    with rebuild library rest [] in observed
+  ... | nothing with rebuilt
+  ... | ()
+  rebuildFixedIsNonempty library (boundary site true ∷ rest) expected fixed rebuilt | just tail
+    with rebuilt
+  ... | refl = rebuildFixedIsNonempty library rest tail fixed observed
+
+  fixedEmptyCannotMatch : ∀ library operation shape capture boundaries →
+    hasFixedBoundary boundaries ≡ true →
+    matchesBoundaries library (saved operation shape [] capture) boundaries ≡ true → ⊥
+  fixedEmptyCannotMatch library operation shape capture boundaries fixed
+    with shapeEqual boundaries shape
+  ... | false = λ ()
+  ... | true with rebuild library boundaries [] in observed
+  ... | nothing = λ ()
+  ... | just [] = λ _ → rebuildFixedIsNonempty library boundaries [] fixed observed refl
+  ... | just (_ ∷ _) = λ ()
+
+  publicWriterEmptyCannotExecute : ∀ library tool shape capture → Tools.kind tool ≡ Tools.businessWrite →
+    executable library (saved (toList (Tools.wireName tool)) shape [] capture) ≡ true → ⊥
+  publicWriterEmptyCannotExecute library tool shape capture writer accepted
+    with lookup (toList (Tools.wireName tool)) registered in observed
+  ... | nothing with accepted
+  ... | ()
+  publicWriterEmptyCannotExecute library tool shape capture writer accepted | just boundaries =
+    fixedEmptyCannotMatch library (toList (Tools.wireName tool)) shape capture boundaries
+      (trans (sym (cong registeredHasFixedBoundary observed)) (publicWriterHasFixedBoundary tool writer))
+      (Admission.RecordFields.andLeft _ _ accepted)
+
+  publicWriterStepsNonempty : (library : Library.Contract) (tool : Tools.Tool) (plan : Saved) →
+    Tools.kind tool ≡ Tools.businessWrite → Saved.operation plan ≡ toList (Tools.wireName tool) →
+    executable library plan ≡ true → Saved.steps plan ≢ []
+  publicWriterStepsNonempty library tool (saved operation shape [] capture) writer refl accepted refl =
+    publicWriterEmptyCannotExecute library tool shape capture writer accepted
+  publicWriterStepsNonempty library tool (saved operation shape (_ ∷ _) capture) writer same accepted ()
 
   obsoletePlanCannotResume : ∀ library plan → currentlyRegistered library plan ≡ false → executable library plan ≡ false
   obsoletePlanCannotResume library plan obsolete rewrite obsolete = refl
