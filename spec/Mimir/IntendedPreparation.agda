@@ -385,6 +385,62 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
       evaluate family raw before ≡ expected before nothing (requestCorrection fault)
     malformedRequestDoesNotEnterBody family raw before fault rejected rewrite rejected = refl
 
+  module ExperienceIntent (format : Encoding.Formatting) where
+    module Experiences = LearningReads.ExperienceReads format
+    module Decode = Public.Decode library
+
+    data Family : Set where experience currentReview history pending : Family
+
+    tool : Family → Tools.Tool
+    tool experience = Tools.getExperience
+    tool currentReview = Tools.getLearningReview
+    tool history = Tools.experienceHistory
+    tool pending = Tools.pendingExperiences
+
+    request : Family → Wire.Object.View → Validation.Fault Data.Sum.⊎ Experiences.Request
+    request experience fields = Record.mapResult Experiences.experience
+      (PublicInput.required "id" (PublicInput.readUUID library) fields)
+    request currentReview fields = Record.mapResult Experiences.currentReview
+      (PublicInput.required "id" (PublicInput.readUUID library) fields)
+    request history fields = Record.mapResult Experiences.history
+      (PublicInput.required "id" (PublicInput.readUUID library) fields)
+    request pending fields = Record._>>=_ (PublicInput.present "project" Wire.asString fields) λ project →
+      Record._>>=_ (Decode.selection "limit" fields) λ selection →
+      Record.mapResult (Experiences.pending project selection)
+        (PublicInput.defaulted "exclude_ids" Data.List.[]
+          (Record.readArray (PublicInput.readUUID library)) fields)
+
+    -- The complete raw history and stored current review come from this
+    -- World; the caller supplies no desired rows or reformatted history.
+    read : Experiences.Request → Store.World → Expected Wire.Value
+    read selected before = expected before (just answer) (directValue answer)
+      where answer = Experiences.answer selected before
+
+    afterRequest : Validation.Fault Data.Sum.⊎ Experiences.Request → Store.World → Expected Wire.Value
+    afterRequest (inj₁ fault) before = expected before nothing (requestCorrection fault)
+    afterRequest (inj₂ selected) before = read selected before
+
+    evaluate : Family → Wire.Value → Store.World → Expected Wire.Value
+    evaluate family raw before with Decode.readInvocation (tool family) raw
+    ... | inj₁ fault = expected before nothing (requestCorrection fault)
+    ... | inj₂ admitted = afterRequest
+      (request family (Wire.Object.normalize (Decode.Invocation.suppliedFields admitted))) before
+
+    afterRequestKeepsWorld : ∀ received before → Expected.world (afterRequest received before) ≡ before
+    afterRequestKeepsWorld (inj₁ fault) before = refl
+    afterRequestKeepsWorld (inj₂ selected) before = refl
+
+    neverChangesWorld : ∀ family raw before → Expected.world (evaluate family raw before) ≡ before
+    neverChangesWorld family raw before with Decode.readInvocation (tool family) raw
+    ... | inj₁ fault = refl
+    ... | inj₂ admitted = afterRequestKeepsWorld
+      (request family (Wire.Object.normalize (Decode.Invocation.suppliedFields admitted))) before
+
+    malformedRequestDoesNotEnterBody : ∀ family raw before fault →
+      Decode.readInvocation (tool family) raw ≡ inj₁ fault →
+      evaluate family raw before ≡ expected before nothing (requestCorrection fault)
+    malformedRequestDoesNotEnterBody family raw before fault rejected rewrite rejected = refl
+
   module ReadOnly (format : Encoding.Formatting) where
     module Basic = StorageReads.BasicReads format using (Request; answer)
     module Experiences = LearningReads.ExperienceReads format using (Request; answer)

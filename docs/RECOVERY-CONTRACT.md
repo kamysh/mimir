@@ -363,6 +363,15 @@ matches; explicit pages keep the existing positive-count and offset rules.
 The complete world is unchanged, including on malformed requests, whose
 business body stays absent. No extra observations or expected values are input.
 
+`IntendedPreparation.Evaluate.ExperienceIntent.evaluate` covers `get_experience`,
+`get_learning_review`, `experience_history` and `pending_experiences` through
+their existing public field readers and `ExperienceReads.answer`. Historical
+source/review payloads remain the complete stored raw JSON, and pending reads
+retain original ordering, exclusions and optional positive selection without
+an invented default count. Every result preserves the complete starting world;
+malformed requests leave the business body absent. These adapters introduce
+neither external observations nor caller-supplied expected history.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |
