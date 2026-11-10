@@ -19,6 +19,25 @@ impl MimirService {
     }
 
     async fn reembed_operation_inner(&self, token: Uuid) -> Result<OperationOutcome> {
+        let previous = self.read_operation_binding(token).await?;
+        let expected = crate::store::OperationBindingRequest::new(
+            "reembed".into(),
+            serde_json::json!({}),
+            previous
+                .as_ref()
+                .map(|binding| mimir_json::clone_value(binding.request.settings()))
+                .unwrap_or_else(|| self.embedding_operation_settings()),
+        )?;
+        let original = self.read_operation_outcome(token, Some(&expected)).await?;
+        if !matches!(
+            original,
+            OperationOutcome::Reserved
+                | OperationOutcome::AwaitingPlan(_)
+                | OperationOutcome::Pending { .. }
+                | OperationOutcome::AwaitingCompletion(_)
+        ) {
+            return Ok(original);
+        }
         let plan = match self.prepare_reembed_operation(token).await? {
             PlanDecision::Ready(plan) => plan,
             PlanDecision::NeedsRecovery(reason) => return Err(anyhow!(reason)),

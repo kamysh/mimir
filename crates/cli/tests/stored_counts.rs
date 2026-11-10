@@ -29,10 +29,26 @@ async fn stored_count_dialog_prevents_a_fake_list_or_sweep_success() -> Result<(
         .insert_edge(&Edge::new(source.id, target.id, EdgeType::Defeats, 1.0)?)
         .await?;
     audit.query(&format!("SELECT * FROM ag_catalog.cypher('{}', $$ MATCH (n:Belief {{id:'{}'}}) SET n.alpha0=-1.0 RETURN n.id $$) AS(id ag_catalog.agtype)",cfg.dbname,target.id),&[]).await?;
+    let token = store
+        .reserve_operation(&format!("stored-count-sweep-{key}"))
+        .await?
+        .operation_token
+        .to_string();
+    let config_path = fixture.root.join(format!("stored-count-policy-{key}.toml"));
+    let mut config = std::fs::read_to_string(fixture.root.join("config.toml"))?;
+    if !config.contains("[retirement]") {
+        config.push_str("\n[retirement]\ngrace_hours=0\n");
+    }
+    std::fs::write(&config_path, config)?;
     for command in ["list", "sweep-defeated"] {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_mimir"))
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mimir"));
+        child
             .args([command, "--project", &project])
-            .output()?;
+            .env("MIMIR_CONFIG", &config_path);
+        if command == "sweep-defeated" {
+            child.args(["--operation-token", &token]);
+        }
+        let output = child.output()?;
         std::fs::write(
             fixture
                 .root

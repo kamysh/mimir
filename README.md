@@ -627,9 +627,18 @@ These laws model the lifecycle, not the SQL implementation itself.
 
 ## CLI reference
 
+Database writes require `--operation-token UUID`. First reserve the intended
+action with `mimir operation reserve REQUEST_KEY`; preserve that key and token
+across retries. Write responses include the original saved result. See the
+[operation protocol](docs/OPERATION-PROTOCOL.md) for examples and correction
+guidance. Read-only commands need no token.
+
 | Command | What it does |
 |---|---|
 | `mimir init [KEY=VALUE ...]` | With no args: create `~/.config/mimir/config.toml` and open it in `$EDITOR`. With `KEY=VALUE` args (e.g. `host=localhost backend=local`): write the config non-interactively, no `$EDITOR` |
+| `mimir operation reserve REQUEST_KEY` | Reserve an action; repeat the same key after a lost reservation reply |
+| `mimir operation outcome --operation-token UUID` | Read the original request, saved progress and result |
+| `mimir operation cancel --operation-token UUID` | Cancel unfinished work after an explicit user decision |
 | `mimir stats` | Print belief, pattern, and edge counts |
 | `mimir list [--project NAME] [--limit N]` | List beliefs, sorted by probability |
 | `mimir patterns [--project NAME] [--limit N]` | List patterns, sorted by success rate |
@@ -645,6 +654,7 @@ These laws model the lifecycle, not the SQL implementation itself.
 | `mimir doc load PATH [--project NAME]` | Index a markdown file for semantic search |
 | `mimir doc query CONTEXT [--project NAME] [--limit N]` | Semantic search over chunks |
 | `mimir doc clear PATH` | Remove all chunks and embeddings for a document |
+| `mimir reembed --operation-token UUID` | Resume the original saved selection of beliefs missing vectors |
 
 ## Building from source
 

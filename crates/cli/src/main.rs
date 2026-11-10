@@ -5,6 +5,7 @@ use mimir_core::{config::Config, MimirService};
 mod configuration;
 mod corrections;
 mod judge;
+mod operations;
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -14,6 +15,9 @@ mod judge;
 #[derive(Parser)]
 #[command(name = "mimir", version, about, long_about = None)]
 struct Cli {
+    /// Required for database writes and operation outcome/cancel. Reserve it with `operation reserve`.
+    #[arg(long, global = true)]
+    operation_token: Option<uuid::Uuid>,
     #[command(subcommand)]
     command: Command,
 }
@@ -97,6 +101,9 @@ mod selection_tests {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Reserve an action, inspect its saved outcome, or explicitly cancel it.
+    #[command(subcommand)]
+    Operation(operations::Command),
     /// Check compatibility or upgrade an existing configuration offline.
     #[command(subcommand)]
     Config(configuration::Command),
@@ -428,7 +435,16 @@ async fn application_main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(correction) = operations::admit(&cli) {
+        println!("{}", mimir_json::to_string(&correction)?);
+        return Ok(());
+    }
+    if operations::dispatch(&cli).await? {
+        return Ok(());
+    }
+
     match cli.command {
+        Command::Operation(_) => unreachable!("operation controls are dispatched above"),
         Command::Judge(command) => std::process::exit(judge::dispatch(command).await),
         Command::Init { pairs } => cmd_init(pairs)?,
         Command::Config(command) => configuration::dispatch(command)?,
@@ -443,22 +459,20 @@ async fn application_main() -> Result<()> {
             prefer_type,
         } => cmd_query(&text, limit, evidence, project.as_deref(), prefer_type).await?,
         Command::Evidence(cmd) => cmd_evidence(cmd).await?,
-        Command::Delete(DeleteCmd::Belief { id }) => cmd_delete(&id).await?,
-        Command::Delete(DeleteCmd::Pattern { id }) => cmd_delete_pattern(&id).await?,
-        Command::Forget { project } => cmd_forget(&project).await?,
-        Command::Decay { factor, project } => cmd_decay(factor, project.as_deref()).await?,
         Command::Contradictions { project } => cmd_contradictions(project.as_deref()).await?,
-        Command::SweepDefeated { threshold, project } => {
-            cmd_sweep_defeated(threshold, project.as_deref()).await?
-        }
-        Command::Doc(DocCmd::Load { path, project }) => cmd_load(&path, project.as_deref()).await?,
         Command::Doc(DocCmd::Query {
             context,
             project,
             limit,
         }) => cmd_query_doc(&context, project.as_deref(), limit).await?,
-        Command::Doc(DocCmd::Clear { path }) => cmd_clear_doc(&path).await?,
-        Command::Reembed => cmd_reembed().await?,
+        Command::Delete(_)
+        | Command::Forget { .. }
+        | Command::Decay { .. }
+        | Command::SweepDefeated { .. }
+        | Command::Doc(DocCmd::Load { .. } | DocCmd::Clear { .. })
+        | Command::Reembed => {
+            unreachable!("business writers require registered operation dispatch")
+        }
         Command::Intervene { id, value } => cmd_intervene(&id, value).await?,
         // Prompt/Pretooluse must never exit non-zero — discard any error
         // silently. Stop is the one exception: it can legitimately block by
@@ -719,21 +733,8 @@ async fn cmd_query(
 async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
     let svc = connect().await?;
     match cmd {
-        EvidenceCmd::Add {
-            chunk_id,
-            belief_id,
-            weight,
-        } => {
-            let chunk = chunk_id
-                .parse::<uuid::Uuid>()
-                .map_err(|_| anyhow::anyhow!("invalid chunk UUID: {}", chunk_id))?;
-            let belief = belief_id
-                .parse::<uuid::Uuid>()
-                .map_err(|_| anyhow::anyhow!("invalid belief UUID: {}", belief_id))?;
-            if corrections::reference(svc.add_evidence(belief, chunk, weight).await)?.is_none() {
-                return Ok(());
-            }
-            println!("grounded {} ← {}  (w={:.2})", belief, chunk, weight);
+        EvidenceCmd::Add { .. } => {
+            unreachable!("business writers require registered operation dispatch")
         }
         EvidenceCmd::List { belief_id } => {
             let belief = belief_id
@@ -800,107 +801,6 @@ async fn cmd_intervene(id: &str, value: f64) -> Result<()> {
 // mimir delete
 // ---------------------------------------------------------------------------
 
-async fn cmd_delete(id: &str) -> Result<()> {
-    let uuid = id
-        .parse::<uuid::Uuid>()
-        .map_err(|_| anyhow::anyhow!("invalid UUID: {}", id))?;
-
-    let svc = connect().await?;
-    if svc.delete_belief(uuid).await? {
-        println!("deleted");
-    } else {
-        println!("not found");
-    }
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// mimir delete-pattern
-// ---------------------------------------------------------------------------
-
-async fn cmd_delete_pattern(id: &str) -> Result<()> {
-    let uuid = id
-        .parse::<uuid::Uuid>()
-        .map_err(|_| anyhow::anyhow!("invalid UUID: {}", id))?;
-
-    let svc = connect().await?;
-    if svc.delete_pattern(uuid).await? {
-        println!("deleted");
-    } else {
-        println!("not found");
-    }
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// mimir forget
-// ---------------------------------------------------------------------------
-
-async fn cmd_forget(project: &str) -> Result<()> {
-    let svc = connect().await?;
-    let count = svc.delete_project(project).await?;
-    println!("deleted {}  [project: {}]", count, project);
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// mimir decay
-// ---------------------------------------------------------------------------
-
-async fn cmd_decay(factor: f64, project: Option<&str>) -> Result<()> {
-    let svc = connect().await?;
-    let count = svc.decay_beliefs(Some(factor), project).await?;
-    println!("decayed {}  [factor: {:.3}]", count, factor);
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// mimir sweep-defeated
-// ---------------------------------------------------------------------------
-
-async fn cmd_sweep_defeated(threshold: f64, project: Option<&str>) -> Result<()> {
-    let svc = connect().await?;
-    let policy = match svc.retirement_policy() {
-        Ok(policy) => policy,
-        Err(issue) => {
-            println!("{}", mimir_json::to_string(issue.correction())?);
-            return Ok(());
-        }
-    };
-    let Some(count) =
-        corrections::stored_evidence(svc.sweep_expired_defeated(threshold, project).await)?
-    else {
-        return Ok(());
-    };
-    println!(
-        "deleted {}  [threshold: {:.2}, configured grace: {}h]",
-        count,
-        threshold,
-        policy.grace_hours()
-    );
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// mimir load
-// ---------------------------------------------------------------------------
-
-async fn cmd_load(path: &str, project: Option<&str>) -> Result<()> {
-    let svc = connect().await?;
-    let count = svc.load_document(path, project).await?;
-    let proj_note = project
-        .map(|p| format!("  [project: {}]", p))
-        .unwrap_or_default();
-    println!("loaded {} chunk(s)  {}{}", count, path, proj_note);
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// mimir query-doc
-// ---------------------------------------------------------------------------
-
 fn document_result_display(result: &mimir_core::documents::QueryResult) -> String {
     let section = if result.section_path.is_empty() {
         String::new()
@@ -964,13 +864,6 @@ async fn cmd_query_doc(
 // mimir clear-doc
 // ---------------------------------------------------------------------------
 
-async fn cmd_clear_doc(path: &str) -> Result<()> {
-    let svc = connect().await?;
-    let count = svc.clear_document(path).await?;
-    println!("cleared {}  {}", count, path);
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // mimir contradictions
 // ---------------------------------------------------------------------------
@@ -1018,88 +911,6 @@ async fn cmd_contradictions(project: Option<&str>) -> Result<()> {
 // ---------------------------------------------------------------------------
 // reembed — backfill belief_embeddings
 // ---------------------------------------------------------------------------
-
-async fn cmd_reembed() -> Result<()> {
-    // Check prerequisites before startup or vector work. Report an actionable
-    // incomplete operation, never a completed count for absent vectors.
-    let cfg = Config::load()
-        .map_err(|e| anyhow::anyhow!("{e}\nRun `mimir init` to create a config file."))?;
-    if cfg.embeddings.is_none() {
-        return print_backfill_decision(&[],0,None,
-            "Embedding is not configured. Ask the user to choose or repair [embeddings] in Mimir configuration before re-embedding; do not choose a model automatically.",
-            "not_attempted",None);
-    }
-    let svc = MimirService::connect(&cfg).await?;
-
-    let beliefs = svc.list_beliefs(None).await?;
-    if beliefs.is_empty() {
-        println!("no beliefs to embed.");
-        return Ok(());
-    }
-
-    let embedded_ids: std::collections::HashSet<uuid::Uuid> =
-        svc.list_embedded_belief_ids().await?.into_iter().collect();
-
-    let mut embedded = 0_usize;
-    let mut skipped = 0_usize;
-    let mut confirmed = Vec::new();
-    for belief in &beliefs {
-        if embedded_ids.contains(&belief.id) {
-            skipped += 1;
-            continue;
-        }
-        if let Err(error) = svc.embed_and_store_belief(belief).await {
-            let preparation = error.downcast_ref::<mimir_core::preparation::PreparationRequired>();
-            let publication = if preparation.is_some()
-                || error.is::<mimir_core::store::BeliefEmbeddingTargetMissing>()
-            {
-                "not_attempted"
-            } else {
-                "unconfirmed"
-            };
-            return print_backfill_decision(
-                &confirmed,
-                skipped,
-                Some(belief.id),
-                &error.to_string(),
-                publication,
-                preparation.map(|value| value.correction()),
-            );
-        }
-        confirmed.push(belief.id);
-        embedded += 1;
-        println!("  embedded {}  {}", belief.id, &belief.content);
-    }
-
-    println!(
-        "\nembedded {embedded} belief{}; skipped {skipped} that already had vectors.",
-        if embedded == 1 { "" } else { "s" }
-    );
-    Ok(())
-}
-
-fn print_backfill_decision(
-    confirmed: &[uuid::Uuid],
-    skipped: usize,
-    current: Option<uuid::Uuid>,
-    problem: &str,
-    publication: &str,
-    correction: Option<&mimir_core::interaction::NeedsInput>,
-) -> Result<()> {
-    println!(
-        "{}",
-        mimir_json::to_string(&serde_json::json!({
-            "status":"needs_input","operation_status":"incomplete",
-            "confirmed_counts":{"embedded":confirmed.len(),"skipped":skipped},
-            "business_changes":{"embedded_belief_ids":confirmed},
-            "current_belief_id":current,"current_vector_publication":publication,
-            "problem":problem,"current_belief_correction":correction,
-            "next_action":"open_user_dialog",
-            "suggested_correction":"Explain this problem and the confirmed prior writes to the user. If the current vector outcome is unconfirmed, read it back before retrying; do not infer rollback or success from an error. Ask whether to repair the prerequisite or cancel. Do not silently change the model or report this run complete."
-        }))?
-    );
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // mimir hook prompt / pretooluse

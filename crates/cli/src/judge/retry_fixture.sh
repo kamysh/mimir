@@ -10,8 +10,9 @@ reviewed=0
 tools=$(jq -nc '
   {pending_experiences:{project:"string",limit:"integer",exclude_ids:"array"},
    learning_capabilities:{},
+   reserve_operation:{request_key:"string"},operation_outcome:{operation_token:"string"},
    get_experience:{id:"string"},
-   review_experience:{review:"object",expected_review_revision:"integer"},
+   review_experience:{review:"object",expected_review_revision:"integer",operation_token:"string"},
    experience_history:{id:"string"},
    query_relevant:{context:"string",project:"string",limit:"integer"},
    query_learning_context:{context:"string",project:"string",limit:"integer"},
@@ -21,6 +22,8 @@ tools=$(jq -nc '
    get_contradictions:{project:"string"}}
   | to_entries | map({name:.key,inputSchema:{type:"object",properties:(.value|map_values({type:.}))}})
   | map(if .name == "review_experience" then
+      .inputSchema.properties.operation_token.format = "uuid" |
+      .inputSchema.required = ["review","expected_review_revision","operation_token"] |
       .inputSchema.properties.review.properties = {
         experience_id:{type:"string"},experience_revision:{type:"integer"},
         reviewer:{type:"string"},rationale:{type:"string"},
@@ -70,6 +73,8 @@ while IFS= read -r request; do
         tools/list) result=$(jq -nc --argjson tools "$tools" '{tools:$tools}') ;;
         tools/call)
             case "$(jq -r '.params.name' <<< "$request")" in
+                reserve_operation) value='{"status":"reserved","operation_token":"00000000-0000-0000-0000-000000000001","reserved_at":"2026-01-01T00:00:00Z"}' ;;
+                operation_outcome) value='{"status":"reserved"}' ;;
                 learning_capabilities)
                     value='{"contract_version":3,"assessment_model_version":1,"source_coverage":true,"typed_learning_items":true,"revision_owned_assessments":true,"legacy_graph_probability_unchanged":true}'
                     if [[ "$mode" == "bad-capabilities" ]]; then
@@ -89,7 +94,7 @@ while IFS= read -r request; do
                       [.candidate_feedback[]?.target.candidate_key | select(. != null)] as $referenced |
                       ($referenced - $declared | length) == 0' <<< "$request" >/dev/null; then
                         error='{"code":-32000,"message":"candidate belief reference must be declared in this review","data":{"kind":"undeclared_candidate","fault":{"path":["candidates"],"code":"missing_reference","message":"candidate belief reference must be declared in this review"}}}'
-                    else reviewed=1; value='{"review_revision":1}'; fi ;;
+                    else reviewed=1; value='{"status":"completed","result":{"review_revision":1}}'; fi ;;
                 query_relevant) error='{"code":-32000,"message":"private fixture database detail"}' ;;
                 query_document) value='[]' ;;
                 *) error='{"code":-32601,"message":"unexpected fixture tool"}' ;;

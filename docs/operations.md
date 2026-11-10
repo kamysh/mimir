@@ -49,12 +49,16 @@ Literal identifiers and error codes remain useful keyword queries. See
 ## Closing an MCP session
 
 The server watches client input while a request is running. Closing the
-connection cancels the unfinished request and discards queued requests. An
-owned local embedding worker is terminated and reaped before the server returns;
-requests that remain connected still run in arrival order.
+connection drops unfinished requests and discards requests not yet started. An
+owned local embedding worker is terminated and reaped before the server returns.
+Requests can run concurrently, so an explicit cancellation does not wait behind
+a blocked provider. Replies retain their request IDs and may arrive out of order.
 
-Disconnect does not undo changes already committed to the database. Read back
-the affected work before retrying a write whose response was lost.
+Disconnect does not undo changes already committed to the database or durably
+cancel the intended action. Read `operation_outcome` with its original token
+before retrying a write whose response was lost. See the
+[operation protocol](OPERATION-PROTOCOL.md) for explicit cancellation and the
+scope of worker-cleanup confirmation.
 
 `mimir reembed` also watches its current belief while embedding. Deleting that
 belief or its project stops the unfinished embedding call and reaps its local

@@ -4,6 +4,7 @@ pub mod config;
 pub mod db;
 mod document_service;
 mod operation_ownership;
+pub mod operation_reporting;
 mod registered_dispatch;
 pub use operation_ownership::OperationCancellation;
 pub use registered_dispatch::WriteAdmissionIssue;

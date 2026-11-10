@@ -68,5 +68,30 @@ its original request ID; response frames are written without interleaving.
 Closing the connection drops every active request and its owned worker before
 the server returns.
 
-Public CLI and background routing is tracked in #86. Source changes do not
-upgrade installed binaries or configuration by themselves.
+The CLI uses the same operation identity and saved-answer format. For example:
+
+```sh
+mimir operation reserve forget-my-project
+# Keep the operation_token printed above, then supply it to the intended write:
+mimir forget my-project --operation-token UUID
+mimir operation outcome --operation-token UUID
+```
+
+Use the returned UUID in place of `UUID`. If the reservation reply is lost,
+repeat `mimir operation reserve forget-my-project` to recover the same token.
+If the write reply is lost, repeat the exact write with that token. Every CLI
+database write requires this flag, including document indexing, evidence,
+decay, sweeping and reembedding. Missing or malformed flags return correction
+guidance before reading configuration or opening the database. Read-only
+commands reject an unrelated operation token. `operation cancel` requires the
+same flag and an explicit user decision.
+
+The judge host supplies its review token; the reviewing model does not choose
+one. The reservation key identifies the experience, its source revision and
+the expected review revision. Retries and client restarts retain this same
+action. A changed proposal cannot silently reserve replacement work. The
+review tool shown to the model omits the host-owned field and the guidance
+explains who supplies it. The model cannot call cancellation through the
+judge's restricted tool list.
+
+Source changes do not upgrade installed binaries or configuration by themselves.

@@ -431,6 +431,22 @@ fn checked_tools(result: &Value) -> Result<Vec<Value>> {
         .as_array()
         .ok_or_else(|| anyhow!("invalid MCP tool list"))?;
     let mut allowed = Vec::new();
+    // Reservation is host-owned; the model cannot switch tokens to bypass an
+    // unfinished review. The host keeps a stable key for the pinned action.
+    for (name, field) in [
+        ("reserve_operation", "request_key"),
+        ("operation_outcome", "operation_token"),
+    ] {
+        let schema = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .and_then(|tool| tool.get("inputSchema"))
+            .ok_or_else(|| anyhow!("required MCP operation control unavailable: {name}"))?;
+        ensure!(
+            schema["properties"][field]["type"] == "string",
+            "unsupported MCP operation control schema: {name}"
+        );
+    }
     for (name, required) in [
         (
             "pending_experiences",
@@ -507,6 +523,19 @@ fn checked_tools(result: &Value) -> Result<Vec<Value>> {
             );
         }
         if name == "review_experience" {
+            ensure!(
+                schema["properties"]["operation_token"]["type"] == "string"
+                    && schema["properties"]["operation_token"]["format"] == "uuid",
+                "review_experience must require the host's PostgreSQL operation token"
+            );
+            ensure!(
+                schema["required"]
+                    .as_array()
+                    .is_some_and(|required| required
+                        .iter()
+                        .any(|field| field == "operation_token")),
+                "review_experience is missing its required operation token"
+            );
             for (key, kind) in [
                 ("experience_id", "string"),
                 ("experience_revision", "integer"),
@@ -558,6 +587,19 @@ fn checked_tools(result: &Value) -> Result<Vec<Value>> {
     }
     Ok(allowed
         .into_iter()
+        .map(|mut tool| {
+            if tool["name"] == "review_experience" {
+                tool["inputSchema"]["properties"]
+                    .as_object_mut()
+                    .expect("checked review properties")
+                    .remove("operation_token");
+                tool["inputSchema"]["required"]
+                    .as_array_mut()
+                    .expect("checked required fields")
+                    .retain(|field| field != "operation_token");
+            }
+            tool
+        })
         .map(mimir_json::Document::into_value)
         .collect())
 }

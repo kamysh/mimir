@@ -1,6 +1,6 @@
 # Registered backfill
 
-The internal `reembed_operation` path keeps the original selected beliefs and
+The CLI `reembed --operation-token UUID` path keeps the original selected beliefs and
 model settings. Each vector and its saved item answer commit together. The last
 item also commits the original embedded/skipped totals. A retry reads those
 answers instead of repeating completed embedding work or selecting new beliefs.
@@ -28,5 +28,7 @@ the saved totals to match the item answers. A stopped preparation cannot claim
 successful embedding.
 
 Focused native tests check the database changes and event-driven cancellation.
-Public CLI/MCP token routing remains separate work in #85 and #86; the existing
-`mimir reembed` command does not yet use this internal registered path.
+Reserve the action with `mimir operation reserve REQUEST_KEY`, then use its
+returned token with `mimir reembed --operation-token UUID`. Preserve both across
+retries; omitted tokens produce correction guidance before configuration is
+loaded. Use `mimir operation outcome --operation-token UUID` to inspect progress.

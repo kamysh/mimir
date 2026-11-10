@@ -87,7 +87,10 @@ async fn missing_references_ask_for_lookup_without_changes_and_keep_clients_usab
         cases.push(("add_evidence", json!({"belief_id":missing,"chunk_id":chunk_id}), "belief_id"));
         cases.push(("query_intervention", json!({"id":missing,"value":0.5}), "id"));
         let mut intervention = None;
-        for (index, (name, arguments, field)) in cases.into_iter().enumerate() {
+        for (index, (name, mut arguments, field)) in cases.into_iter().enumerate() {
+            if mimir_core::operation_catalogue::Operation::ALL.iter().any(|operation|operation.name()==name && operation.registered_write().is_some()) {
+                arguments["operation_token"]=json!(service.reserve_operation(&format!("mcp-reference-{suffix}-{index}")).await?.operation_token);
+            }
             let request = json!({"jsonrpc":"2.0","id":index,"method":"tools/call","params":{"name":name,"arguments":arguments}});
             input.write_all(format!("{request}\n").as_bytes()).await?;
             input.flush().await?;
@@ -100,8 +103,10 @@ async fn missing_references_ask_for_lookup_without_changes_and_keep_clients_usab
             ensure!(issue.fault().code == Code::MissingReference && issue.fault().path == vec![Segment::Key(field.into())]);
             ensure!(issue.suggested_correction().contains("query_") && issue.suggested_correction().contains("user"));
             if name == "add_evidence" {
+                let cli_token=service.reserve_operation(&format!("cli-reference-{suffix}-{index}")).await?.operation_token.to_string();
                 let cli = tokio::process::Command::new(env!("CARGO_BIN_EXE_mimir"))
                     .args(["evidence", "add", arguments["chunk_id"].as_str().unwrap(), arguments["belief_id"].as_str().unwrap()])
+                    .args(["--operation-token",&cli_token])
                     .output().await?;
                 ensure!(cli.status.success(), "CLI grounding did not offer a correction: {}", String::from_utf8_lossy(&cli.stderr));
                 let cli_decision: NeedsInput = mimir_json::from_slice(&cli.stdout)?;
@@ -120,14 +125,17 @@ async fn missing_references_ask_for_lookup_without_changes_and_keep_clients_usab
         // Reads and idempotent deletion retain their advertised absence results.
         // The same MCP connection remains usable after every correction.
         for (name, expected) in [("get_belief", Value::Null), ("delete_belief", json!({"deleted":false}))] {
-            let request = json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":{"id":missing}}});
+            let mut arguments=json!({"id":missing});
+            if name=="delete_belief" {arguments["operation_token"]=json!(service.reserve_operation(&format!("missing-delete-{suffix}")).await?.operation_token);}
+            let request = json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":arguments}});
             input.write_all(format!("{request}\n").as_bytes()).await?;
             input.flush().await?;
             let mut line = String::new();
             ensure!(output.read_line(&mut line).await? != 0);
             let response: Value = mimir_json::from_str(&line)?;
             let result: Value = mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
-            ensure!(result == expected, "advertised absence meaning changed: {response}");
+            let business=if name=="delete_belief" {&result["result"]} else {&result};
+            ensure!(business == &expected, "advertised absence meaning changed: {response}");
         }
         Ok::<_, anyhow::Error>(())
     }.await;
