@@ -352,7 +352,7 @@ pub struct RegisteredStep {
 }
 impl OperationPlan {
     pub(crate) fn captured(&self) -> Option<&Value> {
-        self.inner.stored.capture.as_ref().map(|value| &**value)
+        self.inner.stored.capture.as_deref()
     }
     pub(crate) fn original_request(&self) -> &OperationBindingRequest {
         &self.inner.binding.request

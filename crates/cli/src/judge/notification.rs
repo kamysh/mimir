@@ -29,9 +29,9 @@ pub(super) enum Job {
     #[cfg(test)]
     Idle(tokio::sync::oneshot::Sender<()>),
     Alert {
-        email: EmailConfig,
+        email: Box<EmailConfig>,
     },
-    Digest(CalendarJob),
+    Digest(Box<CalendarJob>),
 }
 
 /// Own one consumer; queue admission never waits for SMTP or OAuth.
@@ -103,7 +103,7 @@ impl Worker {
                     continue;
                 }
                 if let Job::Alert { email: replacement } = job {
-                    email = replacement;
+                    email = *replacement;
                     scan = true;
                     continue;
                 }
@@ -165,7 +165,7 @@ impl Worker {
         // cannot retract successful admission or turn a review into a failure.
         if self
             .send(Job::Alert {
-                email: settings.email.clone(),
+                email: Box::new(settings.email.clone()),
             })
             .is_err()
         {
@@ -235,15 +235,18 @@ async fn deliver(job: Job) -> Result<Option<bool>> {
         #[cfg(test)]
         Job::Idle(_) => unreachable!("test readiness is handled before delivery"),
         Job::Alert { .. } => unreachable!("alert wake-ups are handled before delivery"),
-        Job::Digest(CalendarJob {
-            email,
-            database,
-            path,
-            outcome,
-            time,
-        }) => super::digest::tick(&email, &database, Some(&path), &outcome, time)
-            .await
-            .map(Some),
+        Job::Digest(job) => {
+            let CalendarJob {
+                email,
+                database,
+                path,
+                outcome,
+                time,
+            } = *job;
+            super::digest::tick(&email, &database, Some(&path), &outcome, time)
+                .await
+                .map(Some)
+        }
     }
 }
 
@@ -492,14 +495,15 @@ mod tests {
         assert!(poll_fn(|cx| std::task::Poll::Ready(server.poll_accept(cx).is_pending())).await);
         let mut report = Report::new("blocked", 1, 0, 0, 1, 0);
         // This path has no reference to Worker and cannot send it a channel job.
-        let save = notify_with(Mode::Standalone, &settings, &state, &mut report);
-        tokio::pin!(save);
-        let std::task::Poll::Ready(Ok(())) =
-            poll_fn(|cx| std::task::Poll::Ready(save.as_mut().poll(cx))).await
-        else {
-            panic!("standalone notification was not saved immediately")
-        };
-        drop(save);
+        {
+            let save = notify_with(Mode::Standalone, &settings, &state, &mut report);
+            tokio::pin!(save);
+            let std::task::Poll::Ready(Ok(())) =
+                poll_fn(|cx| std::task::Poll::Ready(save.as_mut().poll(cx))).await
+            else {
+                panic!("standalone notification was not saved immediately")
+            };
+        }
         let (transport, _) = server.accept().await.unwrap();
         // A failed exchange stays pending without a timer or self-triggered
         // delivery loop. An explicit SIGHUP requests the next attempt.

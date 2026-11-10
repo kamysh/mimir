@@ -593,7 +593,7 @@ async fn cmd_list(project: Option<String>, limit: mimir_core::Selection) -> Resu
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            &b.content,
+            b.content,
             mt,
             proj,
         );
@@ -632,8 +632,8 @@ async fn cmd_patterns(project: Option<String>, limit: mimir_core::Selection) -> 
             "{}  rate={:.3}  [{}] → [{}]",
             p.id,
             p.success_rate.value(),
-            &p.situation,
-            &p.approach,
+            p.situation,
+            p.approach,
         );
     }
 
@@ -678,7 +678,7 @@ async fn cmd_query(
                 b.id,
                 b.probability.value(),
                 b.confidence.value(),
-                &b.content,
+                b.content,
                 proj,
             );
             for e in &gb.evidence {
@@ -688,7 +688,7 @@ async fn cmd_query(
                     format!(" § {}", e.section_path.join(" > "))
                 };
                 println!("    ↳ w={:.2}  {}{}", e.weight, e.document_path, section,);
-                println!("        {}", &e.snippet);
+                println!("        {}", e.snippet);
             }
         }
         return Ok(());
@@ -718,7 +718,7 @@ async fn cmd_query(
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            &b.content,
+            b.content,
             proj,
         );
     }
@@ -755,7 +755,7 @@ async fn cmd_evidence(cmd: EvidenceCmd) -> Result<()> {
                     "{}  w={:.2}  {}{}",
                     e.chunk_id, e.weight, e.document_path, section
                 );
-                println!("    {}", &e.snippet);
+                println!("    {}", e.snippet);
             }
         }
     }
@@ -970,7 +970,7 @@ async fn cmd_hook_set_project(name: &str) -> Result<()> {
                     working.len()
                 );
                 for b in &working {
-                    println!("  {}  {}", b.id, &b.content);
+                    println!("  {}  {}", b.id, b.content);
                 }
             }
         }
@@ -1078,7 +1078,7 @@ async fn cmd_hook_stop(project: Option<&str>) -> Result<()> {
         working.len()
     );
     for b in &working {
-        msg.push_str(&format!("  {}  {}\n", b.id, &b.content));
+        msg.push_str(&format!("  {}  {}\n", b.id, b.content));
     }
     eprintln!("{}", msg.trim_end());
     std::process::exit(2);
@@ -1175,7 +1175,7 @@ async fn cmd_hook_pretooluse() -> Result<()> {
             b.id,
             b.probability.value(),
             b.confidence.value(),
-            &b.content,
+            b.content,
             proj,
         ));
     }

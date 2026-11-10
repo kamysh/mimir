@@ -245,10 +245,10 @@ async fn report_error(
         Some(value.correction())
     } else if let Some(value) = error.downcast_ref::<mimir_core::interaction::RequestCorrection>() {
         Some(value.correction())
-    } else if let Some(value) = error.downcast_ref::<mimir_core::config::RetirementIssue>() {
-        Some(value.correction())
     } else {
-        None
+        error
+            .downcast_ref::<mimir_core::config::RetirementIssue>()
+            .map(|value| value.correction())
     };
     if let Some(correction) = correction {
         return print(mimir_json::to_value(correction)?);

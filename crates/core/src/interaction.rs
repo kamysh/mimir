@@ -152,6 +152,12 @@ impl NeedsInput {
     pub fn message(&self) -> &str {
         &self.0.message
     }
+    /// Only the initial pure admission path may certify that no immutable
+    /// request was bound. Preserve each domain fault and its repair guidance.
+    pub(crate) fn before_binding(mut self) -> Self {
+        self.0.message="Correct the indicated fields and retry using the same reserved operation token. No request was bound and no business data changed. Ask the user if an intended value is unknown.".into();
+        self
+    }
 
     fn checked(wire: WireResponse) -> Result<Self> {
         ensure!(

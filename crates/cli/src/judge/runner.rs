@@ -179,12 +179,21 @@ async fn scoped_tool(
             );
             // The model never chooses reviewer identity.
             review.reviewer = "mimir-judge".into();
-            review.validate().map_err(|error| {
-                InputRejected(format!(
+            if let Err(error) = review.validate() {
+                if let Some(correction) =
+                    error.downcast_ref::<mimir_core::interaction::RequestCorrection>()
+                {
+                    // This pure validation precedes reservation and dispatch.
+                    // Keep the field, expected input and repair together in
+                    // the same normal correction dialogue as MCP admission.
+                    return Ok(mimir_json::to_value(correction.correction())?);
+                }
+                return Err(InputRejected(format!(
                     "{error}. {}",
                     super::evidence::guidance(&selected.experience)
                 ))
-            })?;
+                .into());
+            }
             // Source validation needs PostgreSQL-assigned item IDs and resolved
             // assessment keys. The service performs it after allocation, inside
             // the review transaction; the judge forwards the raw keyed input.
@@ -616,11 +625,7 @@ async fn run_inner<B: Backend>(
                 )?;
             }
             let action = match backend
-                .next(
-                    selected,
-                    last.as_ref().map(|v| &**v),
-                    client.allowed_tools(),
-                )
+                .next(selected, last.as_deref(), client.allowed_tools())
                 .await
             {
                 Ok(action) => action,
@@ -1186,10 +1191,24 @@ mod tests {
             Box::pin(async move {
                 if self.calls > 0 {
                     let feedback = last.ok_or_else(|| anyhow!("missing validation feedback"))?;
-                    ensure!(feedback["error"] == "invalid_tool_arguments");
-                    ensure!(feedback["message"]
-                        .as_str()
-                        .is_some_and(|text| text.contains("declared in this review")));
+                    let correction: mimir_core::interaction::NeedsInput =
+                        mimir_json::decode_ref(feedback)?;
+                    use mimir_core::validation::{Code, Segment};
+                    ensure!(
+                        correction.issues().iter().any(|issue| issue.fault().code
+                            == Code::MissingReference
+                            && issue.fault().path
+                                == vec![
+                                    Segment::Key("review".into()),
+                                    Segment::Key("candidate_feedback".into()),
+                                    Segment::Index(0),
+                                    Segment::Key("target".into()),
+                                    Segment::Key("candidate_key".into())
+                                ]
+                            && !issue.expected().is_empty()
+                            && issue.suggested_correction().contains("belief_id")),
+                        "candidate correction lost its location or repair"
+                    );
                 }
                 self.calls += 1;
                 if !self.correct && self.calls == 4 {
@@ -1400,12 +1419,25 @@ mod tests {
                         .unwrap();
                 }
             }
-            assert!(
-                scoped_tool(&mut client, &selected, "review_experience", invalid)
-                    .await
-                    .is_err(),
-                "{path}"
-            );
+            let rejected = scoped_tool(&mut client, &selected, "review_experience", invalid).await;
+            if path == "key" {
+                let value = rejected.expect("missing item key requests correction before MCP");
+                let correction: mimir_core::interaction::NeedsInput =
+                    mimir_json::decode_ref(&value).unwrap();
+                use mimir_core::validation::Segment;
+                assert_eq!(
+                    correction.issues()[0].fault().path,
+                    vec![
+                        Segment::Key("review".into()),
+                        Segment::Key("extracted_items".into()),
+                        Segment::Index(0),
+                        Segment::Key("key".into())
+                    ]
+                );
+                assert!(!correction.issues()[0].suggested_correction().is_empty());
+            } else {
+                assert!(rejected.is_err(), "{path}");
+            }
         }
 
         scoped_tool(
@@ -1647,13 +1679,22 @@ mod tests {
                 "invalid review must not reach MCP"
             );
             if !correct {
-                assert_eq!(report.block_reason.as_deref(), Some("tool_rejected"));
+                assert_eq!(report.block_reason.as_deref(), Some("needs_input"));
                 assert_eq!(report.pending, 1);
                 assert!(report.deferred_reviews.is_empty());
-                assert!(report
-                    .diagnostic
-                    .as_ref()
-                    .is_some_and(|value| value.detail.contains("declared in this review")));
+                let correction: mimir_core::interaction::NeedsInput = mimir_json::from_str(
+                    &report
+                        .diagnostic
+                        .as_ref()
+                        .expect("retain unresolved correction")
+                        .detail,
+                )
+                .expect("retain the complete correction response");
+                assert_eq!(
+                    correction.issues()[0].fault().code,
+                    mimir_core::validation::Code::MissingReference
+                );
+                assert!(!correction.issues()[0].suggested_correction().is_empty());
             } else {
                 assert!(report.diagnostic.is_none());
             }
@@ -1684,7 +1725,7 @@ mod tests {
                             let value =
                                 last.ok_or_else(|| anyhow!("missing correction feedback"))?;
                             let correction: mimir_core::interaction::NeedsInput =
-                                mimir_json::decode_ref(&value)?;
+                                mimir_json::decode_ref(value)?;
                             ensure!(
                                 correction.issues().iter().any(|item| item.fault().path
                                     == vec![mimir_core::validation::Segment::Key("limt".into())]),
@@ -1786,7 +1827,7 @@ mod tests {
                 Box::pin(async move {
                     if let Some(value) = last {
                         let correction: mimir_core::interaction::NeedsInput =
-                            mimir_json::decode_ref(&value)?;
+                            mimir_json::decode_ref(value)?;
                         ensure!(correction.issues()[0]
                             .suggested_correction()
                             .contains("Open a dialog"));

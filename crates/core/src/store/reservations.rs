@@ -95,42 +95,6 @@ fn decode(row: Row) -> Result<OperationReservation> {
     })
 }
 
-#[cfg(test)]
-mod json_ownership_tests {
-    use super::*;
-    #[test]
-    fn deep_json_binding_copy_format_and_rejection_keep_owned_values_safe() {
-        std::thread::Builder::new()
-            .stack_size(256 * 1024)
-            .spawn(|| {
-                let text = format!(
-                    r#"{{"nested":{}null{}}}"#,
-                    "[".repeat(10000),
-                    "]".repeat(10000)
-                );
-                let request = OperationBindingRequest::new(
-                    "operation".into(),
-                    mimir_json::parse(&text).unwrap().into_value(),
-                    serde_json::json!({}),
-                )
-                .unwrap();
-                let copy = request.clone();
-                assert_eq!(request, copy);
-                assert!(format!("{request:?}").contains("nested"));
-                assert!(mimir_json::to_string(&request).unwrap().contains("nested"));
-                assert!(OperationBindingRequest::new(
-                    " ".into(),
-                    mimir_json::parse(&text).unwrap().into_value(),
-                    serde_json::json!({})
-                )
-                .is_err());
-            })
-            .unwrap()
-            .join()
-            .unwrap();
-    }
-}
-
 impl AgeStore {
     /// A lost acknowledgement must be read back with the same token. Never
     /// allocate a replacement token or overwrite the earlier request here.
@@ -220,5 +184,41 @@ impl AgeStore {
             "SELECT operation_token, reserved_at FROM mimir_operation_reservations WHERE operation_token=$1",
             &[&token],
         ).await?.map(decode).transpose()
+    }
+}
+
+#[cfg(test)]
+mod json_ownership_tests {
+    use super::*;
+    #[test]
+    fn deep_json_binding_copy_format_and_rejection_keep_owned_values_safe() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let text = format!(
+                    r#"{{"nested":{}null{}}}"#,
+                    "[".repeat(10000),
+                    "]".repeat(10000)
+                );
+                let request = OperationBindingRequest::new(
+                    "operation".into(),
+                    mimir_json::parse(&text).unwrap().into_value(),
+                    serde_json::json!({}),
+                )
+                .unwrap();
+                let copy = request.clone();
+                assert_eq!(request, copy);
+                assert!(format!("{request:?}").contains("nested"));
+                assert!(mimir_json::to_string(&request).unwrap().contains("nested"));
+                assert!(OperationBindingRequest::new(
+                    " ".into(),
+                    mimir_json::parse(&text).unwrap().into_value(),
+                    serde_json::json!({})
+                )
+                .is_err());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

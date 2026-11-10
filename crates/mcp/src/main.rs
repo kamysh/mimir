@@ -817,7 +817,7 @@ async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
 
     let response = mimir_json::Document::new(match method {
         "initialize" => ok_response(
-            &id,
+            id,
             json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": {} },
@@ -825,7 +825,7 @@ async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
             }),
         ),
 
-        "tools/list" => ok_response(&id, json!({ "tools": catalogue.advertised() })),
+        "tools/list" => ok_response(id, json!({ "tools": catalogue.advertised() })),
 
         "tools/call" => match admission::tool_parameters(params) {
             Err(correction) => envelope::invalid_params(id, correction),
@@ -833,12 +833,12 @@ async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
                 Ok(result) => {
                     let result = mimir_json::Document::new(result);
                     ok_response(
-                        &id,
+                        id,
                         json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
                     )
                 }
                 Err(e) => {
-                    let mut response = err_response(&id, -32000, &e.to_string());
+                    let mut response = err_response(id, -32000, &e.to_string());
                     if let Some(refusal) = e.downcast_ref::<mimir_core::validation::Refusal>() {
                         response["error"]["data"] = mimir_json::to_value(refusal)?;
                     }
@@ -849,7 +849,7 @@ async fn exchange_line<W: tokio::io::AsyncWrite + Unpin>(
 
         other => {
             error!("unknown method: {}", other);
-            err_response(&id, -32601, "Method not found")
+            err_response(id, -32601, "Method not found")
         }
     });
 

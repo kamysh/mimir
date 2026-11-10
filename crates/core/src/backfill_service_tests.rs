@@ -1,7 +1,5 @@
-#[allow(dead_code)]
-#[path = "../../../tests/support/isolation.rs"]
-mod isolation;
 use super::*;
+use crate::test_isolation as isolation;
 use crate::{
     config::{Config, EmbeddingBackend, EmbeddingsConfig},
     embed::{EmbedFuture, EmbeddingCancellation, EmbeddingProvider, OwnedEmbeddingBackend},

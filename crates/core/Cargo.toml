@@ -3,6 +3,11 @@ name = "mimir-core"
 version = "2.3.0"
 edition = "2021"
 
+[features]
+# Explicitly instrumented test binaries only. Normal builds do not read the
+# test controller environment or connect to its socket.
+test-boundaries = []
+
 [dependencies]
 futures-util = "0.3.34"
 mimir-json = { path = "../json" }

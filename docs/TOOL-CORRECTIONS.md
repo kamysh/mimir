@@ -21,8 +21,13 @@ This law covers input rejected before execution. A later user decision after
 embedding or grounding preparation is a separate workflow in #95–#100; it may
 have performed reads and preparation while leaving the stored world unchanged.
 
-This changes the existing MCP handler and composition contracts for #208. It
-matches the already implemented correction flow and prepares the retention
-policy precheck in #207. It does not complete the mandatory recovery dispatcher
-or the remaining physical database correspondence in #74/#76/#153. Native
-source is unchanged.
+The original #208 change connected the MCP handler and composition contracts
+to this correction flow. Mandatory recovery dispatch and physical database
+correspondence remain separate obligations in #74/#76/#153.
+
+The judge also preserves these structured corrections when its own pure review
+validation finds the problem before contacting MCP. For example, feedback that
+names an undeclared candidate retains the full field path, the allowed target
+forms and the suggested repair. The model can declare the intended candidate
+and continue the same review dialogue. If it stops before fixing the request,
+the report retains that correction as `needs_input`; no review is confirmed.

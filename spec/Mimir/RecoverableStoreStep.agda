@@ -348,3 +348,176 @@ module Admitted (Input Diagnostic : Set)
 
   module Core = AtomicStep Input Diagnostic execute stable expectedPhysical
   open Core public hiding (Reply)
+
+-- The same saved final step with metadata observed by the committing statement,
+-- rather than supplied in the public request. Admission, address and original
+-- reply do not depend on a later clock sample. This is the receipt adapter used
+-- by the registered posterior writers; the selected business module fixes its
+-- meaning below, and an observation function only exhibits progress.
+module Observed (Metadata Diagnostic : Set)
+  (key : ℕ → Text) (distinct : ∀ token → ¬ (key token ≡ resultKey))
+  (decide : ℕ → Metadata → Store.World → Diagnostic ⊎ (Store.World × Wire.Value))
+  (keepsJournal : ∀ token metadata before changed reply → decide token metadata before ≡ inj₂ (changed , reply) →
+    Store.World.operations changed ≡ Store.World.operations before)
+  (admit : ℕ → Registration → Maybe Diagnostic)
+  (available : ℕ → Store.World → Metadata) where
+
+  module Saved = Admitted (ℕ × Metadata) Diagnostic proj₁ (λ input → key (proj₁ input))
+    (λ input → distinct (proj₁ input)) (λ input → decide (proj₁ input) (proj₂ input))
+    (λ input → keepsJournal (proj₁ input) (proj₂ input)) (λ input → admit (proj₁ input))
+  module K = Saved.Kernel
+
+  record OriginalAnswer (token : ℕ) (after : Store.World) (reply : Wire.Value) : Set where
+    constructor originalAnswer
+    field active : Store.lookupCancellation after token ≡ nothing
+          step : Store.lookupSaved after token (key token) ≡ just reply
+          final : Σ Wire.Value (λ value → Store.lookupSaved after token resultKey ≡ just value)
+
+  kernelDone : ∀ token metadata before reply →
+    proj₂ (K.execute (token , metadata) before) ≡ done reply →
+    OriginalAnswer token (proj₁ (K.execute (token , metadata) before)) reply
+  kernelDone token metadata before reply completed with Store.lookupCancellation before token in active
+  ... | just _ with completed
+  ... | ()
+  kernelDone token metadata before reply completed | nothing
+    with Store.lookupSaved before token (key token) in step | Store.lookupSaved before token resultKey in final
+  ... | just saved | just value with completed
+  ... | refl = originalAnswer active step (value , final)
+  kernelDone token metadata before reply () | nothing | just _ | nothing
+  kernelDone token metadata before reply () | nothing | nothing | just _
+  kernelDone token metadata before reply completed | nothing | nothing | nothing
+    with decide token metadata before in accepted
+  ... | inj₁ _ with completed
+  ... | ()
+  kernelDone token metadata before reply completed | nothing | nothing | nothing | inj₂ (changed , value) with completed
+  ... | refl = originalAnswer
+    (trans (K.publicationKeepsCancellation (token , metadata) before changed value accepted) active)
+    (K.publishedStepReadable (token , metadata) before changed value accepted step)
+    (value , K.publishedResultReadable (token , metadata) before changed value accepted final)
+
+  kernelStableDone : ∀ token first second before value →
+    proj₂ (K.execute (token , first) before) ≡ done value →
+    K.execute (token , second) (proj₁ (K.execute (token , first) before)) ≡ K.execute (token , first) before
+  kernelStableDone token first second before value completed = trans
+    (K.replay (token , second) _ value (proj₁ (OriginalAnswer.final saved))
+      (OriginalAnswer.active saved) (OriginalAnswer.step saved) (proj₂ (OriginalAnswer.final saved)))
+    (cong (λ reply → proj₁ (K.execute (token , first) before) , reply) (sym completed))
+    where saved = kernelDone token first before value completed
+
+  executesAdmitted : ∀ token metadata before → admit token (registration before) ≡ nothing →
+    Saved.execute (token , metadata) before ≡ K.execute (token , metadata) before
+  executesAdmitted token metadata before admitted rewrite admitted = refl
+
+  doneStable : ∀ token first second before value →
+    proj₂ (Saved.execute (token , first) before) ≡ done value →
+    Saved.execute (token , second) (proj₁ (Saved.execute (token , first) before)) ≡ Saved.execute (token , first) before
+  doneStable token first second before value completed with admit token (registration before) in admitted
+  ... | just _ with completed
+  ... | ()
+  doneStable token first second before value completed | nothing = trans
+    (executesAdmitted token second (proj₁ (K.execute (token , first) before))
+      (trans (cong (admit token) (K.registrationUnchanged (token , first) before)) admitted))
+    (kernelStableDone token first second before value completed)
+
+  Effect = ℕ
+  Reply : Effect → Set
+  Reply _ = Metadata × Result Diagnostic
+  Atomic : Store.World → (token : Effect) → Reply token → Store.World → Set
+  Atomic before token (metadata , reply) after = Saved.Atomic before (token , metadata) reply after
+  module X = Recovery.Execution Store.World Effect Reply Atomic
+  module E = X.E
+
+  script : ℕ → E.Script (Result Diagnostic)
+  script token = E.ask token (λ reply → E.done (proj₂ reply))
+  completedObservation : ∀ token before after reply → X.Completed (script token) before after reply →
+    Σ Metadata (λ metadata → (after , reply) ≡ Saved.execute (token , metadata) before)
+  completedObservation token before after reply
+    (X.completed _ (E.replied _ _ (metadata , _) (E.returned _))
+      (X.changed _ _ _ _ physical (X.unchanged _))) =
+    metadata , Saved.atomicObservation (token , metadata) before after reply physical
+
+  data InterruptOutcome (token : ℕ) (before after : Store.World) : Set where
+    unchanged : after ≡ before → InterruptOutcome token before after
+    published : ∀ metadata value → (after , done value) ≡ Saved.execute (token , metadata) before →
+      InterruptOutcome token before after
+
+  interruptedAtomic : ∀ token before after metadata reply → Atomic before token (metadata , reply) after →
+    InterruptOutcome token before after
+  interruptedAtomic token before after metadata (done value) physical =
+    published metadata value (Saved.atomicObservation (token , metadata) before after (done value) physical)
+  interruptedAtomic token before .before metadata (needsInput _) (observed , DB.abortedNone) = unchanged refl
+  interruptedAtomic token before .before metadata needsRecovery (observed , DB.abortedNone) = unchanged refl
+  interruptedAtomic token before .before metadata (cancelled _) (observed , DB.abortedNone) = unchanged refl
+
+  interruptionState : ∀ token before after → X.Interrupted (script token) before after → InterruptOutcome token before after
+  interruptionState token before after (X.atPrefix _ _ _ (E.stopped _) (X.unchanged _)) = unchanged refl
+  interruptionState token before after
+    (X.atPrefix _ _ _ (E.replied _ _ (metadata , reply) (E.stopped _))
+      (X.changed _ _ _ _ physical (X.unchanged _))) = interruptedAtomic token before after metadata reply physical
+  interruptionState token before after
+    (X.beforeReply _ _ _ _ (metadata , reply) _ (E.stopped _) (X.unchanged _) physical) =
+    interruptedAtomic token before after metadata reply physical
+  interruptionState token before after (X.beforeReply _ _ _ _ _ _ (E.replied _ _ _ ()) _ _)
+
+  registrationUnchanged : ∀ token metadata before →
+    registration (proj₁ (Saved.execute (token , metadata) before)) ≡ registration before
+  registrationUnchanged token metadata before with admit token (registration before)
+  ... | just _ = refl
+  ... | nothing = K.registrationUnchanged (token , metadata) before
+
+  atomicKeepsRegistration : ∀ before token observed after → Atomic before token observed after →
+    registration after ≡ registration before
+  atomicKeepsRegistration before token (metadata , reply) after physical = trans
+    (cong (λ outcome → registration (proj₁ outcome)) (Saved.atomicObservation (token , metadata) before after reply physical))
+    (registrationUnchanged token metadata before)
+
+  changesKeepRegistration : ∀ {before events after} → X.Changes before events after → registration after ≡ registration before
+  changesKeepRegistration (X.unchanged _) = refl
+  changesKeepRegistration (X.changed before token observed middle physical later) =
+    trans (changesKeepRegistration later) (atomicKeepsRegistration before token observed middle physical)
+
+  interruptedKeepsRegistration : ∀ token before after → X.Interrupted (script token) before after →
+    registration after ≡ registration before
+  interruptedKeepsRegistration token before after (X.atPrefix _ _ _ _ physical) = changesKeepRegistration physical
+  interruptedKeepsRegistration token before after (X.beforeReply _ effect _ middle observed _ _ previous active) =
+    trans (atomicKeepsRegistration middle effect observed after active) (changesKeepRegistration previous)
+
+  progress : ∀ token before → Σ Store.World (λ after → Σ (Result Diagnostic) (λ reply → X.Completed (script token) before after reply))
+  progress token before = proj₁ outcome , proj₂ outcome , X.completed
+    ((token , metadata , proj₂ outcome) ∷ [])
+    (E.replied token (λ reply → E.done (proj₂ reply)) (metadata , proj₂ outcome) (E.returned _))
+    (X.changed before token _ _ (refl , Saved.expectedPhysical (token , metadata) before) (X.unchanged _))
+    where metadata = available token before
+          outcome = Saved.execute (token , metadata) before
+
+  everyDatabaseReceiptCovered : ∀ token metadata before tag actual →
+    DB.Atomic before (proj₁ (Saved.execute (token , metadata) before)) tag actual → X.Interrupted (script token) before actual
+  everyDatabaseReceiptCovered token metadata before .DB.committed _ DB.committedAll =
+    X.beforeReply [] token _ before (metadata , proj₂ (Saved.execute (token , metadata) before)) _
+      (E.stopped _) (X.unchanged before) (refl , Saved.expectedPhysical (token , metadata) before)
+  everyDatabaseReceiptCovered token metadata before .DB.aborted _ DB.abortedNone =
+    X.atPrefix [] (script token) before (E.stopped _) (X.unchanged before)
+  everyDatabaseReceiptCovered token metadata before .DB.acknowledgementLost _ DB.unknownBefore =
+    X.atPrefix [] (script token) before (E.stopped _) (X.unchanged before)
+  everyDatabaseReceiptCovered token metadata before .DB.acknowledgementLost _ DB.unknownAfter =
+    X.beforeReply [] token _ before (metadata , proj₂ (Saved.execute (token , metadata) before)) _
+      (E.stopped _) (X.unchanged before) (refl , Saved.expectedPhysical (token , metadata) before)
+
+  module Certified (AtReceipt : ℕ → Metadata → Store.World → Store.World → Result Diagnostic → Set)
+    (meaning : ∀ token metadata before → AtReceipt token metadata before
+      (proj₁ (Saved.execute (token , metadata) before)) (proj₂ (Saved.execute (token , metadata) before))) where
+    Goal : ℕ → Store.World → Store.World → Result Diagnostic → Set
+    Goal token before after reply = Σ Metadata (λ metadata → AtReceipt token metadata before after reply)
+    fromObservation : ∀ token metadata before after reply → (after , reply) ≡ Saved.execute (token , metadata) before → Goal token before after reply
+    fromObservation token metadata before after reply observed = metadata , subst
+      (λ outcome → AtReceipt token metadata before (proj₁ outcome) (proj₂ outcome)) (sym observed) (meaning token metadata before)
+    converges : ∀ token before interrupted after reply → X.Interrupted (script token) before interrupted →
+      X.Completed (script token) interrupted after reply → Goal token before after reply
+    converges token before interrupted after reply crash completion
+      with interruptionState token before interrupted crash | completedObservation token interrupted after reply completion
+    ... | unchanged refl | metadata , observed = fromObservation token metadata before after reply observed
+    ... | published first value same | second , observed = fromObservation token first before after reply
+      (trans observed (trans (cong (Saved.execute (token , second)) (cong proj₁ same))
+        (doneStable token first second before value (sym (cong proj₂ same)))))
+    operation : Recovery.RecoverableFor Store.World ℕ (Result Diagnostic) Goal
+    operation = record { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic; converges = converges; progress = progress }

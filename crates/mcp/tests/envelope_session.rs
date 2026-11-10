@@ -51,7 +51,7 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             .root
             .join(format!("envelope-session-{}.stderr", Uuid::new_v4())),
     )?;
-    let mut child = tokio::process::Command::new(&fixture.mcp)
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mimir-mcp"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(stderr)
@@ -59,7 +59,11 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         .spawn()?;
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
-    let delete = json!({"name":"delete_project", "arguments":{"project":project}});
+    let delete_token = service
+        .reserve_operation(&format!("{project}-delete-envelope-case"))
+        .await?
+        .operation_token;
+    let delete = json!({"name":"delete_project", "arguments":{"project":project,"operation_token":delete_token}});
     let invalid = vec![
         (vec![0xff, b'\n'], -32700, Value::Null),
         (b"{\n".to_vec(), -32700, Value::Null),
@@ -153,7 +157,7 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         );
         let _: NeedsInput = mimir_json::from_value(response["error"]["data"].clone())?;
     }
-    for (name, args, field) in [
+    for (name, mut args, field) in [
         (
             "sweep_expired_defeated",
             json!({"project":project,"prob_threshold":2}),
@@ -203,6 +207,17 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             "key",
         ),
     ] {
+        if mimir_core::operation_catalogue::Operation::ALL
+            .iter()
+            .any(|operation| operation.name() == name && operation.registered_write().is_some())
+        {
+            args["operation_token"] = json!(
+                service
+                    .reserve_operation(&format!("{project}-arguments-{name}-{field}"))
+                    .await?
+                    .operation_token
+            );
+        }
         let message = json!({"jsonrpc":"2.0","id":"argument-fields","method":"tools/call","params":{"name":name,"arguments":args}});
         input.write_all(format!("{message}\n").as_bytes()).await?;
         input.flush().await?;
@@ -246,7 +261,7 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
     }
     // Malformed UUIDs are ordinary argument corrections, including nested
     // arrays. No handler may run first and turn them into generic tool errors.
-    for (name, arguments, paths) in [
+    for (name, mut arguments, paths) in [
         (
             "record_support",
             json!({"from_id":"wrong-from","to_id":"wrong-to","weight":0.5}),
@@ -269,6 +284,17 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
             ],
         ),
     ] {
+        if mimir_core::operation_catalogue::Operation::ALL
+            .iter()
+            .any(|operation| operation.name() == name && operation.registered_write().is_some())
+        {
+            arguments["operation_token"] = json!(
+                service
+                    .reserve_operation(&format!("{project}-uuid-{name}"))
+                    .await?
+                    .operation_token
+            );
+        }
         let message = json!({"jsonrpc":"2.0","id":"uuid-fields","method":"tools/call","params":{"name":name,"arguments":arguments}});
         input.write_all(format!("{message}\n").as_bytes()).await?;
         input.flush().await?;
@@ -307,8 +333,12 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
     }
     // Required preparation is an ordinary user decision, with no belief
     // written and no loss of the existing connection.
+    let review_token = service
+        .reserve_operation(&format!("{project}-required-review-preparation"))
+        .await?
+        .operation_token;
     let review_request = json!({"jsonrpc":"2.0","id":"required-review-preparation","method":"tools/call","params":{
-        "name":"review_experience","arguments":{"expected_review_revision":0,"review":{
+        "name":"review_experience","arguments":{"operation_token":review_token,"expected_review_revision":0,"review":{
             "experience_id":experience_id,"experience_revision":1,"reviewer":"fixture",
             "rationale":"stored experience evidence alone cannot publish an ungrounded belief",
             "candidates":[{"kind":"belief","key":"lesson","content":"must prepare indexed document support"}]}}}});
@@ -328,12 +358,15 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
     );
     let decision: NeedsInput =
         mimir_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+    let path = &decision.issues()[0].fault().path;
     ensure!(
-        decision.issues()[0]
-            .fault()
-            .message
-            .contains("candidate lesson at index 0"),
-        "missing review candidate context"
+        path == &vec![mimir_core::validation::Segment::Key("embeddings".into())]
+            || path.starts_with(&[
+                mimir_core::validation::Segment::Key("review".into()),
+                mimir_core::validation::Segment::Key("candidates".into()),
+                mimir_core::validation::Segment::Index(0)
+            ]),
+        "preparation must identify the missing configuration or exact candidate: {decision:?}"
     );
     ensure!(
         decision.issues()[0]
@@ -354,9 +387,34 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
         service.list_beliefs(Some(&project)).await?.is_empty(),
         "unprepared candidate was published"
     );
+    let chunk_id: Uuid = audit
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let chunk = mimir_core::documents::DocumentChunk::with_id(
+        chunk_id,
+        format!("/mimir-test/{project}.md"),
+        vec![],
+        "Prepare indexed document support before recording this fact.".into(),
+        None,
+        Some(project.clone()),
+    );
+    let store = mimir_core::store::AgeStore::new(
+        mimir_core::db::connect(&fixture.database_config()).await?,
+        fixture.database_config().dbname,
+    )?;
+    store.insert_document_chunk(&chunk).await?;
+    store
+        .insert_chunk_embedding(chunk_id, &[1.0, 0.0, 0.0])
+        .await?;
+    let belief_token = service
+        .reserve_operation(&format!("{project}-required-belief-preparation"))
+        .await?
+        .operation_token;
     let request = json!({"jsonrpc":"2.0","id":"required-preparation","method":"tools/call","params":{
-        "name":"insert_belief","arguments":{"content":"must not store without preparation","probability":0.7,"confidence":0.5,
-        "project":project,"memory_type":"fact","provenance":{"basis":"user_instruction","reference":"explicit isolated test instruction"}}}});
+        "name":"insert_belief","arguments":{"operation_token":belief_token,"content":"must not store without preparation","probability":0.7,"confidence":0.5,
+        "project":project,"memory_type":"fact","provenance":{"basis":"user_instruction","reference":"explicit isolated test instruction"},
+        "grounding":[{"chunk_id":chunk_id,"document_path":chunk.document_path,"quotation":chunk.content,"explanation":"The passage explicitly requires preparation before publication."}]}}});
     input.write_all(format!("{request}\n").as_bytes()).await?;
     input.flush().await?;
     let mut line = String::new();
@@ -393,10 +451,19 @@ async fn malformed_messages_do_not_execute_and_the_same_connection_recovers() ->
     );
 
     // Retention is configuration owned by the user, not an agent argument.
-    for arguments in [
+    for mut arguments in [
         json!({"project":project}),
         json!({"project":project,"grace_hours":0}),
     ] {
+        arguments["operation_token"] = json!(
+            service
+                .reserve_operation(&format!(
+                    "{project}-retention-case-{}",
+                    arguments.get("grace_hours").is_some()
+                ))
+                .await?
+                .operation_token
+        );
         let request = json!({"jsonrpc":"2.0","id":"retention-policy","method":"tools/call","params":{"name":"sweep_expired_defeated","arguments":arguments}});
         input.write_all(format!("{request}\n").as_bytes()).await?;
         input.flush().await?;

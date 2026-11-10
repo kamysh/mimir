@@ -98,13 +98,12 @@ fn walk(schema: &Value, value: &Value, path: &mut Vec<Segment>, issues: &mut Vec
             ));
         }
     }
-    if schema.get("format").and_then(Value::as_str) == Some("uuid") {
-        if value
+    if schema.get("format").and_then(Value::as_str) == Some("uuid")
+        && value
             .as_str()
             .is_some_and(|text| uuid::Uuid::parse_str(text).is_err())
-        {
-            issues.push(CorrectionItem::invalid_uuid(path.clone()));
-        }
+    {
+        issues.push(CorrectionItem::invalid_uuid(path.clone()));
     }
     if let (Some(text), Some(minimum)) = (
         value.as_str(),
