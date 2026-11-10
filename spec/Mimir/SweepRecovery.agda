@@ -538,58 +538,13 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
     module Read = Controls.Readback library postgres using
       (ExecutionContext; admission; admitted; returned; completed; finalPairCompletes)
     module Plan = Controls.Plan using
-      (Step; step; Saved; readStep; fieldNames; decode; readPlanFields; parsedSteps; stepDecoded)
+      (Step; step; Saved; decode)
     module J = Controls.OpaqueJournal using (Cursor; here; Complete; cursorNext)
-    open Admission.RecordFields using (sameRecordView; thirdTrue; unfield)
 
     operationName = toList "sweep_expired_defeated"
-    finalStep = Plan.step (Admission.Descriptor.site descriptor) nothing (key 0)
-
-    singletonValue : ∀ check observed → Project.Registered.singleton check observed ≡ true →
-      Σ Wire.Value (λ raw → observed ≡ just (Wire.array (raw ∷ [])) × check raw ≡ true)
-    singletonValue check (just (Wire.array (raw ∷ []))) known = raw , refl , known
-    singletonValue check (just (Wire.array [])) ()
-    singletonValue check (just (Wire.array (_ ∷ _ ∷ _))) ()
-    singletonValue check (just Wire.null) ()
-    singletonValue check (just (Wire.boolean _)) ()
-    singletonValue check (just (Wire.unsigned _)) ()
-    singletonValue check (just (Wire.signed _)) ()
-    singletonValue check (just (Wire.floating _)) ()
-    singletonValue check (just (Wire.string _)) ()
-    singletonValue check (just (Wire.object _)) ()
-    singletonValue check nothing ()
-
-    selectedRead : ∀ view raw steps → view (toList "steps") ≡ just (Wire.array (raw ∷ [])) →
-      Wire.required (toList "steps") (Decode.readArray Plan.readStep) view ≡ inj₂ steps →
-      Decode.readArray Plan.readStep (Wire.array (raw ∷ [])) ≡ inj₂ steps
-    selectedRead view raw steps found known rewrite found = unfield (toList "steps") _ steps known
-
-    singletonRead : ∀ raw steps → Decode.readArray Plan.readStep (Wire.array (raw ∷ [])) ≡ inj₂ steps →
-      Σ Plan.Step (λ decodedStep → Plan.readStep raw ≡ inj₂ decodedStep × steps ≡ (decodedStep ∷ []))
-    singletonRead raw steps known with Plan.readStep raw
-    ... | inj₁ fault with known
-    ... | ()
-    singletonRead raw steps known | inj₂ decodedStep with known
-    ... | refl = decodedStep , refl , refl
-
-    planCheck : Wire.Object.View → Bool
-    planCheck view = Project.Registered.fieldText operationName (view (toList "operation")) ∧
-      Project.Registered.singleton (Admission.Plan.shapeMatches descriptor) (view (toList "shape")) ∧
-      Project.Registered.singleton (Admission.Plan.stepMatches descriptor) (view (toList "steps"))
-
-    decodedSingle : ∀ raw model → Admission.Plan.matches descriptor raw ≡ true → Plan.decode raw ≡ inj₂ model →
-      Plan.Saved.steps model ≡ (finalStep ∷ [])
-    decodedSingle raw model matched decoded with sameRecordView
-      (toList "operation" ∷ toList "shape" ∷ toList "steps" ∷ []) Plan.fieldNames
-      planCheck Plan.readPlanFields raw model matched decoded
-    ... | view , checked , parsed with singletonValue (Admission.Plan.stepMatches descriptor) (view (toList "steps"))
-      (thirdTrue (Project.Registered.fieldText operationName (view (toList "operation")))
-        (Project.Registered.singleton (Admission.Plan.shapeMatches descriptor) (view (toList "shape")))
-        (Project.Registered.singleton (Admission.Plan.stepMatches descriptor) (view (toList "steps"))) checked)
-    ... | saved , found , matchedStep with singletonRead saved (Plan.Saved.steps model)
-      (selectedRead view saved _ found (Plan.parsedSteps view model parsed))
-    ... | decodedStep , readStep , exact with Plan.stepDecoded descriptor saved decodedStep matchedStep readStep
-    ... | refl = exact
+    module Projection = Controls.Plan.SingletonProjection descriptor using (finalStep; decodedSingle)
+    finalStep = Projection.finalStep
+    decodedSingle = Projection.decodedSingle
 
     originalPlanObserved : ∀ token before (context : Read.ExecutionContext operationName token before) →
       Admission.originalPlan operationName token (Step.registration before) ≡ inj₂
