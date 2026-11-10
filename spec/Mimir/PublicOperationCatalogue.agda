@@ -652,80 +652,111 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
     ; completedDecodedExistingUnchanged; readyRetrySameContext; transportReady; readyOperation
     ; matchesOriginalSettings)
 
-  -- Closed native writer dispatch. The input to every selected certificate
-  -- is the actual token and decoded request carried by this invocation.
-  writerChoiceFor : ∀ tool → Tools.kind tool ≡ Tools.businessWrite →
-    ∀ {submitted} → Request.Invocation tool submitted → Choice
-  writerChoiceFor Tools.insertBelief writer invocation = choose (independentWrite requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.deleteBelief writer invocation = choose (beliefRemoval requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.deleteProject writer invocation = choose (projectRemoval (proj₁ project))
-    (Request.Invocation.operationToken invocation)
-    where project = Creating.readProject (Request.Invocation.arguments invocation) (Request.Invocation.request invocation)
-            (Request.Invocation.decoded invocation)
-  writerChoiceFor Tools.deletePattern writer invocation = choose (patternRemoval requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.insertPattern writer invocation = choose (patternWrite requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.recordSupport writer invocation = choose (relationship Edges.support requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.recordCause writer invocation = choose (relationship Edges.cause requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.recordDefeat writer invocation = choose (defeat requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.recordContradiction writer invocation = choose (relationship Edges.contradiction requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.getBelief () invocation
-  writerChoiceFor Tools.listBeliefs () invocation
-  writerChoiceFor Tools.listPatterns () invocation
-  writerChoiceFor Tools.getContradictions () invocation
-  writerChoiceFor Tools.decayAll writer invocation = choose (decay requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.sweepExpiredDefeated writer invocation = choose (sweep requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.queryRelevant () invocation
-  writerChoiceFor Tools.addEvidence writer invocation = choose (grounding Ground.addition requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.getEvidence () invocation
-  writerChoiceFor Tools.propagateFrom writer invocation = choose (propagation requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.queryIntervention () invocation
-  writerChoiceFor Tools.loadDocument writer invocation = choose (documentLoading requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.queryDocument () invocation
-  writerChoiceFor Tools.clearDocument writer invocation = choose (documentRemoval requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.getLearningReview () invocation
-  writerChoiceFor Tools.learningCapabilities () invocation
-  writerChoiceFor Tools.getLessonAssessment () invocation
-  writerChoiceFor Tools.lessonAssessmentHistory () invocation
-  writerChoiceFor Tools.explainBelief () invocation
-  writerChoiceFor Tools.recordExperience writer invocation = choose (sourceWrite requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.pendingExperiences () invocation
-  writerChoiceFor Tools.reviewExperience writer invocation = choose (reviewWrite requested) (Request.Invocation.operationToken invocation)
-    where requested = Request.Invocation.request invocation
-  writerChoiceFor Tools.getExperience () invocation
-  writerChoiceFor Tools.experienceHistory () invocation
-  writerChoiceFor Tools.queryLearningContext () invocation
-  writerChoiceFor Tools.reserveOperation () invocation
-  writerChoiceFor Tools.operationOutcome () invocation
-  writerChoiceFor Tools.cancelOperation () invocation
+  -- The closed native tool selects its concrete writer family. The caller
+  -- supplies no family, input conversion, operation name or proof capability.
+  module WriterSelection (environment : ReviewEnvironment) where
+    module Replay = Cached environment
+    record Selected (tool : Tools.Tool) : Set where
+      field kind : Kind
+            writer : Replay.Writer kind
+            operationName : Replay.writerName writer ≡ toList (Tools.wireName tool)
 
-  writerChoice : Creating.Call → Choice
-  writerChoice call = writerChoiceFor (Creating.Call.tool call) (Creating.Call.writer call) (Creating.Call.invocation call)
+    select : ∀ tool → Tools.kind tool ≡ Tools.businessWrite →
+      ∀ {submitted} → Request.Invocation tool submitted → Selected tool
+    select Tools.insertBelief allowed invocation = record
+      { kind = independentWrite requested; writer = Replay.independentWriter; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.deleteBelief allowed invocation = record
+      { kind = beliefRemoval requested; writer = Replay.beliefRemover; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.deleteProject allowed invocation = record
+      { kind = projectRemoval (proj₁ project); writer = Replay.projectWriter; operationName = refl }
+      where project = Creating.readProject (Request.Invocation.arguments invocation) (Request.Invocation.request invocation)
+              (Request.Invocation.decoded invocation)
+    select Tools.deletePattern allowed invocation = record
+      { kind = patternRemoval requested; writer = Replay.patternRemover; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.insertPattern allowed invocation = record
+      { kind = patternWrite requested; writer = Replay.patternWriter; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.recordSupport allowed invocation = record
+      { kind = relationship Edges.support requested; writer = Replay.relationshipWriter; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.recordCause allowed invocation = record
+      { kind = relationship Edges.cause requested; writer = Replay.relationshipWriter; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.recordDefeat allowed invocation = record
+      { kind = defeat requested; writer = Replay.defeater; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.recordContradiction allowed invocation = record
+      { kind = relationship Edges.contradiction requested; writer = Replay.relationshipWriter; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.getBelief () invocation
+    select Tools.listBeliefs () invocation
+    select Tools.listPatterns () invocation
+    select Tools.getContradictions () invocation
+    select Tools.decayAll allowed invocation = record
+      { kind = decay requested; writer = Replay.decayer; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.sweepExpiredDefeated allowed invocation = record
+      { kind = sweep requested; writer = Replay.sweeper; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.queryRelevant () invocation
+    select Tools.addEvidence allowed invocation = record
+      { kind = grounding Ground.addition requested; writer = Replay.groundingWriter; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.getEvidence () invocation
+    select Tools.propagateFrom allowed invocation = record
+      { kind = propagation requested; writer = Replay.propagator; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.queryIntervention () invocation
+    select Tools.loadDocument allowed invocation = record
+      { kind = documentLoading requested; writer = Replay.documentLoader; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.queryDocument () invocation
+    select Tools.clearDocument allowed invocation = record
+      { kind = documentRemoval requested; writer = Replay.documentRemover; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.getLearningReview () invocation
+    select Tools.learningCapabilities () invocation
+    select Tools.getLessonAssessment () invocation
+    select Tools.lessonAssessmentHistory () invocation
+    select Tools.explainBelief () invocation
+    select Tools.recordExperience allowed invocation = record
+      { kind = sourceWrite requested; writer = Replay.sourceWriter; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.pendingExperiences () invocation
+    select Tools.reviewExperience allowed invocation = record
+      { kind = reviewWrite requested; writer = Replay.reviewer; operationName = refl }
+      where requested = Request.Invocation.request invocation
+    select Tools.getExperience () invocation
+    select Tools.experienceHistory () invocation
+    select Tools.queryLearningContext () invocation
+    select Tools.reserveOperation () invocation
+    select Tools.operationOutcome () invocation
+    select Tools.cancelOperation () invocation
 
+    selected : (call : Creating.Call) → Selected (Creating.Call.tool call)
+    selected call = select (Creating.Call.tool call) (Creating.Call.writer call) (Creating.Call.invocation call)
+    choice : Creating.Call → Choice
+    choice call = choose (Selected.kind (selected call))
+      (Replay.writerInput (Selected.writer (selected call)) (Creating.Call.token call))
 
   -- The creating prefix is assembled here with the fixed concrete body.
   -- Neither an operation nor its business goal is a public request field.
   module PublicWrites (environment : ReviewEnvironment) (preparation : Creating.Environment) where
+    module Selection = WriterSelection environment
+    module Replay = Cached environment
     choice : Creating.Context → Choice
-    choice scope = writerChoice (Creating.Context.call scope)
+    choice scope = Selection.choice (Creating.Context.call scope)
     bodyKind : Creating.Context → Kind
     bodyKind scope = Choice.kind (choice scope)
     bodyInput : (scope : Creating.Context) → Input (bodyKind scope)
     bodyInput scope = Choice.input (choice scope)
+    bodyWriter : (scope : Creating.Context) → Replay.Writer (bodyKind scope)
+    bodyWriter scope = Selection.Selected.writer (Selection.selected (Creating.Context.call scope))
+    bodyName : ∀ scope → Replay.writerName (bodyWriter scope) ≡ Creating.Call.name (Creating.Context.call scope)
+    bodyName scope = Selection.Selected.operationName (Selection.selected (Creating.Context.call scope))
     bodyCertificate : (scope : Creating.Context) → Certificate (bodyKind scope)
     bodyCertificate scope = certificate environment (bodyKind scope)
     bodyOperation : (scope : Creating.Context) → Recovery.RecoverableFor Store.World
@@ -819,6 +850,12 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
         Creating.Goal requested before baseline (Creating.ready scope) →
         Goal (bodyKind scope) (bodyInput scope) baseline after reply →
         Meaning requested before after (executed scope reply)
+      cachedBusinessOutcome : ∀ baseline scope reply original raw →
+        Creating.Goal requested before baseline (Creating.ready scope) →
+        Goal (bodyKind scope) (bodyInput scope) baseline after reply →
+        Replay.savedValue (bodyWriter scope) reply ≡ just raw →
+        Creating.Read.answer (Creating.Call.token (Creating.Context.call scope)) after ≡ Creating.Read.completed original raw →
+        Meaning requested before after (returned (Creating.Read.completed original raw))
 
     splitPrefixRun : ∀ (program : Creating.E.Script Creating.Result) before after reply {events} →
       E.Runs (E._>>=_ (liftPrefix program) afterPreparation) events reply → X.Changes before events after →
