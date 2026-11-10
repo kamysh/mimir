@@ -4,14 +4,18 @@
 module Mimir.SMTPProtocol where
 
 open import Data.Bool using (Bool; true; false; _∨_)
-open import Data.List using (List; []; _∷_; _++_)
+open import Data.Char using (Char; fromℕ)
+open import Data.Fin using (toℕ)
+open import Data.List using (List; []; _∷_; _++_; concatMap)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Data.Nat using (ℕ; _≟_; _<?_; _+_)
+open import Data.Nat.DivMod using (_/_; _%_)
 open import Data.String using (toList)
 open import Relation.Nullary using (yes; no; does)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
-open import Mimir.Collections using (all?)
-import Mimir.NotificationSchema as Schema
+open import Mimir.Bits using (Byte)
+import Mimir.StandardLibrary as Library
 import Mimir.NotificationIncident as Incident
 import Mimir.NotificationConfig as Config
 import Mimir.DigestDelivery as Digest
@@ -20,9 +24,26 @@ import Mimir.SMTPAuth as Auth
 computer : Maybe Text → Text
 computer nothing = toList "unknown-host"
 computer (just []) = toList "unknown-host"
-computer (just name@(_ ∷ _)) with all? Schema.identifierChar? name
-... | yes _ = name
-... | no _ = toList "unknown-host"
+computer (just name@(_ ∷ _)) = name
+
+-- OS capacity is an external ABI fact. Every successfully decoded, nonempty
+-- hostname is preserved; Mimir chooses neither a size quota nor an alphabet.
+computerPreservesName : ∀ first rest → computer (just (first ∷ rest)) ≡ first ∷ rest
+computerPreservesName first rest = refl
+
+private
+  hexDigit : ℕ → Char
+  hexDigit n with n <? 10
+  ... | yes _ = fromℕ (48 + n)
+  ... | no _ = fromℕ (87 + n)
+
+  hexByte : Byte → Text
+  hexByte value = hexDigit (toℕ value / 16) ∷ hexDigit (toℕ value % 16) ∷ []
+
+-- Only the syntactically constrained identifier uses this representation.
+-- Display headers and body retain the original complete hostname.
+computerID : Library.Contract → Text → Text
+computerID library host = concatMap hexByte (Library.Contract.encodeUTF8 library host)
 
 record Message : Set where
   constructor message
@@ -48,10 +69,10 @@ alertMessage cfg host pendingAlert with Incident.Alert.kind pendingAlert
   (toList "Mimir reported recovery.\nComputer: " ++ host ++ toList "\nSource: " ++ Incident.Alert.source pendingAlert ++
    toList "\n\n" ++ details pendingAlert ++ toList "\n")
 
-digestMessage : Config.Config → Text → Digest.Digest → Message
-digestMessage cfg host digestValue = message (Config.Config.fromAddress cfg) (Config.Config.recipients cfg)
+digestMessage : Library.Contract → Config.Config → Text → Digest.Digest → Message
+digestMessage library cfg host digestValue = message (Config.Config.fromAddress cfg) (Config.Config.recipients cfg)
   (toList "Mimir [" ++ host ++ toList "] daily statistics through " ++ Digest.Digest.throughDay digestValue)
-  (toList "<mimir-daily-" ++ Digest.Digest.throughDay digestValue ++ toList "-" ++ host ++ toList "@mimir.local>")
+  (toList "<mimir-daily-" ++ Digest.Digest.throughDay digestValue ++ toList "-" ++ computerID library host ++ toList "@mimir.local>")
   (toList "text/plain") (toList "Computer: " ++ host ++ toList "\n" ++ Digest.Digest.body digestValue)
 
 data Credentials : Set where

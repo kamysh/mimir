@@ -318,6 +318,96 @@ fn config() -> EmailConfig {
     }
 }
 
+#[test]
+fn hostname_preserves_complete_os_text_without_an_alphabet_or_length_quota() {
+    for name in [
+        "計算機 café 💻/desk".to_owned(),
+        "é".repeat(300),
+        "host\r\nlabel\u{7}".to_owned(),
+    ] {
+        let mut bytes = name.as_bytes().to_vec();
+        bytes.push(0);
+        assert_eq!(hostname_text(&bytes), Some(name.as_str()));
+    }
+    // These are unavailable C/UTF-8 observations, rather than rejected names.
+    for bytes in [&b"\0"[..], &b"\xff\0"[..], &b"not-terminated"[..]] {
+        assert_eq!(hostname_text(bytes), None);
+    }
+}
+
+#[test]
+fn hostname_display_and_digest_identity_preserve_long_unicode() {
+    use lettre::message::header::{ContentTransferEncoding, MessageId, Subject};
+    let host = "計算機 café 💻/desk".repeat(40);
+    let digest = Digest {
+        through_day: "2026-11-10".into(),
+        body: "Complete statistics\n".into(),
+    };
+    let message = smtp::digest_message_on(&config(), &digest, &host).unwrap();
+    assert_eq!(
+        message.headers().get::<Subject>().unwrap().as_ref(),
+        format!("Mimir [{host}] daily statistics through 2026-11-10")
+    );
+    let id = message.headers().get::<MessageId>().unwrap();
+    let repeated = smtp::digest_message_on(&config(), &digest, &host).unwrap();
+    assert_eq!(id, repeated.headers().get::<MessageId>().unwrap());
+    let encoded_host = id
+        .as_ref()
+        .strip_prefix("<mimir-daily-2026-11-10-")
+        .unwrap()
+        .strip_suffix("@mimir.local>")
+        .unwrap();
+    let (encoded_bytes, remainder) = encoded_host.as_bytes().as_chunks::<2>();
+    assert!(remainder.is_empty());
+    let decoded: Vec<u8> = encoded_bytes
+        .iter()
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    assert_eq!(decoded, host.as_bytes());
+    assert_eq!(
+        message.headers().get::<ContentTransferEncoding>(),
+        Some(ContentTransferEncoding::Base64)
+    );
+    let formatted = String::from_utf8(message.formatted()).unwrap();
+    let (_, body) = formatted.split_once("\r\n\r\n").unwrap();
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(body.replace("\r\n", ""))
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(decoded).unwrap(),
+        format!("Computer: {host}\r\nComplete statistics\r\n")
+    );
+}
+
+#[test]
+fn hostname_line_breaks_are_encoded_without_creating_mail_headers() {
+    use lettre::message::header::Subject;
+    let host = "計算機\r\nX-Injected: yes\u{7}";
+    let event = failure("judge", "hostname-fixture", "blocked");
+    let alert = Alert::new(AlertKind::Failure, &event, "blocked", "Fixture failed", 0);
+    let digest = Digest {
+        through_day: "2026-11-10".into(),
+        body: "Complete statistics\n".into(),
+    };
+    for message in [
+        smtp::message_on(&config(), &alert, host).unwrap(),
+        smtp::digest_message_on(&config(), &digest, host).unwrap(),
+    ] {
+        assert!(message
+            .headers()
+            .get::<Subject>()
+            .unwrap()
+            .as_ref()
+            .contains(host));
+        let formatted = String::from_utf8(message.formatted()).unwrap();
+        let (headers, _) = formatted.split_once("\r\n\r\n").unwrap();
+        assert!(!headers
+            .split("\r\n")
+            .any(|line| line.starts_with("X-Injected:")));
+        assert!(headers.contains("=?utf-8?b?"));
+    }
+}
+
 fn directory() -> PathBuf {
     std::env::temp_dir().join(format!("mimir-notification-state-{}", Uuid::new_v4()))
 }

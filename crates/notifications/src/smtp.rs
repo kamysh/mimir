@@ -11,11 +11,14 @@ use lettre::{
 };
 
 pub(crate) fn message(config: &EmailConfig, alert: &Alert) -> Result<Message> {
+    message_on(config, alert, &computer_name())
+}
+
+pub(super) fn message_on(config: &EmailConfig, alert: &Alert, computer: &str) -> Result<Message> {
     let from = config
         .from_address
         .as_deref()
         .ok_or_else(|| anyhow!("missing mail sender"))?;
-    let computer = computer_name();
     let mut builder = Message::builder()
         .from(from.parse().map_err(|_| anyhow!("invalid mail sender"))?)
         .subject(match alert.kind {
@@ -49,11 +52,25 @@ pub(crate) fn message(config: &EmailConfig, alert: &Alert) -> Result<Message> {
 }
 
 pub(crate) fn digest_message(config: &EmailConfig, digest: &Digest) -> Result<Message> {
+    digest_message_on(config, digest, &computer_name())
+}
+
+pub(super) fn digest_message_on(
+    config: &EmailConfig,
+    digest: &Digest,
+    computer: &str,
+) -> Result<Message> {
     let from = config
         .from_address
         .as_deref()
         .ok_or_else(|| anyhow!("missing mail sender"))?;
-    let computer = computer_name();
+    // Message-ID's syntax cannot carry arbitrary hostname text. Encoding every
+    // UTF-8 byte preserves a stable retry identity without altering display data.
+    use std::fmt::Write;
+    let mut computer_id = String::new();
+    for byte in computer.as_bytes() {
+        write!(&mut computer_id, "{byte:02x}").expect("writing to a String cannot fail");
+    }
     let mut builder = Message::builder()
         .from(from.parse().map_err(|_| anyhow!("invalid mail sender"))?)
         .subject(format!(
@@ -62,7 +79,7 @@ pub(crate) fn digest_message(config: &EmailConfig, digest: &Digest) -> Result<Me
         ))
         .message_id(Some(format!(
             "<mimir-daily-{}-{}@mimir.local>",
-            digest.through_day, computer
+            digest.through_day, computer_id
         )))
         .header(ContentType::TEXT_PLAIN);
     for recipient in &config.to {
