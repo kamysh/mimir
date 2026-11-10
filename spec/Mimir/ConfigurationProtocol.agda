@@ -40,6 +40,14 @@ data Failure : Set where
   override : Input.Error → Failure
   validation : Validation.Fault → Failure
   editorLaunch conflictingSettings : Failure
+  editorUnsuccessful : Text → Failure
+
+-- This is the actual std::process::ExitStatus observation, not an inferred
+-- status from attempting to launch a child. The failure description also
+-- retains signal/abnormal termination on platforms without an exit code.
+data EditorStatus : Set where
+  editorSucceeded : EditorStatus
+  editorFailed : Text → EditorStatus
 
 -- Matching is about the fields explicitly named by this request. A custom
 -- field omitted from that request does not become a conflict with a default.
@@ -118,8 +126,7 @@ Reply (announceAlreadyConfigured _) = ⊤
 Reply (announceOpeningExisting _) = ⊤
 Reply announceEditor = ⊤
 Reply announceRestart = ⊤
--- A child exit status, including nonzero, is a successful status() result.
-Reply (editor _ _) = Bool ⊎ ℕ
+Reply (editor _ _) = Bool ⊎ EditorStatus
 
 module P = Effects.Protocol Effect Reply
 open P using (Script; done; ask; _>>=_)
@@ -223,37 +230,46 @@ module Run where
     selectEditor nothing = toList "vi"
     selectEditor (just value) = value
 
+    afterEditor : Bool ⊎ EditorStatus → Script (Failure ⊎ ⊤)
+    afterEditor (inj₁ _) = done (inj₁ editorLaunch)
+    afterEditor (inj₂ editorSucceeded) = ask announceRestart λ _ → done (inj₂ tt)
+    afterEditor (inj₂ (editorFailed status)) = done (inj₁ (editorUnsuccessful status))
+
+    editorSession : Path.Path → Maybe Text → Script (Failure ⊎ ⊤)
+    editorSession path editorValue = ask announceEditor λ _ →
+      ask (editor (selectEditor editorValue) path) afterEditor
+
     afterCreation : Path.Path → Content → Maybe Text → Script (Failure ⊎ ⊤)
     afterCreation path (alreadyConfigured current) editorValue =
       ask (announceAlreadyConfigured path) λ _ → done (inj₂ tt)
     afterCreation path editableExisting editorValue = ask (announceOpeningExisting path) λ _ →
-      ask announceEditor λ _ → ask (editor (selectEditor editorValue) path) λ where
-        (inj₁ _) → done (inj₁ editorLaunch)
-        (inj₂ _) → ask announceRestart λ _ → done (inj₂ tt)
+      editorSession path editorValue
     afterCreation path (configured _ _) editorValue = ask (announceCreated path) λ _ →
       ask announceRestart λ _ → done (inj₂ tt)
     afterCreation path (template _) editorValue = ask (announceCreated path) λ _ →
-      ask announceEditor λ _ → ask (editor (selectEditor editorValue) path) λ where
-        (inj₁ _) → done (inj₁ editorLaunch)
-        (inj₂ _) → ask announceRestart λ _ → done (inj₂ tt)
+      editorSession path editorValue
 
-    EditorOutcome : Bool ⊎ ℕ → Failure ⊎ ⊤ → Set
+    EditorOutcome : Bool ⊎ EditorStatus → Failure ⊎ ⊤ → Set
     EditorOutcome (inj₁ _) result = result ≡ inj₁ editorLaunch
-    EditorOutcome (inj₂ _) result = result ≡ inj₂ tt
+    EditorOutcome (inj₂ editorSucceeded) result = result ≡ inj₂ tt
+    EditorOutcome (inj₂ (editorFailed status)) result = result ≡ inj₁ (editorUnsuccessful status)
 
     -- Existing-file editing never reports completion merely from launching
     -- the editor. Every completed run contains its actual child result.
     existingEditorObserved : ∀ path editorValue events result →
       P.Runs (afterCreation path editableExisting editorValue) events result →
-      Data.Product.Σ (Bool ⊎ ℕ) (λ observed → Data.Product.Σ (List P.Event) (λ rest →
+      Data.Product.Σ (Bool ⊎ EditorStatus) (λ observed → Data.Product.Σ (List P.Event) (λ rest →
         events ≡ ((announceOpeningExisting path , tt) ∷ (announceEditor , tt) ∷
           (editor (selectEditor editorValue) path , observed) ∷ rest) × EditorOutcome observed result))
     existingEditorObserved path editorValue ._ ._
       (P.replied _ _ tt (P.replied _ _ tt (P.replied _ _ (inj₁ failed) (P.returned _)))) =
       inj₁ failed , [] , refl , refl
     existingEditorObserved path editorValue ._ ._
-      (P.replied _ _ tt (P.replied _ _ tt (P.replied _ _ (inj₂ status) (P.replied _ _ tt (P.returned _))))) =
-      inj₂ status , (announceRestart , tt) ∷ [] , refl , refl
+      (P.replied _ _ tt (P.replied _ _ tt (P.replied _ _ (inj₂ editorSucceeded) (P.replied _ _ tt (P.returned _))))) =
+      inj₂ editorSucceeded , (announceRestart , tt) ∷ [] , refl , refl
+    existingEditorObserved path editorValue ._ ._
+      (P.replied _ _ tt (P.replied _ _ tt (P.replied _ _ (inj₂ (editorFailed status)) (P.returned _)))) =
+      inj₂ (editorFailed status) , [] , refl , refl
 
 
     -- Full create command, including early failure, complete publication and
