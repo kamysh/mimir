@@ -1826,3 +1826,79 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     (subst (λ state → ReadyMeaning call state second) sameWorld later))
     where sameWorld = completedDecodedExistingUnchanged requested call before after (ready second)
             (Context.original first) (Context.raw first) decoded (ReadyMeaning.boundRequest earlier) (ReadyMeaning.savedPlan earlier) completion
+
+
+  -- Reservation presence is read from the actual successful bind receipt.
+  -- No global foreign-key invariant on arbitrary modeled Worlds is assumed.
+  Reserved : Call → Store.World → Set
+  Reserved call current = Σ Store.ReservationRow (λ row → Controls.reservation (Call.token call) current ≡ just row)
+
+  boundReserved : ∀ call settings observedTime before original →
+    bound original ≡ proj₂ (bind call settings observedTime before) → Reserved call before
+  boundReserved call settings observedTime before original accepted
+    with Controls.reservation (Call.token call) before in present
+  ... | nothing with accepted
+  ... | ()
+  boundReserved call settings observedTime before original accepted | just row = row , refl
+
+  changesKeepReservation : ∀ token before events after → X.Changes before events after →
+    Controls.reservation token after ≡ Controls.reservation token before
+  changesKeepReservation token before [] .before (X.unchanged _) = refl
+  changesKeepReservation token before ((effect , reply) ∷ events) after
+    (X.changed .before .effect .reply middle physical later) = trans
+      (changesKeepReservation token middle events after later)
+      (cong (Controls.reservation token) (Frame.business (atomicFrame before effect reply middle physical)))
+
+  bindRequestReadyReserved : ∀ call settings before after context →
+    X.Completed (bindRequest call settings) before after (ready context) → Reserved call after
+  bindRequestReadyReserved call settings before after context
+    (X.completed events (E.replied _ _ (observedTime , bound original) execution)
+      changes@(X.changed _ _ _ middle (accepted , physical) later))
+    with boundReserved call settings observedTime before original accepted
+  ... | row , present = row , trans (changesKeepReservation (Call.token call) before events after changes) present
+  bindRequestReadyReserved call settings before after context
+    (X.completed events (E.replied _ _ (observedTime , changed original) ()) changes)
+  bindRequestReadyReserved call settings before after context
+    (X.completed events (E.replied _ _ (observedTime , unknown) (E.replied _ _ _ ())) changes)
+  bindRequestReadyReserved call settings before after context
+    (X.completed events (E.replied _ _ (observedTime , cancelled receipt) (E.replied _ _ _ ())) changes)
+
+  afterSettingsReadyReserved : ∀ call observed before after context →
+    X.Completed (afterSettings call observed) before after (ready context) → Reserved call after
+  afterSettingsReadyReserved call (unavailable fault) before after context (X.completed [] () changes)
+  afterSettingsReadyReserved call (configured settings) before after context completion
+    with Public.freshLearningAdmission (Call.request call)
+  ... | inj₁ fault with completion
+  ... | X.completed [] () changes
+  afterSettingsReadyReserved call (configured settings) before after context completion | inj₂ tt =
+    bindRequestReadyReserved call settings before after context completion
+
+  unboundReadyReserved : ∀ call observed outcome before after context →
+    X.Completed (unbound call observed outcome) before after (ready context) → Reserved call after
+  unboundReadyReserved call observed Read.reserved before after context
+    (X.completed _ (E.replied _ _ settings execution) (X.changed _ _ _ middle physical later)) =
+    afterSettingsReadyReserved call settings middle after context (X.completed _ execution later)
+  unboundReadyReserved call observed Read.unknownToken before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.awaitingPlan _) before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.awaitingCompletion _) before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.pending _ _ _) before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.completed _ _) before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.cancelled _ _ _) before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.needsRecovery _) before after context (X.completed [] () changes)
+  unboundReadyReserved call observed (Read.inconsistent _ _) before after context (X.completed [] () changes)
+
+  afterOriginalReadyReserved : ∀ call observed before after context →
+    X.Completed (afterOriginal call observed) before after (ready context) → Reserved call after
+  afterOriginalReadyReserved call observed before after context completion with binding (Call.token call) observed
+  ... | just original = bindRequestReadyReserved call (Store.BindingRow.settings original) before after context completion
+  ... | nothing = unboundReadyReserved call observed (Read.answer (Call.token call) observed) before after context completion
+
+  startReadyReserved : ∀ call before after context → X.Completed (start call) before after (ready context) → Reserved call after
+  startReadyReserved call before after context
+    (X.completed _ (E.replied _ _ .before execution) (X.changed _ _ _ .before (refl , refl) later)) =
+    afterOriginalReadyReserved call before before after context (X.completed _ execution later)
+
+  completedReadyReservation : ∀ requested call before after context → decode requested ≡ inj₂ call →
+    X.Completed (script requested) before after (ready context) → Reserved call after
+  completedReadyReservation requested call before after context decoded completion rewrite decoded =
+    startReadyReserved call before after context completion
