@@ -343,6 +343,17 @@ reservation result for later public projection; it introduces no new public
 response format. A broken existing key stays a recovery result without making
 up a replacement reservation. Whole-host and wire integration remain unfinished.
 
+`IntendedPreparation.Evaluate.AssessmentIntent.evaluate` admits the three
+assessment reads (`get_lesson_assessment`, `lesson_assessment_history` and
+`explain_belief`) with their existing public field readers, then computes
+`LearningQueryBinding.AssessmentReads.answer` from the complete original world.
+The internal `assessmentReadback` retains the complete typed result, including
+missing targets, invalid stored history or provenance, and invalid scores.
+Those outcomes cannot become successful JSON null or an incomplete page.
+Every read preserves the full world, and malformed admission leaves the body
+absent. The later public projection must handle the retained outcome; this
+adapter does not add or change a public wire format.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |

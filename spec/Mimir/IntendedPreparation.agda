@@ -160,6 +160,8 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     requestCorrection : Validation.Fault → PublicOutcome
     operationReadback : Read.Result → PublicOutcome
     reservationReadback : Controls.RequestKey → Reserve.Result → PublicOutcome
+    assessmentReadback : (format : Encoding.Formatting) →
+      LearningReads.AssessmentReads.Answer format → PublicOutcome
     directValue : Wire.Value → PublicOutcome
 
   record Expected (Body : Set) : Set where
@@ -260,6 +262,57 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
       Decode.readInvocation Tools.operationOutcome raw ≡ inj₁ fault →
       evaluate raw before ≡ expected before nothing (requestCorrection fault)
     malformedRequestDoesNotEnterBody raw before fault rejected rewrite rejected = refl
+
+  module AssessmentIntent (format : Encoding.Formatting) where
+    module Assessments = LearningReads.AssessmentReads format
+    module Decode = Public.Decode library
+
+    data Family : Set where scores history explanation : Family
+
+    tool : Family → Tools.Tool
+    tool scores = Tools.getLessonAssessment
+    tool history = Tools.lessonAssessmentHistory
+    tool explanation = Tools.explainBelief
+
+    -- All parsing uses the same field readers as public admission. Ordered
+    -- pages, missing targets and invalid stored values remain typed results.
+    request : Family → Wire.Object.View → Validation.Fault Data.Sum.⊎ Assessments.Request
+    request scores fields = Record.mapResult Assessments.scores (Decode.assessmentQuery fields)
+    request history fields = Record._>>=_ (Decode.assessmentQuery fields) λ query →
+      Record._>>=_ (PublicInput.defaulted "offset" 0 Decode.integer fields) λ offset →
+      Record.mapResult (Assessments.history query offset) (Decode.selection "limit" fields)
+    request explanation fields = Record._>>=_ (PublicInput.required "id" (PublicInput.readUUID library) fields) λ identity →
+      Record._>>=_ (PublicInput.defaulted "offset" 0 Decode.integer fields) λ offset →
+      Record.mapResult (Assessments.explanation identity offset) (Decode.selection "limit" fields)
+
+    read : Assessments.Request → Store.World → Expected Assessments.Answer
+    read selected before = expected before (just answer) (assessmentReadback format answer)
+      where answer = Assessments.answer selected before
+
+    afterRequest : Validation.Fault Data.Sum.⊎ Assessments.Request → Store.World → Expected Assessments.Answer
+    afterRequest (inj₁ fault) before = expected before nothing (requestCorrection fault)
+    afterRequest (inj₂ selected) before = read selected before
+
+    evaluate : Family → Wire.Value → Store.World → Expected Assessments.Answer
+    evaluate family raw before with Decode.readInvocation (tool family) raw
+    ... | inj₁ fault = expected before nothing (requestCorrection fault)
+    ... | inj₂ admitted = afterRequest
+      (request family (Wire.Object.normalize (Decode.Invocation.suppliedFields admitted))) before
+
+    afterRequestKeepsWorld : ∀ received before → Expected.world (afterRequest received before) ≡ before
+    afterRequestKeepsWorld (inj₁ fault) before = refl
+    afterRequestKeepsWorld (inj₂ selected) before = refl
+
+    neverChangesWorld : ∀ family raw before → Expected.world (evaluate family raw before) ≡ before
+    neverChangesWorld family raw before with Decode.readInvocation (tool family) raw
+    ... | inj₁ fault = refl
+    ... | inj₂ admitted = afterRequestKeepsWorld
+      (request family (Wire.Object.normalize (Decode.Invocation.suppliedFields admitted))) before
+
+    malformedRequestDoesNotEnterBody : ∀ family raw before fault →
+      Decode.readInvocation (tool family) raw ≡ inj₁ fault →
+      evaluate family raw before ≡ expected before nothing (requestCorrection fault)
+    malformedRequestDoesNotEnterBody family raw before fault rejected rewrite rejected = refl
 
   module ReadOnly (format : Encoding.Formatting) where
     module Basic = StorageReads.BasicReads format using (Request; answer)
