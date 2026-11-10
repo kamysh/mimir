@@ -132,6 +132,87 @@ impl Session {
     }
 }
 
+#[tokio::test]
+async fn missing_relationship_endpoints_preserve_bound_requests_and_offer_a_user_decision(
+) -> Result<()> {
+    use mimir_core::{
+        graph::MemoryType,
+        store::AgeStore,
+        validation::{Code, Segment},
+    };
+    let fixture = isolation::fixture();
+    let cfg = fixture.database_config();
+    let audit = db::connect(&cfg).await?;
+    let key: Uuid = audit
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let missing: Uuid = audit
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
+    let project = format!("bound-endpoint-{key}");
+    let source =
+        isolation::seed_belief_in_project("source", 0.7, 0.5, &project, MemoryType::Fact).await?;
+    let target =
+        isolation::seed_belief_in_project("target", 0.4, 0.5, &project, MemoryType::Fact).await?;
+    let store = AgeStore::new(db::connect(&cfg).await?, cfg.dbname.clone())?;
+    ensure!(store.get_belief(missing).await?.is_none());
+    let before = mimir_json::to_value((
+        store.get_belief(source.id).await?,
+        store.get_belief(target.id).await?,
+    ))?;
+    let mut session = Session::start(&fixture.root, key)?;
+    let checked: Result<()> = async {
+        for (name, first, second) in [("record_support", "from_id", "to_id"), ("record_cause", "from_id", "to_id"), ("record_contradiction", "id_a", "id_b")] {
+            for missing_first in [true, false] {
+                let left = if missing_first { missing } else { source.id }.to_string().to_uppercase();
+                let right = if missing_first { target.id } else { missing }.to_string();
+                let mut arguments = json!({"weight":0.5});
+                arguments[first] = json!(left);
+                arguments[second] = json!(right);
+                let reservation = session.tool("reserve_operation", json!({"request_key":format!("bound-endpoint-{key}-{name}-{missing_first}")})).await?;
+                let token: Uuid = reservation["operation_token"].as_str().context("missing reserved token")?.parse()?;
+                let mut submitted = arguments.clone();
+                submitted["operation_token"] = json!(token);
+                let refused = session.tool(name, submitted.clone()).await?;
+                let correction: NeedsInput = mimir_json::decode_ref(&refused)?;
+                ensure!(refused["business_changes"] == "none");
+                let fault = correction.issues()[0].fault();
+                ensure!(fault.code == Code::MissingReference);
+                ensure!(fault.path == vec![Segment::Key(if missing_first {first} else {second}.into())]);
+                ensure!(fault.message == format!("The requested belief {missing} was not found in Mimir."));
+                let binding = store.read_operation_binding(token).await?.context("request must already be bound")?;
+                ensure!(binding.request.arguments() == &arguments, "refusal changed the exact submitted endpoints");
+                let pending = session.tool("operation_outcome", json!({"operation_token":token})).await?;
+                ensure!(pending["status"] == "pending", "{pending}");
+                let saved: i64 = audit.query_one("SELECT count(*) FROM mimir_operation_step_replies WHERE operation_token=$1", &[&token]).await?.get(0);
+                let cancelled: i64 = audit.query_one("SELECT count(*) FROM mimir_operation_cancellations WHERE operation_token=$1", &[&token]).await?.get(0);
+                ensure!(saved == 0 && cancelled == 0, "refusal must not fabricate completion or cancel the action");
+                ensure!(store.get_edges_among(&[source.id, target.id, missing]).await?.is_empty());
+                ensure!(mimir_json::to_value((store.get_belief(source.id).await?, store.get_belief(target.id).await?))? == before);
+                let repair = correction.issues()[0].suggested_correction();
+                ensure!(repair.contains(first) && repair.contains(second) && repair.contains(&left) && repair.contains(&right), "exact original endpoints missing from correction: {refused}");
+                ensure!(repair.contains("operation_outcome") && repair.contains("user") && repair.contains("cancel") && repair.contains("reserve"), "missing immutable-request decision: {refused}");
+                ensure!(!repair.contains("then retry with its ID"), "bound request cannot be edited: {refused}");
+                ensure!(correction.message().contains("already bound"), "top-level guidance must not suggest rewriting the request: {refused}");
+                submitted[if missing_first { first } else { second }] = json!(if missing_first {source.id} else {target.id});
+                let changed = session.tool(name, submitted).await?;
+                let changed: NeedsInput = mimir_json::decode_ref(&changed)?;
+                ensure!(changed.issues()[0].fault().code == Code::WrongIdentity);
+                ensure!(store.read_operation_binding(token).await?.context("original binding retained")?.request == binding.request);
+            }
+        }
+        Ok(())
+    }.await;
+    let shutdown = session.finish().await;
+    let cleanup = store.delete_project(&project).await;
+    checked?;
+    shutdown?;
+    cleanup?;
+    Ok(())
+}
+
 #[cfg(feature = "test-boundaries")]
 #[tokio::test]
 async fn project_deletion_retries_after_real_process_exit_at_each_commit_side() -> Result<()> {
