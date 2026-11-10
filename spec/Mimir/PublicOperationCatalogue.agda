@@ -550,13 +550,13 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   classify (Public.inference (InferenceRequest.contradictions project)) = basic (Basic.contradictions project)
   classify (Public.inference (InferenceRequest.sweep project threshold grace)) = correction perCallRetention
   classify expected@(Public.sweepConfigured project threshold) = sweep expected
-  classify (Public.relevant context selection project preference includeEvidence perBelief) = retrieval
-    (Search.fromFields context selection project preference includeEvidence perBelief)
+  classify (Public.relevant queryText selection project preference includeEvidence perBelief) = retrieval
+    (Search.fromFields queryText selection project preference includeEvidence perBelief)
   classify expected@(Public.addEvidence belief chunk weight) = grounding Ground.addition expected
   classify expected@(Public.removeEvidence belief chunk) = grounding Ground.removal expected
   classify (Public.evidence belief) = basic (Basic.evidence belief)
   classify expected@(Public.loadDocument path project) = documentLoading expected
-  classify (Public.queryDocument context project selection) = documentQuery (Documents.query context project selection)
+  classify (Public.queryDocument queryText project selection) = documentQuery (Documents.query queryText project selection)
   classify expected@(Public.clearDocument path) = documentRemoval expected
   classify expected@(Public.learning (Learning.recordExperience source revision)) = sourceWrite expected
   classify expected@(Public.learning (Learning.reviewExperience review revision)) = reviewWrite expected
