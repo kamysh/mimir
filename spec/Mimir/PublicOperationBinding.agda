@@ -556,6 +556,36 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ observedCall = inj₂ (admittedWrite tool raw kind observedCall)
 
+  -- This project value comes from the actual admitted object, rather than
+  -- a second parse, a default project or reconstructed request arguments.
+  decodedProject : ∀ fields requested → D.decode Tools.deleteProject fields ≡ inj₂ requested →
+    Σ Text (λ project → requested ≡ Public.deleteProject project)
+  decodedProject fields requested accepted with Record.bindSuccess
+    (Fields.required "project" Wire.asString fields) (λ project → inj₂ (Public.deleteProject project)) requested accepted
+  ... | project , observed , same = project , sym (Sum.inj₂-injective same)
+
+  admittedProject : ∀ fields requested → D.admittedFields Tools.deleteProject fields ≡ inj₂ requested →
+    Σ Text (λ project → requested ≡ Public.deleteProject project)
+  admittedProject fields requested accepted = Record.afterSuccess (D.suppliedTypes fields)
+    (λ _ → D.decode Tools.deleteProject fields) requested
+    (λ _ _ decoded → decodedProject fields requested decoded) accepted
+
+  readProject : ∀ raw requested → D.readTool Tools.deleteProject raw ≡ inj₂ requested →
+    Σ Text (λ project → requested ≡ Public.deleteProject project)
+  readProject (Wire.object fields) requested accepted
+    with Wire.Object.checkUnknowns Objects.forbid (Public.acceptedFields Tools.deleteProject) fields
+  ... | Validation.rejected detail invalid with accepted
+  ... | ()
+  readProject (Wire.object fields) requested accepted | Validation.accepted known =
+    admittedProject (Wire.Object.normalize fields) requested accepted
+  readProject (Wire.string _) requested ()
+  readProject (Wire.signed _) requested ()
+  readProject (Wire.unsigned _) requested ()
+  readProject (Wire.floating _) requested ()
+  readProject (Wire.boolean _) requested ()
+  readProject Wire.null requested ()
+  readProject (Wire.array _) requested ()
+
   -- The SQL predicate compares the operation name as text, and independently
   -- compares arguments and settings as jsonb (where 1 and 1.0 are equal).
   -- The supplied object still removes only operation_token.
