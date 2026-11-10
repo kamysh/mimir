@@ -435,6 +435,17 @@ clock. Invalid stored inputs remain a typed no-publication outcome. The existing
 registration parser is shared without changing the registered operation's API
 or behavior. Full public host/wire assembly remains unfinished.
 
+`IntendedBeliefDeletion.Evaluate.With.evaluate` composes `delete_belief` admission
+with its original registration, deletion meaning, checked numerical consequences
+and both saved answers. Fresh work needs its actual locked publication clock;
+an absent target or failed numerical preparation needs no invented report.
+Prepared deletion checks the actual captured report through the existing
+`Business.checked`, retaining refused/rejected/repeated outcomes without saving
+a completed answer. Replay preserves the current world and original boolean
+result without new receipts. Unchanged parser and diagnostic definitions are
+shared locally so the adapter needs no fake clock or calculator. Complete
+public host/wire assembly remains unfinished.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |

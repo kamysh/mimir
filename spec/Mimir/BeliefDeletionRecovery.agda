@@ -37,7 +37,7 @@ erased : ℕ → Store.World → Store.World
 erased identity before = Store.removeBeliefVectors (identity ∷ [])
   (Store.removeNodes (identity ∷ []) true before)
 
-module Business (databaseSum : List Float → Float) (calculator : P.Calculator) where
+module Diagnostics (databaseSum : List Float → Float) where
   module N = Inference.NumericalOutcome databaseSum
 
   data Diagnostic : Set where
@@ -45,6 +45,13 @@ module Business (databaseSum : List Float → Float) (calculator : P.Calculator)
     preparation : N.PreparationIssue → Diagnostic
     rejectedReport : P.CalculationReport → Diagnostic
     repeated : P.State → List P.State → Diagnostic
+
+module Business (databaseSum : List Float → Float) (calculator : P.Calculator) where
+  module N = Inference.NumericalOutcome databaseSum
+
+  Diagnostic : Set
+  Diagnostic = Diagnostics.Diagnostic databaseSum
+  open Diagnostics databaseSum public using (requestFault; preparation; rejectedReport; repeated)
 
   Outcome = Diagnostic ⊎ (Store.World × Wire.Value)
 
@@ -121,11 +128,7 @@ module Business (databaseSum : List Float → Float) (calculator : P.Calculator)
   journalUnchanged publicationTime identity before after reply accepted = publicationKeepsJournal publicationTime identity before after reply
     (subst (Goal publicationTime identity before) accepted (proj₂ (checked publicationTime identity before)))
 
-module Registered (conversion : Conversion.Contract)
-  (databaseSum : List Float → Float) (calculator : P.Calculator)
-  (serverTime : ℕ → Store.World → ℤ) where
-  module B = Business databaseSum calculator
-
+module Registration (conversion : Conversion.Contract) where
   descriptor : Admission.Descriptor
   descriptor = Admission.descriptor (toList "delete_belief") (toList "store.delete_belief")
     (toList "[\"store.delete_belief\",null]")
@@ -148,6 +151,21 @@ module Registered (conversion : Conversion.Contract)
     (Store.BindingRow.arguments binding))
   ... | _ = inj₁ (Validation.fault (Validation.key "settings" ∷ []) Validation.unknownField
     "delete_belief has no per-request settings. Read the original binding and outcome; resolve this token with the user rather than replacing its settings.")
+
+module Registered (conversion : Conversion.Contract)
+  (databaseSum : List Float → Float) (calculator : P.Calculator)
+  (serverTime : ℕ → Store.World → ℤ) where
+  module B = Business databaseSum calculator
+
+  module Shared = Registration conversion
+  descriptor : Admission.Descriptor
+  descriptor = Shared.descriptor
+  key : ℕ → Text
+  key = Shared.key
+  distinct : ∀ token → key token ≡ Step.resultKey → ⊥
+  distinct = Shared.distinct
+  original : ℕ → Step.Registration → Validation.Fault ⊎ (ℕ × ℤ)
+  original = Shared.original
 
   admit : ℕ → Step.Registration → Data.Maybe.Maybe B.Diagnostic
   admit token registration with original token registration

@@ -18,6 +18,7 @@ open import Data.Unit using (tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
+import Mimir.BeliefDeletionRecovery as BeliefDeletion
 import Mimir.DocumentQuery as DocumentQuery
 import Mimir.InferenceStorageBinding as Numerical
 import Mimir.OperationControls as Controls
@@ -177,6 +178,8 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     learningContextReadback : LearningContext.Output → PublicOutcome
     invalidContextAssessment : PublicOutcome
     invalidDecayInputs : PublicOutcome
+    beliefDeletionProblem : (databaseSum : Data.List.List Float.Float → Float.Float) →
+      BeliefDeletion.Diagnostics.Diagnostic databaseSum → PublicOutcome
     agentDecision : Errors.AgentCorrection.Claim → PublicOutcome
     numericalReadback : (databaseSum : Data.List.List Float.Float → Float.Float) →
       Numerical.NumericalOutcome.Result databaseSum → PublicOutcome
