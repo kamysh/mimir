@@ -516,18 +516,17 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ observedCall = inj₂ (admittedWrite tool raw kind observedCall)
 
-  -- This is the existing external canonical Value boundary used for native
-  -- jsonb matching: object order/numeric spelling are normalized; omission,
-  -- explicit null, field values and array order remain different. It compares
-  -- the actual submitted object after removing only operation_token.
+  -- Match through the actual external database jsonb comparison. Compact JSON
+  -- bytes do not have these semantics (for example, 1 and 1.0 compare equal in
+  -- PostgreSQL). The stored object still removes only operation_token.
   signature : Text → Wire.Value → Wire.Value → Wire.Value
   signature name arguments settings = Wire.array (Wire.string name ∷ arguments ∷ settings ∷ [])
 
   matches : Call → Wire.Value → Store.BindingRow → Bool
-  matches call settings original = does (Lists.≡-dec Fin._≟_
-    (Library.Contract.compactJSON library (signature (Call.name call) (Call.arguments call) settings))
-    (Library.Contract.compactJSON library (signature (Store.BindingRow.operation original)
-      (Store.BindingRow.arguments original) (Store.BindingRow.settings original))))
+  matches call settings original = Controls.PostgreSQL.jsonbEqual postgres
+    (signature (Call.name call) (Call.arguments call) settings)
+    (signature (Store.BindingRow.operation original)
+      (Store.BindingRow.arguments original) (Store.BindingRow.settings original))
 
   tables = Store.World.operations
   binding : ℕ → Store.World → Maybe Store.BindingRow
@@ -835,8 +834,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
 
   afterPolicy : Call → Wire.Value → Settings → E.Script Result
   afterPolicy call settings (unavailable fault) = E.done (needsInput fault)
-  afterPolicy call settings (configured current) with does (Lists.≡-dec Fin._≟_
-    (Library.Contract.compactJSON library settings) (Library.Contract.compactJSON library current))
+  afterPolicy call settings (configured current) with Controls.PostgreSQL.jsonbEqual postgres settings current
   ... | false = E.done (needsInput changedPolicy)
   ... | true = createPlan call settings
 
@@ -923,8 +921,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
 
   afterPolicyScoped : ∀ call settings observed → Scoped call (afterPolicy call settings observed)
   afterPolicyScoped call settings (unavailable fault) = finished _
-  afterPolicyScoped call settings (configured current) with does (Lists.≡-dec Fin._≟_
-    (Library.Contract.compactJSON library settings) (Library.Contract.compactJSON library current))
+  afterPolicyScoped call settings (configured current) with Controls.PostgreSQL.jsonbEqual postgres settings current
   ... | false = finished _
   ... | true = createPlanScoped call settings
 
@@ -1134,8 +1131,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     X.Completed (afterPolicy call settings observed) before after reply → ReplyMeaning call after reply
   afterPolicyMeaning call settings (unavailable fault) before .before .(needsInput fault)
     (X.completed [] (E.returned _) (X.unchanged _)) = dialogue fault
-  afterPolicyMeaning call settings (configured current) before after reply completion with does (Lists.≡-dec Fin._≟_
-    (Library.Contract.compactJSON library settings) (Library.Contract.compactJSON library current))
+  afterPolicyMeaning call settings (configured current) before after reply completion with Controls.PostgreSQL.jsonbEqual postgres settings current
   ... | true = createPlanMeaning call settings before after reply completion
   ... | false with completion
   ... | X.completed [] (E.returned _) (X.unchanged _) = dialogue changedPolicy
@@ -1325,8 +1321,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   afterPolicyProgress : Environment → ∀ call settings observed before → Σ Store.World (λ after → Σ Result
     (λ reply → X.Completed (afterPolicy call settings observed) before after reply))
   afterPolicyProgress environment call settings (unavailable fault) before = doneProgress _ before
-  afterPolicyProgress environment call settings (configured current) before with does (Lists.≡-dec Fin._≟_
-    (Library.Contract.compactJSON library settings) (Library.Contract.compactJSON library current))
+  afterPolicyProgress environment call settings (configured current) before with Controls.PostgreSQL.jsonbEqual postgres settings current
   ... | false = doneProgress _ before
   ... | true = createPlanProgress environment call settings before
 

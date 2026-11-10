@@ -65,6 +65,10 @@ record PostgreSQL : Set₁ where
   field reservationDefault : ∀ before → DefaultReturning before
         cancellationTimestamp : ℕ → Store.World → ℤ
         storedStepBefore : Text → Text → Bool -- actual database ORDER BY step
+        -- Actual PostgreSQL jsonb equality: object order and numeric spelling
+        -- are immaterial; omitted fields, null and array order remain distinct.
+        -- This external database observation is not compact JSON byte equality.
+        jsonbEqual : Wire.Value → Wire.Value → Bool
 
 -- Both mutating controls have one committed publication with metadata selected
 -- by its observed database reply. Goal is fixed by concrete control assembly.
