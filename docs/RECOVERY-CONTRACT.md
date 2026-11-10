@@ -457,6 +457,16 @@ preserves the current world and original list without new receipts. Shared
 parser/diagnostic definitions do not change business goals or runtime behavior.
 Complete public host/wire assembly remains unfinished.
 
+`IntendedEvidence.Evaluate.With.evaluate` composes public `add_evidence`
+admission, original metadata, the independent evidence/posterior intention and
+both saved answers. Invalid references, invalid weights or failed preparation
+need no invented report and publish no tentative evidence. Prepared fresh work
+checks its actual report at the actual locked publication clock; rejected or
+repeated calculations preserve the original world and pending journal. Replay
+returns the original answer without new receipts. The unchanged kind-specific
+registration parser is shared locally. Library `delete_evidence` admission and
+complete public host/wire assembly remain explicitly unfinished.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |

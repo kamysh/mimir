@@ -168,10 +168,7 @@ distinctFor : ∀ kind → Admission.Descriptor.key (descriptorFor kind) ≡ Ste
 distinctFor addition ()
 distinctFor removal ()
 
-module Registered (kind : Kind) (conversion : Conversion.Contract)
-  (databaseSum : List Float → Float) (calculator : P.Calculator)
-  (serverTime : ℕ → Store.World → ℤ) where
-  module B = Business databaseSum calculator
+module Registration (kind : Kind) (conversion : Conversion.Contract) where
   module PublicDecode = Public.Decode conversion
 
   descriptor : Admission.Descriptor
@@ -207,6 +204,27 @@ module Registered (kind : Kind) (conversion : Conversion.Contract)
   ... | Wire.object [] = Decode.mapResult (λ requested → requested , Store.ReservationRow.reservedAt reserved)
     (request (Store.BindingRow.arguments binding))
   ... | _ = inj₁ mismatch
+
+module Registered (kind : Kind) (conversion : Conversion.Contract)
+  (databaseSum : List Float → Float) (calculator : P.Calculator)
+  (serverTime : ℕ → Store.World → ℤ) where
+  module B = Business databaseSum calculator
+  module Shared = Registration kind conversion
+  module PublicDecode = Public.Decode conversion
+  descriptor : Admission.Descriptor
+  descriptor = Shared.descriptor
+  key : ℕ → Text
+  key = Shared.key
+  distinct : ∀ token → key token ≡ Step.resultKey → ⊥
+  distinct = Shared.distinct
+  mismatch : Validation.Fault
+  mismatch = Shared.mismatch
+  requestFor : Kind → Wire.Value → Validation.Fault ⊎ Ground.Request
+  requestFor = Shared.requestFor
+  request : Wire.Value → Validation.Fault ⊎ Ground.Request
+  request = Shared.request
+  original : ℕ → Step.Registration → Validation.Fault ⊎ (Ground.Request × ℤ)
+  original = Shared.original
 
   admit : ℕ → Step.Registration → Maybe B.Diagnostic
   admit token registration with original token registration
