@@ -22,6 +22,9 @@ import Mimir.GraphMutationProtocol as Mutation
 import Mimir.GroundingPublication as Ground
 import Mimir.GraphReadProtocol as Read
 import Mimir.GraphRecords as Records
+import Mimir.DirectGraphRecovery as DirectRelationships
+import Mimir.RegisteredStoreAdmission as RegisteredAdmission
+open import Mimir.SourceReview using (_≟Text_)
 import Mimir.InferenceProtocol as Inference
 import Mimir.DocumentQuery as DocumentQuery
 import Mimir.LearningQueryProtocol as Query
@@ -80,6 +83,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     success : V.Value → Projection
     failure : A.Result → Projection
     decision : Errors.AgentCorrection.Claim → Projection
+    boundReferenceDecision : Store.BindingRow → Validation.Fault → Projection
     partialDecision : Mutation.CommittedEdge → Errors.AgentCorrection.Claim → Projection
 
   flag : String → Bool → V.Value
@@ -360,6 +364,36 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   faultStep : A.Result → ℕ → Store.World → Step.Result Validation.Fault → Projection
   faultStep original = stepProjection original (λ fault → decision (argumentCorrection fault))
 
+  boundReferenceReport : Store.BindingRow → Validation.Fault → Errors.AgentCorrection.Claim
+  boundReferenceReport binding detail = Errors.AgentCorrection.boundRelationshipReference detail
+    (Formatting.uuidText format (Store.BindingRow.token binding))
+    (Library.Contract.lossyUTF8 library (Library.Contract.compactJSON library (Store.BindingRow.arguments binding)))
+    where library = Application.Environment.library environment
+
+  relationshipEndpoint : DirectRelationships.Kind → List Validation.Segment → Bool
+  relationshipEndpoint relation (Validation.fieldKey fieldName ∷ [])
+    with fieldName ≟Text toList (DirectRelationships.endpointField relation true)
+  ... | yes _ = true
+  ... | no _ with fieldName ≟Text toList (DirectRelationships.endpointField relation false)
+  ...   | yes _ = true
+  ...   | no _ = false
+  relationshipEndpoint relation _ = false
+
+  resolvedRelationshipReference : DirectRelationships.Kind → ℕ → Store.World → Validation.Fault → Projection
+  resolvedRelationshipReference relation token final detail with
+    RegisteredAdmission.resolve (DirectRelationships.descriptor relation) token (Step.registration final)
+  ... | inj₁ _ = decision (argumentCorrection detail)
+  ... | inj₂ (_ , binding) = boundReferenceDecision binding detail
+
+  relationshipReference : DirectRelationships.Kind → ℕ → Store.World → Validation.Fault → Projection
+  relationshipReference relation token final detail with Validation.code detail | relationshipEndpoint relation (Validation.path detail)
+  ... | Validation.missingReference | true = resolvedRelationshipReference relation token final detail
+  ... | _ | _ = decision (argumentCorrection detail)
+
+  relationshipStep : A.Result → DirectRelationships.Kind → ℕ → Store.World → Step.Result Validation.Fault → Projection
+  relationshipStep original relation token final =
+    stepProjection original (relationshipReference relation token final) token final
+
   storedDefeat : ℕ → ℕ → List Edges.Edge → Maybe Mutation.CommittedEdge
   storedDefeat from to [] = nothing
   storedDefeat from to (edge ∷ rest) with from ≟ Edges.Edge.from edge | to ≟ Edges.Edge.to edge | Edges.Edge.relation edge
@@ -446,7 +480,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   payload original (C.beliefRemoval expected) token (C.BeliefRemovalGuard.needsInput detail) final = decision (argumentCorrection detail)
   payload original (C.beliefRemoval expected) token (C.BeliefRemovalGuard.executed reply) final = stepProjection original deletionProblem token final reply
   payload original (C.relationship relation expected) token (C.RelationshipGuard.needsInput detail) final = decision (argumentCorrection detail)
-  payload original (C.relationship relation expected) token (C.RelationshipGuard.executed reply) final = faultStep original token final reply
+  payload original (C.relationship relation expected) token (C.RelationshipGuard.executed reply) final = relationshipStep original relation token final reply
   payload original (C.grounding relation expected) token (C.GroundingGuard.needsInput detail) final = decision (argumentCorrection detail)
   payload original (C.grounding relation expected) token (C.GroundingGuard.executed reply) final = stepProjection original groundingProblem token final reply
   payload original (C.propagation expected) token (C.PropagationGuard.needsInput detail) final = decision (argumentCorrection detail)
@@ -519,10 +553,17 @@ module Encode (environment : Application.Environment) (format : Encoding.Formatt
     ("next_action" , V.string (toList "read_operation_outcome_or_ask_user")) ∷
     ("message" , V.string (toList "The original operation returned this diagnostic, but this receipt does not establish that business data is unchanged. Read its original outcome and preserve committed steps before discussing the correction with the user.")) ∷ [])
 
+  boundReferenceValue : A.Result → Store.BindingRow → Validation.Fault → V.Value
+  boundReferenceValue original@(A.terminalResult call initial terminal) binding detail with A.Checked.Terminal.disposition call terminal
+  ... | A.Checked.correction certified = Errors.AgentCorrection.emitBoundRelationshipReference
+    (Errors.AgentCorrection.certified (P.boundReferenceReport binding detail) (Errors.AgentCorrection.Certified.unchanged certified))
+  ... | _ = decisionValue original (P.boundReferenceReport binding detail)
+
   result : A.Result → V.Value
   result original with P.project original
   ... | P.success value = value
   ... | P.decision report = decisionValue original report
+  ... | P.boundReferenceDecision binding detail = boundReferenceValue original binding detail
   ... | P.partialDecision edge report = P.partialValue edge report
   ... | P.failure cause = object (("status" , V.string (toList "needs_recovery")) ∷
     ("message" , V.string (toList "The requested operation has no certified successful result. Keep its original token, request and saved answers; read operation_outcome and the complete diagnostic before retrying or asking the user to resolve the prerequisite.")) ∷ [])
