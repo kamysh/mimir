@@ -109,10 +109,7 @@ module Business (databaseSum : List Float → Float) (calculator : P.Calculator)
 -- preparation result separately. A retry never resolves the path afresh.
 -- The existing canonicalize dependency supplies this preparation; no path
 -- parser or filesystem-normalization theorem is invented here.
-module Registered (conversion : Conversion.Contract)
-  (databaseSum : List Float → Float) (calculator : P.Calculator)
-  (serverTime : ℕ → Store.World → ℤ) where
-  module B = Business databaseSum calculator
+module Registration (conversion : Conversion.Contract) where
   module PublicDecode = Public.Decode conversion
 
   descriptor : Admission.Descriptor
@@ -147,6 +144,27 @@ module Registered (conversion : Conversion.Contract)
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ requested = Decode.mapResult (λ path → path , Store.ReservationRow.reservedAt reserved)
     (prepared (Store.BindingRow.settings binding))
+
+module Registered (conversion : Conversion.Contract)
+  (databaseSum : List Float → Float) (calculator : P.Calculator)
+  (serverTime : ℕ → Store.World → ℤ) where
+  module B = Business databaseSum calculator
+  module Shared = Registration conversion
+  module PublicDecode = Public.Decode conversion
+  descriptor : Admission.Descriptor
+  descriptor = Shared.descriptor
+  key : ℕ → Text
+  key = Shared.key
+  distinct : ∀ token → key token ≡ Step.resultKey → ⊥
+  distinct = Shared.distinct
+  mismatch : Validation.Fault
+  mismatch = Shared.mismatch
+  request : Wire.Value → Validation.Fault ⊎ Text
+  request = Shared.request
+  prepared : Wire.Value → Validation.Fault ⊎ Text
+  prepared = Shared.prepared
+  original : ℕ → Step.Registration → Validation.Fault ⊎ (Text × ℤ)
+  original = Shared.original
 
   admit : ℕ → Step.Registration → Maybe B.G.Diagnostic
   admit token registration with original token registration

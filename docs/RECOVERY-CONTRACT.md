@@ -467,6 +467,16 @@ returns the original answer without new receipts. The unchanged kind-specific
 registration parser is shared locally. Library `delete_evidence` admission and
 complete public host/wire assembly remain explicitly unfinished.
 
+`IntendedDocumentRemoval.Evaluate.With.evaluate` composes `clear_document`
+admission with its immutable resolved-path settings, independent indexed-data
+removal/posterior intent and both original answers. It never re-resolves a path
+on retry or invents a path when preparation failed. Fresh prepared work requires
+actual locked-clock and calculation receipts; preparation/rejected/repeated
+outcomes retain the original business world and pending journal. Success keeps
+the original cleared count, while replay preserves the current world without
+new receipts. The parser and existing business goals are unchanged; complete
+public host/wire assembly remains unfinished.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |
