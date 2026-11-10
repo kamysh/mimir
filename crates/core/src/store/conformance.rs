@@ -422,7 +422,7 @@ impl AgeStore {
             let id = Uuid::parse_str(row.get(0))?;
             ensure!(!proposed.contains(&id) || old.contains(&id), "generated chunk identity is already occupied");
         }
-        self.delete_document_chunks_in(&tx, &old).await?;
+        self.delete_document_chunks_in(tx, &old).await?;
         self.delete_chunk_embeddings_on(tx.client(), &old).await?;
         for (chunk, vector) in chunks.iter().zip(vectors) {
             self.insert_document_chunk_on(tx.client(), chunk).await?;

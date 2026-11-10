@@ -28,6 +28,18 @@ async fn stored_count_problem_is_a_dialog_and_the_same_connection_recovers() -> 
     let target =
         isolation::seed_belief_in_project("target", 0.1, 0.2, &project, MemoryType::Fact).await?;
     let store = AgeStore::new(db::connect(&cfg).await?, cfg.dbname.clone())?;
+    let token = store
+        .reserve_operation(&format!("stored-count-mcp-{key}"))
+        .await?
+        .operation_token;
+    let config_path = fixture
+        .root
+        .join(format!("stored-count-mcp-policy-{key}.toml"));
+    let mut config = std::fs::read_to_string(fixture.root.join("config.toml"))?;
+    if !config.contains("[retirement]") {
+        config.push_str("\n[retirement]\ngrace_hours=0\n");
+    }
+    std::fs::write(&config_path, config)?;
     store
         .insert_edge(&Edge::new(source.id, target.id, EdgeType::Defeats, 1.0)?)
         .await?;
@@ -41,6 +53,7 @@ async fn stored_count_problem_is_a_dialog_and_the_same_connection_recovers() -> 
         .create_new(true)
         .open(fixture.root.join(format!("stored-count-{key}.stdout")))?;
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mimir-mcp"))
+        .env("MIMIR_CONFIG", &config_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(stderr)
@@ -50,7 +63,7 @@ async fn stored_count_problem_is_a_dialog_and_the_same_connection_recovers() -> 
     let mut output = BufReader::new(child.stdout.take().unwrap());
     let checked:Result<()>=async {
         for (id,name,args) in [(1,"get_belief",json!({"id":target.id})),
-            (2,"sweep_expired_defeated",json!({"project":project,"prob_threshold":0.3}))] {
+            (2,"sweep_expired_defeated",json!({"project":project,"prob_threshold":0.3,"operation_token":token}))] {
             let request=json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}});
             input.write_all(format!("{request}\n").as_bytes()).await?;input.flush().await?;
             let mut line=String::new();ensure!(output.read_line(&mut line).await?!=0,"server stopped before correction");

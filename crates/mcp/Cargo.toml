@@ -7,6 +7,9 @@ edition = "2021"
 name = "mimir-mcp"
 path = "src/main.rs"
 
+[features]
+test-boundaries = ["mimir-core/test-boundaries"]
+
 [dependencies]
 mimir-json = { path = "../json" }
 serde_stacker = "0.1.14"

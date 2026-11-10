@@ -1,7 +1,5 @@
-#[allow(dead_code)]
-#[path = "../../../../tests/support/isolation.rs"]
-mod isolation;
 use super::*;
+use crate::test_isolation as isolation;
 
 #[test]
 fn deeply_nested_invalid_capture_is_rejected_without_recursive_copy_or_cleanup() {

@@ -654,7 +654,13 @@ impl crate::MimirService {
                 let support = self
                     .store
                     .validate_indexed_support(belief.project.as_deref(), &grounding)
-                    .await?;
+                    .await
+                    .map_err(|error| {
+                        match error.downcast_ref::<crate::preparation::PreparationRequired>() {
+                            Some(issue) => issue.for_review_candidate(index, &key).into(),
+                            None => error,
+                        }
+                    })?;
                 let result = self
                     .watch_review_preparation(
                         &review,

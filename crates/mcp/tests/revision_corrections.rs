@@ -20,6 +20,8 @@ struct Client {
     input: tokio::process::ChildStdin,
     output: BufReader<tokio::process::ChildStdout>,
     next_id: u64,
+    scope: uuid::Uuid,
+    cases: std::collections::BTreeMap<String, uuid::Uuid>,
 }
 impl Client {
     fn start(id: uuid::Uuid) -> Result<Self> {
@@ -29,7 +31,7 @@ impl Client {
                 .root
                 .join(format!("learning-references-{id}.stderr")),
         )?;
-        let mut child = tokio::process::Command::new(&fixture.mcp)
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mimir-mcp"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr)
@@ -42,9 +44,50 @@ impl Client {
             input,
             output,
             next_id: 0,
+            scope: id,
+            cases: Default::default(),
         })
     }
-    async fn call(&mut self, name: &str, arguments: Value) -> Result<Value> {
+    // Each distinct payload below is an independently declared diagnostic
+    // test case. Exact repeats retain its explicit reserved identity. This
+    // fixture policy is not application retry behavior: the public protocol
+    // tests separately require unchanged arguments under the original token.
+    async fn independent_case(&mut self, name: &str, mut arguments: Value) -> Result<Value> {
+        let writer = mimir_core::operation_catalogue::Operation::ALL
+            .iter()
+            .any(|operation| operation.name() == name && operation.registered_write().is_some());
+        if writer {
+            let key = mimir_json::to_string(&json!([name, arguments]))?;
+            let token = match self.cases.get(&key) {
+                Some(token) => *token,
+                None => {
+                    let reservation = self
+                        .raw(
+                            "reserve_operation",
+                            json!({"request_key":format!("diagnostic-case-{}-{}",self.scope,self.cases.len())}),
+                        )
+                        .await?;
+                    ensure!(
+                        reservation["status"] == "reserved",
+                        "test case was not reserved: {reservation}"
+                    );
+                    let token = reservation["operation_token"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("missing test reservation token"))?
+                        .parse()?;
+                    self.cases.insert(key, token);
+                    token
+                }
+            };
+            arguments["operation_token"] = json!(token);
+        }
+        let response = self.raw(name, arguments).await?;
+        if writer && response["status"] == "completed" {
+            return Ok(mimir_json::clone_value(&response["result"]));
+        }
+        Ok(response)
+    }
+    async fn raw(&mut self, name: &str, arguments: Value) -> Result<Value> {
         let request = json!({"jsonrpc":"2.0","id":self.next_id,"method":"tools/call","params":{"name":name,"arguments":arguments}});
         self.next_id += 1;
         self.input
@@ -95,15 +138,18 @@ async fn belief_citations_offer_field_corrections_and_keep_the_connection_usable
     let mut client = Client::start(id)?;
     let request = json!({"content":"Retries retain the original operation identity.","probability":0.7,"confidence":0.5,"project":project,
         "provenance":{"basis":"document","reference":"The indexed retry guide"}});
-    let correction: NeedsInput =
-        mimir_json::from_value(client.call("insert_belief", request.clone()).await?)?;
+    let correction: NeedsInput = mimir_json::from_value(
+        client
+            .independent_case("insert_belief", request.clone())
+            .await?,
+    )?;
     ensure!(correction.issues().iter().any(|issue| issue.fault().path
         == vec![Segment::Key("grounding".into())]
         && issue.fault().code == Code::MissingField));
     let mut malformed = request.clone();
     malformed["grounding"] = json!([{"chunk_id":"not-a-uuid","document_path":"/guide.md","quotation":"Original text","explanation":"Why it supports the claim"}]);
     let correction: NeedsInput =
-        mimir_json::from_value(client.call("insert_belief", malformed).await?)?;
+        mimir_json::from_value(client.independent_case("insert_belief", malformed).await?)?;
     ensure!(correction.issues().iter().any(|issue| issue.fault().path
         == vec![
             Segment::Key("grounding".into()),
@@ -113,7 +159,7 @@ async fn belief_citations_offer_field_corrections_and_keep_the_connection_usable
     let mut weighted = request.clone();
     weighted["grounding"] = json!([{"chunk_id":id,"document_path":"/guide.md","quotation":"Original text","explanation":"Why it supports the claim","weight":1.0}]);
     let correction: NeedsInput =
-        mimir_json::from_value(client.call("insert_belief", weighted).await?)?;
+        mimir_json::from_value(client.independent_case("insert_belief", weighted).await?)?;
     ensure!(correction.issues().iter().any(|issue| issue.fault().path
         == vec![
             Segment::Key("grounding".into()),
@@ -141,7 +187,7 @@ async fn belief_citations_offer_field_corrections_and_keep_the_connection_usable
     valid["grounding"] = json!([{"chunk_id":id,"document_path":chunk.document_path,"quotation":chunk.content,
         "explanation":"The passage explicitly requires retries to retain the original operation identifier."}]);
     let correction: NeedsInput =
-        mimir_json::from_value(client.call("insert_belief", valid).await?)?;
+        mimir_json::from_value(client.independent_case("insert_belief", valid).await?)?;
     ensure!(correction.issues().iter().any(|issue| issue.location()
         == mimir_core::interaction::Location::Configuration
         && issue.fault().path == vec![Segment::Key("embeddings".into())]));
@@ -150,7 +196,7 @@ async fn belief_citations_offer_field_corrections_and_keep_the_connection_usable
         "Incomplete preparation published a belief"
     );
     let after = client
-        .call("list_beliefs", json!({"project":project}))
+        .independent_case("list_beliefs", json!({"project":project}))
         .await?;
     ensure!(
         after.as_array().is_some_and(|values| values.is_empty()),
@@ -175,7 +221,7 @@ async fn blank_source_fields_offer_precise_corrections_and_keep_the_mcp_connecti
             invalid[field] = json!(" \t\n");
             let correction: NeedsInput = mimir_json::from_value(
                 client
-                    .call(
+                    .independent_case(
                         "record_experience",
                         json!({"experience":invalid,"expected_revision":0}),
                     )
@@ -199,7 +245,7 @@ async fn blank_source_fields_offer_precise_corrections_and_keep_the_mcp_connecti
             ensure!(service.get_experience(id).await?.is_none());
         }
         let stored = client
-            .call(
+            .independent_case(
                 "record_experience",
                 json!({"experience":source,"expected_revision":0}),
             )
@@ -207,7 +253,7 @@ async fn blank_source_fields_offer_precise_corrections_and_keep_the_mcp_connecti
         ensure!(stored["experience"]["id"] == json!(id) && stored["revision"] == json!(1));
         ensure!(
             client
-                .call(
+                .independent_case(
                     "record_experience",
                     json!({"experience":source,"expected_revision":0})
                 )
@@ -237,7 +283,9 @@ async fn missing_propagation_source_offers_readback_and_accepts_a_corrected_requ
     let mut client = Client::start(id)?;
     let checked = async {
         let before = mimir_json::to_value(service.get_belief(source.id).await?)?;
-        let response = client.call("propagate_from", json!({"id":id})).await?;
+        let response = client
+            .independent_case("propagate_from", json!({"id":id}))
+            .await?;
         let correction: NeedsInput = mimir_json::from_value(response)?;
         ensure!(correction.issues()[0].fault().path == vec![Segment::Key("id".into())]);
         ensure!(correction.issues()[0]
@@ -247,7 +295,7 @@ async fn missing_propagation_source_offers_readback_and_accepts_a_corrected_requ
             .suggested_correction()
             .contains("ask the user"));
         let valid = client
-            .call("propagate_from", json!({"id":source.id}))
+            .independent_case("propagate_from", json!({"id":source.id}))
             .await?;
         ensure!(valid.is_array());
         ensure!(mimir_json::to_value(service.get_belief(source.id).await?)? == before);
@@ -270,10 +318,12 @@ async fn blank_learning_context_project_offers_correction_and_keeps_connection_u
     let mut client = Client::start(id)?;
     let project = format!("context-project-correction-{id}");
     let valid = json!({"context":"literal context", "project":project});
-    let before = client.call("query_learning_context", valid.clone()).await?;
+    let before = client
+        .independent_case("query_learning_context", valid.clone())
+        .await?;
     for project in ["", " \t\r\n", "\u{2003}"] {
         let response = client
-            .call(
+            .independent_case(
                 "query_learning_context",
                 json!({"context":"literal context", "project":project}),
             )
@@ -286,7 +336,9 @@ async fn blank_learning_context_project_offers_correction_and_keeps_connection_u
         ensure!(issue.suggested_correction().contains("ask the user"));
         ensure!(response["business_changes"] == "none");
     }
-    let after = client.call("query_learning_context", valid).await?;
+    let after = client
+        .independent_case("query_learning_context", valid)
+        .await?;
     ensure!(
         after == before,
         "corrections changed the learning-context response"
@@ -334,24 +386,24 @@ async fn cyclic_numerical_decision_preserves_posteriors_and_reports_an_earlier_e
     let before_b = mimir_json::to_value(service.get_belief(b.id).await?)?;
     let mut client = Client::start(id)?;
     let checked=async {
-        let correction=client.call("propagate_from",json!({"id":seed.id})).await?;
+        let correction=client.independent_case("propagate_from",json!({"id":seed.id})).await?;
         let parsed:NeedsInput=mimir_json::from_value(correction)?;
         ensure!(parsed.issues()[0].fault().message.contains("2 distinct"));
         ensure!(mimir_json::to_value(service.get_belief(a.id).await?)?==before_a);
         ensure!(mimir_json::to_value(service.get_belief(b.id).await?)?==before_b);
 
         let source=json!({"id":id,"project":project,"context":"cyclic counts","action":"retain a numerical decision","outcome":"unknown","source":"tool_result","evidence":["isolated fixture"],"belief_ids":[a.id,b.id]});
-        client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?;
+        client.independent_case("record_experience",json!({"experience":source,"expected_revision":0})).await?;
         let original=service.experience_history(id).await?;
         let review=json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"no invented tolerance","feedback":[{"belief_id":a.id,"verdict":"support","weight":0}]});
-        let result=client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
+        let result=client.independent_case("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
         let parsed:NeedsInput=mimir_json::from_value(result)?;
         ensure!(parsed.issues()[0].suggested_correction().contains("Open a dialog"));
         ensure!(service.experience_history(id).await?==original);
         ensure!(mimir_json::to_value(service.get_belief(a.id).await?)?==before_a);
         ensure!(mimir_json::to_value(service.get_belief(b.id).await?)?==before_b);
 
-        let partial=client.call("record_defeat",json!({"from_id":seed.id,"to_id":a.id,"weight":0.0})).await?;
+        let partial=client.independent_case("record_defeat",json!({"from_id":seed.id,"to_id":a.id,"weight":0.0})).await?;
         ensure!(partial["status"]=="needs_input");
         ensure!(partial["posterior_publication"]=="not_performed");
         ensure!(partial["business_changes"]["committed_edge"]["from_id"]==json!(seed.id));
@@ -363,7 +415,7 @@ async fn cyclic_numerical_decision_preserves_posteriors_and_reports_an_earlier_e
 
         // Deletion detaches rows before recomputing, in one transaction. An
         // unfinished numerical result must roll back that deletion as well.
-        let decision = client.call("delete_belief",json!({"id":seed.id})).await?;
+        let decision = client.independent_case("delete_belief",json!({"id":seed.id})).await?;
         let parsed:NeedsInput=mimir_json::from_value(decision)?;
         ensure!(parsed.issues()[0].fault().message.contains("2 distinct"));
         ensure!(service.get_belief(seed.id).await?.is_some(),"a numerical decision committed the deletion");
@@ -387,7 +439,7 @@ async fn document_query_without_embeddings_requests_a_user_dialog() -> Result<()
     let mut client = Client::start(id)?;
     let checked = async {
         let reply = client
-            .call(
+            .independent_case(
                 "query_document",
                 json!({"context":"complete query with its final condition"}),
             )
@@ -425,14 +477,14 @@ async fn local_key_mistakes_offer_precise_repairs_before_any_reservation_or_publ
         let source=json!({"id":id,"project":project,"context":"local keys","action":"reuse exact identifiers","outcome":"unknown","source":"user_feedback","evidence":["source/0"],"source_records":[{"source_ref":"source/0","actor":"human","provenance":"user_feedback","text":"Keep every key unchanged."}],"learning_items":[item]});
         for bad in ["", " ", " local item", "local item ", "\u{00a0}local item"] {
             let mut invalid=source.clone();invalid["learning_items"][0]["key"]=json!(bad);
-            let result=client.call("record_experience",json!({"experience":invalid,"expected_revision":0})).await?;
+            let result=client.independent_case("record_experience",json!({"experience":invalid,"expected_revision":0})).await?;
             key_correction(result,json!(["experience","learning_items",0,"key"]),if bad.trim().is_empty(){Code::EmptyText}else{Code::MalformedInput})?;
             ensure!(service.get_experience(id).await?.is_none());
             ensure!(db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1",&[&id]).await?.get::<_,i64>(0)==0);
         }
         let mut duplicate=source.clone();duplicate["learning_items"]=json!([item,item]);
-        key_correction(client.call("record_experience",json!({"experience":duplicate,"expected_revision":0})).await?,json!(["experience","learning_items",1,"key"]),Code::Duplicate)?;
-        let stored=client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?;
+        key_correction(client.independent_case("record_experience",json!({"experience":duplicate,"expected_revision":0})).await?,json!(["experience","learning_items",1,"key"]),Code::Duplicate)?;
+        let stored=client.independent_case("record_experience",json!({"experience":source,"expected_revision":0})).await?;
         ensure!(stored["experience"]["learning_items"][0]["key"]=="local item","a valid internal space was rewritten");
         let history=service.experience_history(id).await?;
         let assessment=json!({"target":{"belief_id":belief.id},"scope":"fixture","rubric":"fixture","correctness":{"value":null,"weight":0},"usefulness":{"value":null,"weight":0},"evidence_indices":[],"item_keys":["local item"],"rationale":"unresolved"});
@@ -440,21 +492,21 @@ async fn local_key_mistakes_offer_precise_repairs_before_any_reservation_or_publ
         let review=json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"preserve every key","candidates":[candidate],"assessments":[assessment],"source_coverage":[{"source_ref":"source/0","status":"complete","reason":"original evidence retained"}]});
         for bad in ["", " ", " candidate step", "candidate step ", "\u{00a0}candidate step"] {
             let mut invalid=review.clone();invalid["candidates"][0]["key"]=json!(bad);
-            key_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,json!(["review","candidates",0,"key"]),if bad.trim().is_empty(){Code::EmptyText}else{Code::MalformedInput})?;
+            key_correction(client.independent_case("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,json!(["review","candidates",0,"key"]),if bad.trim().is_empty(){Code::EmptyText}else{Code::MalformedInput})?;
             ensure!(service.experience_history(id).await?==history);
         }
         for bad in ["", " ", " local item", "local item ", "\u{00a0}local item"] {
             let mut invalid=review.clone();invalid["assessments"][0]["item_keys"]=json!([bad]);
-            key_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,json!(["review","assessments",0,"item_keys",0]),if bad.trim().is_empty(){Code::EmptyText}else{Code::MalformedInput})?;
+            key_correction(client.independent_case("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,json!(["review","assessments",0,"item_keys",0]),if bad.trim().is_empty(){Code::EmptyText}else{Code::MalformedInput})?;
             ensure!(service.experience_history(id).await?==history);
         }
         let mut duplicate=review.clone();duplicate["assessments"][0]["item_keys"]=json!(["local item","local item"]);
-        key_correction(client.call("review_experience",json!({"review":duplicate,"expected_review_revision":0})).await?,json!(["review","assessments",0,"item_keys",1]),Code::Duplicate)?;
+        key_correction(client.independent_case("review_experience",json!({"review":duplicate,"expected_review_revision":0})).await?,json!(["review","assessments",0,"item_keys",1]),Code::Duplicate)?;
         ensure!(db.query_one("SELECT count(*) FROM mimir_review_candidates WHERE experience_id=$1",&[&id]).await?.get::<_,i64>(0)==0);
-        let completed=client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
+        let completed=client.independent_case("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
         ensure!(completed["review_revision"]==1);
         let history=service.experience_history(id).await?;
-        ensure!(client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?==completed);
+        ensure!(client.independent_case("review_experience",json!({"review":review,"expected_review_revision":0})).await?==completed);
         ensure!(service.experience_history(id).await?==history);
         Ok::<_,anyhow::Error>(())
     }.await;
@@ -503,10 +555,10 @@ async fn conflicting_review_entries_offer_repairs_without_changing_saved_work() 
     let mut client = Client::start(id)?;
     let checked = async {
         let source=json!({"id":id,"project":project,"context":"inspect conflicting review entries","action":"retain each observed contribution once","outcome":"unknown","source":"tool_result","evidence":["isolated fixture observation"],"belief_ids":[first.id,second.id]});
-        client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?;
-        let original=client.call("get_experience",json!({"id":id})).await?;
-        let history=client.call("experience_history",json!({"id":id})).await?;
-        let saved_review=client.call("get_learning_review",json!({"id":id})).await?;
+        client.independent_case("record_experience",json!({"experience":source,"expected_revision":0})).await?;
+        let original=client.independent_case("get_experience",json!({"id":id})).await?;
+        let history=client.independent_case("experience_history",json!({"id":id})).await?;
+        let saved_review=client.independent_case("get_learning_review",json!({"id":id})).await?;
         let base=json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"unresolved fixture observation"});
         let assessment=json!({"target":{"belief_id":first.id},"scope":"fixture","rubric":"fixture","correctness":{"value":null,"weight":0},"usefulness":{"value":null,"weight":0},"evidence_indices":[],"rationale":"unresolved"});
         let feedback=json!({"belief_id":first.id,"verdict":"support","weight":0});
@@ -529,18 +581,18 @@ async fn conflicting_review_entries_offer_repairs_without_changing_saved_work() 
         let mut duplicate_feedback=base.clone();duplicate_feedback["feedback"]=json!([feedback,feedback]);
         cases.push((duplicate_feedback,json!(["review","feedback",1]),Code::Duplicate));
         for (review,path,code) in cases {
-            let result=client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
+            let result=client.independent_case("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
             let correction:NeedsInput=mimir_json::from_value(result)?;
             let item=&correction.issues()[0];
             ensure!(item.fault().code==code && mimir_json::to_value(&item.fault().path)?==path);
             ensure!(!item.fault().message.is_empty() && !item.expected().is_empty());
             ensure!(item.suggested_correction().contains("same experience ID"));
-            ensure!(client.call("get_experience",json!({"id":id})).await?==original,"conflict changed its experience");
-            ensure!(client.call("experience_history",json!({"id":id})).await?==history,"conflict changed its history");
-            ensure!(client.call("get_learning_review",json!({"id":id})).await?==saved_review,"conflict published a review");
+            ensure!(client.independent_case("get_experience",json!({"id":id})).await?==original,"conflict changed its experience");
+            ensure!(client.independent_case("experience_history",json!({"id":id})).await?==history,"conflict changed its history");
+            ensure!(client.independent_case("get_learning_review",json!({"id":id})).await?==saved_review,"conflict published a review");
         }
         let mut corrected=base;corrected["assessments"]=json!([assessment]);
-        let result=client.call("review_experience",json!({"review":corrected,"expected_review_revision":0})).await?;
+        let result=client.independent_case("review_experience",json!({"review":corrected,"expected_review_revision":0})).await?;
         ensure!(result["review_revision"]==1,"corrected request did not complete: {result}");
         Ok::<_,anyhow::Error>(())
     }.await;
@@ -574,14 +626,14 @@ async fn learning_history_and_explanations_return_all_or_the_explicit_positive_s
             for index in 0..21 {
                 let experience_id = fixture_identity().await?;
                 let source = json!({"id":experience_id,"project":project,"context":format!("selection {assessment} {index}"),"action":"record complete selection fixture","outcome":"unknown","source":"tool_result","evidence":["isolated fixture observation"],"belief_ids":[belief.id]});
-                client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?;
+                client.independent_case("record_experience",json!({"experience":source,"expected_revision":0})).await?;
                 let mut review = json!({"experience_id":experience_id,"experience_revision":1,"reviewer":"fixture","rationale":"unresolved fixture observation"});
                 if assessment {
                     review["assessments"] = json!([{"target":{"belief_id":belief.id},"scope":"fixture","rubric":"fixture","correctness":{"value":null,"weight":0},"usefulness":{"value":null,"weight":0},"evidence_indices":[],"rationale":"unresolved"}]);
                 } else {
                     review["feedback"] = json!([{"belief_id":belief.id,"verdict":"support","weight":0}]);
                 }
-                ensure!(client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?["review_revision"]==1);
+                ensure!(client.independent_case("review_experience",json!({"review":review,"expected_review_revision":0})).await?["review_revision"]==1);
             }
         }
         let history = json!({"project":project,"belief_id":belief.id,"scope":"fixture","rubric":"fixture"});
@@ -591,18 +643,18 @@ async fn learning_history_and_explanations_return_all_or_the_explicit_positive_s
                 let mut request = base.clone();
                 if let Some(count)=limit { request["limit"]=json!(count); }
                 if offset!=0 { request["offset"]=json!(offset); }
-                let result=client.call(name,request).await?;
+                let result=client.independent_case(name,request).await?;
                 let page=if name=="explain_belief" { &result["learning"] } else { &result };
                 ensure!(page[field].as_array().map(Vec::len)==Some(want),"wrong {name} selection: {result}");
                 ensure!(page["next_offset"]==json!(next),"wrong {name} continuation: {result}");
             }
             for bad in [json!(0),json!(-1),json!("all"),json!(null)] {
                 let mut request=base.clone();request["limit"]=bad;
-                let correction:NeedsInput=mimir_json::from_value(client.call(name,request).await?)?;
+                let correction:NeedsInput=mimir_json::from_value(client.independent_case(name,request).await?)?;
                 ensure!(mimir_json::to_value(&correction.issues()[0].fault().path)?==json!(["limit"]));
                 ensure!(!correction.issues()[0].suggested_correction().is_empty());
             }
-            ensure!(client.call(name,base).await?["status"]!="needs_input");
+            ensure!(client.independent_case(name,base).await?["status"]!="needs_input");
         }
         Ok::<_,anyhow::Error>(())
     }.await;
@@ -631,7 +683,7 @@ async fn review_source_dialogues_precede_embedding_and_preserve_literal_evidence
         let source = json!({"id":id,"project":project,"context":"literal evidence","action":"read the saved source before extraction","outcome":"unknown","source":"agent_report","evidence":["event/0","wrapped/1"],"belief_ids":[belief.id],"source_records":[
             {"source_ref":"event/0","actor":"agent","provenance":"agent_report","text":"Proceed carefully."},
             {"source_ref":"wrapped/1","actor":"controller","provenance":"tool_result","text":"{\"actor\":\"agent\",\"message\":\"Check first\\nThen proceed\"}"}]});
-        ensure!(client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?["revision"]==1);
+        ensure!(client.independent_case("record_experience",json!({"experience":source,"expected_revision":0})).await?["revision"]==1);
         let history = service.experience_history(id).await?;
         let item = json!({"kind":"suggestion","key":"check-first","source_ref":"wrapped/1","actor":"controller","statement":"Check first\\nThen proceed","conditions":"nested speaker remains interpretation"});
         let review = json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"literal source words","extracted_items":[item],"source_coverage":[
@@ -653,24 +705,24 @@ async fn review_source_dialogues_precede_embedding_and_preserve_literal_evidence
             (quote,json!(["review","extracted_items",0,"statement"]),Code::QuotationMismatch),
             (legacy,json!(["review"]),Code::UnsupportedCombination),
         ] {
-            reference_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,path.clone(),code)?;
+            reference_correction(client.independent_case("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,path.clone(),code)?;
             invalid["candidates"] = json!([{"kind":"belief","key":"must-not-embed","content":"complete candidate fixture","memory_type":"Fact"}]);
-            reference_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,path,code)?;
+            reference_correction(client.independent_case("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,path,code)?;
             ensure!(service.experience_history(id).await? == history);
             for table in ["mimir_learning_item_owners","mimir_review_candidates"] {
                 ensure!(db.query_one(&format!("SELECT count(*) FROM {table} WHERE experience_id=$1"),&[&id]).await?.get::<_,i64>(0)==0);
             }
         }
         let bare = json!({"id":bare_id,"project":project,"context":"no source records","action":"do not invent sources","outcome":"unknown","source":"agent_report","evidence":[]});
-        client.call("record_experience",json!({"experience":bare,"expected_revision":0})).await?;
+        client.independent_case("record_experience",json!({"experience":bare,"expected_revision":0})).await?;
         let mut invalid = review.clone(); invalid["experience_id"] = json!(bare_id);
-        reference_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,json!(["review","source_coverage"]),Code::UnsupportedCombination)?;
+        reference_correction(client.independent_case("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,json!(["review","source_coverage"]),Code::UnsupportedCombination)?;
         invalid["source_coverage"] = json!([]);
-        reference_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,json!(["review","extracted_items"]),Code::UnsupportedCombination)?;
-        let answer = client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
+        reference_correction(client.independent_case("review_experience",json!({"review":invalid,"expected_review_revision":0})).await?,json!(["review","extracted_items"]),Code::UnsupportedCombination)?;
+        let answer = client.independent_case("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
         ensure!(answer["review_revision"]==1 && answer["item_ids"]["check-first"].is_string());
-        ensure!(client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await? == answer);
-        let saved = client.call("get_learning_review",json!({"id":id})).await?;
+        ensure!(client.independent_case("review_experience",json!({"review":review,"expected_review_revision":0})).await? == answer);
+        let saved = client.independent_case("get_learning_review",json!({"id":id})).await?;
         ensure!(saved.to_string().contains("Check first\\\\nThen proceed"),"readback changed literal source escapes: {saved}");
         Ok::<_,anyhow::Error>(())
     }.await;
@@ -693,10 +745,10 @@ async fn review_retention_is_checked_before_embedding_without_rewriting_original
     let mut client = Client::start(id)?;
     let checked = async {
         let source = json!({"id":id,"project":project,"context":"review retention","action":"preserve extracted evidence","outcome":"unknown","source":"agent_report","evidence":["original/0"],"source_records":[{"source_ref":"original/0","actor":"agent","provenance":"agent_report","text":"Check first. Then verify."}]});
-        ensure!(client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?["revision"]==1);
+        ensure!(client.independent_case("record_experience",json!({"experience":source,"expected_revision":0})).await?["revision"]==1);
         let item = json!({"kind":"suggestion","key":"check-first","source_ref":"original/0","actor":"agent","statement":"Check first.","conditions":"not yet observed"});
         let review = json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"keep the original quotation","extracted_items":[item],"source_coverage":[{"source_ref":"original/0","status":"unresolved","reason":"no observed outcome"}]});
-        let original = client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
+        let original = client.independent_case("review_experience",json!({"review":review,"expected_review_revision":0})).await?;
         ensure!(original["review_revision"]==1 && original["item_ids"]["check-first"].is_string());
         let history = service.experience_history(id).await?;
         let mut omitted = review.clone(); omitted["extracted_items"] = json!([]);
@@ -704,22 +756,22 @@ async fn review_retention_is_checked_before_embedding_without_rewriting_original
         let mut kind = review.clone(); kind["extracted_items"][0]["kind"] = json!("decision");
         let mut renamed = review.clone(); renamed["extracted_items"][0]["key"] = json!("new-name");
         for mut invalid in [omitted.clone(),rewritten,kind,renamed] {
-            reference_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":1})).await?,json!(["review","extracted_items"]),Code::MissingReference)?;
+            reference_correction(client.independent_case("review_experience",json!({"review":invalid,"expected_review_revision":1})).await?,json!(["review","extracted_items"]),Code::MissingReference)?;
             // A missing embedding backend must not mask this input mistake.
             invalid["candidates"] = json!([{"kind":"belief","key":"must-not-embed","content":"complete candidate fixture","memory_type":"Fact"}]);
-            reference_correction(client.call("review_experience",json!({"review":invalid,"expected_review_revision":1})).await?,json!(["review","extracted_items"]),Code::MissingReference)?;
+            reference_correction(client.independent_case("review_experience",json!({"review":invalid,"expected_review_revision":1})).await?,json!(["review","extracted_items"]),Code::MissingReference)?;
             ensure!(service.experience_history(id).await? == history);
             ensure!(db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1",&[&id]).await?.get::<_,i64>(0)==1);
             ensure!(db.query_one("SELECT count(*) FROM mimir_review_candidates WHERE experience_id=$1",&[&id]).await?.get::<_,i64>(0)==0);
         }
-        ensure!(client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await? == original);
+        ensure!(client.independent_case("review_experience",json!({"review":review,"expected_review_revision":0})).await? == original);
         let mut revised = review.clone(); revised["extracted_items"][0]["conditions"] = json!("interpretation revised; quotation retained");
         let next = json!({"kind":"suggestion","key":"verify-next","source_ref":"original/0","actor":"agent","statement":"Then verify.","conditions":"not yet observed"});
         revised["extracted_items"].as_array_mut().unwrap().push(next);
-        let answer = client.call("review_experience",json!({"review":revised,"expected_review_revision":1})).await?;
+        let answer = client.independent_case("review_experience",json!({"review":revised,"expected_review_revision":1})).await?;
         ensure!(answer["review_revision"]==2 && answer["item_ids"]["check-first"]==original["item_ids"]["check-first"] && answer["item_ids"]["verify-next"].is_string());
-        ensure!(client.call("review_experience",json!({"review":revised,"expected_review_revision":1})).await? == answer);
-        let readback = client.call("get_learning_review",json!({"id":id})).await?;
+        ensure!(client.independent_case("review_experience",json!({"review":revised,"expected_review_revision":1})).await? == answer);
+        let readback = client.independent_case("get_learning_review",json!({"id":id})).await?;
         ensure!(readback["review_revision"]==2);
         ensure!(db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1",&[&id]).await?.get::<_,i64>(0)==2);
         Ok::<_,anyhow::Error>(())
@@ -744,9 +796,9 @@ async fn source_retention_corrections_preserve_original_evidence_and_allow_appen
     let checked = async {
         let original_source = json!({"source_ref":"original/0","actor":"agent","provenance":"agent_report","text":"Check first.","recorded_at":"2026-11-08T00:00:00Z"});
         let source = json!({"id":id,"project":project,"context":"source retention","action":"retain the original observation","outcome":"unknown","source":"agent_report","evidence":["original/0"],"source_records":[original_source]});
-        let original = client.call("record_experience",json!({"experience":source,"expected_revision":0})).await?;
+        let original = client.independent_case("record_experience",json!({"experience":source,"expected_revision":0})).await?;
         ensure!(original["revision"] == 1);
-        ensure!(client.call("record_experience",json!({"experience":source,"expected_revision":0})).await? == original);
+        ensure!(client.independent_case("record_experience",json!({"experience":source,"expected_revision":0})).await? == original);
         let history = service.experience_history(id).await?;
         let mut changed_project = source.clone(); changed_project["project"] = json!(format!("other-{project}"));
         let mut missing = source.clone(); missing["source_records"] = json!([]); missing["evidence"] = json!([]);
@@ -757,17 +809,17 @@ async fn source_retention_corrections_preserve_original_evidence_and_allow_appen
         }
         for (mut invalid,path,code) in cases {
             invalid["learning_items"] = json!([{"kind":"suggestion","key":"tentative","source_ref":"original/0","actor":"agent","statement":"Check first.","conditions":"no observed outcome"}]);
-            reference_correction(client.call("record_experience",json!({"experience":invalid,"expected_revision":1})).await?,path,code)?;
+            reference_correction(client.independent_case("record_experience",json!({"experience":invalid,"expected_revision":1})).await?,path,code)?;
             ensure!(service.experience_history(id).await? == history);
             ensure!(db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1",&[&id]).await?.get::<_,i64>(0)==0,"refusal retained a tentative item allocation");
-            let current = client.call("get_experience",json!({"id":id})).await?;
+            let current = client.independent_case("get_experience",json!({"id":id})).await?;
             ensure!(current["revision"]==1 && current["experience"]["source_records"][0]==original_source);
         }
         let correction = json!({"source_ref":"correction/1","actor":"human","provenance":"user_feedback","text":"The original instruction was incomplete."});
         let mut appended = source.clone(); appended["source_records"] = json!([original_source,correction]); appended["evidence"] = json!(["original/0","correction/1"]);
-        let revised = client.call("record_experience",json!({"experience":appended,"expected_revision":1})).await?;
+        let revised = client.independent_case("record_experience",json!({"experience":appended,"expected_revision":1})).await?;
         ensure!(revised["revision"]==2 && revised["experience"]["source_records"][0]==original_source && revised["experience"]["source_records"][1]==correction);
-        ensure!(client.call("record_experience",json!({"experience":appended,"expected_revision":1})).await? == revised);
+        ensure!(client.independent_case("record_experience",json!({"experience":appended,"expected_revision":1})).await? == revised);
         ensure!(service.experience_history(id).await? != history);
         Ok::<_,anyhow::Error>(())
     }.await;
@@ -800,13 +852,13 @@ async fn candidate_name_corrections_preserve_declarations_history_and_completed_
     let mut client = Client::start(id)?;
     let checked = async {
         let source = json!({"id":id,"project":project,"context":"candidate names","action":"read saved declarations","outcome":"unknown","source":"agent_report","evidence":["isolated fixture receipt"],"belief_ids":[belief.id]});
-        ensure!(client.call("record_experience", json!({"experience":source,"expected_revision":0})).await?["revision"] == 1);
+        ensure!(client.independent_case("record_experience", json!({"experience":source,"expected_revision":0})).await?["revision"] == 1);
         let history = service.experience_history(id).await?;
         let candidate = json!({"kind":"pattern","key":"retry-step","situation":"retry an observed operation","approach":"read its saved answer first"});
         let review = json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"one stable declaration","candidates":[candidate]});
         let mut duplicate = review.clone();
         duplicate["candidates"] = json!([candidate,candidate]);
-        reference_correction(client.call("review_experience", json!({"review":duplicate,"expected_review_revision":0})).await?, json!(["review","candidates"]), Code::Duplicate)?;
+        reference_correction(client.independent_case("review_experience", json!({"review":duplicate,"expected_review_revision":0})).await?, json!(["review","candidates"]), Code::Duplicate)?;
         ensure!(service.experience_history(id).await? == history);
         let absent = json!({"candidate_key":"not-declared"});
         let present = json!({"belief_id":belief.id});
@@ -818,32 +870,32 @@ async fn candidate_name_corrections_preserve_declarations_history_and_completed_
         ];
         for (field,value,path) in cases {
             let mut invalid = review.clone(); invalid[field] = value;
-            reference_correction(client.call("review_experience", json!({"review":invalid,"expected_review_revision":0})).await?, path, Code::MissingReference)?;
+            reference_correction(client.independent_case("review_experience", json!({"review":invalid,"expected_review_revision":0})).await?, path, Code::MissingReference)?;
             ensure!(service.experience_history(id).await? == history);
         }
         let mut wrong_kind = review.clone();
         wrong_kind["candidate_feedback"] = json!([{"target":{"candidate_key":"retry-step"},"verdict":"support","weight":0.5}]);
-        reference_correction(client.call("review_experience", json!({"review":wrong_kind,"expected_review_revision":0})).await?,json!(["review","candidate_feedback",0,"target","candidate_key"]),Code::MissingReference)?;
+        reference_correction(client.independent_case("review_experience", json!({"review":wrong_kind,"expected_review_revision":0})).await?,json!(["review","candidate_feedback",0,"target","candidate_key"]),Code::MissingReference)?;
         ensure!(service.experience_history(id).await? == history);
         ensure!(db.query_one("SELECT count(*) FROM mimir_review_candidates WHERE experience_id = $1", &[&id]).await?.get::<_,i64>(0) == 0);
-        let original = client.call("review_experience", json!({"review":review,"expected_review_revision":0})).await?;
+        let original = client.independent_case("review_experience", json!({"review":review,"expected_review_revision":0})).await?;
         let history = service.experience_history(id).await?;
         let node:uuid::Uuid = db.query_one("SELECT node_id FROM mimir_review_candidates WHERE experience_id = $1 AND candidate_key = 'retry-step'", &[&id]).await?.get(0);
         let mut changed = review.clone(); changed["candidates"][0]["approach"] = json!("changed declaration");
-        reference_correction(client.call("review_experience",json!({"review":changed,"expected_review_revision":1})).await?,json!(["review","candidates",0,"key"]),Code::WrongIdentity)?;
+        reference_correction(client.independent_case("review_experience",json!({"review":changed,"expected_review_revision":1})).await?,json!(["review","candidates",0,"key"]),Code::WrongIdentity)?;
         let mut batch = changed.clone();
         batch["candidates"] = json!([{"kind":"pattern","key":"new-first","situation":"must not publish","approach":"wait for a valid whole request"},changed["candidates"][0]]);
-        reference_correction(client.call("review_experience",json!({"review":batch,"expected_review_revision":1})).await?,json!(["review","candidates",1,"key"]),Code::WrongIdentity)?;
+        reference_correction(client.independent_case("review_experience",json!({"review":batch,"expected_review_revision":1})).await?,json!(["review","candidates",1,"key"]),Code::WrongIdentity)?;
         ensure!(service.experience_history(id).await? == history);
         ensure!(db.query_one("SELECT count(*) FROM mimir_review_candidates WHERE experience_id = $1", &[&id]).await?.get::<_,i64>(0) == 1);
-        ensure!(client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await? == original);
-        client.call("delete_pattern",json!({"id":node})).await?;
+        ensure!(client.independent_case("review_experience",json!({"review":review,"expected_review_revision":0})).await? == original);
+        client.independent_case("delete_pattern",json!({"id":node})).await?;
         let mut fresh = review.clone(); fresh["rationale"] = json!("new review after deletion");
-        reference_correction(client.call("review_experience",json!({"review":fresh,"expected_review_revision":1})).await?,json!(["review","candidates",0,"key"]),Code::MissingReference)?;
+        reference_correction(client.independent_case("review_experience",json!({"review":fresh,"expected_review_revision":1})).await?,json!(["review","candidates",0,"key"]),Code::MissingReference)?;
         ensure!(service.get_pattern(node).await?.is_none());
         ensure!(service.experience_history(id).await? == history);
-        ensure!(client.call("review_experience",json!({"review":review,"expected_review_revision":0})).await? == original);
-        ensure!(client.call("get_learning_review",json!({"id":id})).await?["review_revision"] == 1);
+        ensure!(client.independent_case("review_experience",json!({"review":review,"expected_review_revision":0})).await? == original);
+        ensure!(client.independent_case("get_learning_review",json!({"id":id})).await?["review_revision"] == 1);
         Ok::<_,anyhow::Error>(())
     }.await;
     drop(client.input);
@@ -920,17 +972,17 @@ async fn learning_references_keep_exact_paths_and_refuse_before_preparation_or_p
         let source = json!({"id":id,"project":project,"context":"reference fixture","action":"explicit isolated observation","outcome":"unknown","source":"agent_report","evidence":["isolated fixture receipt"]});
         for (belief, code) in [(missing, Code::MissingReference), (foreign.id, Code::WrongIdentity), (global.id, Code::WrongIdentity), (working.id, Code::UnsupportedCombination)] {
             let mut invalid = source.clone(); invalid["belief_ids"] = json!([belief]);
-            reference_correction(client.call("record_experience", json!({"experience":invalid,"expected_revision":0})).await?, json!(["experience","belief_ids",0]), code)?;
+            reference_correction(client.independent_case("record_experience", json!({"experience":invalid,"expected_revision":0})).await?, json!(["experience","belief_ids",0]), code)?;
             ensure!(service.get_experience(id).await?.is_none(), "refused reference published an experience");
-            reference_correction(client.call("get_lesson_assessment", json!({"project":project,"belief_id":belief,"scope":"fixture","rubric":"fixture"})).await?, json!(["belief_id"]), code)?;
+            reference_correction(client.independent_case("get_lesson_assessment", json!({"project":project,"belief_id":belief,"scope":"fixture","rubric":"fixture"})).await?, json!(["belief_id"]), code)?;
         }
         for (pattern_id, code) in [(missing, Code::MissingReference), (pattern.id, Code::WrongIdentity)] {
             let mut invalid = source.clone(); invalid["pattern_id"] = json!(pattern_id);
-            reference_correction(client.call("record_experience", json!({"experience":invalid,"expected_revision":0})).await?, json!(["experience","pattern_id"]), code)?;
+            reference_correction(client.independent_case("record_experience", json!({"experience":invalid,"expected_revision":0})).await?, json!(["experience","pattern_id"]), code)?;
             ensure!(service.get_experience(id).await?.is_none());
         }
         let mut valid_source = source.clone(); valid_source["belief_ids"] = json!([local.id]);
-        ensure!(client.call("record_experience", json!({"experience":valid_source,"expected_revision":0})).await?["revision"] == 1);
+        ensure!(client.independent_case("record_experience", json!({"experience":valid_source,"expected_revision":0})).await?["revision"] == 1);
         let history = service.experience_history(id).await?;
         let review = json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"no fabricated observation"});
         let absent = json!({"belief_id":missing});
@@ -950,11 +1002,11 @@ async fn learning_references_keep_exact_paths_and_refuse_before_preparation_or_p
             // If preparation ran first, the absent embedding configuration
             // would mask the actual invalid reference.
             invalid["candidates"] = json!([{"kind":"belief","key":"prepared-later","content":"complete candidate fixture","memory_type":"Fact"}]);
-            reference_correction(client.call("review_experience", json!({"review":invalid,"expected_review_revision":0})).await?, path, Code::MissingReference)?;
+            reference_correction(client.independent_case("review_experience", json!({"review":invalid,"expected_review_revision":0})).await?, path, Code::MissingReference)?;
             ensure!(service.experience_history(id).await? == history && service.get_experience(id).await?.unwrap().review_revision == 0);
         }
-        ensure!(client.call("review_experience", json!({"review":review,"expected_review_revision":0})).await?["review_revision"] == 1);
-        let score = client.call("get_lesson_assessment", json!({"project":project,"belief_id":local.id,"scope":"fixture","rubric":"fixture"})).await?;
+        ensure!(client.independent_case("review_experience", json!({"review":review,"expected_review_revision":0})).await?["review_revision"] == 1);
+        let score = client.independent_case("get_lesson_assessment", json!({"project":project,"belief_id":local.id,"scope":"fixture","rubric":"fixture"})).await?;
         ensure!(score["status"] != "needs_input" && !score.is_null());
         Ok::<_, anyhow::Error>(())
     }.await;
@@ -983,7 +1035,7 @@ async fn permitted_project_and_global_patterns_remain_valid_references() -> Resu
         for pattern in [&local, &global] {
             let source_id = fixture_identity().await?;
             let source = json!({"id":source_id,"project":project,"context":"pattern scope fixture","action":"explicit pattern use","outcome":"unknown","source":"agent_report","evidence":["isolated fixture"],"pattern_id":pattern.id});
-            let recorded = client.call("record_experience", json!({"experience":source,"expected_revision":0})).await?;
+            let recorded = client.independent_case("record_experience", json!({"experience":source,"expected_revision":0})).await?;
             ensure!(recorded["revision"] == 1 && recorded["experience"]["pattern_id"] == json!(pattern.id), "permitted pattern was refused: {recorded}");
         }
         Ok::<_, anyhow::Error>(())
@@ -1030,21 +1082,21 @@ async fn item_identity_corrections_keep_authorship_and_roll_back_every_reservati
             (json!([named,id_only]), 1, "id", Code::MissingReference),
         ] {
             let mut invalid = source.clone(); invalid["learning_items"] = items;
-            reference_correction(client.call("record_experience", json!({"experience":invalid,"expected_revision":0})).await?,
+            reference_correction(client.independent_case("record_experience", json!({"experience":invalid,"expected_revision":0})).await?,
                 json!(["experience","learning_items",index,field]), code)?;
             ensure!(service.get_experience(id).await?.is_none());
             let count: i64 = db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1", &[&id]).await?.get(0);
             ensure!(count == 0, "refusal left a reserved item or partial source");
         }
         source["learning_items"] = json!([named]);
-        let recorded = client.call("record_experience", json!({"experience":source,"expected_revision":0})).await?;
+        let recorded = client.independent_case("record_experience", json!({"experience":source,"expected_revision":0})).await?;
         let assigned = recorded["experience"]["learning_items"][0]["id"].clone();
         ensure!(assigned.is_string());
-        ensure!(client.call("record_experience", json!({"experience":source,"expected_revision":0})).await? == recorded);
+        ensure!(client.independent_case("record_experience", json!({"experience":source,"expected_revision":0})).await? == recorded);
         let history = service.experience_history(id).await?;
         for (field, value) in [("id", json!(invented)), ("actor", json!("different speaker")), ("source_ref", json!("different/source"))] {
             let mut invalid = source.clone(); invalid["learning_items"][0][field] = value;
-            reference_correction(client.call("record_experience", json!({"experience":invalid,"expected_revision":1})).await?,
+            reference_correction(client.independent_case("record_experience", json!({"experience":invalid,"expected_revision":1})).await?,
                 json!(["experience","learning_items",0,field]), Code::WrongIdentity)?;
             ensure!(service.experience_history(id).await? == history);
         }
@@ -1059,27 +1111,27 @@ async fn item_identity_corrections_keep_authorship_and_roll_back_every_reservati
         ] {
             let mut invalid = review.clone(); invalid["extracted_items"] = items;
             invalid["candidates"] = json!([{"kind":"belief","key":"must-not-prepare","content":"complete candidate fixture","memory_type":"Fact"}]);
-            reference_correction(client.call("review_experience", json!({"review":invalid,"expected_review_revision":0})).await?,
+            reference_correction(client.independent_case("review_experience", json!({"review":invalid,"expected_review_revision":0})).await?,
                 json!(["review","extracted_items",index,field]), code)?;
             ensure!(service.experience_history(id).await? == history);
         }
         let assessment = json!({"target":{"belief_id":belief.id},"scope":"fixture","rubric":"fixture","correctness":{"value":null,"weight":0},"usefulness":{"value":null,"weight":0},"evidence_indices":[],"item_keys":["verify-next"],"rationale":"unresolved"});
         let mut invalid = review.clone(); invalid["assessments"] = json!([assessment]);
         invalid["assessments"][0]["item_keys"] = json!(["unknown-item"]);
-        reference_correction(client.call("review_experience", json!({"review":invalid,"expected_review_revision":0})).await?,
+        reference_correction(client.independent_case("review_experience", json!({"review":invalid,"expected_review_revision":0})).await?,
             json!(["review","assessments",0,"item_keys",0]), Code::MissingReference)?;
         ensure!(service.experience_history(id).await? == history);
         let count: i64 = db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1", &[&id]).await?.get(0);
         ensure!(count == 1, "refused review left a tentative allocation");
         let mut valid = review.clone(); valid["assessments"] = json!([assessment]);
-        let reviewed = client.call("review_experience", json!({"review":valid,"expected_review_revision":0})).await?;
+        let reviewed = client.independent_case("review_experience", json!({"review":valid,"expected_review_revision":0})).await?;
         ensure!(reviewed["review_revision"] == 1);
         let stored_id = reviewed["item_ids"]["verify-next"].clone();
         ensure!(stored_id.is_string() && stored_id != assigned);
-        ensure!(client.call("review_experience", json!({"review":valid,"expected_review_revision":0})).await? == reviewed);
+        ensure!(client.independent_case("review_experience", json!({"review":valid,"expected_review_revision":0})).await? == reviewed);
         let count: i64 = db.query_one("SELECT count(*) FROM mimir_learning_item_owners WHERE experience_id=$1", &[&id]).await?.get(0);
         ensure!(count == 2, "retry allocated a duplicate item");
-        let readback = client.call("get_learning_review", json!({"id":id})).await?;
+        let readback = client.independent_case("get_learning_review", json!({"id":id})).await?;
         ensure!(readback["review_revision"] == 1);
         Ok::<_, anyhow::Error>(())
     }.await;
@@ -1103,18 +1155,18 @@ async fn completed_review_readback_survives_candidate_deletion_without_resurrect
     let mut client = Client::start(id)?;
     let checked = async {
         let source = json!({"id":id,"project":project,"context":"completed review fixture","action":"record one observation","outcome":"unknown","source":"agent_report","evidence":["isolated fixture receipt"]});
-        client.call("record_experience", json!({"experience":source,"expected_revision":0})).await?;
+        client.independent_case("record_experience", json!({"experience":source,"expected_revision":0})).await?;
         let review = json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"retain the original completed answer",
             "candidates":[{"kind":"pattern","key":"retry-step","situation":"retry an observed operation","approach":"read the saved result before repeating it"}]});
-        let original = client.call("review_experience", json!({"review":review,"expected_review_revision":0})).await?;
+        let original = client.independent_case("review_experience", json!({"review":review,"expected_review_revision":0})).await?;
         let assigned: uuid::Uuid = original["candidate_ids"]["retry-step"].as_str().unwrap().parse()?;
         ensure!(service.get_pattern(assigned).await?.is_some());
         let history = service.experience_history(id).await?;
-        let deleted = client.call("delete_pattern", json!({"id":assigned})).await?;
+        let deleted = client.independent_case("delete_pattern", json!({"id":assigned})).await?;
         ensure!(deleted == json!({"deleted":true}));
         ensure!(service.get_pattern(assigned).await?.is_none());
         for expected in [0, 1] {
-            let replayed = client.call("review_experience", json!({"review":review,"expected_review_revision":expected})).await?;
+            let replayed = client.independent_case("review_experience", json!({"review":review,"expected_review_revision":expected})).await?;
             ensure!(replayed == original, "completed retry changed its original answer: {replayed}");
             ensure!(service.get_pattern(assigned).await?.is_none(), "readback resurrected the deleted candidate");
             ensure!(service.get_pattern(unrelated.id).await?.is_some(), "readback changed unrelated data");
@@ -1127,7 +1179,7 @@ async fn completed_review_readback_survives_candidate_deletion_without_resurrect
         let refusal = service.review_experience(&fresh, 1).await.unwrap_err();
         ensure!(refusal.to_string().contains("deleted"), "new publication reused a retired key");
         ensure!(service.get_pattern(assigned).await?.is_none() && service.experience_history(id).await? == history);
-        ensure!(client.call("get_learning_review", json!({"id":id})).await?["review_revision"] == 1);
+        ensure!(client.independent_case("get_learning_review", json!({"id":id})).await?["review_revision"] == 1);
         Ok::<_, anyhow::Error>(())
     }.await;
     drop(client.input);
@@ -1184,7 +1236,7 @@ async fn stale_revisions_offer_readback_and_preserve_history_and_exact_retries()
             .root
             .join(format!("revision-corrections-{id}.stderr")),
     )?;
-    let mut child = tokio::process::Command::new(&fixture.mcp)
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mimir-mcp"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(stderr)
@@ -1197,35 +1249,37 @@ async fn stale_revisions_offer_readback_and_preserve_history_and_exact_retries()
         input,
         output,
         next_id: 0,
+        scope: id,
+        cases: Default::default(),
     };
     let checked = async {
         let mut source = json!({"id":id,"project":project,"context":"revision fixture","action":"original observation","outcome":"unknown","source":"agent_report","evidence":["isolated fixture observation"]});
-        correction(client.call("record_experience", json!({"experience":source,"expected_revision":1})).await?, &["expected_revision"], &["get_experience", "experience_history"])?;
+        correction(client.independent_case("record_experience", json!({"experience":source,"expected_revision":1})).await?, &["expected_revision"], &["get_experience", "experience_history"])?;
         ensure!(service.get_experience(id).await?.is_none());
-        let first = client.call("record_experience", json!({"experience":source,"expected_revision":0})).await?;
+        let first = client.independent_case("record_experience", json!({"experience":source,"expected_revision":0})).await?;
         ensure!(first["revision"] == 1);
-        ensure!(client.call("record_experience", json!({"experience":source,"expected_revision":0})).await? == first, "exact create retry changed its result");
+        ensure!(client.independent_case("record_experience", json!({"experience":source,"expected_revision":0})).await? == first, "exact create retry changed its result");
         source["action"] = json!("corrected observation");
-        let second = client.call("record_experience", json!({"experience":source,"expected_revision":1})).await?;
+        let second = client.independent_case("record_experience", json!({"experience":source,"expected_revision":1})).await?;
         ensure!(second["revision"] == 2);
         let history = service.experience_history(id).await?;
         let mut stale = source.clone(); stale["action"] = json!("a competing stale correction");
-        correction(client.call("record_experience", json!({"experience":stale,"expected_revision":1})).await?, &["expected_revision"], &["get_experience", "experience_history"])?;
+        correction(client.independent_case("record_experience", json!({"experience":stale,"expected_revision":1})).await?, &["expected_revision"], &["get_experience", "experience_history"])?;
         ensure!(service.experience_history(id).await? == history && service.get_experience(id).await?.unwrap().revision == 2);
-        ensure!(client.call("get_experience", json!({"id":id})).await? == second);
+        ensure!(client.independent_case("get_experience", json!({"id":id})).await? == second);
         let mut review = json!({"experience_id":id,"experience_revision":1,"reviewer":"fixture","rationale":"no new beliefs or observed learning effects"});
-        correction(client.call("review_experience", json!({"review":review,"expected_review_revision":0})).await?, &["review", "experience_revision"], &["get_experience", "get_learning_review", "experience_history"])?;
+        correction(client.independent_case("review_experience", json!({"review":review,"expected_review_revision":0})).await?, &["review", "experience_revision"], &["get_experience", "get_learning_review", "experience_history"])?;
         ensure!(service.experience_history(id).await? == history);
         review["experience_revision"] = json!(2);
-        let reviewed = client.call("review_experience", json!({"review":review,"expected_review_revision":0})).await?;
+        let reviewed = client.independent_case("review_experience", json!({"review":review,"expected_review_revision":0})).await?;
         ensure!(reviewed["review_revision"] == 1);
         let history = service.experience_history(id).await?;
         let mut changed = review.clone(); changed["rationale"] = json!("competing stale review");
-        correction(client.call("review_experience", json!({"review":changed,"expected_review_revision":0})).await?, &["expected_review_revision"], &["get_experience", "get_learning_review"])?;
+        correction(client.independent_case("review_experience", json!({"review":changed,"expected_review_revision":0})).await?, &["expected_review_revision"], &["get_experience", "get_learning_review"])?;
         ensure!(service.experience_history(id).await? == history, "refused review appended history or changed acknowledgement");
-        let readback = client.call("get_learning_review", json!({"id":id})).await?;
+        let readback = client.independent_case("get_learning_review", json!({"id":id})).await?;
         ensure!(readback["revision"] == 2 && readback["review_revision"] == 1 && readback["reviewed_revision"] == 2);
-        ensure!(client.call("review_experience", json!({"review":review,"expected_review_revision":0})).await? == reviewed, "lost-reply retry did not return original review");
+        ensure!(client.independent_case("review_experience", json!({"review":review,"expected_review_revision":0})).await? == reviewed, "lost-reply retry did not return original review");
         ensure!(service.experience_history(id).await? == history);
         Ok::<_, anyhow::Error>(())
     }.await;

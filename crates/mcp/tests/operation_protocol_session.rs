@@ -1,4 +1,7 @@
 //! Exercise the real operation protocol, including correction before binding.
+#[cfg(feature = "test-boundaries")]
+#[path = "../../../tests/support/commit_boundary.rs"]
+mod commit_boundary;
 #[allow(dead_code)]
 #[path = "../../../tests/support/isolation.rs"]
 mod isolation;
@@ -18,6 +21,17 @@ struct Session {
 }
 impl Session {
     fn start(root: &std::path::Path, key: Uuid) -> Result<Self> {
+        Self::launch(
+            root,
+            key,
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_mimir-mcp")),
+        )
+    }
+    fn launch(
+        root: &std::path::Path,
+        key: Uuid,
+        mut command: tokio::process::Command,
+    ) -> Result<Self> {
         let stderr = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -26,7 +40,7 @@ impl Session {
             .write(true)
             .create_new(true)
             .open(root.join(format!("operation-{key}.stdout")))?;
-        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mimir-mcp"))
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr)
@@ -96,6 +110,135 @@ impl Session {
         );
         Ok(())
     }
+}
+
+#[cfg(feature = "test-boundaries")]
+#[tokio::test]
+async fn project_deletion_retries_after_real_process_exit_at_each_commit_side() -> Result<()> {
+    use commit_boundary::{Controller, Phase};
+    use mimir_core::{
+        documents::DocumentChunk,
+        graph::MemoryType,
+        operation_catalogue::{CommitSite, GraphOperation, Operation},
+        store::AgeStore,
+    };
+    let fixture = isolation::fixture();
+    let audit = db::connect(&fixture.database_config()).await?;
+    let store = AgeStore::new(
+        db::connect(&fixture.database_config()).await?,
+        fixture.database_config().dbname,
+    )?;
+    let config = Config {
+        database: fixture.database_config(),
+        embeddings: None,
+        llm: None,
+        judge: None,
+        email: None,
+        retirement: None,
+    };
+    let service = MimirService::connect(&config).await?;
+    let operation = Operation::Graph(GraphOperation::DeleteProject);
+    let declared = operation.committed_boundaries();
+    ensure!(declared.len() == 1 && declared[0].site == CommitSite::ProjectDeletion);
+    for phase in [Phase::BeforeCommit, Phase::AfterCommit] {
+        let ids = audit
+            .query_one(
+                "SELECT gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),gen_random_uuid()",
+                &[],
+            )
+            .await?;
+        let key: Uuid = ids.get(0);
+        let killed_session_key: Uuid = ids.get(1);
+        let retry_session_key: Uuid = ids.get(2);
+        let chunk_id: Uuid = ids.get(3);
+        let project = format!("named-boundary-{key}");
+        let unrelated = format!("named-boundary-preserved-{key}");
+        let belief =
+            isolation::seed_belief_in_project("owned belief", 0.5, 0.5, &project, MemoryType::Fact)
+                .await?;
+        let survivor = isolation::seed_belief_in_project(
+            "unrelated belief",
+            0.5,
+            0.5,
+            &unrelated,
+            MemoryType::Fact,
+        )
+        .await?;
+        let vector = vec![0.125; 384];
+        store.insert_belief_embedding(belief.id, &vector).await?;
+        store.insert_belief_embedding(survivor.id, &vector).await?;
+        let chunk = DocumentChunk::with_id(
+            chunk_id,
+            format!("/private/{key}.md"),
+            vec![],
+            "owned passage".into(),
+            None,
+            Some(project.clone()),
+        );
+        store.insert_document_chunk(&chunk).await?;
+        store.insert_chunk_embedding(chunk.id, &vector).await?;
+        let reservation = service
+            .reserve_operation(&format!("named-boundary-{key}"))
+            .await?;
+        let token = reservation.operation_token;
+        let step = mimir_json::to_string(&(declared[0].site.name(), Option::<String>::None))?;
+        let controller = Controller::new(token, operation, declared[0].site, step, phase)?;
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_mimir-mcp"));
+        controller.configure(&mut command);
+        let mut session = Session::launch(&fixture.root, killed_session_key, command)?;
+        let original = json!({"operation_token":token,"project":project});
+        let mut pending = Box::pin(session.tool("delete_project", original.clone()));
+        let checkpoint = tokio::select! {
+            reached = controller.reached() => reached?,
+            early = &mut pending => anyhow::bail!("operation returned before its actual {phase:?} checkpoint: {early:?}"),
+        };
+        drop(pending);
+        let event = checkpoint.terminate(&mut session.child).await?;
+        std::fs::write(
+            fixture.root.join(format!("boundary-{key}.json")),
+            mimir_json::to_string(&event)?,
+        )?;
+        session.input.take();
+        let mut remaining = Vec::new();
+        session.output.read_to_end(&mut remaining).await?;
+        session.transcript.write_all(&remaining)?;
+        session.transcript.flush()?;
+        let expected_before_retry = usize::from(phase == Phase::BeforeCommit);
+        ensure!(service.list_beliefs(Some(&project)).await?.len() == expected_before_retry);
+        let count = audit.query_one("SELECT (SELECT count(*) FROM belief_embeddings WHERE belief_id=$1), (SELECT count(*) FROM chunk_embeddings WHERE chunk_id=$2)",&[&belief.id,&chunk.id]).await?;
+        ensure!(
+            count.get::<_, i64>(0) == expected_before_retry as i64
+                && count.get::<_, i64>(1) == expected_before_retry as i64
+        );
+        let mut retry = Session::start(&fixture.root, retry_session_key)?;
+        let completed = retry.tool("delete_project", original.clone()).await?;
+        ensure!(
+            completed["status"] == "completed" && completed["result"]["deleted"] == 2,
+            "lost reply must retain the original count: {completed}"
+        );
+        ensure!(retry.tool("delete_project", original).await? == completed);
+        ensure!(
+            retry
+                .tool("operation_outcome", json!({"operation_token":token}))
+                .await?
+                == completed
+        );
+        retry.finish().await?;
+        ensure!(service.list_beliefs(Some(&project)).await?.is_empty());
+        ensure!(store.get_chunk_ids_by_project(&project).await?.is_empty());
+        let count=audit.query_one("SELECT (SELECT count(*) FROM belief_embeddings WHERE belief_id=$1), (SELECT count(*) FROM chunk_embeddings WHERE chunk_id=$2), (SELECT count(*) FROM belief_embeddings WHERE belief_id=$3)",&[&belief.id,&chunk.id,&survivor.id]).await?;
+        ensure!(
+            count.get::<_, i64>(0) == 0
+                && count.get::<_, i64>(1) == 0
+                && count.get::<_, i64>(2) == 1
+        );
+        ensure!(
+            mimir_json::to_value(service.get_belief(survivor.id).await?)?
+                == mimir_json::to_value(Some(survivor))?
+        );
+        service.delete_project(&unrelated).await?;
+    }
+    Ok(())
 }
 
 #[tokio::test]

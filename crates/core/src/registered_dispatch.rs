@@ -24,6 +24,36 @@ impl WriteAdmissionIssue {
         &self.0
     }
     fn new(operation: Operation, cause: anyhow::Error) -> Self {
+        if let Some(correction) = cause.downcast_ref::<crate::interaction::RequestCorrection>() {
+            return Self(correction.correction().clone().before_binding());
+        }
+        if let Some(correction) = cause.downcast_ref::<crate::preparation::PreparationRequired>() {
+            return Self(correction.correction().clone().before_binding());
+        }
+        if let Some(refusal) = cause.downcast_ref::<crate::validation::Refusal>() {
+            let mut fault = refusal.fault.clone();
+            let root = match operation {
+                Operation::Learning(L::RecordExperience) => Some("experience"),
+                Operation::Learning(L::ReviewExperience) => Some("review"),
+                _ => None,
+            };
+            if let Some(root) = root {
+                if !matches!(fault.path.first(),Some(crate::validation::Segment::Key(key)) if key==root || key=="expected_revision" || key=="expected_review_revision")
+                {
+                    fault
+                        .path
+                        .insert(0, crate::validation::Segment::Key(root.into()));
+                }
+            }
+            let issue=CorrectionItem::new(Location::Arguments,fault,
+                format!("The indicated {} field satisfying its advertised schema and the condition explained above.",operation.name()),
+                "Correct the indicated field using the intended request, then retry with the same reserved operation token. Ask the user if a required value is unknown. Do not invent evidence, change configuration automatically, or reserve another action to bypass a correction.".into()).expect("initial validation retains its field and repair");
+            return Self(
+                NeedsInput::new(issue, vec![])
+                    .expect("one complete domain fault")
+                    .before_binding(),
+            );
+        }
         let item = CorrectionItem::new(Location::Arguments,
             Fault {path:vec![],code:Code::MalformedInput,
                 message:format!("The {} request cannot be admitted: {cause:#}. No request was bound and no business data changed.",operation.name())},

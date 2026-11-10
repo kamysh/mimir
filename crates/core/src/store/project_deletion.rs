@@ -29,9 +29,8 @@ impl AgeStore {
                 } else {
                     raw.to_owned()
                 };
-                Ok(Uuid::parse_str(&text).context(
-                    "A project-owned node has an invalid UUID; deletion was not committed",
-                )?)
+                Uuid::parse_str(&text)
+                    .context("A project-owned node has an invalid UUID; deletion was not committed")
             })
             .collect()
     }
