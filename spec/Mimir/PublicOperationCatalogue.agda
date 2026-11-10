@@ -7,7 +7,7 @@ open import Data.Bool using (Bool; true; false)
 open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Float.Base using (Float)
 open import Data.Integer using (ℤ)
-open import Data.List using (List; [])
+open import Data.List using (List; []; _∷_)
 import Data.Maybe
 open import Data.Nat using (ℕ; zero; suc; s≤s; z≤n)
 open import Data.Maybe using (Maybe; just; nothing)
@@ -158,15 +158,15 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   module Relationship kind = Edges.Registered library kind
     using (key; distinct; decide; keepsJournal; admit; operation; cachedReplay)
   module BeliefRemoval = DeleteBelief.Registered library databaseSum calculator serverTime
-    using (operation; interruptedKeepsRegistration; cachedReplay)
+    using (operation; interruptedKeepsRegistration; interruptedKeepsCancellation; cachedReplay)
   module Grounding kind = Ground.Registered kind library databaseSum calculator serverTime
-    using (operation; interruptedKeepsRegistration; cachedReplay)
+    using (operation; interruptedKeepsRegistration; interruptedKeepsCancellation; cachedReplay)
   module Propagate = Propagation.Registered format library databaseSum calculator serverTime
-    using (operation; interruptedKeepsRegistration; cachedReplay)
+    using (operation; interruptedKeepsRegistration; interruptedKeepsCancellation; cachedReplay)
   module Decaying = Decay.Registered library databaseSum serverTime
-    using (operation; interruptedKeepsRegistration; cachedReplay)
+    using (operation; interruptedKeepsRegistration; interruptedKeepsCancellation; cachedReplay)
   module DocumentRemoval = Clear.Registered library databaseSum calculator serverTime
-    using (operation; interruptedKeepsRegistration; cachedReplay)
+    using (operation; interruptedKeepsRegistration; interruptedKeepsCancellation; cachedReplay)
   module IndependentWrite = Independent.Registered format library databaseSum calculator allocateOwner
   module IndependentPublic = IndependentWrite.Public configuration
   module Defeating = Defeat.Registered library databaseSum calculator serverTime
