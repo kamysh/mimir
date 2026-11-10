@@ -22,6 +22,7 @@ open import Mimir.ExperienceSchema using (Experience; Outcome; success; failure;
 open import Mimir.ReviewSchema using (Review; Feedback; Link; CandidateFeedback; CandidateLink;
   Verdict; support; defeat; relationCode)
 import Mimir.DocumentStore as Documents
+import Mimir.LearningInput as Input
 
 optional : ∀ {A : Set} → (A → Key) → Maybe A → Key
 optional encode nothing = fields []
@@ -136,13 +137,43 @@ status unresolved = natural 1
 coverage : Coverage → Key
 coverage c = fields (text (Coverage.reference c) ∷ status (Coverage.status c) ∷ text (Coverage.reason c) ∷ [])
 
+-- Canonical rows serialize item IDs as present optional fields and have no
+-- unresolved assessment item_keys. This also represents the native fallback
+-- to an applied legacy payload when its separate request column is NULL.
+recordedItem : LearningItem → Key
+recordedItem i = fields (optional natural (just (LearningItem.identity i)) ∷ optional text (LearningItem.localKey i) ∷ kind (LearningItem.kind i) ∷
+  text (LearningItem.reference i) ∷ text (LearningItem.actor i) ∷ text (LearningItem.statement i) ∷
+  text (LearningItem.conditions i) ∷ many prediction (LearningItem.predictions i) ∷ [])
+
+recordedAssessment : Assessment → Key
+recordedAssessment a = fields (assessment a ∷ fields [] ∷ [])
+
 review : Review → Key
 review r = fields (natural (Review.experienceID r) ∷ integer (Review.experienceRevision r) ∷
   text (Review.reviewer r) ∷ text (Review.rationale r) ∷ many feedback (Review.feedbacks r) ∷
   many link (Review.links r) ∷ many natural (Review.superseded r) ∷
   many candidateValue (Review.candidates r) ∷ many candidateFeedback (Review.candidateFeedbacks r) ∷
-  many candidateLink (Review.candidateLinks r) ∷ many assessment (Review.assessments r) ∷
-  many item (Review.extracted r) ∷ many coverage (Review.coverage r) ∷ [])
+  many candidateLink (Review.candidateLinks r) ∷ many recordedAssessment (Review.assessments r) ∷
+  many recordedItem (Review.extracted r) ∷ many coverage (Review.coverage r) ∷ [])
+
+-- Request identity retains what was submitted before PostgreSQL fills IDs
+-- and resolves item_keys. Equal applied reviews are not necessarily retries
+-- of the same submitted declaration.
+inputItem : Input.Item → Key
+inputItem i = fields (optional natural (Input.Item.identity i) ∷ optional text (Input.Item.localKey i) ∷
+  kind (Input.Item.kind i) ∷ text (Input.Item.reference i) ∷ text (Input.Item.actor i) ∷
+  text (Input.Item.statement i) ∷ text (Input.Item.conditions i) ∷ many prediction (Input.Item.predictions i) ∷ [])
+
+inputAssessment : Input.Assessment → Key
+inputAssessment a = fields (assessment (Input.Assessment.value a) ∷ many text (Input.Assessment.itemKeys a) ∷ [])
+
+reviewInput : Input.Review → Key
+reviewInput r = fields (natural (Input.Review.experienceID r) ∷ integer (Input.Review.experienceRevision r) ∷
+  text (Input.Review.reviewer r) ∷ text (Input.Review.rationale r) ∷ many feedback (Input.Review.feedbacks r) ∷
+  many link (Input.Review.links r) ∷ many natural (Input.Review.superseded r) ∷
+  many candidateValue (Input.Review.candidates r) ∷ many candidateFeedback (Input.Review.candidateFeedbacks r) ∷
+  many candidateLink (Input.Review.candidateLinks r) ∷ many inputAssessment (Input.Review.assessments r) ∷
+  many inputItem (Input.Review.extracted r) ∷ many coverage (Input.Review.coverage r) ∷ [])
 
 numericComparisonIsSemantic : ∀ left right → value left ≡ value right → number (finite left) ≡ number (finite right)
 numericComparisonIsSemantic left right = cong real

@@ -153,7 +153,7 @@ module BoundRequest (conversion : Conversion.Contract)
     "Use the exact original defeat arguments and empty settings. Read the saved plan and answers; do not replace the request or repeat its edge."
 
   decode : Wire.Value → Validation.Fault ⊎ Request
-  decode raw with D.readTool Tools.recordDefeat raw
+  decode raw with D.readBoundTool Tools.recordDefeat raw
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ (Public.mutation (Mutation.edge from to Review.defeats weight)) = inj₂ (request from to weight)
   ... | inj₂ _ = inj₁ mismatch

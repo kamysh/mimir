@@ -68,6 +68,7 @@ import Mimir.DirectGraphRecovery
 import Mimir.PatternPublicationRecovery
 import Mimir.IndependentBeliefRecovery
 import Mimir.IndependentPublicationRecovery
+import Mimir.PublicOperationBinding
 import Mimir.ExperienceSourceIntent
 import Mimir.ExperienceSourceRecovery
 import Mimir.DecayRecovery
@@ -77,6 +78,7 @@ import Mimir.SweepRecovery
 import Mimir.PropagationRecovery
 import Mimir.DocumentRemovalRecovery
 import Mimir.DocumentReplacementRecovery
+import Mimir.DocumentLoadingRecovery
 import Mimir.AtomicFile
 import Mimir.CharacterRules
 import Mimir.OAuthCache
@@ -511,3 +513,7 @@ import Mimir.TraversalCompleteness
 import Mimir.OrderedRetrieval
 import Mimir.PublicRetrievalRecovery
 import Mimir.PublicLearningContextRecovery
+import Mimir.ReviewPublicationIntent
+import Mimir.ReviewPublicationRecovery
+import Mimir.ReviewPreparationRecovery
+import Mimir.ReviewOperationRecovery

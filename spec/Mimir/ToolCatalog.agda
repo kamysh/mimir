@@ -16,6 +16,50 @@ data Tool : Set where
   lessonAssessmentHistory explainBelief recordExperience : Tool
   pendingExperiences reviewExperience getExperience experienceHistory : Tool
   queryLearningContext : Tool
+  reserveOperation operationOutcome cancelOperation : Tool
+
+-- Controls own their reservation/readback/cancellation protocol. A business
+-- write instead requires a previously issued token alongside its arguments.
+data Kind : Set where businessWrite readOnly operationControl : Kind
+
+kind : Tool → Kind
+kind insertBelief = businessWrite
+kind deleteBelief = businessWrite
+kind deleteProject = businessWrite
+kind deletePattern = businessWrite
+kind insertPattern = businessWrite
+kind recordSupport = businessWrite
+kind recordCause = businessWrite
+kind recordDefeat = businessWrite
+kind recordContradiction = businessWrite
+kind getBelief = readOnly
+kind listBeliefs = readOnly
+kind listPatterns = readOnly
+kind getContradictions = readOnly
+kind decayAll = businessWrite
+kind sweepExpiredDefeated = businessWrite
+kind queryRelevant = readOnly
+kind addEvidence = businessWrite
+kind getEvidence = readOnly
+kind propagateFrom = businessWrite
+kind queryIntervention = readOnly
+kind loadDocument = businessWrite
+kind queryDocument = readOnly
+kind clearDocument = businessWrite
+kind getLearningReview = readOnly
+kind learningCapabilities = readOnly
+kind getLessonAssessment = readOnly
+kind lessonAssessmentHistory = readOnly
+kind explainBelief = readOnly
+kind recordExperience = businessWrite
+kind pendingExperiences = readOnly
+kind reviewExperience = businessWrite
+kind getExperience = readOnly
+kind experienceHistory = readOnly
+kind queryLearningContext = readOnly
+kind reserveOperation = operationControl
+kind operationOutcome = operationControl
+kind cancelOperation = operationControl
 
 wireName : Tool → String
 wireName insertBelief = "insert_belief"
@@ -52,3 +96,6 @@ wireName reviewExperience = "review_experience"
 wireName getExperience = "get_experience"
 wireName experienceHistory = "experience_history"
 wireName queryLearningContext = "query_learning_context"
+wireName reserveOperation = "reserve_operation"
+wireName operationOutcome = "operation_outcome"
+wireName cancelOperation = "cancel_operation"

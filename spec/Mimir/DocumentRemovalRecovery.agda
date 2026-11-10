@@ -129,7 +129,7 @@ module Registered (conversion : Conversion.Contract)
     "Read the original document-removal request, its prepared path and its outcome. If its bound request or server preparation is invalid, ask the user whether to cancel this unfinished token and reserve corrected work. Do not guess a path or replace this token's arguments."
 
   request : Wire.Value → Validation.Fault ⊎ Text
-  request raw with PublicDecode.readTool Tools.clearDocument raw
+  request raw with PublicDecode.readBoundTool Tools.clearDocument raw
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ (Public.clearDocument path) = inj₂ path
   ... | inj₂ _ = inj₁ mismatch

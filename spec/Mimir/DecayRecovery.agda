@@ -119,7 +119,7 @@ module Registered (conversion : Conversion.Contract) (databaseSum : List Float �
     "Read the original decay request and outcome. Correct its declared factor and project fields; retain its original token and settings rather than inventing replacements."
 
   decode : ℤ → Wire.Value → Validation.Fault ⊎ Request
-  decode publicationTime raw with PublicDecode.readTool Tools.decayAll raw
+  decode publicationTime raw with PublicDecode.readBoundTool Tools.decayAll raw
   ... | inj₁ fault = inj₁ fault
   ... | inj₂ (Public.inference (Inference.decay project factor)) = inj₂ (request publicationTime factor project)
   ... | inj₂ _ = inj₁ mismatch
