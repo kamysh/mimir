@@ -15,6 +15,7 @@ open import Data.Empty using (⊥)
 open import Data.Nat using (ℕ)
 open import Data.Float.Base using (Float)
 open import Mimir.Text using (Text)
+open import Data.String using (toList)
 import Mimir.PosteriorComputation as Posterior
 import Mimir.LearningOperations as Operations
 open import Data.Sum using (_⊎_; inj₁; inj₂)
@@ -420,6 +421,19 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
     (X.completed [] (E.returned _) (X.unchanged _)) = reviewPublished baseline scope
       (P.completedGoal request original baseline (P.ready scope) originalOwners) business
 
+  afterSavedReadback : ∀ request original baseline scope interrupted middle prepared final reply value binding →
+    P.X.Completed (P.script request) original baseline (P.ready scope) →
+    B.Goal scope baseline interrupted (Step.done value) →
+    P.Readback.admission (toList "review_experience") request interrupted ≡
+      P.Readback.returned (P.Readback.completed binding value) →
+    P.X.Completed (P.script request) interrupted middle prepared →
+    X.Completed (afterPreparation prepared) middle final reply → Goal request original final reply
+  afterSavedReadback request original baseline scope interrupted middle prepared final reply value binding
+    originalOwners business saved retryOwners retryBody
+    with P.completedReadback request interrupted binding value saved middle prepared retryOwners
+  ... | sameWorld , sameReply = afterCompletedPublication request original baseline scope interrupted middle prepared final reply value
+    originalOwners business sameWorld sameReply retryBody
+
   interruptedKeepsRegistration : ∀ request original interrupted →
     X.Interrupted (script request) original interrupted → Step.registration interrupted ≡ Step.registration original
   interruptedKeepsRegistration request original interrupted cut
@@ -432,3 +446,45 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
     (trans (cong Step.registration (cong proj₁ observed))
       (F.executeKeepsRegistration (P.Context.token scope) (B.supplied scope packets metadata) baseline))
     (P.Frame.originalRegistration (P.completedFrame request original baseline (P.ready scope) owners))
+
+  afterPublishedPreparation : ∀ request original baseline scope interrupted middle prepared final reply
+    preparedBusiness packets metadata value →
+    P.X.Completed (P.script request) original baseline (P.ready scope) →
+    B.P.Captured scope baseline preparedBusiness → B.Ready scope preparedBusiness packets →
+    (interrupted , Step.done value) ≡ F.Saved.execute (P.Context.token scope , B.supplied scope packets metadata) baseline →
+    P.X.Completed (P.script request) interrupted middle prepared →
+    X.Completed (afterPreparation prepared) middle final reply → Goal request original final reply
+  afterPublishedPreparation request original baseline scope interrupted middle prepared final reply
+    preparedBusiness packets metadata value originalOwners captured preparedReady observed retryOwners retryBody
+    with P.completedMeaning request original baseline (P.ready scope) originalOwners
+  ... | P.readyOwners .scope facts = afterSavedReadback request original baseline scope interrupted middle prepared final reply
+    value (proj₁ completed) originalOwners
+    (B.publishedGoal scope preparedBusiness packets metadata value baseline interrupted captured preparedReady observed)
+    (proj₂ completed) retryOwners retryBody
+    where
+    fixedTokenObservation = trans observed
+      (cong (λ identity → F.Saved.execute (identity , B.supplied scope packets metadata) baseline) (P.ReadyMeaning.ownToken facts))
+    completed = P.readyThenPublicationReadback request original baseline scope (B.supplied scope packets metadata)
+      interrupted value originalOwners (P.ReadyMeaning.originalTime facts) (P.ReadyMeaning.originalRequest facts)
+      (P.ReadyMeaning.completeJournal facts) (P.ReadyMeaning.completeCursor facts) fixedTokenObservation
+
+  converges : ∀ request original interrupted final reply → X.Interrupted (script request) original interrupted →
+    X.Completed (script request) interrupted final reply → Goal request original final reply
+  converges request original interrupted final reply interruptedRun completedRun
+    with splitInterruptedPrefix (P.script request) original interrupted interruptedRun |
+      splitPrefixRun (P.script request) interrupted final reply (X.Completed.returned completedRun) (X.Completed.changes completedRun)
+  ... | preparing partial | baseline , prepared , retryOwners , retryBody =
+    prefixThenBodyGoal request original baseline final prepared reply
+      (P.converges request original interrupted baseline prepared partial retryOwners) retryBody
+  ... | publishing baseline scope originalOwners bodyCut | middle , prepared , retryOwners , retryBody
+    with B.interruptionCut scope baseline interrupted bodyCut
+  ... | B.noPublication refl = afterUnpublishedPreparation request original baseline scope middle prepared final reply
+    originalOwners retryOwners retryBody
+  ... | B.published preparedBusiness packets metadata value captured preparedReady observed =
+    afterPublishedPreparation request original baseline scope interrupted middle prepared final reply
+      preparedBusiness packets metadata value originalOwners captured preparedReady observed retryOwners retryBody
+
+  operation : P.Environment → Recovery.RecoverableFor Store.World Input Result Goal
+  operation environment = record
+    { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic
+    ; converges = converges; progress = progress environment }

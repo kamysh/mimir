@@ -1003,8 +1003,12 @@
         "spec/Mimir/LearningOperations.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
-      "rust_correspondence": "open; separate from behavioral specification",
+      "rust_correspondence": "Registered internal review publication and owned preparation have focused native checks; public token routing remains in the dispatcher work.",
       "completion_modules": [
+        "spec/Mimir/ReviewPublicationIntent.agda",
+        "spec/Mimir/ReviewPublicationRecovery.agda",
+        "spec/Mimir/ReviewPreparationRecovery.agda",
+        "spec/Mimir/ReviewOperationRecovery.agda",
         "spec/Mimir/LearningOperations.agda",
         "spec/Mimir/ReviewNumericalPublication.agda",
         "spec/Mimir/ReviewPreparationPublication.agda",
@@ -1019,8 +1023,8 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "baseline_gap": "The earlier review model did not connect original owner allocations, complete required preparation and the saved final result in one whole-store recovery operation.",
+      "remaining": "Public MCP/CLI token routing remains in the separately planned dispatcher integration."
     },
     {
       "name": "get_experience",
