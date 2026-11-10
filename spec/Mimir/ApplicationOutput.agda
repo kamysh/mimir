@@ -77,7 +77,7 @@ import Data.Float.Base as Float
 module Project (environment : Application.Environment) (format : Encoding.Formatting) where
   private
     module A = Application.Run environment using
-      (Result; terminalResult; Call; RouteValue; route; plainRoute; registeredRoute; module Checked; module O)
+      (Result; reached; terminalResult; Call; RouteValue; route; plainRoute; registeredRoute; module Checked; module O)
     module Writes = Application.Run.Writes environment using (Response; needsInput; returned; executed; bodyKind; bodyInput)
   open Encoding
   open Encode format
@@ -337,37 +337,68 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     (Validation.fault (Validation.key "saved_replies" ∷ []) Validation.malformedInput
       "A final operation answer was stored before every step of the original plan was complete.")
 
-  readback : A.Result → ℕ → C.Control.Read.Result → Projection
-  readback original token C.Control.Read.unknownToken = decision (argumentCorrection
+  completionFields : ℕ → Store.BindingRow → V.Value → List (String × V.Value)
+  completionFields token binding value =
+    ("operation_token" , uuid token) ∷ ("status" , V.string (toList "completed")) ∷
+    ("original_request" , originalRequest binding) ∷ ("result" , value) ∷ []
+
+  cancellationFields : ℕ → Store.CancellationRow → Maybe Store.BindingRow → List Store.SavedReplyRow → List (String × V.Value)
+  cancellationFields token cancellation binding replies =
+    ("operation_token" , uuid token) ∷ ("status" , V.string (toList "cancelled")) ∷
+    ("cancellation" , object (("operation_token" , uuid (Store.CancellationRow.token cancellation)) ∷
+      ("cancelled_at" , timestamp (Store.CancellationRow.cancelledAt cancellation)) ∷ [])) ∷
+    ("original_request" , optional originalRequest binding) ∷ ("saved_replies" , V.array (map savedReply replies)) ∷ []
+
+  pendingExecutionFields : ℕ → Store.World → List (String × V.Value)
+  pendingExecutionFields token final =
+    ("worker_cleanup" , V.string (toList "not_confirmed_by_this_receipt")) ∷
+    ("pending_executions" , V.array (map executionReceipt (Controls.ExecutionOwnership.ordered
+      (Application.Environment.postgres environment) (Controls.ExecutionOwnership.pending token final)))) ∷ []
+
+  readback : A.Result → ℕ → Store.World → C.Control.Read.Result → Projection
+  readback original token final C.Control.Read.unknownToken = decision (argumentCorrection
     (Validation.fault (Validation.key "operation_token" ∷ []) Validation.missingReference
       "This token has no reservation in the selected database. Repeat reserve_operation with the original request_key if its reply was lost, and check the selected database. Do not invent a replacement token."))
-  readback original token C.Control.Read.reserved = success (object
+  readback original token final C.Control.Read.reserved = success (object
     (("operation_token" , uuid token) ∷ ("status" , V.string (toList "reserved")) ∷
      ("suggested_fix" , V.string (toList "Call the intended write with this token and its complete arguments; retain those exact arguments on retries.")) ∷ []))
-  readback original token (C.Control.Read.awaitingPlan binding) = pendingReadback token binding
-  readback original token (C.Control.Read.awaitingCompletion binding) = pendingReadback token binding
-  readback original token (C.Control.Read.pending binding planned replies) = success (object
+  readback original token final (C.Control.Read.awaitingPlan binding) = pendingReadback token binding
+  readback original token final (C.Control.Read.awaitingCompletion binding) = pendingReadback token binding
+  readback original token final (C.Control.Read.pending binding planned replies) = success (object
     (("operation_token" , uuid token) ∷ ("status" , V.string (toList "pending")) ∷
      ("original_request" , originalRequest binding) ∷ ("next_step" , nextStep planned) ∷
      ("saved_replies" , V.array (map savedReply replies)) ∷
      ("suggested_fix" , V.string (toList "Repeat the original write with unchanged token and arguments to resume its saved next step. Ask the user about unresolved prerequisites; do not skip steps or cancel automatically.")) ∷ []))
-  readback original token (C.Control.Read.completed binding value) = success (object
-    (("operation_token" , uuid token) ∷ ("status" , V.string (toList "completed")) ∷
-     ("original_request" , originalRequest binding) ∷ ("result" , value) ∷ []))
-  readback original token (C.Control.Read.needsRecovery binding) = savedRecordsProblem binding
+  readback original token final (C.Control.Read.completed binding value) = success (object (completionFields token binding value))
+  readback original token final (C.Control.Read.needsRecovery binding) = savedRecordsProblem binding
     (Validation.fault (Validation.key "saved_replies" ∷ []) Validation.malformedInput
       "The saved operation records require reconciliation before this work can resume.")
-  readback original token (C.Control.Read.inconsistent binding problem) = journalProblem binding problem
-  readback original token (C.Control.Read.cancelled cancellation binding replies) = success (object
-    (("operation_token" , uuid token) ∷ ("status" , V.string (toList "cancelled")) ∷
-     ("cancellation" , object (("operation_token" , uuid (Store.CancellationRow.token cancellation)) ∷
-       ("cancelled_at" , timestamp (Store.CancellationRow.cancelledAt cancellation)) ∷ [])) ∷
-     ("original_request" , optional originalRequest binding) ∷ ("saved_replies" , V.array (map savedReply replies)) ∷
-     ("worker_cleanup" , V.string (toList "not_confirmed_by_this_receipt")) ∷
-     ("message" , V.string (toList "Cancellation is durable and further publication is blocked. Committed changes and saved answers remain. This database receipt does not establish that every worker has stopped.")) ∷ []))
+  readback original token final (C.Control.Read.inconsistent binding problem) = journalProblem binding problem
+  readback original token final (C.Control.Read.cancelled cancellation binding replies) = success (object
+    (cancellationFields token cancellation binding replies ++ pendingExecutionFields token final ++
+     ("message" , V.string (toList "Cancellation is durable and further business publication under this token is blocked. Committed changes and saved answers remain. This database receipt does not establish that every worker has finished stopping.")) ∷ []))
+
+  controlReadback : A.Result → ℕ → Store.World → C.Control.Read.Result → Projection
+  controlReadback original token final (C.Control.Read.completed binding value) = success (object
+    (completionFields token binding value ++ pendingExecutionFields token final ++
+     ("message" , V.string (toList "The original business result is complete and unchanged. This snapshot lists any executions still lacking their physical-stop acknowledgement. A user-requested cancel_operation waits for every copy to stop without rewriting this result; identify an unreachable owner by its recorded host/address, program and process ID, never infer cleanup from that identity.")) ∷ []))
+  controlReadback original token final reply = readback original token final reply
+
+  globallyStoppedReadback : (original : A.Result) → (token : ℕ) →
+    Controls.ExecutionOwnership.StoppedAfter token (A.reached original) → Projection
+  globallyStoppedReadback original token stopped with
+    C.Control.Read.answer token (Controls.ExecutionOwnership.StoppedAfter.final stopped)
+  ... | C.Control.Read.cancelled cancellation binding replies = success (object
+    (cancellationFields token cancellation binding replies ++
+     ("worker_cleanup" , V.string (toList "confirmed_for_all_registered_copies")) ∷
+     ("pending_executions" , V.array (map executionReceipt (Controls.ExecutionOwnership.ordered
+       (Application.Environment.postgres environment) (Controls.ExecutionOwnership.pending token
+         (Controls.ExecutionOwnership.StoppedAfter.final stopped))))) ∷
+     ("message" , V.string (toList "Cancellation is durable. Every registered execution of this action confirmed that its request body and owned local workers stopped. Earlier committed changes and saved answers remain. This guarantee requires all participating Mimir copies to use the compatible registration protocol; it does not assert that a hosted provider stopped remote computation.")) ∷ []))
+  ... | reply = readback original token (Controls.ExecutionOwnership.StoppedAfter.final stopped) reply
 
   finalReadback : A.Result → ℕ → Store.World → Projection
-  finalReadback original token final = readback original token (C.Control.Read.answer token final)
+  finalReadback original token final = readback original token final (C.Control.Read.answer token final)
 
   stepProjection : ∀ {Diagnostic : Set} → A.Result → (Diagnostic → Projection) →
     ℕ → Store.World → Step.Result Diagnostic → Projection
@@ -508,7 +539,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   payload original (C.sweep expected) token reply final = stepProjection original deletionProblem token final reply
   payload original (C.sourceWrite expected) token reply final = stepProjection original sourceProblem token final reply
   payload original (C.reviewWrite expected) token reply final = stepProjection original reviewPublicationProblem token final reply
-  payload original (C.documentLoading expected) token (C.DocumentEntry.inspected outcome) final = readback original token outcome
+  payload original (C.documentLoading expected) token (C.DocumentEntry.inspected outcome) final = readback original token final outcome
   payload original (C.documentLoading expected) token result@(C.DocumentEntry.executed _) final =
     stepProjection original groundingProblem token final (C.DocumentEntry.normalized result)
   payload original (C.control Controls.reserve stableKey) input (C.Control.Reserve.reserved row) final = success (object
@@ -520,7 +551,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     (Validation.problem (Validation.key "request_key" ∷ []) Validation.malformedInput
       (toList "The saved request key points to a missing reservation for token " ++ Formatting.uuidText format token ++
        toList ". Keep the original request_key and selected database; ask the user to reconcile the saved reservation instead of inventing a replacement action.")))
-  payload original (C.control Controls.readOutcome token) input reply final = readback original token reply
+  payload original (C.control Controls.readOutcome token) input reply final = controlReadback original token final reply
   payload original (C.control Controls.cancel token) input reply final = finalReadback original token final
 
   writePayload : A.Result → C.Creating.Request → Writes.Response → Store.World → Projection
@@ -529,7 +560,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     with C.Creating.decode requested
   ... | inj₁ detail = decision (argumentCorrection detail)
   ... | inj₂ call = readback original
-    (C.Creating.Call.token call) outcome
+    (C.Creating.Call.token call) final outcome
   writePayload original requested (Writes.executed scope reply) final =
     payload original (Writes.bodyKind scope) (Writes.bodyInput scope) reply final
 
