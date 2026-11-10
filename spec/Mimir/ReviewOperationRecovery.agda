@@ -237,6 +237,25 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
   script : Input → E.Script Result
   script request = E._>>=_ (liftPrefix (P.script request)) afterPreparation
 
+  -- Cached completion uses only the real owner-prefix inspection. The
+  -- observed host settings cannot restart owners, embedding or publication.
+  cachedReplay : ∀ (environment : P.Environment) token current binding raw →
+    P.Readback.admission (toList "review_experience") token current ≡
+      P.Readback.returned (P.Readback.completed binding raw) →
+    X.Completed (script token) current current (Step.done raw)
+  cachedReplay environment token current binding raw known = X.completed
+    ((prepare (P.inspectOwners token) , (settings , current)) ∷ [])
+    (E.bindRuns (prefixRuns prefixRun) (E.returned _))
+    (X.changed current _ _ current (refl , refl) (X.unchanged current))
+    where
+    settings = P.Environment.currentSettings environment token current
+    cachedOwners : P.E.Runs (P.afterInspection token (settings , current)) [] (P.stopped (Step.done raw))
+    cachedOwners = subst (λ program → P.E.Runs program [] (P.stopped (Step.done raw)))
+      (sym (P.afterCompletedReadback token settings current binding raw known)) (P.E.returned _)
+    prefixRun : P.E.Runs (P.script token) ((P.inspectOwners token , (settings , current)) ∷ [])
+      (P.stopped (Step.done raw))
+    prefixRun = P.E.replied _ _ _ cachedOwners
+
   -- An owner prefix may change only its owned metadata. A review outcome is
   -- then governed by the fixed full-store publication meaning, including every
   -- required prepared belief, its indexed support and numerical consequences.
