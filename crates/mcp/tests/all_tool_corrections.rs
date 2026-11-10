@@ -510,6 +510,7 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
     );
     println!("Checked {array_item_cases} invalid array-item cases");
     println!("Checked {missing_cases} missing-field, {wrong_type_cases} wrong-type, {invalid_uuid_cases} invalid UUID, {invalid_choice_cases} invalid choice, {zero_selection_cases} zero-selection, {nested_cases} nested unknown-field, {nested_missing_cases} nested missing-field and {nested_wrong_type_cases} nested wrong-type cases across {} advertised tools", tools.len());
+    let mut corrected_limit_cases = 0;
     for name in [
         "list_beliefs",
         "list_patterns",
@@ -546,7 +547,41 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
             value.get("status") != Some(&json!("needs_input")),
             "{name}: corrected request still needs input: {value}"
         );
+        let descriptor = tools.iter().find(|tool| tool["name"] == name).unwrap();
+        if descriptor["inputSchema"]["properties"]["limit"]["minimum"] == 1 {
+            check_field(
+                &mut input,
+                &mut output,
+                name,
+                json!({"limit":0}),
+                "limit",
+                Code::InvalidNumber,
+            )
+            .await?;
+            let corrected = send(&mut input, &mut output, json!({"jsonrpc":"2.0","id":"corrected-limit","method":"tools/call","params":{"name":name,"arguments":{"limit":1}}})).await?;
+            ensure!(
+                corrected["id"] == "corrected-limit"
+                    && corrected.get("error").is_none()
+                    && corrected["result"]["isError"] != true,
+                "{name}: corrected limit failed: {corrected}"
+            );
+            let result: Value = mimir_json::from_str(
+                corrected["result"]["content"][0]["text"]
+                    .as_str()
+                    .context("missing corrected limit result")?,
+            )?;
+            ensure!(
+                result.get("status") != Some(&json!("needs_input")),
+                "{name}: corrected limit still needs input: {result}"
+            );
+            corrected_limit_cases += 1;
+        }
     }
+    ensure!(
+        corrected_limit_cases != 0,
+        "no read-only limit correction loops were exercised"
+    );
+    println!("Checked {corrected_limit_cases} corrected limit requests on the same MCP connection");
     let after = snapshot().await?;
     ensure!(
         before == after,
