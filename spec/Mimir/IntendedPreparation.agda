@@ -8,6 +8,7 @@ open import Data.Bool using (true; false)
 open import Data.Integer using (ℤ)
 import Data.List
 open import Data.Maybe using (Maybe; just; nothing)
+open import Data.Nat using (ℕ)
 open import Data.Product using (_×_; _,_; proj₁)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.String using (String)
@@ -18,6 +19,7 @@ import Mimir.ApplicationStore as Store
 import Mimir.OperationControls as Controls
 import Mimir.PublicOperationBinding as Binding
 import Mimir.PublicRequest as Public
+import Mimir.PublicInput as PublicInput
 import Mimir.ProjectDeletion as Project
 import Mimir.StandardLibrary as Library
 import Mimir.PublicEncoding as Encoding
@@ -163,6 +165,42 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
       world : Store.World
       body : Maybe Body
       publicOutcome : PublicOutcome
+
+  module OperationReadback where
+    module Decode = Public.Decode library
+
+    -- The complete saved state supplies the answer. This includes malformed
+    -- journals and cancellation; neither is replaced with an assumed success.
+    read : ℕ → Store.World → Expected Read.Result
+    read token before = expected before (just answer) (operationReadback answer)
+      where answer = Read.answer token before
+
+    afterToken : Validation.Fault Data.Sum.⊎ ℕ → Store.World → Expected Read.Result
+    afterToken (inj₁ fault) before = expected before nothing (requestCorrection fault)
+    afterToken (inj₂ token) before = read token before
+
+    evaluate : Wire.Value → Store.World → Expected Read.Result
+    evaluate raw before with Decode.readInvocation Tools.operationOutcome raw
+    ... | inj₁ fault = expected before nothing (requestCorrection fault)
+    ... | inj₂ admitted = afterToken
+      (PublicInput.required "operation_token" (PublicInput.readUUID library)
+        (Wire.Object.normalize (Decode.Invocation.suppliedFields admitted))) before
+
+    afterTokenKeepsWorld : ∀ received before → Expected.world (afterToken received before) ≡ before
+    afterTokenKeepsWorld (inj₁ fault) before = refl
+    afterTokenKeepsWorld (inj₂ token) before = refl
+
+    neverChangesWorld : ∀ raw before → Expected.world (evaluate raw before) ≡ before
+    neverChangesWorld raw before with Decode.readInvocation Tools.operationOutcome raw
+    ... | inj₁ fault = refl
+    ... | inj₂ admitted = afterTokenKeepsWorld
+      (PublicInput.required "operation_token" (PublicInput.readUUID library)
+        (Wire.Object.normalize (Decode.Invocation.suppliedFields admitted))) before
+
+    malformedRequestDoesNotEnterBody : ∀ raw before fault →
+      Decode.readInvocation Tools.operationOutcome raw ≡ inj₁ fault →
+      evaluate raw before ≡ expected before nothing (requestCorrection fault)
+    malformedRequestDoesNotEnterBody raw before fault rejected rewrite rejected = refl
 
   module ReadOnly (format : Encoding.Formatting) where
     module Basic = StorageReads.BasicReads format using (Request; answer)

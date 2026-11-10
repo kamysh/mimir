@@ -324,6 +324,14 @@ acknowledgements must still be composed around it. The remaining family
 adapters and public serialization are separate unfinished work; this is not a
 complete evaluator for all public tools.
 
+`IntendedPreparation.Evaluate.OperationReadback.evaluate` also computes the
+expected `operation_outcome` read directly from the complete saved state. It
+validates the submitted request, keeps its typed status and all world fields,
+and needs no fresh clock, identity or other observation. An invalid request
+keeps the body absent. The later public projection must use this control
+request and the returned world for its full pending-execution diagnostics;
+ordinary write-result formatting cannot substitute for that response.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |
