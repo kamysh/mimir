@@ -450,6 +450,25 @@ mod tests {
         }
     }
 
+    fn retain_missing_exit_receipt(worker: &mut Worker, partials: Vec<PathBuf>) -> u32 {
+        unsafe extern "C" {
+            fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+        }
+        let mut child = worker.child.take().unwrap();
+        let pid = child.id();
+        child.kill().unwrap();
+        let mut status = 0;
+        // Consume only this test's exact child exit outside Child::wait.
+        // This reproduces an actual missing wait receipt without changing a
+        // process-wide signal handler or signalling any unrelated process.
+        assert_eq!(unsafe { waitpid(pid as i32, &mut status, 0) }, pid as i32);
+        let error = child.wait().unwrap_err();
+        worker
+            .cleanup
+            .retain(child, worker.directory.clone(), partials, error);
+        pid
+    }
+
     #[tokio::test]
     async fn stopped_native_work_is_killed_and_reaped() {
         let (directory, program) = fixture("json.loads(sys.stdin.readline())\nprint(json.dumps({'status':'started','version':2}),flush=True)\nwhile True: pass");
@@ -478,26 +497,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_child_exit_receipt_remains_unconfirmed_and_keeps_diagnostics() {
-        unsafe extern "C" {
-            fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-        }
         let (directory, program) = fixture("sys.stdin.read()");
         let mut worker = Worker::spawn(program).unwrap();
         let diagnostics = worker.directory.clone();
         let partial = diagnostics.join("owned.part");
         std::fs::write(&partial, b"incomplete model download").unwrap();
-        let mut child = worker.child.take().unwrap();
-        let pid = child.id();
-        child.kill().unwrap();
-        let mut status = 0;
-        // Consume only this test's exact child exit outside Child::wait.
-        // This reproduces an actual missing wait receipt without changing a
-        // process-wide signal handler or signalling any unrelated process.
-        assert_eq!(unsafe { waitpid(pid as i32, &mut status, 0) }, pid as i32);
-        let error = child.wait().unwrap_err();
-        worker
-            .cleanup
-            .retain(child, diagnostics.clone(), vec![partial.clone()], error);
+        let pid = retain_missing_exit_receipt(&mut worker, vec![partial.clone()]);
         let cleanup = worker.cleanup.clone();
         drop(worker);
         assert!(cleanup.pending());
@@ -515,6 +520,57 @@ mod tests {
         assert!(healthy.retry().is_empty());
         assert!(cleanup.pending());
         drop(cleanup);
+        std::fs::remove_dir_all(diagnostics).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_job_preserves_its_physical_cleanup_failure() {
+        struct MissingReceipt {
+            program: PathBuf,
+            ready: Mutex<Option<tokio::sync::oneshot::Sender<PathBuf>>>,
+        }
+        impl EmbeddingProvider for MissingReceipt {
+            fn embed<'a>(
+                &'a self,
+                _texts: &'a [String],
+                cancellation: EmbeddingCancellation,
+            ) -> EmbedFuture<'a> {
+                Box::pin(async move {
+                    let mut worker =
+                        Worker::spawn_with_cleanup(self.program.clone(), cancellation.cleanup)?;
+                    retain_missing_exit_receipt(&mut worker, vec![]);
+                    self.ready
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .unwrap()
+                        .send(worker.directory.clone())
+                        .unwrap();
+                    std::future::pending::<()>().await;
+                    Ok(vec![])
+                })
+            }
+        }
+        let (directory, program) = fixture("sys.stdin.read()");
+        let (ready, mut received) = tokio::sync::oneshot::channel();
+        let backend = OwnedEmbeddingBackend::for_test(Box::new(MissingReceipt {
+            program,
+            ready: Mutex::new(Some(ready)),
+        }));
+        let texts = vec!["input".into()];
+        let mut job = Box::pin(backend.embed(&texts));
+        let control = job.stop_handle();
+        let diagnostics = tokio::select! {
+            diagnostics = &mut received => diagnostics.unwrap(),
+            result = &mut job => panic!("job returned before cancellation: {result:?}"),
+        };
+        assert!(control.cancel());
+        let error = job.await.unwrap_err();
+        assert!(!error.is::<EmbeddingCancelled>());
+        assert!(error.to_string().contains("cleanup is unconfirmed"));
+        assert!(error.to_string().contains(diagnostics.to_str().unwrap()));
+        assert!(control.cleanup_pending());
         std::fs::remove_dir_all(diagnostics).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
     }
