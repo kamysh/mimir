@@ -12,6 +12,9 @@ open import Data.Product using (_×_; _,_)
 open import Data.String using (String; toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
+import Mimir.Recovery as Recovery
+import Data.Empty
+import Data.List.Relation.Unary.All
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Relation.Nullary using (Dec; yes; no)
 open import Mimir.Text using (Text)
@@ -253,3 +256,281 @@ module Run where
         WriteRun writeSettings path content (initialWrite writeSettings) written IO.success →
         P.Runs (afterCreation path content editorValue) announcements result →
         Created writeSettings path pairs editorValue (prepared Data.List.++ written Data.List.++ announcements) result
+
+-- Noninteractive init is a concrete filesystem operation. The source bytes
+-- and their typed configuration are observations of the existing TOML boundary;
+-- this model does not implement or prove a parser/formatter. Other files are an
+-- arbitrary frame and are preserved by every Mimir publication.
+module NonInteractive (Frame : Set) (parser : Unsigned.Parser)
+  (compareFields : ∀ pairs old desired → Dec (explicitFields pairs old ≡ explicitFields pairs desired)) where
+  module Overrides = Input.Read parser
+  Input = (String × Text) × List (String × Text)
+  pairs : Input → List (String × Text)
+  pairs (first , rest) = first ∷ rest
+
+  data File : Set where
+    invalidFile : Text → Failure → File
+    validFile : Text → Schema.Config → File
+  module Storage = IO.Publication File Frame
+  World = Storage.World
+
+  record Metadata : Set where
+    constructor metadata
+    field operations : Operations.Admitted; source : Text
+
+  preparedFile : Metadata → Values.Config → File
+  preparedFile observed cfg = validFile (Metadata.source observed)
+    (Schema.config (Metadata.operations observed) cfg nothing nothing nothing nothing)
+
+  data Result : Set where
+    ready : File → Result
+    needsDecision : Failure → Result
+
+  existing : Input → Values.Config → File → Result
+  existing input desired document@(invalidFile _ failure) = needsDecision failure
+  existing input desired document@(validFile source current)
+    with compareFields (pairs input) (Schema.Config.core current) desired
+  ... | yes same = ready document
+  ... | no different = needsDecision conflictingSettings
+
+  chosenOutcome : Metadata → Input → Values.Config → World → World × Result
+  chosenOutcome observed input desired before with Storage.World.target before
+  ... | nothing = Storage.intended (preparedFile observed desired) before , ready (preparedFile observed desired)
+  ... | just current = before , existing input desired current
+
+  outcome : Metadata → Input → World → World × Result
+  outcome observed input before with Overrides.create (pairs input)
+  ... | inj₁ error = before , needsDecision (override error)
+  ... | inj₂ desired = chosenOutcome observed input desired before
+
+  data CommandEffect : Set where
+    inspect : CommandEffect
+    defaults : CommandEffect
+    encode : Operations.Admitted → Values.Config → CommandEffect
+    preparePrivate linkAbsent : File → CommandEffect
+    syncParent : CommandEffect
+    announceReady : File → CommandEffect
+  CommandReply : CommandEffect → Set
+  CommandReply inspect = Maybe File
+  CommandReply defaults = Operations.Admitted
+  CommandReply (encode _ _) = Text
+  CommandReply _ = ⊤
+  module E = Effects.Protocol CommandEffect CommandReply
+
+  announce : File → E.Script Result
+  announce document = E.ask syncParent (λ _ → E.ask (announceReady document) (λ _ → E.done (ready document)))
+  checkedExisting : Input → Values.Config → File → E.Script Result
+  checkedExisting input desired current with existing input desired current
+  ... | ready document = announce document
+  ... | needsDecision failure = E.done (needsDecision failure)
+  afterInspect : Input → Values.Config → Maybe File → E.Script Result
+  afterInspect input desired (just current) = checkedExisting input desired current
+  afterInspect input desired nothing = E.ask defaults (λ operations → E.ask (encode operations desired) (λ source →
+    let document = preparedFile (metadata operations source) desired in
+    E.ask (preparePrivate document) (λ _ → E.ask (linkAbsent document) (λ _ → announce document))))
+  script : Input → E.Script Result
+  script input with Overrides.create (pairs input)
+  ... | inj₁ error = E.done (needsDecision (override error))
+  ... | inj₂ desired = E.ask inspect (afterInspect input desired)
+
+  -- Failed reads/private writes/syncs interrupt this script. They cannot be
+  -- fabricated successful receipts. A successful link is the same complete
+  -- create-if-absent publication certified by ConfigurationIO.Publication.
+  data Atomic : World → (effect : CommandEffect) → CommandReply effect → World → Set where
+    inspected : ∀ before → Atomic before inspect (Storage.World.target before) before
+    suppliedDefaults : ∀ before operations → Atomic before defaults operations before
+    encoded : ∀ before operations desired source → Atomic before (encode operations desired) source before
+    privatelyPrepared : ∀ before document → Atomic before (preparePrivate document) tt before
+    linked : ∀ before document → Atomic before (linkAbsent document) tt (Storage.intended document before)
+    synced : ∀ before → Atomic before syncParent tt before
+    announced : ∀ before document → Atomic before (announceReady document) tt before
+  module X = Recovery.Execution World CommandEffect CommandReply Atomic
+
+  Goal : Input → World → World → Result → Set
+  Goal input before after reply = Data.Product.Σ Metadata (λ observed → (after , reply) ≡ outcome observed input before)
+
+  -- Only a complete publication changes this world. If another complete file
+  -- already occupies the path it wins; if our file won, its requested fields
+  -- match directly on every later retry, independent of fresh host metadata.
+  outcomeAfterLink : ∀ wanted input before observed cfg →
+    Overrides.create (pairs input) ≡ inj₂ cfg →
+    Data.Product.Σ Metadata (λ original →
+      outcome wanted input (Storage.intended (preparedFile observed cfg) before) ≡ outcome original input before)
+  outcomeAfterLink wanted input (Storage.world nothing frame) observed cfg accepted
+    rewrite accepted with compareFields (pairs input) cfg cfg
+  ... | yes same = observed , refl
+  ... | no different = Data.Empty.⊥-elim (different refl)
+  outcomeAfterLink wanted input (Storage.world (just current) frame) observed cfg accepted
+    rewrite accepted = wanted , refl
+
+  data Owned (input : Input) : CommandEffect → Set where
+    inspectOwned : Owned input inspect
+    defaultsOwned : Owned input defaults
+    encodeOwned : ∀ operations cfg → Owned input (encode operations cfg)
+    privateOwned : ∀ document → Owned input (preparePrivate document)
+    linkOwned : ∀ observed cfg → Overrides.create (pairs input) ≡ inj₂ cfg →
+      Owned input (linkAbsent (preparedFile observed cfg))
+    syncOwned : Owned input syncParent
+    announceOwned : ∀ document → Owned input (announceReady document)
+
+  data Scoped (input : Input) : E.Script Result → Set where
+    returned : ∀ value → Scoped input (E.done value)
+    asked : ∀ effect continuation → Owned input effect →
+      (∀ reply → Scoped input (continuation reply)) → Scoped input (E.ask effect continuation)
+
+  announceScoped : ∀ input document → Scoped input (announce document)
+  announceScoped input document = asked _ _ syncOwned (λ _ →
+    asked _ _ (announceOwned document) (λ _ → returned _))
+  existingScoped : ∀ input desired document → Scoped input (checkedExisting input desired document)
+  existingScoped input desired document with existing input desired document
+  ... | ready selected = announceScoped input selected
+  ... | needsDecision failure = returned _
+  inspectScoped : ∀ input desired → Overrides.create (pairs input) ≡ inj₂ desired →
+    ∀ selected → Scoped input (afterInspect input desired selected)
+  inspectScoped input desired accepted (just current) = existingScoped input desired current
+  inspectScoped input desired accepted nothing = asked _ _ defaultsOwned (λ operations →
+    asked _ _ (encodeOwned operations desired) (λ source →
+      asked _ _ (privateOwned _) (λ _ →
+        asked _ _ (linkOwned (metadata operations source) desired accepted) (λ _ → announceScoped input _))))
+  scriptScoped : ∀ input → Scoped input (script input)
+  scriptScoped input with Overrides.create (pairs input) in accepted
+  ... | inj₁ error = returned _
+  ... | inj₂ desired = asked _ _ inspectOwned (inspectScoped input desired accepted)
+
+  prefixScoped : ∀ input program events residual → Scoped input program → E.Prefix program events residual →
+    Data.List.Relation.Unary.All.All (λ event → Owned input (Data.Product.proj₁ event)) events × Scoped input residual
+  prefixScoped input program [] .program scoped (E.stopped _) = Data.List.Relation.Unary.All.[] , scoped
+  prefixScoped input .(E.ask effect continuation) .((effect , reply) ∷ events) residual
+    (asked effect continuation own later) (E.replied _ _ reply {events} rest)
+    with prefixScoped input (continuation reply) events residual (later reply) rest
+  ... | owners , scoped = Data.List.Relation.Unary.All._∷_ own owners , scoped
+  activeOwned : ∀ input effect continuation → Scoped input (E.ask effect continuation) → Owned input effect
+  activeOwned input effect continuation (asked .effect .continuation own later) = own
+
+  Invariant : Input → World → World → Set
+  Invariant input initial current = ∀ wanted → Data.Product.Σ Metadata (λ original →
+    outcome wanted input current ≡ outcome original input initial)
+  atomicInvariant : ∀ input initial before after effect reply → Owned input effect →
+    Atomic before effect reply after → Invariant input initial before → Invariant input initial after
+  atomicInvariant input initial before .before .inspect ._ inspectOwned (inspected .before) old = old
+  atomicInvariant input initial before .before .defaults operations defaultsOwned (suppliedDefaults .before .operations) old = old
+  atomicInvariant input initial before .before .(encode operations cfg) source (encodeOwned operations cfg) (encoded .before .operations .cfg .source) old = old
+  atomicInvariant input initial before .before .(preparePrivate document) .tt (privateOwned document) (privatelyPrepared .before .document) old = old
+  atomicInvariant input initial before ._ .(linkAbsent (preparedFile observed cfg)) .tt (linkOwned observed cfg accepted)
+    (linked .before ._) old wanted with outcomeAfterLink wanted input before observed cfg accepted
+  ... | previous , same with old previous
+  ... | original , retained = original , Relation.Binary.PropositionalEquality.trans same retained
+  atomicInvariant input initial before .before .syncParent .tt syncOwned (synced .before) old = old
+  atomicInvariant input initial before .before .(announceReady document) .tt (announceOwned document) (announced .before .document) old = old
+
+  changesInvariant : ∀ input initial before events after →
+    Data.List.Relation.Unary.All.All (λ event → Owned input (Data.Product.proj₁ event)) events →
+    X.Changes before events after → Invariant input initial before → Invariant input initial after
+  changesInvariant input initial before [] .before Data.List.Relation.Unary.All.[] (X.unchanged _) old = old
+  changesInvariant input initial before ((effect , reply) ∷ events) after
+    (Data.List.Relation.Unary.All._∷_ own owners) (X.changed _ _ _ middle physical rest) old =
+    changesInvariant input initial middle events after owners rest
+      (atomicInvariant input initial before middle effect reply own physical old)
+
+  interruptedInvariant : ∀ input initial current → X.Interrupted (script input) initial current → Invariant input initial current
+  interruptedInvariant input initial current (X.atPrefix events residual .current prefix physical) =
+    changesInvariant input initial initial events current
+      (Data.Product.proj₁ (prefixScoped input (script input) events residual (scriptScoped input) prefix)) physical
+      (λ observed → observed , refl)
+  interruptedInvariant input initial after
+    (X.beforeReply events effect continuation current reply .after prefix physical active)
+    with prefixScoped input (script input) events (E.ask effect continuation) (scriptScoped input) prefix
+  ... | owners , residual = atomicInvariant input initial current after effect reply
+    (activeOwned input effect continuation residual) active
+    (changesInvariant input initial initial events current owners physical (λ observed → observed , refl))
+
+  -- Availability builds a successful physical execution. Actual receipts
+  -- still admit every observed defaults/serialization value on each attempt.
+  module Execution (available : World → Metadata) where
+    announceObservation : ∀ document before after reply events →
+      E.Runs (announce document) events reply → X.Changes before events after →
+      (after , reply) ≡ (before , ready document)
+    announceObservation document before .before .(ready document) ._
+      (E.replied _ _ tt (E.replied _ _ tt (E.returned _)))
+      (X.changed _ _ _ _ (synced _) (X.changed _ _ _ _ (announced _ _) (X.unchanged _))) = refl
+
+    existingObservation : ∀ input desired document before after reply events →
+      E.Runs (checkedExisting input desired document) events reply → X.Changes before events after →
+      (after , reply) ≡ (before , existing input desired document)
+    existingObservation input desired document before after reply events execution physical
+      with existing input desired document
+    ... | ready selected = announceObservation selected before after reply events execution physical
+    existingObservation input desired document before .before .(needsDecision failure) .[]
+      (E.returned _) (X.unchanged _) | needsDecision failure = refl
+
+    readObservation : ∀ input desired →
+      ∀ before after reply events → E.Runs (afterInspect input desired (Storage.World.target before)) events reply →
+      X.Changes before events after → Data.Product.Σ Metadata (λ observed →
+        (after , reply) ≡ chosenOutcome observed input desired before)
+    readObservation input desired before@(Storage.world (just current) frame) after reply events execution physical =
+      available before , existingObservation input desired current before after reply events execution physical
+    readObservation input desired before@(Storage.world nothing frame) after reply ._
+      (E.replied _ _ operations (E.replied _ _ source (E.replied _ _ tt (E.replied _ _ tt execution))))
+      (X.changed _ _ _ _ (suppliedDefaults _ _) (X.changed _ _ _ _ (encoded _ _ _ _)
+        (X.changed _ _ _ _ (privatelyPrepared _ _) (X.changed _ _ _ _ (linked _ _) physical))))
+      = metadata operations source , announceObservation _ _ after reply _ execution physical
+
+    completedObservation : ∀ input before after reply → X.Completed (script input) before after reply →
+      Goal input before after reply
+    completedObservation input before after reply complete with Overrides.create (pairs input) in accepted
+    ... | inj₁ error with complete
+    ... | X.completed .[] (E.returned _) (X.unchanged _) = available before , refl
+    completedObservation input before after reply complete | inj₂ desired with complete
+    ... | X.completed _ (E.replied _ _ .(Storage.World.target before) execution)
+      (X.changed _ _ _ .before (inspected .before) physical) =
+      readObservation input desired before after reply _ execution physical
+
+    announceProgress : ∀ document before → X.Completed (announce document) before before (ready document)
+    announceProgress document before = X.completed
+      ((syncParent , tt) ∷ (announceReady document , tt) ∷ [])
+      (E.replied _ _ tt (E.replied _ _ tt (E.returned _)))
+      (X.changed _ _ _ _ (synced _) (X.changed _ _ _ _ (announced _ _) (X.unchanged _)))
+    existingProgress : ∀ input desired document before →
+      X.Completed (checkedExisting input desired document) before before (existing input desired document)
+    existingProgress input desired document before with existing input desired document
+    ... | ready selected = announceProgress selected before
+    ... | needsDecision failure = X.completed [] (E.returned _) (X.unchanged _)
+
+    readProgress : ∀ input desired before → Data.Product.Σ World (λ after → Data.Product.Σ Result (λ reply →
+      X.Completed (afterInspect input desired (Storage.World.target before)) before after reply))
+    readProgress input desired before@(Storage.world (just current) frame) =
+      before , existing input desired current , existingProgress input desired current before
+    readProgress input desired before@(Storage.world nothing frame) =
+      Storage.intended document before , ready document , X.completed
+        ((defaults , Metadata.operations observed) ∷ (encode (Metadata.operations observed) desired , Metadata.source observed) ∷
+         (preparePrivate document , tt) ∷ (linkAbsent document , tt) ∷
+         (syncParent , tt) ∷ (announceReady document , tt) ∷ [])
+        (E.replied _ _ _ (E.replied _ _ _ (E.replied _ _ tt (E.replied _ _ tt
+          (E.replied _ _ tt (E.replied _ _ tt (E.returned _)))))))
+        (X.changed _ _ _ _ (suppliedDefaults _ _) (X.changed _ _ _ _ (encoded _ _ _ _)
+          (X.changed _ _ _ _ (privatelyPrepared _ _) (X.changed _ _ _ _ (linked _ _)
+            (X.changed _ _ _ _ (synced _) (X.changed _ _ _ _ (announced _ _) (X.unchanged _)))))))
+      where
+      observed = available before
+      document = preparedFile observed desired
+
+    progress : ∀ input before → Data.Product.Σ World (λ after → Data.Product.Σ Result (λ reply →
+      X.Completed (script input) before after reply))
+    progress input before with Overrides.create (pairs input)
+    ... | inj₁ error = before , needsDecision (override error) , X.completed [] (E.returned _) (X.unchanged _)
+    ... | inj₂ desired with readProgress input desired before
+    ... | after , reply , X.completed events execution physical = after , reply , X.completed
+      ((inspect , Storage.World.target before) ∷ events) (E.replied _ _ _ execution)
+      (X.changed _ _ _ _ (inspected _) physical)
+
+    converges : ∀ input initial interrupted after reply → X.Interrupted (script input) initial interrupted →
+      X.Completed (script input) interrupted after reply → Goal input initial after reply
+    converges input initial interrupted after reply cut completion
+      with completedObservation input interrupted after reply completion
+    ... | observed , completedOutcome with interruptedInvariant input initial interrupted cut observed
+    ... | original , retained = original , Relation.Binary.PropositionalEquality.trans completedOutcome retained
+
+    operation : Recovery.RecoverableFor World Input Result Goal
+    operation = record
+      { Effect = CommandEffect; Reply = CommandReply; script = script; Atomic = Atomic
+      ; progress = progress; converges = converges }
