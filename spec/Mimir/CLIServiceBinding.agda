@@ -32,7 +32,11 @@ import Mimir.Effects as Effects
 import Mimir.Recovery as Recovery
 import Mimir.McpErrors as Errors
 module Correction = Errors.AgentCorrection
-open CLI
+open CLI using (ServiceCommand; Invocation; DatabaseCommand; Admitted; WriteCall
+  ; ReadCall; module DatabaseObservations; writeService; readService; statisticsService
+  ; contradictionsService; interventionService; graphRead; relevantRead
+  ; evidenceRead; documentRead; list; patterns; evidenceList; listRows; patternRows
+  ; service; control; reembed; invocation; serviceCase; controlCase; backfillCase)
 import Mimir.ToolCatalog as Tools
 import Mimir.StructuredValue as Wire
 import Mimir.PublicRetrievalRecovery as Search
@@ -55,7 +59,6 @@ import Mimir.JudgeConfigurationComposition as JudgeConfigurationBinding
 import Mimir.JudgeCommandExecution as JudgeCommand
 import Mimir.UnixPath as NativePath
 import Mimir.UnixMetadata as Metadata
-open import Mimir.RecordDecoding using (_>>=_)
 
 -- Offline compatibility includes the same optional runtime checks as the
 -- actual CLI. A raw 'compatible' value is insufficient: execution below must
@@ -77,9 +80,11 @@ module ConfigurationChecking (library : Library.Contract) (sizeMaximum : ℕ)
     needsInput : Failure → Result
 
   retired : ConfigurationSchema.Config → Text ⊎ ⊤
-  retired cfg = Upgrade.checkOptional "judge" Upgrade.judgeKeys (ConfigurationSchema.Config.judge cfg) >>= λ _ →
-    Upgrade.checkOptional "llm" Upgrade.llmKeys (ConfigurationSchema.Config.llm cfg) >>= λ _ →
-    Upgrade.checkOptional "email" Upgrade.emailKeys (ConfigurationSchema.Config.email cfg)
+  retired cfg with Upgrade.checkOptional "judge" Upgrade.judgeKeys (ConfigurationSchema.Config.judge cfg)
+  ... | inj₁ detail = inj₁ detail
+  ... | inj₂ tt with Upgrade.checkOptional "llm" Upgrade.llmKeys (ConfigurationSchema.Config.llm cfg)
+  ... | inj₁ detail = inj₁ detail
+  ... | inj₂ tt = Upgrade.checkOptional "email" Upgrade.emailKeys (ConfigurationSchema.Config.email cfg)
 
   retention : ConfigurationSchema.Config → Validation.Fault ⊎ ⊤
   retention cfg with ConfigurationSchema.Config.retirement cfg
@@ -103,7 +108,7 @@ module ConfigurationChecking (library : Library.Contract) (sizeMaximum : ℕ)
 
   afterRuntime : ConfigurationSchema.Config → Judge.Result → P.Script Result
   afterRuntime cfg (inj₁ detail) = P.done (needsInput (runtimeFailure detail))
-  afterRuntime cfg (inj₂ loaded) = P.done (compatible cfg)
+  afterRuntime cfg (inj₂ admittedRuntime) = P.done (compatible cfg)
   afterRetention : Path.Path → ConfigurationSchema.Config → P.Script Result
   afterRetention path cfg with retention cfg
   ... | inj₁ fault = P.done (needsInput (retirementFailure fault))
@@ -204,13 +209,13 @@ module ConfigurationBinding (Frame : Set) (library : Library.Contract) (sizeMaxi
     P.ask (executeUpgrade (selectedPath explicit) logging) (afterUpgrade (selectedPath explicit) logging)
   start : CLI.ConfigurationCommand → Maybe Text → P.Script ℕ
   start command token with CLI.admit library (CLI.invocation (CLI.configuration command) token)
-  ... | inj₁ claim = P.ask (inputCorrection claim) (λ _ → P.done 0)
+  ... | inj₁ report = P.ask (inputCorrection report) (λ _ → P.done 0)
   ... | inj₂ admitted = dispatch command
 
-  invalidFlagsCannotStartConfigurationIO : ∀ command token claim →
-    CLI.admit library (CLI.invocation (CLI.configuration command) token) ≡ inj₁ claim →
-    start command token ≡ P.ask (inputCorrection claim) (λ _ → P.done 0)
-  invalidFlagsCannotStartConfigurationIO command token claim invalid rewrite invalid = refl
+  invalidFlagsCannotStartConfigurationIO : ∀ command token report →
+    CLI.admit library (CLI.invocation (CLI.configuration command) token) ≡ inj₁ report →
+    start command token ≡ P.ask (inputCorrection report) (λ _ → P.done 0)
+  invalidFlagsCannotStartConfigurationIO command token report invalid rewrite invalid = refl
 
 -- Initialization runs without an application/database environment: the file
 -- may not exist yet. Its sole execution effect selects the fixed filesystem
@@ -270,17 +275,17 @@ module InitializationBinding (Frame : Set) (parser : Unsigned.Parser)
 
   start : List (Data.String.String × Text) → Maybe Text → P.Script ℕ
   start pairs token with CLI.admit library (CLI.invocation (CLI.init pairs) token)
-  ... | inj₁ claim = P.ask (inputCorrection claim) (λ _ → P.done 0)
+  ... | inj₁ report = P.ask (inputCorrection report) (λ _ → P.done 0)
   ... | inj₂ admitted = P.ask (executeInit (selected pairs)) (afterInit (selected pairs))
 
   completedInitializationMeetsGoal : ∀ input before after reply →
     Selected.X.Completed (Selected.script input) before after reply → I.Goal input before after reply
   completedInitializationMeetsGoal = Selected.completedMeetsGoal
 
-  invalidFlagsCannotStartInitialization : ∀ pairs token claim →
-    CLI.admit library (CLI.invocation (CLI.init pairs) token) ≡ inj₁ claim →
-    start pairs token ≡ P.ask (inputCorrection claim) (λ _ → P.done 0)
-  invalidFlagsCannotStartInitialization pairs token claim invalid rewrite invalid = refl
+  invalidFlagsCannotStartInitialization : ∀ pairs token report →
+    CLI.admit library (CLI.invocation (CLI.init pairs) token) ≡ inj₁ report →
+    start pairs token ≡ P.ask (inputCorrection report) (λ _ → P.done 0)
+  invalidFlagsCannotStartInitialization pairs token report invalid rewrite invalid = refl
 
 module Run (environment : Application.Environment) where
   databaseSum = Application.Environment.databaseSum environment
@@ -578,7 +583,7 @@ module ManagedEntry (environment : Application.Environment)
   route (CLI.invocation (CLI.hook command) token) = hookOwner command
   select : CLI.Invocation → Selection
   select call with CLI.admit library call
-  ... | inj₁ claim = managed (correctionCall claim)
+  ... | inj₁ report = managed (correctionCall report)
   ... | inj₂ admitted = route call
 
   data Effect : Set where
@@ -605,13 +610,13 @@ module ManagedEntry (environment : Application.Environment)
   program (databaseCall call selected) = liftDatabase (D.start call selected)
   program (initializationCall pairs token) = liftInitialization (Init.start pairs token)
   program (configurationCall command token) = liftConfiguration (Config.start command token)
-  program (correctionCall claim) = P.ask (correction claim) (λ _ → P.done 0)
+  program (correctionCall report) = P.ask (correction report) (λ _ → P.done 0)
 
   data Receipt (migrations : M.Inputs) : (effect : Effect) → Reply effect → Set where
     databaseObserved : ∀ effect reply → Database.Receipt migrations effect reply → Receipt migrations (database effect) reply
     initializationObserved : ∀ effect reply → Receipt migrations (initialization effect) reply
     configurationObserved : ∀ effect reply → Receipt migrations (configuration effect) reply
-    correctionWritten : ∀ claim → Receipt migrations (correction claim) tt
+    correctionWritten : ∀ report → Receipt migrations (correction report) tt
   data Runs (migrations : M.Inputs) : P.Script ℕ → List P.Event → ℕ → Set where
     returned : ∀ result → Runs migrations (P.done result) [] result
     replied : ∀ effect continuation reply events result → Receipt migrations effect reply →
@@ -623,7 +628,7 @@ module ManagedEntry (environment : Application.Environment)
   data OfflineEffect : Effect → Set where
     initEffect : ∀ effect → OfflineEffect (initialization effect)
     configEffect : ∀ effect → OfflineEffect (configuration effect)
-    correctionEffect : ∀ claim → OfflineEffect (correction claim)
+    correctionEffect : ∀ report → OfflineEffect (correction report)
   data Offline : List P.Event → Set where
     noEffects : Offline []
     offlineStep : ∀ {effect reply events} → OfflineEffect effect → Offline events → Offline ((effect , reply) ∷ events)
@@ -659,6 +664,6 @@ module ManagedEntry (environment : Application.Environment)
       events : List P.Event
       executed : Runs migrations (program selected) events result
 
-  invalidInputSelectsCorrection : ∀ call claim → CLI.admit library call ≡ inj₁ claim →
-    select call ≡ managed (correctionCall claim)
-  invalidInputSelectsCorrection call claim invalid rewrite invalid = refl
+  invalidInputSelectsCorrection : ∀ call report → CLI.admit library call ≡ inj₁ report →
+    select call ≡ managed (correctionCall report)
+  invalidInputSelectsCorrection call report invalid rewrite invalid = refl
