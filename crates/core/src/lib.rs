@@ -3,6 +3,11 @@ mod backfill_service;
 pub mod config;
 pub mod db;
 mod document_service;
+mod operation_ownership;
+pub mod operation_reporting;
+mod registered_dispatch;
+pub use operation_ownership::OperationCancellation;
+pub use registered_dispatch::WriteAdmissionIssue;
 pub mod documents;
 pub mod embed;
 pub mod graph;
@@ -14,6 +19,7 @@ pub mod operation_catalogue;
 mod password;
 pub mod retrieval;
 pub mod store;
+mod sweep_service;
 mod tls;
 pub mod validation;
 
@@ -116,6 +122,7 @@ pub struct MimirService {
     embeddings: Option<OwnedEmbeddingBackend>,
     embedding_operation_settings: serde_json::Value,
     retirement: Option<toml::Value>,
+    operation_executions: std::sync::Arc<operation_ownership::OperationExecutions>,
 }
 
 impl MimirService {
@@ -147,6 +154,7 @@ impl MimirService {
             embeddings,
             embedding_operation_settings: preparation::operation_settings(cfg.embeddings.as_ref()),
             retirement: cfg.retirement.clone(),
+            operation_executions: Default::default(),
         })
     }
 
@@ -882,35 +890,10 @@ impl MimirService {
                 "Supply a finite probability between 0 and 1 inclusive; no beliefs were read or deleted.",
             ).into());
         }
-        let grace_period = self.retirement_policy()?.duration();
-        let edges = match project {
-            Some(p) => self.store.get_defeats_with_timestamps_by_project(p).await?,
-            None => self.store.get_defeats_with_timestamps().await?,
-        };
-        if edges.is_empty() {
-            return Ok(0);
-        }
-        let beliefs = match project {
-            Some(p) => self.store.list_beliefs_by_project(p).await?,
-            None => self.store.list_beliefs().await?,
-        };
-        let belief_map: std::collections::HashMap<Uuid, Belief> =
-            beliefs.into_iter().map(|b| (b.id, b)).collect();
-        let now = chrono::Utc::now();
-        let candidates = self.inference.find_expired_defeated(
-            &edges,
-            &belief_map,
-            now,
-            prob_threshold,
-            grace_period,
-        );
-        let mut deleted = 0usize;
-        for id in candidates {
-            if self.store.delete_belief(id).await? {
-                deleted += 1;
-            }
-        }
-        Ok(deleted)
+        let policy = self.retirement_policy()?;
+        self.store
+            .sweep_expired_defeated(prob_threshold, project, &policy)
+            .await
     }
 
     /// Hybrid retrieval ranked by weighted Reciprocal Rank Fusion.

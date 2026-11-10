@@ -24,7 +24,7 @@ fn decode<T: DeserializeOwned>(request: &OperationBindingRequest, schema: &str) 
         )
         .into());
     }
-    mimir_json::from_value(request.arguments().clone()).map_err(|error| {
+    mimir_json::decode_ref(request.arguments()).map_err(|error| {
         RequestCorrection::bound_graph_request(
             "",
             Code::MalformedInput,
@@ -115,6 +115,14 @@ fn edge(request: &OperationBindingRequest) -> Result<Edge> {
         edge_type: kind,
         weight,
     })
+}
+
+pub(crate) fn admit_request(request: &OperationBindingRequest) -> Result<()> {
+    if request.operation() == "insert_pattern" {
+        pattern(request).map(|_| ())
+    } else {
+        edge(request).map(|_| ())
+    }
 }
 
 impl AgeStore {

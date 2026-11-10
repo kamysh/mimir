@@ -49,12 +49,16 @@ Literal identifiers and error codes remain useful keyword queries. See
 ## Closing an MCP session
 
 The server watches client input while a request is running. Closing the
-connection cancels the unfinished request and discards queued requests. An
-owned local embedding worker is terminated and reaped before the server returns;
-requests that remain connected still run in arrival order.
+connection drops unfinished requests and discards requests not yet started. An
+owned local embedding worker is terminated and reaped before the server returns.
+Requests can run concurrently, so an explicit cancellation does not wait behind
+a blocked provider. Replies retain their request IDs and may arrive out of order.
 
-Disconnect does not undo changes already committed to the database. Read back
-the affected work before retrying a write whose response was lost.
+Disconnect does not undo changes already committed to the database or durably
+cancel the intended action. Read `operation_outcome` with its original token
+before retrying a write whose response was lost. See the
+[operation protocol](OPERATION-PROTOCOL.md) for explicit cancellation and the
+scope of worker-cleanup confirmation.
 
 `mimir reembed` also watches its current belief while embedding. Deleting that
 belief or its project stops the unfinished embedding call and reaps its local
@@ -229,3 +233,15 @@ A new missing or conflicting date is not treated as old data. Mimir requests
 a user decision, identifies the stored metadata and migration receipt to
 inspect, and leaves the beliefs unchanged. Do not invent a historical date,
 restart the clock or delete a belief to bypass that request.
+
+A sweep deletes its entire eligible set, cleans up its vectors and recomputes
+affected survivors in one transaction. A numerical refusal leaves the complete
+set unchanged. The registered token path saves its exact original selected IDs
+and count with that publication. A completed retry reads that answer before
+checking current retention settings and never selects later work.
+
+An unfinished registered sweep pauses if the user changes or removes its
+original retention policy. Open a dialog to restore that policy or explicitly
+cancel unfinished work before starting a different operation. Old completed
+per-belief results remain readable; unfinished old plans require a decision
+and cannot execute under the new layout. See [belief retention](BELIEF-RETENTION.md).

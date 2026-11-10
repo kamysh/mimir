@@ -5,6 +5,8 @@
 /// a transaction. Instrumentation and native/spec comparison follow in #88.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommitSite {
+    OperationReservation,
+    OperationCancellation,
     EmbeddingOwnerReservation,
     BeliefPublication,
     BeliefVectorPublication,
@@ -28,6 +30,8 @@ pub enum CommitSite {
 impl CommitSite {
     pub fn name(self) -> &'static str {
         match self {
+            Self::OperationReservation => "store.reserve_operation",
+            Self::OperationCancellation => "store.cancel_operation",
             Self::EmbeddingOwnerReservation => "store.reserve_belief_preparation",
             Self::BeliefPublication => "store.publish_prepared_belief",
             Self::BeliefVectorPublication => "store.insert_belief_embedding",
@@ -72,22 +76,26 @@ const fn repeated(site: CommitSite) -> CommitBoundary {
 
 macro_rules! operations {
     (graph { $($graph:ident => $graph_name:literal [$($graph_boundary:expr),* $(,)?]),* $(,)? }
-     learning { $($learning:ident => $learning_name:literal [$($learning_boundary:expr),* $(,)?]),* $(,)? }) => {
+     learning { $($learning:ident => $learning_name:literal [$($learning_boundary:expr),* $(,)?]),* $(,)? }
+     control { $($control:ident => $control_name:literal [$($control_boundary:expr),* $(,)?]),* $(,)? }) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum GraphOperation { $($graph),* }
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum LearningOperation { $($learning),* }
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum Operation { Graph(GraphOperation), Learning(LearningOperation) }
+        pub enum ControlOperation { $($control),* }
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Operation { Graph(GraphOperation), Learning(LearningOperation), Control(ControlOperation) }
         impl Operation {
-            pub const ALL: &'static [Self] = &[$(Self::Graph(GraphOperation::$graph)),*, $(Self::Learning(LearningOperation::$learning)),*];
+            pub const ALL: &'static [Self] = &[$(Self::Graph(GraphOperation::$graph)),*, $(Self::Learning(LearningOperation::$learning)),*, $(Self::Control(ControlOperation::$control)),*];
             pub fn name(self) -> &'static str {
-                match self { $(Self::Graph(GraphOperation::$graph) => $graph_name),*, $(Self::Learning(LearningOperation::$learning) => $learning_name),* }
+                match self { $(Self::Graph(GraphOperation::$graph) => $graph_name),*, $(Self::Learning(LearningOperation::$learning) => $learning_name),*, $(Self::Control(ControlOperation::$control) => $control_name),* }
             }
             pub fn committed_boundaries(self) -> &'static [CommitBoundary] {
                 match self {
                     $(Self::Graph(GraphOperation::$graph) => { const PLAN: &[CommitBoundary] = &[$($graph_boundary),*]; PLAN }),*,
-                    $(Self::Learning(LearningOperation::$learning) => { const PLAN: &[CommitBoundary] = &[$($learning_boundary),*]; PLAN }),*
+                    $(Self::Learning(LearningOperation::$learning) => { const PLAN: &[CommitBoundary] = &[$($learning_boundary),*]; PLAN }),*,
+                    $(Self::Control(ControlOperation::$control) => { const PLAN: &[CommitBoundary] = &[$($control_boundary),*]; PLAN }),*
                 }
             }
         }
@@ -111,7 +119,7 @@ operations! {
         ListPatterns => "list_patterns" [],
         GetContradictions => "get_contradictions" [],
         DecayAll => "decay_all" [once(Decay)],
-        SweepExpiredDefeated => "sweep_expired_defeated" [repeated(BeliefDeletion)],
+        SweepExpiredDefeated => "sweep_expired_defeated" [once(BeliefDeletion)],
         QueryRelevant => "query_relevant" [],
         AddEvidence => "add_evidence" [once(EvidencePublication)],
         GetEvidence => "get_evidence" [],
@@ -134,6 +142,32 @@ operations! {
         ExperienceHistory => "experience_history" [],
         QueryLearningContext => "query_learning_context" []
     }
+    control {
+        ReserveOperation => "reserve_operation" [once(OperationReservation)],
+        OperationOutcome => "operation_outcome" [],
+        CancelOperation => "cancel_operation" [once(OperationCancellation)]
+    }
+}
+
+/// The shared write dispatcher accepts only a declared business writer.
+/// Controls have their own reservation/readback/cancellation protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegisteredWrite {
+    operation: Operation,
+}
+impl RegisteredWrite {
+    pub fn operation(self) -> Operation {
+        self.operation
+    }
+}
+impl Operation {
+    pub fn registered_write(self) -> Option<RegisteredWrite> {
+        match self {
+            Self::Control(_) => None,
+            Self::Graph(_) | Self::Learning(_) => (!self.committed_boundaries().is_empty())
+                .then_some(RegisteredWrite { operation: self }),
+        }
+    }
 }
 
 /// Library operations have checked plans without becoming advertised MCP tools.
@@ -149,7 +183,12 @@ impl RegisteredOperation {
         Operation::ALL
             .iter()
             .copied()
-            .find(|operation| operation.name() == name)
+            // Controls own their concrete reservation/readback/cancellation
+            // certificates; they are not business plans executed under a
+            // second operation token.
+            .find(|operation| {
+                !matches!(operation, Operation::Control(_)) && operation.name() == name
+            })
             .map(Self::Tool)
             .or_else(|| (name == "delete_evidence").then_some(Self::DeleteEvidence))
             .or_else(|| (name == "reembed").then_some(Self::Reembed))

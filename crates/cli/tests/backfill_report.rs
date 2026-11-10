@@ -33,11 +33,16 @@ async fn reembed_without_backend_requests_a_decision_and_preserves_existing_data
     )
     .await?;
     let before = mimir_json::to_value(service.get_belief(belief.id).await?)?;
+    let token = service
+        .reserve_operation(&format!("cli-backfill-{identity}"))
+        .await?
+        .operation_token;
     let log = fixture
         .root
         .join(format!("backfill-missing-backend-{identity}"));
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mimir"))
         .arg("reembed")
+        .args(["--operation-token", &token.to_string()])
         .stdin(Stdio::null())
         .stdout(std::fs::File::create(log.with_extension("stdout"))?)
         .stderr(std::fs::File::create(log.with_extension("stderr"))?)
@@ -64,16 +69,17 @@ async fn reembed_without_backend_requests_a_decision_and_preserves_existing_data
     // Parse all stdout: a trailing success summary would make this fail too.
     let report: Value = mimir_json::from_slice(&output)?;
     ensure!(report["status"] == "needs_input");
-    ensure!(report["operation_status"] == "incomplete");
-    ensure!(report["next_action"] == "open_user_dialog");
-    ensure!(report["current_vector_publication"] == "not_attempted");
-    ensure!(report["current_belief_id"].is_null());
-    ensure!(report["confirmed_counts"]["embedded"] == 0);
-    ensure!(report["business_changes"]["embedded_belief_ids"]
-        .as_array()
-        .is_some_and(Vec::is_empty));
-    let problem = report["problem"].as_str().unwrap_or_default();
+    ensure!(report["next_action"] == "correct_request_or_ask_user");
+    let correction: mimir_core::interaction::NeedsInput = mimir_json::decode_ref(&report)?;
+    let problem = &correction.issues()[0].fault().message;
     ensure!(problem.contains("user") && problem.contains("embedding"));
+    ensure!(
+        matches!(
+            service.read_operation_outcome(token, None).await?,
+            mimir_core::store::OperationOutcome::Pending { .. }
+        ),
+        "a missing provider must preserve the original unfinished plan"
+    );
     ensure!(
         after == before && vector_count == 0,
         "a prerequisite decision must preserve stored data"

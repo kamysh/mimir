@@ -80,15 +80,44 @@ fn catalogue_requires_host_capability_and_every_typed_review_property() {
         ]
     );
     for tool in &allowed {
-        assert_eq!(
-            Some(tool),
-            valid["tools"]
-                .as_array()
+        let mut expected = valid["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|original| original["name"] == tool["name"])
+            .unwrap()
+            .clone();
+        if expected["name"] == "review_experience" {
+            expected["inputSchema"]["properties"]
+                .as_object_mut()
                 .unwrap()
-                .iter()
-                .find(|original| original["name"] == tool["name"])
-        );
+                .remove("operation_token");
+            expected["inputSchema"]["required"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|field| field != "operation_token");
+        }
+        assert_eq!(tool, &expected);
     }
+    assert!(allowed
+        .iter()
+        .all(|tool| tool["name"] != "reserve_operation"
+            && tool["name"] != "operation_outcome"
+            && tool["name"] != "cancel_operation"));
+    for name in ["reserve_operation", "operation_outcome"] {
+        let mut absent = valid.clone();
+        absent["tools"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|tool| tool["name"] != name);
+        assert!(checked_tools(&absent).is_err());
+    }
+    let mut missing_token = valid.clone();
+    advertised_mut(&mut missing_token, "review_experience")["inputSchema"]["required"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|field| field != "operation_token");
+    assert!(checked_tools(&missing_token).is_err());
     let mut absent = valid.clone();
     absent["tools"]
         .as_array_mut()
@@ -137,6 +166,7 @@ fn catalogue_keeps_first_match_and_optional_advertised_definitions() {
     );
 
     let mut valid = catalogue();
+    let original_count = checked_tools(&valid).unwrap().len();
     for name in ["get_lesson_assessment", "lesson_assessment_history"] {
         valid["tools"]
             .as_array_mut()
@@ -150,7 +180,7 @@ fn catalogue_keeps_first_match_and_optional_advertised_definitions() {
         .unwrap()
         .push(json!({"name":"get_learning_review",
         "inputSchema":{"properties":{"id":{"type":"string"}}}}));
-    assert_eq!(checked_tools(&valid).unwrap().len(), 12);
+    assert_eq!(checked_tools(&valid).unwrap().len(), original_count + 3);
     for name in [
         "get_lesson_assessment",
         "lesson_assessment_history",

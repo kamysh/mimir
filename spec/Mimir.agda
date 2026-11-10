@@ -59,6 +59,7 @@ import Mimir.Effects
 import Mimir.Recovery
 import Mimir.OperationControls
 import Mimir.BackfillRecovery
+import Mimir.BackfillOperationRecovery
 import Mimir.RecoverableStoreStep
 import Mimir.RecoverableStoreSequence
 import Mimir.RegisteredStoreAdmission
@@ -73,6 +74,7 @@ import Mimir.ExperienceSourceRecovery
 import Mimir.DecayRecovery
 import Mimir.GroundingRecovery
 import Mimir.DefeatRecovery
+import Mimir.SweepRecovery
 import Mimir.PropagationRecovery
 import Mimir.DocumentRemovalRecovery
 import Mimir.DocumentReplacementRecovery

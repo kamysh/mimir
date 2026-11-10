@@ -42,6 +42,16 @@ this recalls an earlier decision; I'll check it against the current code."
 
 ## Choose the write that matches the evidence
 
+Before a write, use `reserve_operation` with a stable `request_key` for that
+intended action, then supply its PostgreSQL-issued `operation_token` with the
+write. Keep the key, token and unchanged arguments on retries. A lost reply is
+resolved through the same key or `operation_outcome`; it does not justify
+starting another action. Use returned `needs_input` guidance to correct input
+or discuss an uncertain prerequisite with the user. Once a request is bound,
+do not replace its arguments. Invoke `cancel_operation` only after an explicit
+user decision, and do not infer completed worker cleanup from its database
+receipt. Completed write replies contain the original business `result`.
+
 For an incident that may change a later approach, use `record_experience` with
 the situation, action, observed outcome and concrete evidence. The judge can
 then form or revise a hypothesis through an atomic, experience-owned candidate

@@ -42,6 +42,23 @@ pub(super) fn reference<T>(result: anyhow::Result<T>) -> anyhow::Result<Option<T
     }
 }
 
+/// The selected caller is read-only, or owns an acknowledged complete
+/// rollback. A larger operation with an earlier commit must not use this.
+pub(super) fn stored_evidence<T>(result: anyhow::Result<T>) -> anyhow::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) => {
+            if let Some(issue) = error.downcast_ref::<mimir_core::graph::StoredBeliefIssue>() {
+                let correction = NeedsInput::new(issue.issue().clone(), vec![])?;
+                println!("{}", mimir_json::to_string(&correction)?);
+                Ok(None)
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
 fn uuid(value: &str, field: &str, issues: &mut Vec<CorrectionItem>) {
     if uuid::Uuid::parse_str(value).is_err() {
         issues.push(CorrectionItem::invalid_uuid(vec![Segment::Key(

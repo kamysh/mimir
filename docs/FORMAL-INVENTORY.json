@@ -7187,6 +7187,72 @@
           "line": 641,
           "specification": [],
           "status": "test-definition-not-production-behavior"
+        },
+        {
+          "kind": "fn",
+          "name": "admit_count_write",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/StoreRows.agda",
+            "spec/Mimir/EvidenceValidity.agda",
+            "spec/Mimir/PosteriorComputation.agda"
+          ],
+          "mapping_boundary": "Native stored/proposed count admission against the existing formal validity rules; focused database and real MCP/CLI tests, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "admit_probability_write",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/StoreRows.agda",
+            "spec/Mimir/EvidenceValidity.agda",
+            "spec/Mimir/PosteriorComputation.agda"
+          ],
+          "mapping_boundary": "Native stored/proposed count admission against the existing formal validity rules; focused database and real MCP/CLI tests, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "pair_problem",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/StoreRows.agda",
+            "spec/Mimir/EvidenceValidity.agda",
+            "spec/Mimir/PosteriorComputation.agda"
+          ],
+          "mapping_boundary": "Native stored/proposed count admission against the existing formal validity rules; focused database and real MCP/CLI tests, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "stored_counter",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/StoreRows.agda",
+            "spec/Mimir/EvidenceValidity.agda",
+            "spec/Mimir/PosteriorComputation.agda"
+          ],
+          "mapping_boundary": "Native stored/proposed count admission against the existing formal validity rules; focused database and real MCP/CLI tests, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "stored_pair",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/StoreRows.agda",
+            "spec/Mimir/EvidenceValidity.agda",
+            "spec/Mimir/PosteriorComputation.agda"
+          ],
+          "mapping_boundary": "Native stored/proposed count admission against the existing formal validity rules; focused database and real MCP/CLI tests, not a compiled Rust refinement theorem."
+        },
+        {
+          "kind": "fn",
+          "name": "stored_probability",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/StoreRows.agda",
+            "spec/Mimir/EvidenceValidity.agda",
+            "spec/Mimir/PosteriorComputation.agda"
+          ],
+          "mapping_boundary": "Native stored/proposed count admission against the existing formal validity rules; focused database and real MCP/CLI tests, not a compiled Rust refinement theorem."
         }
       ],
       "status": "unmapped",
@@ -18072,51 +18138,60 @@
     {
       "path": "crates/core/src/backfill_service.rs",
       "definitions": [],
-      "status": "partial-147-whole-operation-recovery-open",
+      "status": "registered-backfill-recovery-checked-public-routing-open",
       "classification": "production-behavior",
       "behavioral_specification": [
         "spec/Mimir/BackfillRecovery.agda",
-        "spec/Mimir/EmbeddingLifecycle.agda"
+        "spec/Mimir/EmbeddingLifecycle.agda",
+        "spec/Mimir/BackfillCaptureEncoding.agda",
+        "spec/Mimir/BackfillPreparationRecovery.agda",
+        "spec/Mimir/BackfillOperationRecovery.agda"
       ],
       "proof_boundary_category": "database_effects",
-      "specification_status": "item-policy-and-admission-checked-whole-operation-certificate-open"
+      "specification_status": "whole-operation-recovery-certificate-and-focused-native-regressions"
     },
     {
       "path": "crates/core/src/store/backfill.rs",
       "definitions": [],
-      "status": "partial-147-whole-operation-recovery-open",
+      "status": "registered-backfill-recovery-checked-public-routing-open",
       "classification": "production-behavior",
       "behavioral_specification": [
         "spec/Mimir/BackfillRecovery.agda",
-        "spec/Mimir/OperationControls.agda"
+        "spec/Mimir/OperationControls.agda",
+        "spec/Mimir/BackfillCaptureEncoding.agda",
+        "spec/Mimir/BackfillPreparationRecovery.agda",
+        "spec/Mimir/BackfillOperationRecovery.agda"
       ],
       "proof_boundary_category": "database_effects",
-      "specification_status": "item-policy-and-admission-checked-whole-operation-certificate-open"
+      "specification_status": "whole-operation-recovery-certificate-and-focused-native-regressions"
     },
     {
       "path": "crates/core/src/backfill_service_tests.rs",
       "definitions": [],
-      "status": "partial-147-whole-operation-recovery-open",
+      "status": "registered-backfill-recovery-checked-public-routing-open",
       "classification": "verification-or-example-artifact"
     },
     {
       "path": "crates/core/src/store/backfill_tests.rs",
       "definitions": [],
-      "status": "partial-147-whole-operation-recovery-open",
+      "status": "registered-backfill-recovery-checked-public-routing-open",
       "classification": "verification-or-example-artifact"
     },
     {
       "path": "crates/core/migrations/022_backfill_change_events.sql",
       "definitions": [],
-      "status": "partial-147-whole-operation-recovery-open",
+      "status": "registered-backfill-recovery-checked-public-routing-open",
       "classification": "production-behavior",
       "behavioral_specification": [
         "spec/Mimir/Migrations.agda",
         "spec/Mimir/MigrationSchema.agda",
-        "spec/Mimir/MigrationScriptBinding.agda"
+        "spec/Mimir/MigrationScriptBinding.agda",
+        "spec/Mimir/BackfillCaptureEncoding.agda",
+        "spec/Mimir/BackfillPreparationRecovery.agda",
+        "spec/Mimir/BackfillOperationRecovery.agda"
       ],
       "proof_boundary_category": "database_effects",
-      "specification_status": "item-policy-and-admission-checked-whole-operation-certificate-open"
+      "specification_status": "whole-operation-recovery-certificate-and-focused-native-regressions"
     },
     {
       "path": "crates/core/src/store/retirement.rs",
@@ -18242,6 +18317,164 @@
         "spec/Mimir/MigrationScriptBinding.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
+    },
+    {
+      "path": "crates/core/src/store/sweep.rs",
+      "definitions": [
+        {
+          "kind": "fn",
+          "name": "correction",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/SweepRecovery.agda",
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/RetirementClock.agda"
+          ],
+          "mapping_boundary": "Source navigation, not a Rust refinement theorem; actual transaction/replay/policy behavior is checked in owned database and MCP tests."
+        },
+        {
+          "kind": "fn",
+          "name": "fmt",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/SweepRecovery.agda",
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/RetirementClock.agda"
+          ],
+          "mapping_boundary": "Source navigation, not a Rust refinement theorem; actual transaction/replay/policy behavior is checked in owned database and MCP tests."
+        },
+        {
+          "kind": "fn",
+          "name": "policy_issue",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/SweepRecovery.agda",
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/RetirementClock.agda"
+          ],
+          "mapping_boundary": "Source navigation, not a Rust refinement theorem; actual transaction/replay/policy behavior is checked in owned database and MCP tests."
+        },
+        {
+          "kind": "fn",
+          "name": "settings",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/SweepRecovery.agda",
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/RetirementClock.agda"
+          ],
+          "mapping_boundary": "Source navigation, not a Rust refinement theorem; actual transaction/replay/policy behavior is checked in owned database and MCP tests."
+        },
+        {
+          "kind": "fn",
+          "name": "default_threshold",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/SweepRecovery.agda",
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/RetirementClock.agda"
+          ],
+          "mapping_boundary": "Source navigation, not a Rust refinement theorem; actual transaction/replay/policy behavior is checked in owned database and MCP tests."
+        },
+        {
+          "kind": "fn",
+          "name": "validate_threshold",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/SweepRecovery.agda",
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/RetirementClock.agda"
+          ],
+          "mapping_boundary": "Source navigation, not a Rust refinement theorem; actual transaction/replay/policy behavior is checked in owned database and MCP tests."
+        },
+        {
+          "kind": "fn",
+          "name": "check_policy",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/SweepRecovery.agda",
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/RetirementClock.agda"
+          ],
+          "mapping_boundary": "Source navigation, not a Rust refinement theorem; actual transaction/replay/policy behavior is checked in owned database and MCP tests."
+        },
+        {
+          "kind": "fn",
+          "name": "sweep_locked_in",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/SweepRecovery.agda",
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/RetirementClock.agda"
+          ],
+          "mapping_boundary": "Source navigation, not a Rust refinement theorem; actual transaction/replay/policy behavior is checked in owned database and MCP tests."
+        },
+        {
+          "kind": "fn",
+          "name": "sweep_expired_defeated",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/SweepRecovery.agda",
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/RetirementClock.agda"
+          ],
+          "mapping_boundary": "Source navigation, not a Rust refinement theorem; actual transaction/replay/policy behavior is checked in owned database and MCP tests."
+        },
+        {
+          "kind": "fn",
+          "name": "sweep_operation",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/SweepRecovery.agda",
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/RetirementClock.agda"
+          ],
+          "mapping_boundary": "Source navigation, not a Rust refinement theorem; actual transaction/replay/policy behavior is checked in owned database and MCP tests."
+        }
+      ],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/SweepRecovery.agda",
+        "spec/Mimir/OperationControls.agda",
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/RetirementClock.agda"
+      ]
+    },
+    {
+      "path": "crates/core/src/sweep_service.rs",
+      "definitions": [
+        {
+          "kind": "fn",
+          "name": "sweep_operation",
+          "specification": [],
+          "behavioral_area": [
+            "spec/Mimir/SweepRecovery.agda",
+            "spec/Mimir/OperationControls.agda",
+            "spec/Mimir/InferenceProtocol.agda",
+            "spec/Mimir/RetirementClock.agda"
+          ],
+          "mapping_boundary": "Source navigation, not a Rust refinement theorem; actual transaction/replay/policy behavior is checked in owned database and MCP tests."
+        }
+      ],
+      "status": "behavioral-area-mapped-rust-correspondence-open",
+      "classification": "production-behavior",
+      "behavioral_specification": [
+        "spec/Mimir/SweepRecovery.agda",
+        "spec/Mimir/OperationControls.agda",
+        "spec/Mimir/InferenceProtocol.agda",
+        "spec/Mimir/RetirementClock.agda"
+      ]
     },
     {
       "path": "crates/core/src/document_service.rs",

@@ -124,6 +124,11 @@ fn parser_and_semantic_misuse_return_repair_guidance_before_configuration() -> R
 async fn cli_and_mcp_keep_the_same_uuid_diagnosis_and_mcp_remains_usable() -> Result<()> {
     let fixture = isolation::fixture();
     let cli = invalid(&["delete", "belief", "bad-id"])?;
+    let token: uuid::Uuid = mimir_core::db::connect(&fixture.database_config())
+        .await?
+        .query_one("SELECT gen_random_uuid()", &[])
+        .await?
+        .get(0);
     let stderr = std::fs::File::create(fixture.root.join(format!(
         "cli-correction-mcp-{}.stderr",
         uuid::Uuid::new_v4()
@@ -137,7 +142,11 @@ async fn cli_and_mcp_keep_the_same_uuid_diagnosis_and_mcp_remains_usable() -> Re
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
     for (id, name, arguments) in [
-        (1, "delete_belief", json!({"id":"bad-id"})),
+        (
+            1,
+            "delete_belief",
+            json!({"id":"bad-id","operation_token":token}),
+        ),
         (2, "learning_capabilities", json!({})),
     ] {
         let request = json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}});

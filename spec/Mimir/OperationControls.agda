@@ -388,7 +388,7 @@ module Plan where
     entry "list_patterns" [] ∷
     entry "get_contradictions" [] ∷
     entry "decay_all" (once "store.decay_locked" ∷ []) ∷
-    entry "sweep_expired_defeated" (repeated "store.delete_belief" ∷ []) ∷
+    entry "sweep_expired_defeated" (once "store.delete_belief" ∷ []) ∷
     entry "query_relevant" [] ∷
     entry "add_evidence" (once "store.insert_evidence" ∷ []) ∷
     entry "get_evidence" [] ∷

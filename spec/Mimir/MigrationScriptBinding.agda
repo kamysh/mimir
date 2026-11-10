@@ -46,6 +46,8 @@ source Schema.beliefSources = toList "CREATE TABLE public.mimir_belief_sources (
 source Schema.firstDefeatClock = toList "DO $migration$\nBEGIN\n  EXECUTE format($query$\n    SELECT * FROM ag_catalog.cypher(%L, $cypher$\n      MATCH (:Belief)-[:DEFEATS]->(target:Belief)\n      WHERE target.first_defeated_at IS NULL\n        AND target.legacy_defeat_expired IS NULL\n      SET target.legacy_defeat_expired = true\n      RETURN count(target)\n    $cypher$) AS (count ag_catalog.agtype)\n  $query$, current_database());\nEND\n$migration$;"
 source Schema.backfillChangeEvents = toList "CREATE TRIGGER mimir_backfill_vector_changed\nAFTER INSERT OR UPDATE OR DELETE ON public.belief_embeddings\nFOR EACH STATEMENT EXECUTE FUNCTION mimir_embedding_owner_changed();"
 
+source Schema.reviewPreparationEvents = toList "-- Hints for owned preparation, not new-work scheduling. A feedback-only\n-- acknowledgement must revoke stale preparation without making a queue loop.\nCREATE FUNCTION public.mimir_notify_review_state_changed() RETURNS trigger\nLANGUAGE plpgsql AS $$\nBEGIN\n    PERFORM pg_notify('mimir_review_state_changed', '');\n    RETURN NULL;\nEND\n$$;\n\nCREATE TRIGGER mimir_review_source_state_changed\nAFTER UPDATE OF revision, review_revision, project OR DELETE ON public.mimir_experiences\nFOR EACH ROW EXECUTE FUNCTION public.mimir_notify_review_state_changed();\n\nCREATE TRIGGER mimir_review_candidate_state_changed\nAFTER INSERT OR UPDATE OR DELETE ON public.mimir_review_candidates\nFOR EACH ROW EXECUTE FUNCTION public.mimir_notify_review_state_changed();"
+
 data Statement : Set where
   application : Schema.DDL → Statement
   transactionSearchPath : List Text → Statement

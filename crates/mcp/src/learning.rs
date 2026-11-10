@@ -84,11 +84,6 @@ fn text<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
         .as_str()
         .ok_or_else(|| anyhow!("'{key}' must be a string"))
 }
-fn integer(args: &Value, key: &str) -> Result<i64> {
-    required(args, key)?
-        .as_i64()
-        .ok_or_else(|| anyhow!("'{key}' must be an integer"))
-}
 fn page_selection(
     args: &Value,
 ) -> std::result::Result<(usize, mimir_core::Selection), mimir_core::interaction::NeedsInput> {
@@ -136,20 +131,8 @@ pub async fn call(svc: &MimirService, operation: LearningOperation, args: &Value
             svc.explain_belief(text(args, "id")?.parse()?, offset, limit)
                 .await?
         }
-        LearningOperation::RecordExperience => mimir_json::to_value(
-            svc.record_experience(
-                &mimir_json::decode_ref(required(args, "experience")?)?,
-                integer(args, "expected_revision")?,
-            )
-            .await?,
-        )?,
-        LearningOperation::ReviewExperience => mimir_json::to_value(
-            svc.review_experience(
-                &mimir_json::decode_ref(required(args, "review")?)?,
-                integer(args, "expected_review_revision")?,
-            )
-            .await?,
-        )?,
+        LearningOperation::RecordExperience | LearningOperation::ReviewExperience =>
+            anyhow::bail!("Use this declared writer through execute_registered_write with its original operation token"),
         LearningOperation::GetLearningReview => {
             svc.learning_review(text(args, "id")?.parse()?).await?
         }

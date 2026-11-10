@@ -8,13 +8,58 @@ use std::collections::{BTreeMap, BTreeSet};
 pub type Input = Value;
 
 pub use mimir_core::operation_catalogue::{
-    CommitBoundary, GraphOperation, LearningOperation, Operation,
+    CommitBoundary, ControlOperation, GraphOperation, LearningOperation, Operation,
 };
 
 async fn call(operation: Operation, service: &MimirService, input: &Input) -> Result<Value> {
+    if let Some(writer) = operation.registered_write() {
+        let token = super::operation_protocol::token(input)?;
+        let mut arguments = mimir_json::Document::new(mimir_json::clone_value(input));
+        arguments
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("Use the advertised argument object"))?
+            .remove("operation_token");
+        let result = service
+            .execute_registered_write(writer, token, arguments)
+            .await;
+        match result {
+            Ok(result) => return super::operation_protocol::outcome(token, result),
+            Err(error) => {
+                // A stopped provider or lost reply is not evidence that the
+                // operation is unfinished. Read the matching original request;
+                // never report another operation's result for a wrong token.
+                if !error.is::<mimir_core::WriteAdmissionIssue>() {
+                    if let Ok(Some(original)) = service.read_operation_binding(token).await {
+                        let mut arguments =
+                            mimir_json::Document::new(mimir_json::clone_value(input));
+                        arguments
+                            .as_object_mut()
+                            .expect("admitted argument object")
+                            .remove("operation_token");
+                        let expected = mimir_core::store::OperationBindingRequest::new(
+                            operation.name().into(),
+                            arguments.into_value(),
+                            mimir_json::clone_value(original.request.settings()),
+                        )?;
+                        if let Ok(
+                            outcome @ (mimir_core::store::OperationOutcome::Completed { .. }
+                            | mimir_core::store::OperationOutcome::Cancelled { .. }),
+                        ) = service.read_operation_outcome(token, Some(&expected)).await
+                        {
+                            return super::operation_protocol::outcome(token, outcome);
+                        }
+                    }
+                }
+                return Err(error);
+            }
+        }
+    }
     match operation {
         Operation::Graph(operation) => super::handle_graph_call(service, operation, input).await,
         Operation::Learning(operation) => super::learning::call(service, operation, input).await,
+        Operation::Control(operation) => {
+            super::operation_protocol::call(operation, service, input).await
+        }
     }
 }
 
@@ -36,12 +81,34 @@ impl RegisteredOperation {
         if let Some(correction) = super::admission::arguments(self.input_schema(), input) {
             return Ok(mimir_json::to_value(correction)?);
         }
-        if self.handler == Operation::Graph(GraphOperation::SweepExpiredDefeated) {
-            if let Err(issue) = service.retirement_policy() {
+        let result = call(self.handler, service, input).await;
+        if let Err(error) = &result {
+            if let Some(issue) = error.downcast_ref::<mimir_core::WriteAdmissionIssue>() {
                 return Ok(mimir_json::to_value(issue.correction())?);
             }
         }
-        let result = call(self.handler, service, input).await;
+        if self.handler == Operation::Graph(GraphOperation::SweepExpiredDefeated) {
+            if let Err(error) = &result {
+                if let Some(issue) = error.downcast_ref::<mimir_core::config::RetirementIssue>() {
+                    return Ok(mimir_json::to_value(issue.correction())?);
+                }
+            }
+        }
+        // Read-only handlers cannot have changed business data. Sweep also
+        // acknowledges rollback before exposing a stored-value diagnostic;
+        // an unacknowledged rollback deliberately strips that typed cause.
+        // Do not apply this conversion to larger or partially committed work.
+        if self.committed_boundaries().is_empty()
+            || self.handler == Operation::Graph(GraphOperation::SweepExpiredDefeated)
+        {
+            if let Err(error) = &result {
+                if let Some(issue) = error.downcast_ref::<mimir_core::graph::StoredBeliefIssue>() {
+                    let correction =
+                        mimir_core::interaction::NeedsInput::new(issue.issue().clone(), vec![])?;
+                    return Ok(mimir_json::to_value(correction)?);
+                }
+            }
+        }
         if self.handler == Operation::Graph(GraphOperation::RecordDefeat) {
             if let Err(error) = &result {
                 if let Some(decision) =
@@ -60,6 +127,7 @@ impl RegisteredOperation {
                     | GraphOperation::LoadDocument
                     | GraphOperation::DeleteBelief
                     | GraphOperation::AddEvidence
+                    | GraphOperation::SweepExpiredDefeated
             ) | Operation::Learning(
                 LearningOperation::RecordExperience | LearningOperation::ReviewExperience
             )
@@ -89,6 +157,13 @@ impl RegisteredOperation {
                 }
             }
         }
+        if self.handler == Operation::Graph(GraphOperation::SweepExpiredDefeated) {
+            if let Err(error) = &result {
+                if let Some(issue) = error.downcast_ref::<mimir_core::store::SweepPolicyIssue>() {
+                    return Ok(mimir_json::to_value(issue.correction())?);
+                }
+            }
+        }
         if matches!(
             self.handler,
             Operation::Graph(
@@ -100,6 +175,7 @@ impl RegisteredOperation {
                     | GraphOperation::QueryIntervention
                     | GraphOperation::QueryDocument
                     | GraphOperation::PropagateFrom
+                    | GraphOperation::SweepExpiredDefeated
             ) | Operation::Learning(
                 LearningOperation::RecordExperience
                     | LearningOperation::ReviewExperience
@@ -165,6 +241,13 @@ impl Catalogue {
                 descriptor["inputSchema"].is_object(),
                 "compiled tool {name} has no input schema"
             );
+            if handler.registered_write().is_some() {
+                let schema = &descriptor["inputSchema"];
+                ensure!(schema["properties"]["operation_token"]["type"]=="string"
+                    && schema["properties"]["operation_token"]["format"]=="uuid"
+                    && schema["required"].as_array().is_some_and(|fields|fields.iter().any(|field|field=="operation_token")),
+                    "registered writer {name} must advertise its required PostgreSQL operation_token UUID");
+            }
             let mut descriptor = descriptor.clone();
             super::admission::close_objects(&mut descriptor["inputSchema"]);
             entries.push(RegisteredOperation {
@@ -255,6 +338,15 @@ mod tests {
             .unwrap()
             .push(json!({"name":"unregistered_tool","inputSchema":{}}));
         assert!(Catalogue::new(unknown).is_err());
+        let mut bypass = original.clone();
+        bypass[0]["inputSchema"]["required"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|field| field != "operation_token");
+        assert!(
+            Catalogue::new(bypass).is_err(),
+            "a registered writer cannot drop mandatory token admission"
+        );
         let mut no_input = original;
         no_input[0].as_object_mut().unwrap().remove("inputSchema");
         assert!(Catalogue::new(no_input).is_err());

@@ -875,41 +875,7 @@ impl AgeStore {
     /// Source, ownership, posterior consequences and the original response
     /// share the registered transaction. The caller's incident ID is retained.
     pub async fn record_experience_operation(&self, step: &RegisteredStep) -> Result<StepDecision> {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Arguments {
-            experience: Experience,
-            expected_revision: i64,
-        }
-        fn original(request: &OperationBindingRequest) -> Result<Arguments> {
-            if request.operation() != "record_experience" {
-                return Err(RequestCorrection::bound_graph_request("operation_token", Code::WrongIdentity,
-                    "This token does not name a record_experience request; no experience was changed.".into(),
-                    "The original token bound to the intended record_experience request.").into());
-            }
-            if !request
-                .settings()
-                .as_object()
-                .is_some_and(|settings| settings.is_empty())
-            {
-                return Err(RequestCorrection::bound_graph_request(
-                    "settings",
-                    Code::UnknownField,
-                    "record_experience has no per-request settings; no experience was changed."
-                        .into(),
-                    "An empty settings object for the original source request.",
-                )
-                .into());
-            }
-            let args: Arguments = mimir_json::from_value(request.arguments().clone())
-                .map_err(|error| RequestCorrection::bound_graph_request("", Code::MalformedInput,
-                    format!("Invalid original source request: {error}. No experience was changed."),
-                    "Exactly experience and expected_revision, using the advertised experience schema and its original stable incident UUID."))?;
-            validate_record_source(&args.experience, args.expected_revision)
-                .map_err(RequestCorrection::bound_source_repair)?;
-            Ok(args)
-        }
-        original(step.expected())?;
+        original_source_operation(step.expected())?;
         if step.description().site
             != crate::operation_catalogue::CommitSite::ExperiencePublication.name()
         {
@@ -929,7 +895,7 @@ impl AgeStore {
         let token = step.token();
         self.commit_final_operation_step(step, move |tx, request| {
             Box::pin(async move {
-                let args = original(request)?;
+                let args = original_source_operation(request)?;
                 tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
                     .await?;
                 let posterior_time = Self::reserved_publication_time(tx, token).await?;
@@ -991,6 +957,22 @@ impl AgeStore {
             .await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
+        let result = self
+            .review_experience_in(&tx, review, expected, prepared)
+            .await?;
+        tx.commit().await.with_context(|| format!("The outcome of review {} at source revision {} must be read back with get_learning_review and experience_history before retrying. Keep the same request and candidate keys; do not invent a replacement review or assume nothing was committed.", review.experience_id, review.experience_revision))?;
+        Ok(result)
+    }
+
+    // Callers hold the operation reservation, when registered, followed by
+    // the learning writer lock. The supplied transaction owns publication.
+    pub(super) async fn review_experience_in(
+        &self,
+        tx: &Transaction<'_>,
+        review: &Review,
+        expected: i64,
+        prepared: &HashMap<String, crate::preparation::PreparedBelief>,
+    ) -> Result<ExperienceState> {
         let current = state(
             &tx.query_opt(
                 &format!("{CURRENT} WHERE e.id=$1"),
@@ -1114,8 +1096,14 @@ impl AgeStore {
         }
         self.replace_review_edges(&tx, review.experience_id, &applied.links)
             .await?;
-        self.recompute_learning(&tx, Some(&current.experience.project), affected)
-            .await?;
+        let publication_time = Self::posterior_time_on(tx.client()).await?;
+        self.recompute_learning_at(
+            tx,
+            Some(&current.experience.project),
+            affected,
+            publication_time,
+        )
+        .await?;
         let mut result = state(
             &tx.query_one(
                 &format!("{CURRENT} WHERE e.id=$1"),
@@ -1127,7 +1115,6 @@ impl AgeStore {
         result
             .item_ids
             .extend(local_item_ids(&applied.extracted_items));
-        tx.commit().await.with_context(|| format!("The outcome of review {} at source revision {} must be read back with get_learning_review and experience_history before retrying. Keep the same request and candidate keys; do not invent a replacement review or assume nothing was committed.", review.experience_id, review.experience_revision))?;
         Ok(result)
     }
     async fn replace_review_edges(
@@ -1157,17 +1144,6 @@ impl AgeStore {
         }
         Ok(())
     }
-    pub(super) async fn recompute_learning(
-        &self,
-        tx: &Transaction<'_>,
-        project: Option<&str>,
-        affected: HashSet<Uuid>,
-    ) -> Result<()> {
-        let publication_time = Self::posterior_time_on(tx.client()).await?;
-        self.recompute_learning_at(tx, project, affected, publication_time)
-            .await
-    }
-
     pub(super) async fn recompute_learning_at(
         &self,
         tx: &Transaction<'_>,
@@ -1625,4 +1601,49 @@ impl AgeStore {
         tx.commit().await?;
         Ok(result)
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceOperationArguments {
+    experience: Experience,
+    expected_revision: i64,
+}
+fn original_source_operation(
+    request: &OperationBindingRequest,
+) -> Result<SourceOperationArguments> {
+    if request.operation() != "record_experience" {
+        return Err(RequestCorrection::bound_graph_request(
+            "operation_token",
+            Code::WrongIdentity,
+            "This token does not name a record_experience request; no experience was changed."
+                .into(),
+            "The original token bound to the intended record_experience request.",
+        )
+        .into());
+    }
+    if !request
+        .settings()
+        .as_object()
+        .is_some_and(|settings| settings.is_empty())
+    {
+        return Err(RequestCorrection::bound_graph_request(
+            "settings",
+            Code::UnknownField,
+            "record_experience has no per-request settings; no experience was changed.".into(),
+            "An empty settings object for the original source request.",
+        )
+        .into());
+    }
+    let args: SourceOperationArguments = mimir_json::decode_ref(request.arguments())
+        .map_err(|error| RequestCorrection::bound_graph_request("", Code::MalformedInput,
+            format!("Invalid original source request: {error}. No experience was changed."),
+            "Exactly experience and expected_revision, using the advertised experience schema and its original stable incident UUID."))?;
+    validate_record_source(&args.experience, args.expected_revision)
+        .map_err(RequestCorrection::bound_source_repair)?;
+    Ok(args)
+}
+
+pub(crate) fn admit_source_operation(request: &OperationBindingRequest) -> Result<()> {
+    original_source_operation(request).map(|_| ())
 }

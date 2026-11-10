@@ -157,6 +157,8 @@ async fn scoped_tool(
             }
         }
         "review_experience" => {
+            input_ensure!(args.get("operation_token").is_none(),
+                "The judge host owns operation_token. Supply only the advertised review fields; do not choose or replace an operation token.");
             input_ensure!(
                 args["expected_review_revision"].as_i64() == Some(selected.review_revision),
                 "stale review token"
@@ -187,6 +189,32 @@ async fn scoped_tool(
             // assessment keys. The service performs it after allocation, inside
             // the review transaction; the judge forwards the raw keyed input.
             mimir_json::replace(&mut args["review"], mimir_json::to_value(review)?);
+            // This names the pinned review action, not a model turn or an
+            // argument hash. Corrected arguments cannot silently reserve a
+            // different action after the original request became immutable.
+            let request_key = mimir_json::to_string(&json!([
+                "mimir-judge",
+                "review_experience",
+                selected.experience.id,
+                selected.revision,
+                selected.review_revision
+            ]))?;
+            let reservation = client
+                .tool("reserve_operation", json!({"request_key":request_key}))
+                .await?;
+            if reservation["status"] == "needs_input" {
+                mimir_json::decode_ref::<mimir_core::interaction::NeedsInput>(&reservation)?;
+                return Ok(reservation.into_value());
+            }
+            input_ensure!(
+                reservation["status"] == "reserved",
+                "operation reservation did not return its reserved identity"
+            );
+            let operation_token = reservation["operation_token"].as_str().ok_or_else(|| {
+                anyhow!("operation reservation did not return its PostgreSQL token")
+            })?;
+            let _: Uuid = operation_token.parse()?;
+            args["operation_token"] = json!(operation_token);
         }
         "query_relevant" | "query_learning_context" | "query_document" | "get_contradictions" => {
             input_ensure!(
@@ -909,6 +937,7 @@ async fn run_inner<B: Backend>(
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Context;
     #[allow(dead_code)] // Shared guard also serves integration-test crates.
     mod isolation {
         include!(concat!(
@@ -925,6 +954,99 @@ mod tests {
     use mimir_notifications::config::{Auth, EmailConfig, Tls};
     use std::path::PathBuf;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn pinned_review_reuses_its_postgres_token_after_client_restart_and_rejects_changed_work(
+    ) -> Result<()> {
+        let fixture = isolation::fixture();
+        let config = Config::load_from_path(&fixture.root.join("config.toml"))?;
+        let service = MimirService::connect(&config).await?;
+        let audit = mimir_core::db::connect(&fixture.database_config()).await?;
+        let id: Uuid = audit
+            .query_one("SELECT gen_random_uuid()", &[])
+            .await?
+            .get(0);
+        let project = format!("judge-operation-identity-{id}");
+        let experience = Experience {
+            id,
+            project: project.clone(),
+            context: "verify saved review identity".into(),
+            action: "review one pinned source".into(),
+            outcome: Outcome::Success,
+            source: ObservationSource::ToolResult,
+            evidence: vec!["A disposable observed outcome".into()],
+            belief_ids: vec![],
+            pattern_id: None,
+            learning_items: vec![],
+            source_records: vec![],
+        };
+        let selected = service.record_experience(&experience, 0).await?;
+        let arguments = json!({"expected_review_revision":selected.review_revision,"review":{"experience_id":id,"experience_revision":selected.revision,"reviewer":"fixture","rationale":"The observed source needs no new belief."}});
+        let mut client =
+            Client::start(&fixture.mcp, &[], &fixture.root.join("config.toml")).await?;
+        let first = scoped_tool(
+            &mut client,
+            &selected,
+            "review_experience",
+            arguments.clone(),
+        )
+        .await?;
+        ensure!(
+            first["status"] == "completed",
+            "review did not return its saved result: {first}"
+        );
+        let request_key = mimir_json::to_string(&json!([
+            "mimir-judge",
+            "review_experience",
+            id,
+            selected.revision,
+            selected.review_revision
+        ]))?;
+        let token = service
+            .reserve_operation(&request_key)
+            .await?
+            .operation_token;
+        ensure!(first["operation_token"] == token.to_string());
+        drop(client);
+        let mut client =
+            Client::start(&fixture.mcp, &[], &fixture.root.join("config.toml")).await?;
+        ensure!(
+            scoped_tool(
+                &mut client,
+                &selected,
+                "review_experience",
+                arguments.clone()
+            )
+            .await?
+                == first,
+            "a restarted judge lost its original review result"
+        );
+        let mut changed = arguments.clone();
+        changed["review"]["rationale"] =
+            json!("A different proposed review must not replace saved work.");
+        let refused = scoped_tool(&mut client, &selected, "review_experience", changed).await?;
+        let _: mimir_core::interaction::NeedsInput = mimir_json::decode_ref(&refused)?;
+        ensure!(
+            service
+                .get_experience(id)
+                .await?
+                .context("retained experience")?
+                .review_revision
+                == 1
+        );
+        let mut supplied = arguments;
+        supplied["operation_token"] = json!(token);
+        let rejected = scoped_tool(&mut client, &selected, "review_experience", supplied)
+            .await
+            .unwrap_err();
+        ensure!(
+            rejected.is::<InputRejected>(),
+            "the model must not choose the host token"
+        );
+        drop(client);
+        service.delete_project(&project).await?;
+        Ok(())
+    }
 
     #[derive(Clone, Copy)]
     enum Mode {

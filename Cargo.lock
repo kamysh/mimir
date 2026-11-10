@@ -1569,6 +1569,7 @@ dependencies = [
 name = "mimir-core"
 version = "2.3.0"
 dependencies = [
+ "futures-util",
  "anyhow",
  "chrono",
  "include_dir",
@@ -1606,6 +1607,7 @@ name = "mimir-mcp"
 version = "2.3.0"
 dependencies = [
  "anyhow",
+ "futures-util",
  "mimir-core",
  "mimir-json",
  "serde",
