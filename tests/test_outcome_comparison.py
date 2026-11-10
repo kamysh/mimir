@@ -12,6 +12,22 @@ SPEC.loader.exec_module(comparison)
 
 
 class CompleteOutcomeComparisonTests(unittest.TestCase):
+    def empty_world(self):
+        definitions = json.loads(comparison.CONTRACT_PATH.read_text())['$defs']
+
+        def empty(shape):
+            if '$ref' in shape:
+                return empty(definitions[shape['$ref'].removeprefix('#/$defs/')])
+            if 'const' in shape:
+                return shape['const']
+            if shape.get('type') == 'array':
+                return []
+            if shape.get('type') == 'object':
+                return {key: empty(shape['properties'][key]) for key in shape['required']}
+            self.fail(f'No empty snapshot value for {shape}')
+
+        return empty(definitions['world'])
+
     def compare_json(self, expected, actual):
         decode = lambda value: json.loads(value, parse_float=comparison.Decimal)
         return list(comparison.differences(decode(expected), decode(actual)))
@@ -45,13 +61,14 @@ class CompleteOutcomeComparisonTests(unittest.TestCase):
         result = self.compare_json('{"a/b~":[1,2],"missing":3}', '{"a/b~":[9,8],"extra":4}')
         self.assertEqual([comparison.pointer(item[0]) for item in result],
                          ['/a~1b~0/0', '/a~1b~0/1', '/extra', '/missing'])
+        self.assertNotEqual(comparison.pointer(()), comparison.pointer(('',)))
 
     def test_complete_observation_requires_world_body_and_public_reply(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             expected = root / 'expected.json'
             native = root / 'native.json'
-            outcome = {'world': {}, 'body_result': {'kind': 'not_entered'},
+            outcome = {'world': self.empty_world(), 'body_result': {'kind': 'not_entered'},
                        'public_payload': {'status': 'needs_input'}}
             expected.write_text(json.dumps(outcome))
             native.write_text(json.dumps(outcome | {'exchange': {'stdout': 'retained'}}))
@@ -62,6 +79,47 @@ class CompleteOutcomeComparisonTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 comparison.compare_files(expected, native)
 
+    def test_missing_world_table_or_execution_receipt_field_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'incomplete.json'
+            world = self.empty_world()
+            outcome = {'world': world, 'body_result': {'kind': 'not_entered'},
+                       'public_payload': None}
+            del world['operations']['executions']
+            path.write_text(json.dumps(outcome))
+            with self.assertRaisesRegex(ValueError, '/world/operations:.*executions'):
+                comparison.load_observation(path)
+            world['operations']['executions'] = [{'identity': 1}]
+            path.write_text(json.dumps(outcome))
+            with self.assertRaisesRegex(ValueError, '/world/operations/executions/0:.*stoppedAt'):
+                comparison.load_observation(path)
+
+    def test_incomplete_returned_body_names_the_missing_value(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'incomplete-body.json'
+            path.write_text(json.dumps({'world': self.empty_world(),
+                                        'body_result': {'kind': 'returned'},
+                                        'public_payload': None}))
+            with self.assertRaisesRegex(ValueError, '/body_result:.*missing fields.*value'):
+                comparison.load_observation(path)
+
+    def test_complete_execution_receipt_keeps_ids_timestamps_and_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'execution.json'
+            world = self.empty_world()
+            row = {'identity': '00000000-0000-4000-8000-000000000001',
+                   'token': '00000000-0000-4000-8000-000000000002',
+                   'registeredAt': '2026-11-10T10:00:00Z', 'stoppedAt': None,
+                   'ownerProgram': 'mimir-mcp', 'ownerPid': 17,
+                   'ownerHost': 'tartar', 'ownerHostSource': 'kernel_hostname',
+                   'clientAddress': '172.17.0.1/32'}
+            world['operations']['executions'] = [row]
+            path.write_text(json.dumps({'world': world,
+                                        'body_result': {'kind': 'not_entered'},
+                                        'public_payload': None}))
+            loaded = comparison.load_observation(path)
+            self.assertEqual(loaded['world']['operations']['executions'], [row])
+
     def test_duplicate_fields_and_nonfinite_numbers_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'bad.json'
@@ -69,6 +127,26 @@ class CompleteOutcomeComparisonTests(unittest.TestCase):
                 with self.subTest(value=value):
                     path.write_text(value)
                     with self.assertRaises(ValueError):
+                        comparison.load_observation(path)
+
+    def test_complete_jsonb_integral_values_have_no_python_digit_ceiling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'large-integer.json'
+            envelope = json.dumps({'world': self.empty_world(),
+                                   'body_result': {'kind': 'not_entered'},
+                                   'public_payload': 'large-jsonb-value'})
+            digits = '1' + '0' * 10000
+            path.write_text(envelope.replace('"large-jsonb-value"', digits))
+            value = comparison.load_observation(path)['public_payload']
+            self.assertEqual(str(value), digits)
+
+    def test_invalid_or_unrepresentable_json_identifies_the_retained_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'bad-number.json'
+            for source in ('{"unfinished":', '1e99999999999999999999999999999'):
+                with self.subTest(source=source):
+                    path.write_text(source)
+                    with self.assertRaisesRegex(ValueError, 'bad-number.json: cannot decode'):
                         comparison.load_observation(path)
 
     def test_deleted_belief_does_not_conceal_its_remaining_vector(self):

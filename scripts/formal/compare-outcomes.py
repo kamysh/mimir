@@ -8,13 +8,57 @@ snapshot adapter on both sides; this comparison never sorts stored arrays.
 """
 
 import argparse
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 import json
 from pathlib import Path
 import sys
 
 
 OUTCOME_FIELDS = {'world', 'body_result', 'public_payload'}
+CONTRACT_PATH = Path(__file__).resolve().parents[2] / 'docs/intended-outcome-contract.schema.json'
+
+
+def require_shape(value, shape, definitions, path=()):
+    """Check transport/record shape; existing typed adapters own domain rules."""
+    if '$ref' in shape:
+        name = shape['$ref'].removeprefix('#/$defs/')
+        return require_shape(value, definitions[name], definitions, path)
+    if 'oneOf' in shape:
+        matches = 0
+        problems = []
+        for alternative in shape['oneOf']:
+            try:
+                require_shape(value, alternative, definitions, path)
+                matches += 1
+            except ValueError as error:
+                problems.append(str(error))
+        if matches != 1:
+            raise ValueError(f'{location(path)}: does not identify one complete result shape; '
+                             + '; '.join(problems))
+        return
+    if 'const' in shape and value != shape['const']:
+        raise ValueError(f'{location(path)}: expected {shape["const"]!r}')
+    accepted = shape.get('type')
+    if accepted:
+        accepted = accepted if isinstance(accepted, list) else [accepted]
+        kinds = {'object': isinstance(value, dict), 'array': isinstance(value, list),
+                 'string': isinstance(value, str), 'boolean': isinstance(value, bool),
+                 'integer': isinstance(value, int) and not isinstance(value, bool),
+                 'number': number(value), 'null': value is None}
+        if not any(kinds[kind] for kind in accepted):
+            raise ValueError(f'{location(path)}: expected {accepted}')
+    if isinstance(value, dict):
+        fields = shape.get('properties', {})
+        missing = set(shape.get('required', [])) - value.keys()
+        extra = value.keys() - fields.keys() if shape.get('additionalProperties') is False else set()
+        if missing or extra:
+            raise ValueError(f'{location(path)}: missing fields {sorted(missing)}; '
+                             f'unexpected fields {sorted(extra)}')
+        for key in value.keys() & fields.keys():
+            require_shape(value[key], fields[key], definitions, path + (key,))
+    elif isinstance(value, list) and 'items' in shape:
+        for index, item in enumerate(value):
+            require_shape(item, shape['items'], definitions, path + (index,))
 
 
 def unique_object(pairs):
@@ -31,11 +75,21 @@ def reject_constant(value):
 
 
 def load_observation(path, *, native=False):
-    value = json.loads(Path(path).read_text(), object_pairs_hook=unique_object,
-                       parse_float=Decimal, parse_constant=reject_constant)
+    # Retained raw JSONB must not inherit Python's decimal-digit ceiling.
+    # Zero is this interpreter API's documented setting to disable it;
+    # it gives zero no special meaning in Mimir requests.
+    if hasattr(sys, 'set_int_max_str_digits'):
+        sys.set_int_max_str_digits(0)
+    try:
+        value = json.loads(Path(path).read_text(), object_pairs_hook=unique_object,
+                           parse_float=Decimal, parse_constant=reject_constant)
+    except (ValueError, DecimalException, RecursionError) as error:
+        raise ValueError(f'{path}: cannot decode retained JSON observation: {error}') from error
     fields = OUTCOME_FIELDS | ({'exchange'} if native else set())
     if not isinstance(value, dict) or set(value) != fields:
         raise ValueError(f'{path}: required complete observation fields: {sorted(fields)}')
+    definitions = json.loads(CONTRACT_PATH.read_text())['$defs']
+    require_shape(value, definitions['nativeObservation' if native else 'output'], definitions)
     return {key: value[key] for key in OUTCOME_FIELDS}
 
 
@@ -73,7 +127,11 @@ def differences(expected, actual, path=()):
 
 def pointer(path):
     return ''.join('/' + str(part).replace('~', '~0').replace('/', '~1')
-                   for part in path) or '/'
+                   for part in path)
+
+
+def location(path):
+    return pointer(path) or '<document>'
 
 
 def compare_files(expected_path, native_path):
@@ -95,7 +153,7 @@ def main():
         print(f'Cannot compare complete outcomes: {error}', file=sys.stderr)
         return 2
     for path, reason, expected, actual in mismatches:
-        print(f'{pointer(path)}: {reason}\n  expected: {expected!r}\n  observed: {actual!r}')
+        print(f'{location(path)}: {reason}\n  expected: {expected!r}\n  observed: {actual!r}')
     if mismatches:
         print(f'{len(mismatches)} differences; inputs retained at '
               f'{args.expected} and {args.observed}')
