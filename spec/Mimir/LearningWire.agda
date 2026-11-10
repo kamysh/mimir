@@ -27,6 +27,23 @@ import Mimir.SourceWire as Source
 import Mimir.CandidateWire as Candidate
 import Mimir.IndependentProvenance as Origin
 import Mimir.LearningInput as Input
+import Mimir.SourceSchema as Sources
+import Mimir.Validation as Validation
+
+-- Allocation-independent source checks are shared by public admission and
+-- saved-request readback. They retain the original unallocated input.
+sourceHeader : Input.Experience → Fault ⊎ Input.Experience
+sourceHeader value = mapResult (λ _ → value) (Validation.result
+  (Validation.combine (Validation.at (Validation.key "learning_items") (Input.validateItems (Input.Experience.items value)))
+  (Validation.combine (Sources.validateSources (Input.Experience.sources value))
+    (Validation.combine (X.checkEvidenceReferences (Input.Experience.sources value) (Input.Experience.evidence value))
+    (Validation.combine (Validation.at (Validation.key "project") (C.checkNonblank (Input.Experience.project value)))
+    (Validation.combine (Validation.at (Validation.key "context") (C.checkNonblank (Input.Experience.context value)))
+    (Validation.combine (Validation.at (Validation.key "action") (C.checkNonblank (Input.Experience.action value)))
+      (X.checkOutcomeEvidence (Input.Experience.outcome value) (Input.Experience.evidence value)))))))))
+
+reviewHeader : Input.Review → Fault ⊎ Input.Review
+reviewHeader value = mapResult (λ _ → value) (Validation.result (Input.validateReview value))
 
 recordOf : ∀ {A : Set} → List String → (V.Object.View → Fault ⊎ A) → V.Value → Fault ⊎ A
 recordOf names = readRecord Objects.forbid Objects.keepLast (map toList names)

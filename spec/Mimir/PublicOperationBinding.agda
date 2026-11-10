@@ -451,6 +451,23 @@ module Decode (library : Library.Contract) where
     ... | inj₁ fault = ⊥-elim (doneCannotAsk _ events effect next prefix)
     ... | inj₂ tt = inj₂ (refl , eraseActive (O.script token) before current interrupted effect next reply events prefix physical active)
 
+    -- A final answer that appeared during this interrupted call cannot have
+    -- come from rejecting its binding: that branch never changes the World.
+    completedInterruption : ∀ token before current raw →
+      Store.lookupSaved before token Step.resultKey ≡ nothing →
+      Store.lookupSaved current token Step.resultKey ≡ just raw →
+      X.Interrupted (script token) before current →
+      admit source expected token (bindings before) ≡ inj₂ tt ×
+        O.X.Interrupted (O.script token) before current
+    completedInterruption token before current raw absent present cut
+      with interruptionMeaning token before current cut
+    ... | inj₂ active = active
+    ... | inj₁ same = ⊥-elim (impossible same)
+      where
+      impossible : current ≡ before → ⊥
+      impossible refl with trans (sym absent) present
+      ... | ()
+
     admittedRetry : ∀ token before interrupted → admit source expected token (bindings before) ≡ inj₂ tt →
       O.X.Interrupted (O.script token) before interrupted → admit source expected token (bindings interrupted) ≡ inj₂ tt
     admittedRetry token before interrupted admitted cut with
