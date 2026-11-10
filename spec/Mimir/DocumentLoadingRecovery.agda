@@ -49,6 +49,7 @@ import Mimir.ConfigurationValues as Config
 import Mimir.ProjectDeletion as Project
 import Mimir.Effects as Effects
 import Mimir.Recovery as Recovery
+import Mimir.OperationControls as Controls
 import Data.List.Properties as Lists
 open import Mimir.RecordDecoding using (_>>=_)
 
@@ -858,10 +859,10 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
       field value : Run.Value; transcript : List E.Event
 
     missingBackend : Validation.Fault
-    missingBackend = Validation.fault (Validation.key "embeddings" ∷ []) Validation.missingReference
+    missingBackend = Validation.fault (Validation.key "embeddings" ∷ []) Validation.missingField
       "Document indexing needs an embedding backend. Configure one or ask the user before cancelling this unfinished operation; the previous index was not replaced."
     changedBackend : Validation.Fault
-    changedBackend = Validation.fault (Validation.key "embeddings" ∷ []) Validation.malformedInput
+    changedBackend = Validation.fault (Validation.key "embeddings" ∷ []) Validation.wrongIdentity
       "The configured embedding backend differs from the original operation. Read the original binding and outcome; ask the user before cancellation and a corrected reservation. The previous index was not replaced."
     providerResult : Text ⊎ List Store.Vector → Validation.Fault ⊎ List Store.Vector
     providerResult (inj₁ reason) = inj₁ (backendFault reason)
@@ -1162,6 +1163,463 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
     fullOperation = record { recovers = converges; progresses = progress; observes = actualReceipts }
 
     toRecoverable : Operation → Recovery.RecoverableFor Store.World ℕ Result PublicGoal
+    toRecoverable certificate = record
+      { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic
+      ; converges = Operation.recovers certificate; progress = Operation.progresses certificate }
+
+  CompletePublicationGoal = Goal
+
+  -- The entry observes the actual journal before choosing a continuation.
+  -- Fresh commits also retain the native transaction's next-step admission;
+  -- neither fact is an argument that an MCP caller may supply.
+  module Entry (coreConfiguration : Config.Config) (postgres : Controls.PostgreSQL) where
+    module Body = Public coreConfiguration
+    module Journal = Controls.Readback library postgres
+    module Opaque = Controls.OpaqueJournal
+    module Plan = Controls.Plan
+    operationName : Text
+    operationName = toList "load_document"
+
+    record PrefixAdmission (token : ℕ) (before : Store.World) : Set where
+      constructor prefixAdmission
+      field
+        context : Journal.ExecutionContext operationName token before
+        actual : Journal.admission operationName token before ≡ Journal.admitted context
+        declaredFirst declaredLast : Plan.Step
+        selected : Opaque.next (Opaque.Complete.prefix (Journal.ExecutionContext.journal context)) ≡ just declaredFirst
+        key : Plan.Step.id declaredFirst ≡ preparationKey token
+        cursor : Opaque.Cursor token before (Plan.Saved.steps (Journal.ExecutionContext.plan context)) (declaredFirst ∷ declaredLast ∷ [])
+
+    record FinalAdmission (token : ℕ) (before : Store.World) : Set where
+      constructor finalAdmission
+      field
+        context : Journal.ExecutionContext operationName token before
+        actual : Journal.admission operationName token before ≡ Journal.admitted context
+        declaredLast : Plan.Step
+        selected : Opaque.next (Opaque.Complete.prefix (Journal.ExecutionContext.journal context)) ≡ just declaredLast
+        key : Plan.Step.id declaredLast ≡ publicationKey token
+        cursor : Opaque.Cursor token before (Plan.Saved.steps (Journal.ExecutionContext.plan context)) (declaredLast ∷ [])
+
+    data Outcome : Set where
+      inspected : Journal.Result → Outcome
+      executed : Body.Result → Outcome
+    normalized : Outcome → Run.Value
+    normalized (executed result) = Body.Result.value result
+    normalized (inspected (Journal.completed _ value)) = Step.done value
+    normalized (inspected (Journal.cancelled receipt _ _)) = Step.cancelled receipt
+    normalized (inspected _) = Step.needsRecovery
+
+    data Effect : Set where
+      inspect : ℕ → Effect
+      body : Body.Effect → Effect
+    Reply : Effect → Set
+    Reply (inspect _) = Store.World
+    Reply (body effect) = Body.Reply effect
+    module E = Effects.Protocol Effect Reply
+    lift : Body.E.Script Body.Result → E.Script Outcome
+    lift (Body.E.done result) = E.done (executed result)
+    lift (Body.E.ask effect continuation) = E.ask (body effect) (λ reply → lift (continuation reply))
+    branch : ℕ → Store.World → E.Script Outcome
+    branch token snapshot with Journal.admission operationName token snapshot
+    ... | Journal.returned result = E.done (inspected result)
+    ... | Journal.admitted context = lift (Body.script token)
+    script : ℕ → E.Script Outcome
+    script token = E.ask (inspect token) (branch token)
+
+    CommitAdmission : Store.World → (effect : Body.Effect) → Body.Reply effect → Set
+    CommitAdmission before (Body.reserve token) (metadata , value) =
+      FirstPublication metadata token before → PrefixAdmission token before
+    CommitAdmission before (Body.publish token vectors) (time , value) =
+      SecondPublication (publication vectors time) token before → FinalAdmission token before
+    CommitAdmission before _ _ = ⊤
+    Atomic : Store.World → (effect : Effect) → Reply effect → Store.World → Set
+    Atomic before (inspect token) snapshot after = snapshot ≡ before × after ≡ before
+    Atomic before (body effect) reply after = Body.Atomic before effect reply after × CommitAdmission before effect reply
+    module X = Recovery.Execution Store.World Effect Reply Atomic
+
+    -- Cached history and a malformed/foreign journal preserve the whole store.
+    -- A running request instead owes the independent publication goal, even
+    -- when a completed retry returns its original answer through readback.
+    EntryGoal : ℕ → Store.World → Store.World → Outcome → Set
+    EntryGoal token before after result =
+      (after ≡ before × Σ Journal.Result (λ original →
+        Journal.admission operationName token before ≡ Journal.returned original × result ≡ inspected original)) ⊎
+      CompletePublicationGoal token before after (normalized result)
+
+    eraseCompletion : ∀ program before after result events → E.Runs (lift program) events result →
+      X.Changes before events after → Σ Body.Result (λ response → result ≡ executed response × Body.X.Completed program before after response)
+    eraseCompletion (Body.E.done response) before .before ._ .[] (E.returned _) (X.unchanged _) =
+      response , refl , Body.X.completed [] (Body.E.returned _) (Body.X.unchanged _)
+    eraseCompletion (Body.E.ask effect next) before after result ._
+      (E.replied .(body effect) _ reply execution) (X.changed _ _ _ middle physical changes)
+      with eraseCompletion (next reply) middle after result _ execution changes
+    ... | response , same , Body.X.completed events observedRun stores = response , same , Body.X.completed
+      ((effect , reply) ∷ events) (Body.E.replied effect next reply observedRun) (Body.X.changed before effect reply middle (proj₁ physical) stores)
+
+    record OriginalPrefix (program : Body.E.Script Body.Result) (before after : Store.World) (residual : E.Script Outcome) : Set where
+      constructor originalPrefix
+      field
+        events : List Body.E.Event
+        remaining : Body.E.Script Body.Result
+        reached : Body.E.Prefix program events remaining
+        physical : Body.X.Changes before events after
+        projection : residual ≡ lift remaining
+
+    erasePrefix : ∀ program before after residual events → E.Prefix (lift program) events residual →
+      X.Changes before events after → OriginalPrefix program before after residual
+    erasePrefix program before .before .(lift program) .[] (E.stopped _) (X.unchanged _) =
+      originalPrefix [] program (Body.E.stopped _) (Body.X.unchanged _) refl
+    erasePrefix (Body.E.ask effect next) before after residual ._
+      (E.replied .(body effect) _ reply prefix) (X.changed _ _ _ middle physical changes)
+      with erasePrefix (next reply) middle after residual _ prefix changes
+    ... | originalPrefix events remaining reached stores same = originalPrefix
+      ((effect , reply) ∷ events) remaining (Body.E.replied effect next reply reached)
+      (Body.X.changed before effect reply middle (proj₁ physical) stores) same
+
+    eraseActive : ∀ program before current after effect next reply events →
+      E.Prefix (lift program) events (E.ask effect next) → X.Changes before events current →
+      Atomic current effect reply after → Body.X.Interrupted program before after
+    eraseActive program before current after effect next reply events prefix physical active
+      with erasePrefix program before current (E.ask effect next) events prefix physical
+    ... | originalPrefix sourceEvents (Body.E.done response) reached stores ()
+    ... | originalPrefix sourceEvents (Body.E.ask sourceEffect sourceNext) reached stores refl =
+      Body.X.beforeReply sourceEvents sourceEffect sourceNext current reply after reached stores (proj₁ active)
+
+    donePrefixUnchanged : ∀ (result : Outcome) events residual before after → E.Prefix (E.done result) events residual →
+      X.Changes before events after → after ≡ before
+    donePrefixUnchanged result .[] .(E.done result) before .before (E.stopped _) (X.unchanged _) = refl
+
+    doneCannotAsk : ∀ (result : Outcome) events effect next → E.Prefix (E.done result) events (E.ask effect next) → ⊥
+    doneCannotAsk result events effect next ()
+
+    CompletionMeaning : ℕ → Store.World → Store.World → Outcome → Set
+    CompletionMeaning token before after (inspected result) =
+      after ≡ before × Journal.admission operationName token before ≡ Journal.returned result
+    CompletionMeaning token before after (executed result) =
+      Σ (Journal.ExecutionContext operationName token before) (λ context →
+        Journal.admission operationName token before ≡ Journal.admitted context ×
+        Body.X.Completed (Body.script token) before after result)
+
+    branchMeaning : ∀ token before after result events → E.Runs (branch token before) events result →
+      X.Changes before events after → CompletionMeaning token before after result
+    branchMeaning token before after result events execution physical
+      with Journal.admission operationName token before in accepted
+    ... | Journal.returned original with execution | physical
+    ... | E.returned _ | X.unchanged _ = refl , accepted
+    branchMeaning token before after result events execution physical | Journal.admitted context
+      with eraseCompletion (Body.script token) before after result events execution physical
+    ... | response , refl , sourceRun = context , accepted , sourceRun
+
+    completionMeaning : ∀ token before after result → X.Completed (script token) before after result →
+      CompletionMeaning token before after result
+    completionMeaning token before after result
+      (X.completed _ (E.replied _ _ .before execution) (X.changed _ _ _ .before (refl , refl) physical)) =
+      branchMeaning token before after result _ execution physical
+
+    completedMeetsGoal : ∀ token before after result → X.Completed (script token) before after result → EntryGoal token before after result
+    completedMeetsGoal token before after (inspected result) complete
+      with completionMeaning token before after (inspected result) complete
+    ... | same , returned = inj₁ (same , result , returned , refl)
+    completedMeetsGoal token before after (executed result) complete
+      with completionMeaning token before after (executed result) complete
+    ... | context , accepted , sourceRun = inj₂ (Body.converges token before before after result
+      (Body.X.atPrefix [] (Body.script token) before (Body.E.stopped _) (Body.X.unchanged before)) sourceRun)
+
+    InterruptionMeaning : ℕ → Store.World → Store.World → Set
+    InterruptionMeaning token before interrupted = interrupted ≡ before ⊎
+      Σ (Journal.ExecutionContext operationName token before) (λ context →
+        Journal.admission operationName token before ≡ Journal.admitted context ×
+        Body.X.Interrupted (Body.script token) before interrupted)
+
+    interruptionMeaning : ∀ token before interrupted → X.Interrupted (script token) before interrupted →
+      InterruptionMeaning token before interrupted
+    interruptionMeaning token before .before
+      (X.atPrefix .[] .(script token) .before (E.stopped _) (X.unchanged _)) = inj₁ refl
+    interruptionMeaning token before interrupted
+      (X.atPrefix _ residual .interrupted (E.replied _ _ .before {events} prefix)
+        (X.changed _ _ _ .before (refl , refl) physical))
+      with Journal.admission operationName token before in accepted
+    ... | Journal.returned original = inj₁ (donePrefixUnchanged _ events residual before interrupted prefix physical)
+    ... | Journal.admitted context with erasePrefix (Body.script token) before interrupted residual events prefix physical
+    ... | originalPrefix sourceEvents remaining reached stores same = inj₂ (context , refl ,
+      Body.X.atPrefix sourceEvents remaining interrupted reached stores)
+    interruptionMeaning token before interrupted
+      (X.beforeReply .[] .(inspect token) .(branch token) .before reply .interrupted
+        (E.stopped _) (X.unchanged _) active) = inj₁ (proj₂ active)
+    interruptionMeaning token before interrupted
+      (X.beforeReply _ effect next current reply .interrupted (E.replied _ _ .before {events} prefix)
+        (X.changed _ _ _ .before (refl , refl) physical) active)
+      with Journal.admission operationName token before in accepted
+    ... | Journal.returned original = Data.Empty.⊥-elim (doneCannotAsk _ events effect next prefix)
+    ... | Journal.admitted context = inj₂ (context , refl ,
+      eraseActive (Body.script token) before current interrupted effect next reply events prefix physical active)
+
+    data JournalState (token : ℕ) (current : Store.World) : Set where
+      pending : (context : Journal.ExecutionContext operationName token current) →
+        Journal.admission operationName token current ≡ Journal.admitted context → JournalState token current
+      completed : (binding : Store.BindingRow) (reply : Wire.Value) →
+        Journal.admission operationName token current ≡ Journal.returned (Journal.completed binding reply) →
+        (∀ initial received → Run.evaluate initial received token current ≡ (current , Step.done reply)) →
+        JournalState token current
+
+    finalPublicationKeepsJournal : ∀ token received before → SecondPublication received token before →
+      FinalAdmission token before →
+      JournalState token (proj₁ (second received token before))
+    finalPublicationKeepsJournal token received before
+      (saved , changed , reply , firstSaved , admitted , active , finalMissing , resultMissing , accepted)
+      guard = subst (JournalState token) (sym (cong proj₁ fresh))
+        (completed binding reply outcome (λ initial wanted →
+          publishedEvaluation initial wanted received token before saved changed reply
+            firstSaved admitted active finalMissing resultMissing accepted))
+      where
+      context = FinalAdmission.context guard
+      binding = Journal.ExecutionContext.bindingRow context
+      fresh = secondFresh received token before saved changed reply firstSaved admitted active finalMissing resultMissing accepted
+      outcome : Journal.admission operationName token (Final.Kernel.publication (token , received) changed reply) ≡
+        Journal.returned (Journal.completed binding reply)
+      outcome = subst (λ key → Journal.admission operationName token
+        (Store.saveAnswer (Store.saveAnswer changed token key reply) token Step.resultKey reply) ≡
+        Journal.returned (Journal.completed binding reply)) (FinalAdmission.key guard)
+        (Journal.finalPairCompletes operationName token before context (FinalAdmission.declaredLast guard) reply changed
+          (FinalAdmission.selected guard) (FinalAdmission.cursor guard) resultMissing active
+          (publicationJournal (token , received) before changed reply accepted))
+
+    finishKeepsJournal : ∀ token vectors time value before after →
+      Atomic before (body (Body.publish token vectors)) (time , value) after →
+      JournalState token before → JournalState token after
+    finishKeepsJournal token vectors time value before after (physical , admission) current
+      with secondClassification (publication vectors time) token before
+    ... | inj₁ same = subst (JournalState token) (sym (trans
+      (cong proj₁ (Run.Second.atomicObservation (publication vectors time) token before after value physical)) same)) current
+    ... | inj₂ fresh = subst (JournalState token)
+      (sym (cong proj₁ (Run.Second.atomicObservation (publication vectors time) token before after value physical)))
+      (finalPublicationKeepsJournal token (publication vectors time) before fresh (admission fresh))
+
+    unavailableCannotPublish : ∀ token fault before changed reply →
+      decidePreparation (token , unavailable fault) before ≡ inj₂ (changed , reply) → ⊥
+    unavailableCannotPublish token fault before changed reply accepted with original token (Step.registration before)
+    ... | inj₁ _ with accepted
+    ... | ()
+    unavailableCannotPublish token fault before changed reply () | inj₂ _
+
+    faultCannotPublish : ∀ token fault time before changed reply →
+      decidePublication (token , publication (inj₁ fault) time) before ≡ inj₂ (changed , reply) → ⊥
+    faultCannotPublish token fault time before changed reply accepted with original token (Step.registration before)
+    ... | inj₁ _ with accepted
+    ... | ()
+    faultCannotPublish token fault time before changed reply accepted | inj₂ actual with storedPreparation token before
+    ... | inj₁ _ with accepted
+    ... | ()
+    faultCannotPublish token fault time before changed reply accepted | inj₂ actual | inj₂ value
+      with sameProject (Request.project actual) (Prepared.project value) ∧
+        hasOwner token value (Store.World.embeddingOwners before) ∧
+        sameChunks (documentRows (Prepared.path value) before) (Prepared.previous value)
+    ... | false with accepted
+    ... | ()
+    faultCannotPublish token fault time before changed reply () | inj₂ actual | inj₂ value | true
+
+    unavailableAdmission : ∀ token fault before →
+      FirstPublication (unavailable fault) token before → PrefixAdmission token before
+    unavailableAdmission token fault before (changed , reply , _ , _ , _ , _ , _ , accepted) =
+      Data.Empty.⊥-elim (unavailableCannotPublish token fault before changed reply accepted)
+    faultAdmission : ∀ token fault time before →
+      SecondPublication (publication (inj₁ fault) time) token before → FinalAdmission token before
+    faultAdmission token fault time before (saved , changed , reply , _ , _ , _ , _ , _ , accepted) =
+      Data.Empty.⊥-elim (faultCannotPublish token fault time before changed reply accepted)
+
+    refusalProgress : ∀ token previous fault before → Σ Store.World (λ after → Σ Body.Result (λ result →
+      X.Completed (lift (Body.finish token previous (inj₁ fault))) before after (executed result)))
+    refusalProgress token previous fault before = proj₁ proposed , result , X.completed
+      ((body (Body.publish token (inj₁ fault)) , (time , proj₂ proposed)) ∷ []) (E.replied _ _ _ (E.returned _))
+      (X.changed before _ _ _ ((refl , secondPhysical received token before) , faultAdmission token fault time before) (X.unchanged _))
+      where
+      time = serverTime token before
+      received = publication (inj₁ fault) time
+      proposed = second received token before
+      result = Body.completed (proj₂ proposed) (previous ++ ((Body.publish token (inj₁ fault) , (time , proj₂ proposed)) ∷ []))
+
+    ownerProgress : ∀ token previous value before → Σ Store.World (λ after → Σ Body.Result (λ result →
+      X.Completed (lift (Body.afterOwner token previous value)) before after (executed result)))
+    ownerProgress token previous (Step.done _) before with refusalProgress token
+      (previous ++ ((Body.readSources token , inj₁ mismatch) ∷ [])) mismatch before
+    ... | after , result , X.completed events execution physical = after , result , X.completed
+      ((body (Body.readSources token) , inj₁ mismatch) ∷ events) (E.replied _ _ _ execution)
+      (X.changed before _ _ before (refl , tt) physical)
+    ownerProgress token previous (Step.needsInput diagnostic) before = before , Body.completed (Step.needsInput diagnostic) previous ,
+      X.completed [] (E.returned _) (X.unchanged _)
+    ownerProgress token previous Step.needsRecovery before = before , Body.completed Step.needsRecovery previous ,
+      X.completed [] (E.returned _) (X.unchanged _)
+    ownerProgress token previous (Step.cancelled receipt) before = before , Body.completed (Step.cancelled receipt) previous ,
+      X.completed [] (E.returned _) (X.unchanged _)
+
+    bodyProgress : ∀ token before → Σ Store.World (λ after → Σ Body.Result (λ result →
+      X.Completed (lift (Body.script token)) before after (executed result)))
+    bodyProgress token before with ownerProgress token
+      ((Body.reserve token , (unavailable mismatch , proj₂ (first (unavailable mismatch) token before))) ∷ [])
+      (proj₂ (first (unavailable mismatch) token before)) (proj₁ (first (unavailable mismatch) token before))
+    ... | after , result , X.completed events execution physical = after , result , X.completed
+      ((body (Body.reserve token) , (unavailable mismatch , proj₂ (first (unavailable mismatch) token before))) ∷ events)
+      (E.replied _ _ _ execution)
+      (X.changed before _ _ _ (((refl , firstPhysical (unavailable mismatch) token before) , tt) , unavailableAdmission token mismatch before) physical)
+
+    branchProgress : ∀ token before → Σ Store.World (λ after → Σ Outcome (λ result →
+      X.Completed (branch token before) before after result))
+    branchProgress token before with Journal.admission operationName token before
+    ... | Journal.returned result = before , inspected result , X.completed [] (E.returned _) (X.unchanged _)
+    ... | Journal.admitted context with bodyProgress token before
+    ... | after , result , complete = after , executed result , complete
+
+    progress : ∀ token before → Σ Store.World (λ after → Σ Outcome (λ result → X.Completed (script token) before after result))
+    progress token before with branchProgress token before
+    ... | after , result , X.completed events execution physical = after , result , X.completed
+      ((inspect token , before) ∷ events) (E.replied _ _ before execution)
+      (X.changed before _ _ before (refl , refl) physical)
+
+    Observed : ℕ → Store.World → Store.World → Outcome → Set
+    Observed token before after (inspected result) = CompletionMeaning token before after (inspected result)
+    Observed token before after (executed result) =
+      Σ (Journal.ExecutionContext operationName token before) (λ context →
+        Journal.admission operationName token before ≡ Journal.admitted context ×
+        Σ (Body.X.Completed (Body.script token) before after result) (λ execution →
+          Body.X.Completed.events execution ≡ Body.Result.transcript result))
+
+    actualReceipts : Body.Operation → ∀ token before after result → X.Completed (script token) before after result →
+      Observed token before after result
+    actualReceipts certificate token before after (inspected result) execution =
+      completionMeaning token before after (inspected result) execution
+    actualReceipts certificate token before after (executed result) execution
+      with completionMeaning token before after (executed result) execution
+    ... | context , admitted , sourceRun = context , admitted , sourceRun ,
+      Body.Operation.observes certificate token before after result sourceRun
+
+    returnedSame : ∀ token before firstResult secondResult →
+      Journal.returned {operation = operationName} {token = token} {before = before} firstResult ≡ Journal.returned secondResult →
+      firstResult ≡ secondResult
+    returnedSame token before firstResult .firstResult refl = refl
+    admittedCannotReturn : ∀ token before context result →
+      Journal.admitted {operation = operationName} {token = token} {before = before} context ≡ Journal.returned result → ⊥
+    admittedCannotReturn token before context result ()
+
+    cachedOriginalGoal : ∀ token before current result → Body.X.Interrupted (Body.script token) before current →
+      JournalState token current → Journal.admission operationName token current ≡ Journal.returned result →
+      CompletePublicationGoal token before current (normalized (inspected result))
+    cachedOriginalGoal token before current result cut (pending context accepted) returned =
+      Data.Empty.⊥-elim (admittedCannotReturn token current context result (trans (sym accepted) returned))
+    cachedOriginalGoal token before current result cut (completed binding reply accepted evaluates) returned
+      with returnedSame token current (Journal.completed binding reply) result (trans (sym accepted) returned)
+    ... | refl with Body.interruptedInvariant token before current cut (unavailable mismatch)
+      (publication (inj₁ mismatch) (serverTime token current))
+    ... | originalFirst , originalFinal , retained = subst
+      (λ pair → CompletePublicationGoal token before (proj₁ pair) (proj₂ pair))
+      (sym (trans (sym (evaluates (unavailable mismatch) (publication (inj₁ mismatch) (serverTime token current)))) retained))
+      (meaning originalFirst originalFinal token before)
+
+    prefixPublicationKeepsJournal : ∀ token metadata before → FirstPublication metadata token before →
+      PrefixAdmission token before → JournalState token (proj₁ (first metadata token before))
+    prefixPublicationKeepsJournal token metadata before
+      (changed , reply , admitted , active , firstMissing , finalMissing , resultMissing , accepted) guard
+      with Journal.preserveAfterNext operationName token before (PrefixAdmission.context guard)
+        (PrefixAdmission.declaredFirst guard) (PrefixAdmission.declaredLast guard) [] reply changed
+        (PrefixAdmission.selected guard) (PrefixAdmission.cursor guard) active
+        (preparationJournal (token , metadata) before changed reply accepted)
+    ... | context , current = subst (JournalState token) (sym (cong proj₁ fresh))
+      (subst (JournalState token) (cong (λ key → Store.saveAnswer changed token key reply) (PrefixAdmission.key guard))
+        (pending context current))
+      where
+      fresh = freshFirst metadata token before changed reply admitted active firstMissing finalMissing resultMissing accepted
+
+    reserveKeepsJournal : ∀ token metadata value before after →
+      Atomic before (body (Body.reserve token)) (metadata , value) after →
+      JournalState token before → JournalState token after
+    reserveKeepsJournal token metadata value before after ((physical , source) , admission) current
+      with firstClassification metadata token before
+    ... | inj₁ same = subst (JournalState token) (sym (trans
+      (cong proj₁ (Run.First.atomicObservation metadata token before after value physical)) same)) current
+    ... | inj₂ fresh = subst (JournalState token)
+      (sym (cong proj₁ (Run.First.atomicObservation metadata token before after value physical)))
+      (prefixPublicationKeepsJournal token metadata before fresh (admission fresh))
+
+    bodyKeepsJournal : ∀ token effect reply before after → Body.Owned token effect →
+      Atomic before (body effect) reply after → JournalState token before → JournalState token after
+    bodyKeepsJournal token .(Body.reserve token) (metadata , value) before after Body.ownerOwned physical current =
+      reserveKeepsJournal token metadata value before after physical current
+    bodyKeepsJournal token .(Body.readSources token) (inj₁ fault) before .before Body.sourcesOwned (refl , tt) current = current
+    bodyKeepsJournal token .(Body.readSources token) (inj₂ .before) before .before Body.sourcesOwned ((refl , refl) , tt) current = current
+    bodyKeepsJournal token .(Body.embed token cfg content) reply before .before (Body.embedOwned cfg content) (refl , tt) current = current
+    bodyKeepsJournal token .(Body.publish token vectors) (time , value) before after (Body.publishOwned vectors) physical current =
+      finishKeepsJournal token vectors time value before after physical current
+
+    prefixKeepsJournal : ∀ token program events residual before after → Body.Scoped token program →
+      E.Prefix (lift program) events residual → X.Changes before events after →
+      JournalState token before → JournalState token after
+    prefixKeepsJournal token program .[] .(lift program) before .before scoped (E.stopped _) (X.unchanged _) current = current
+    prefixKeepsJournal token .(Body.E.ask effect continuation) ._ residual before after
+      (Body.asked effect continuation own later) (E.replied .(body effect) _ reply prefix)
+      (X.changed _ _ _ middle physical rest) current =
+      prefixKeepsJournal token (continuation reply) _ residual middle after (later reply) prefix rest
+        (bodyKeepsJournal token effect reply before middle own physical current)
+
+    activeKeepsJournal : ∀ token program events effect next reply before current after → Body.Scoped token program →
+      E.Prefix (lift program) events (E.ask effect next) → X.Changes before events current → Atomic current effect reply after →
+      JournalState token before → JournalState token after
+    activeKeepsJournal token program events effect next reply before current after scoped prefix physical active initial
+      with erasePrefix program before current (E.ask effect next) events prefix physical
+    ... | originalPrefix sourceEvents (Body.E.done response) reached stores ()
+    ... | originalPrefix sourceEvents (Body.E.ask sourceEffect sourceNext) reached stores refl =
+      bodyKeepsJournal token sourceEffect reply current after
+        (Body.activeOwned token sourceEffect sourceNext (proj₂ (Body.prefixScoped token program sourceEvents _ scoped reached)))
+        active (prefixKeepsJournal token program events _ before current scoped prefix physical initial)
+
+    interruptedHasJournal : ∀ token before interrupted context →
+      Journal.admission operationName token before ≡ Journal.admitted context →
+      X.Interrupted (script token) before interrupted → JournalState token interrupted
+    interruptedHasJournal token before .before context accepted
+      (X.atPrefix .[] .(script token) .before (E.stopped _) (X.unchanged _)) = pending context accepted
+    interruptedHasJournal token before interrupted context accepted
+      (X.atPrefix _ residual .interrupted (E.replied _ _ .before {events} prefix)
+        (X.changed _ _ _ .before (refl , refl) physical))
+      with Journal.admission operationName token before in observedAdmission
+    ... | Journal.returned original = Data.Empty.⊥-elim
+      (admittedCannotReturn token before context original (sym accepted))
+    ... | Journal.admitted actual = prefixKeepsJournal token (Body.script token) events residual before interrupted
+      (Body.scriptScoped token) prefix physical (pending actual observedAdmission)
+    interruptedHasJournal token before interrupted context accepted
+      (X.beforeReply .[] .(inspect token) .(branch token) .before reply .interrupted
+        (E.stopped _) (X.unchanged _) active) = subst (JournalState token) (sym (proj₂ active)) (pending context accepted)
+    interruptedHasJournal token before interrupted context accepted
+      (X.beforeReply _ effect next current reply .interrupted (E.replied _ _ .before {events} prefix)
+        (X.changed _ _ _ .before (refl , refl) physical) active)
+      with Journal.admission operationName token before in observedAdmission
+    ... | Journal.returned original = Data.Empty.⊥-elim (doneCannotAsk _ events effect next prefix)
+    ... | Journal.admitted actual = activeKeepsJournal token (Body.script token) events effect next reply before current interrupted
+      (Body.scriptScoped token) prefix physical active (pending actual observedAdmission)
+
+    converges : ∀ token before interrupted after result → X.Interrupted (script token) before interrupted →
+      X.Completed (script token) interrupted after result → EntryGoal token before after result
+    converges token before interrupted after result cut retry with interruptionMeaning token before interrupted cut
+    ... | inj₁ same = subst (λ start → EntryGoal token start after result) same
+      (completedMeetsGoal token interrupted after result retry)
+    ... | inj₂ (context , accepted , sourceCut) with result | completionMeaning token interrupted after result retry
+    ... | inspected original | same , actualReadback = inj₂ (subst
+      (λ final → CompletePublicationGoal token before final (normalized (inspected original))) (sym same)
+      (cachedOriginalGoal token before interrupted original sourceCut
+        (interruptedHasJournal token before interrupted context accepted cut) actualReadback))
+    ... | executed response | actualContext , admitted , sourceRun =
+      inj₂ (Body.converges token before interrupted after response sourceCut sourceRun)
+
+    -- This is the entry-level certificate consumed by public assembly. It
+    -- retains the actual inspection and source/provider transcript proof;
+    -- the private two-phase kernel cannot bypass the journal guard.
+    record Operation : Set₁ where
+      field
+        recovers : ∀ token before interrupted after result → X.Interrupted (script token) before interrupted →
+          X.Completed (script token) interrupted after result → EntryGoal token before after result
+        progresses : ∀ token before → Σ Store.World (λ after → Σ Outcome (λ result → X.Completed (script token) before after result))
+        observes : ∀ token before after result → X.Completed (script token) before after result → Observed token before after result
+    fullOperation : Operation
+    fullOperation = record
+      { recovers = converges; progresses = progress; observes = actualReceipts Body.fullOperation }
+    toRecoverable : Operation → Recovery.RecoverableFor Store.World ℕ Outcome EntryGoal
     toRecoverable certificate = record
       { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic
       ; converges = Operation.recovers certificate; progress = Operation.progresses certificate }

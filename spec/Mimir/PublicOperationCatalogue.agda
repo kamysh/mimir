@@ -238,9 +238,20 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
       (IndependentWrite.Run.Second.atomicObservation observed token before after reply physical))
     (independentSecondBindings observed token before)
   module IndependentFrame = BindingFrame IndependentPublic.Atomic independentAtomicBindings
-  module IndependentGuard expected proof = Admit.Guarded (Binding.advertised Tools.insertBelief) expected
-    (IndependentPublic.toRecoverable proof)
+  module IndependentGuard expected = Admit.Guarded (Binding.advertised Tools.insertBelief) expected
+    (IndependentPublic.toRecoverable IndependentPublic.fullOperation)
     (λ token → IndependentFrame.existingBindingSurvives (IndependentPublic.script token) token)
+
+  independentObserved : ∀ expected (proof : IndependentPublic.Operation) token before after response →
+    IndependentGuard.X.Completed expected (IndependentGuard.script expected token) before after
+      (IndependentGuard.executed response) →
+    Data.Product.Σ (IndependentPublic.X.Completed (IndependentPublic.script token) before after response)
+      (λ actual → IndependentPublic.X.Completed.events actual ≡ IndependentPublic.Result.transcript response)
+  independentObserved expected proof token before after response complete =
+    actual , IndependentPublic.Operation.observes proof token before after response actual
+    where
+    actual = proj₂ (IndependentGuard.completionMeaning expected token before after
+      (IndependentGuard.executed response) complete)
 
   data Kind : Set where
     basic : Basic.Request → Kind
@@ -289,7 +300,7 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   Result (projectRemoval _) = Wire.Value
   Result (correction _) = Validation.Fault
   Result (patternWrite expected) = PatternGuard.Result expected
-  Result (independentWrite expected) = IndependentGuard.Result expected IndependentPublic.fullOperation
+  Result (independentWrite expected) = IndependentGuard.Result expected
   Result (patternRemoval expected) = PatternRemovalGuard.Result expected
   Result (beliefRemoval expected) = BeliefRemovalGuard.Result expected
   Result (relationship kind expected) = RelationshipGuard.Result kind expected
@@ -309,7 +320,7 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   Goal (projectRemoval project) = ProjectSelected.Meaning project
   Goal (correction diagnostic) = Refusal.Goal diagnostic
   Goal (patternWrite expected) = PatternGuard.Goal expected
-  Goal (independentWrite expected) = IndependentGuard.Goal expected IndependentPublic.fullOperation
+  Goal (independentWrite expected) = IndependentGuard.Goal expected
   Goal (patternRemoval expected) = PatternRemovalGuard.Goal expected
   Goal (beliefRemoval expected) = BeliefRemovalGuard.Goal expected
   Goal (relationship kind expected) = RelationshipGuard.Goal kind expected
@@ -352,7 +363,8 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   executable (retrieval request) proof = Fixed.operation (Retrieval.toRecoverable proof) request
   executable (context request) proof = Fixed.operation (LearningContext.toRecoverable proof) request
   executable (documentQuery request) proof = Fixed.operation (DocumentQuery.toRecoverable proof) request
-  executable (independentWrite expected) proof = IndependentGuard.operation expected proof
+  executable (independentWrite expected) proof = IndependentGuard.operationWith expected
+    (IndependentPublic.Operation.recovers proof) (IndependentPublic.Operation.progresses proof)
   executable (basic _) proof = proof
   executable (experiences _) proof = proof
   executable (assessments _) proof = proof

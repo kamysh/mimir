@@ -155,14 +155,6 @@ data Source : Set where
   advertised : Tools.Tool → Source
   evidenceRemoval : Source -- existing internal API, not another MCP tool
 
--- Replies depend on the business reply type, never on the particular proof
--- term used to certify that operation. Full observed certificates can then be
--- retained at assembly without making their proof fields part of wire data.
-module GuardedReply (Response : Set) where
-  data Result : Set where
-    needsInput : Validation.Fault → Result
-    executed : Response → Result
-
 sourceName : Source → Text
 sourceName (advertised tool) = toList (Tools.wireName tool)
 sourceName evidenceRemoval = toList "remove_evidence"
@@ -276,7 +268,9 @@ module Decode (library : Library.Contract) where
       Project.Registered.binding token (bindings interrupted) ≡ just original) where
     module O = Recovery.RecoverableFor underlying
 
-    open GuardedReply Response public
+    data Result : Set where
+      needsInput : Validation.Fault → Result
+      executed : Response → Result
 
     data Effect : Set where
       readBinding : ℕ → Effect
@@ -350,10 +344,20 @@ module Decode (library : Library.Contract) where
       (X.completed _ (E.replied _ _ .before execution) (X.changed _ _ _ .before (refl , refl) physical)) =
       branchMeaning token before after result _ execution physical
 
-    completedMeetsGoal : ∀ token before after result → X.Completed (script token) before after result → Goal token before after result
-    completedMeetsGoal token before after (needsInput fault) completion = completionMeaning token before after (needsInput fault) completion
-    completedMeetsGoal token before after (executed response) completion with completionMeaning token before after (executed response) completion
-    ... | admitted , sourceCompletion = admitted , O.completedMeetsGoal token before after response sourceCompletion
+    SourceRecovery : Set
+    SourceRecovery = ∀ token before interrupted after response → O.X.Interrupted (O.script token) before interrupted →
+      O.X.Completed (O.script token) interrupted after response → BusinessGoal token before after response
+
+    SourceProgress : Set
+    SourceProgress = ∀ token before → Σ Store.World (λ after → Σ Response (λ response → O.X.Completed (O.script token) before after response))
+
+    completedMeetsGoalWith : SourceRecovery → ∀ token before after result → X.Completed (script token) before after result → Goal token before after result
+    completedMeetsGoalWith recovers token before after (needsInput fault) completion = completionMeaning token before after (needsInput fault) completion
+    completedMeetsGoalWith recovers token before after (executed response) completion with completionMeaning token before after (executed response) completion
+    ... | admitted , sourceCompletion = admitted , recovers token before before after response
+      (O.X.atPrefix [] (O.script token) before (O.E.stopped _) (O.X.unchanged before)) sourceCompletion
+
+    completedMeetsGoal = completedMeetsGoalWith O.converges
 
     record OriginalPrefix (program : O.E.Script Response) (before after : Store.World) (residual : E.Script Result) : Set where
       constructor originalPrefix
@@ -425,30 +429,38 @@ module Decode (library : Library.Contract) where
     ... | original , saved = trans (cong (admitRow source expected)
       (trans (preservesBinding token before interrupted original saved cut) (sym saved))) admitted
 
-    converges : ∀ token before interrupted after result → X.Interrupted (script token) before interrupted →
+    convergesWith : SourceRecovery → ∀ token before interrupted after result → X.Interrupted (script token) before interrupted →
       X.Completed (script token) interrupted after result → Goal token before after result
-    converges token before interrupted after result cut completion with interruptionMeaning token before interrupted cut
-    ... | inj₁ same = subst (λ initial → Goal token initial after result) same (completedMeetsGoal token interrupted after result completion)
-    converges token before interrupted after (needsInput fault) cut completion | inj₂ (admitted , sourceCut)
+    convergesWith recovers token before interrupted after result cut completion with interruptionMeaning token before interrupted cut
+    ... | inj₁ same = subst (λ initial → Goal token initial after result) same (completedMeetsGoalWith recovers token interrupted after result completion)
+    convergesWith recovers token before interrupted after (needsInput fault) cut completion | inj₂ (admitted , sourceCut)
       with completionMeaning token interrupted after (needsInput fault) completion
     ... | unchanged , refused with trans (sym (admittedRetry token before interrupted admitted sourceCut)) refused
     ... | ()
-    converges token before interrupted after (executed response) cut completion | inj₂ (admitted , sourceCut)
+    convergesWith recovers token before interrupted after (executed response) cut completion | inj₂ (admitted , sourceCut)
       with completionMeaning token interrupted after (executed response) completion
-    ... | retryAdmitted , sourceCompletion = admitted , O.converges token before interrupted after response sourceCut sourceCompletion
+    ... | retryAdmitted , sourceCompletion = admitted , recovers token before interrupted after response sourceCut sourceCompletion
 
-    branchProgress : ∀ token before → Σ Store.World (λ after → Σ Result (λ result → X.Completed (afterBinding token before) before after result))
-    branchProgress token before with admit source expected token (bindings before)
+    branchProgressWith : SourceProgress → ∀ token before → Σ Store.World (λ after → Σ Result (λ result → X.Completed (afterBinding token before) before after result))
+    branchProgressWith progresses token before with admit source expected token (bindings before)
     ... | inj₁ fault = before , needsInput fault , X.completed [] (E.returned _) (X.unchanged _)
-    ... | inj₂ tt with O.progress token before
+    ... | inj₂ tt with progresses token before
     ... | after , response , O.X.completed events execution physical = after , executed response , X.completed
       (map liftEvent events) (liftRun _ events response execution) (liftChanges physical)
 
-    progress : ∀ token before → Σ Store.World (λ after → Σ Result (λ result → X.Completed (script token) before after result))
-    progress token before with branchProgress token before
+    progressWith : SourceProgress → ∀ token before → Σ Store.World (λ after → Σ Result (λ result → X.Completed (script token) before after result))
+    progressWith progresses token before with branchProgressWith progresses token before
     ... | after , result , X.completed events execution physical = after , result , X.completed
       ((readBinding token , before) ∷ events) (E.replied _ _ before execution)
       (X.changed before _ before before (refl , refl) physical)
 
+    -- Behavioral types stay fixed; alternative proofs of those SAME scripts,
+    -- effects and business goal enter only here, never as reply parameters.
+    operationWith : SourceRecovery → SourceProgress → Recovery.RecoverableFor Store.World ℕ Result Goal
+    operationWith recovers progresses = record
+      { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic
+      ; converges = convergesWith recovers; progress = progressWith progresses }
+    converges = convergesWith O.converges
+    progress = progressWith O.progress
     operation : Recovery.RecoverableFor Store.World ℕ Result Goal
-    operation = record { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic; converges = converges; progress = progress }
+    operation = operationWith O.converges O.progress
