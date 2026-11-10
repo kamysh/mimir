@@ -17,7 +17,7 @@ open import Data.Product using (_×_; _,_; Σ; proj₁; proj₂)
 open import Data.String using (toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
-open import Relation.Nullary using (does; ¬_)
+open import Relation.Nullary using (does; ¬_; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; trans; subst; sym)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
@@ -46,6 +46,10 @@ import Mimir.JsonObjects as Objects
 import Mimir.RecoverableStoreStep as Step
 import Mimir.Recovery as Recovery
 import Mimir.Effects as Effects
+import Mimir.OperationControls as Controls
+import Mimir.DatabaseTransaction as DB
+import Mimir.RegisteredStoreAdmission as AdmissionStore
+import Data.Fin as Fin
 open import Mimir.RecordDecoding using (_>>=_)
 
 sameText : Text → Text → Bool
@@ -157,7 +161,7 @@ data Source : Set where
 
 sourceName : Source → Text
 sourceName (advertised tool) = toList (Tools.wireName tool)
-sourceName evidenceRemoval = toList "remove_evidence"
+sourceName evidenceRemoval = toList "delete_evidence"
 
 missingBinding changedRequest : Validation.Fault
 missingBinding = Validation.fault (Validation.key "operation_token" ∷ []) Validation.missingReference
@@ -464,3 +468,953 @@ module Decode (library : Library.Contract) where
     progress = progressWith O.progress
     operation : Recovery.RecoverableFor Store.World ℕ Result Goal
     operation = operationWith O.converges O.progress
+
+-- Native execute_registered_write creates this metadata before its concrete
+-- writer runs. The input is the actual public object, never an expected plan,
+-- reconstructed argument object, success flag or caller-selected goal.
+module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) where
+  module D = Public.Decode library
+  module P = Controls.Plan
+  module Read = Controls.Readback library postgres
+
+  record Request : Set where
+    constructor submittedWrite
+    field tool : Tools.Tool; submitted : Wire.Value
+
+  writerToken : ∀ tool → Tools.kind tool ≡ Tools.businessWrite → Public.TokenFor tool → ℕ
+  writerToken tool known token with Tools.kind tool
+  ... | Tools.businessWrite = token
+  writerToken tool () token | Tools.readOnly
+  writerToken tool () token | Tools.operationControl
+
+  record Call : Set where
+    constructor admittedWrite
+    field tool : Tools.Tool
+          submitted : Wire.Value
+          writer : Tools.kind tool ≡ Tools.businessWrite
+          invocation : D.Invocation tool submitted
+    token : ℕ
+    token = writerToken tool writer (D.Invocation.operationToken invocation)
+    arguments : Wire.Value
+    arguments = D.Invocation.arguments invocation
+    request : Public.Request
+    request = D.Invocation.request invocation
+    name : Text
+    name = toList (Tools.wireName tool)
+
+  wrongWriter : Validation.Fault
+  wrongWriter = Validation.fault [] Validation.wrongIdentity
+    "Use the advertised read-only or operation-control entry for this tool. Only an admitted business write creates a binding and plan. No business data changed."
+
+  decode : Request → Validation.Fault ⊎ Call
+  decode (submittedWrite tool raw) with Tools.kind tool in kind
+  ... | Tools.readOnly = inj₁ wrongWriter
+  ... | Tools.operationControl = inj₁ wrongWriter
+  ... | Tools.businessWrite with D.readInvocation tool raw
+  ... | inj₁ fault = inj₁ fault
+  ... | inj₂ observedCall = inj₂ (admittedWrite tool raw kind observedCall)
+
+  -- This is the existing external canonical Value boundary used for native
+  -- jsonb matching: object order/numeric spelling are normalized; omission,
+  -- explicit null, field values and array order remain different. It compares
+  -- the actual submitted object after removing only operation_token.
+  signature : Text → Wire.Value → Wire.Value → Wire.Value
+  signature name arguments settings = Wire.array (Wire.string name ∷ arguments ∷ settings ∷ [])
+
+  matches : Call → Wire.Value → Store.BindingRow → Bool
+  matches call settings original = does (Lists.≡-dec Fin._≟_
+    (Library.Contract.compactJSON library (signature (Call.name call) (Call.arguments call) settings))
+    (Library.Contract.compactJSON library (signature (Store.BindingRow.operation original)
+      (Store.BindingRow.arguments original) (Store.BindingRow.settings original))))
+
+  tables = Store.World.operations
+  binding : ℕ → Store.World → Maybe Store.BindingRow
+  binding token before = Project.Registered.binding token (Store.OperationTables.bindings (tables before))
+  plan : ℕ → Store.World → Maybe Wire.Value
+  plan token before = Project.Registered.plan token (Store.OperationTables.plans (tables before))
+
+  protected : Store.World → Store.World
+  protected before = record before { operations = record (tables before) { bindings = []; plans = [] } }
+
+  putBinding : Store.BindingRow → Store.World → Store.World
+  putBinding row before = record before { operations = record (tables before)
+    { bindings = row ∷ Store.OperationTables.bindings (tables before) } }
+  putPlan : ℕ → Wire.Value → Store.World → Store.World
+  putPlan token raw before = record before { operations = record (tables before)
+    { plans = Store.planRow token raw ∷ Store.OperationTables.plans (tables before) } }
+
+  newBinding : Call → Wire.Value → ℤ → Store.BindingRow
+  newBinding call settings observedTime = Store.bindingRow (Call.token call) (Call.name call)
+    (Call.arguments call) settings observedTime
+
+  data BindingResult : Set where
+    bound changed : Store.BindingRow → BindingResult
+    unknown : BindingResult
+    cancelled : Store.CancellationRow → BindingResult
+
+  bind : Call → Wire.Value → ℤ → Store.World → Store.World × BindingResult
+  bind call settings observedTime before with Controls.reservation (Call.token call) before
+  ... | nothing = before , unknown
+  ... | just _ with Store.lookupCancellation before (Call.token call)
+  ... | just receipt = before , cancelled receipt
+  ... | nothing with binding (Call.token call) before
+  ... | nothing = putBinding (newBinding call settings observedTime) before , bound (newBinding call settings observedTime)
+  ... | just original with matches call settings original
+  ... | false = before , changed original
+  ... | true = before , bound original
+
+  bindingPreservesBusiness : ∀ call settings observedTime before →
+    protected (proj₁ (bind call settings observedTime before)) ≡ protected before
+  bindingPreservesBusiness call settings observedTime before with Controls.reservation (Call.token call) before
+  ... | nothing = refl
+  ... | just _ with Store.lookupCancellation before (Call.token call)
+  ... | just _ = refl
+  ... | nothing with binding (Call.token call) before
+  ... | nothing = refl
+  ... | just original with matches call settings original
+  ... | false = refl
+  ... | true = refl
+
+  -- Only the original declared belief keys repeat. Other advertised writers
+  -- have fixed registered boundaries. Document/sweep service methods perform
+  -- the same fixed-plan writes before their captured business work.
+  reviewSteps : List Candidates.Candidate → List P.Step
+  reviewSteps [] = []
+  reviewSteps (Candidates.patternCandidate _ _ _ ∷ rest) = reviewSteps rest
+  reviewSteps (Candidates.belief key _ _ _ ∷ rest) =
+    P.canonicalStep library (toList "store.reserve_belief_preparation") (just key) ∷ reviewSteps rest
+
+  selected : Public.Request → List P.Step
+  selected (Public.learning (Learning.reviewExperience input expected)) = reviewSteps (Input.Review.candidates input)
+  selected _ = []
+
+  badPlan : Validation.Fault
+  badPlan = Validation.fault (Validation.key "operation_token" ∷ []) Validation.wrongIdentity
+    "Read the original binding, registered plan and saved answers. Resolve incompatible or incomplete metadata with the user; do not replace the token, invent a plan or repeat confirmed work."
+
+  computedPlan : Call → Validation.Fault ⊎ P.Saved
+  computedPlan call with P.lookup (Call.name call) P.registered
+  ... | nothing = inj₁ badPlan
+  ... | just shape with P.rebuild library shape (selected (Call.request call))
+  ... | nothing = inj₁ badPlan
+  ... | just steps with P.valid library (P.saved (Call.name call) shape steps nothing)
+  ... | false = inj₁ badPlan
+  ... | true = inj₂ (P.saved (Call.name call) shape steps nothing)
+
+  -- A receipt from serialization of the server-computed plan. This is the
+  -- external Serde boundary, not a client plan or normalization theorem.
+  data PlanEncoding (call : Call) : Set where
+    encoded : ∀ planned → computedPlan call ≡ inj₂ planned →
+      (raw : Wire.Value) → P.decode raw ≡ inj₂ planned → PlanEncoding call
+    encodingFailed : Validation.Fault → PlanEncoding call
+
+  data PlanResult : Set where
+    planned : Store.BindingRow → P.Saved → Wire.Value → PlanResult
+    planRefused : Validation.Fault → PlanResult
+    planCancelled : Store.CancellationRow → PlanResult
+    planUnknown : PlanResult
+
+  existingPlan : Store.BindingRow → Wire.Value → PlanResult
+  existingPlan original raw with P.decode raw
+  ... | inj₁ fault = planRefused fault
+  ... | inj₂ stored with P.textEqual (Store.BindingRow.operation original) (P.Saved.operation stored)
+  ... | false = planRefused badPlan
+  ... | true with P.valid library stored
+  ... | false = planRefused badPlan
+  ... | true = planned original stored raw
+
+  saveNewPlan : (call : Call) → Store.BindingRow → PlanEncoding call → Store.World → Store.World × PlanResult
+  saveNewPlan call original (encodingFailed fault) before = before , planRefused fault
+  saveNewPlan call original (encoded model computed raw decoded) before = putPlan (Call.token call) raw before , planned original model raw
+
+  prepare : (call : Call) → Wire.Value → PlanEncoding call → Store.World → Store.World × PlanResult
+  prepare call settings encodedPlan before with binding (Call.token call) before
+  ... | nothing = before , planUnknown
+  ... | just original with matches call settings original
+  ... | false = before , planRefused changedRequest
+  ... | true with Store.lookupCancellation before (Call.token call)
+  ... | just receipt = before , planCancelled receipt
+  ... | nothing with plan (Call.token call) before
+  ... | just raw = before , existingPlan original raw
+  ... | nothing with Read.savedRows (Call.token call) before
+  ... | _ ∷ _ = before , planRefused badPlan
+  ... | [] = saveNewPlan call original encodedPlan before
+
+  planPreservesBusiness : ∀ call settings encodedPlan before →
+    protected (proj₁ (prepare call settings encodedPlan before)) ≡ protected before
+  planPreservesBusiness call settings encodedPlan before with binding (Call.token call) before
+  ... | nothing = refl
+  ... | just original with matches call settings original
+  ... | false = refl
+  ... | true with Store.lookupCancellation before (Call.token call)
+  ... | just _ = refl
+  ... | nothing with plan (Call.token call) before
+  ... | just _ = refl
+  ... | nothing with Read.savedRows (Call.token call) before
+  ... | _ ∷ _ = refl
+  ... | [] with encodedPlan
+  ... | encodingFailed _ = refl
+  ... | encoded model computed raw decoded = refl
+
+  data BindingsGrew (call : Call) (original : Bindings) : Bindings → Set where
+    sameBindings : BindingsGrew call original original
+    firstBinding : ∀ settings observedTime current →
+      Project.Registered.binding (Call.token call) current ≡ nothing →
+      BindingsGrew call original current →
+      BindingsGrew call original (newBinding call settings observedTime ∷ current)
+
+  data PlansGrew (call : Call) (original : List Store.PlanRow) : List Store.PlanRow → Set where
+    samePlans : PlansGrew call original original
+    firstPlan : ∀ model raw current → computedPlan call ≡ inj₂ model → P.decode raw ≡ inj₂ model →
+      Project.Registered.plan (Call.token call) current ≡ nothing →
+      PlansGrew call original current → PlansGrew call original (Store.planRow (Call.token call) raw ∷ current)
+
+  bindGrows : ∀ call settings observedTime before →
+    BindingsGrew call (bindings before) (bindings (proj₁ (bind call settings observedTime before)))
+  bindGrows call settings observedTime before with Controls.reservation (Call.token call) before
+  ... | nothing = sameBindings
+  ... | just _ with Store.lookupCancellation before (Call.token call)
+  ... | just _ = sameBindings
+  ... | nothing with binding (Call.token call) before in found
+  ... | nothing = firstBinding settings observedTime _ found sameBindings
+  ... | just original with matches call settings original
+  ... | false = sameBindings
+  ... | true = sameBindings
+
+  bindKeepsPlans : ∀ call settings observedTime before →
+    Store.OperationTables.plans (tables (proj₁ (bind call settings observedTime before))) ≡ Store.OperationTables.plans (tables before)
+  bindKeepsPlans call settings observedTime before with Controls.reservation (Call.token call) before
+  ... | nothing = refl
+  ... | just _ with Store.lookupCancellation before (Call.token call)
+  ... | just _ = refl
+  ... | nothing with binding (Call.token call) before
+  ... | nothing = refl
+  ... | just original with matches call settings original
+  ... | false = refl
+  ... | true = refl
+
+  planKeepsBindings : ∀ call settings encodedPlan before →
+    bindings (proj₁ (prepare call settings encodedPlan before)) ≡ bindings before
+  planKeepsBindings call settings encodedPlan before with binding (Call.token call) before
+  ... | nothing = refl
+  ... | just original with matches call settings original
+  ... | false = refl
+  ... | true with Store.lookupCancellation before (Call.token call)
+  ... | just _ = refl
+  ... | nothing with plan (Call.token call) before
+  ... | just _ = refl
+  ... | nothing with Read.savedRows (Call.token call) before
+  ... | _ ∷ _ = refl
+  ... | [] with encodedPlan
+  ... | encodingFailed _ = refl
+  ... | encoded model computed raw decoded = refl
+
+  planGrows : ∀ call settings encodedPlan before → PlansGrew call
+    (Store.OperationTables.plans (tables before)) (Store.OperationTables.plans (tables (proj₁ (prepare call settings encodedPlan before))))
+  planGrows call settings encodedPlan before with binding (Call.token call) before
+  ... | nothing = samePlans
+  ... | just original with matches call settings original
+  ... | false = samePlans
+  ... | true with Store.lookupCancellation before (Call.token call)
+  ... | just _ = samePlans
+  ... | nothing with plan (Call.token call) before in found
+  ... | just _ = samePlans
+  ... | nothing with Read.savedRows (Call.token call) before
+  ... | _ ∷ _ = samePlans
+  ... | [] with encodedPlan
+  ... | encodingFailed _ = samePlans
+  ... | encoded model computed raw decoded = firstPlan model raw _ computed decoded found samePlans
+
+  record Frame (call : Call) (before after : Store.World) : Set where
+    field business : protected after ≡ protected before
+          bindingExtension : BindingsGrew call (bindings before) (bindings after)
+          planExtension : PlansGrew call (Store.OperationTables.plans (tables before)) (Store.OperationTables.plans (tables after))
+
+  identityFrame : ∀ call before → Frame call before before
+  identityFrame call before = record { business = refl; bindingExtension = sameBindings; planExtension = samePlans }
+
+  extendBindings : ∀ call first middle final → BindingsGrew call first middle → BindingsGrew call middle final → BindingsGrew call first final
+  extendBindings call first middle .middle earlier sameBindings = earlier
+  extendBindings call first middle _ earlier (firstBinding settings observedTime current absent later) =
+    firstBinding settings observedTime current absent (extendBindings call first middle current earlier later)
+
+  extendPlans : ∀ call first middle final → PlansGrew call first middle → PlansGrew call middle final → PlansGrew call first final
+  extendPlans call first middle .middle earlier samePlans = earlier
+  extendPlans call first middle _ earlier (firstPlan model raw current computed decoded absent later) =
+    firstPlan model raw current computed decoded absent (extendPlans call first middle current earlier later)
+
+  composeFrame : ∀ call first middle final → Frame call first middle → Frame call middle final → Frame call first final
+  composeFrame call first middle final earlier later = record
+    { business = trans (Frame.business later) (Frame.business earlier)
+    ; bindingExtension = extendBindings call _ _ _ (Frame.bindingExtension earlier) (Frame.bindingExtension later)
+    ; planExtension = extendPlans call _ _ _ (Frame.planExtension earlier) (Frame.planExtension later) }
+
+  bindFrame : ∀ call settings observedTime before → Frame call before (proj₁ (bind call settings observedTime before))
+  bindFrame call settings observedTime before = record
+    { business = bindingPreservesBusiness call settings observedTime before
+    ; bindingExtension = bindGrows call settings observedTime before
+    ; planExtension = subst (PlansGrew call (Store.OperationTables.plans (tables before)))
+        (sym (bindKeepsPlans call settings observedTime before)) samePlans }
+
+  planFrame : ∀ call settings encodedPlan before → Frame call before (proj₁ (prepare call settings encodedPlan before))
+  planFrame call settings encodedPlan before = record
+    { business = planPreservesBusiness call settings encodedPlan before
+    ; bindingExtension = subst (BindingsGrew call (bindings before))
+        (sym (planKeepsBindings call settings encodedPlan before)) sameBindings
+    ; planExtension = planGrows call settings encodedPlan before }
+
+  data Settings : Set where
+    configured : Wire.Value → Settings
+    unavailable : Validation.Fault → Settings
+
+  record Context : Set where
+    constructor preparedWrite
+    field call : Call
+          original : Store.BindingRow
+          model : P.Saved
+          raw : Wire.Value
+
+  data Result : Set where
+    needsInput : Validation.Fault → Result
+    returned : Read.Result → Result
+    ready : Context → Result
+
+  data Effect : Set where
+    readOriginal : Call → Effect
+    currentSettings : Call → Effect
+    bindOriginal : Call → Wire.Value → Effect
+    readResult : Call → Effect
+    publishPlan : Call → Wire.Value → Effect
+
+  Reply : Effect → Set
+  Reply (readOriginal _) = Store.World
+  Reply (currentSettings _) = Settings
+  Reply (bindOriginal _ _) = ℤ × BindingResult
+  Reply (readResult _) = Store.World
+  Reply (publishPlan call _) = PlanEncoding call × PlanResult
+
+  bindingReceipt : BindingResult → DB.Receipt
+  bindingReceipt (bound _) = DB.committed
+  bindingReceipt (changed _) = DB.committed
+  bindingReceipt unknown = DB.aborted
+  bindingReceipt (cancelled _) = DB.aborted
+  planReceipt : PlanResult → DB.Receipt
+  planReceipt (planned _ _ _) = DB.committed
+  planReceipt _ = DB.aborted
+
+  Atomic : Store.World → (effect : Effect) → Reply effect → Store.World → Set
+  Atomic before (readOriginal _) observed after = observed ≡ before × after ≡ before
+  Atomic before (currentSettings _) observed after = after ≡ before
+  Atomic before (bindOriginal call settings) (observedTime , reply) after =
+    reply ≡ proj₂ (bind call settings observedTime before) ×
+    DB.Atomic before (proj₁ (bind call settings observedTime before)) (bindingReceipt reply) after
+  Atomic before (readResult _) observed after = observed ≡ before × after ≡ before
+  Atomic before (publishPlan call settings) (encodedPlan , reply) after =
+    reply ≡ proj₂ (prepare call settings encodedPlan before) ×
+    DB.Atomic before (proj₁ (prepare call settings encodedPlan before)) (planReceipt reply) after
+
+  module X = Recovery.Execution Store.World Effect Reply Atomic
+  module E = X.E
+
+  afterPlan : Call → PlanResult → E.Script Result
+  afterPlan call (planned original model raw) = E.done (ready (preparedWrite call original model raw))
+  afterPlan call (planRefused fault) = E.done (needsInput fault)
+  afterPlan call (planCancelled receipt) = E.ask (readResult call)
+    (λ observed → E.done (returned (Read.answer (Call.token call) observed)))
+  afterPlan call planUnknown = E.ask (readResult call)
+    (λ observed → E.done (returned (Read.answer (Call.token call) observed)))
+
+  createPlan : Call → Wire.Value → E.Script Result
+  createPlan call settings = E.ask (publishPlan call settings) (λ observed → afterPlan call (proj₂ observed))
+
+  changedPolicy : Validation.Fault
+  changedPolicy = Validation.fault (Validation.key "retirement" ∷ []) Validation.wrongIdentity
+    "The configured retention policy differs from the original sweep. Read its original binding and ask the user whether to restore that policy or explicitly cancel the unfinished action. Do not choose a new retention period or replace its plan."
+
+  afterPolicy : Call → Wire.Value → Settings → E.Script Result
+  afterPolicy call settings (unavailable fault) = E.done (needsInput fault)
+  afterPolicy call settings (configured current) with does (Lists.≡-dec Fin._≟_
+    (Library.Contract.compactJSON library settings) (Library.Contract.compactJSON library current))
+  ... | false = E.done (needsInput changedPolicy)
+  ... | true = createPlan call settings
+
+  needsPolicy : Tools.Tool → Bool
+  needsPolicy Tools.sweepExpiredDefeated = true
+  needsPolicy _ = false
+
+  beforePlan : Call → Wire.Value → E.Script Result
+  beforePlan call settings with needsPolicy (Call.tool call)
+  ... | true = E.ask (currentSettings call) (afterPolicy call settings)
+  ... | false = createPlan call settings
+
+  resume : Call → Wire.Value → Read.Result → E.Script Result
+  resume call settings (Read.awaitingPlan _) = beforePlan call settings
+  resume call settings (Read.awaitingCompletion _) = beforePlan call settings
+  resume call settings (Read.pending _ _ _) = beforePlan call settings
+  resume call settings completedOutcome = E.done (returned completedOutcome)
+
+  readOutcome : Call → Wire.Value → E.Script Result
+  readOutcome call settings = E.ask (readResult call) (λ observed → resume call settings (Read.answer (Call.token call) observed))
+
+  afterBinding : Call → Wire.Value → ℤ × BindingResult → E.Script Result
+  afterBinding call settings (observedTime , bound _) = readOutcome call settings
+  afterBinding call settings (observedTime , changed _) = E.done (needsInput changedRequest)
+  afterBinding call settings (observedTime , unknown) = readOutcome call settings
+  afterBinding call settings (observedTime , cancelled _) = readOutcome call settings
+
+  bindRequest : Call → Wire.Value → E.Script Result
+  bindRequest call settings = E.ask (bindOriginal call settings) (afterBinding call settings)
+
+  afterSettings : Call → Settings → E.Script Result
+  afterSettings call (unavailable fault) = E.done (needsInput fault)
+  afterSettings call (configured settings) = bindRequest call settings
+
+  unbound : Call → Store.World → Read.Result → E.Script Result
+  unbound call observed Read.reserved = E.ask (currentSettings call) (afterSettings call)
+  unbound call observed outcome = E.done (returned outcome)
+
+  afterOriginal : Call → Store.World → E.Script Result
+  afterOriginal call observed with binding (Call.token call) observed
+  ... | just original = bindRequest call (Store.BindingRow.settings original)
+  ... | nothing = unbound call observed (Read.answer (Call.token call) observed)
+
+  start : Call → E.Script Result
+  start call = E.ask (readOriginal call) (afterOriginal call)
+
+  script : Request → E.Script Result
+  script requested with decode requested
+  ... | inj₁ fault = E.done (needsInput fault)
+  ... | inj₂ call = start call
+
+  effectCall : Effect → Call
+  effectCall (readOriginal call) = call
+  effectCall (currentSettings call) = call
+  effectCall (bindOriginal call _) = call
+  effectCall (readResult call) = call
+  effectCall (publishPlan call _) = call
+
+  atomicFrame : ∀ before effect reply after → Atomic before effect reply after → Frame (effectCall effect) before after
+  atomicFrame before (readOriginal call) observed after (same , unchanged) =
+    subst (Frame call before) (sym unchanged) (identityFrame call before)
+  atomicFrame before (currentSettings call) observed after unchanged =
+    subst (Frame call before) (sym unchanged) (identityFrame call before)
+  atomicFrame before (readResult call) observed after (same , unchanged) =
+    subst (Frame call before) (sym unchanged) (identityFrame call before)
+  atomicFrame before (bindOriginal call settings) (observedTime , reply) after (same , publication) =
+    DB.invariantPreserved (Frame call before) publication (identityFrame call before) (bindFrame call settings observedTime before)
+  atomicFrame before (publishPlan call settings) (encodedPlan , reply) after (same , publication) =
+    DB.invariantPreserved (Frame call before) publication (identityFrame call before) (planFrame call settings encodedPlan before)
+
+  data Scoped (call : Call) : E.Script Result → Set where
+    finished : ∀ result → Scoped call (E.done result)
+    asked : ∀ effect next → effectCall effect ≡ call →
+      (∀ observed → Scoped call (next observed)) → Scoped call (E.ask effect next)
+
+  afterPlanScoped : ∀ call reply → Scoped call (afterPlan call reply)
+  afterPlanScoped call (planned original model raw) = finished _
+  afterPlanScoped call (planRefused fault) = finished _
+  afterPlanScoped call (planCancelled receipt) = asked _ _ refl (λ _ → finished _)
+  afterPlanScoped call planUnknown = asked _ _ refl (λ _ → finished _)
+
+  createPlanScoped : ∀ call settings → Scoped call (createPlan call settings)
+  createPlanScoped call settings = asked _ _ refl (λ observed → afterPlanScoped call (proj₂ observed))
+
+  afterPolicyScoped : ∀ call settings observed → Scoped call (afterPolicy call settings observed)
+  afterPolicyScoped call settings (unavailable fault) = finished _
+  afterPolicyScoped call settings (configured current) with does (Lists.≡-dec Fin._≟_
+    (Library.Contract.compactJSON library settings) (Library.Contract.compactJSON library current))
+  ... | false = finished _
+  ... | true = createPlanScoped call settings
+
+  beforePlanScoped : ∀ call settings → Scoped call (beforePlan call settings)
+  beforePlanScoped call settings with needsPolicy (Call.tool call)
+  ... | true = asked _ _ refl (afterPolicyScoped call settings)
+  ... | false = createPlanScoped call settings
+
+  resumeScoped : ∀ call settings result → Scoped call (resume call settings result)
+  resumeScoped call settings (Read.awaitingPlan _) = beforePlanScoped call settings
+  resumeScoped call settings (Read.awaitingCompletion _) = beforePlanScoped call settings
+  resumeScoped call settings (Read.pending _ _ _) = beforePlanScoped call settings
+  resumeScoped call settings Read.unknownToken = finished _
+  resumeScoped call settings Read.reserved = finished _
+  resumeScoped call settings (Read.completed _ _) = finished _
+  resumeScoped call settings (Read.needsRecovery _) = finished _
+  resumeScoped call settings (Read.inconsistent _ _) = finished _
+  resumeScoped call settings (Read.cancelled _ _ _) = finished _
+
+  readOutcomeScoped : ∀ call settings → Scoped call (readOutcome call settings)
+  readOutcomeScoped call settings = asked _ _ refl (λ observed → resumeScoped call settings (Read.answer (Call.token call) observed))
+
+  afterBindingScoped : ∀ call settings observed → Scoped call (afterBinding call settings observed)
+  afterBindingScoped call settings (observedTime , bound _) = readOutcomeScoped call settings
+  afterBindingScoped call settings (observedTime , changed _) = finished _
+  afterBindingScoped call settings (observedTime , unknown) = readOutcomeScoped call settings
+  afterBindingScoped call settings (observedTime , cancelled _) = readOutcomeScoped call settings
+
+  bindRequestScoped : ∀ call settings → Scoped call (bindRequest call settings)
+  bindRequestScoped call settings = asked _ _ refl (afterBindingScoped call settings)
+
+  afterSettingsScoped : ∀ call observed → Scoped call (afterSettings call observed)
+  afterSettingsScoped call (unavailable fault) = finished _
+  afterSettingsScoped call (configured settings) = bindRequestScoped call settings
+
+  unboundScoped : ∀ call before outcome → Scoped call (unbound call before outcome)
+  unboundScoped call before Read.reserved = asked _ _ refl (afterSettingsScoped call)
+  unboundScoped call before Read.unknownToken = finished _
+  unboundScoped call before (Read.awaitingPlan _) = finished _
+  unboundScoped call before (Read.awaitingCompletion _) = finished _
+  unboundScoped call before (Read.pending _ _ _) = finished _
+  unboundScoped call before (Read.completed _ _) = finished _
+  unboundScoped call before (Read.needsRecovery _) = finished _
+  unboundScoped call before (Read.inconsistent _ _) = finished _
+  unboundScoped call before (Read.cancelled _ _ _) = finished _
+
+  afterOriginalScoped : ∀ call before → Scoped call (afterOriginal call before)
+  afterOriginalScoped call before with binding (Call.token call) before
+  ... | just original = bindRequestScoped call (Store.BindingRow.settings original)
+  ... | nothing = unboundScoped call before (Read.answer (Call.token call) before)
+
+  startScoped : ∀ call → Scoped call (start call)
+  startScoped call = asked _ _ refl (afterOriginalScoped call)
+
+  prefixFrame : ∀ call (program : E.Script Result) → Scoped call program →
+    ∀ before events residual after → E.Prefix program events residual → X.Changes before events after →
+    Frame call before after × Scoped call residual
+  prefixFrame call program owned before [] .program .before (E.stopped _) (X.unchanged _) = identityFrame call before , owned
+  prefixFrame call (E.ask effect next) (asked .effect .next same later) before _ residual after
+    (E.replied .effect .next observed prefix) (X.changed _ _ _ middle physical changes)
+    with prefixFrame call (next observed) (later observed) middle _ residual after prefix changes
+  ... | restFrame , residualScoped = composeFrame call before middle after
+    (subst (λ owner → Frame owner before middle) same (atomicFrame before effect observed middle physical)) restFrame , residualScoped
+
+  interruptedStartFrame : ∀ call before interrupted → X.Interrupted (start call) before interrupted → Frame call before interrupted
+  interruptedStartFrame call before interrupted (X.atPrefix events residual .interrupted prefix changes) =
+    proj₁ (prefixFrame call (start call) (startScoped call) before events residual interrupted prefix changes)
+  interruptedStartFrame call before interrupted
+    (X.beforeReply events effect next current observed .interrupted prefix changes physical)
+    with prefixFrame call (start call) (startScoped call) before events (E.ask effect next) current prefix changes
+  ... | earlier , asked .effect .next same later = composeFrame call before current interrupted earlier
+    (subst (λ owner → Frame owner current interrupted) same (atomicFrame current effect observed interrupted physical))
+
+  completedStartFrame : ∀ call before after reply → X.Completed (start call) before after reply → Frame call before after
+  completedStartFrame call before after reply completedRun = interruptedStartFrame call before after
+    (X.completedRunMayLoseFinalReply (start call) before after reply completedRun)
+
+  computedValid : ∀ call model → computedPlan call ≡ inj₂ model → P.valid library model ≡ true
+  computedValid call model accepted with P.lookup (Call.name call) P.registered
+  ... | nothing with accepted
+  ... | ()
+  computedValid call model accepted | just shape with P.rebuild library shape (selected (Call.request call))
+  ... | nothing with accepted
+  ... | ()
+  computedValid call model accepted | just shape | just steps with P.valid library (P.saved (Call.name call) shape steps nothing) in valid
+  ... | false with accepted
+  ... | ()
+  computedValid call model accepted | just shape | just steps | true with accepted
+  ... | refl = valid
+
+  headPlan : ∀ call raw before → plan (Call.token call) (putPlan (Call.token call) raw before) ≡ just raw
+  headPlan call raw before with Call.token call ≟ Call.token call
+  ... | yes _ = refl
+  ... | no different = ⊥-elim (different refl)
+
+  record ReadyMeaning (call : Call) (after : Store.World) (context : Context) : Set where
+    field actualCall : Context.call context ≡ call
+          boundRequest : binding (Call.token call) after ≡ just (Context.original context)
+          originalArguments : Σ Wire.Value (λ settings → matches call settings (Context.original context) ≡ true)
+          savedPlan : plan (Call.token call) after ≡ just (Context.raw context)
+          decodedPlan : P.decode (Context.raw context) ≡ inj₂ (Context.model context)
+          executable : P.valid library (Context.model context) ≡ true
+
+  data ReplyMeaning (call : Call) (after : Store.World) : Result → Set where
+    dialogue : ∀ fault → ReplyMeaning call after (needsInput fault)
+    originalReadback : ∀ outcome → Read.answer (Call.token call) after ≡ outcome → ReplyMeaning call after (returned outcome)
+    originalPlan : ∀ context → ReadyMeaning call after context → ReplyMeaning call after (ready context)
+
+  Goal : Request → Store.World → Store.World → Result → Set
+  Goal requested before after reply with decode requested
+  ... | inj₁ fault = after ≡ before × reply ≡ needsInput fault
+  ... | inj₂ call = Frame call before after × ReplyMeaning call after reply
+
+  existingReady : ∀ call settings before original raw returnedOriginal returnedModel returnedRaw →
+    binding (Call.token call) before ≡ just original → matches call settings original ≡ true →
+    plan (Call.token call) before ≡ just raw →
+    existingPlan original raw ≡ planned returnedOriginal returnedModel returnedRaw →
+    ReadyMeaning call before (preparedWrite call returnedOriginal returnedModel returnedRaw)
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored accepted
+    with P.decode raw in decoded
+  ... | inj₁ _ with accepted
+  ... | ()
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored accepted | inj₂ model
+    with P.textEqual (Store.BindingRow.operation original) (P.Saved.operation model)
+  ... | false with accepted
+  ... | ()
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored accepted | inj₂ model | true
+    with P.valid library model in valid
+  ... | false with accepted
+  ... | ()
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored accepted | inj₂ model | true | true
+    with accepted
+  ... | refl = record
+    { actualCall = refl; boundRequest = known; originalArguments = settings , matched
+    ; savedPlan = stored; decodedPlan = decoded; executable = valid }
+
+  newPlanReady : ∀ call settings original encoding before after returnedOriginal returnedModel returnedRaw →
+    binding (Call.token call) before ≡ just original → matches call settings original ≡ true →
+    (after , planned returnedOriginal returnedModel returnedRaw) ≡ saveNewPlan call original encoding before →
+    ReadyMeaning call after (preparedWrite call returnedOriginal returnedModel returnedRaw)
+  newPlanReady call settings original (encodingFailed fault) before after returnedOriginal returnedModel returnedRaw known matched ()
+  newPlanReady call settings original (encoded model computed raw decoded) before after returnedOriginal returnedModel returnedRaw known matched accepted
+    with accepted
+  ... | refl = record
+    { actualCall = refl; boundRequest = known; originalArguments = settings , matched
+    ; savedPlan = headPlan call raw before; decodedPlan = decoded; executable = computedValid call model computed }
+
+  prepareReady : ∀ call settings encoding before after original model raw →
+    (after , planned original model raw) ≡ prepare call settings encoding before →
+    ReadyMeaning call after (preparedWrite call original model raw)
+  prepareReady call settings encoding before after original model raw accepted
+    with binding (Call.token call) before in known
+  ... | nothing with accepted
+  ... | ()
+  prepareReady call settings encoding before after original model raw accepted | just boundRow
+    with matches call settings boundRow in matched
+  ... | false with accepted
+  ... | ()
+  prepareReady call settings encoding before after original model raw accepted | just boundRow | true
+    with Store.lookupCancellation before (Call.token call)
+  ... | just _ with accepted
+  ... | ()
+  prepareReady call settings encoding before after original model raw accepted | just boundRow | true | nothing
+    with plan (Call.token call) before in stored
+  ... | just old = subst (λ state → ReadyMeaning call state (preparedWrite call original model raw))
+    (sym (cong proj₁ accepted))
+    (existingReady call settings before boundRow old original model raw known matched stored (sym (cong proj₂ accepted)))
+  prepareReady call settings encoding before after original model raw accepted | just boundRow | true | nothing | nothing
+    with Read.savedRows (Call.token call) before
+  ... | _ ∷ _ with accepted
+  ... | ()
+  prepareReady call settings encoding before after original model raw accepted | just boundRow | true | nothing | nothing | [] =
+    newPlanReady call settings boundRow encoding before after original model raw known matched accepted
+
+  prepareAtomicReady : ∀ call settings encoding reply before after →
+    Atomic before (publishPlan call settings) (encoding , reply) after →
+    ∀ original model raw → reply ≡ planned original model raw →
+    ReadyMeaning call after (preparedWrite call original model raw)
+  prepareAtomicReady call settings encoding .(planned original model raw) before ._ (accepted , DB.committedAll)
+    original model raw refl = prepareReady call settings encoding before _ original model raw
+      (cong (λ result → proj₁ (prepare call settings encoding before) , result) accepted)
+
+  readbackCompletion : ∀ call before after reply →
+    X.Completed (E.ask (readResult call) (λ observed → E.done (returned (Read.answer (Call.token call) observed)))) before after reply →
+    ReplyMeaning call after reply
+  readbackCompletion call before .before .(returned (Read.answer (Call.token call) before))
+    (X.completed _ (E.replied _ _ .before (E.returned _))
+      (X.changed _ _ _ .before (refl , refl) (X.unchanged _))) = originalReadback _ refl
+
+  afterPlanMeaning : ∀ call planResult before after reply →
+    (∀ original model raw → planResult ≡ planned original model raw → ReadyMeaning call before (preparedWrite call original model raw)) →
+    X.Completed (afterPlan call planResult) before after reply → ReplyMeaning call after reply
+  afterPlanMeaning call (planned original model raw) before .before .(ready (preparedWrite call original model raw)) facts
+    (X.completed [] (E.returned _) (X.unchanged _)) = originalPlan _ (facts original model raw refl)
+  afterPlanMeaning call (planRefused fault) before .before .(needsInput fault) facts
+    (X.completed [] (E.returned _) (X.unchanged _)) = dialogue fault
+  afterPlanMeaning call (planCancelled receipt) before after reply facts completion = readbackCompletion call before after reply completion
+  afterPlanMeaning call planUnknown before after reply facts completion = readbackCompletion call before after reply completion
+
+  createPlanMeaning : ∀ call settings before after reply → X.Completed (createPlan call settings) before after reply → ReplyMeaning call after reply
+  createPlanMeaning call settings before after reply
+    (X.completed _ (E.replied _ _ (encoding , result) execution) (X.changed _ _ _ middle physical changes)) =
+    afterPlanMeaning call result middle after reply
+      (prepareAtomicReady call settings encoding result before middle physical) (X.completed _ execution changes)
+
+  afterPolicyMeaning : ∀ call settings observed before after reply →
+    X.Completed (afterPolicy call settings observed) before after reply → ReplyMeaning call after reply
+  afterPolicyMeaning call settings (unavailable fault) before .before .(needsInput fault)
+    (X.completed [] (E.returned _) (X.unchanged _)) = dialogue fault
+  afterPolicyMeaning call settings (configured current) before after reply completion with does (Lists.≡-dec Fin._≟_
+    (Library.Contract.compactJSON library settings) (Library.Contract.compactJSON library current))
+  ... | true = createPlanMeaning call settings before after reply completion
+  ... | false with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = dialogue changedPolicy
+
+  beforePlanMeaning : ∀ call settings before after reply →
+    X.Completed (beforePlan call settings) before after reply → ReplyMeaning call after reply
+  beforePlanMeaning call settings before after reply completion with needsPolicy (Call.tool call)
+  ... | false = createPlanMeaning call settings before after reply completion
+  ... | true with completion
+  ... | X.completed _ (E.replied _ _ observed execution) (X.changed _ _ _ .before refl changes) =
+    afterPolicyMeaning call settings observed before after reply (X.completed _ execution changes)
+
+  resumeMeaning : ∀ call settings before after reply →
+    X.Completed (resume call settings (Read.answer (Call.token call) before)) before after reply → ReplyMeaning call after reply
+  resumeMeaning call settings before after reply completion with Read.answer (Call.token call) before in observed
+  ... | Read.awaitingPlan _ = beforePlanMeaning call settings before after reply completion
+  ... | Read.awaitingCompletion _ = beforePlanMeaning call settings before after reply completion
+  ... | Read.pending _ _ _ = beforePlanMeaning call settings before after reply completion
+  ... | Read.unknownToken with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+  resumeMeaning call settings before after reply completion | Read.reserved with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+  resumeMeaning call settings before after reply completion | Read.completed _ _ with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+  resumeMeaning call settings before after reply completion | Read.cancelled _ _ _ with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+  resumeMeaning call settings before after reply completion | Read.needsRecovery _ with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+  resumeMeaning call settings before after reply completion | Read.inconsistent _ _ with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+
+  readOutcomeMeaning : ∀ call settings before after reply → X.Completed (readOutcome call settings) before after reply → ReplyMeaning call after reply
+  readOutcomeMeaning call settings before after reply
+    (X.completed _ (E.replied _ _ .before execution) (X.changed _ _ _ .before (refl , refl) changes)) =
+    resumeMeaning call settings before after reply (X.completed _ execution changes)
+
+  afterBindingMeaning : ∀ call settings observed before after reply →
+    X.Completed (afterBinding call settings observed) before after reply → ReplyMeaning call after reply
+  afterBindingMeaning call settings (observedTime , bound _) before after reply completion = readOutcomeMeaning call settings before after reply completion
+  afterBindingMeaning call settings (observedTime , unknown) before after reply completion = readOutcomeMeaning call settings before after reply completion
+  afterBindingMeaning call settings (observedTime , cancelled _) before after reply completion = readOutcomeMeaning call settings before after reply completion
+  afterBindingMeaning call settings (observedTime , changed _) before .before .(needsInput changedRequest)
+    (X.completed [] (E.returned _) (X.unchanged _)) = dialogue changedRequest
+
+  bindRequestMeaning : ∀ call settings before after reply → X.Completed (bindRequest call settings) before after reply → ReplyMeaning call after reply
+  bindRequestMeaning call settings before after reply
+    (X.completed _ (E.replied _ _ observed execution) (X.changed _ _ _ middle physical changes)) =
+    afterBindingMeaning call settings observed middle after reply (X.completed _ execution changes)
+
+  afterSettingsMeaning : ∀ call observed before after reply →
+    X.Completed (afterSettings call observed) before after reply → ReplyMeaning call after reply
+  afterSettingsMeaning call (configured settings) before after reply completion = bindRequestMeaning call settings before after reply completion
+  afterSettingsMeaning call (unavailable fault) before .before .(needsInput fault)
+    (X.completed [] (E.returned _) (X.unchanged _)) = dialogue fault
+
+  unboundMeaning : ∀ call before after reply →
+    X.Completed (unbound call before (Read.answer (Call.token call) before)) before after reply → ReplyMeaning call after reply
+  unboundMeaning call before after reply completion with Read.answer (Call.token call) before in observed
+  ... | Read.reserved with completion
+  ... | X.completed _ (E.replied _ _ settings execution) (X.changed _ _ _ .before refl changes) =
+    afterSettingsMeaning call settings before after reply (X.completed _ execution changes)
+  unboundMeaning call before after reply completion | Read.unknownToken with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+  unboundMeaning call before after reply completion | Read.awaitingPlan _ with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+  unboundMeaning call before after reply completion | Read.awaitingCompletion _ with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+  unboundMeaning call before after reply completion | Read.pending _ _ _ with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+  unboundMeaning call before after reply completion | Read.completed _ _ with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+  unboundMeaning call before after reply completion | Read.cancelled _ _ _ with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+  unboundMeaning call before after reply completion | Read.needsRecovery _ with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+  unboundMeaning call before after reply completion | Read.inconsistent _ _ with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = originalReadback _ observed
+
+  afterOriginalMeaning : ∀ call before after reply →
+    X.Completed (afterOriginal call before) before after reply → ReplyMeaning call after reply
+  afterOriginalMeaning call before after reply completion with binding (Call.token call) before
+  ... | just original = bindRequestMeaning call (Store.BindingRow.settings original) before after reply completion
+  ... | nothing = unboundMeaning call before after reply completion
+
+  completedMeaning : ∀ call before after reply → X.Completed (start call) before after reply → ReplyMeaning call after reply
+  completedMeaning call before after reply
+    (X.completed _ (E.replied _ _ .before execution) (X.changed _ _ _ .before (refl , refl) changes)) =
+    afterOriginalMeaning call before after reply (X.completed _ execution changes)
+
+  doneInterruptedSameWorld : ∀ (result : Result) before after → X.Interrupted (E.done result) before after → after ≡ before
+  doneInterruptedSameWorld result before .before (X.atPrefix [] _ _ (E.stopped _) (X.unchanged _)) = refl
+  doneInterruptedSameWorld result before after (X.beforeReply _ _ _ _ _ _ () _ _)
+
+  completedGoal : ∀ requested before after reply → X.Completed (script requested) before after reply → Goal requested before after reply
+  completedGoal requested before after reply completion with decode requested
+  ... | inj₁ fault with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) = refl , refl
+  completedGoal requested before after reply completion | inj₂ call =
+    completedStartFrame call before after reply completion , completedMeaning call before after reply completion
+
+  converges : ∀ requested before interrupted after reply → X.Interrupted (script requested) before interrupted →
+    X.Completed (script requested) interrupted after reply → Goal requested before after reply
+  converges requested before interrupted after reply interruption completion with decode requested
+  ... | inj₁ fault with completion
+  ... | X.completed [] (E.returned _) (X.unchanged _) =
+    doneInterruptedSameWorld (needsInput fault) before interrupted interruption , refl
+  converges requested before interrupted after reply interruption completion | inj₂ call =
+    composeFrame call before interrupted after (interruptedStartFrame call before interrupted interruption)
+      (completedStartFrame call interrupted after reply completion) , completedMeaning call interrupted after reply completion
+
+  bindingSamePhysical : ∀ (before : Store.World) reply → DB.Atomic before before (bindingReceipt reply) before
+  bindingSamePhysical before (bound _) = DB.committedAll
+  bindingSamePhysical before (changed _) = DB.committedAll
+  bindingSamePhysical before unknown = DB.abortedNone
+  bindingSamePhysical before (cancelled _) = DB.abortedNone
+  planSamePhysical : ∀ (before : Store.World) reply → DB.Atomic before before (planReceipt reply) before
+  planSamePhysical before (planned _ _ _) = DB.committedAll
+  planSamePhysical before (planRefused _) = DB.abortedNone
+  planSamePhysical before (planCancelled _) = DB.abortedNone
+  planSamePhysical before planUnknown = DB.abortedNone
+
+  bindPhysical : ∀ call settings observedTime before → DB.Atomic before
+    (proj₁ (bind call settings observedTime before)) (bindingReceipt (proj₂ (bind call settings observedTime before)))
+    (proj₁ (bind call settings observedTime before))
+  bindPhysical call settings observedTime before with Controls.reservation (Call.token call) before
+  ... | nothing = DB.abortedNone
+  ... | just _ with Store.lookupCancellation before (Call.token call)
+  ... | just _ = DB.abortedNone
+  ... | nothing with binding (Call.token call) before
+  ... | nothing = DB.committedAll
+  ... | just original with matches call settings original
+  ... | false = DB.committedAll
+  ... | true = DB.committedAll
+
+  preparePhysical : ∀ call settings encoding before → DB.Atomic before
+    (proj₁ (prepare call settings encoding before)) (planReceipt (proj₂ (prepare call settings encoding before)))
+    (proj₁ (prepare call settings encoding before))
+  preparePhysical call settings encoding before with binding (Call.token call) before
+  ... | nothing = DB.abortedNone
+  ... | just original with matches call settings original
+  ... | false = DB.abortedNone
+  ... | true with Store.lookupCancellation before (Call.token call)
+  ... | just _ = DB.abortedNone
+  ... | nothing with plan (Call.token call) before
+  ... | just raw = planSamePhysical before (existingPlan original raw)
+  ... | nothing with Read.savedRows (Call.token call) before
+  ... | _ ∷ _ = DB.abortedNone
+  ... | [] with encoding
+  ... | encodingFailed _ = DB.abortedNone
+  ... | encoded model computed raw decoded = DB.committedAll
+
+  -- These are only witnesses of available host/PG/library replies. They do
+  -- not choose a goal, World, script, plan or client request. Atomic above
+  -- accepts every actual reply, including different observations on retry.
+  record Environment : Set where
+    field settings : Call → Store.World → Settings
+          bindingTime : Call → Store.World → ℤ
+          encodePlan : ∀ call → Store.World → PlanEncoding call
+
+  doneProgress : ∀ result before → Σ Store.World (λ after → Σ Result (λ reply → X.Completed (E.done result) before after reply))
+  doneProgress result before = before , result , X.completed [] (E.returned _) (X.unchanged _)
+
+  readbackProgress : ∀ call before → Σ Store.World (λ after → Σ Result (λ reply →
+    X.Completed (E.ask (readResult call) (λ observed → E.done (returned (Read.answer (Call.token call) observed)))) before after reply))
+  readbackProgress call before = before , returned (Read.answer (Call.token call) before) , X.completed
+    ((readResult call , before) ∷ []) (E.replied _ _ before (E.returned _))
+    (X.changed before _ before before (refl , refl) (X.unchanged before))
+
+  afterPlanProgress : ∀ call result before → Σ Store.World (λ after → Σ Result (λ reply → X.Completed (afterPlan call result) before after reply))
+  afterPlanProgress call (planned original model raw) before = doneProgress _ before
+  afterPlanProgress call (planRefused fault) before = doneProgress _ before
+  afterPlanProgress call (planCancelled receipt) before = readbackProgress call before
+  afterPlanProgress call planUnknown before = readbackProgress call before
+
+  createPlanProgress : Environment → ∀ call settings before → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (createPlan call settings) before after reply))
+  createPlanProgress environment call settings before
+    with afterPlanProgress call
+      (proj₂ (prepare call settings (Environment.encodePlan environment call before) before))
+      (proj₁ (prepare call settings (Environment.encodePlan environment call before) before))
+  ... | after , reply , X.completed events execution changes = after , reply , X.completed
+    ((publishPlan call settings , encoding , proj₂ expected) ∷ events) (E.replied _ _ _ execution)
+    (X.changed before _ _ _ (refl , preparePhysical call settings encoding before) changes)
+    where encoding = Environment.encodePlan environment call before
+          expected = prepare call settings encoding before
+
+  afterPolicyProgress : Environment → ∀ call settings observed before → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (afterPolicy call settings observed) before after reply))
+  afterPolicyProgress environment call settings (unavailable fault) before = doneProgress _ before
+  afterPolicyProgress environment call settings (configured current) before with does (Lists.≡-dec Fin._≟_
+    (Library.Contract.compactJSON library settings) (Library.Contract.compactJSON library current))
+  ... | false = doneProgress _ before
+  ... | true = createPlanProgress environment call settings before
+
+  beforePlanProgress : Environment → ∀ call settings before → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (beforePlan call settings) before after reply))
+  beforePlanProgress environment call settings before with needsPolicy (Call.tool call)
+  ... | false = createPlanProgress environment call settings before
+  ... | true with afterPolicyProgress environment call settings (Environment.settings environment call before) before
+  ... | after , reply , X.completed events execution changes = after , reply , X.completed
+    ((currentSettings call , Environment.settings environment call before) ∷ events) (E.replied _ _ _ execution)
+    (X.changed before _ _ before refl changes)
+
+  resumeProgress : Environment → ∀ call settings outcome before → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (resume call settings outcome) before after reply))
+  resumeProgress environment call settings (Read.awaitingPlan _) before = beforePlanProgress environment call settings before
+  resumeProgress environment call settings (Read.awaitingCompletion _) before = beforePlanProgress environment call settings before
+  resumeProgress environment call settings (Read.pending _ _ _) before = beforePlanProgress environment call settings before
+  resumeProgress environment call settings Read.unknownToken before = doneProgress _ before
+  resumeProgress environment call settings Read.reserved before = doneProgress _ before
+  resumeProgress environment call settings (Read.completed _ _) before = doneProgress _ before
+  resumeProgress environment call settings (Read.cancelled _ _ _) before = doneProgress _ before
+  resumeProgress environment call settings (Read.needsRecovery _) before = doneProgress _ before
+  resumeProgress environment call settings (Read.inconsistent _ _) before = doneProgress _ before
+
+  readOutcomeProgress : Environment → ∀ call settings before → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (readOutcome call settings) before after reply))
+  readOutcomeProgress environment call settings before with resumeProgress environment call settings (Read.answer (Call.token call) before) before
+  ... | after , reply , X.completed events execution changes = after , reply , X.completed
+    ((readResult call , before) ∷ events) (E.replied _ _ before execution)
+    (X.changed before _ before before (refl , refl) changes)
+
+  afterBindingProgress : Environment → ∀ call settings observed before → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (afterBinding call settings observed) before after reply))
+  afterBindingProgress environment call settings (observedTime , bound _) before = readOutcomeProgress environment call settings before
+  afterBindingProgress environment call settings (observedTime , unknown) before = readOutcomeProgress environment call settings before
+  afterBindingProgress environment call settings (observedTime , cancelled _) before = readOutcomeProgress environment call settings before
+  afterBindingProgress environment call settings (observedTime , changed _) before = doneProgress _ before
+
+  bindRequestProgress : Environment → ∀ call settings before → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (bindRequest call settings) before after reply))
+  bindRequestProgress environment call settings before
+    with afterBindingProgress environment call settings
+      (Environment.bindingTime environment call before , proj₂ (bind call settings (Environment.bindingTime environment call before) before))
+      (proj₁ (bind call settings (Environment.bindingTime environment call before) before))
+  ... | after , reply , X.completed events execution changes = after , reply , X.completed
+    ((bindOriginal call settings , observedTime , proj₂ expected) ∷ events) (E.replied _ _ _ execution)
+    (X.changed before _ _ _ (refl , bindPhysical call settings observedTime before) changes)
+    where observedTime = Environment.bindingTime environment call before
+          expected = bind call settings observedTime before
+
+  afterSettingsProgress : Environment → ∀ call observed before → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (afterSettings call observed) before after reply))
+  afterSettingsProgress environment call (unavailable fault) before = doneProgress _ before
+  afterSettingsProgress environment call (configured settings) before = bindRequestProgress environment call settings before
+
+  unboundProgress : Environment → ∀ call before outcome → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (unbound call before outcome) before after reply))
+  unboundProgress environment call before Read.reserved with afterSettingsProgress environment call (Environment.settings environment call before) before
+  ... | after , reply , X.completed events execution changes = after , reply , X.completed
+    ((currentSettings call , Environment.settings environment call before) ∷ events) (E.replied _ _ _ execution)
+    (X.changed before _ _ before refl changes)
+  unboundProgress environment call before Read.unknownToken = doneProgress _ before
+  unboundProgress environment call before (Read.awaitingPlan _) = doneProgress _ before
+  unboundProgress environment call before (Read.awaitingCompletion _) = doneProgress _ before
+  unboundProgress environment call before (Read.pending _ _ _) = doneProgress _ before
+  unboundProgress environment call before (Read.completed _ _) = doneProgress _ before
+  unboundProgress environment call before (Read.cancelled _ _ _) = doneProgress _ before
+  unboundProgress environment call before (Read.needsRecovery _) = doneProgress _ before
+  unboundProgress environment call before (Read.inconsistent _ _) = doneProgress _ before
+
+  afterOriginalProgress : Environment → ∀ call before → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (afterOriginal call before) before after reply))
+  afterOriginalProgress environment call before with binding (Call.token call) before
+  ... | just original = bindRequestProgress environment call (Store.BindingRow.settings original) before
+  ... | nothing = unboundProgress environment call before (Read.answer (Call.token call) before)
+
+  startProgress : Environment → ∀ call before → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (start call) before after reply))
+  startProgress environment call before with afterOriginalProgress environment call before
+  ... | after , reply , X.completed events execution changes = after , reply , X.completed
+    ((readOriginal call , before) ∷ events) (E.replied _ _ before execution)
+    (X.changed before _ before before (refl , refl) changes)
+
+  progress : Environment → ∀ requested before → Σ Store.World (λ after → Σ Result
+    (λ reply → X.Completed (script requested) before after reply))
+  progress environment requested before with decode requested
+  ... | inj₁ fault = doneProgress _ before
+  ... | inj₂ call = startProgress environment call before
+
+  operation : Environment → Recovery.RecoverableFor Store.World Request Result Goal
+  operation environment = record
+    { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic
+    ; converges = converges; progress = progress environment }
