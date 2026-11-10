@@ -12,10 +12,12 @@ import Data.Integer.Properties as Integer
 open import Data.List using (List; []; _∷_; map)
 import Data.List.Properties as Lists
 open import Data.Maybe using (Maybe; just; nothing)
+import Data.Maybe.Properties as Maybes
 open import Data.Nat using (ℕ; _≟_)
 open import Data.Product using (_×_; _,_; Σ; proj₁; proj₂)
 open import Data.String using (toList)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
+import Data.Sum.Properties as Sum
 open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (does; ¬_; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; trans; subst; sym)
@@ -1418,3 +1420,98 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   operation environment = record
     { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic
     ; converges = converges; progress = progress environment }
+
+  bindingPresentStopsGrowth : ∀ call first final original →
+    Project.Registered.binding (Call.token call) first ≡ just original → BindingsGrew call first final → final ≡ first
+  bindingPresentStopsGrowth call first .first original known sameBindings = refl
+  bindingPresentStopsGrowth call first _ original known (firstBinding settings observedTime current absent earlier)
+    with bindingPresentStopsGrowth call first current original known earlier
+  ... | refl with trans (sym absent) known
+  ... | ()
+
+  planPresentStopsGrowth : ∀ call first final raw →
+    Project.Registered.plan (Call.token call) first ≡ just raw → PlansGrew call first final → final ≡ first
+  planPresentStopsGrowth call first .first raw known samePlans = refl
+  planPresentStopsGrowth call first _ raw known (firstPlan model value current computed decoded absent earlier)
+    with planPresentStopsGrowth call first current raw known earlier
+  ... | refl with trans (sym absent) known
+  ... | ()
+
+  restore : Store.World → Bindings → List Store.PlanRow → Store.World
+  restore current originalBindings originalPlans = record current
+    { operations = record (tables current) { bindings = originalBindings; plans = originalPlans } }
+
+  restoreProtected : ∀ current → restore (protected current) (bindings current) (Store.OperationTables.plans (tables current)) ≡ current
+  restoreProtected current = refl
+
+  existingFrameUnchanged : ∀ call before after original raw →
+    binding (Call.token call) before ≡ just original → plan (Call.token call) before ≡ just raw →
+    Frame call before after → after ≡ before
+  existingFrameUnchanged call before after original raw knownBinding knownPlan frame = trans
+    (sym (restoreProtected after))
+    (trans (cong (λ state → restore state (bindings after) (Store.OperationTables.plans (tables after))) (Frame.business frame))
+    (trans (cong (λ rows → restore (protected before) rows (Store.OperationTables.plans (tables after))) bindingsUnchanged)
+    (trans (cong (restore (protected before) (bindings before)) plansUnchanged) (restoreProtected before))))
+    where
+    bindingsUnchanged = bindingPresentStopsGrowth call (bindings before) (bindings after) original knownBinding (Frame.bindingExtension frame)
+    plansUnchanged = planPresentStopsGrowth call (Store.OperationTables.plans (tables before)) (Store.OperationTables.plans (tables after))
+      raw knownPlan (Frame.planExtension frame)
+
+  completedExistingUnchanged : ∀ call before after result original raw →
+    binding (Call.token call) before ≡ just original → plan (Call.token call) before ≡ just raw →
+    X.Completed (start call) before after result → after ≡ before
+  completedExistingUnchanged call before after result original raw knownBinding knownPlan completion =
+    existingFrameUnchanged call before after original raw knownBinding knownPlan (completedStartFrame call before after result completion)
+
+  transportReady : ∀ call before after context →
+    binding (Call.token call) after ≡ binding (Call.token call) before →
+    plan (Call.token call) after ≡ plan (Call.token call) before →
+    ReadyMeaning call before context → ReadyMeaning call after context
+  transportReady call before after context sameBinding samePlan earlier = record
+    { actualCall = ReadyMeaning.actualCall earlier
+    ; boundRequest = trans sameBinding (ReadyMeaning.boundRequest earlier)
+    ; originalArguments = ReadyMeaning.originalArguments earlier
+    ; savedPlan = trans samePlan (ReadyMeaning.savedPlan earlier)
+    ; decodedPlan = ReadyMeaning.decodedPlan earlier; executable = ReadyMeaning.executable earlier }
+
+  contextSame : ∀ first second → Context.call first ≡ Context.call second →
+    Context.original first ≡ Context.original second → Context.model first ≡ Context.model second →
+    Context.raw first ≡ Context.raw second → first ≡ second
+  contextSame (preparedWrite call original model raw) (preparedWrite .call .original .model .raw) refl refl refl refl = refl
+
+  readyContextUnique : ∀ call current first second → ReadyMeaning call current first → ReadyMeaning call current second → first ≡ second
+  readyContextUnique call current first second earlier later = contextSame first second
+    (trans (ReadyMeaning.actualCall earlier) (sym (ReadyMeaning.actualCall later)))
+    (Maybes.just-injective (trans (sym (ReadyMeaning.boundRequest earlier)) (ReadyMeaning.boundRequest later)))
+    (Sum.inj₂-injective (trans (sym (ReadyMeaning.decodedPlan earlier))
+      (trans (cong P.decode sameRaw) (ReadyMeaning.decodedPlan later)))) sameRaw
+    where sameRaw = Maybes.just-injective (trans (sym (ReadyMeaning.savedPlan earlier)) (ReadyMeaning.savedPlan later))
+
+  decodedScript : ∀ requested call → decode requested ≡ inj₂ call → script requested ≡ start call
+  decodedScript requested call decoded rewrite decoded = refl
+
+  completedReady : ∀ requested before after context → X.Completed (script requested) before after (ready context) →
+    Σ Call (λ call → decode requested ≡ inj₂ call × ReadyMeaning call after context)
+  completedReady requested before after context completion with decode requested in decoded
+  ... | inj₁ _ with completion
+  ... | X.completed [] () _
+  completedReady requested before after context completion | inj₂ call
+    with completedMeaning call before after (ready context) completion
+  ... | originalPlan .context facts = call , refl , facts
+
+  completedDecodedExistingUnchanged : ∀ requested call before after result original raw → decode requested ≡ inj₂ call →
+    binding (Call.token call) before ≡ just original → plan (Call.token call) before ≡ just raw →
+    X.Completed (script requested) before after result → after ≡ before
+  completedDecodedExistingUnchanged requested call before after result original raw decoded knownBinding knownPlan completion =
+    completedExistingUnchanged call before after result original raw knownBinding knownPlan
+      (subst (λ program → X.Completed program before after result) (decodedScript requested call decoded) completion)
+
+  readyRetrySameContext : ∀ requested call before after first second → decode requested ≡ inj₂ call →
+    ReadyMeaning call before first → X.Completed (script requested) before after (ready second) → after ≡ before × second ≡ first
+  readyRetrySameContext requested call before after first second decoded earlier completion
+    with completedMeaning call before after (ready second)
+      (subst (λ program → X.Completed program before after (ready second)) (decodedScript requested call decoded) completion)
+  ... | originalPlan .second later = sameWorld , sym (readyContextUnique call before first second earlier
+    (subst (λ state → ReadyMeaning call state second) sameWorld later))
+    where sameWorld = completedDecodedExistingUnchanged requested call before after (ready second)
+            (Context.original first) (Context.raw first) decoded (ReadyMeaning.boundRequest earlier) (ReadyMeaning.savedPlan earlier) completion
