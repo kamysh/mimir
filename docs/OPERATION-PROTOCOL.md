@@ -24,6 +24,18 @@ changed prerequisite can still need a user decision. Keep the bound request;
 do not replace its arguments, silently choose another model or invent a new
 action to bypass the problem.
 
+For `record_support`, `record_cause` or `record_contradiction`, a missing stored
+endpoint is a correction after binding, rather than permission to replace an
+ID under that token. The response keeps the missing endpoint's field and error,
+and shows both original endpoint values. Read `operation_outcome` with the
+original token, then inspect the intended beliefs. Retry the exact original
+arguments only after resolving their missing prerequisite. If an endpoint was
+wrong, explain it to the user and ask before cancelling unfinished work and
+reserving a deliberately separate corrected request. Mimir does neither
+automatically. This correction certifies no relationship publication after
+confirmed rollback; an unconfirmed rollback remains an uncertainty error with
+outcome-readback instructions.
+
 Call `operation_outcome` with the token to inspect its saved state:
 
 | Status | Meaning |
