@@ -214,6 +214,7 @@ module Registered (format : Encoding.Formatting) (conversion : Conversion.Contra
   completedObservation = Run.completedObservation
   interruptionState = Run.interruptionState
   interruptedKeepsRegistration = Run.interruptedKeepsRegistration
+  interruptedKeepsCancellation = Run.interruptedKeepsCancellation
   progress = Run.progress
   everyDatabaseReceiptCovered = Run.everyDatabaseReceiptCovered
   module X = Run.X
