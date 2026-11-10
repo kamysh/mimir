@@ -115,7 +115,8 @@ enum Command {
     ///
     /// With no arguments: writes a commented template to
     /// ~/.config/mimir/config.toml (or $XDG_CONFIG_HOME/mimir/config.toml) and
-    /// opens it in $EDITOR. With KEY=VALUE arguments: writes a config built
+    /// opens the existing config (or creates a template) in $EDITOR.
+    /// With KEY=VALUE arguments: writes a config built
     /// from those overrides non-interactively (no $EDITOR). Recognised keys:
     /// host, port, dbname, user, password, pgpassfile, ssl_mode, ssl_root_cert, ssl_client_cert,
     /// ssl_client_key, backend, model, api_key, cache_dir.
@@ -502,8 +503,16 @@ async fn connect() -> Result<MimirService> {
 
 fn cmd_init(pairs: Vec<(String, String)>) -> Result<()> {
     if pairs.is_empty() {
-        let path = Config::create_template()?;
-        println!("Created: {}", path.display());
+        let path = match Config::create_template()? {
+            mimir_core::config::TemplatePreparation::Created(path) => {
+                println!("Created: {}", path.display());
+                path
+            }
+            mimir_core::config::TemplatePreparation::Existing(path) => {
+                println!("Opening existing configuration: {}", path.display());
+                path
+            }
+        };
         println!("Opening in $EDITOR… (save and close to finish)");
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
         std::process::Command::new(&editor).arg(&path).status()?;

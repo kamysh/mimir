@@ -22,8 +22,11 @@ a partial configuration at the selected path. An interrupted publication can lea
 the complete file there; repeating the request reads it back. A directory-sync
 failure reports uncertain durability rather than claiming the target was unchanged.
 
-Bare `mimir init` creates a new template and opens the editor. It still refuses
-an existing path. Use the `KEY=VALUE` form for agent setup.
+Bare `mimir init` opens the selected configuration in the editor, creating a
+template first when the file is absent. Existing bytes stay untouched until
+the user's editor changes them. Retrying after template publication therefore
+reaches the editor instead of refusing the file. Use the `KEY=VALUE` form for
+agent setup.
 
 `Mimir.ConfigurationIO.Publication.Run.completedRetryConverges` checks the file
 publication goal using the shared interruption relation, including a lost reply.

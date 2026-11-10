@@ -385,6 +385,14 @@ pub enum ConfigCreation {
     AlreadyConfigured(std::path::PathBuf),
 }
 
+/// Interactive initialization preserves an existing file for the user's editor.
+/// Its contents need not already be valid: editing can be how the user repairs it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TemplatePreparation {
+    Created(std::path::PathBuf),
+    Existing(std::path::PathBuf),
+}
+
 fn matching_existing_config(
     path: &std::path::Path,
     pairs: &[(String, String)],
@@ -481,16 +489,30 @@ impl Config {
         Ok((config, operations))
     }
 
-    /// Write a template config at the default path and return the path.
-    /// Fails if the file already exists.
-    pub fn create_template() -> anyhow::Result<std::path::PathBuf> {
+    /// Prepare a template or preserve the existing file for interactive editing.
+    pub fn create_template() -> anyhow::Result<TemplatePreparation> {
         let path = Self::config_path();
-        if path.exists() {
-            anyhow::bail!("config already exists at {}", path.display());
+        if std::fs::symlink_metadata(&path).is_ok() {
+            anyhow::ensure!(
+                std::fs::metadata(&path).is_ok_and(|value| value.is_file()),
+                "The configuration path {} does not name an existing file. No file was changed. Choose a configuration file path before opening the editor.",
+                path.display()
+            );
+            return Ok(TemplatePreparation::Existing(path));
         }
         let content = crate::operations::Operations::defaults()?.header()? + CONFIG_TEMPLATE;
-        write_private_config(&path, &content)?;
-        Ok(path)
+        match write_private_config(&path, &content) {
+            Ok(()) => Ok(TemplatePreparation::Created(path)),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|value| value.kind() == std::io::ErrorKind::AlreadyExists)
+                    && std::fs::metadata(&path).is_ok_and(|value| value.is_file()) =>
+            {
+                Ok(TemplatePreparation::Existing(path))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Build a config non-interactively from `KEY=VALUE` overrides on top of
