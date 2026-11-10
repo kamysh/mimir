@@ -29,6 +29,7 @@ import Mimir.StandardLibrary as Conversion
 import Mimir.McpErrors as Errors
 import Mimir.GraphMutationProtocol as Mutation
 import Mimir.ApplicationStore as Store
+import Mimir.ApplicationHost as Host
 module Correction = Errors.AgentCorrection
 
 all : List T.Tool
@@ -55,11 +56,13 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   (conversion : Conversion.Contract) where
   module A = Application.Run environment using (Result; Event; Runs; start)
   module P = Output.Project environment format using
-    (project; success; failure; decision; boundReferenceDecision; partialDecision; partialValue; boundReferenceReport)
+    (Projection; project; success; failure; decision; boundReferenceDecision; partialDecision; partialValue; boundReferenceReport; globallyStoppedReadback)
   module D = Request.Decode (Application.Environment.library environment) using (readInvocation)
+  module Physical = Host.Run environment
 
   data Diagnostic : Set where
     operationFailed : A.Result → Diagnostic
+    physicalCleanupPending : Envelope.Text → A.Result → Store.World → Diagnostic
 
   data Result : Set where
     failure : Diagnostic → Result
@@ -82,54 +85,92 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
       (toList "The advertised required fields, field types and accepted alternatives.")
       (toList "Correct the indicated field using the tool schema and task context. If its value is unknown, ask the user; do not invent a default.")) []
 
+  finishProjection : A.Result → P.Projection → Result
+  finishProjection original (P.success value) = completed value
+  finishProjection original (P.failure cause) = failure (operationFailed cause)
+  finishProjection original (P.decision report) = preparationDecision original report
+  finishProjection original (P.boundReferenceDecision binding detail) = boundReferenceDecision original binding detail
+  finishProjection original (P.partialDecision edge report) = partialDecision original edge report
+
   finish : A.Result → Result
-  finish result with P.project result
-  ... | P.success value = completed value
-  ... | P.failure cause = failure (operationFailed cause)
-  ... | P.decision report = preparationDecision result report
-  ... | P.boundReferenceDecision binding detail = boundReferenceDecision result binding detail
-  ... | P.partialDecision edge report = partialDecision result edge report
+  finish result = finishProjection result (P.project result)
+
+  exitProjection : ∀ {selected before entered final}
+    (entry : Physical.Entry selected before entered) (original : A.Result) →
+    Physical.Exit entry (Physical.A.reached original) final → P.Projection
+  exitProjection (Physical.ordinaryEntry before) original (Physical.ordinaryExit .before _) = P.project original
+  exitProjection (Physical.fenced token before fence) original (Physical.fencedExit .token .before .fence _) = P.project original
+  exitProjection (Physical.unknown token before absent) original (Physical.unknownExit .token .before .absent _) = P.project original
+  exitProjection (Physical.started token row before entered same pending registered) original
+    (Physical.acknowledged .token .row .before .entered .same .pending .registered _ ownedWorkers receipt timestamp) = P.project original
+  exitProjection (Physical.cancelEntry token before) original
+    (Physical.cancelExit .token .before _ final (Physical.unfenced noFinal noCancellation)) = P.project original
+  exitProjection (Physical.cancelEntry token before) original
+    (Physical.cancelExit .token .before _ final (Physical.allCopiesStopped receipt)) =
+      P.globallyStoppedReadback original token receipt
+
+  hostProjection : ∀ {tool raw events} → Physical.Execution tool raw events → P.Projection
+  hostProjection execution = exitProjection (Physical.Execution.entry execution)
+    (Physical.Execution.databaseResult execution) (Physical.Execution.exited execution)
+
+  finishHosted : ∀ {tool raw events} → Physical.Result tool raw events → Result
+  finishHosted (Physical.returned execution) = finishProjection
+    (Physical.Execution.databaseResult execution) (hostProjection execution)
+  finishHosted (Physical.cleanupPending initial entered entry databaseResult ran final pending) =
+    failure (physicalCleanupPending (Physical.pendingReason pending) databaseResult final)
 
   data Handled (name : Envelope.Text) (raw : V.Value) : List A.Event → Result → Set where
     unknown : lookup name ≡ nothing → Handled name raw [] (inputCorrection (unknownTool name))
     invalid : ∀ tool fault → lookup name ≡ just tool → D.readInvocation tool raw ≡ inj₁ fault →
       Handled name raw [] (inputCorrection (invalidArguments fault))
-    executed : ∀ tool initial events result → lookup name ≡ just tool →
-      A.Runs (A.start tool raw initial) events result → Handled name raw events (finish result)
+    executed : ∀ tool events (hosted : Physical.Result tool raw events) → lookup name ≡ just tool →
+      Handled name raw events (finishHosted hosted)
+
+  -- Native handleTool futures own their registration while still pending.
+  -- The transport derives shutdown rows from these actual started entries.
+  record InFlight (name : Envelope.Text) (raw : V.Value) : Set where
+    field
+      tool : T.Tool
+      named : lookup name ≡ just tool
+      active : Physical.Active tool raw
+    owned : List Store.ExecutionRow
+    owned = Physical.Active.owned active
 
   record Operation (name : Envelope.Text) (raw : V.Value) (events : List A.Event) (value : V.Value) : Set where
     constructor operation
     field
       tool : T.Tool
-      initial : Store.World
-      result : A.Result
+      hosted : Physical.Execution tool raw events
       named : lookup name ≡ just tool
-      execution : A.Runs (A.start tool raw initial) events result
-      projected : finish result ≡ completed value
+      projected : finishHosted (Physical.returned hosted) ≡ completed value
 
   successWitness : ∀ name raw events reply value → Handled name raw events reply →
     reply ≡ completed value → Operation name raw events value
-  successWitness name raw events reply value (executed tool initial events₁ result named ran) same =
-    operation tool initial result named ran same
+  successWitness name raw events reply value (executed tool events₁ (Physical.returned hosted) named) same =
+    operation tool hosted named same
+  successWitness name raw events reply value
+    (executed tool events₁ (Physical.cleanupPending initial entered entry databaseResult ran final pending) named) ()
 
   successRequiresOperation : ∀ name raw events value → Handled name raw events (completed value) →
     Operation name raw events value
   successRequiresOperation name raw events value proof = successWitness name raw events (completed value) value proof refl
 
-  completionCannotRequestCorrection : ∀ result report → finish result ≡ inputCorrection report → Data.Empty.⊥
-  completionCannotRequestCorrection result report with P.project result
-  ... | P.success value = λ ()
-  ... | P.failure cause = λ ()
-  ... | P.decision report₁ = λ ()
-  ... | P.boundReferenceDecision binding detail = λ ()
-  ... | P.partialDecision edge report₁ = λ ()
+  projectionCannotRequestCorrection : ∀ result projection report →
+    finishProjection result projection ≡ inputCorrection report → Data.Empty.⊥
+  projectionCannotRequestCorrection result (P.success value) report = λ ()
+  projectionCannotRequestCorrection result (P.failure cause) report = λ ()
+  projectionCannotRequestCorrection result (P.decision decision) report = λ ()
+  projectionCannotRequestCorrection result (P.boundReferenceDecision binding detail) report = λ ()
+  projectionCannotRequestCorrection result (P.partialDecision edge decision) report = λ ()
 
   correctionWitness : ∀ name raw events reply report → Handled name raw events reply →
     reply ≡ inputCorrection report → events ≡ []
   correctionWitness name raw events reply report (unknown named) same = refl
   correctionWitness name raw events reply report (invalid tool detail named decoded) same = refl
-  correctionWitness name raw events reply report (executed tool initial events₁ result named ran) same =
-    ⊥-elim (completionCannotRequestCorrection result report same)
+  correctionWitness name raw events reply report (executed tool events₁ (Physical.returned hosted) named) same =
+    ⊥-elim (projectionCannotRequestCorrection (Physical.Execution.databaseResult hosted) (hostProjection hosted) report same)
+  correctionWitness name raw events reply report
+    (executed tool events₁ (Physical.cleanupPending initial entered entry databaseResult ran final pending) named) ()
 
   admissionCorrectionsHaveNoEvents : ∀ name raw events report →
     Handled name raw events (inputCorrection report) → events ≡ []

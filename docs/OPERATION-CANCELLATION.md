@@ -102,3 +102,17 @@ and acknowledgements. A full stop confirmation requires every matching
 execution row to be acknowledged; a pending row rules that confirmation out.
 The host may wait indefinitely, so the model does not invent a termination
 promise for an unreachable copy.
+
+`ApplicationHost` places registration before the actual application run and
+the request's physical stop acknowledgement after its reached world. Its
+in-flight receipt also covers partial application runs: disconnect cleanup
+derives its owned execution rows from their actual registration receipts,
+including handlers that have not produced a tool reply. Local shutdown stops
+those requests; it does not revoke their tokens or confirm other hosts.
+
+The public handler requires this host receipt rather than accepting a bare
+application trace. An unconfirmed cleanup is an error with the retained cause
+and observed world. For explicit cancellation, a durable completion or
+cancellation fence requires the separate all-copy stop trace before the host
+can claim confirmation. Ordinary writes keep their exact original completed
+payload; explicit outcome readback additionally shows pending copy identities.
