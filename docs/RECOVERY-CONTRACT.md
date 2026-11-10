@@ -346,6 +346,15 @@ adapter must still compose this result with the selected operation's
 independent business intent and its public response encoding; the metadata
 adapter alone does not satisfy any of the remaining whole-operation entries.
 
+The project-deletion composition is
+`IntendedPreparation.Evaluate.ProjectDeletion.evaluate`. It takes the original
+submitted value, decodes its token and project, prepares its metadata and then
+computes `ProjectDeletion.Registered.intended` and `expectedReply`. It retains
+the complete expected world, whether the body was entered, and the semantic
+correction or operation readback. This uses neither a desired-world input nor
+an effect-script evaluator. Public wire projection and executable transport
+remain required before this entry can be marked complete.
+
 `scripts/formal/compare-outcomes.py --expected PATH --observed PATH` compares
 the retained complete output of that adapter with a native observation. It
 requires the world, body result and public reply on both sides; the native

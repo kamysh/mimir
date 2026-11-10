@@ -596,7 +596,8 @@
       ],
       "pure_sources": [
         "ProjectDeletion.Registered.intended",
-        "ProjectDeletion.Registered.expectedReply"
+        "ProjectDeletion.Registered.expectedReply",
+        "IntendedPreparation.Evaluate.ProjectDeletion.evaluate"
       ],
       "whole_operation_adapter": "required-by-152"
     },

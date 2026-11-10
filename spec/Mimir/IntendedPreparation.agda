@@ -6,17 +6,20 @@ module Mimir.IntendedPreparation where
 
 open import Data.Bool using (true; false)
 open import Data.Integer using (ℤ)
-open import Data.Maybe using (just; nothing)
-open import Data.Product using (_×_; _,_)
+open import Data.Maybe using (Maybe; just; nothing)
+open import Data.Product using (_×_; _,_; proj₁)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.Unit using (tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
 import Mimir.OperationControls as Controls
 import Mimir.PublicOperationBinding as Binding
 import Mimir.PublicRequest as Public
+import Mimir.ProjectDeletion as Project
 import Mimir.StandardLibrary as Library
 import Mimir.StructuredValue as Wire
+import Mimir.ToolCatalog as Tools
 import Mimir.Validation as Validation
 
 module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) where
@@ -101,3 +104,45 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
       C.decode requested ≡ inj₁ fault →
       evaluate requested before ≡ (before , C.needsInput fault)
     malformedInputUnchanged requested before fault rejected rewrite rejected = refl
+
+  -- Typed semantic output for the public adapter. A returned null body stays
+  -- distinct from admission which never entered the business operation.
+  data PublicOutcome : Set where
+    requestCorrection : Validation.Fault → PublicOutcome
+    operationReadback : Read.Result → PublicOutcome
+
+  record Expected : Set where
+    constructor expected
+    field
+      world : Store.World
+      body : Maybe Wire.Value
+      publicOutcome : PublicOutcome
+
+  module ProjectDeletion (observed : (call : C.Call) → Observations call) where
+    module Metadata = With observed
+    module Decode = Public.Decode library
+
+    project : ∀ {raw} → Decode.Invocation Tools.deleteProject raw → Text
+    project call = proj₁ (C.readProject (Decode.Invocation.arguments call)
+      (Decode.Invocation.request call) (Decode.Invocation.decoded call))
+
+    -- The operation input comes from the original submitted request. The
+    -- metadata result cannot replace its token, project or desired outcome.
+    prepared : Project.Registered.Input → Outcome → Expected
+    prepared request (before , C.needsInput fault) =
+      expected before nothing (requestCorrection fault)
+    prepared request (before , C.returned outcome) =
+      expected before nothing (operationReadback outcome)
+    prepared request (before , C.ready context) =
+      expected final (just answer)
+        (operationReadback (Read.answer (Project.Registered.Input.token request) final))
+      where
+      final = Project.Registered.intended request before
+      answer = Project.Registered.expectedReply request before
+
+    evaluate : Wire.Value → Store.World → Expected
+    evaluate raw before with Decode.readInvocation Tools.deleteProject raw
+    ... | inj₁ fault = expected before nothing (requestCorrection fault)
+    ... | inj₂ call = prepared
+      (Project.Registered.input (Decode.Invocation.operationToken call) (project call))
+      (Metadata.admitted (C.admittedWrite Tools.deleteProject raw refl call) before)
