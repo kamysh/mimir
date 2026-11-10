@@ -409,3 +409,26 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
       (P.converges request original baseline middle prepared
         (P.X.completedRunMayLoseFinalReply (P.script request) original baseline (P.ready scope) originalOwners) retryOwners)
       retryBody
+
+  afterCompletedPublication : ∀ request original baseline scope interrupted middle prepared final reply value →
+    P.X.Completed (P.script request) original baseline (P.ready scope) →
+    B.Goal scope baseline interrupted (Step.done value) →
+    middle ≡ interrupted → prepared ≡ P.stopped (Step.done value) →
+    X.Completed (afterPreparation prepared) middle final reply → Goal request original final reply
+  afterCompletedPublication request original baseline scope interrupted .interrupted .(P.stopped (Step.done value))
+    .interrupted .(Step.done value) value originalOwners business refl refl
+    (X.completed [] (E.returned _) (X.unchanged _)) = reviewPublished baseline scope
+      (P.completedGoal request original baseline (P.ready scope) originalOwners) business
+
+  interruptedKeepsRegistration : ∀ request original interrupted →
+    X.Interrupted (script request) original interrupted → Step.registration interrupted ≡ Step.registration original
+  interruptedKeepsRegistration request original interrupted cut
+    with splitInterruptedPrefix (P.script request) original interrupted cut
+  ... | preparing partial = P.Frame.originalRegistration (P.interruptedFrame request original interrupted partial)
+  ... | publishing baseline scope owners partial with B.interruptionCut scope baseline interrupted partial
+  ... | B.noPublication unchanged = trans (cong Step.registration unchanged)
+    (P.Frame.originalRegistration (P.completedFrame request original baseline (P.ready scope) owners))
+  ... | B.published prepared packets metadata value captured ready observed = trans
+    (trans (cong Step.registration (cong proj₁ observed))
+      (F.executeKeepsRegistration (P.Context.token scope) (B.supplied scope packets metadata) baseline))
+    (P.Frame.originalRegistration (P.completedFrame request original baseline (P.ready scope) owners))
