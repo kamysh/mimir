@@ -334,6 +334,17 @@ An unsupported family must be reported as unsupported and fail coverage. It
 must never fall back to an identity expected world, an observed-world goal
 validator, or a duplicate native implementation.
 
+`IntendedPreparation.Evaluate.With.evaluate` computes the surrounding write
+metadata from the actual decoded request and the retained settings, PostgreSQL
+binding time and standard plan-encoding observations. It uses the existing
+pure binding, plan and readback functions. It preserves original settings for
+an already bound action and reads its saved outcome before checking a current
+sweep policy. Invalid input returns a correction with the original world.
+It does not run an effect script or perform business writes. The complete
+adapter must still compose this result with the selected operation's
+independent business intent and its public response encoding; the metadata
+adapter alone does not satisfy any of the remaining whole-operation entries.
+
 `scripts/formal/compare-outcomes.py --expected PATH --observed PATH` compares
 the retained complete output of that adapter with a native observation. It
 requires the world, body result and public reply on both sides; the native
