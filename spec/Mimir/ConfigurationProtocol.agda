@@ -33,6 +33,7 @@ data Content : Set where
   template : Operations.Admitted → Content
   configured : Operations.Admitted → Values.Config → Content
   alreadyConfigured : Schema.Config → Content
+  editableExisting : Content
 
 data Failure : Set where
   file : IO.Failure → Failure
@@ -97,7 +98,9 @@ data Effect : Set where
   prettyTOML : Values.Config → Effect
   filesystem : Path.Path → Content → IO.Effect → Effect
   sameFields : List (String × Text) → Values.Config → Values.Config → Effect
+  existingFile : Path.Path → Effect
   announceCreated announceAlreadyConfigured : Path.Path → Effect
+  announceOpeningExisting : Path.Path → Effect
   announceEditor announceRestart : Effect
   editor : Text → Path.Path → Effect
 
@@ -109,8 +112,10 @@ Reply (parseTOML _) = IO.Failure ⊎ V.Value
 Reply (prettyTOML _) = IO.Failure ⊎ Text
 Reply (filesystem _ _ _) = IO.Input
 Reply (sameFields pairs old proposed) = Dec (explicitFields pairs old ≡ explicitFields pairs proposed)
+Reply (existingFile _) = IO.Failure ⊎ ⊤
 Reply (announceCreated _) = ⊤
 Reply (announceAlreadyConfigured _) = ⊤
+Reply (announceOpeningExisting _) = ⊤
 Reply announceEditor = ⊤
 Reply announceRestart = ⊤
 -- A child exit status, including nonzero, is a successful status() result.
@@ -202,7 +207,9 @@ module Run where
       (inj₂ current) → compareExisting current pairs
 
     existing : Path.Path → List (String × Text) → Script (Failure ⊎ Content)
-    existing path [] = done (inj₁ (file IO.alreadyExists))
+    existing path [] = ask (existingFile path) λ where
+      (inj₁ failure) → done (inj₁ (file failure))
+      (inj₂ tt) → done (inj₂ editableExisting)
     existing path pairs@(_ ∷ _) = readExisting path pairs
 
     prepare : Path.Path → List (String × Text) → Script (Failure ⊎ Content)
@@ -219,12 +226,34 @@ module Run where
     afterCreation : Path.Path → Content → Maybe Text → Script (Failure ⊎ ⊤)
     afterCreation path (alreadyConfigured current) editorValue =
       ask (announceAlreadyConfigured path) λ _ → done (inj₂ tt)
+    afterCreation path editableExisting editorValue = ask (announceOpeningExisting path) λ _ →
+      ask announceEditor λ _ → ask (editor (selectEditor editorValue) path) λ where
+        (inj₁ _) → done (inj₁ editorLaunch)
+        (inj₂ _) → ask announceRestart λ _ → done (inj₂ tt)
     afterCreation path (configured _ _) editorValue = ask (announceCreated path) λ _ →
       ask announceRestart λ _ → done (inj₂ tt)
     afterCreation path (template _) editorValue = ask (announceCreated path) λ _ →
       ask announceEditor λ _ → ask (editor (selectEditor editorValue) path) λ where
         (inj₁ _) → done (inj₁ editorLaunch)
         (inj₂ _) → ask announceRestart λ _ → done (inj₂ tt)
+
+    EditorOutcome : Bool ⊎ ℕ → Failure ⊎ ⊤ → Set
+    EditorOutcome (inj₁ _) result = result ≡ inj₁ editorLaunch
+    EditorOutcome (inj₂ _) result = result ≡ inj₂ tt
+
+    -- Existing-file editing never reports completion merely from launching
+    -- the editor. Every completed run contains its actual child result.
+    existingEditorObserved : ∀ path editorValue events result →
+      P.Runs (afterCreation path editableExisting editorValue) events result →
+      Data.Product.Σ (Bool ⊎ ℕ) (λ observed → Data.Product.Σ (List P.Event) (λ rest →
+        events ≡ ((announceOpeningExisting path , tt) ∷ (announceEditor , tt) ∷
+          (editor (selectEditor editorValue) path , observed) ∷ rest) × EditorOutcome observed result))
+    existingEditorObserved path editorValue ._ ._
+      (P.replied _ _ tt (P.replied _ _ tt (P.replied _ _ (inj₁ failed) (P.returned _)))) =
+      inj₁ failed , [] , refl , refl
+    existingEditorObserved path editorValue ._ ._
+      (P.replied _ _ tt (P.replied _ _ tt (P.replied _ _ (inj₂ status) (P.replied _ _ tt (P.returned _))))) =
+      inj₂ status , (announceRestart , tt) ∷ [] , refl , refl
 
 
     -- Full create command, including early failure, complete publication and
@@ -233,6 +262,10 @@ module Run where
     data Created (writeSettings : IO.Settings) (path : Path.Path)
       (pairs : List (String × Text)) (editorValue : Maybe Text) :
       List P.Event → Failure ⊎ ⊤ → Set where
+      editingExisting : ∀ prepared announcements result →
+        P.Runs (prepare path pairs) prepared (inj₂ editableExisting) →
+        P.Runs (afterCreation path editableExisting editorValue) announcements result →
+        Created writeSettings path pairs editorValue (prepared Data.List.++ announcements) result
       existingReady : ∀ prepared current announcements result →
         P.Runs (prepare path pairs) prepared (inj₂ (alreadyConfigured current)) →
         P.Runs (afterCreation path (alreadyConfigured current) editorValue) announcements result →
@@ -243,6 +276,14 @@ module Run where
         WriteRun writeSettings path content (initialWrite writeSettings) written (IO.failed IO.alreadyExists) →
         P.Runs (readExisting path pairs) checked (inj₂ (alreadyConfigured current)) →
         P.Runs (afterCreation path (alreadyConfigured current) editorValue) announcements result →
+        Created writeSettings path pairs editorValue
+          (prepared Data.List.++ written Data.List.++ checked Data.List.++ announcements) result
+      racedEditor : ∀ prepared content written checked announcements result →
+        NewContent content →
+        P.Runs (prepare path pairs) prepared (inj₂ content) →
+        WriteRun writeSettings path content (initialWrite writeSettings) written (IO.failed IO.alreadyExists) →
+        P.Runs (existing path pairs) checked (inj₂ editableExisting) →
+        P.Runs (afterCreation path editableExisting editorValue) announcements result →
         Created writeSettings path pairs editorValue
           (prepared Data.List.++ written Data.List.++ checked Data.List.++ announcements) result
       preparationFailed : ∀ events failure → P.Runs (prepare path pairs) events (inj₁ failure) →
