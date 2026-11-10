@@ -3,7 +3,7 @@
   "scope": "Application behavior, with standard libraries supplied externally; see the current value audit and historical verification receipt separately.",
   "counts": {
     "mcp": 37,
-    "cli_leaves": 30,
+    "cli_leaves": 33,
     "lifecycle_groups": 7
   },
   "mcp": [
@@ -1250,11 +1250,18 @@
         "spec/Mimir/ConfigurationProtocol.agda",
         "spec/Mimir/ConfigurationIO.agda",
         "spec/Mimir/CLI.agda",
-        "spec/Mimir/ApplicationProtocol.agda"
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/CLIServiceBinding.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
-      "baseline_gap": "Finish CLI KEY=VALUE parsing, override errors and editor invocation composition.",
-      "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
+      "baseline_gap": "Complete offline initialization, durable existing-file readback, explicit-field comparison and actual editor exit before success.",
+      "remaining": "The complete initialization certificate passed the isolated PR414 aggregate. The whole CLI consumer remains awaiting combined dispatcher verification in #148/#151.",
+      "recovery_contract": {
+        "operation": "Mimir.ConfigurationProtocol.Initialization.Execution.operation",
+        "entry": "Mimir.CLIServiceBinding.InitializationBinding.start",
+        "intent": "Prepare or preserve the complete selected configuration and unrelated file frame; explicit matching fields or interactive editor readiness; actual failed editor cannot report success.",
+        "boundary": "Fixed offline filesystem certificate and actual editor receipt; no database connection or caller-provided operation/goal."
+      }
     },
     {
       "name": "stats",
@@ -1287,7 +1294,7 @@
         "spec/Mimir/ApplicationProtocol.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
-      "baseline_gap": "Reuse list_beliefs domain semantics; CLI limit 0 means unlimited.",
+      "baseline_gap": "List all raw matching beliefs, then apply the native CLI probability sort and optional explicit positive selection. Omitted selection means all; zero requires correction.",
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
     },
     {
@@ -1304,7 +1311,7 @@
         "spec/Mimir/ApplicationProtocol.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
-      "baseline_gap": "Reuse list_patterns semantics; CLI limit 0 means unlimited.",
+      "baseline_gap": "List all matching patterns and apply optional explicit positive native CLI selection. Omitted selection means all; zero requires correction.",
       "remaining": "Rust implementation correspondence; outside the completed bounded specification task."
     },
     {
@@ -1768,10 +1775,11 @@
         "spec/Mimir/OperationalConfiguration.agda",
         "spec/Mimir/ConfigurationSchema.agda",
         "spec/Mimir/ConfigurationProtocol.agda",
-        "spec/Mimir/CLI.agda"
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/CLIServiceBinding.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
-      "remaining": "See operational repair verification receipt; no machine-checked Rust refinement claim."
+      "remaining": "The fixed offline lifecycle consumer is defined but awaits combined type-checking in #148/#151; no aggregate or Rust refinement claim for this new assembly."
     },
     {
       "name": "config upgrade",
@@ -1782,10 +1790,11 @@
         "spec/Mimir/ConfigurationUpgrade.agda",
         "spec/Mimir/OperationalConfiguration.agda",
         "spec/Mimir/ConfigurationProtocol.agda",
-        "spec/Mimir/CLI.agda"
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/CLIServiceBinding.agda"
       ],
       "status": "behavior-defined-and-aggregate-checked",
-      "remaining": "Mandatory CLI configuration lifecycle routing remains #148 and dispatcher work. See docs/CONFIGURATION-UPGRADE-RECOVERY.md; no machine-checked Rust refinement claim.",
+      "remaining": "The fixed offline lifecycle consumer is defined but awaits combined type-checking in #148/#151; no aggregate or Rust refinement claim for this new assembly.",
       "recovery_contract": {
         "operation": "Mimir.ConfigurationUpgrade.Document.Replacement.recoverable",
         "intent": "Pure document upgrade; preserve unrelated payload and complete frame; retain explicit logging directory on retry.",
@@ -1813,6 +1822,66 @@
       ],
       "status": "behavior-defined-and-aggregate-checked",
       "remaining": "See operational repair verification receipt; no machine-checked Rust refinement claim."
+    },
+    {
+      "name": "operation reserve",
+      "source": "crates/cli/src/operations.rs",
+      "step": 6,
+      "existing_modules": [],
+      "completion_modules": [
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/CLIServiceBinding.agda",
+        "spec/Mimir/OperationControls.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/PublicOperationCatalogue.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "consumer-defined-awaiting-combined-typecheck",
+      "control_tool": "reserve_operation",
+      "recovery_certificate": "Mimir.OperationControls.Controls.operation reserve",
+      "interface_evidence": "Required request_key; no operation token is accepted.",
+      "intent": "Retrying the same request key returns its original PostgreSQL token and reservation time, including a lost acknowledgement.",
+      "remaining": "The fixed control certificate is checked; the new whole CLI/application consumer is awaiting the checked upstream dispatcher. No aggregate or Rust refinement claim."
+    },
+    {
+      "name": "operation outcome",
+      "source": "crates/cli/src/operations.rs",
+      "step": 6,
+      "existing_modules": [],
+      "completion_modules": [
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/CLIServiceBinding.agda",
+        "spec/Mimir/OperationControls.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/PublicOperationCatalogue.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "consumer-defined-awaiting-combined-typecheck",
+      "control_tool": "operation_outcome",
+      "recovery_certificate": "Mimir.OperationControls.Controls.operation readOutcome",
+      "interface_evidence": "Required global --operation-token UUID; no operation arguments.",
+      "intent": "Read the actual original plan and journal, preserving pending, completed, cancelled, unknown and inconsistent distinctions.",
+      "remaining": "The fixed control certificate is checked; the new whole CLI/application consumer is awaiting the checked upstream dispatcher. No aggregate or Rust refinement claim."
+    },
+    {
+      "name": "operation cancel",
+      "source": "crates/cli/src/operations.rs",
+      "step": 6,
+      "existing_modules": [],
+      "completion_modules": [
+        "spec/Mimir/CLI.agda",
+        "spec/Mimir/CLIServiceBinding.agda",
+        "spec/Mimir/OperationControls.agda",
+        "spec/Mimir/PublicRequest.agda",
+        "spec/Mimir/PublicOperationCatalogue.agda",
+        "spec/Mimir/ApplicationProtocol.agda"
+      ],
+      "status": "consumer-defined-awaiting-combined-typecheck",
+      "control_tool": "cancel_operation",
+      "recovery_certificate": "Mimir.OperationControls.Controls.operation cancel",
+      "interface_evidence": "Required global --operation-token UUID; no operation arguments.",
+      "intent": "Explicit cancellation preserves committed steps and historical completed results and blocks future writes under the cancelled token.",
+      "remaining": "The fixed control certificate is checked; the new whole CLI/application consumer is awaiting the checked upstream dispatcher. No aggregate or Rust refinement claim."
     }
   ],
   "lifecycles": [
@@ -2081,8 +2150,14 @@
   "public_control_interface_update": {
     "native_tools": 37,
     "native_cli_leaves": 33,
-    "documented_cli_leaves": 30,
-    "boundary": "Tool admission and concrete control certificates are checked separately from mandatory execution routing. The CLI operation reserve/outcome/cancel model integration remains #151/#86; the full coverage check must refuse that gap until those entries and semantics are integrated.",
+    "documented_cli_leaves": 33,
+    "boundary": "The closed tool/control certificates and CLI leaf/action inventory are checked separately from mandatory execution routing. The CLI operation consumers are now defined; #151/#86 completion still requires the actual upstream application entry and safe consumer checks. Inventory coverage alone is not that proof.",
     "request_binding": "The invocation is indexed by its exact submitted JSON value. Its arguments are computed by removing only operation_token for business writers; all other supplied fields and values are preserved."
+  },
+  "cli_control_interface_update": {
+    "status": "consumer-defined-awaiting-combined-typecheck",
+    "entry": "Mimir.CLIServiceBinding.ManagedEntry",
+    "token_admission": "CLI.admit runs before configuration/database effects. Business writes and outcome/cancel require the global token; reads, reserve and offline commands reject a supplied token.",
+    "boundary": "The closed native CLI leaves and concrete control actions are checked mechanically. Actual consumers must pass safe type-checking after the shared application dispatcher is checked; this inventory is not that proof."
   }
 }

@@ -18,19 +18,13 @@ open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; subst)
 open import Mimir.Text using (Text)
 import Mimir.ConfigurationPath as Path
-import Mimir.PublicRequest as Public
 import Mimir.PublicEncoding as Encoding
 import Mimir.PublicInput as Input
-import Mimir.ApplicationProtocol as Application
-import Mimir.ApplicationOutput as Output
 import Mimir.GraphReadProtocol as Read
-import Mimir.GraphDeletion as Delete
-import Mimir.InferenceProtocol as Inference
 import Mimir.CandidateGraph as Graph
 import Mimir.LearningCandidates as Candidates
 import Mimir.RetrievalRanking as Ranking
 import Mimir.StructuredValue as V
-import Mimir.Effects as Effects
 import Mimir.Validation as Validation
 import Mimir.StandardLibrary as Library
 import Mimir.McpErrors as Errors
@@ -41,7 +35,8 @@ import Mimir.StorageSemantics as Stored
 import Mimir.InferenceStorageBinding as InferenceStore
 import Mimir.PosteriorComputation as Posterior
 import Mimir.Recovery as Recovery
-import Mimir.DatabaseReadCommitted as Committed
+import Mimir.OperationControls as Controls
+import Mimir.ToolCatalog as Tools
 module Correction = Errors.AgentCorrection
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
 
@@ -70,17 +65,112 @@ data ServiceCommand : Set where
   docClear : Text → ServiceCommand
   intervene : Text → Float → ServiceCommand
 
+data OperationCommand : Set where
+  reserve : Text → OperationCommand
+  outcome cancel : OperationCommand
+
 data ConfigurationCommand : Set where
   check : Maybe Path.Path → ConfigurationCommand
   upgrade : Maybe Path.Path → Maybe Path.Path → ConfigurationCommand
 
 data Command : Set where
+  control : OperationCommand → Command
   configuration : ConfigurationCommand → Command
   init : List (String × Text) → Command
   service : ServiceCommand → Command
   reembed : Command
   hook : HookCommand → Command
   judge : JudgeCommand → Command
+
+-- The DB entry accepts this closed command family. Offline configuration,
+-- hook and judge dispatch remain their existing separate application paths.
+data DatabaseCommand : Command → Set where
+  serviceCase : ∀ command → DatabaseCommand (service command)
+  controlCase : ∀ command → DatabaseCommand (control command)
+  backfillCase : DatabaseCommand reembed
+
+databaseCommand : (command : Command) → Maybe (DatabaseCommand command)
+databaseCommand (service command) = just (serviceCase command)
+databaseCommand (control command) = just (controlCase command)
+databaseCommand reembed = just backfillCase
+databaseCommand (configuration _) = nothing
+databaseCommand (init _) = nothing
+databaseCommand (hook _) = nothing
+databaseCommand (judge _) = nothing
+
+operationLeafName : OperationCommand → String
+operationLeafName (reserve _) = "operation reserve"
+operationLeafName outcome = "operation outcome"
+operationLeafName cancel = "operation cancel"
+
+-- The global option belongs to the actual invocation, including commands
+-- which forbid it. Keep its submitted spelling until pure UUID admission.
+record Invocation : Set where
+  constructor invocation
+  field
+    command : Command
+    operationToken : Maybe Text
+
+serviceWrites : ServiceCommand → Bool
+serviceWrites stats = false
+serviceWrites (list _ _) = false
+serviceWrites (patterns _ _) = false
+serviceWrites (query _ _ _ _ _) = false
+serviceWrites (evidenceAdd _ _ _) = true
+serviceWrites (evidenceList _) = false
+serviceWrites (deleteBelief _) = true
+serviceWrites (deletePattern _) = true
+serviceWrites (forget _) = true
+serviceWrites (decay _ _) = true
+serviceWrites (contradictions _) = false
+serviceWrites (sweep _ _) = true
+serviceWrites (docLoad _ _) = true
+serviceWrites (docQuery _ _ _) = false
+serviceWrites (docClear _) = true
+serviceWrites (intervene _ _) = false
+
+needsToken : Command → Bool
+needsToken (control (reserve _)) = false
+needsToken (control outcome) = true
+needsToken (control cancel) = true
+needsToken (service command) = serviceWrites command
+needsToken reembed = true
+needsToken (configuration _) = false
+needsToken (init _) = false
+needsToken (hook _) = false
+needsToken (judge _) = false
+
+Token : Bool → Set
+Token true = ℕ
+Token false = ⊤
+
+missingToken : Correction.Claim
+missingToken = Correction.claim (Correction.item Correction.arguments
+  (Validation.fault (Validation.key "operation_token" ∷ []) Validation.missingField
+    "This command requires the original PostgreSQL-issued operation token before any business work starts.")
+  (toList "--operation-token UUID returned by mimir operation reserve REQUEST_KEY.")
+  (toList "Reserve this intended action first and keep its key and token. After a lost reply, repeat the original reservation key, then retry this exact command with its original token. Do not invent a UUID.")) []
+
+unexpectedToken : Correction.Claim
+unexpectedToken = Correction.claim (Correction.item Correction.arguments
+  (Validation.fault (Validation.key "operation_token" ∷ []) Validation.unsupportedCombination
+    "This command does not use an operation token.")
+  (toList "Omit --operation-token for this command.")
+  (toList "Use operation outcome to inspect a token, or supply it to the intended business write. Check the command help; do not silently change the requested action.")) []
+
+tokenSyntax : Library.Contract → Maybe Text → Correction.Claim ⊎ ⊤
+tokenSyntax library nothing = inj₂ tt
+tokenSyntax library (just raw) with Input.readUUID library (V.string raw)
+... | inj₁ _ = inj₁ (Correction.claim (Correction.uuidItem (Validation.key "operation_token" ∷ [])) [])
+... | inj₂ _ = inj₂ tt
+
+readToken : Library.Contract → (required : Bool) → Maybe Text → Correction.Claim ⊎ Token required
+readToken library true nothing = inj₁ missingToken
+readToken library false nothing = inj₂ tt
+readToken library required (just raw) with Input.readUUID library (V.string raw)
+... | inj₁ _ = inj₁ (Correction.claim (Correction.uuidItem (Validation.key "operation_token" ∷ [])) [])
+readToken library true (just raw) | inj₂ token = inj₂ token
+readToken library false (just raw) | inj₂ _ = inj₁ unexpectedToken
 
 record Defaults : Set where
   field listLimit queryLimit documentLimit : Ranking.Selection
@@ -115,26 +205,164 @@ requestIssues conversion (evidenceAdd chunk belief weight) = uuidIssues conversi
   uuidIssues conversion "belief_id" belief ++ probabilityIssues "weight" weight
 requestIssues conversion (evidenceList belief) = uuidIssues conversion "belief_id" belief
 requestIssues conversion (decay factor project) = probabilityIssues "factor" factor
+requestIssues conversion (sweep threshold project) = probabilityIssues "threshold" threshold
 requestIssues conversion _ = []
 
-request : Library.Contract → ServiceCommand → Validation.Fault ⊎ Public.Request
-request conversion stats = inj₂ (Public.read Read.stats)
-request conversion (list project limit) = inj₂ (Public.read (Read.listBeliefs project nothing))
-request conversion (patterns project limit) = inj₂ (Public.read (Read.listPatterns project))
-request conversion (query text limit evidence project prefer) = inj₂ (Public.relevant text limit project prefer evidence nothing)
-request conversion (evidenceAdd chunk belief weight) = Input.readUUID conversion (V.string chunk) >>= λ chunkID →
-  Input.readUUID conversion (V.string belief) >>= λ beliefID → inj₂ (Public.addEvidence beliefID chunkID weight)
-request conversion (evidenceList belief) = mapResult Public.evidence (Input.readUUID conversion (V.string belief))
-request conversion (deleteBelief id) = mapResult (Public.delete Delete.belief) (Input.readUUID conversion (V.string id))
-request conversion (deletePattern id) = mapResult (Public.delete Delete.patternNode) (Input.readUUID conversion (V.string id))
-request conversion (forget project) = inj₂ (Public.deleteProject project)
-request conversion (decay factor project) = inj₂ (Public.inference (Inference.decay project factor))
-request conversion (contradictions project) = inj₂ (Public.inference (Inference.contradictions project))
-request conversion (sweep threshold project) = inj₂ (Public.sweepConfigured project threshold)
-request conversion (docLoad path project) = inj₂ (Public.loadDocument path project)
-request conversion (docQuery text project limit) = inj₂ (Public.queryDocument text project limit)
-request conversion (docClear path) = inj₂ (Public.clearDocument path)
-request conversion (intervene id value) = mapResult (λ target → Public.inference (Inference.intervention target value)) (Input.readUUID conversion (V.string id))
+-- The native parser first reports command-field problems, then applies the
+-- global operation option policy. Both decisions precede configuration/DB I/O.
+commandIssues : Library.Contract → Command → List Correction.Item
+commandIssues library (service command) = requestIssues library command
+commandIssues library (control (reserve key)) with Controls.admitRequestKey key
+... | inj₂ _ = []
+... | inj₁ detail = Correction.item Correction.arguments detail
+  (toList "A stable nonblank key identifying this intended action.")
+  (toList "Repeat the original key after a lost reply. Ask the user if the intended action is uncertain; do not reserve replacement work to bypass a problem.") ∷ []
+commandIssues library (control outcome) = []
+commandIssues library (control cancel) = []
+commandIssues library (configuration _) = []
+commandIssues library (init _) = []
+commandIssues library reembed = []
+commandIssues library (hook _) = []
+commandIssues library (judge _) = []
+
+record Admitted (library : Library.Contract) (call : Invocation) : Set where
+  field
+    noCommandIssues : commandIssues library (Invocation.command call) ≡ []
+    token : Token (needsToken (Invocation.command call))
+    tokenRead : readToken library (needsToken (Invocation.command call)) (Invocation.operationToken call) ≡ inj₂ token
+
+admitParsed : ∀ library call → Correction.Claim ⊎ Admitted library call
+admitParsed library call with commandIssues library (Invocation.command call) in issues
+... | first ∷ rest = inj₁ (Correction.claim first rest)
+... | [] with readToken library (needsToken (Invocation.command call)) (Invocation.operationToken call) in read
+... | inj₁ detail = inj₁ detail
+... | inj₂ token = inj₂ record { noCommandIssues = issues; token = token; tokenRead = read }
+
+admit : ∀ library call → Correction.Claim ⊎ Admitted library call
+admit library call with tokenSyntax library (Invocation.operationToken call)
+... | inj₁ detail = inj₁ detail
+... | inj₂ tt = admitParsed library call
+
+invalidTokenCannotBeAdmitted : ∀ library call detail →
+  readToken library (needsToken (Invocation.command call)) (Invocation.operationToken call) ≡ inj₁ detail →
+  Admitted library call → ⊥
+invalidTokenCannotBeAdmitted library call detail invalid accepted with
+  Relation.Binary.PropositionalEquality.trans (Relation.Binary.PropositionalEquality.sym (Admitted.tokenRead accepted)) invalid
+... | ()
+
+-- Native CLI bindings use typed argument values, including numeric defaults.
+-- Project is added only when supplied; no implicit null is inserted. The
+-- global token is excluded from the immutable business arguments.
+record WriteCall : Set where
+  constructor writeCall
+  field
+    tool : Tools.Tool
+    writerRole : Tools.kind tool ≡ Tools.businessWrite
+    arguments : V.Value
+
+-- These are private read routes, not alternate business-write entry points.
+-- In particular listBeliefs is an all-matches read, not an MCP page request.
+data ReadCall : Set where
+  graphRead : Read.Request → ReadCall
+  relevantRead : Text → Ranking.Selection → Maybe Text → Maybe Candidates.Memory → Bool → ReadCall
+  evidenceRead : ℕ → ReadCall
+  documentRead : Text → Maybe Text → Ranking.Selection → ReadCall
+
+-- Every service command selects one concrete checked write or read path.
+-- There is no unhandled-command branch that could report successful no work.
+data ServicePlan : Set where
+  writeService : WriteCall → ServicePlan
+  readService : ReadCall → ServicePlan
+  statisticsService : ServicePlan
+  contradictionsService : Maybe Text → ServicePlan
+  interventionService : ℕ → Float → ServicePlan
+
+planNeedsToken : ServicePlan → Bool
+planNeedsToken (writeService _) = true
+planNeedsToken (readService _) = false
+planNeedsToken statisticsService = false
+planNeedsToken (contradictionsService _) = false
+planNeedsToken (interventionService _ _) = false
+
+module Arguments (format : Encoding.Formatting) where
+  module Encode = Encoding.Encode format
+
+  projectObject : Maybe Text → List (String × V.Value) → V.Value
+  projectObject nothing fields = Encoding.object fields
+  projectObject (just project) fields = Encoding.object (fields ++ ("project" , V.string project) ∷ [])
+
+  serviceRoute : Library.Contract → ServiceCommand → Validation.Fault ⊎ ServicePlan
+  serviceRoute library stats = inj₂ statisticsService
+  serviceRoute library (list project limit) = inj₂ (readService (graphRead (Read.listBeliefs project nothing)))
+  serviceRoute library (patterns project limit) = inj₂ (readService (graphRead (Read.listPatterns project)))
+  serviceRoute library (query text limit evidence project prefer) = inj₂ (readService (relevantRead text limit project prefer evidence))
+  serviceRoute library (evidenceAdd chunk belief weight) = inj₂ (writeService (writeCall Tools.addEvidence refl
+    (Encoding.object (("chunk_id" , V.string chunk) ∷ ("belief_id" , V.string belief) ∷ ("weight" , Encode.real weight) ∷ []))))
+  serviceRoute library (evidenceList belief) = mapResult (λ id → readService (evidenceRead id)) (Input.readUUID library (V.string belief))
+  serviceRoute library (deleteBelief id) = inj₂ (writeService (writeCall Tools.deleteBelief refl (Encoding.object (("id" , V.string id) ∷ []))))
+  serviceRoute library (deletePattern id) = inj₂ (writeService (writeCall Tools.deletePattern refl (Encoding.object (("id" , V.string id) ∷ []))))
+  serviceRoute library (forget project) = inj₂ (writeService (writeCall Tools.deleteProject refl (Encoding.object (("project" , V.string project) ∷ []))))
+  serviceRoute library (decay factor project) = inj₂ (writeService (writeCall Tools.decayAll refl (projectObject project (("decay_factor" , Encode.real factor) ∷ []))))
+  serviceRoute library (contradictions project) = inj₂ (contradictionsService project)
+  serviceRoute library (sweep threshold project) = inj₂ (writeService (writeCall Tools.sweepExpiredDefeated refl (projectObject project (("prob_threshold" , Encode.real threshold) ∷ []))))
+  serviceRoute library (docLoad path project) = inj₂ (writeService (writeCall Tools.loadDocument refl (projectObject project (("path" , V.string path) ∷ []))))
+  serviceRoute library (docQuery text project limit) = inj₂ (readService (documentRead text project limit))
+  serviceRoute library (docClear path) = inj₂ (writeService (writeCall Tools.clearDocument refl (Encoding.object (("path" , V.string path) ∷ []))))
+  serviceRoute library (intervene id value) = mapResult (λ identity → interventionService identity value) (Input.readUUID library (V.string id))
+
+  -- Argument construction and the global option gate agree on EVERY route.
+  -- A newly added command cannot silently select a write without its token.
+  selectedServiceTokenPolicy : ∀ library command plan →
+    serviceRoute library command ≡ inj₂ plan → serviceWrites command ≡ planNeedsToken plan
+  selectedServiceTokenPolicy library stats plan refl = refl
+  selectedServiceTokenPolicy library (list project limit) plan refl = refl
+  selectedServiceTokenPolicy library (patterns project limit) plan refl = refl
+  selectedServiceTokenPolicy library (query text limit evidence project prefer) plan refl = refl
+  selectedServiceTokenPolicy library (evidenceAdd chunk belief weight) plan refl = refl
+  selectedServiceTokenPolicy library (deleteBelief id) plan refl = refl
+  selectedServiceTokenPolicy library (deletePattern id) plan refl = refl
+  selectedServiceTokenPolicy library (forget project) plan refl = refl
+  selectedServiceTokenPolicy library (decay factor project) plan refl = refl
+  selectedServiceTokenPolicy library (contradictions project) plan refl = refl
+  selectedServiceTokenPolicy library (sweep threshold project) plan refl = refl
+  selectedServiceTokenPolicy library (docLoad path project) plan refl = refl
+  selectedServiceTokenPolicy library (docQuery text project limit) plan refl = refl
+  selectedServiceTokenPolicy library (docClear path) plan refl = refl
+  selectedServiceTokenPolicy library (evidenceList belief) plan accepted with Input.readUUID library (V.string belief)
+  ... | inj₁ error with accepted
+  ... | ()
+  selectedServiceTokenPolicy library (evidenceList belief) plan accepted | inj₂ identity with accepted
+  ... | refl = refl
+  selectedServiceTokenPolicy library (intervene id value) plan accepted with Input.readUUID library (V.string id)
+  ... | inj₁ error with accepted
+  ... | ()
+  selectedServiceTokenPolicy library (intervene id value) plan accepted | inj₂ identity with accepted
+  ... | refl = refl
+
+  controlTool : OperationCommand → Tools.Tool
+  controlTool (reserve _) = Tools.reserveOperation
+  controlTool outcome = Tools.operationOutcome
+  controlTool cancel = Tools.cancelOperation
+
+  tokenObject : Maybe Text → V.Value
+  tokenObject nothing = Encoding.object []
+  tokenObject (just token) = Encoding.object (("operation_token" , V.string token) ∷ [])
+
+  controlArguments : OperationCommand → Maybe Text → V.Value
+  controlArguments (reserve key) token = Encoding.object (("request_key" , V.string key) ∷ [])
+  controlArguments outcome token = tokenObject token
+  controlArguments cancel token = tokenObject token
+
+  -- This field is transport data. The checked public decoder removes it
+  -- before comparing or storing the original business binding.
+  withToken : Text → V.Value → V.Value
+  withToken token (V.object fields) = V.object ((toList "operation_token" , V.string token) ∷ fields)
+  withToken token raw = raw
+
+  tokenDoesNotChangeBusinessArguments : ∀ token fields →
+    Input.withoutField (toList "operation_token") (withToken token (V.object fields)) ≡
+    Input.withoutField (toList "operation_token") (V.object fields)
+  tokenDoesNotChangeBusinessArguments token fields = refl
 
 listRows : Ranking.Selection → List Graph.BeliefValues → List Graph.BeliefValues
 listRows limit rows = Ranking.cap limit (Ranking.sort
@@ -169,7 +397,7 @@ deduplicate = go []
 data Parsed : Set where
   help version : Parsed
   invalid : Correction.Claim → Parsed
-  parsedCommand : Command → Parsed
+  parsedCommand : Invocation → Parsed
 
 parseExit : Parsed → Maybe ℕ
 parseExit help = just 0
@@ -195,13 +423,6 @@ module DatabaseObservations (databaseSum : List Float → Float) (calculator : P
     counts : Read.Statistics → Result
     pairs : List PairDetail → Result
     projection : N.Result → List ProjectionDetail → Result
-
-  selectCommand : Library.Contract → ServiceCommand → Validation.Fault ⊎ Maybe Request
-  selectCommand conversion stats = inj₂ (just readStats)
-  selectCommand conversion (contradictions scope) = inj₂ (just (readContradictions scope))
-  selectCommand conversion (intervene identity value) = Input.readUUID conversion (V.string identity) >>=
-    λ target → inj₂ (just (readIntervention target value))
-  selectCommand conversion _ = inj₂ nothing
 
   contradictionDetails : Maybe Text → Store.World → List PairDetail
   contradictionDetails scope before = map details (deduplicate
@@ -261,165 +482,3 @@ module DatabaseObservations (databaseSum : List Float → Float) (calculator : P
   Success (counts _) = ⊤
   Success (pairs _) = ⊤
   Success (projection result _) = Project.Success result
-
-module Run (conversion : Library.Contract) (environment : Application.Environment) (format : Encoding.Formatting)
-  (databaseSum : List Float → Float) where
-  module A = Application.Run environment
-  module O = Output.Project environment format
-  module D = DatabaseObservations databaseSum (Application.Environment.calculator environment)
-
-  data Failure : Set where
-    connection : Text → Failure
-    operation : A.Result → Failure
-    output : Text → Failure
-
-  -- Payloads are fully selected application data. A renderer preserves their
-  -- complete text, applies terminal layout, and never performs a database read.
-  data Line : Set where
-    inputDecision : Correction.Claim → Line
-    configurationDecision : Application.Correction.Claim → Line
-    commandOutput : ServiceCommand → A.Result → Line
-    emptyIntervention emptyContradictions : Line
-    intervention : ℕ → Float → Maybe Graph.BeliefValues → Line
-    contradiction : ℕ → ℕ → Maybe Graph.BeliefValues → Maybe Graph.BeliefValues → Line
-    observationDecision : D.N.Result → Line
-
-  data Effect : Set where
-    connect : Effect
-    execute : Public.Request → Effect
-    observe : D.Request → Effect
-    print : Line → Effect
-
-  Reply : Effect → Set
-  Reply connect = Text ⊎ ⊤
-  Reply (execute _) = A.Result
-  Reply (observe _) = Text ⊎ D.Result
-  Reply (print _) = Text ⊎ ⊤
-  module P = Effects.Protocol Effect Reply
-  open P using (Script; done; ask) renaming (_>>=_ to _then_)
-
-  data Observation (input : D.Request) (before : Store.World) : D.Result → Set where
-    completedObservation : ∀ after reply →
-      D.R.X.Completed (D.R.script input) before after reply → Observation input before reply
-
-  emit : Line → Script (Failure ⊎ ⊤)
-  emit line = ask (print line) λ where
-    (inj₁ error) → done (inj₁ (output error))
-    (inj₂ tt) → done (inj₂ tt)
-
-  outputLines : D.Result → List Line
-  outputLines (D.counts values) = commandOutput stats (A.readResult (Read.counted values)) ∷ []
-  outputLines (D.pairs []) = emptyContradictions ∷ []
-  outputLines (D.pairs values@(_ ∷ _)) = map (λ { (a , b , first , second) → contradiction a b first second }) values
-  outputLines (D.projection (D.N.calculated []) rows) = emptyIntervention ∷ []
-  outputLines (D.projection (D.N.calculated (_ ∷ _)) rows) = map
-    (λ { (id , probability , belief) → intervention id probability belief }) rows
-  outputLines (D.projection result rows) = observationDecision result ∷ []
-
-  emitLines : List Line → Script (Failure ⊎ ⊤)
-  emitLines [] = done (inj₂ tt)
-  emitLines (line ∷ rest) = emit line then λ where
-    (inj₁ error) → done (inj₁ error)
-    (inj₂ tt) → emitLines rest
-
-  observedOutput : D.Result → Script (Failure ⊎ ⊤)
-  observedOutput result = emitLines (outputLines result)
-
-  data Printed : List Line → List P.Event → Set where
-    none : Printed [] []
-    next : ∀ line lines events → Printed lines events → Printed (line ∷ lines) ((print line , inj₂ tt) ∷ events)
-
-  completedOutputIsExact : ∀ lines events → P.Runs (emitLines lines) events (inj₂ tt) → Printed lines events
-  completedOutputIsExact [] .[] (P.returned _) = none
-  completedOutputIsExact (line ∷ lines) events (P.replied _ _ (inj₁ error) ())
-  completedOutputIsExact (line ∷ lines) events (P.replied _ _ (inj₂ tt) rest) =
-    next line lines _ (completedOutputIsExact lines _ rest)
-
-  observationOutputMeetsGoal : ∀ input before after reply → D.R.X.Completed (D.R.script input) before after reply →
-    ∀ events → P.Runs (observedOutput reply) events (inj₂ tt) →
-    D.Goal input before after reply × Printed (outputLines reply) events
-  observationOutputMeetsGoal input before after reply complete events emitted =
-    D.completedMeetsGoal input before after reply complete , completedOutputIsExact (outputLines reply) events emitted
-
-  afterObservation : Text ⊎ D.Result → Script (Failure ⊎ ⊤)
-  afterObservation (inj₁ error) = done (inj₁ (connection error))
-  afterObservation (inj₂ result) = observedOutput result
-
-  projectResult : ServiceCommand → A.Result → A.Result
-  projectResult (list _ limit) (A.readResult (Read.beliefList rows)) = A.readResult (Read.beliefList (listRows limit rows))
-  projectResult (patterns _ limit) (A.readResult (Read.patternList rows)) = A.readResult (Read.patternList (patternRows limit rows))
-  projectResult command value = value
-
-  success : ServiceCommand → A.Result → Script (Failure ⊎ ⊤)
-  success command value = emit (commandOutput command (projectResult command value))
-
-  after : ServiceCommand → A.Result → Script (Failure ⊎ ⊤)
-  after command value with O.project value
-  ... | O.failure cause = done (inj₁ (operation cause))
-  ... | O.decision report = emit (configurationDecision report)
-  ... | O.partialDecision edge report = emit (commandOutput command value)
-  ... | O.success _ = success command value
-
-  dispatchOrdinary : ServiceCommand → Script (Failure ⊎ ⊤)
-  dispatchOrdinary command with request conversion command
-  ... | inj₁ error = emit (inputDecision (Correction.claim
-      (Correction.item Correction.arguments error
-        (toList "Arguments accepted by this Mimir command.")
-        (toList "Correct the reported fields and rerun the command. If a required value is unknown, ask the user instead of guessing.")) []))
-  ... | inj₂ request with A.admission request
-  ...   | inj₁ detail = emit (configurationDecision (Application.configurationCorrection detail))
-  ...   | inj₂ tt = ask (execute request) (after command)
-
-  dispatch : ServiceCommand → Script (Failure ⊎ ⊤)
-  dispatch command with D.selectCommand conversion command
-  ... | inj₁ error = emit (inputDecision (Correction.claim
-    (Correction.item Correction.arguments error (toList "A stored belief UUID.")
-      (toList "Correct the indicated UUID. If the intended belief is unknown, ask the user instead of inventing an identifier.")) []))
-  ... | inj₂ nothing = dispatchOrdinary command
-  ... | inj₂ (just input) = ask (observe input) afterObservation
-
-  connectThen : ServiceCommand → Script (Failure ⊎ ⊤)
-  connectThen command = ask connect λ where
-    (inj₁ error) → done (inj₁ (connection error))
-    (inj₂ tt) → dispatch command
-
-  start : ServiceCommand → Script (Failure ⊎ ⊤)
-  start command with requestIssues conversion command
-  ... | [] = connectThen command
-  ... | first ∷ rest = emit (inputDecision (Correction.claim first rest))
-
-  invalidPreflightOnlyPrintsCorrection : ∀ command first rest →
-    requestIssues conversion command ≡ first ∷ rest →
-    start command ≡ emit (inputDecision (Correction.claim first rest))
-  invalidPreflightOnlyPrintsCorrection command first rest problems rewrite problems = refl
-
-  invalidPreflightCannotConnect : ∀ command first rest events outcome →
-    requestIssues conversion command ≡ first ∷ rest →
-    P.Runs (start command) events outcome →
-    Σ (Reply (print (inputDecision (Correction.claim first rest))))
-      (λ reply → events ≡ ((print (inputDecision (Correction.claim first rest)) , reply) ∷ []))
-  invalidPreflightCannotConnect command first rest events outcome problems execution rewrite problems with execution
-  ... | P.replied _ _ (inj₁ error) (P.returned _) = inj₁ error , refl
-  ... | P.replied _ _ (inj₂ tt) (P.returned _) = inj₂ tt , refl
-
-  exit : Failure ⊎ ⊤ → ℕ
-  exit (inj₁ _) = 1
-  exit (inj₂ tt) = 0
-
-  -- Every service-effect receipt must have a complete concrete application
-  -- execution. This supplies the execution boundary, not an opaque handler.
-  data Executed : Public.Request → A.Result → Set where
-    application : ∀ request events result → A.Runs (A.start request) events result → Executed request result
-
-  data Receipt (reads : Committed.Contract Store.World) : (effect : Effect) → Reply effect → Set where
-    connected : ∀ response → Receipt reads connect response
-    printed : ∀ line response → Receipt reads (print line) response
-    executed : ∀ request response → Executed request response → Receipt reads (execute request) response
-    observed : ∀ input (event : Committed.Contract.Read reads) response →
-      Observation input (Committed.Contract.snapshot reads event) response → Receipt reads (observe input) (inj₂ response)
-    observationFailed : ∀ input detail → Receipt reads (observe input) (inj₁ detail)
-
-  data Runs (reads : Committed.Contract Store.World) : Script (Failure ⊎ ⊤) → List P.Event → Failure ⊎ ⊤ → Set where
-    returned : ∀ result → Runs reads (done result) [] result
-    responded : ∀ effect continuation reply events result → Receipt reads effect reply →
-      Runs reads (continuation reply) events result → Runs reads (ask effect continuation) ((effect , reply) ∷ events) result

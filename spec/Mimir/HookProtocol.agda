@@ -17,13 +17,15 @@ open import Mimir.Text using (Text; trim)
 import Mimir.CLI as CLI
 import Mimir.StructuredValue as V
 import Mimir.PublicInput as Input
-import Mimir.PublicRequest as Public
 import Mimir.ApplicationProtocol as Application
 import Mimir.GraphReadProtocol as Read
 import Mimir.CandidateGraph as Graph
 import Mimir.LearningCandidates as Candidates
 import Mimir.Effects as Effects
 import Mimir.RetrievalProtocol as Retrieval
+import Mimir.PublicRetrievalRecovery as Search
+import Mimir.McpErrors as Errors
+module Correction = Errors.AgentCorrection
 
 member : Text → V.Value → Maybe V.Value
 member name (V.object fields) = V.Object.normalize fields name
@@ -61,6 +63,7 @@ sessionFile : Text → Text
 sessionFile id = toList "mimir-session-project-" ++ id
 
 data Message : Set where
+  inputDecision : Correction.Claim → Message
   -- Every selected belief retains its complete content in the injected or
   -- working-belief message; terminal/JSON encoding adds no excerpt width.
   promptContext pretoolContext : Retrieval.Coverage → List Graph.BeliefValues → Message
@@ -79,7 +82,7 @@ module Run (environment : Application.Environment) where
     gitTopLevel : Effect
     currentDirectory : Effect
     connect : Effect
-    execute : Public.Request → Effect
+    execute : A.ReadRequest → Effect
     stdout stderr : Message → Effect
 
   Reply : Effect → Set
@@ -120,23 +123,30 @@ module Run (environment : Application.Environment) where
   message CLI.prompt = promptContext
   message _ = pretoolContext
 
+  afterInjection : CLI.HookCommand → A.Result → Script ℕ
+  afterInjection kind result with A.readView result
+  ... | just (A.retrievalView request (A.C.Retrieval.completed _ _ _ _ (Search.plain capturedReport))) =
+    ask (stdout (message kind (Retrieval.Report.retrieval capturedReport) (Retrieval.Report.beliefs capturedReport))) (λ _ → done 0)
+  ... | _ = done 0
+
   inject : CLI.HookCommand → Text → Maybe Text → Script ℕ
   inject kind text scope = ask connect λ where
     (inj₁ _) → done 0
-    (inj₂ tt) → ask (execute (Public.relevant text nothing scope nothing false nothing)) λ where
-      (A.relevantResult result) → ask (stdout
-        (message kind (Retrieval.Report.retrieval result) (Retrieval.Report.beliefs result))) (λ _ → done 0)
-      _ → done 0
+    (inj₂ tt) → ask (execute (A.relevantRead (Search.fromFields text nothing scope nothing false nothing))) (afterInjection kind)
+
+  afterStop : A.Result → Script ℕ
+  afterStop result with A.readView result
+  ... | just (A.basicView (A.C.Basic.listBeliefs _ _) []) = done 0
+  ... | just (A.basicView (A.C.Basic.listBeliefs _ _) beliefs@(_ ∷ _)) =
+    ask (stderr (unconsolidated beliefs)) (λ _ → done 2)
+  ... | _ = done 0
 
   stop : Maybe Text → V.Value → Script ℕ
   stop project value with active value
   ... | true = done 0
   ... | false = stopScope project >>= λ scope → ask connect λ where
     (inj₁ _) → done 0
-    (inj₂ tt) → ask (execute (Public.read (Read.listBeliefs scope (just Candidates.working)))) λ where
-      (A.readResult (Read.beliefList [])) → done 0
-      (A.readResult (Read.beliefList beliefs@(_ ∷ _))) → ask (stderr (unconsolidated beliefs)) (λ _ → done 2)
-      _ → done 0
+    (inj₂ tt) → ask (execute (A.graphRead (Read.listBeliefs scope (just Candidates.working)))) afterStop
 
   parsed : CLI.HookCommand → V.Value → Script ℕ
   parsed (CLI.stop project) value = stop project value
@@ -144,15 +154,19 @@ module Run (environment : Application.Environment) where
   ... | nothing = done 0
   ... | just text = sessionScope value >>= inject kind text
 
+  afterProject : Text → A.Result → Script ℕ
+  afterProject name result with A.readView result
+  ... | just (A.basicView (A.C.Basic.listBeliefs _ _) []) = done 0
+  ... | just (A.basicView (A.C.Basic.listBeliefs _ _) beliefs@(_ ∷ _)) =
+    ask (stdout (preexisting name beliefs)) (λ _ → done 0)
+  ... | _ = done 0
+
   setProject : Text → Script ℕ
   setProject name = ask sessionEnvironment λ where
     nothing → done 0
     (just id) → ask (writeSessionFile (sessionFile id) name) λ _ → ask connect λ where
       (inj₁ _) → done 0
-      (inj₂ tt) → ask (execute (Public.read (Read.listBeliefs (just name) (just Candidates.working)))) λ where
-        (A.readResult (Read.beliefList [])) → done 0
-        (A.readResult (Read.beliefList beliefs@(_ ∷ _))) → ask (stdout (preexisting name beliefs)) (λ _ → done 0)
-        _ → done 0
+      (inj₂ tt) → ask (execute (A.graphRead (Read.listBeliefs (just name) (just Candidates.working)))) (afterProject name)
 
   start : CLI.HookCommand → Script ℕ
   start (CLI.setProject name) = setProject name
@@ -161,6 +175,19 @@ module Run (environment : Application.Environment) where
     (inj₂ input) → ask (parseJSON input) λ where
       (inj₁ _) → done 0
       (inj₂ value) → parsed kind value
+
+  -- The real CLI applies the global flag gate even for optional hooks.
+  -- After admission all existing hook suppression and exit behavior is kept.
+  startCLI : Maybe Text → CLI.HookCommand → Script ℕ
+  startCLI token kind with CLI.admit (Application.Environment.library environment)
+    (CLI.invocation (CLI.hook kind) token)
+  ... | inj₁ detail = ask (stdout (inputDecision detail)) (λ _ → done 0)
+  ... | inj₂ accepted = start kind
+
+  admittedCLIHasOriginalHookBehavior : ∀ token kind accepted →
+    CLI.admit (Application.Environment.library environment) (CLI.invocation (CLI.hook kind) token) ≡ inj₂ accepted →
+    startCLI token kind ≡ start kind
+  admittedCLIHasOriginalHookBehavior token kind accepted checked rewrite checked = refl
 
   data Receipt : (effect : Effect) → Reply effect → Set where
     input : ∀ response → Receipt stdinUTF8 response
@@ -173,7 +200,7 @@ module Run (environment : Application.Environment) where
     connected : ∀ response → Receipt connect response
     printed : ∀ message → Receipt (stdout message) tt
     diagnostic : ∀ message → Receipt (stderr message) tt
-    application : ∀ request events result → A.Runs (A.start request) events result → Receipt (execute request) result
+    application : ∀ request initial events result → A.Runs (A.startRead request initial) events result → Receipt (execute request) result
 
   data Runs : Script ℕ → List P.Event → ℕ → Set where
     returned : ∀ result → Runs (done result) [] result

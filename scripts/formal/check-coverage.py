@@ -180,6 +180,50 @@ def native_cli_commands():
     return commands
 
 
+def native_control_calls(source, prefix, indent):
+    """Read the maintained block arms, refusing missing or complex calls."""
+    padding = ' ' * indent
+    arms = re.findall(r'^' + padding + prefix + r'(\w+)(?: \{[^}]*\})?' +
+                      (r'\)' if prefix.endswith('Command::') else '') +
+                      r' => \{(.*?)^' + padding + r'\}', source, re.M | re.S)
+    result = {}
+    for variant, body in arms:
+        calls = re.findall(r'\bservice\s*\.\s*(\w+)\s*\(', body)
+        assert len(calls) == 1, ('unsupported control service dispatch', variant)
+        assert variant not in result, ('repeated control dispatch', variant)
+        result[variant] = calls[0]
+    assert result, 'missing concrete control dispatch'
+    return result
+
+
+def cli_control_correspondence():
+    native = read('crates/core/src/operation_catalogue.rs')
+    native_public_operations(native)  # Retain the full closed-source audit.
+    declared = native.split('operations! {', 1)[1].split('\n}\n', 1)[0]
+    body = declared.split('    control {', 1)[1].split('\n    }', 1)[0]
+    wires = dict(re.findall(r'^\s*(\w+) => "([a-z_]+)"', body, re.M))
+    mcp = native_control_calls(read('crates/mcp/src/operation_protocol.rs'), 'ControlOperation::', 8)
+    assert set(mcp) == set(wires), 'MCP control handlers disagree with closed registration'
+    mcp_methods = {wires[variant]: method for variant, method in mcp.items()}
+    cli_source = read('crates/cli/src/operations.rs')
+    dispatch = cli_source.split('Route::Control =>', 1)[1].split('return Ok(true);', 1)[0]
+    cli = native_control_calls(dispatch, r'Application::Operation\(Command::', 16)
+    assert set(cli) == set(enum_variants('crates/cli/src/operations.rs', 'Command')), 'CLI controls lack concrete handlers'
+    native_methods = {'operation ' + kebab(variant): method for variant, method in cli.items()}
+    formal = read('spec/Mimir/CLI.agda')
+    leaves = re.findall(r'^operationLeafName \(?([a-zA-Z]+)(?: _)?\)? = "([^"]+)"$', formal, re.M)
+    tools = re.findall(r'^  controlTool \(?([a-zA-Z]+)(?: _)?\)? = Tools\.(\w+)$', formal, re.M)
+    assert len(leaves) == len(dict(leaves)) and len(tools) == len(dict(tools)), 'repeated formal CLI control'
+    assert set(dict(leaves)) == set(dict(tools)), 'CLI control name and selected operation disagree'
+    formal_public_operations(read('spec/Mimir/ToolCatalog.agda'))
+    tool_wires = dict(re.findall(r'^wireName\s+(\w+)\s*=\s*"([a-z_]+)"$', read('spec/Mimir/ToolCatalog.agda'), re.M))
+    selected = {leaf: tool_wires[dict(tools)[constructor]] for constructor, leaf in leaves}
+    assert set(selected) == set(native_methods), 'closed CLI control leaves disagree'
+    assert set(selected.values()) == set(mcp_methods), 'CLI does not select every concrete control'
+    assert {leaf: mcp_methods[tool] for leaf, tool in selected.items()} == native_methods, 'CLI command selects a different action from the formal control'
+    return selected
+
+
 def formal_control_operations(source):
     body = source.split('  registered =', 1)[1].split('  lookup :', 1)[0]
     entries = re.findall(r'^\s*entry "([a-z_]+)" ([^\n]+)', body, re.M)
@@ -224,6 +268,12 @@ def check():
         'unmapped_native_cli': sorted(set(commands) - set(cli_names)),
         'missing_native_cli': sorted(set(cli_names) - set(commands)),
     }
+
+    cli_entries = {item['name']: item for item in coverage['cli']}
+    mcp_entries = {item['name']: item for item in coverage['mcp']}
+    for leaf, tool in cli_control_correspondence().items():
+        assert cli_entries[leaf]['control_tool'] == tool, ('wrong CLI control mapping', leaf)
+        assert cli_entries[leaf]['recovery_certificate'] == mcp_entries[tool]['recovery_certificate'], ('missing CLI recovery certificate', leaf)
 
     files = list((ROOT / 'spec').rglob('*.agda'))
     module_paths = {'.'.join(p.relative_to(ROOT / 'spec').with_suffix('').parts): p for p in files}

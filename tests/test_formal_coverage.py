@@ -170,5 +170,38 @@ class PublicToolCoverageTests(unittest.TestCase):
         self.assertTrue({'operation reserve', 'operation outcome', 'operation cancel'} <= set(commands))
 
 
+class CliControlCorrespondenceTests(unittest.TestCase):
+    def test_each_cli_control_selects_the_same_service_action_as_its_mcp_tool(self):
+        self.assertEqual(set(coverage.cli_control_correspondence()),
+                         {'operation ' + coverage.kebab(name) for name in
+                          coverage.enum_variants('crates/cli/src/operations.rs', 'Command')})
+
+    def test_reading_an_outcome_cannot_silently_select_cancellation(self):
+        original_read = coverage.read
+        def wrong_operation(path):
+            source = original_read(path)
+            return source.replace('controlTool outcome = Tools.operationOutcome',
+                                  'controlTool outcome = Tools.cancelOperation') if path == 'spec/Mimir/CLI.agda' else source
+        with patch.object(coverage, 'read', wrong_operation), self.assertRaises(AssertionError):
+            coverage.cli_control_correspondence()
+
+    def test_a_changed_native_cli_action_cannot_keep_the_old_formal_mapping(self):
+        original_read = coverage.read
+        def wrong_action(path):
+            source = original_read(path)
+            return source.replace('service.read_operation_outcome(token, None)',
+                                  'service.cancel_operation(token)') if path == 'crates/cli/src/operations.rs' else source
+        with patch.object(coverage, 'read', wrong_action), self.assertRaises(AssertionError):
+            coverage.cli_control_correspondence()
+
+    def test_missing_formal_control_arm_is_rejected(self):
+        original_read = coverage.read
+        def missing_control(path):
+            source = original_read(path)
+            return source.replace('  controlTool cancel = Tools.cancelOperation\n', '') if path == 'spec/Mimir/CLI.agda' else source
+        with patch.object(coverage, 'read', missing_control), self.assertRaises(AssertionError):
+            coverage.cli_control_correspondence()
+
+
 if __name__ == '__main__':
     unittest.main()
