@@ -555,6 +555,21 @@ module ExecutionOwnership where
     AllStopped token (rows before)
   completedHostHasEveryStopReceipt token before receipt = FullConfirmation.everyCopy receipt
 
+  -- Database cancellation returns before its owners can acknowledge stopping.
+  -- The public host therefore records the actual later acknowledgements from
+  -- that reached database world, rather than attaching a certificate about an
+  -- unrelated or caller-selected snapshot.
+  data HostRuns (token : ℕ) : HostState token → HostState token → Set where
+    returned : ∀ state → HostRuns token state state
+    advanced : ∀ {before middle after} → HostStep token before middle →
+      HostRuns token middle after → HostRuns token before after
+
+  record StoppedAfter (token : ℕ) (databaseTerminal : Store.World) : Set where
+    field
+      final : Store.World
+      certifiedStop : FullConfirmation token final
+      observed : HostRuns token (waiting databaseTerminal) (fullyStopped final certifiedStop)
+
 module Plan where
   record Boundary : Set where
     constructor boundary
