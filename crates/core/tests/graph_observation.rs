@@ -66,6 +66,10 @@ async fn combines_graph_and_vector_rows_from_one_view() -> Result<()> {
         .beliefs
         .iter()
         .any(|row| row.identity == belief));
+    assert!(observed
+        .belief_metadata
+        .iter()
+        .any(|row| row.identity == belief));
     assert!(observed.chunks.iter().any(|row| row.identity == chunk));
     assert!(observed
         .belief_links
