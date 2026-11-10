@@ -67,25 +67,28 @@ pub struct Digest {
 
 /// The host which actually sends the email, not the origin of every database row.
 pub fn computer_name() -> String {
-    let mut bytes = [0u8; 256];
-    let result = unsafe { libc::gethostname(bytes.as_mut_ptr().cast(), bytes.len()) };
-    if result != 0 {
+    let mut information = std::mem::MaybeUninit::<libc::utsname>::zeroed();
+    // uname fills the platform's own complete hostname field. Its ABI capacity
+    // is an OS constraint, rather than a Mimir-selected output buffer size.
+    if unsafe { libc::uname(information.as_mut_ptr()) } != 0 {
         return "unknown-host".into();
     }
-    let end = bytes
+    // Successful uname initializes every field of this C structure.
+    let information = unsafe { information.assume_init() };
+    let bytes: Vec<u8> = information
+        .nodename
         .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(bytes.len());
-    let name = std::str::from_utf8(&bytes[..end]).unwrap_or("");
-    if name.is_empty()
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-    {
-        "unknown-host".into()
-    } else {
-        name.into()
-    }
+        .map(|byte| *byte as u8)
+        .collect();
+    hostname_text(&bytes).unwrap_or("unknown-host").into()
+}
+
+fn hostname_text(bytes: &[u8]) -> Option<&str> {
+    std::ffi::CStr::from_bytes_until_nul(bytes)
+        .ok()?
+        .to_str()
+        .ok()
+        .filter(|name| !name.is_empty())
 }
 
 impl Outcome {

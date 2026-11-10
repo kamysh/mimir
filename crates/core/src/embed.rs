@@ -184,9 +184,27 @@ impl OwnedEmbeddingBackend {
             let mut ended = cancellation.clone();
             let result = tokio::select! {
                 biased;
-                _ = ended.ended() => return Err(EmbeddingCancelled.into()),
+                _ = ended.ended() => Err(EmbeddingCancelled.into()),
                 result = self.provider.embed(texts, cancellation) => result,
             };
+            let issues = owner.control.confirm_cleanup();
+            if !issues.is_empty() {
+                let mut detail = String::from("Local worker cleanup is unconfirmed. Open the user dialog before starting replacement work.");
+                for issue in issues {
+                    detail.push_str(&format!(
+                        "\nWorker {}: {}; private diagnostics: {}",
+                        issue.pid,
+                        issue.error,
+                        issue.diagnostics.display()
+                    ));
+                }
+                if let Err(error) = result {
+                    detail.push_str(&format!("\nEmbedding request: {error:#}"));
+                }
+                // Keep this as a cleanup failure, rather than an error chain
+                // classified as ordinary EmbeddingCancelled by consumers.
+                return Err(anyhow::anyhow!(detail));
+            }
             // This transition is serialized with cancel(). A cancellation that
             // won the race cannot subsequently become an accepted result.
             if owner.finish() {

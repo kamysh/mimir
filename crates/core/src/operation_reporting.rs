@@ -58,7 +58,7 @@ pub fn outcome(token: Uuid, result: OperationOutcome) -> Result<Value> {
             response["saved_replies"] = mimir_json::to_value(saved_replies)?;
             response["suggested_fix"] = json!("Repeat the original write with the same token and arguments to resume its saved next step. Discuss an unresolved prerequisite with the user; do not skip steps or silently cancel.");
         }
-        OperationOutcome::Completed { binding, outcome } => {
+        OperationOutcome::Completed { binding, outcome, .. } => {
             response["status"] = json!("completed");
             response["original_request"] = mimir_json::to_value(binding)?;
             response["result"] = mimir_json::clone_value(outcome.reply());
@@ -67,14 +67,33 @@ pub fn outcome(token: Uuid, result: OperationOutcome) -> Result<Value> {
             format!("Token {token} needs its saved records reconciled: {reason}"),
             format!("The original request and its complete saved plan/answers: {}",mimir_json::to_string(&binding)?),
             "Keep the original token, request, plan and saved answers. Explain the inconsistency to the user and resolve those records before executing more work. Do not invent a success result, change the saved plan or repeat committed changes."),
-        OperationOutcome::Cancelled { cancellation, binding, saved_replies } => {
+        OperationOutcome::Cancelled { cancellation, binding, saved_replies, pending_executions } => {
             response["status"] = json!("cancelled");
             response["cancellation"] = mimir_json::to_value(cancellation)?;
             response["original_request"] = mimir_json::to_value(binding)?;
             response["saved_replies"] = mimir_json::to_value(saved_replies)?;
             response["worker_cleanup"] = json!("not_confirmed_by_this_receipt");
+            response["pending_executions"] = mimir_json::to_value(pending_executions)?;
             response["message"] = json!("Cancellation is durable and further business publication under this token is blocked. Committed changes and saved answers remain. This database receipt does not establish that every worker has finished stopping.");
         }
+    }
+    Ok(response.into_value())
+}
+
+/// Explicit readback also identifies duplicate workers after business success.
+/// Ordinary completed write/replay/cancel answers keep their exact envelope.
+pub fn readback(token: Uuid, result: OperationOutcome) -> Result<Value> {
+    let pending = match &result {
+        OperationOutcome::Completed {
+            pending_executions, ..
+        } => Some(pending_executions.clone()),
+        _ => None,
+    };
+    let mut response = mimir_json::Document::new(outcome(token, result)?);
+    if let Some(pending) = pending {
+        response["pending_executions"] = mimir_json::to_value(pending)?;
+        response["worker_cleanup"] = json!("not_confirmed_by_this_receipt");
+        response["message"] = json!("The original business result is complete and unchanged. This snapshot lists any executions still lacking their physical-stop acknowledgement. A user-requested cancel_operation waits for every copy to stop without rewriting this result; identify an unreachable owner by its recorded host/address, program and process ID, never infer cleanup from that identity.");
     }
     Ok(response.into_value())
 }
@@ -82,14 +101,23 @@ pub fn outcome(token: Uuid, result: OperationOutcome) -> Result<Value> {
 /// Report database revocation and physical cleanup separately. A dropped
 /// future cannot replace the operating system's missing child-exit receipt.
 pub fn cancellation(token: Uuid, result: crate::OperationCancellation) -> Result<Value> {
+    let all_confirmed = result.all_cleanup_confirmed();
     let confirmed = result.local_cleanup_confirmed();
     let issues = result.cleanup_issues().to_vec();
     let mut response = mimir_json::Document::new(outcome(token, result.into_outcome())?);
+    if all_confirmed && issues.is_empty() && response["status"] == "completed" {
+        // Cancellation stopped duplicate execution; it does not rewrite the
+        // original completed business envelope or saved result.
+        return Ok(response.into_value());
+    }
     if !issues.is_empty() {
         response["worker_cleanup"] = json!("unconfirmed_for_this_server");
         response["next_action"] = json!("open_user_dialog");
         response["cleanup_issues"] = mimir_json::to_value(issues)?;
         response["message"] = json!("The saved operation state and earlier committed replies are retained. This Mimir process could not confirm that the listed local workers exited. Explain the operating-system error and private diagnostic location to the user before starting replacement work. Retry cancel_operation with the same token to retry cleanup; do not infer that a dropped request or a database cancellation receipt means the workers stopped.");
+    } else if all_confirmed {
+        response["worker_cleanup"] = json!("confirmed_for_all_registered_copies");
+        response["message"] = json!("Cancellation is durable. Every registered execution of this action confirmed that its request body and owned local workers stopped. Earlier committed changes and saved answers remain. This guarantee requires all participating Mimir copies to use the compatible registration protocol; it does not assert that a hosted provider stopped remote computation.");
     } else if confirmed {
         response["worker_cleanup"] = json!("confirmed_for_this_server");
         response["message"] = json!("Cancellation is durable and further publication under this token is blocked. This Mimir process stopped its owned execution before replying. Cleanup in other processes is not confirmed by this receipt. Earlier committed changes and saved answers remain.");

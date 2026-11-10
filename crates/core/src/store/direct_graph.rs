@@ -182,6 +182,7 @@ impl AgeStore {
             client: self.client.clone(),
             graph_name: self.graph_name.clone(),
         };
+        let original_arguments = mimir_json::to_string(step.expected().arguments())?;
         self.commit_final_operation_step(step, move |tx, binding| {
             Box::pin(async move {
                 let original = edge(binding)?;
@@ -204,5 +205,12 @@ impl AgeStore {
             })
         })
         .await
+        .map_err(|error| {
+            RequestCorrection::bound_relationship_reference(
+                error,
+                step.token(),
+                &original_arguments,
+            )
+        })
     }
 }

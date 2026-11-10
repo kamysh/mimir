@@ -15,6 +15,85 @@ def read(path):
     return (ROOT / path).read_text()
 
 
+def check_application_assembly(source):
+    """Guard the reviewed assembly declarations, not arbitrary Agda semantics.
+
+    This deliberately accepts only the maintained local declaration shapes.
+    A refactor needs review of this guard; comments/whitespace are not evidence.
+    Agda still establishes totality, dependent indices and the actual theorems.
+    No other specification modules are searched for purported implementations.
+    """
+    lines = [line.split('--', 1)[0].rstrip() for line in source.splitlines()]
+    assert lines.count('module Run (environment : Environment) where') == 1, 'missing or repeated application execution assembly'
+    first = lines.index('module Run (environment : Environment) where') + 1
+    end = next((index for index in range(first, len(lines))
+                if lines[index].strip() and not lines[index].startswith('  ')), len(lines))
+    lines = lines[first:end]
+
+    def declaration(name):
+        start = re.compile(r'^  (?:(?:data|record|module) )?' + re.escape(name) + r'(?=\s|:|$)')
+        matches = [index for index, line in enumerate(lines) if start.match(line)]
+        assert matches, ('missing application assembly declaration', name)
+        first = matches[0]
+        end = first + 1
+        while end < len(lines):
+            line = lines[end]
+            if line.strip() and not line.startswith(('    ', '  ... ')) and not start.match(line):
+                break
+            end += 1
+        assert all(first <= index < end for index in matches), ('split or repeated application assembly declaration', name)
+        return ' '.join(' '.join(lines[first:end]).split())
+
+    expected = {
+        'WriteFixed': 'module WriteFixed requested = Catalogue.Fixed Writes.recoverable requested using (operation)',
+        'Route': '''data Route : Set where
+          plainRoute : C.Choice → Route
+          registeredRoute : Creating.Request → Route''',
+        'route': '''route : Call → Route
+          route call@(C.toolCall tool submitted) with Tools.kind tool
+          ... | Tools.businessWrite = registeredRoute (Creating.submittedWrite tool submitted)
+          ... | Tools.readOnly = plainRoute (choice call)
+          ... | Tools.operationControl = plainRoute (choice call)
+          route call@(C.privateRead request) = plainRoute (choice call)''',
+        'RouteCertificate': '''RouteCertificate : (selected : Route) → Set₁
+          RouteCertificate (plainRoute selected) = C.Certificate (C.Choice.kind selected)
+          RouteCertificate (registeredRoute requested) = Recovery.RecoverableFor Store.World ⊤ Writes.Response
+            (λ _ → Writes.Meaning requested)''',
+        'routeCertificate': '''routeCertificate : (selected : Route) → RouteCertificate selected
+          routeCertificate (plainRoute selected) = C.certificate reviewEnvironment (C.Choice.kind selected)
+          routeCertificate (registeredRoute requested) = WriteFixed.operation requested''',
+        'routeOperation': '''routeOperation : (selected : Route) → RouteCertificate selected →
+          Recovery.RecoverableFor Store.World (RouteInput selected) (RouteValue selected) (RouteGoal selected)
+          routeOperation (plainRoute selected) proof = C.executable (C.Choice.kind selected) proof
+          routeOperation (registeredRoute requested) proof = proof''',
+        'certificate': '''certificate : (call : Call) → RouteCertificate (route call)
+          certificate call = routeCertificate (route call)''',
+        'operation': '''operation : (call : Call) → Recovery.RecoverableFor Store.World (RouteInput (route call))
+          (RouteValue (route call)) (RouteGoal (route call))
+          operation call = routeOperation (route call) (certificate call)''',
+        'Checked': '''module Checked (call : Call) = Recovery.CheckedFor (operation call) (RouteSuccess (route call))''',
+        'State': '''data State : Set where
+          running : (call : Call) (initial : Store.World) →
+            Checked.RunState call (input call) initial → State''',
+        'start': '''start : Tools.Tool → Wire.Value → Store.World → State
+          start tool submitted initial = running call initial (Checked.start call (input call) initial)
+            where call = C.toolCall tool submitted''',
+        'startRead': '''startRead : ReadRequest → Store.World → State
+          startRead request initial = running call initial (Checked.start call (input call) initial)
+            where call = C.privateRead request''',
+        'Result': '''record Result : Set where
+          constructor terminalResult
+          field
+            call : Call
+            initial : Store.World
+            terminal : Checked.Terminal call (input call) initial''',
+    }
+    for name, shape in expected.items():
+        assert declaration(name) == ' '.join(shape.split()), ('application execution assembly changed; review the fixed certificate boundary', name)
+    return {'state_constructors': ['running'], 'result_constructor': 'terminalResult',
+            'boundary': 'Reviewed local assembly shape only; Agda checking and Rust correspondence remain separate.'}
+
+
 def enum_variants(path, name):
     match = re.search(r'(?:pub(?:\([^)]*\))? )?enum ' + name + r' \{(.*?)\n\}', read(path), re.S)
     assert match, (path, name)
@@ -204,10 +283,88 @@ def formal_field_names(source, name):
     return set(re.findall(r'toList "([a-z_]+)"', body.group(1)))
 
 
+def record_field_names(source, name):
+    """Read the maintained flat record headers used by the snapshot envelope."""
+    body = re.search(r'^record ' + re.escape(name) + r' : Set where\n(.*?)(?=^\S|\Z)',
+                     source, re.M | re.S)
+    assert body, ('missing world record', name)
+    declarations = body.group(1).split('field', 1)[1]
+    fields = []
+    for declaration in re.split(r'[;\n]', declarations):
+        declaration = declaration.split('--', 1)[0]
+        if ':' in declaration:
+            names = declaration.split(':', 1)[0].split()
+            assert names and all(re.fullmatch(r'\w+', item) for item in names), declaration
+            fields.extend(names)
+    assert fields and len(fields) == len(set(fields)), (name, fields)
+    return set(fields)
+
+
+def check_intended_outcome_contract():
+    contract = json.loads(read('docs/intended-outcome-contract.schema.json'))
+    definitions = contract['$defs']
+    def references(value):
+        if isinstance(value, dict):
+            if '$ref' in value:
+                assert value['$ref'].startswith('#/$defs/'), value['$ref']
+                assert value['$ref'].removeprefix('#/$defs/') in definitions, value['$ref']
+            for nested in value.values():
+                references(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                references(nested)
+    references(contract)
+    assert set(definitions['input']['properties']) == {
+        'contract_version', 'entrypoint', 'request', 'initial_world',
+        'current_settings', 'observations'}, 'intended input contract changed'
+    assert set(definitions['output']['properties']) == {
+        'world', 'body_result', 'public_payload'}, 'complete intended observation is required'
+    assert set(definitions['nativeObservation']['properties']) == {
+        'world', 'body_result', 'public_payload', 'exchange'}, 'native exchange must remain separate from oracle input'
+    record_bindings = contract['x-model-records']
+    expected_bindings = {
+        ('world', 'ApplicationStore', 'World'),
+        ('learning', 'LearningStore', 'World'),
+        ('publication', 'ReviewPreparationPublication', 'World'),
+        ('ledger', 'ReviewLedger', 'World'),
+        ('history', 'LearningHistoryWire', 'Database'),
+        ('operations', 'ApplicationStore', 'OperationTables'),
+        ('execution', 'ApplicationStore', 'ExecutionRow'),
+    }
+    actual_bindings = [(item['definition'], item['module'], item['record'])
+                       for item in record_bindings]
+    assert len(actual_bindings) == len(expected_bindings) and set(actual_bindings) == expected_bindings, (
+        'complete snapshot record bindings are required', actual_bindings)
+    for binding in record_bindings:
+        expected = record_field_names(read('spec/Mimir/' + binding['module'] + '.agda'), binding['record'])
+        observed = definitions[binding['definition']]
+        assert set(observed['properties']) == set(observed['required']) == expected, binding
+        assert observed['additionalProperties'] is False, binding
+    names = [name for family in contract['x-intent-adapters'] for name in family['operations']]
+    advertised = set(re.findall(r'^wireName \w+ = "([a-z_]+)"$',
+                                read('spec/Mimir/ToolCatalog.agda'), re.M))
+    assert len(names) == len(set(names)), 'duplicate intended-outcome family'
+    internal = {'delete_evidence', 'reembed', 'stats', 'get_pattern'}
+    assert set(names) == advertised | internal, {
+        'missing_intents': sorted(advertised - set(names)),
+        'missing_internal_intents': sorted(internal - set(names)),
+        'unexpected_intents': sorted(set(names) - advertised - internal)}
+    for family in contract['x-intent-adapters']:
+        assert family['whole_operation_adapter'] == 'required-by-152', family
+        assert family['pure_sources'], family
+        for symbol in family['pure_sources']:
+            module, *_, declaration = symbol.split('.')
+            assert re.search(r'\b' + re.escape(declaration) + r'\s*(?::|=)',
+                             read('spec/Mimir/' + module + '.agda')), symbol
+    return len(names)
+
+
 def check():
     coverage = json.loads(read('docs/FORMAL-BEHAVIOR-COVERAGE.json'))
     inventory = json.loads(read('docs/FORMAL-INVENTORY.json'))
     public_count = check_public_tools(coverage)
+    intended_count = check_intended_outcome_contract()
+    check_application_assembly(read('spec/Mimir/ApplicationProtocol.agda'))
 
     controls = read('spec/Mimir/OperationControls.agda')
     native_catalogue = read('crates/core/src/operation_catalogue.rs')
@@ -268,7 +425,7 @@ def check():
         r'^source Schema\.(\w+) = toList (".*")$', read('spec/Mimir/MigrationScriptBinding.agda'), re.M)}
     migration_keys = ['initial', 'searchPath', 'embeddingTable', 'evidenceEdges',
                       'betaBeliefs', 'learning', 'candidates', 'assessment', 'owners', 'allocation',
-                      'reviewQueueNotifications', 'operationReservations', 'operationBindings', 'operationStepReplies', 'operationPlans', 'operationRequestKeys', 'candidateKeyContent', 'embeddingOwners', 'operationCancellations', 'decayAccounting', 'firstDefeatClock', 'backfillChangeEvents', 'beliefSources', 'reviewPreparationEvents']
+                      'reviewQueueNotifications', 'operationReservations', 'operationBindings', 'operationStepReplies', 'operationPlans', 'operationRequestKeys', 'candidateKeyContent', 'embeddingOwners', 'operationCancellations', 'decayAccounting', 'firstDefeatClock', 'backfillChangeEvents', 'beliefSources', 'reviewPreparationEvents', 'operationExecutionStops']
     sql_files = sorted((ROOT / 'crates/core/migrations').glob('*.sql'))
     assert len(sql_files) == len(migration_keys) == len(bound_sources)
     for path, key in zip(sql_files, migration_keys):
@@ -276,6 +433,7 @@ def check():
 
     return {
         'result': 'passed', 'mcp_operations': public_count,
+        'intended_outcome_contract_entries': intended_count,
         'cli_leaves': len(cli_names), 'lifecycle_groups': len(coverage['lifecycles']),
         'source_artifacts': len(inventory['files']),
         'production_artifacts': sum(x['classification'] == 'production-behavior' for x in inventory['files']),

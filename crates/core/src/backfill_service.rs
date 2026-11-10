@@ -99,7 +99,7 @@ impl MimirService {
         }
         let backend=self.embeddings.as_ref().ok_or_else(||problem(Code::MissingEvidence,"The original pending source requires a configured embedding backend before writing; open a user dialog to repair it or cancel.".into()))?;
         let texts = [source.content.clone()];
-        let job = self.operation_embedding_job(backend, &texts, Some(token))?;
+        let job = self.operation_embedding_job(backend, &texts, Some(token));
         tokio::pin!(job);
         loop {
             tokio::select! {

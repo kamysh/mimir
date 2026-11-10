@@ -2,7 +2,7 @@
 //! is shared through PostgreSQL; this registry does not infer remote cleanup.
 use crate::{
     embed::{EmbeddingCancelled, EmbeddingStopHandle, WorkerCleanupIssue},
-    store::OperationOutcome,
+    store::{executions, ExecutionReceipt, OperationOutcome},
     MimirService,
 };
 use anyhow::{Context, Result};
@@ -11,21 +11,87 @@ use std::{
     collections::HashMap,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     task::{Context as TaskContext, Poll},
 };
 use tokio::sync::watch;
 use uuid::Uuid;
 
+// This capability exists only while the exact registered request is polled.
+// It cannot be supplied by a caller or inferred from another active token.
+tokio::task_local! {
+    static CURRENT_REQUEST: Arc<RequestScope>;
+}
+
+#[derive(Default)]
+struct Children {
+    body_destroyed: bool,
+    stopped: Vec<watch::Receiver<bool>>,
+}
+
+struct RequestScope {
+    execution: ExecutionReceipt,
+    registry: Weak<OperationExecutions>,
+    children: Mutex<Children>,
+}
+
+impl RequestScope {
+    fn admits(&self, registry: &Arc<OperationExecutions>, token: Uuid) -> bool {
+        self.execution.operation_token == token && self.registry.ptr_eq(&Arc::downgrade(registry))
+    }
+
+    fn own_child(&self, child: &Active) -> Result<()> {
+        let mut children = self
+            .children
+            .lock()
+            .map_err(|_| anyhow::anyhow!("request child ownership is unavailable"))?;
+        if children.body_destroyed {
+            return Err(EmbeddingCancelled.into());
+        }
+        children.stopped.push(child.stopped.subscribe());
+        Ok(())
+    }
+
+    fn body_destroyed(&self) {
+        self.children
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .body_destroyed = true;
+    }
+
+    async fn join_children(&self) -> Result<()> {
+        let waiting = {
+            let children = self
+                .children
+                .lock()
+                .map_err(|_| anyhow::anyhow!("request child ownership is unavailable"))?;
+            anyhow::ensure!(
+                children.body_destroyed,
+                "The request body has not stopped; its execution cannot be acknowledged"
+            );
+            children.stopped.clone()
+        };
+        Stopping { waiting }.wait().await
+    }
+}
+
 struct Active {
     abort: AbortHandle,
     stopped: watch::Sender<bool>,
+    execution: Option<ExecutionReceipt>,
+}
+#[derive(Clone)]
+struct PendingAcknowledgement {
+    execution: ExecutionReceipt,
+    registration_uncertain: bool,
+    scope: Option<Arc<RequestScope>>,
 }
 #[derive(Default)]
 struct State {
     active: HashMap<Uuid, Vec<Arc<Active>>>,
     stopping: HashMap<Uuid, watch::Sender<bool>>,
     embedding_cleanup: HashMap<Uuid, Vec<EmbeddingStopHandle>>,
+    awaiting_ack: HashMap<Uuid, PendingAcknowledgement>,
 }
 #[derive(Default)]
 pub(crate) struct OperationExecutions {
@@ -36,18 +102,31 @@ struct Owner {
     registry: Arc<OperationExecutions>,
     token: Uuid,
     active: Arc<Active>,
+    scope: Option<Arc<RequestScope>>,
 }
 impl Drop for Owner {
     fn drop(&mut self) {
         // OwnedExecution declares its body first, so provider futures and
         // native guards have dropped. Physical cleanup errors remain tracked
         // separately and cannot become a confirmed stop receipt.
-        self.active.stopped.send_replace(true);
+        if let Some(scope) = &self.scope {
+            scope.body_destroyed();
+        }
         let mut state = self
             .registry
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if let Some(execution) = &self.active.execution {
+            state.awaiting_ack.insert(
+                execution.execution_id,
+                PendingAcknowledgement {
+                    execution: execution.clone(),
+                    registration_uncertain: false,
+                    scope: self.scope.clone(),
+                },
+            );
+        }
         if let Some(entries) = state.active.get_mut(&self.token) {
             entries.retain(|entry| !Arc::ptr_eq(entry, &self.active));
             if entries.is_empty() {
@@ -59,6 +138,22 @@ impl Drop for Owner {
                     }
                 }
             }
+        }
+        // A waiter may flush immediately when this event wakes it. Publish
+        // only after the stopped execution is queued and the registry unlocks.
+        drop(state);
+        self.active.stopped.send_replace(true);
+    }
+}
+
+struct RegistrationOwner {
+    registry: Arc<OperationExecutions>,
+    execution: Option<ExecutionReceipt>,
+}
+impl Drop for RegistrationOwner {
+    fn drop(&mut self) {
+        if let Some(execution) = self.execution.take() {
+            self.registry.remember_stopped(execution, true);
         }
     }
 }
@@ -118,8 +213,12 @@ impl OperationExecutions {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("operation execution registry is unavailable"))?;
+        let still_active = state
+            .active
+            .get(&token)
+            .is_some_and(|entries| !entries.is_empty());
         if let Some(jobs) = state.embedding_cleanup.get_mut(&token) {
-            jobs.retain(EmbeddingStopHandle::cleanup_pending);
+            jobs.retain(|job| still_active || job.cleanup_pending());
             if jobs.is_empty() {
                 state.embedding_cleanup.remove(&token);
             }
@@ -127,10 +226,24 @@ impl OperationExecutions {
         Ok(issues)
     }
 
+    #[cfg(test)]
     fn own<F: Future>(self: &Arc<Self>, token: Uuid, work: F) -> Result<OwnedExecution<F>> {
+        self.own_registered(token, work, None)
+    }
+
+    fn own_registered<F: Future>(
+        self: &Arc<Self>,
+        token: Uuid,
+        work: F,
+        execution: Option<ExecutionReceipt>,
+    ) -> Result<OwnedExecution<F>> {
         let (abort, registration): (AbortHandle, AbortRegistration) = AbortHandle::new_pair();
         let (stopped, _) = watch::channel(false);
-        let active = Arc::new(Active { abort, stopped });
+        let active = Arc::new(Active {
+            abort,
+            stopped,
+            execution,
+        });
         {
             let mut state = self
                 .state
@@ -147,8 +260,43 @@ impl OperationExecutions {
                 registry: self.clone(),
                 token,
                 active,
+                scope: None,
             },
         })
+    }
+
+    fn remember_stopped(&self, execution: ExecutionReceipt, registration_uncertain: bool) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .awaiting_ack
+            .insert(
+                execution.execution_id,
+                PendingAcknowledgement {
+                    execution,
+                    registration_uncertain,
+                    scope: None,
+                },
+            );
+    }
+
+    fn acknowledgements(&self) -> Result<Vec<PendingAcknowledgement>> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("operation execution registry is unavailable"))?
+            .awaiting_ack
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    fn acknowledged(&self, identity: Uuid) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .awaiting_ack
+            .remove(&identity);
     }
     fn stop(&self, token: Uuid) -> Result<Stopping> {
         let active = {
@@ -204,6 +352,7 @@ pub struct OperationCancellation {
     outcome: OperationOutcome,
     local_cleanup_confirmed: bool,
     cleanup_issues: Vec<WorkerCleanupIssue>,
+    all_cleanup_confirmed: bool,
 }
 impl OperationCancellation {
     pub fn local_cleanup_confirmed(&self) -> bool {
@@ -215,56 +364,235 @@ impl OperationCancellation {
     pub fn cleanup_issues(&self) -> &[WorkerCleanupIssue] {
         &self.cleanup_issues
     }
+    pub fn all_cleanup_confirmed(&self) -> bool {
+        self.all_cleanup_confirmed
+    }
 }
 impl MimirService {
     pub(crate) fn operation_embedding_job<'a>(
-        &self,
+        &'a self,
         backend: &'a crate::embed::OwnedEmbeddingBackend,
         texts: &'a [String],
         token: Option<Uuid>,
-    ) -> Result<crate::embed::EmbeddingJob<'a>> {
-        let job = backend.embed(texts);
-        if let Some(token) = token {
-            self.operation_executions
-                .track_embedding(token, job.stop_handle())?;
-        }
-        Ok(job)
+    ) -> crate::embed::EmbedFuture<'a> {
+        Box::pin(async move {
+            let work = async {
+                let job = backend.embed(texts);
+                if let Some(token) = token {
+                    self.operation_executions
+                        .track_embedding(token, job.stop_handle())?;
+                }
+                job.await
+            };
+            match token {
+                Some(token) => {
+                    let parent = CURRENT_REQUEST
+                        .try_with(|scope| {
+                            scope
+                                .admits(&self.operation_executions, token)
+                                .then(|| scope.clone())
+                        })
+                        .ok()
+                        .flatten();
+                    if let Some(parent) = parent {
+                        self.own_child(parent, token, work).await
+                    } else {
+                        self.own_execution(token, work, true).await
+                    }
+                }
+                None => work.await,
+            }
+        })
     }
 
-    pub(crate) async fn own_operation<F: Future<Output = Result<T>>, T>(
+    async fn own_child<F: Future<Output = Result<T>> + Send, T: Send>(
+        &self,
+        parent: Arc<RequestScope>,
+        token: Uuid,
+        work: F,
+    ) -> Result<T> {
+        let mut client = crate::db::connect(&self.database).await?;
+        if !executions::permits_child(&mut client, token).await? {
+            return Err(EmbeddingCancelled.into());
+        }
+        drop(client);
+        let owned = self
+            .operation_executions
+            .own_registered(token, work, None)?;
+        parent.own_child(&owned._owner.active)?;
+        let result = owned
+            .await
+            .map_err(|_| anyhow::Error::from(EmbeddingCancelled))
+            .and_then(std::convert::identity);
+        let cleanup = self.operation_executions.confirm_embedding_cleanup(token);
+        match result {
+            Ok(value) => {
+                ensure_physical_cleanup(&cleanup?)?;
+                Ok(value)
+            }
+            Err(error) => {
+                let issues = cleanup.context(format!("Original cause: {error:#}"))?;
+                ensure_physical_cleanup(&issues).context(format!("Original cause: {error:#}"))?;
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) async fn own_operation<F: Future<Output = Result<T>> + Send, T: Send>(
         &self,
         token: Uuid,
         work: F,
     ) -> Result<T> {
-        let result = match self.operation_executions.own(token, work) {
-            Ok(owned) => {
+        self.own_execution(token, work, false).await
+    }
+
+    async fn own_execution<F: Future<Output = Result<T>> + Send, T: Send>(
+        &self,
+        token: Uuid,
+        work: F,
+        provider: bool,
+    ) -> Result<T> {
+        // LISTEN is acknowledged before registration can commit. A later
+        // cancellation therefore either prevents registration or is queued.
+        let mut revoked =
+            crate::db::OperationExecutionSubscription::cancelled(&self.database, token).await?;
+        let mut client = crate::db::connect(&self.database).await?;
+        let (execution, mut starting) =
+            match executions::register(&mut client, token, |execution| RegistrationOwner {
+                registry: self.operation_executions.clone(),
+                execution: Some(execution.clone()),
+            })
+            .await
+            {
+                Ok(Some(execution)) => execution,
+                Ok(None) if provider => return Err(EmbeddingCancelled.into()),
+                // A terminal action may only perform the existing exact readback.
+                // Provider work never uses this branch.
+                Ok(None) => return work.await,
+                Err(error) => {
+                    return Err(error);
+                }
+            };
+        // Registration is durable; this connection has no remaining work.
+        // The separately owned cancellation subscription stays active.
+        drop(client);
+        let scope = Arc::new(RequestScope {
+            execution: execution.clone(),
+            registry: Arc::downgrade(&self.operation_executions),
+            children: Default::default(),
+        });
+        let work = CURRENT_REQUEST.scope(scope.clone(), work);
+        let result = match self.operation_executions.own_registered(
+            token,
+            work,
+            Some(execution.clone()),
+        ) {
+            Ok(mut owned) => {
+                owned._owner.scope = Some(scope);
+                starting.execution = None;
                 let mut owned = Box::pin(owned);
-                let result = owned.as_mut().await;
+                let result = tokio::select! {
+                    biased;
+                    observed = revoked.changed() => {
+                        match observed {
+                            Ok(()) => Err(EmbeddingCancelled.into()),
+                            Err(error) => Err(error.context("Cancellation monitoring disconnected. This execution stopped; physical confirmation remains pending until its owner can acknowledge it.")),
+                        }
+                    }
+                    result = owned.as_mut() => result.map_err(|_| anyhow::Error::from(EmbeddingCancelled)),
+                };
                 // Drop the provider and publish its stop receipt before waiting
                 // for the cancellation writer; otherwise they deadlock.
                 drop(owned);
                 result
             }
             Err(error) => {
+                // Registration committed, but the local cancellation gate won
+                // before this body was ever polled.
+                drop(starting);
+                let _ = self.acknowledge_stopped(Some(token)).await;
                 self.operation_executions.wait_decision(token).await?;
                 return Err(error);
             }
         };
+        let cleanup = self.acknowledge_stopped(Some(token)).await;
         match result {
-            Ok(result) => result,
-            Err(_) => {
+            Ok(result) => {
+                let issues = cleanup?;
+                ensure_physical_cleanup(&issues)?;
+                result
+            }
+            Err(error) => {
+                let issues = cleanup.context(format!("Execution stopped, but global acknowledgement remains pending. Original cause: {error:#}"))?;
+                ensure_physical_cleanup(&issues).context(format!("Original cause: {error:#}"))?;
                 self.operation_executions.wait_decision(token).await?;
-                Err(EmbeddingCancelled.into())
+                Err(error)
             }
         }
+    }
+
+    /// Host-owned async finalization. Drop only queues stopped executions;
+    /// this method publishes acknowledgements after their physical cleanup.
+    pub async fn confirm_stopped_executions(&self) -> Result<Vec<WorkerCleanupIssue>> {
+        self.acknowledge_stopped(None).await
+    }
+
+    async fn acknowledge_stopped(&self, token: Option<Uuid>) -> Result<Vec<WorkerCleanupIssue>> {
+        let pending: Vec<_> = self
+            .operation_executions
+            .acknowledgements()?
+            .into_iter()
+            .filter(|pending| token.is_none_or(|token| pending.execution.operation_token == token))
+            .collect();
+        if pending.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut issues = Vec::new();
+        let mut client = crate::db::connect(&self.database).await?;
+        for pending in pending {
+            if let Some(scope) = &pending.scope {
+                scope.join_children().await?;
+            }
+            let execution = pending.execution;
+            let local = self
+                .operation_executions
+                .confirm_embedding_cleanup(execution.operation_token)?;
+            if !local.is_empty() {
+                issues.extend(local);
+                continue;
+            }
+            match executions::acknowledge(&mut client, &execution).await? {
+                Some(receipt) if receipt.stopped_at.is_some() => self.operation_executions.acknowledged(execution.execution_id),
+                None if pending.registration_uncertain => { // No body ever began under this uncertain registration.
+                    self.operation_executions.acknowledged(execution.execution_id);
+                }
+                Some(_) => anyhow::bail!("Execution {} has no physical-stop acknowledgement; keep it pending and open the user dialog", execution.execution_id),
+                None => anyhow::bail!("Registered execution {} disappeared without its stop acknowledgement; keep the original token and open the user dialog", execution.execution_id),
+            }
+        }
+        Ok(issues)
+    }
+
+    pub async fn finish_operation_host(&self) -> Result<()> {
+        ensure_physical_cleanup(&self.confirm_stopped_executions().await?)
     }
     /// Stop owned calls before waiting for database revocation. A blocked
     /// database query must not keep a cancelled native provider running.
     pub async fn cancel_operation(&self, token: Uuid) -> Result<OperationCancellation> {
         let stopping = self.operation_executions.stop(token)?;
-        let recorded = self.record_operation_cancellation(token).await;
+        let mut acknowledgements =
+            crate::db::OperationExecutionSubscription::stopped(&self.database, token).await?;
+        let recorded = async {
+            let store = crate::store::AgeStore::new(
+                crate::db::connect(&self.database).await?,
+                self.database.dbname.clone(),
+            )?;
+            store.record_operation_cancellation(token).await?;
+            Ok::<_, anyhow::Error>(store)
+        }
+        .await;
         let stopped = stopping.wait().await;
-        let cleanup = self.operation_executions.confirm_embedding_cleanup(token);
+        let cleanup = self.acknowledge_stopped(Some(token)).await;
         self.operation_executions.decision(
             token,
             recorded.is_ok()
@@ -273,21 +601,62 @@ impl MimirService {
         );
         stopped?;
         let cleanup_issues = cleanup?;
-        recorded.context(if cleanup_issues.is_empty() {
+        let store = recorded.context(if cleanup_issues.is_empty() {
             "This process's work stopped, but database cancellation is unconfirmed. Keep the token and read its outcome before retrying cancellation; do not restart its business work."
         } else {
             "The request future was dropped, but local worker cleanup and database cancellation remain unconfirmed. Keep the token and retry cancellation; inspect the private worker diagnostics and ask the user before starting replacement work."
         })?;
-        let outcome = self.read_operation_outcome(token, None).await?;
-        let local_cleanup_confirmed =
-            cleanup_issues.is_empty() && matches!(&outcome, OperationOutcome::Cancelled { .. });
+        let mut outcome = store.read_operation_outcome(token, None).await?;
+        // After revocation commits, registration is fenced under the same
+        // reservation lock. Only actual owner acknowledgements shrink this set.
+        while cleanup_issues.is_empty() {
+            let pending = match &outcome {
+                OperationOutcome::Cancelled {
+                    pending_executions, ..
+                } => pending_executions.clone(),
+                OperationOutcome::Completed { .. } => store.pending_execution_stops(token).await?,
+                _ => break,
+            };
+            if pending.is_empty() {
+                break;
+            }
+            acknowledgements.changed().await.context("Global worker cleanup remains pending. A disconnected copy has not confirmed physical stop; read operation_outcome and restore that owner's connection, without inventing a deadline or replacement action")?;
+            outcome = store.read_operation_outcome(token, None).await?;
+        }
+        let local_cleanup_confirmed = cleanup_issues.is_empty()
+            && matches!(
+                &outcome,
+                OperationOutcome::Cancelled { .. } | OperationOutcome::Completed { .. }
+            );
+        let all_cleanup_confirmed = local_cleanup_confirmed;
         Ok(OperationCancellation {
             outcome,
             local_cleanup_confirmed,
             cleanup_issues,
+            all_cleanup_confirmed,
         })
     }
 }
+
+fn ensure_physical_cleanup(issues: &[WorkerCleanupIssue]) -> Result<()> {
+    if issues.is_empty() {
+        return Ok(());
+    }
+    let mut message = String::from("Physical cleanup remains unconfirmed; no execution acknowledgement was published. Open the user dialog before replacement work.");
+    for issue in issues {
+        message.push_str(&format!(
+            "\nWorker {}: {}; private diagnostics: {}",
+            issue.pid,
+            issue.error,
+            issue.diagnostics.display()
+        ));
+    }
+    anyhow::bail!(message)
+}
+
+#[cfg(test)]
+#[path = "operation_global_tests.rs"]
+mod global_tests;
 
 #[cfg(test)]
 mod tests {
@@ -302,6 +671,7 @@ mod tests {
             },
             binding: None,
             saved_replies: Vec::new(),
+            pending_executions: Vec::new(),
         }
     }
 
@@ -313,6 +683,7 @@ mod tests {
             OperationCancellation {
                 outcome: cancelled(token),
                 local_cleanup_confirmed: false,
+                all_cleanup_confirmed: false,
                 cleanup_issues: vec![WorkerCleanupIssue {
                     pid: 123,
                     diagnostics: "/private/worker/diagnostics".into(),
@@ -346,6 +717,7 @@ mod tests {
             OperationCancellation {
                 outcome: cancelled(token),
                 local_cleanup_confirmed: true,
+                all_cleanup_confirmed: false,
                 cleanup_issues: Vec::new(),
             },
         )
@@ -382,5 +754,65 @@ mod tests {
         drop(owned);
         stopping.wait().await.unwrap();
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn stop_receipt_wakes_only_after_its_acknowledgement_is_queued() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::task::{Wake, Waker};
+        struct ObserveQueue {
+            registry: Arc<OperationExecutions>,
+            identity: Uuid,
+            correct: AtomicBool,
+            observations: AtomicUsize,
+        }
+        impl Wake for ObserveQueue {
+            fn wake(self: Arc<Self>) {
+                let queued = self
+                    .registry
+                    .acknowledgements()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row.execution.execution_id == self.identity);
+                self.correct.fetch_and(queued, Ordering::SeqCst);
+                self.observations.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        // Local registry observation only: this mock receipt is never stored.
+        let token = Uuid::new_v4();
+        let execution = ExecutionReceipt {
+            execution_id: Uuid::new_v4(),
+            operation_token: token,
+            registered_at: chrono::Utc::now(),
+            stopped_at: None,
+            owner_program: "test-registry".into(),
+            owner_pid: i64::from(std::process::id()),
+            owner_host: None,
+            owner_host_source: None,
+            client_address: None,
+        };
+        let registry = Arc::new(OperationExecutions::default());
+        let owned = registry
+            .own_registered(token, std::future::pending::<()>(), Some(execution.clone()))
+            .unwrap();
+        let mut receiver = owned._owner.active.stopped.subscribe();
+        let observer = Arc::new(ObserveQueue {
+            registry,
+            identity: execution.execution_id,
+            correct: AtomicBool::new(true),
+            observations: AtomicUsize::new(0),
+        });
+        let waker = Waker::from(observer.clone());
+        let mut changed = Box::pin(receiver.changed());
+        assert!(changed
+            .as_mut()
+            .poll(&mut TaskContext::from_waker(&waker))
+            .is_pending());
+        drop(owned);
+        assert!(observer.observations.load(Ordering::SeqCst) > 0);
+        assert!(
+            observer.correct.load(Ordering::SeqCst),
+            "stop receipt became observable before its owner could acknowledge"
+        );
     }
 }

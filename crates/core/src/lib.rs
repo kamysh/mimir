@@ -434,7 +434,7 @@ impl MimirService {
             embedder,
             std::slice::from_ref(&belief.content),
             operation_token,
-        )?;
+        );
         tokio::pin!(job);
         loop {
             tokio::select! {
@@ -507,7 +507,7 @@ impl MimirService {
             embedder,
             std::slice::from_ref(&belief.content),
             operation_token,
-        )?;
+        );
         tokio::pin!(job);
         loop {
             tokio::select! {

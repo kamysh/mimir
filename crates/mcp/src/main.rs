@@ -706,35 +706,46 @@ where
     let mut running = FuturesUnordered::new();
     let mut replies = std::collections::VecDeque::new();
     let mut outgoing: Option<Outgoing> = None;
-    loop {
-        if outgoing.is_none() {
-            outgoing = replies
-                .pop_front()
-                .map(|bytes| Outgoing { bytes, written: 0 });
-        }
-        tokio::select! {
-            biased;
-            read = reader.read_until(b'\n', &mut partial) => {
-                if read? == 0 {
-                    // Drop every active request before returning. Each owned
-                    // native worker stops and is reaped synchronously on drop.
-                    return Ok(());
+    let served: Result<()> = async {
+        loop {
+            if outgoing.is_none() {
+                outgoing = replies
+                    .pop_front()
+                    .map(|bytes| Outgoing { bytes, written: 0 });
+            }
+            tokio::select! {
+                biased;
+                read = reader.read_until(b'\n', &mut partial) => {
+                    if read? == 0 {
+                        // The host below drops bodies, then owns their async ACKs.
+                        return Ok(());
+                    }
+                    let line=std::mem::take(&mut partial);
+                    running.push(async move {
+                        let mut response=Vec::new();
+                        exchange_line(svc,catalogue,&line,&mut response).await?;
+                        Ok::<_, anyhow::Error>(response)
+                    });
                 }
-                let line=std::mem::take(&mut partial);
-                running.push(async move {
-                    let mut response=Vec::new();
-                    exchange_line(svc,catalogue,&line,&mut response).await?;
-                    Ok::<_, anyhow::Error>(response)
-                });
+                written = write_response(&mut stdout,&mut outgoing), if outgoing.is_some() => {
+                    written?;
+                    outgoing=None;
+                }
+                response = running.next(), if !running.is_empty() => {
+                    let response=response.expect("an active request was present")?;
+                    if !response.is_empty() { replies.push_back(response); }
+                }
             }
-            written = write_response(&mut stdout,&mut outgoing), if outgoing.is_some() => {
-                written?;
-                outgoing=None;
-            }
-            response = running.next(), if !running.is_empty() => {
-                let response=response.expect("an active request was present")?;
-                if !response.is_empty() { replies.push_back(response); }
-            }
+        }
+    }
+    .await;
+    drop(running);
+    let cleanup = svc.finish_operation_host().await;
+    match (served, cleanup) {
+        (Ok(()), cleanup) => cleanup,
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup)) => {
+            Err(cleanup.context(format!("Original MCP host error: {error:#}")))
         }
     }
 }

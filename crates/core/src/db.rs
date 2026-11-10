@@ -161,6 +161,14 @@ impl ReviewQueueSubscription {
     }
 
     async fn connect_channels(cfg: &DatabaseConfig, channels: &[&'static str]) -> Result<Self> {
+        Self::connect_filtered(cfg, channels, None).await
+    }
+
+    async fn connect_filtered(
+        cfg: &DatabaseConfig,
+        channels: &[&'static str],
+        payload: Option<String>,
+    ) -> Result<Self> {
         let (client, mut connection) = postgres_config(cfg).connect(tls_connector(cfg)?).await?;
         let (sent, events) = tokio::sync::mpsc::unbounded_channel();
         let observed_channels = channels.to_vec();
@@ -168,7 +176,10 @@ impl ReviewQueueSubscription {
             while let Some(message) = std::future::poll_fn(|cx| connection.poll_message(cx)).await {
                 let event = match message {
                     Ok(tokio_postgres::AsyncMessage::Notification(notification))
-                        if observed_channels.contains(&notification.channel()) =>
+                        if observed_channels.contains(&notification.channel())
+                            && payload
+                                .as_ref()
+                                .is_none_or(|expected| notification.payload() == expected) =>
                     {
                         Ok(())
                     }
@@ -236,6 +247,39 @@ impl ReviewPreparationSubscription {
 /// Subscribed before checking an owner's durable row. Empty hints never
 /// identify which job stopped; each request must recheck its own owner.
 pub(crate) struct EmbeddingOwnerSubscription(ReviewQueueSubscription);
+
+/// Acknowledged subscription for one action. Cancellation notifications stop
+/// its owned body before waiting on any further database read; ACK notifications
+/// only tell a canceller to reread the durable pending execution rows.
+pub(crate) struct OperationExecutionSubscription(ReviewQueueSubscription);
+
+impl OperationExecutionSubscription {
+    pub(crate) async fn cancelled(cfg: &DatabaseConfig, token: uuid::Uuid) -> Result<Self> {
+        Ok(Self(
+            ReviewQueueSubscription::connect_filtered(
+                cfg,
+                &["mimir_operation_cancelled"],
+                Some(token.to_string()),
+            )
+            .await?,
+        ))
+    }
+
+    pub(crate) async fn stopped(cfg: &DatabaseConfig, token: uuid::Uuid) -> Result<Self> {
+        Ok(Self(
+            ReviewQueueSubscription::connect_filtered(
+                cfg,
+                &["mimir_operation_execution_stopped"],
+                Some(token.to_string()),
+            )
+            .await?,
+        ))
+    }
+
+    pub(crate) async fn changed(&mut self) -> Result<()> {
+        self.0.changed().await
+    }
+}
 
 impl EmbeddingOwnerSubscription {
     pub(crate) async fn connect(cfg: &DatabaseConfig) -> Result<Self> {
