@@ -75,7 +75,10 @@ import Mimir.ReviewSchema as Relations
 import Data.Float.Base as Float
 
 module Project (environment : Application.Environment) (format : Encoding.Formatting) where
-  module A = Application.Run environment
+  private
+    module A = Application.Run environment using
+      (Result; terminalResult; Call; RouteValue; route; plainRoute; registeredRoute; module Checked; module O)
+    module Writes = Application.Run.Writes environment using (Response; needsInput; returned; executed; bodyKind; bodyInput)
   open Encoding
   open Encode format
 
@@ -153,7 +156,15 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     ("scope" , V.string (Context.Key.scope fieldKey)) ∷ ("rubric" , V.string (Context.Key.rubric fieldKey)) ∷ ("scores" , s) ∷ []) ∷ later)
   ... | _ | _ = nothing
 
-  module C = A.C
+  private
+    module C = Application.Run.C environment using
+      (Choice; Input; Kind; Result; basic; experiences; assessments; intervention; retrieval; context; documentQuery; correction; control
+      ; patternWrite; patternRemoval; beliefRemoval; independentWrite; projectRemoval; relationship; grounding
+      ; propagation; decay; documentRemoval; defeat; sweep; sourceWrite; reviewWrite; documentLoading
+      ; module Assessments; module Intervention; module Retrieval; module LearningContext; module DocumentQuery
+      ; module Control; module Creating; module IndependentPublic; module DocumentEntry
+      ; module PatternGuard; module PatternRemovalGuard; module BeliefRemovalGuard; module RelationshipGuard
+      ; module IndependentGuard; module GroundingGuard; module PropagationGuard; module DecayGuard; module ClearGuard)
 
   argumentCorrection : Validation.Fault → Errors.AgentCorrection.Claim
   argumentCorrection detail = Errors.AgentCorrection.claim
@@ -161,7 +172,9 @@ module Project (environment : Application.Environment) (format : Encoding.Format
       (toList "The unchanged intended request and the advertised field types and required values.")
       (toList "Correct the indicated field before binding. For already bound work, read operation_outcome and retain the original token and arguments; ask the user before cancelling or reserving corrected work.")) []
 
-  module Numerical = NumericalRead.NumericalOutcome (Application.Environment.databaseSum environment)
+  private
+    module Numerical = NumericalRead.NumericalOutcome (Application.Environment.databaseSum environment)
+      using (PreparationIssue; missingSeed; invalidStoredInputs; invalidIntervention)
   module GroundDiagnostic = GroundingRecovery.Business (Application.Environment.databaseSum environment)
     (Application.Environment.calculator environment) using (Diagnostic; requestFault; preparation; rejectedReport; repeated)
   module DeletionDiagnostic = BeliefDeletion.Business (Application.Environment.databaseSum environment)
@@ -260,21 +273,23 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     (toList "The external operation could not complete: " ++ description ++
      toList " Read the original outcome before retrying; ask the user if a prerequisite or request must change.")
   operationProblem (Operations.allocationFailure fault) = decision (argumentCorrection fault)
-  operationProblem failure with Operations.requestCorrection failure
+  operationProblem (Operations.recordFailure cause) with Operations.requestCorrection (Operations.recordFailure cause)
   ... | just report = decision report
-  operationProblem (Operations.recordFailure failure) | nothing = recordProblem failure
-  operationProblem (Operations.reviewFailure failure) | nothing = reviewProblem failure
+  ... | nothing = recordProblem cause
+  operationProblem (Operations.reviewFailure cause) with Operations.requestCorrection (Operations.reviewFailure cause)
+  ... | just report = decision report
+  ... | nothing = reviewProblem cause
 
   sourceProblem : Validation.Fault ⊎ (Recording.Failure ⊎ (Operations.Failure ⊎ GroundDiagnostic.Diagnostic)) → Projection
   sourceProblem (inj₁ fault) = decision (argumentCorrection fault)
-  sourceProblem (inj₂ (inj₁ failure)) = recordProblem failure
-  sourceProblem (inj₂ (inj₂ (inj₁ failure))) = operationProblem failure
-  sourceProblem (inj₂ (inj₂ (inj₂ failure))) = groundingProblem failure
+  sourceProblem (inj₂ (inj₁ cause)) = recordProblem cause
+  sourceProblem (inj₂ (inj₂ (inj₁ cause))) = operationProblem cause
+  sourceProblem (inj₂ (inj₂ (inj₂ cause))) = groundingProblem cause
 
   reviewPublicationProblem : Validation.Fault ⊎ (Operations.Failure ⊎ GroundDiagnostic.Diagnostic) → Projection
   reviewPublicationProblem (inj₁ fault) = decision (argumentCorrection fault)
-  reviewPublicationProblem (inj₂ (inj₁ failure)) = operationProblem failure
-  reviewPublicationProblem (inj₂ (inj₂ failure)) = groundingProblem failure
+  reviewPublicationProblem (inj₂ (inj₁ cause)) = operationProblem cause
+  reviewPublicationProblem (inj₂ (inj₂ cause)) = groundingProblem cause
 
   originalRequest : Store.BindingRow → V.Value
   originalRequest binding = object
@@ -290,9 +305,9 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     ("reply" , Store.SavedReplyRow.reply row) ∷ [])
 
   nextStep : Controls.Plan.Step → V.Value
-  nextStep step = object (("site" , V.string (Controls.Plan.Step.site step)) ∷
-    ("key" , optional V.string (Controls.Plan.Step.key step)) ∷
-    ("id" , V.string (Controls.Plan.Step.id step)) ∷ [])
+  nextStep planned = object (("site" , V.string (Controls.Plan.Step.site planned)) ∷
+    ("key" , optional V.string (Controls.Plan.Step.key planned)) ∷
+    ("id" , V.string (Controls.Plan.Step.id planned)) ∷ [])
 
   pendingReadback : ℕ → Store.BindingRow → Projection
   pendingReadback token binding = success (object (("operation_token" , uuid token) ∷
@@ -331,9 +346,9 @@ module Project (environment : Application.Environment) (format : Encoding.Format
      ("suggested_fix" , V.string (toList "Call the intended write with this token and its complete arguments; retain those exact arguments on retries.")) ∷ []))
   readback original token (C.Control.Read.awaitingPlan binding) = pendingReadback token binding
   readback original token (C.Control.Read.awaitingCompletion binding) = pendingReadback token binding
-  readback original token (C.Control.Read.pending binding step replies) = success (object
+  readback original token (C.Control.Read.pending binding planned replies) = success (object
     (("operation_token" , uuid token) ∷ ("status" , V.string (toList "pending")) ∷
-     ("original_request" , originalRequest binding) ∷ ("next_step" , nextStep step) ∷
+     ("original_request" , originalRequest binding) ∷ ("next_step" , nextStep planned) ∷
      ("saved_replies" , V.array (map savedReply replies)) ∷
      ("suggested_fix" , V.string (toList "Repeat the original write with unchanged token and arguments to resume its saved next step. Ask the user about unresolved prerequisites; do not skip steps or cancel automatically.")) ∷ []))
   readback original token (C.Control.Read.completed binding value) = success (object
@@ -396,8 +411,8 @@ module Project (environment : Application.Environment) (format : Encoding.Format
 
   storedDefeat : ℕ → ℕ → List Edges.Edge → Maybe Mutation.CommittedEdge
   storedDefeat from to [] = nothing
-  storedDefeat from to (edge ∷ rest) with from ≟ Edges.Edge.from edge | to ≟ Edges.Edge.to edge | Edges.Edge.relation edge
-  ... | yes _ | yes _ | Relations.defeats = just (Mutation.committedEdge from to (Edges.Edge.weight edge))
+  storedDefeat from to (stored ∷ rest) with from ≟ Edges.Edge.from stored | to ≟ Edges.Edge.to stored | Edges.Edge.relation stored
+  ... | yes _ | yes _ | Relations.defeats = just (Mutation.committedEdge from to (Edges.Edge.weight stored))
   ... | _ | _ | _ = storedDefeat from to rest
 
   defeatProblem : A.Result → Public.Request → ℕ → Store.World → GroundDiagnostic.Diagnostic → Projection
@@ -417,9 +432,9 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   retrievalResponse (Search.plain result) = object
     (("beliefs" , V.array (map belief (Retrieval.Report.beliefs result))) ∷
      ("retrieval" , Retrieval.coverageValue (Retrieval.Report.retrieval result)) ∷ [])
-  retrievalResponse (Search.grounded coverage beliefs) = object
+  retrievalResponse (Search.grounded report beliefs) = object
     (("beliefs" , V.array (map grounded beliefs)) ∷
-     ("retrieval" , Retrieval.coverageValue coverage) ∷ [])
+     ("retrieval" , Retrieval.coverageValue report) ∷ [])
 
   contextOutput : A.Result → ContextProtocol.Output → Projection
   contextOutput original result with contextAssessments (Context.Assessments.values (ContextProtocol.Output.assessments result))
@@ -496,27 +511,27 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   payload original (C.documentLoading expected) token (C.DocumentEntry.inspected outcome) final = readback original token outcome
   payload original (C.documentLoading expected) token result@(C.DocumentEntry.executed _) final =
     stepProjection original groundingProblem token final (C.DocumentEntry.normalized result)
-  payload original (C.control Controls.reserve requestKey) input (C.Control.Reserve.reserved row) final = success (object
+  payload original (C.control Controls.reserve stableKey) input (C.Control.Reserve.reserved row) final = success (object
     (("status" , V.string (toList "reserved")) ∷ ("operation_token" , uuid (Store.ReservationRow.token row)) ∷
      ("reserved_at" , timestamp (Store.ReservationRow.reservedAt row)) ∷
-     ("request_key" , V.string (Controls.RequestKey.text requestKey)) ∷
+     ("request_key" , V.string (Controls.RequestKey.text stableKey)) ∷
      ("message" , V.string (toList "No business work has run. Keep this key and token for the intended write, including after a lost reply.")) ∷ []))
-  payload original (C.control Controls.reserve requestKey) input (C.Control.Reserve.needsRecovery token) final = decision (argumentCorrection
+  payload original (C.control Controls.reserve stableKey) input (C.Control.Reserve.needsRecovery token) final = decision (argumentCorrection
     (Validation.problem (Validation.key "request_key" ∷ []) Validation.malformedInput
       (toList "The saved request key points to a missing reservation for token " ++ Formatting.uuidText format token ++
        toList ". Keep the original request_key and selected database; ask the user to reconcile the saved reservation instead of inventing a replacement action.")))
   payload original (C.control Controls.readOutcome token) input reply final = readback original token reply
   payload original (C.control Controls.cancel token) input reply final = finalReadback original token final
 
-  writePayload : A.Result → C.Creating.Request → A.Writes.Response → Store.World → Projection
-  writePayload original requested (A.Writes.needsInput detail) final = decision (argumentCorrection detail)
-  writePayload original requested (A.Writes.returned outcome) final
+  writePayload : A.Result → C.Creating.Request → Writes.Response → Store.World → Projection
+  writePayload original requested (Writes.needsInput detail) final = decision (argumentCorrection detail)
+  writePayload original requested (Writes.returned outcome) final
     with C.Creating.decode requested
   ... | inj₁ detail = decision (argumentCorrection detail)
   ... | inj₂ call = readback original
     (C.Creating.Call.token call) outcome
-  writePayload original requested (A.Writes.executed scope reply) final =
-    payload original (A.Writes.bodyKind scope) (A.Writes.bodyInput scope) reply final
+  writePayload original requested (Writes.executed scope reply) final =
+    payload original (Writes.bodyKind scope) (Writes.bodyInput scope) reply final
 
   routePayload : A.Result → (call : A.Call) → A.RouteValue (A.route call) → Store.World → Projection
   routePayload original call reply final with A.route call
@@ -526,37 +541,39 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   -- A non-successful completed script retains its actual typed diagnostic.
   -- Stopping before a returned reply never manufactures a successful value.
   retryProjection : (original : A.Result) → Projection
-  retryProjection original@(A.terminalResult call initial terminal) with
-    A.Checked.Active.remaining call (A.Checked.Terminal.active call terminal)
+  retryProjection original@(A.terminalResult call initial finishedState) with
+    A.Checked.Active.remaining {call = call} (A.Checked.Terminal.active {call = call} finishedState)
   ... | A.O.E.done reply = routePayload original call reply
-    (A.Checked.History.current call (A.Checked.Active.evidence call (A.Checked.Terminal.active call terminal)))
+    (A.Checked.History.current {call = call} (A.Checked.Active.evidence {call = call} (A.Checked.Terminal.active {call = call} finishedState)))
   ... | A.O.E.ask effect continuation = failure original
 
   project : A.Result → Projection
-  project original@(A.terminalResult call initial terminal) with A.Checked.Terminal.disposition call terminal
+  project original@(A.terminalResult call initial finishedState) with A.Checked.Terminal.disposition {call = call} finishedState
   ... | A.Checked.done reply exposed successful = routePayload original call reply
-    (A.Checked.History.current call (A.Checked.Active.evidence call (A.Checked.Terminal.active call terminal)))
-  ... | A.Checked.correction certified = retryProjection original
+    (A.Checked.History.current {call = call} (A.Checked.Active.evidence {call = call} (A.Checked.Terminal.active {call = call} finishedState)))
+  ... | A.Checked.correction evidence = retryProjection original
   ... | A.Checked.retry = retryProjection original
   ... | A.Checked.fatal violation = failure original
 
 module Encode (environment : Application.Environment) (format : Encoding.Formatting) where
-  module A = Application.Run environment
-  module P = Project environment format
+  private
+    module A = Application.Run environment using (Result; terminalResult; module Checked)
+    module P = Project environment format using
+      (project; success; failure; decision; boundReferenceDecision; partialDecision; boundReferenceReport; partialValue)
 
   decisionValue : A.Result → Errors.AgentCorrection.Claim → V.Value
-  decisionValue (A.terminalResult call initial terminal) report with A.Checked.Terminal.disposition call terminal
-  ... | A.Checked.correction certified = Errors.AgentCorrection.emitCorrection
-    (Errors.AgentCorrection.certified report (Errors.AgentCorrection.Certified.unchanged certified))
-  ... | _ = object (("status" , V.string (toList "needs_recovery")) ∷
+  decisionValue (A.terminalResult call initial finishedState) report with A.Checked.Terminal.disposition {call = call} finishedState
+  ... | A.Checked.correction evidence = Errors.AgentCorrection.emitCorrection
+    (Errors.AgentCorrection.certified report (Errors.AgentCorrection.Certified.unchanged evidence))
+  ... | _ = Encoding.object (("status" , V.string (toList "needs_recovery")) ∷
     ("issues" , Errors.AgentCorrection.issues report) ∷
     ("next_action" , V.string (toList "read_operation_outcome_or_ask_user")) ∷
     ("message" , V.string (toList "The original operation returned this diagnostic, but this receipt does not establish that business data is unchanged. Read its original outcome and preserve committed steps before discussing the correction with the user.")) ∷ [])
 
   boundReferenceValue : A.Result → Store.BindingRow → Validation.Fault → V.Value
-  boundReferenceValue original@(A.terminalResult call initial terminal) binding detail with A.Checked.Terminal.disposition call terminal
-  ... | A.Checked.correction certified = Errors.AgentCorrection.emitBoundRelationshipReference
-    (Errors.AgentCorrection.certified (P.boundReferenceReport binding detail) (Errors.AgentCorrection.Certified.unchanged certified))
+  boundReferenceValue original@(A.terminalResult call initial finishedState) binding detail with A.Checked.Terminal.disposition {call = call} finishedState
+  ... | A.Checked.correction evidence = Errors.AgentCorrection.emitBoundRelationshipReference
+    (Errors.AgentCorrection.certified (P.boundReferenceReport binding detail) (Errors.AgentCorrection.Certified.unchanged evidence))
   ... | _ = decisionValue original (P.boundReferenceReport binding detail)
 
   result : A.Result → V.Value
@@ -565,5 +582,5 @@ module Encode (environment : Application.Environment) (format : Encoding.Formatt
   ... | P.decision report = decisionValue original report
   ... | P.boundReferenceDecision binding detail = boundReferenceValue original binding detail
   ... | P.partialDecision edge report = P.partialValue edge report
-  ... | P.failure cause = object (("status" , V.string (toList "needs_recovery")) ∷
+  ... | P.failure cause = Encoding.object (("status" , V.string (toList "needs_recovery")) ∷
     ("message" , V.string (toList "The requested operation has no certified successful result. Keep its original token, request and saved answers; read operation_outcome and the complete diagnostic before retrying or asking the user to resolve the prerequisite.")) ∷ [])
