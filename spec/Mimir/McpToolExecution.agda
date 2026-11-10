@@ -53,9 +53,10 @@ lookup name = find name all
 
 module Run (environment : Application.Environment) (format : Encoding.Formatting)
   (conversion : Conversion.Contract) where
-  module A = Application.Run environment
-  module P = Output.Project environment format
-  module D = Request.Decode (Application.Environment.library environment)
+  module A = Application.Run environment using (Result; Event; Runs; start)
+  module P = Output.Project environment format using
+    (project; success; failure; decision; boundReferenceDecision; partialDecision; partialValue; boundReferenceReport)
+  module D = Request.Decode (Application.Environment.library environment) using (readInvocation)
 
   data Diagnostic : Set where
     operationFailed : A.Result → Diagnostic
@@ -64,6 +65,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
     failure : Diagnostic → Result
     inputCorrection : Correction.Claim → Result
     preparationDecision : A.Result → Correction.Claim → Result
+    boundReferenceDecision : A.Result → Store.BindingRow → Fault → Result
     partialDecision : A.Result → Mutation.CommittedEdge → Correction.Claim → Result
     completed : V.Value → Result
 
@@ -85,6 +87,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   ... | P.success value = completed value
   ... | P.failure cause = failure (operationFailed cause)
   ... | P.decision report = preparationDecision result report
+  ... | P.boundReferenceDecision binding detail = boundReferenceDecision result binding detail
   ... | P.partialDecision edge report = partialDecision result edge report
 
   data Handled (name : Envelope.Text) (raw : V.Value) : List A.Event → Result → Set where
@@ -118,6 +121,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   ... | P.success value = λ ()
   ... | P.failure cause = λ ()
   ... | P.decision report₁ = λ ()
+  ... | P.boundReferenceDecision binding detail = λ ()
   ... | P.partialDecision edge report₁ = λ ()
 
   correctionWitness : ∀ name raw events reply report → Handled name raw events reply →
