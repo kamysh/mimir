@@ -298,16 +298,20 @@ module Run where
         P.Runs (afterCreation path content editorValue) announcements result →
         Created writeSettings path pairs editorValue (prepared Data.List.++ written Data.List.++ announcements) result
 
--- Noninteractive init is a concrete filesystem operation. The source bytes
+-- Init readiness is a concrete filesystem operation. The source bytes
 -- and their typed configuration are observations of the existing TOML boundary;
 -- this model does not implement or prove a parser/formatter. Other files are an
 -- arbitrary frame and are preserved by every Mimir publication.
-module NonInteractive (Frame : Set) (parser : Unsigned.Parser)
+module Initialization (Frame : Set) (parser : Unsigned.Parser)
   (compareFields : ∀ pairs old desired → Dec (explicitFields pairs old ≡ explicitFields pairs desired)) where
   module Overrides = Input.Read parser
-  Input = (String × Text) × List (String × Text)
+  data Request : Set where
+    explicit : (String × Text) × List (String × Text) → Request
+    interactive : Request
+  Input = Request
   pairs : Input → List (String × Text)
-  pairs (first , rest) = first ∷ rest
+  pairs (explicit (first , rest)) = first ∷ rest
+  pairs interactive = []
 
   data File : Set where
     invalidFile : Text → Failure → File
@@ -327,12 +331,16 @@ module NonInteractive (Frame : Set) (parser : Unsigned.Parser)
     ready : File → Result
     needsDecision : Failure → Result
 
-  existing : Input → Values.Config → File → Result
-  existing input desired document@(invalidFile _ failure) = needsDecision failure
-  existing input desired document@(validFile source current)
+  matchingExisting : Input → Values.Config → File → Result
+  matchingExisting input desired document@(invalidFile _ failure) = needsDecision failure
+  matchingExisting input desired document@(validFile source current)
     with compareFields (pairs input) (Schema.Config.core current) desired
   ... | yes same = ready document
   ... | no different = needsDecision conflictingSettings
+
+  existing : Input → Values.Config → File → Result
+  existing interactive desired document = ready document
+  existing input@(explicit _) desired document = matchingExisting input desired document
 
   chosenOutcome : Metadata → Input → Values.Config → World → World × Result
   chosenOutcome observed input desired before with Storage.World.target before
@@ -397,7 +405,9 @@ module NonInteractive (Frame : Set) (parser : Unsigned.Parser)
     Overrides.create (pairs input) ≡ inj₂ cfg →
     Data.Product.Σ Metadata (λ original →
       outcome wanted input (Storage.intended (preparedFile observed cfg) before) ≡ outcome original input before)
-  outcomeAfterLink wanted input (Storage.world nothing frame) observed cfg accepted
+  outcomeAfterLink wanted interactive (Storage.world nothing frame) observed .Values.defaultConfig refl =
+    observed , refl
+  outcomeAfterLink wanted input@(explicit _) (Storage.world nothing frame) observed cfg accepted
     rewrite accepted with compareFields (pairs input) cfg cfg
   ... | yes same = observed , refl
   ... | no different = Data.Empty.⊥-elim (different refl)
