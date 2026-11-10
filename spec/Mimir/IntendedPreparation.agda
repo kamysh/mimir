@@ -22,6 +22,7 @@ import Mimir.PublicOperationBinding as Binding
 import Mimir.PublicRequest as Public
 import Mimir.PublicInput as PublicInput
 import Mimir.RecordDecoding as Record
+import Mimir.Recovery as Recovery
 import Mimir.RetrievalRanking as Ranking
 import Mimir.LearningCandidates as Candidates
 import Mimir.ProjectDeletion as Project
@@ -42,6 +43,7 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   module C = Binding.Creating library postgres
   module Read = Controls.Readback library postgres
   module Reserve = Controls.Reservation postgres
+  module Cancel = Recovery.Cancellation
 
   -- These are external facts from the same attempted execution, not an
   -- expected world, a desired reply, an admission context or a recovery proof.
@@ -163,6 +165,7 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     requestCorrection : Validation.Fault → PublicOutcome
     operationReadback : Read.Result → PublicOutcome
     reservationReadback : Controls.RequestKey → Reserve.Result → PublicOutcome
+    cancellationReadback : ℕ → Cancel.Result → PublicOutcome
     assessmentReadback : (format : Encoding.Formatting) →
       LearningReads.AssessmentReads.Answer format → PublicOutcome
     directValue : Wire.Value → PublicOutcome
@@ -227,6 +230,60 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
 
     malformedRequestDoesNotEnterBody : ∀ raw before receipt fault →
       Decode.readInvocation Tools.reserveOperation raw ≡ inj₁ fault →
+      evaluate raw before receipt ≡ inj₂ (expected before nothing (requestCorrection fault))
+    malformedRequestDoesNotEnterBody raw before receipt fault rejected rewrite rejected = refl
+
+  module CancellationIntent where
+    module Decode = Public.Decode library
+    CancellationEvaluation = ObservationError Data.Sum.⊎ Expected Cancel.Result
+
+    missingClock : ObservationError
+    missingClock = observationError (Validation.fault
+      (Validation.key "observations" Data.List.∷ Validation.key "cancellation_clock" Data.List.∷ Data.List.[])
+      Validation.missingField
+      "A fresh cancellation needs the PostgreSQL clock actually used for its cancellation row. Capture that receipt for this token and attempt; do not invent a timestamp or turn missing test input into a product correction. Existing cancellation and completed results need no fresh clock.")
+
+    returned : ℕ → Store.World → Cancel.Result → Expected Cancel.Result
+    returned token after reply = expected after (just reply) (cancellationReadback token reply)
+
+    -- This is the independently stated database intent, not an execution of
+    -- the receipt script and not a claim that any physical worker has stopped.
+    atTime : ℕ → ℤ → Store.World → Expected Cancel.Result
+    atTime token time before = returned token (Cancel.intended original before)
+      (Cancel.expectedReply original before)
+      where original = Cancel.input token time
+
+    cancel : ℕ → Store.World → Maybe ℤ → CancellationEvaluation
+    cancel token before receipt with Cancel.reserved token
+      (Store.OperationTables.reservations (Store.World.operations before))
+    ... | false = inj₂ (returned token before Cancel.unknownToken)
+    ... | true with Store.lookupSaved before token Cancel.resultKey
+    ... | just saved = inj₂ (returned token before (Cancel.savedResult saved))
+    ... | nothing with Store.lookupCancellation before token
+    ... | just original = inj₂ (atTime token (Store.CancellationRow.cancelledAt original) before)
+    ... | nothing with receipt
+    ... | nothing = inj₁ missingClock
+    ... | just time = inj₂ (atTime token time before)
+
+    afterToken : Validation.Fault Data.Sum.⊎ ℕ → Store.World → Maybe ℤ → CancellationEvaluation
+    afterToken (inj₁ fault) before receipt = inj₂ (expected before nothing (requestCorrection fault))
+    afterToken (inj₂ token) before receipt = cancel token before receipt
+
+    evaluate : Wire.Value → Store.World → Maybe ℤ → CancellationEvaluation
+    evaluate raw before receipt with Decode.readInvocation Tools.cancelOperation raw
+    ... | inj₁ fault = inj₂ (expected before nothing (requestCorrection fault))
+    ... | inj₂ admitted = afterToken
+      (PublicInput.required "operation_token" (PublicInput.readUUID library)
+        (Wire.Object.normalize (Decode.Invocation.suppliedFields admitted))) before receipt
+
+    savedResultNeedsNoFreshClock : ∀ token before saved →
+      Cancel.reserved token (Store.OperationTables.reservations (Store.World.operations before)) ≡ true →
+      Store.lookupSaved before token Cancel.resultKey ≡ just saved →
+      cancel token before nothing ≡ inj₂ (returned token before (Cancel.savedResult saved))
+    savedResultNeedsNoFreshClock token before saved allocated completed rewrite allocated | completed = refl
+
+    malformedRequestDoesNotEnterBody : ∀ raw before receipt fault →
+      Decode.readInvocation Tools.cancelOperation raw ≡ inj₁ fault →
       evaluate raw before receipt ≡ inj₂ (expected before nothing (requestCorrection fault))
     malformedRequestDoesNotEnterBody raw before receipt fault rejected rewrite rejected = refl
 

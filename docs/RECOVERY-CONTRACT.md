@@ -343,6 +343,17 @@ reservation result for later public projection; it introduces no new public
 response format. A broken existing key stays a recovery result without making
 up a replacement reservation. Whole-host and wire integration remain unfinished.
 
+`IntendedPreparation.Evaluate.CancellationIntent.evaluate` computes the
+independent database cancellation intent and typed result. Only a fresh
+cancellation needs its actual PostgreSQL clock; retries retain the original
+row/time, and saved completed results remain exact without a new cancellation.
+The internal `cancellationReadback` is explicitly database-only: neither that
+result nor an execution row can certify that every copy physically stopped.
+Full host comparison must also include the actual worker-stop receipts and
+acknowledgement metadata required by the approved global-stop contract.
+Missing oracle clocks remain `ObservationError`, and malformed requests keep
+the body absent. Global host/wire composition remains unfinished.
+
 `IntendedPreparation.Evaluate.AssessmentIntent.evaluate` admits the three
 assessment reads (`get_lesson_assessment`, `lesson_assessment_history` and
 `explain_belief`) with their existing public field readers, then computes
