@@ -1,5 +1,8 @@
 //! Revision conflicts offer exact readback, without rewriting newer work.
 #[allow(dead_code)]
+#[path = "../../../tests/support/database_observation.rs"]
+mod database_observation;
+#[allow(dead_code)]
 #[path = "../../../tests/support/isolation.rs"]
 mod isolation;
 
@@ -14,6 +17,22 @@ use mimir_core::{
 use serde_json::{json, Value};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+async fn business_snapshot() -> Result<(
+    database_observation::graph::GraphObservation,
+    database_observation::learning::LearningObservation,
+)> {
+    let mut connection = db::connect(&isolation::fixture().database_config()).await?;
+    let tx = connection
+        .build_transaction()
+        .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+        .read_only(true)
+        .start()
+        .await?;
+    let observed = database_observation::observe(&tx).await?;
+    tx.commit().await?;
+    Ok((observed.graph, observed.learning))
+}
 
 struct Client {
     child: tokio::process::Child,
@@ -283,6 +302,7 @@ async fn missing_propagation_source_offers_readback_and_accepts_a_corrected_requ
     let mut client = Client::start(id)?;
     let checked = async {
         let before = mimir_json::to_value(service.get_belief(source.id).await?)?;
+        let before_business = business_snapshot().await?;
         let response = client
             .independent_case("propagate_from", json!({"id":id}))
             .await?;
@@ -294,6 +314,10 @@ async fn missing_propagation_source_offers_readback_and_accepts_a_corrected_requ
         ensure!(correction.issues()[0]
             .suggested_correction()
             .contains("ask the user"));
+        ensure!(
+            business_snapshot().await? == before_business,
+            "stale reference changed business data"
+        );
         let valid = client
             .independent_case("propagate_from", json!({"id":source.id}))
             .await?;
