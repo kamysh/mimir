@@ -78,3 +78,21 @@ pub fn outcome(token: Uuid, result: OperationOutcome) -> Result<Value> {
     }
     Ok(response.into_value())
 }
+
+/// Report database revocation and physical cleanup separately. A dropped
+/// future cannot replace the operating system's missing child-exit receipt.
+pub fn cancellation(token: Uuid, result: crate::OperationCancellation) -> Result<Value> {
+    let confirmed = result.local_cleanup_confirmed();
+    let issues = result.cleanup_issues().to_vec();
+    let mut response = mimir_json::Document::new(outcome(token, result.into_outcome())?);
+    if !issues.is_empty() {
+        response["worker_cleanup"] = json!("unconfirmed_for_this_server");
+        response["next_action"] = json!("open_user_dialog");
+        response["cleanup_issues"] = mimir_json::to_value(issues)?;
+        response["message"] = json!("The saved operation state and earlier committed replies are retained. This Mimir process could not confirm that the listed local workers exited. Explain the operating-system error and private diagnostic location to the user before starting replacement work. Retry cancel_operation with the same token to retry cleanup; do not infer that a dropped request or a database cancellation receipt means the workers stopped.");
+    } else if confirmed {
+        response["worker_cleanup"] = json!("confirmed_for_this_server");
+        response["message"] = json!("Cancellation is durable and further publication under this token is blocked. This Mimir process stopped its owned execution before replying. Cleanup in other processes is not confirmed by this receipt. Earlier committed changes and saved answers remain.");
+    }
+    Ok(response.into_value())
+}

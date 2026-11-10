@@ -161,16 +161,7 @@ pub(super) async fn dispatch(cli: &Cli) -> Result<bool> {
                 Application::Operation(Command::Cancel) => {
                     let token = cli.operation_token.context("admitted cancellation token")?;
                     let cancelled = service.cancel_operation(token).await?;
-                    let confirmed = cancelled.local_cleanup_confirmed();
-                    let mut response = mimir_json::Document::new(operation_reporting::outcome(
-                        token,
-                        cancelled.into_outcome(),
-                    )?);
-                    if confirmed {
-                        response["worker_cleanup"] = json!("confirmed_for_this_server");
-                        response["message"]=json!("Cancellation is durable. This CLI process stopped its own registered work before replying; cleanup in other processes is not confirmed. Earlier committed changes and saved answers remain.");
-                    }
-                    print(response.into_value())?;
+                    print(operation_reporting::cancellation(token, cancelled)?)?;
                 }
                 _ => unreachable!("the exhaustive route selects only operation controls"),
             }

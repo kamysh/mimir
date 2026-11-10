@@ -8,6 +8,107 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 const FLAG: &str = "--embedding-worker";
 const VERSION: u32 = 2;
 
+#[derive(Default)]
+pub(super) struct Cleanup {
+    unreaped: Mutex<Vec<UnreapedWorker>>,
+}
+
+struct UnreapedWorker {
+    child: Option<Child>,
+    directory: PathBuf,
+    partials: Vec<PathBuf>,
+    error: String,
+}
+
+impl UnreapedWorker {
+    fn retry(&mut self) -> std::io::Result<()> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(());
+        };
+        // The initial owner already attempted kill+wait. A failed wait may
+        // mean another reaper consumed the child, so never signal that PID
+        // again. Only an actual wait receipt can resolve this uncertainty.
+        if child.try_wait()?.is_none() {
+            return Err(std::io::Error::other(
+                "the local worker has not reported exit after the earlier failed cleanup",
+            ));
+        }
+        self.child.take();
+        remove_partials(&self.partials);
+        Ok(())
+    }
+}
+
+impl Drop for UnreapedWorker {
+    fn drop(&mut self) {
+        if let Err(error) = self.retry() {
+            tracing::error!(%error, diagnostics = %self.directory.display(), "local worker cleanup remains unconfirmed");
+        }
+    }
+}
+
+impl Cleanup {
+    pub(super) fn pending(&self) -> bool {
+        !self
+            .unreaped
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty()
+    }
+
+    pub(super) fn retry(&self) -> Vec<WorkerCleanupIssue> {
+        let mut pending = self
+            .unreaped
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        pending.retain_mut(|worker| match worker.retry() {
+            Ok(()) => false,
+            Err(error) => {
+                worker.error = error.to_string();
+                true
+            }
+        });
+        pending
+            .iter()
+            .filter_map(|worker| {
+                worker.child.as_ref().map(|child| WorkerCleanupIssue {
+                    pid: child.id(),
+                    diagnostics: worker.directory.clone(),
+                    error: worker.error.clone(),
+                })
+            })
+            .collect()
+    }
+
+    fn retain(
+        &self,
+        child: Child,
+        directory: PathBuf,
+        partials: Vec<PathBuf>,
+        error: std::io::Error,
+    ) {
+        self.unreaped
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(UnreapedWorker {
+                child: Some(child),
+                directory,
+                partials,
+                error: error.to_string(),
+            });
+    }
+}
+
+fn remove_partials(paths: &[PathBuf]) {
+    for path in paths {
+        if let Err(error) = std::fs::remove_file(path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(%error, path = %path.display(), "could not remove worker partial download");
+            }
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -60,11 +161,15 @@ impl EmbeddingProvider for LocalBackend {
                 .pop();
             let mut worker = match idle {
                 Some(worker) => worker,
-                None => Worker::spawn(match &self.executable {
-                    Some(path) => path.clone(),
-                    None => std::env::current_exe()?,
-                })?,
+                None => Worker::spawn_with_cleanup(
+                    match &self.executable {
+                        Some(path) => path.clone(),
+                        None => std::env::current_exe()?,
+                    },
+                    cancellation.cleanup.clone(),
+                )?,
             };
+            worker.cleanup = cancellation.cleanup.clone();
             let request = Request {
                 version: VERSION,
                 texts: texts.to_vec(),
@@ -74,6 +179,9 @@ impl EmbeddingProvider for LocalBackend {
             cancellation.check()?;
             match result {
                 Ok(vectors) => {
+                    // The completed protocol reply ended this job. The idle
+                    // process is now owned by the backend, not this operation.
+                    worker.cleanup = Arc::new(Cleanup::default());
                     self.idle
                         .lock()
                         .map_err(|_| anyhow::anyhow!("local worker pool poisoned"))?
@@ -94,7 +202,8 @@ impl EmbeddingProvider for LocalBackend {
 
 struct Worker {
     // The child is kept even if stdio conversion or exchange fails.
-    child: Child,
+    child: Option<Child>,
+    cleanup: Arc<Cleanup>,
     input: Option<tokio::process::ChildStdin>,
     output: Option<BufReader<tokio::process::ChildStdout>>,
     directory: PathBuf,
@@ -103,7 +212,19 @@ struct Worker {
 }
 
 impl Worker {
+    #[cfg(test)]
     fn spawn(executable: PathBuf) -> Result<Self> {
+        Self::spawn_with_cleanup(executable, Arc::new(Cleanup::default()))
+    }
+
+    fn id(&self) -> u32 {
+        self.child
+            .as_ref()
+            .expect("worker child is owned until drop")
+            .id()
+    }
+
+    fn spawn_with_cleanup(executable: PathBuf, cleanup: Arc<Cleanup>) -> Result<Self> {
         use std::os::unix::fs::DirBuilderExt;
         let directory =
             std::env::temp_dir().join(format!("mimir-embedding-{}", uuid::Uuid::new_v4()));
@@ -123,7 +244,8 @@ impl Worker {
             }
         };
         let mut worker = Self {
-            child,
+            child: Some(child),
+            cleanup,
             input: None,
             output: None,
             directory,
@@ -131,11 +253,19 @@ impl Worker {
             partials: Vec::new(),
         };
         worker.input = Some(tokio::process::ChildStdin::from_std(
-            worker.child.stdin.take().context("worker stdin missing")?,
+            worker
+                .child
+                .as_mut()
+                .context("worker process missing")?
+                .stdin
+                .take()
+                .context("worker stdin missing")?,
         )?);
         worker.output = Some(BufReader::new(tokio::process::ChildStdout::from_std(
             worker
                 .child
+                .as_mut()
+                .context("worker process missing")?
                 .stdout
                 .take()
                 .context("worker stdout missing")?,
@@ -168,7 +298,7 @@ impl Worker {
         let model = root.join(HF_MODEL_ID.replace('/', "--"));
         self.partials = [model.join("tokenizer.json"), model.join("onnx/model.onnx")]
             .into_iter()
-            .map(|path| path.with_extension(format!("part-{}", self.child.id())))
+            .map(|path| path.with_extension(format!("part-{}", self.id())))
             .collect();
         let mut encoded = mimir_json::to_vec(request)?;
         encoded.push(b'\n');
@@ -205,17 +335,17 @@ impl Drop for Worker {
         // Dropping an async inference future cannot detach model work. SIGKILL
         // stops even a blocked native model call; wait reaps this exact child.
         self.input.take();
-        let _ = self.child.kill();
-        if let Err(error) = self.child.wait() {
-            tracing::error!(%error, pid = self.child.id(), "could not reap local embedding worker");
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let _ = child.kill();
+        if let Err(error) = child.wait() {
+            tracing::error!(%error, pid = child.id(), diagnostics = %self.directory.display(), "could not reap local embedding worker");
+            self.cleanup
+                .retain(child, self.directory.clone(), self.partials.clone(), error);
+            return;
         }
-        for path in &self.partials {
-            if let Err(error) = std::fs::remove_file(path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(%error, path = %path.display(), "could not remove worker partial download");
-                }
-            }
-        }
+        remove_partials(&self.partials);
         if !self.preserve {
             let _ = std::fs::remove_dir_all(&self.directory);
         }
@@ -273,7 +403,10 @@ fn worker_main() -> Result<()> {
             embed_with_state(
                 &state,
                 &request.texts,
-                &EmbeddingCancellation { state: received },
+                &EmbeddingCancellation {
+                    state: received,
+                    cleanup: Arc::new(Cleanup::default()),
+                },
             )
         })();
         let response = match result {
@@ -332,7 +465,7 @@ mod tests {
             worker.response().await.unwrap(),
             Response::Started { version: VERSION }
         ));
-        let pid = worker.child.id();
+        let pid = worker.id();
         let log_directory = worker.directory.clone();
         drop(worker);
         // wait() has reaped the child, so there is neither computation nor a
@@ -340,6 +473,49 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
         assert!(!log_directory.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_missing_child_exit_receipt_remains_unconfirmed_and_keeps_diagnostics() {
+        unsafe extern "C" {
+            fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+        }
+        let (directory, program) = fixture("sys.stdin.read()");
+        let mut worker = Worker::spawn(program).unwrap();
+        let diagnostics = worker.directory.clone();
+        let partial = diagnostics.join("owned.part");
+        std::fs::write(&partial, b"incomplete model download").unwrap();
+        let mut child = worker.child.take().unwrap();
+        let pid = child.id();
+        child.kill().unwrap();
+        let mut status = 0;
+        // Consume only this test's exact child exit outside Child::wait.
+        // This reproduces an actual missing wait receipt without changing a
+        // process-wide signal handler or signalling any unrelated process.
+        assert_eq!(unsafe { waitpid(pid as i32, &mut status, 0) }, pid as i32);
+        let error = child.wait().unwrap_err();
+        worker
+            .cleanup
+            .retain(child, diagnostics.clone(), vec![partial.clone()], error);
+        let cleanup = worker.cleanup.clone();
+        drop(worker);
+        assert!(cleanup.pending());
+        for _ in 0..2 {
+            let issues = cleanup.retry();
+            assert_eq!(issues.len(), 1);
+            assert_eq!(issues[0].pid, pid);
+            assert_eq!(issues[0].diagnostics, diagnostics);
+            assert!(!issues[0].error.is_empty());
+            assert!(partial.exists());
+            assert!(diagnostics.join("stderr.log").exists());
+        }
+        // A different job's successful cleanup cannot clear this receipt.
+        let healthy = Cleanup::default();
+        assert!(healthy.retry().is_empty());
+        assert!(cleanup.pending());
+        drop(cleanup);
+        std::fs::remove_dir_all(diagnostics).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -369,6 +545,8 @@ mod tests {
         BufReader::new(stream).read_line(&mut pid).await.unwrap();
         assert!(control.cancel());
         assert!(job.await.unwrap_err().is::<EmbeddingCancelled>());
+        assert!(control.confirm_cleanup().is_empty());
+        assert!(!control.cleanup_pending());
         #[cfg(target_os = "linux")]
         assert!(!PathBuf::from(format!("/proc/{}", pid.trim())).exists());
         std::fs::remove_dir_all(program_directory).unwrap();
@@ -379,7 +557,7 @@ mod tests {
     async fn exchange_preserves_whole_vectors_and_reuses_one_process() {
         let (directory, program) = fixture("for line in sys.stdin:\n request=json.loads(line)\n print(json.dumps({'status':'started','version':2}),flush=True)\n print(json.dumps({'status':'complete','vectors':[[0.125]*768 for text in request['texts']]}),flush=True)");
         let mut worker = Worker::spawn(program).unwrap();
-        let pid = worker.child.id();
+        let pid = worker.id();
         let expected = vec![vec![0.125; LOCAL_DIM]];
         assert_eq!(
             worker.exchange(&request(&directory)).await.unwrap(),
@@ -389,7 +567,7 @@ mod tests {
             worker.exchange(&request(&directory)).await.unwrap(),
             expected
         );
-        assert_eq!(worker.child.id(), pid);
+        assert_eq!(worker.id(), pid);
         drop(worker);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -445,7 +623,7 @@ mod tests {
             Response::Started { .. }
         ));
         drop(first);
-        assert!(second.child.try_wait().unwrap().is_none());
+        assert!(second.child.as_mut().unwrap().try_wait().unwrap().is_none());
         drop(second);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -459,7 +637,13 @@ mod tests {
         );
         let (_sender, received) = tokio::sync::watch::channel(EmbeddingStatus::Running);
         let error = backend
-            .embed(&["input".into()], EmbeddingCancellation { state: received })
+            .embed(
+                &["input".into()],
+                EmbeddingCancellation {
+                    state: received,
+                    cleanup: Arc::new(Cleanup::default()),
+                },
+            )
             .await
             .unwrap_err();
         let message = error.to_string();
