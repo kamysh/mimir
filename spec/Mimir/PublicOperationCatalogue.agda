@@ -3,7 +3,7 @@
 -- goals. There is no caller-selected goal, script or physical relation here.
 module Mimir.PublicOperationCatalogue where
 
-open import Data.Bool using (Bool)
+open import Data.Bool using (Bool; true; false)
 open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Float.Base using (Float)
 open import Data.Integer using (ℤ)
@@ -11,9 +11,10 @@ open import Data.List using (List; [])
 import Data.Maybe
 open import Data.Nat using (ℕ; zero; suc; s≤s; z≤n)
 open import Data.Maybe using (just; nothing)
-open import Data.Product using (_×_; _,_; proj₁; proj₂)
+open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
+open import Data.String using (toList)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; trans)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
@@ -49,6 +50,20 @@ import Mimir.IndependentPublicationRecovery as Independent
 import Mimir.IndependentBeliefRecovery as IndependentIntent
 import Mimir.GraphReadProtocol as GraphRead
 import Mimir.LearningQueryProtocol as LearningQuery
+import Mimir.DefeatRecovery as Defeat
+import Mimir.SweepRecovery as Sweep
+import Mimir.ExperienceSourceRecovery as Source
+import Mimir.DocumentLoadingRecovery as Loading
+import Mimir.ReviewOperationRecovery as ReviewOperation
+import Mimir.ReviewPublicationRecovery as ReviewPublication
+import Mimir.ReviewPreparationRecovery as ReviewPreparation
+import Mimir.OperationControls as Controls
+import Mimir.GraphMutationProtocol as Mutation
+import Mimir.GraphDeletion as Deletion
+import Mimir.InferenceProtocol as InferenceRequest
+import Mimir.LearningOperations as Learning
+import Mimir.ReviewSchema as Relations
+import Mimir.DocumentQuery as DocumentAnswer
 
 -- A fixed request is supplied by the closed dispatcher. This reindexing
 -- preserves the original script, physical semantics and whole-world goal.
@@ -116,8 +131,17 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   (arithmetic : Ranking.F32) (unicode : Ranking.Unicode)
   (vectors : Database.VectorOperations) (configuration : Config.Config)
   (textBefore : Text → Text → Bool)
-  (allocateOwner : ℕ → Store.World → IndependentIntent.Allocation) where
+  (allocateOwner : ℕ → Store.World → IndependentIntent.Allocation)
+  (database : ℕ) (postgres : Controls.PostgreSQL)
+  (serverTime : ℕ → Store.World → ℤ)
+  (utcTimestamp : Text → Validation.Fault Data.Sum.⊎ ℤ)
+  (sourcePostgres : Source.PostgreSQL)
+  (sweepObservation : ℕ → Store.World → Sweep.Metadata)
+  (reviewDependencies : ReviewPublication.Dependencies)
+  (reviewCodec : ReviewPreparation.AllocationEncoding.Codec format)
+  (reviewBackend : Store.World → ReviewPublication.Preparing.Claim → Text Data.Sum.⊎ List Store.Vector) where
   module Admit = Binding.Decode library
+  module Request = Public.Decode library
   module Basic = Database.BasicReads format
   module Experiences = LearningReads.ExperienceReads format
   module Assessments = LearningReads.AssessmentReads format
@@ -128,13 +152,26 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   module PatternWrite = Pattern.Registered library format
   module PatternRemoval = DeletePattern.Registered library
   module Relationship kind = Edges.Registered library kind
-  module BeliefRemoval = DeleteBelief.Registered library databaseSum calculator
-  module Grounding kind = Ground.Registered kind library databaseSum calculator
-  module Propagate = Propagation.Registered format library databaseSum calculator
-  module Decaying = Decay.Registered library databaseSum
-  module DocumentRemoval = Clear.Registered library databaseSum calculator
+  module BeliefRemoval = DeleteBelief.Registered library databaseSum calculator serverTime
+  module Grounding kind = Ground.Registered kind library databaseSum calculator serverTime
+  module Propagate = Propagation.Registered format library databaseSum calculator serverTime
+  module Decaying = Decay.Registered library databaseSum serverTime
+  module DocumentRemoval = Clear.Registered library databaseSum calculator serverTime
   module IndependentWrite = Independent.Registered format library databaseSum calculator allocateOwner
   module IndependentPublic = IndependentWrite.Public configuration
+  module Defeating = Defeat.Registered library databaseSum calculator serverTime
+  module Sweeping = Sweep.Registered library format databaseSum calculator sweepObservation
+  module Recording = Source.Registered library format database databaseSum calculator sourcePostgres
+  module DocumentEntry = Loading.Registered.Entry library format utcTimestamp databaseSum calculator serverTime configuration postgres
+    using (Outcome; inspected; executed; normalized; EntryGoal; Operation; fullOperation; toRecoverable)
+  module Reviewing = ReviewOperation.Registered library format database databaseSum calculator
+    reviewDependencies reviewCodec postgres reviewBackend
+    using (Result; Goal; operation)
+  ReviewEnvironment : Set
+  ReviewEnvironment = ReviewPreparation.Registered.Environment library format database databaseSum calculator
+    reviewDependencies reviewCodec postgres
+  module Control = Controls.Controls library postgres
+  module ControlFixed request input = Fixed (Control.operation request) input
   module ProjectIntent = Recovery.DeterministicContract Project.Registered.recoverable
   module ProjectSelected project = Reindex ProjectIntent.operationFor (λ token → Project.Registered.input token project)
 
@@ -179,31 +216,32 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   module RelationshipGuard kind expected = Admit.Guarded (Binding.advertised (relationshipTool kind)) expected (Relationship.operation kind)
     (λ token → RelationshipFrame.existingBindingSurvives kind token token)
 
-  module BeliefRemovalFrame = Binding.AdmittedStep ℕ BeliefRemoval.B.Diagnostic (λ token → token) BeliefRemoval.key
-    BeliefRemoval.distinct BeliefRemoval.decide BeliefRemoval.keepsJournal BeliefRemoval.admit
-  module BeliefRemovalGuard expected = Admit.Guarded (Binding.advertised Tools.deleteBelief) expected BeliefRemoval.operation
-    (λ token → BeliefRemovalFrame.existingBindingSurvives token token)
+  registrationKeepsBinding : ∀ token before after original → Step.registration after ≡ Step.registration before →
+    Project.Registered.binding token (Binding.bindings before) ≡ just original →
+    Project.Registered.binding token (Binding.bindings after) ≡ just original
+  registrationKeepsBinding token before after original unchanged present = trans
+    (cong (λ registration → Project.Registered.binding token (proj₁ (proj₂ (proj₂ registration)))) unchanged) present
 
-  module GroundingFrame kind = Binding.AdmittedStep ℕ (Grounding.B.Diagnostic kind) (λ token → token) (Grounding.key kind)
-    (Grounding.distinct kind) (Grounding.decide kind) (Grounding.keepsJournal kind) (Grounding.admit kind)
+  module BeliefRemovalGuard expected = Admit.Guarded (Binding.advertised Tools.deleteBelief) expected BeliefRemoval.operation
+    (λ token before after original present crash → registrationKeepsBinding token before after original
+      (BeliefRemoval.interruptedKeepsRegistration token before after crash) present)
+
   groundingSource : Ground.Kind → Binding.Source
   groundingSource Ground.addition = Binding.advertised Tools.addEvidence
   groundingSource Ground.removal = Binding.evidenceRemoval
   module GroundingGuard kind expected = Admit.Guarded (groundingSource kind) expected (Grounding.operation kind)
-    (λ token → GroundingFrame.existingBindingSurvives kind token token)
+    (λ token before after original present crash → registrationKeepsBinding token before after original
+      (Grounding.interruptedKeepsRegistration kind token before after crash) present)
 
-  module PropagationFrame = Binding.AdmittedStep ℕ Propagate.B.Diagnostic (λ token → token) Propagate.key
-    Propagate.distinct Propagate.decide Propagate.keepsJournal Propagate.admit
   module PropagationGuard expected = Admit.Guarded (Binding.advertised Tools.propagateFrom) expected Propagate.operation
-    (λ token → PropagationFrame.existingBindingSurvives token token)
-  module DecayFrame = Binding.AdmittedStep ℕ Decaying.B.Diagnostic (λ token → token) Decaying.key
-    Decaying.distinct Decaying.decide Decaying.keepsJournal Decaying.admit
+    (λ token before after original present crash → registrationKeepsBinding token before after original
+      (Propagate.interruptedKeepsRegistration token before after crash) present)
   module DecayGuard expected = Admit.Guarded (Binding.advertised Tools.decayAll) expected Decaying.operation
-    (λ token → DecayFrame.existingBindingSurvives token token)
-  module ClearFrame = Binding.AdmittedStep ℕ DocumentRemoval.B.G.Diagnostic (λ token → token) DocumentRemoval.key
-    DocumentRemoval.distinct DocumentRemoval.decide DocumentRemoval.keepsJournal DocumentRemoval.admit
+    (λ token before after original present crash → registrationKeepsBinding token before after original
+      (Decaying.interruptedKeepsRegistration token before after crash) present)
   module ClearGuard expected = Admit.Guarded (Binding.advertised Tools.clearDocument) expected DocumentRemoval.operation
-    (λ token → ClearFrame.existingBindingSurvives token token)
+    (λ token before after original present crash → registrationKeepsBinding token before after original
+      (DocumentRemoval.interruptedKeepsRegistration token before after crash) present)
 
   independentFirstBindings : ∀ metadata token before →
     Binding.bindings (proj₁ (IndependentWrite.first metadata token before)) ≡ Binding.bindings before
@@ -268,6 +306,8 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
     propagation decay documentRemoval : Public.Request → Kind
     relationship : Edges.Kind → Public.Request → Kind
     grounding : Ground.Kind → Public.Request → Kind
+    defeat sweep sourceWrite reviewWrite documentLoading : Public.Request → Kind
+    control : (request : Controls.Request) → Controls.Input request → Kind
 
   Input : Kind → Set
   Input (basic _) = ⊤
@@ -288,6 +328,12 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   Input (propagation _) = ℕ
   Input (decay _) = ℕ
   Input (documentRemoval _) = ℕ
+  Input (defeat _) = ℕ
+  Input (sweep _) = ℕ
+  Input (sourceWrite _) = ℕ
+  Input (reviewWrite _) = ℕ
+  Input (documentLoading _) = ℕ
+  Input (control _ _) = ⊤
 
   Result : Kind → Set
   Result (basic _) = Wire.Value
@@ -308,6 +354,12 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   Result (propagation expected) = PropagationGuard.Result expected
   Result (decay expected) = DecayGuard.Result expected
   Result (documentRemoval expected) = ClearGuard.Result expected
+  Result (defeat _) = Defeating.Run.Value
+  Result (sweep _) = Sweeping.Saved.Reply
+  Result (sourceWrite _) = Recording.Saved.Reply
+  Result (reviewWrite _) = Reviewing.Result
+  Result (documentLoading _) = DocumentEntry.Outcome
+  Result (control request _) = Control.Result request
 
   Goal : (kind : Kind) → Input kind → Store.World → Store.World → Result kind → Set
   Goal (basic request) = BasicFixed.Meaning request
@@ -328,6 +380,12 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   Goal (propagation expected) = PropagationGuard.Goal expected
   Goal (decay expected) = DecayGuard.Goal expected
   Goal (documentRemoval expected) = ClearGuard.Goal expected
+  Goal (defeat _) = Defeating.Goal
+  Goal (sweep _) = Sweeping.Goal
+  Goal (sourceWrite _) = Recording.Goal
+  Goal (reviewWrite _) = Reviewing.Goal
+  Goal (documentLoading _) = DocumentEntry.EntryGoal
+  Goal (control request input) = ControlFixed.Meaning request input
 
   -- Observed operations require their complete certificate at assembly.
   -- There is no generic recoverability constructor for these cases.
@@ -336,27 +394,34 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   Certificate (context request) = LearningContext.Operation
   Certificate (documentQuery request) = DocumentQuery.Operation
   Certificate (independentWrite expected) = IndependentPublic.Operation
+  Certificate (documentLoading expected) = DocumentEntry.Operation
   Certificate kind = Recovery.RecoverableFor Store.World (Input kind) (Result kind) (Goal kind)
 
-  certificate : (kind : Kind) → Certificate kind
-  certificate (basic request) = BasicFixed.operation request
-  certificate (experiences request) = ExperienceFixed.operation request
-  certificate (assessments request) = AssessmentFixed.operation request
-  certificate (intervention request) = InterventionFixed.operation request
-  certificate (retrieval request) = Retrieval.operation
-  certificate (context request) = LearningContext.operation
-  certificate (documentQuery request) = DocumentQuery.fullOperation
-  certificate (projectRemoval project) = ProjectSelected.operation project
-  certificate (correction diagnostic) = Refusal.operation diagnostic
-  certificate (patternWrite expected) = PatternGuard.operation expected
-  certificate (independentWrite expected) = IndependentPublic.fullOperation
-  certificate (patternRemoval expected) = PatternRemovalGuard.operation expected
-  certificate (beliefRemoval expected) = BeliefRemovalGuard.operation expected
-  certificate (relationship kind expected) = RelationshipGuard.operation kind expected
-  certificate (grounding kind expected) = GroundingGuard.operation kind expected
-  certificate (propagation expected) = PropagationGuard.operation expected
-  certificate (decay expected) = DecayGuard.operation expected
-  certificate (documentRemoval expected) = ClearGuard.operation expected
+  certificate : ReviewEnvironment → (kind : Kind) → Certificate kind
+  certificate environment (basic request) = BasicFixed.operation request
+  certificate environment (experiences request) = ExperienceFixed.operation request
+  certificate environment (assessments request) = AssessmentFixed.operation request
+  certificate environment (intervention request) = InterventionFixed.operation request
+  certificate environment (retrieval request) = Retrieval.operation
+  certificate environment (context request) = LearningContext.operation
+  certificate environment (documentQuery request) = DocumentQuery.fullOperation
+  certificate environment (projectRemoval project) = ProjectSelected.operation project
+  certificate environment (correction diagnostic) = Refusal.operation diagnostic
+  certificate environment (patternWrite expected) = PatternGuard.operation expected
+  certificate environment (independentWrite expected) = IndependentPublic.fullOperation
+  certificate environment (patternRemoval expected) = PatternRemovalGuard.operation expected
+  certificate environment (beliefRemoval expected) = BeliefRemovalGuard.operation expected
+  certificate environment (relationship kind expected) = RelationshipGuard.operation kind expected
+  certificate environment (grounding kind expected) = GroundingGuard.operation kind expected
+  certificate environment (propagation expected) = PropagationGuard.operation expected
+  certificate environment (decay expected) = DecayGuard.operation expected
+  certificate environment (documentRemoval expected) = ClearGuard.operation expected
+  certificate environment (defeat expected) = Defeating.operation
+  certificate environment (sweep expected) = Sweeping.operation
+  certificate environment (sourceWrite expected) = Recording.operation
+  certificate environment (reviewWrite expected) = Reviewing.operation environment
+  certificate environment (documentLoading expected) = DocumentEntry.fullOperation
+  certificate environment (control request input) = ControlFixed.operation request input
 
   executable : (kind : Kind) → Certificate kind →
     Recovery.RecoverableFor Store.World (Input kind) (Result kind) (Goal kind)
@@ -365,6 +430,7 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   executable (documentQuery request) proof = Fixed.operation (DocumentQuery.toRecoverable proof) request
   executable (independentWrite expected) proof = IndependentGuard.operationWith expected
     (IndependentPublic.Operation.recovers proof) (IndependentPublic.Operation.progresses proof)
+  executable (documentLoading expected) proof = DocumentEntry.toRecoverable proof
   executable (basic _) proof = proof
   executable (experiences _) proof = proof
   executable (assessments _) proof = proof
@@ -379,6 +445,60 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
   executable (propagation _) proof = proof
   executable (decay _) proof = proof
   executable (documentRemoval _) proof = proof
+  executable (defeat _) proof = proof
+  executable (sweep _) proof = proof
+  executable (sourceWrite _) proof = proof
+  executable (reviewWrite _) proof = proof
+  executable (control _ _) proof = proof
+
+  stepSucceeded : ∀ {Diagnostic : Set} → Step.Result Diagnostic → Set
+  stepSucceeded (Step.done _) = ⊤
+  stepSucceeded _ = ⊥
+
+  querySucceeded : DocumentAnswer.Result → Set
+  querySucceeded (DocumentAnswer.found _) = ⊤
+  querySucceeded _ = ⊥
+
+  -- Completion of a diagnostic is not completion of the requested write.
+  -- Every success classification is fixed by this concrete reply family.
+  Success : (kind : Kind) → Result kind → Set
+  Success (basic _) _ = ⊤
+  Success (experiences _) _ = ⊤
+  Success (assessments _) reply = Σ Wire.Value (λ value → Assessments.successfulWire reply ≡ just value)
+  Success (intervention _) reply = Intervention.Success reply
+  Success (retrieval _) _ = ⊤
+  Success (context _) (LearningContext.needsInput _ _) = ⊥
+  Success (context _) (LearningContext.contextResult _ (LearningContext.Assembly.response _)) = ⊤
+  Success (context _) (LearningContext.contextResult _ LearningContext.Assembly.invalidAssessment) = ⊥
+  Success (documentQuery _) reply = querySucceeded (DocumentQuery.value reply)
+  Success (projectRemoval _) reply = Σ ℕ (λ count → reply ≡
+    Wire.object ((toList "deleted" , Wire.unsigned count) Data.List.∷ []))
+  Success (correction _) _ = ⊥
+  Success (patternWrite expected) (PatternGuard.needsInput _) = ⊥
+  Success (patternWrite expected) (PatternGuard.executed reply) = stepSucceeded reply
+  Success (independentWrite expected) (IndependentGuard.needsInput _) = ⊥
+  Success (independentWrite expected) (IndependentGuard.executed reply) = stepSucceeded (IndependentPublic.Result.value reply)
+  Success (patternRemoval expected) (PatternRemovalGuard.needsInput _) = ⊥
+  Success (patternRemoval expected) (PatternRemovalGuard.executed reply) = stepSucceeded reply
+  Success (beliefRemoval expected) (BeliefRemovalGuard.needsInput _) = ⊥
+  Success (beliefRemoval expected) (BeliefRemovalGuard.executed reply) = stepSucceeded reply
+  Success (relationship kind expected) (RelationshipGuard.needsInput _) = ⊥
+  Success (relationship kind expected) (RelationshipGuard.executed reply) = stepSucceeded reply
+  Success (grounding kind expected) (GroundingGuard.needsInput _) = ⊥
+  Success (grounding kind expected) (GroundingGuard.executed reply) = stepSucceeded reply
+  Success (propagation expected) (PropagationGuard.needsInput _) = ⊥
+  Success (propagation expected) (PropagationGuard.executed reply) = stepSucceeded reply
+  Success (decay expected) (DecayGuard.needsInput _) = ⊥
+  Success (decay expected) (DecayGuard.executed reply) = stepSucceeded reply
+  Success (documentRemoval expected) (ClearGuard.needsInput _) = ⊥
+  Success (documentRemoval expected) (ClearGuard.executed reply) = stepSucceeded reply
+  Success (defeat _) reply = stepSucceeded reply
+  Success (sweep _) reply = stepSucceeded reply
+  Success (sourceWrite _) reply = stepSucceeded reply
+  Success (reviewWrite _) reply = stepSucceeded reply
+  Success (documentLoading _) reply = stepSucceeded (DocumentEntry.normalized reply)
+  Success (control Controls.readOutcome _) Control.Read.unknownToken = ⊥
+  Success (control request _) reply = Control.Success request reply
 
   invalidPage : Validation.Fault
   invalidPage = Validation.fault (Validation.key "limit" Data.List.∷ []) Validation.invalidNumber
@@ -407,3 +527,119 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
     (Experiences.pending project (just (Ranking.positiveCount (suc count) (s≤s z≤n))) excluded)
   learningQuery (LearningQuery.score selection) = assessments (Assessments.scores selection)
   learningQuery (LearningQuery.assessmentHistory selection offset count) = assessments (Assessments.history selection offset count)
+
+  perCallRetention : Validation.Fault
+  perCallRetention = Validation.fault (Validation.key "grace_hours" Data.List.∷ []) Validation.unknownField
+    "Retention is chosen by the user in retirement.grace_hours, not by an operation argument. Remove the per-call override and use the configured sweep request. If that policy is missing, ask the user to choose it."
+
+  -- This is the closed semantic request table. It determines the concrete
+  -- business certificate; raw invocation/binding admission is assembled before
+  -- writable bodies, never replaced by selecting a different goal or script.
+  classify : Public.Request → Kind
+  classify expected@(Public.mutation (Mutation.belief content probability confidence project memory provenance citations)) = independentWrite expected
+  classify expected@(Public.mutation (Mutation.patternNode situation approach success project)) = patternWrite expected
+  classify expected@(Public.mutation (Mutation.edge from to Relations.supports weight)) = relationship Edges.support expected
+  classify expected@(Public.mutation (Mutation.edge from to Relations.causes weight)) = relationship Edges.cause expected
+  classify expected@(Public.mutation (Mutation.edge from to Relations.contradicts weight)) = relationship Edges.contradiction expected
+  classify expected@(Public.mutation (Mutation.edge from to Relations.defeats weight)) = defeat expected
+  classify (Public.read request) = graphRead request
+  classify expected@(Public.delete Deletion.belief identity) = beliefRemoval expected
+  classify expected@(Public.delete Deletion.patternNode identity) = patternRemoval expected
+  classify (Public.deleteProject project) = projectRemoval project
+  classify expected@(Public.inference (InferenceRequest.propagate identity)) = propagation expected
+  classify (Public.inference (InferenceRequest.intervention identity value)) = intervention (Intervention.input identity value)
+  classify expected@(Public.inference (InferenceRequest.decay project factor)) = decay expected
+  classify (Public.inference (InferenceRequest.contradictions project)) = basic (Basic.contradictions project)
+  classify (Public.inference (InferenceRequest.sweep project threshold grace)) = correction perCallRetention
+  classify expected@(Public.sweepConfigured project threshold) = sweep expected
+  classify (Public.relevant queryText selection project preference includeEvidence perBelief) = retrieval
+    (Search.fromFields queryText selection project preference includeEvidence perBelief)
+  classify expected@(Public.addEvidence belief chunk weight) = grounding Ground.addition expected
+  classify expected@(Public.removeEvidence belief chunk) = grounding Ground.removal expected
+  classify (Public.evidence belief) = basic (Basic.evidence belief)
+  classify expected@(Public.loadDocument path project) = documentLoading expected
+  classify (Public.queryDocument queryText project selection) = documentQuery (Documents.query queryText project selection)
+  classify expected@(Public.clearDocument path) = documentRemoval expected
+  classify expected@(Public.learning (Learning.recordExperience source revision)) = sourceWrite expected
+  classify expected@(Public.learning (Learning.reviewExperience review revision)) = reviewWrite expected
+  classify (Public.learningQuery request) = learningQuery request
+  classify (Public.learningContext queryText project selection) = context (Context.contextSearch queryText project selection)
+  classify Public.capabilities = basic Basic.capabilities
+  classify (Public.reserveOperation requestKey) = control Controls.reserve requestKey
+  classify (Public.operationOutcome token) = control Controls.readOutcome token
+  classify (Public.cancelOperation token) = control Controls.cancel token
+
+  operation : (environment : ReviewEnvironment) → (request : Public.Request) → Certificate (classify request)
+  operation environment request = certificate environment (classify request)
+
+  data ReadRequest : Set where
+    graphCall : GraphRead.Request → ReadRequest
+    relevantCall : Search.Request → ReadRequest
+    evidenceCall : ℕ → ReadRequest
+    documentCall : Documents.Request → ReadRequest
+
+  readKind : ReadRequest → Kind
+  readKind (graphCall request) = graphRead request
+  readKind (relevantCall request) = retrieval request
+  readKind (evidenceCall identity) = basic (Basic.evidence identity)
+  readKind (documentCall request) = documentQuery request
+
+  data Call : Set where
+    toolCall : Tools.Tool → Wire.Value → Call
+    privateRead : ReadRequest → Call
+
+  record Choice : Set where
+    constructor choose
+    field kind : Kind; input : Input kind
+
+  missingToken : Validation.Fault
+  missingToken = Validation.fault (Validation.key "operation_token" Data.List.∷ []) Validation.missingField
+    "This write requires its PostgreSQL-issued operation token. Reserve the request with a stable request_key and reuse that token for the same arguments; read its outcome if a reply was lost."
+  withToken : (ℕ → Choice) → Data.Maybe.Maybe ℕ → Choice
+  withToken ready (just token) = ready token
+  withToken ready nothing = choose (correction missingToken) tt
+
+  chooseInput : Kind → Data.Maybe.Maybe ℕ → Choice
+  chooseInput kind@(basic _) _ = choose kind tt
+  chooseInput kind@(experiences _) _ = choose kind tt
+  chooseInput kind@(assessments _) _ = choose kind tt
+  chooseInput kind@(intervention _) _ = choose kind tt
+  chooseInput kind@(retrieval _) _ = choose kind tt
+  chooseInput kind@(context _) _ = choose kind tt
+  chooseInput kind@(documentQuery _) _ = choose kind tt
+  chooseInput kind@(correction _) _ = choose kind tt
+  chooseInput kind@(control _ _) _ = choose kind tt
+  chooseInput kind@(projectRemoval _) token = withToken (choose kind) token
+  chooseInput kind@(patternWrite _) token = withToken (choose kind) token
+  chooseInput kind@(independentWrite _) token = withToken (choose kind) token
+  chooseInput kind@(patternRemoval _) token = withToken (choose kind) token
+  chooseInput kind@(beliefRemoval _) token = withToken (choose kind) token
+  chooseInput kind@(relationship _ _) token = withToken (choose kind) token
+  chooseInput kind@(grounding _ _) token = withToken (choose kind) token
+  chooseInput kind@(propagation _) token = withToken (choose kind) token
+  chooseInput kind@(decay _) token = withToken (choose kind) token
+  chooseInput kind@(documentRemoval _) token = withToken (choose kind) token
+  chooseInput kind@(defeat _) token = withToken (choose kind) token
+  chooseInput kind@(sweep _) token = withToken (choose kind) token
+  chooseInput kind@(sourceWrite _) token = withToken (choose kind) token
+  chooseInput kind@(reviewWrite _) token = withToken (choose kind) token
+  chooseInput kind@(documentLoading _) token = withToken (choose kind) token
+
+  tokenForKind : (kind : Tools.Kind) → Public.TokenForKind kind → Data.Maybe.Maybe ℕ
+  tokenForKind Tools.businessWrite token = just token
+  tokenForKind Tools.readOnly tt = nothing
+  tokenForKind Tools.operationControl tt = nothing
+
+  resolve : Call → Choice
+  resolve (toolCall tool submitted) with Request.readInvocation tool submitted
+  ... | inj₁ fault = choose (correction fault) tt
+  ... | inj₂ invocation = chooseInput (classify (Request.Invocation.request invocation))
+    (tokenForKind (Tools.kind tool) (Request.Invocation.operationToken invocation))
+  resolve (privateRead request) = chooseInput (readKind request) nothing
+
+  selectedCertificate : ReviewEnvironment → (call : Call) → Certificate (Choice.kind (resolve call))
+  selectedCertificate environment call = certificate environment (Choice.kind (resolve call))
+  selectedOperation : (environment : ReviewEnvironment) → (call : Call) →
+    Recovery.RecoverableFor Store.World (Input (Choice.kind (resolve call)))
+      (Result (Choice.kind (resolve call))) (Goal (Choice.kind (resolve call)))
+  selectedOperation environment call = executable (Choice.kind (resolve call)) (selectedCertificate environment call)

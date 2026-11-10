@@ -15,6 +15,7 @@ import Mimir.McpToolExecution as Handler
 import Mimir.StructuredValue as JSON
 import Mimir.StructuredValue as Schema
 import Mimir.ApplicationProtocol as Application
+import Mimir.ApplicationOutput as Output
 import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
 import Mimir.ApplicationStore as Store
@@ -43,16 +44,13 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
       value : ∀ schema → Materialized (H.completed schema) (inj₂ schema)
       correction : ∀ {before after} (proof : Correction.Certified Store.World before after) →
         Materialized (H.inputCorrection (Correction.Certified.report proof)) (inj₂ (Correction.emitCorrection proof))
-      preparation : ∀ {before after : Store.World}
-        (proof : Correction.Certified Store.BusinessSnapshot
-          (Store.businessSnapshot before) (Store.businessSnapshot after)) →
-        Materialized (H.preparationDecision (Correction.Certified.report proof)) (inj₂ (Correction.emitCorrection proof))
-      partial : ∀ {before after} edge report →
-        Mutation.StatementReceipt (Mutation.insertEdge
-          (Mutation.CommittedEdge.from edge) (Mutation.CommittedEdge.to edge)
-          Review.defeats (Mutation.CommittedEdge.weight edge)) before
-          (Mutation.receipt Database.committed) after →
-        Materialized (H.partialDecision edge report) (inj₂ (H.P.partialValue edge report))
+      preparation : ∀ actual report →
+        (unchanged : Store.businessSnapshot (A.reached actual) ≡
+          Store.businessSnapshot (A.Result.initial actual)) →
+        Materialized (H.preparationDecision actual report)
+          (inj₂ (Correction.emitCorrection (Correction.certified report unchanged)))
+      partial : ∀ actual edge report →
+        Materialized (H.partialDecision actual edge report) (inj₂ (H.P.partialValue edge report))
 
     data Event : Set where
       external : (effect : Exchange.Effect) → External effect → Exchange.Reply effect → Event

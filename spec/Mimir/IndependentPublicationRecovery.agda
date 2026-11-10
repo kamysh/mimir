@@ -534,6 +534,44 @@ module Registered (format : Encoding.Formatting) (conversion : Conversion.Contra
     Atomic before (publish token observed) reply after = Run.Atomic before (Run.finish token) (observed , reply) after
     module X = Recovery.Execution Store.World Effect Reply Atomic
 
+    -- A completed publication is replayed through its real owner/read/final
+    -- path. Its saved answers, rather than a newly prepared vector, determine
+    -- the reply. The caller derives these journal facts from the actual cut.
+    cachedReplay : ∀ token current ownerAnswer raw →
+      admit token (Step.registration current) ≡ nothing →
+      Store.lookupCancellation current token ≡ nothing →
+      Store.lookupSaved current token (Belief.ownerKey token) ≡ just ownerAnswer →
+      Store.lookupSaved current token (Belief.publicationKey token) ≡ just raw →
+      Store.lookupSaved current token Step.resultKey ≡ just raw →
+      Σ Result (λ reply → X.Completed (script token) current current reply ×
+        Result.value reply ≡ Step.done raw)
+    cachedReplay token current ownerAnswer raw admitted active ownerSaved finalSaved resultSaved =
+      answer , X.completed events control physical , refl
+      where
+      metadata = allocate token current
+      observed = packet current (inj₁ unprepared)
+      prefix = (reserve token , (metadata , Step.done ownerAnswer)) ∷ []
+      sources = prefix ++ ((readSources token , inj₂ current) ∷ [])
+      events = sources ++ ((publish token observed , Step.done raw) ∷ [])
+      answer = completed (Step.done raw) events
+      ownerEquation = prefixCompleteReplay metadata token current ownerAnswer raw raw
+        admitted active ownerSaved finalSaved resultSaved
+      finalEquation = secondCompleteReplay observed token current ownerAnswer raw raw
+        admitted active ownerSaved finalSaved resultSaved
+      ownerPhysical : Atomic current (reserve token) (metadata , Step.done ownerAnswer) current
+      ownerPhysical rewrite ownerEquation = refl , DB.committedAll
+      finalPhysical : Atomic current (publish token observed) (Step.done raw) current
+      finalPhysical rewrite finalEquation = refl , DB.committedAll
+      snapshotControl : E.Runs (afterSnapshot token sources (inj₂ current))
+        ((publish token observed , Step.done raw) ∷ []) answer
+      snapshotControl rewrite finalSaved = E.replied _ _ _ (E.returned _)
+      control : E.Runs (script token) events answer
+      control = E.replied _ _ _ (E.replied _ _ _ snapshotControl)
+      physical : X.Changes current events current
+      physical = X.changed _ _ _ _ ownerPhysical
+        (X.changed _ _ _ _ (refl , refl)
+          (X.changed _ _ _ _ finalPhysical (X.unchanged _)))
+
     data Owned (token : ℕ) : Effect → Set where
       ownerOwned : Owned token (reserve token)
       sourcesOwned : Owned token (readSources token)

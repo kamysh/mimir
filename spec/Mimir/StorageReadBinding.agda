@@ -28,6 +28,7 @@ import Mimir.DocumentQuery as Query
 import Mimir.EvidenceRead as Evidence
 import Mimir.StorageSemantics as Semantics
 import Mimir.GraphReadProtocol as Graph
+import Mimir.CandidateGraph as GraphValues
 import Mimir.GraphRecords as Records
 import Mimir.GraphNumerics as Numeric
 import Mimir.InferenceProtocol as Inference
@@ -350,30 +351,50 @@ module BasicReads (format : Encoding.Formatting) where
   ... | nothing = supportingPassages state later
   ... | just chunk = Evidence.referenceOf (Store.Ground.weight edgeRow) chunk ∷ supportingPassages state later
 
-  answer : Request → Store.World → Wire.Value
-  answer stats state = Encoding.object
+  -- Typed display data and the public JSON are projections of this SAME
+  -- observed world. CLI sorting does not deserialize JSON or read again.
+  View : Request → Set
+  View stats = Graph.Statistics
+  View (getBelief _) = Maybe GraphValues.BeliefValues
+  View (getPattern _) = Maybe GraphValues.PatternValues
+  View (listBeliefs _ _) = List GraphValues.BeliefValues
+  View (beliefPage _ _ _ _) = Records.Page
+  View (listPatterns _) = List GraphValues.PatternValues
+  View (contradictions _) = List (ℕ × ℕ)
+  View (evidence _) = List Evidence.Reference
+  View capabilities = Capabilities.Capabilities
+
+  view : (request : Request) → Store.World → View request
+  view stats state = Graph.statisticsAnswer state
+  view (getBelief id) state = Ranking.lookup id (Store.beliefs state)
+  view (getPattern id) state = Records.getPattern id (Store.patterns (Store.nodes state))
+  view (listBeliefs project memory) state = Records.listBeliefs project memory (Store.beliefs state)
+  view (beliefPage project memory count offset) state = Graph.pageAnswer project memory (suc count) offset state
+  view (listPatterns project) state = Records.listPatterns project (Store.patterns (Store.nodes state))
+  view (contradictions project) state = Numeric.activeContradictions
+    (Records.listBeliefs project nothing (Store.beliefs state)) (Semantics.contradictions project state)
+  view (evidence id) state = supportingPassages state (Evidence.ranked id nothing (Semantics.groundRows state))
+  view capabilities state = Capabilities.current
+
+  encodeView : (request : Request) → View request → Wire.Value
+  encodeView stats counts = Encoding.object
     (("beliefs" , Wire.unsigned (Graph.Statistics.beliefCount counts)) ∷
      ("patterns" , Wire.unsigned (Graph.Statistics.patternCount counts)) ∷
      ("supports" , Wire.unsigned (Graph.Statistics.supportCount counts)) ∷
      ("defeats" , Wire.unsigned (Graph.Statistics.defeatCount counts)) ∷
      ("causes" , Wire.unsigned (Graph.Statistics.causeCount counts)) ∷
      ("contradicts" , Wire.unsigned (Graph.Statistics.contradictionCount counts)) ∷ [])
-    where counts = Graph.statisticsAnswer state
-  answer (getBelief id) state = Encoding.optional Encode.belief (Ranking.lookup id (Store.beliefs state))
-  answer (getPattern id) state = Encoding.optional Encode.patternValue
-    (Records.getPattern id (Store.patterns (Store.nodes state)))
-  answer (listBeliefs project memory) state = Wire.array
-    (map Encode.belief (Records.listBeliefs project memory (Store.beliefs state)))
-  answer (beliefPage project memory count offset) state = Encode.beliefPage
-    (Graph.pageAnswer project memory (suc count) offset state)
-  answer (listPatterns project) state = Wire.array
-    (map Encode.patternValue (Records.listPatterns project (Store.patterns (Store.nodes state))))
-  answer (contradictions project) state = Wire.array (map Encode.identityPair
-    (Numeric.activeContradictions (Records.listBeliefs project nothing (Store.beliefs state))
-      (Semantics.contradictions project state)))
-  answer (evidence id) state = Wire.array (map Encode.reference
-    (supportingPassages state (Evidence.ranked id nothing (Semantics.groundRows state))))
-  answer capabilities state = Capabilities.encode Capabilities.current
+  encodeView (getBelief _) value = Encoding.optional Encode.belief value
+  encodeView (getPattern _) value = Encoding.optional Encode.patternValue value
+  encodeView (listBeliefs _ _) rows = Wire.array (map Encode.belief rows)
+  encodeView (beliefPage _ _ _ _) value = Encode.beliefPage value
+  encodeView (listPatterns _) rows = Wire.array (map Encode.patternValue rows)
+  encodeView (contradictions _) rows = Wire.array (map Encode.identityPair rows)
+  encodeView (evidence _) rows = Wire.array (map Encode.reference rows)
+  encodeView capabilities value = Capabilities.encode value
+
+  answer : Request → Store.World → Wire.Value
+  answer request state = encodeView request (view request state)
 
   module Checked = Recovery.ReadOnly answer
 
@@ -385,6 +406,19 @@ module BasicReads (format : Encoding.Formatting) where
     Checked.Checked.X.Completed (Checked.Checked.script request) interrupted final reply →
     final ≡ initial × reply ≡ answer request initial
   completeReplyAndUnchangedWorld = Checked.completedRetryPreservesStateAndAnswer
+
+  completedReplyUsesObservedView : ∀ request before after reply →
+    Checked.Checked.X.Completed (Checked.Checked.script request) before after reply →
+    reply ≡ encodeView request (view request before)
+  completedReplyUsesObservedView request before after reply execution =
+    cong proj₂ (Checked.Checked.completedMeetsIntent request before after reply execution)
+
+  completedViewHasNoLaterRead : ∀ request before after reply →
+    Checked.Checked.X.Completed (Checked.Checked.script request) before after reply →
+    view request after ≡ view request before
+  completedViewHasNoLaterRead request before after reply execution =
+    cong (view request) (cong proj₁ (Checked.Checked.completedMeetsIntent request before after reply execution))
+
 
 -- The embedding primitive describes the configured model's query vector; it
 -- is not a caller-supplied search answer. The selected rows, missing-row
