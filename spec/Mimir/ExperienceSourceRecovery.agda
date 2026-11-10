@@ -57,7 +57,7 @@ record Request : Set where
 
 record Metadata : Set where
   constructor observed
-  field sourceTime : ℤ; itemReplies : List (Operations.Failure ⊎ ℕ)
+  field sourceTime : ℤ; posteriorTime : ℤ; itemReplies : List (Operations.Failure ⊎ ℕ)
 
 -- External observation capability, not an application UUID generator or an
 -- axiom about the desired world. Convergence permits every observed reply,
@@ -260,7 +260,7 @@ module Registered (conversion : Conversion.Contract) (format : Encoding.Formatti
   decide : Internal → Store.World → B.Outcome
   decide (token , metadata) before with original token (Step.registration before)
   ... | inj₁ fault = inj₁ (B.requestFault fault)
-  ... | inj₂ (input , posteriorTime) = proj₁ (B.checked input metadata posteriorTime before)
+  ... | inj₂ (input , posteriorTime) = proj₁ (B.checked input metadata (Metadata.posteriorTime metadata) before)
 
   keepsJournal : ∀ input before after reply → decide input before ≡ inj₂ (after , reply) →
     Store.World.operations after ≡ Store.World.operations before
@@ -268,7 +268,7 @@ module Registered (conversion : Conversion.Contract) (format : Encoding.Formatti
   ... | inj₁ fault with accepted
   ... | ()
   keepsJournal (token , metadata) before after reply accepted | inj₂ (input , posteriorTime) =
-    B.checkedKeepsJournal input metadata posteriorTime before after reply accepted
+    B.checkedKeepsJournal input metadata (Metadata.posteriorTime metadata) before after reply accepted
 
   module Saved = Step.Admitted Internal B.Diagnostic proj₁ (λ input → key (proj₁ input))
     (λ input → distinct (proj₁ input)) decide keepsJournal admit
@@ -291,7 +291,7 @@ module Registered (conversion : Conversion.Contract) (format : Encoding.Formatti
 
   decidesBound : ∀ token metadata before input posteriorTime →
     original token (Step.registration before) ≡ inj₂ (input , posteriorTime) →
-    decide (token , metadata) before ≡ proj₁ (B.checked input metadata posteriorTime before)
+    decide (token , metadata) before ≡ proj₁ (B.checked input metadata (Metadata.posteriorTime metadata) before)
   decidesBound token metadata before input posteriorTime bound rewrite bound = refl
 
   FreshGoal : ℕ → Request → Metadata → ℤ → Store.World → Store.World → Saved.Reply → Set
@@ -303,9 +303,9 @@ module Registered (conversion : Conversion.Contract) (format : Encoding.Formatti
 
   freshMeaning : ∀ token input metadata posteriorTime before →
     original token (Step.registration before) ≡ inj₂ (input , posteriorTime) →
-    FreshGoal token input metadata posteriorTime before (proj₁ (K.fresh (token , metadata) before)) (proj₂ (K.fresh (token , metadata) before))
+    FreshGoal token input metadata (Metadata.posteriorTime metadata) before (proj₁ (K.fresh (token , metadata) before)) (proj₂ (K.fresh (token , metadata) before))
   freshMeaning token input metadata posteriorTime before bound rewrite decidesBound token metadata before input posteriorTime bound
-    with B.checked input metadata posteriorTime before
+    with B.checked input metadata (Metadata.posteriorTime metadata) before
   ... | inj₁ diagnostic , correct = refl , correct
   ... | inj₂ (changed , reply) , correct = changed , correct , refl
 
@@ -318,7 +318,7 @@ module Registered (conversion : Conversion.Contract) (format : Encoding.Formatti
   ... | just saved | just _ = after ≡ before × reply ≡ Step.done saved
   ... | just _ | nothing = after ≡ before × reply ≡ Step.needsRecovery
   ... | nothing | just _ = after ≡ before × reply ≡ Step.needsRecovery
-  ... | nothing | nothing = FreshGoal token input metadata posteriorTime before after reply
+  ... | nothing | nothing = FreshGoal token input metadata (Metadata.posteriorTime metadata) before after reply
 
   meaning : ∀ token metadata before →
     MetaGoal token metadata before (proj₁ (Saved.execute (token , metadata) before)) (proj₂ (Saved.execute (token , metadata) before))
@@ -478,8 +478,8 @@ module Registered (conversion : Conversion.Contract) (format : Encoding.Formatti
 
     metadata : Metadata
     metadata with original token (Step.registration before)
-    ... | inj₁ _ = observed (PostgreSQL.clock postgres token before) []
-    ... | inj₂ (input , _) = observed (PostgreSQL.clock postgres token before) (allocationReplies input)
+    ... | inj₁ _ = observed (PostgreSQL.clock postgres token before) (PostgreSQL.clock postgres token before) []
+    ... | inj₂ (input , _) = observed (PostgreSQL.clock postgres token before) (PostgreSQL.clock postgres token before) (allocationReplies input)
 
     present : ∀ input → Present (B.M.normalized (Request.source input) before (allocationReplies input))
     present input with collect (B.M.Normalize.experience (Request.source input) (Store.learningView before))
