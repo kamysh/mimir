@@ -892,13 +892,12 @@ impl AgeStore {
             client: self.client.clone(),
             graph_name: self.graph_name.clone(),
         };
-        let token = step.token();
         self.commit_final_operation_step(step, move |tx, request| {
             Box::pin(async move {
                 let args = original_source_operation(request)?;
                 tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
                     .await?;
-                let posterior_time = Self::reserved_publication_time(tx, token).await?;
+                let posterior_time = Self::posterior_time_on(tx.client()).await?;
                 // The original raw API rolls back all tentative allocations on an
                 // exact source replay. Preserve that behavior while saving its reply.
                 tx.batch_execute("SAVEPOINT mimir_source_preparation")

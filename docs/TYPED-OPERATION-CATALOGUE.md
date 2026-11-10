@@ -106,3 +106,20 @@ project_deletion_retries_after_real_process_exit_at_each_commit_side`.
 This checks the real commit boundary and retry behavior for deletion. Extending
 the operation matrix and comparing observations with the Agda-owned intended
 functions remain the separate planned harness work.
+
+## When new belief counts take effect
+
+An operation's reservation time records when its token was issued. New belief
+counts use the database time observed after acquiring the publication lock.
+For example, reserving a request on Monday and completing it on Wednesday must
+give the new counts a Wednesday baseline. Otherwise a later decay could charge
+them for time before they existed. Original identities and creation dates keep
+their original meaning; changing the count baseline does not rewrite them.
+
+The baseline never moves backward if the database clock is earlier than an
+already stored baseline. Each successful transaction saves its business changes
+and original answers together. Retrying a completed token returns those answers
+and preserves the current database, including changes made by later operations.
+The Agda contracts bind the count calculation to the actual publication-time
+receipt; a timestamp supplier is used only to demonstrate that execution can
+make progress.

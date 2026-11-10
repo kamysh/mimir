@@ -1356,12 +1356,16 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   knownPlan operation token before context raw plan observed decoded = sameRight
     (trans (sym (ExecutionContext.decoded context)) (trans (cong Plan.decode (knownRaw operation token before context raw observed)) decoded))
 
+  notCompletion : Result → Set
+  notCompletion (completed _ _) = ⊥
+  notCompletion _ = ⊤
+
   data PendingCheck (operation : Text) (token : ℕ) (before : Store.World) : Set where
-    blockedPending : Result → ¬ ExecutionContext operation token before → PendingCheck operation token before
+    blockedPending : (result : Result) → notCompletion result → ¬ ExecutionContext operation token before → PendingCheck operation token before
     validPending : ExecutionContext operation token before → PendingCheck operation token before
 
   pendingDecision : ∀ {operation token before} → PendingCheck operation token before → ExecutionAdmission operation token before
-  pendingDecision (blockedPending result _) = returned result
+  pendingDecision (blockedPending result _ _) = returned result
   pendingDecision (validPending context) = admitted context
 
   pendingAdmission : ∀ operation token before binding →
@@ -1373,29 +1377,29 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
   pendingAdmission operation token before binding foundBinding matchingExpected =
     pendingDecision (checkPending operation token before binding foundBinding matchingExpected)
   checkPending operation token before binding foundBinding matchingExpected with reservation token before in foundReservation
-  ... | nothing = blockedPending unknownToken (λ context → noJust (trans (sym foundReservation) (ExecutionContext.originalReservation context)))
+  ... | nothing = blockedPending unknownToken tt (λ context → noJust (trans (sym foundReservation) (ExecutionContext.originalReservation context)))
   ... | just reservedRow with Project.Registered.plan token (Store.OperationTables.plans (Store.World.operations before)) in foundPlan
-  ... | nothing = blockedPending (needsRecovery binding) (λ context → noJust (trans (sym foundPlan) (ExecutionContext.originalPlan context)))
+  ... | nothing = blockedPending (needsRecovery binding) tt (λ context → noJust (trans (sym foundPlan) (ExecutionContext.originalPlan context)))
   ... | just raw with Plan.decode raw in decoded
-  ... | inj₁ fault = blockedPending (inconsistent binding (malformedPlan fault)) (λ context → differentSummands
+  ... | inj₁ fault = blockedPending (inconsistent binding (malformedPlan fault)) tt (λ context → differentSummands
     (trans (sym (ExecutionContext.decoded context)) (trans (cong Plan.decode (knownRaw operation token before context raw foundPlan)) decoded)))
   ... | inj₂ plan with Plan.textEqual (Store.BindingRow.operation binding) (Plan.Saved.operation plan) in matching
-  ... | false = blockedPending (inconsistent binding differentOperation) (λ context → falseTrue (trans (sym matching)
+  ... | false = blockedPending (inconsistent binding differentOperation) tt (λ context → falseTrue (trans (sym matching)
     (trans (sym (cong₂ (λ current stored → Plan.textEqual (Store.BindingRow.operation current) (Plan.Saved.operation stored))
       (sameJust (trans (sym (ExecutionContext.originalBinding context)) foundBinding)) (knownPlan operation token before context raw plan foundPlan decoded)))
       (ExecutionContext.matchingOperation context))))
   ... | true with Plan.executable library plan in executable
-  ... | false = blockedPending (needsRecovery binding) (λ context → falseTrue (trans (sym executable)
+  ... | false = blockedPending (needsRecovery binding) tt (λ context → falseTrue (trans (sym executable)
     (trans (sym (cong (Plan.executable library) (knownPlan operation token before context raw plan foundPlan decoded))) (ExecutionContext.executable context))))
   ... | true with addressing? (Plan.Saved.steps plan)
-  ... | no invalid = blockedPending (inconsistent binding invalidRegisteredPlan) (λ context → invalid
+  ... | no invalid = blockedPending (inconsistent binding invalidRegisteredPlan) tt (λ context → invalid
     (subst Addressing (cong Plan.Saved.steps (knownPlan operation token before context raw plan foundPlan decoded)) (ExecutionContext.addresses context)))
   ... | yes addresses with all? (λ declared → different? (Plan.Step.id declared) StoreStep.resultKey) (Plan.Saved.steps plan)
-  ... | no invalid = blockedPending (inconsistent binding invalidRegisteredPlan) (λ context → invalid
+  ... | no invalid = blockedPending (inconsistent binding invalidRegisteredPlan) tt (λ context → invalid
     (subst (All (λ declared → Plan.Step.id declared ≢ StoreStep.resultKey))
       (cong Plan.Saved.steps (knownPlan operation token before context raw plan foundPlan decoded)) (ExecutionContext.separateResult context)))
   ... | yes separate with OpaqueJournal.check token before (Plan.Saved.steps plan) in checked
-  ... | inj₁ fault = blockedPending (inconsistent binding undeclaredOrNonprefixAnswers) (λ context →
+  ... | inj₁ fault = blockedPending (inconsistent binding undeclaredOrNonprefixAnswers) tt (λ context →
     OpaqueJournal.checkCannotFail token before _
       (subst (OpaqueJournal.Complete token before) (cong Plan.Saved.steps (knownPlan operation token before context raw plan foundPlan decoded)) (ExecutionContext.journal context)) fault checked)
   ... | inj₂ journal = validPending (executionContext reservedRow foundReservation binding foundBinding matchingExpected raw foundPlan plan decoded matching executable addresses separate journal)
@@ -1450,6 +1454,118 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
       (trans (alongObservation _ (afterMatch operation token before binding original) true matching)
         (cong (afterReadback operation token before binding original matching) completedOutcome))
 
+  -- A completed readback exposes the actual durable answer. Inverting this
+  -- computed path does not assume a handler-provided replay capability.
+  afterPrefixCompletedValue : ∀ binding plan receipts remaining found original value →
+    afterPrefix binding plan receipts remaining found ≡ completed original value → replyValue found ≡ just value
+  afterPrefixCompletedValue binding plan receipts [] (just result) .binding .(Store.SavedReplyRow.reply result) refl = refl
+  afterPrefixCompletedValue binding plan receipts (_ ∷ _) (just result) original value ()
+  afterPrefixCompletedValue binding plan receipts (_ ∷ _) nothing original value ()
+  afterPrefixCompletedValue binding plan receipts [] nothing original value completedOutcome with Plan.Saved.steps plan
+  ... | [] with completedOutcome
+  ... | ()
+  afterPrefixCompletedValue binding plan receipts [] nothing original value completedOutcome | _ ∷ _ with completedOutcome
+  ... | ()
+
+  afterPlanCompletedValue : ∀ binding plan rows original value →
+    afterPlan binding plan rows ≡ completed original value → replyValue (find StoreStep.resultKey rows) ≡ just value
+  afterPlanCompletedValue binding plan rows original value completedOutcome
+    with Plan.textEqual (Store.BindingRow.operation binding) (Plan.Saved.operation plan)
+  ... | false with completedOutcome
+  ... | ()
+  afterPlanCompletedValue binding plan rows original value completedOutcome | true with Plan.valid library plan
+  ... | false with completedOutcome
+  ... | ()
+  afterPlanCompletedValue binding plan rows original value completedOutcome | true | true
+    with prefix (Plan.Saved.steps plan) rows
+  ... | receipts , remaining with length (filterᵇ notFinal rows) ≟ length receipts
+  ... | no _ with completedOutcome
+  ... | ()
+  afterPlanCompletedValue binding plan rows original value completedOutcome | true | true | receipts , remaining | yes _ =
+    afterPrefixCompletedValue binding plan receipts remaining
+    (find StoreStep.resultKey rows) original value completedOutcome
+
+  answerCompletedLookup : ∀ token before original value → answer token before ≡ completed original value →
+    Store.lookupSaved before token StoreStep.resultKey ≡ just value
+  answerCompletedLookup token before original value completedOutcome
+    with Project.Registered.binding token (Store.OperationTables.bindings (Store.World.operations before))
+  ... | just binding with Store.lookupCancellation before token
+  ... | just _ with completedOutcome
+  ... | ()
+  answerCompletedLookup token before original value completedOutcome | just binding | nothing
+    with Project.Registered.plan token (Store.OperationTables.plans (Store.World.operations before))
+  ... | nothing with savedRows token before
+  ... | [] with completedOutcome
+  ... | ()
+  answerCompletedLookup token before original value completedOutcome | just binding | nothing | nothing | _ ∷ _ with completedOutcome
+  ... | ()
+  answerCompletedLookup token before original value completedOutcome | just binding | nothing | just raw
+    with Plan.decode raw
+  ... | inj₁ _ with completedOutcome
+  ... | ()
+  answerCompletedLookup token before original value completedOutcome | just binding | nothing | just raw | inj₂ plan = trans
+    (sym (findReply token StoreStep.resultKey (Store.OperationTables.savedReplies (Store.World.operations before))))
+    (afterPlanCompletedValue binding plan (savedRows token before) original value completedOutcome)
+  answerCompletedLookup token before original value completedOutcome | nothing with Store.lookupCancellation before token
+  ... | just _ with completedOutcome
+  ... | ()
+  answerCompletedLookup token before original value completedOutcome | nothing | nothing with reservation token before
+  ... | just _ with completedOutcome
+  ... | ()
+  answerCompletedLookup token before original value completedOutcome | nothing | nothing | nothing with completedOutcome
+  ... | ()
+
+  pendingCannotComplete : ∀ operation token before binding found matching original value →
+    pendingAdmission operation token before binding found matching ≡ returned (completed original value) → ⊥
+  pendingCannotComplete operation token before binding found matching original value completedOutcome
+    with checkPending operation token before binding found matching
+  ... | blockedPending result impossible _ with completedOutcome
+  ... | refl = impossible
+  pendingCannotComplete operation token before binding found matching original value completedOutcome | validPending context with completedOutcome
+  ... | ()
+
+  returnedInjective : ∀ {operation token before} {first second : Result} →
+    returned {operation} {token} {before} first ≡ returned second → first ≡ second
+  returnedInjective refl = refl
+
+  afterReadbackCompletedLookup : ∀ operation token before binding found matching observed original value →
+    answer token before ≡ observed →
+    afterReadback operation token before binding found matching observed ≡ returned (completed original value) →
+    Store.lookupSaved before token StoreStep.resultKey ≡ just value
+  afterReadbackCompletedLookup operation token before binding found matching (pending _ _ _) original value known completedOutcome =
+    ⊥-elim (pendingCannotComplete operation token before binding found matching original value completedOutcome)
+  afterReadbackCompletedLookup operation token before binding found matching (completed _ _) original value known completedOutcome =
+    answerCompletedLookup token before original value (trans known (returnedInjective completedOutcome))
+  afterReadbackCompletedLookup operation token before binding found matching (cancelled _ _ _) original value known ()
+  afterReadbackCompletedLookup operation token before binding found matching (inconsistent _ _) original value known ()
+  afterReadbackCompletedLookup operation token before binding found matching (needsRecovery _) original value known ()
+  afterReadbackCompletedLookup operation token before binding found matching (awaitingPlan _) original value known ()
+  afterReadbackCompletedLookup operation token before binding found matching (awaitingCompletion _) original value known ()
+  afterReadbackCompletedLookup operation token before binding found matching unknownToken original value known ()
+  afterReadbackCompletedLookup operation token before binding found matching reserved original value known ()
+
+  afterMatchCompletedLookup : ∀ operation token before binding found matched matching original value →
+    afterMatch operation token before binding found matched matching ≡ returned (completed original value) →
+    Store.lookupSaved before token StoreStep.resultKey ≡ just value
+  afterMatchCompletedLookup operation token before binding found false matching original value ()
+  afterMatchCompletedLookup operation token before binding found true matching original value completedOutcome =
+    afterReadbackCompletedLookup operation token before binding found matching (answer token before) original value refl completedOutcome
+
+  afterLookupCompletedLookup : ∀ operation token before observed found original value →
+    afterBindingLookup operation token before observed found ≡ returned (completed original value) →
+    Store.lookupSaved before token StoreStep.resultKey ≡ just value
+  afterLookupCompletedLookup operation token before nothing found original value completedOutcome =
+    answerCompletedLookup token before original value (returnedInjective completedOutcome)
+  afterLookupCompletedLookup operation token before (just binding) found original value completedOutcome =
+    afterMatchCompletedLookup operation token before binding found
+      (Plan.textEqual (Store.BindingRow.operation binding) operation) refl original value completedOutcome
+
+  admissionCompletedLookup : ∀ operation token before original value →
+    admission operation token before ≡ returned (completed original value) →
+    Store.lookupSaved before token StoreStep.resultKey ≡ just value
+  admissionCompletedLookup operation token before original value = afterLookupCompletedLookup operation token before
+    (Project.Registered.binding token (Store.OperationTables.bindings (Store.World.operations before))) refl original value
+
   contextAfterNext : ∀ operation token before (context : ExecutionContext operation token before) next value changed →
     OpaqueJournal.next (OpaqueJournal.Complete.prefix (ExecutionContext.journal context)) ≡ just next →
     Store.World.operations changed ≡ Store.World.operations before →
@@ -1499,7 +1615,7 @@ module Readback (library : Library.Contract) (postgres : PostgreSQL) where
       (ExecutionContext.bindingRow context) (ExecutionContext.originalBinding context) (ExecutionContext.requestedOperation context) ≡ admitted actual)
   pendingAdmissionExists operation token before context with checkPending operation token before
     (ExecutionContext.bindingRow context) (ExecutionContext.originalBinding context) (ExecutionContext.requestedOperation context)
-  ... | blockedPending result impossible = ⊥-elim (impossible context)
+  ... | blockedPending result _ impossible = ⊥-elim (impossible context)
   ... | validPending actual = actual , refl
 
   admissionFromPending : ∀ operation token before (context : ExecutionContext operation token before) next receipts →
