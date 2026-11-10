@@ -621,12 +621,12 @@ module Registered (format : Encoding.Formatting) (conversion : Conversion.Contra
     -- These are computed journal facts, established by the physical prefix.
     -- In particular a new final answer must come from the paired publication.
     ReplayFacts : ℕ → Store.World → Set
-    ReplayFacts token current = admit token (Step.registration current) ≡ nothing ×
+    ReplayFacts token current = ∀ raw → Store.lookupSaved current token Step.resultKey ≡ just raw →
+      admit token (Step.registration current) ≡ nothing ×
       Store.lookupCancellation current token ≡ nothing ×
-      (∀ raw → Store.lookupSaved current token Step.resultKey ≡ just raw →
-        Σ Wire.Value (λ ownerAnswer →
-          Store.lookupSaved current token (Belief.ownerKey token) ≡ just ownerAnswer ×
-          Store.lookupSaved current token (Belief.publicationKey token) ≡ just raw))
+      Σ Wire.Value (λ ownerAnswer →
+        Store.lookupSaved current token (Belief.ownerKey token) ≡ just ownerAnswer ×
+        Store.lookupSaved current token (Belief.publicationKey token) ≡ just raw)
 
     noSavedAnswer : ∀ {raw : Wire.Value} → nothing ≡ just raw → ⊥
     noSavedAnswer ()
@@ -639,9 +639,7 @@ module Registered (format : Encoding.Formatting) (conversion : Conversion.Contra
     ... | inj₁ unchanged = subst (ReplayFacts token) (sym unchanged) old
     ... | inj₂ (changed , reply , admitted , active , ownerAbsent , finalAbsent , resultAbsent , accepted) =
       subst (ReplayFacts token) (sym (cong proj₁ published))
-        (trans (cong (admit token) (O.Saved.keepsRegistration metadata token current changed reply accepted)) admitted ,
-         trans (O.Saved.keepsCancellation metadata token current changed reply accepted) active ,
-         λ raw known → ⊥-elim (noSavedAnswer (trans (sym noResult) known)))
+        (λ raw known → ⊥-elim (noSavedAnswer (trans (sym noResult) known)))
       where
       published = freshPrefix metadata token current changed reply admitted active ownerAbsent finalAbsent resultAbsent accepted
       noResult = O.Saved.Base.firstHasNoResult metadata token current changed reply accepted resultAbsent
@@ -680,10 +678,11 @@ module Registered (format : Encoding.Formatting) (conversion : Conversion.Contra
     ... | inj₁ unchanged = subst (ReplayFacts token) (sym unchanged) old
     ... | inj₂ (ownerAnswer , changed , reply , admitted , active , ownerSaved , finalAbsent , resultAbsent , accepted) =
       subst (ReplayFacts token) (sym (cong proj₁ published))
-        (trans (cong (admit token) (Final.Kernel.publicationKeepsRegistration observed token current changed reply accepted)) admitted ,
+        (λ raw known →
+         trans (cong (admit token) (Final.Kernel.publicationKeepsRegistration observed token current changed reply accepted)) admitted ,
          trans (Final.Kernel.publicationKeepsCancellation observed token current changed reply accepted) active ,
-         λ raw known → ownerAnswer , trans (publishedFirst observed token current changed reply accepted) ownerSaved ,
-           trans finalReadable (cong just (sameSavedAnswer (trans (sym resultReadable) known))))
+         ownerAnswer , trans (publishedFirst observed token current changed reply accepted) ownerSaved ,
+         trans finalReadable (cong just (sameSavedAnswer (trans (sym resultReadable) known))))
       where
       published = secondFresh observed token current ownerAnswer changed reply admitted active ownerSaved finalAbsent resultAbsent accepted
       finalReadable = Final.Kernel.publishedStepReadable observed token current changed reply accepted finalAbsent
@@ -719,18 +718,15 @@ module Registered (format : Encoding.Formatting) (conversion : Conversion.Contra
       (changesKeepReplay token initial events current owners physical old)
 
     cachedReplayAfterCut : ∀ token initial current raw →
-      admit token (Step.registration initial) ≡ nothing →
-      Store.lookupCancellation initial token ≡ nothing →
       Store.lookupSaved initial token Step.resultKey ≡ nothing →
       X.Interrupted (script token) initial current →
       Store.lookupSaved current token Step.resultKey ≡ just raw →
       Σ Result (λ reply → X.Completed (script token) current current reply ×
         Result.value reply ≡ Step.done raw)
-    cachedReplayAfterCut token initial current raw admitted active absent cut known
+    cachedReplayAfterCut token initial current raw absent cut known
       with interruptedKeepsReplay token initial current cut
-        (admitted , active , λ value saved → ⊥-elim (noSavedAnswer (trans (sym absent) saved)))
-    ... | currentAdmitted , currentActive , paired with paired raw known
-    ... | ownerAnswer , ownerSaved , finalSaved = cachedReplay token current ownerAnswer raw
+        (λ value saved → ⊥-elim (noSavedAnswer (trans (sym absent) saved))) raw known
+    ... | currentAdmitted , currentActive , ownerAnswer , ownerSaved , finalSaved = cachedReplay token current ownerAnswer raw
       currentAdmitted currentActive ownerSaved finalSaved known
 
     atomicInvariant : ∀ token initial before after effect reply → Owned token effect →
