@@ -32,6 +32,8 @@ import Mimir.StandardLibrary as Library
 import Mimir.PublicEncoding as Encoding
 import Mimir.StorageReadBinding as StorageReads
 import Mimir.LearningQueryBinding as LearningReads
+import Mimir.LearningContextProtocol as LearningContext
+import Mimir.McpErrors as Errors
 import Mimir.StructuredValue as Wire
 import Mimir.ToolCatalog as Tools
 import Mimir.Validation as Validation
@@ -170,6 +172,9 @@ module Evaluate (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     cancellationReadback : ℕ → Cancel.Result → PublicOutcome
     documentQueryReadback : DocumentQuery.Result → PublicOutcome
     retrievalReadback : PublicRetrieval.Response → PublicOutcome
+    learningContextReadback : LearningContext.Output → PublicOutcome
+    invalidContextAssessment : PublicOutcome
+    agentDecision : Errors.AgentCorrection.Claim → PublicOutcome
     assessmentReadback : (format : Encoding.Formatting) →
       LearningReads.AssessmentReads.Answer format → PublicOutcome
     directValue : Wire.Value → PublicOutcome

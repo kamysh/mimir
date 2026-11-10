@@ -404,6 +404,17 @@ and the full world stays unchanged. Its current certified snapshot effect has
 no database-failure reply: outer read failures and full host/wire assembly are
 explicitly outside this acknowledged-read adapter and remain unfinished.
 
+`IntendedLearningContext.Evaluate.evaluate` admits `query_learning_context` and
+uses the existing retrieval answer and pure context assembly on the original
+world. Its full typed body retains the actual retrieval receipt; success keeps
+all selected beliefs, procedure outcomes/provenance, assessments and coverage.
+The existing blank-project agent decision and invalid-stored-assessment outcome
+remain distinct and cannot turn into a partial successful context. Refused
+projects need no read/provider facts; otherwise the acknowledged snapshot is
+required before any necessary embedding response. Missing receipts are exterior
+input errors, and the full world stays unchanged. As with retrieval, outer
+snapshot failures and public host/wire composition remain unfinished.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |
