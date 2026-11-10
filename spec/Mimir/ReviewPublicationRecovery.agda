@@ -39,6 +39,7 @@ import Mimir.LearningSchema as Items
 import Mimir.LearningStore as Learning
 import Mimir.PosteriorComputation as Posterior
 import Mimir.OperationControls as Controls
+import Mimir.ProjectDeletion as Project
 import Mimir.PublicEncoding as Encoding
 import Mimir.ReviewObservation as Observation
 import Mimir.ReviewPlanning as Planning
@@ -477,6 +478,120 @@ module FinalBody (library : Library.Contract) (format : Encoding.Formatting) (da
   ... | inj₂ input with Plan.stepsEqual (expectedSteps input) (Plan.Saved.steps storedPlan)
   ... | false = inj₁ mismatch
   ... | true = inj₂ (input , Store.ReservationRow.reservedAt reserved)
+
+  andLeft : ∀ first second → first ∧ second ≡ true → first ≡ true
+  andLeft false second ()
+  andLeft true second accepted = refl
+  andRight : ∀ first second → first ∧ second ≡ true → second ≡ true
+  andRight false second ()
+  andRight true second accepted = accepted
+
+  textEqualSound : ∀ first second → Plan.textEqual first second ≡ true → first ≡ second
+  textEqualSound first second accepted with first ≟Text second
+  ... | yes same = same
+  ... | no _ with accepted
+  ... | ()
+
+  maybeEqualSound : ∀ first second → Plan.maybeEqual first second ≡ true → first ≡ second
+  maybeEqualSound nothing nothing accepted = refl
+  maybeEqualSound (just first) (just second) accepted = cong just (textEqualSound first second accepted)
+  maybeEqualSound nothing (just second) ()
+  maybeEqualSound (just first) nothing ()
+
+  stepsEqualSound : ∀ first second → Plan.stepsEqual first second ≡ true → first ≡ second
+  stepsEqualSound [] [] accepted = refl
+  stepsEqualSound [] (_ ∷ _) ()
+  stepsEqualSound (_ ∷ _) [] ()
+  stepsEqualSound (Plan.step site itemKey identity ∷ rest) (Plan.step site₂ itemKey₂ identity₂ ∷ tail) accepted
+    with textEqualSound site site₂ (andLeft (Plan.textEqual site site₂) (Plan.maybeEqual itemKey itemKey₂ ∧ (Plan.textEqual identity identity₂ ∧ Plan.stepsEqual rest tail)) accepted)
+       | maybeEqualSound itemKey itemKey₂ (andLeft (Plan.maybeEqual itemKey itemKey₂) (Plan.textEqual identity identity₂ ∧ Plan.stepsEqual rest tail) (andRight (Plan.textEqual site site₂) (Plan.maybeEqual itemKey itemKey₂ ∧ (Plan.textEqual identity identity₂ ∧ Plan.stepsEqual rest tail)) accepted))
+       | textEqualSound identity identity₂ (andLeft (Plan.textEqual identity identity₂) (Plan.stepsEqual rest tail) (andRight (Plan.maybeEqual itemKey itemKey₂) (Plan.textEqual identity identity₂ ∧ Plan.stepsEqual rest tail) (andRight (Plan.textEqual site site₂) (Plan.maybeEqual itemKey itemKey₂ ∧ (Plan.textEqual identity identity₂ ∧ Plan.stepsEqual rest tail)) accepted)))
+       | stepsEqualSound rest tail (andRight (Plan.textEqual identity identity₂) (Plan.stepsEqual rest tail) (andRight (Plan.maybeEqual itemKey itemKey₂) (Plan.textEqual identity identity₂ ∧ Plan.stepsEqual rest tail) (andRight (Plan.textEqual site site₂) (Plan.maybeEqual itemKey itemKey₂ ∧ (Plan.textEqual identity identity₂ ∧ Plan.stepsEqual rest tail)) accepted)))
+  ... | refl | refl | refl | refl = refl
+
+  record BoundFacts (token : ℕ) (registration : Step.Registration)
+    (reserved : Store.ReservationRow) (binding : Store.BindingRow) (rawPlan : Wire.Value) : Set where
+    field reservationKnown : Admission.reservation token (proj₁ registration) ≡ just reserved
+          bindingKnown : Project.Registered.binding token (proj₁ (proj₂ (proj₂ registration))) ≡ just binding
+          planKnown : Project.Registered.plan token (proj₂ (proj₂ (proj₂ registration))) ≡ just rawPlan
+          bindingOperation : Plan.textEqual (Store.BindingRow.operation binding) (toList "review_experience") ≡ true
+
+  boundFacts : ∀ token registration reserved binding rawPlan →
+    Admission.originalPlan (toList "review_experience") token registration ≡ inj₂ (reserved , binding , rawPlan) →
+    BoundFacts token registration reserved binding rawPlan
+  boundFacts token registration@(reservations , requests , bindings , plans) reserved binding rawPlan accepted
+    with Admission.reservation token reservations in reservedKnown
+  ... | nothing with accepted
+  ... | ()
+  boundFacts token registration@(reservations , requests , bindings , plans) reserved binding rawPlan accepted | just actualReserved
+    with Project.Registered.binding token bindings in originalKnown
+  ... | nothing with accepted
+  ... | ()
+  boundFacts token registration@(reservations , requests , bindings , plans) reserved binding rawPlan accepted | just actualReserved | just actualBinding
+    with Plan.textEqual (Store.BindingRow.operation actualBinding) (toList "review_experience") in matching
+  ... | false with accepted
+  ... | ()
+  boundFacts token registration@(reservations , requests , bindings , plans) reserved binding rawPlan accepted | just actualReserved | just actualBinding | true
+    with Project.Registered.plan token plans in storedKnown
+  ... | nothing with accepted
+  ... | ()
+  boundFacts token registration@(reservations , requests , bindings , plans) reserved binding rawPlan accepted | just actualReserved | just actualBinding | true | just actualPlan
+    with accepted
+  ... | refl = record
+    { reservationKnown = reservedKnown; bindingKnown = originalKnown; planKnown = storedKnown; bindingOperation = matching }
+
+  record OriginalFacts (token : ℕ) (registration : Step.Registration) (input : Request) (time : ℤ) : Set where
+    field reserved : Store.ReservationRow
+          binding : Store.BindingRow
+          rawPlan : Wire.Value
+          storedPlan : Plan.Saved
+          bound : BoundFacts token registration reserved binding rawPlan
+          decoded : Plan.decode rawPlan ≡ inj₂ storedPlan
+          executable : Plan.valid library storedPlan ≡ true
+          named : Plan.textEqual (Plan.Saved.operation storedPlan) (toList "review_experience") ≡ true
+          provider : Independent.ProviderSettings.admitted (Store.BindingRow.settings binding) ≡ true
+          requestDecoded : arguments (Store.BindingRow.arguments binding) ≡ inj₂ input
+          originalSteps : Plan.Saved.steps storedPlan ≡ expectedSteps input
+          reservationTime : Store.ReservationRow.reservedAt reserved ≡ time
+
+  originalFacts : ∀ token registration input time → original token registration ≡ inj₂ (input , time) →
+    OriginalFacts token registration input time
+  originalFacts token registration input time accepted
+    with Admission.originalPlan (toList "review_experience") token registration in registered
+  ... | inj₁ _ with accepted
+  ... | ()
+  originalFacts token registration input time accepted | inj₂ (reserved , binding , rawPlan)
+    with Plan.decode rawPlan in decoded
+  ... | inj₁ _ with accepted
+  ... | ()
+  originalFacts token registration input time accepted | inj₂ (reserved , binding , rawPlan) | inj₂ storedPlan
+    with Plan.valid library storedPlan in executable
+  ... | false with accepted
+  ... | ()
+  originalFacts token registration input time accepted | inj₂ (reserved , binding , rawPlan) | inj₂ storedPlan | true
+    with Plan.textEqual (Plan.Saved.operation storedPlan) (toList "review_experience") in named
+  ... | false with accepted
+  ... | ()
+  originalFacts token registration input time accepted | inj₂ (reserved , binding , rawPlan) | inj₂ storedPlan | true | true
+    with Independent.ProviderSettings.admitted (Store.BindingRow.settings binding) in provider
+  ... | false with accepted
+  ... | ()
+  originalFacts token registration input time accepted | inj₂ (reserved , binding , rawPlan) | inj₂ storedPlan | true | true | true
+    with arguments (Store.BindingRow.arguments binding) in requestDecoded
+  ... | inj₁ _ with accepted
+  ... | ()
+  originalFacts token registration input time accepted | inj₂ (reserved , binding , rawPlan) | inj₂ storedPlan | true | true | true | inj₂ actualInput
+    with Plan.stepsEqual (expectedSteps actualInput) (Plan.Saved.steps storedPlan) in stepsMatch
+  ... | false with accepted
+  ... | ()
+  originalFacts token registration input time accepted | inj₂ (reserved , binding , rawPlan) | inj₂ storedPlan | true | true | true | inj₂ actualInput | true
+    with accepted
+  ... | refl = record
+    { reserved = reserved; binding = binding; rawPlan = rawPlan; storedPlan = storedPlan
+    ; bound = boundFacts token registration reserved binding rawPlan registered
+    ; decoded = decoded; executable = executable; named = named; provider = provider; requestDecoded = requestDecoded
+    ; originalSteps = sym (stepsEqualSound (expectedSteps actualInput) (Plan.Saved.steps storedPlan) stepsMatch)
+    ; reservationTime = refl }
 
   Internal = ℕ × Metadata
   admit : Internal → Step.Registration → Maybe B.Diagnostic
