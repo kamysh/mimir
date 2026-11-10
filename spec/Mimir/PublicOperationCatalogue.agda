@@ -155,7 +155,7 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
     using (Internal; key; distinct; decide; keepsJournal; admit; module X; script; interruptionState; operation; cachedReplay)
   module PatternRemoval = DeletePattern.Registered library
     using (key; distinct; decide; keepsJournal; admit; operation; cachedReplay)
-  module Relationship kind = Edges.Registered library kind
+  module Relationship kind = Edges.Registered library (Encoding.Formatting.uuidText format) kind
     using (key; distinct; decide; keepsJournal; admit; operation; cachedReplay)
   module BeliefRemoval = DeleteBelief.Registered library databaseSum calculator serverTime
     using (operation; interruptedKeepsRegistration; cachedReplay)
