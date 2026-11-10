@@ -115,7 +115,7 @@ enum Command {
     /// ssl_client_key, backend, model, api_key, cache_dir.
     /// An existing valid config is left unchanged when the explicit overrides
     /// already match. Conflicting overrides ask for a decision. With no
-    /// arguments, an existing config is preserved and reported as an error.
+    /// arguments, the existing file opens in the editor so it can be repaired.
     Init {
         /// KEY=VALUE pairs (e.g. `host=localhost port=5450 backend=local`).
         /// Omit to get the interactive $EDITOR flow.
