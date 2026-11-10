@@ -1613,6 +1613,84 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
     ... | Journal.admitted actual = activeKeepsJournal token (Body.script token) events effect next reply before current interrupted
       (Body.scriptScoped token) prefix physical active (pending actual observedAdmission)
 
+    -- The actual entry may publish an owner and saved answers, then replace
+    -- document data. None of those commits changes the original operation
+    -- registration or its cancellation row, including a lost reply boundary.
+    MetadataFrame : ℕ → Store.World → Store.World → Set
+    MetadataFrame token before current = Step.registration current ≡ Step.registration before ×
+      Store.lookupCancellation current token ≡ Store.lookupCancellation before token
+
+    private
+      unchangedMetadata : ∀ token before current → current ≡ before → MetadataFrame token before current
+      unchangedMetadata token before current same = cong Step.registration same ,
+        cong (λ world → Store.lookupCancellation world token) same
+
+      followedMetadata : ∀ token before middle current → MetadataFrame token before middle →
+        MetadataFrame token middle current → MetadataFrame token before current
+      followedMetadata token before middle current earlier later =
+        trans (proj₁ later) (proj₁ earlier) , trans (proj₂ later) (proj₂ earlier)
+
+      firstMetadata : ∀ metadata token before → MetadataFrame token before (proj₁ (first metadata token before))
+      firstMetadata metadata token before with firstClassification metadata token before
+      ... | inj₁ same = unchangedMetadata token before _ same
+      ... | inj₂ (changed , reply , admitted , active , firstMissing , lastMissing , resultMissing , accepted) =
+        subst (MetadataFrame token before)
+          (sym (cong proj₁ (freshFirst metadata token before changed reply admitted active firstMissing lastMissing resultMissing accepted)))
+          (Prefix.keepsRegistration (token , metadata) before changed reply accepted ,
+           Prefix.keepsCancellation (token , metadata) before changed reply accepted)
+
+      secondMetadata : ∀ received token before → MetadataFrame token before (proj₁ (second received token before))
+      secondMetadata received token before with Store.lookupSaved before token (preparationKey token)
+      ... | nothing = refl , refl
+      ... | just _ = Final.registrationUnchanged (token , received) before ,
+        Final.cancellationUnchanged token (token , received) before
+
+      bodyAtomicMetadata : ∀ token before current effect reply → Body.Owned token effect →
+        Body.Atomic before effect reply current → MetadataFrame token before current
+      bodyAtomicMetadata token before current .(Body.reserve token) (metadata , reply) Body.ownerOwned physical =
+        subst (MetadataFrame token before)
+          (sym (cong proj₁ (Run.First.atomicObservation metadata token before current reply (proj₁ physical))))
+          (firstMetadata metadata token before)
+      bodyAtomicMetadata token before current .(Body.readSources token) (inj₁ fault) Body.sourcesOwned same =
+        unchangedMetadata token before current same
+      bodyAtomicMetadata token before current .(Body.readSources token) (inj₂ snapshot) Body.sourcesOwned (snapshotSame , same) =
+        unchangedMetadata token before current same
+      bodyAtomicMetadata token before current .(Body.embed token cfg content) reply (Body.embedOwned cfg content) same =
+        unchangedMetadata token before current same
+      bodyAtomicMetadata token before current .(Body.publish token vectors) (time , reply) (Body.publishOwned vectors) physical =
+        subst (MetadataFrame token before)
+          (sym (cong proj₁ (Run.Second.atomicObservation (publication vectors time) token before current reply physical)))
+          (secondMetadata (publication vectors time) token before)
+
+      bodyChangesMetadata : ∀ token initial before events current →
+        All (λ event → Body.Owned token (proj₁ event)) events →
+        Body.X.Changes before events current → MetadataFrame token initial before → MetadataFrame token initial current
+      bodyChangesMetadata token initial before [] .before [] (Body.X.unchanged _) old = old
+      bodyChangesMetadata token initial before ((effect , reply) ∷ events) current (own ∷ owners)
+        (Body.X.changed _ _ _ middle physical rest) old =
+        bodyChangesMetadata token initial middle events current owners rest
+          (followedMetadata token initial before middle old (bodyAtomicMetadata token before middle effect reply own physical))
+
+      bodyInterruptedMetadata : ∀ token before current → Body.X.Interrupted (Body.script token) before current →
+        MetadataFrame token before current
+      bodyInterruptedMetadata token before current (Body.X.atPrefix events residual .current prefix physical) =
+        bodyChangesMetadata token before before events current
+          (proj₁ (Body.prefixScoped token (Body.script token) events residual (Body.scriptScoped token) prefix))
+          physical (refl , refl)
+      bodyInterruptedMetadata token before current
+        (Body.X.beforeReply events effect continuation middle reply .current prefix physical active)
+        with Body.prefixScoped token (Body.script token) events (Body.E.ask effect continuation) (Body.scriptScoped token) prefix
+      ... | owners , residual = followedMetadata token before middle current
+        (bodyChangesMetadata token before before events middle owners physical (refl , refl))
+        (bodyAtomicMetadata token middle current effect reply (Body.activeOwned token effect continuation residual) active)
+
+    interruptedMetadataFrame : ∀ token before current → X.Interrupted (script token) before current →
+      Step.registration current ≡ Step.registration before ×
+      Store.lookupCancellation current token ≡ Store.lookupCancellation before token
+    interruptedMetadataFrame token before current cut with interruptionMeaning token before current cut
+    ... | inj₁ same = unchangedMetadata token before current same
+    ... | inj₂ (context , admitted , bodyCut) = bodyInterruptedMetadata token before current bodyCut
+
     converges : ∀ token before interrupted after result → X.Interrupted (script token) before interrupted →
       X.Completed (script token) interrupted after result → EntryGoal token before after result
     converges token before interrupted after result cut retry with interruptionMeaning token before interrupted cut
