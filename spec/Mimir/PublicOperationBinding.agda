@@ -1084,6 +1084,7 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
           savedPlan : plan (Call.token call) after ≡ just (Context.raw context)
           decodedPlan : P.decode (Context.raw context) ≡ inj₂ (Context.model context)
           executable : P.executable library (Context.model context) ≡ true
+          uncancelled : Store.lookupCancellation after (Call.token call) ≡ nothing
 
   readyOperation : ∀ call after context → ReadyMeaning call after context →
     Store.BindingRow.operation (Context.original context) ≡ Call.name call
@@ -1312,36 +1313,39 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   existingReady : ∀ call settings before original raw returnedOriginal returnedModel returnedRaw →
     binding (Call.token call) before ≡ just original → matches call settings original ≡ true →
     plan (Call.token call) before ≡ just raw →
+    Store.lookupCancellation before (Call.token call) ≡ nothing →
     existingPlan original raw ≡ planned returnedOriginal returnedModel returnedRaw →
     ReadyMeaning call before (preparedWrite call returnedOriginal returnedModel returnedRaw)
-  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored accepted
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted
     with P.decode raw in decoded
   ... | inj₁ _ with accepted
   ... | ()
-  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored accepted | inj₂ model
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted | inj₂ model
     with P.textEqual (Store.BindingRow.operation original) (P.Saved.operation model)
   ... | false with accepted
   ... | ()
-  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored accepted | inj₂ model | true
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted | inj₂ model | true
     with P.executable library model in valid
   ... | false with accepted
   ... | ()
-  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored accepted | inj₂ model | true | true
+  existingReady call settings before original raw returnedOriginal returnedModel returnedRaw known matched stored active accepted | inj₂ model | true | true
     with accepted
   ... | refl = record
     { actualCall = refl; boundRequest = known; originalArguments = settings , matched
-    ; savedPlan = stored; decodedPlan = decoded; executable = valid }
+    ; savedPlan = stored; decodedPlan = decoded; executable = valid; uncancelled = active }
 
   newPlanReady : ∀ call settings original encoding before after returnedOriginal returnedModel returnedRaw →
     binding (Call.token call) before ≡ just original → matches call settings original ≡ true →
+    Store.lookupCancellation before (Call.token call) ≡ nothing →
     (after , planned returnedOriginal returnedModel returnedRaw) ≡ saveNewPlan call original encoding before →
     ReadyMeaning call after (preparedWrite call returnedOriginal returnedModel returnedRaw)
-  newPlanReady call settings original (encodingFailed fault) before after returnedOriginal returnedModel returnedRaw known matched ()
-  newPlanReady call settings original (encoded model computed raw decoded) before after returnedOriginal returnedModel returnedRaw known matched accepted
+  newPlanReady call settings original (encodingFailed fault) before after returnedOriginal returnedModel returnedRaw known matched active ()
+  newPlanReady call settings original (encoded model computed raw decoded) before after returnedOriginal returnedModel returnedRaw known matched active accepted
     with accepted
   ... | refl = record
     { actualCall = refl; boundRequest = known; originalArguments = settings , matched
-    ; savedPlan = headPlan call raw before; decodedPlan = decoded; executable = computedExecutable call model computed }
+    ; savedPlan = headPlan call raw before; decodedPlan = decoded; executable = computedExecutable call model computed
+    ; uncancelled = active }
 
   prepareReady : ∀ call settings encoding before after original model raw →
     (after , planned original model raw) ≡ prepare call settings encoding before →
@@ -1355,20 +1359,20 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   ... | false with accepted
   ... | ()
   prepareReady call settings encoding before after original model raw accepted | just boundRow | true
-    with Store.lookupCancellation before (Call.token call)
+    with Store.lookupCancellation before (Call.token call) in active
   ... | just _ with accepted
   ... | ()
   prepareReady call settings encoding before after original model raw accepted | just boundRow | true | nothing
     with plan (Call.token call) before in stored
   ... | just old = subst (λ state → ReadyMeaning call state (preparedWrite call original model raw))
     (sym (cong proj₁ accepted))
-    (existingReady call settings before boundRow old original model raw known matched stored (sym (cong proj₂ accepted)))
+    (existingReady call settings before boundRow old original model raw known matched stored active (sym (cong proj₂ accepted)))
   prepareReady call settings encoding before after original model raw accepted | just boundRow | true | nothing | nothing
     with Read.savedRows (Call.token call) before
   ... | _ ∷ _ with accepted
   ... | ()
   prepareReady call settings encoding before after original model raw accepted | just boundRow | true | nothing | nothing | [] =
-    newPlanReady call settings boundRow encoding before after original model raw known matched accepted
+    newPlanReady call settings boundRow encoding before after original model raw known matched active accepted
 
   prepareAtomicReady : ∀ call settings encoding reply before after →
     Atomic before (publishPlan call settings) (encoding , reply) after →
@@ -1741,13 +1745,15 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
   transportReady : ∀ call before after context →
     binding (Call.token call) after ≡ binding (Call.token call) before →
     plan (Call.token call) after ≡ plan (Call.token call) before →
+    Store.lookupCancellation after (Call.token call) ≡ Store.lookupCancellation before (Call.token call) →
     ReadyMeaning call before context → ReadyMeaning call after context
-  transportReady call before after context sameBinding samePlan earlier = record
+  transportReady call before after context sameBinding samePlan sameCancellation earlier = record
     { actualCall = ReadyMeaning.actualCall earlier
     ; boundRequest = trans sameBinding (ReadyMeaning.boundRequest earlier)
     ; originalArguments = ReadyMeaning.originalArguments earlier
     ; savedPlan = trans samePlan (ReadyMeaning.savedPlan earlier)
-    ; decodedPlan = ReadyMeaning.decodedPlan earlier; executable = ReadyMeaning.executable earlier }
+    ; decodedPlan = ReadyMeaning.decodedPlan earlier; executable = ReadyMeaning.executable earlier
+    ; uncancelled = trans sameCancellation (ReadyMeaning.uncancelled earlier) }
 
   contextSame : ∀ first second → Context.call first ≡ Context.call second →
     Context.original first ≡ Context.original second → Context.model first ≡ Context.model second →
