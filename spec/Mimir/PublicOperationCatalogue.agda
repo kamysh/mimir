@@ -643,3 +643,309 @@ module Run (library : Library.Contract) (format : Encoding.Formatting)
     Recovery.RecoverableFor Store.World (Input (Choice.kind (resolve call)))
       (Result (Choice.kind (resolve call))) (Goal (Choice.kind (resolve call)))
   selectedOperation environment call = executable (Choice.kind (resolve call)) (selectedCertificate environment call)
+
+
+  module Creating = Binding.Creating library postgres
+
+  -- Closed native writer dispatch. The input to every selected certificate
+  -- is the actual token and decoded request carried by this invocation.
+  writerChoiceFor : ∀ tool → Tools.kind tool ≡ Tools.businessWrite →
+    ∀ {submitted} → Request.Invocation tool submitted → Choice
+  writerChoiceFor Tools.insertBelief writer invocation = choose (independentWrite requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.deleteBelief writer invocation = choose (beliefRemoval requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.deleteProject writer invocation = choose (projectRemoval (proj₁ project))
+    (Request.Invocation.operationToken invocation)
+    where project = Creating.readProject (Request.Invocation.arguments invocation) (Request.Invocation.request invocation)
+            (Request.Invocation.decoded invocation)
+  writerChoiceFor Tools.deletePattern writer invocation = choose (patternRemoval requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.insertPattern writer invocation = choose (patternWrite requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.recordSupport writer invocation = choose (relationship Edges.support requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.recordCause writer invocation = choose (relationship Edges.cause requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.recordDefeat writer invocation = choose (defeat requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.recordContradiction writer invocation = choose (relationship Edges.contradiction requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.getBelief () invocation
+  writerChoiceFor Tools.listBeliefs () invocation
+  writerChoiceFor Tools.listPatterns () invocation
+  writerChoiceFor Tools.getContradictions () invocation
+  writerChoiceFor Tools.decayAll writer invocation = choose (decay requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.sweepExpiredDefeated writer invocation = choose (sweep requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.queryRelevant () invocation
+  writerChoiceFor Tools.addEvidence writer invocation = choose (grounding Ground.addition requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.getEvidence () invocation
+  writerChoiceFor Tools.propagateFrom writer invocation = choose (propagation requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.queryIntervention () invocation
+  writerChoiceFor Tools.loadDocument writer invocation = choose (documentLoading requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.queryDocument () invocation
+  writerChoiceFor Tools.clearDocument writer invocation = choose (documentRemoval requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.getLearningReview () invocation
+  writerChoiceFor Tools.learningCapabilities () invocation
+  writerChoiceFor Tools.getLessonAssessment () invocation
+  writerChoiceFor Tools.lessonAssessmentHistory () invocation
+  writerChoiceFor Tools.explainBelief () invocation
+  writerChoiceFor Tools.recordExperience writer invocation = choose (sourceWrite requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.pendingExperiences () invocation
+  writerChoiceFor Tools.reviewExperience writer invocation = choose (reviewWrite requested) (Request.Invocation.operationToken invocation)
+    where requested = Request.Invocation.request invocation
+  writerChoiceFor Tools.getExperience () invocation
+  writerChoiceFor Tools.experienceHistory () invocation
+  writerChoiceFor Tools.queryLearningContext () invocation
+  writerChoiceFor Tools.reserveOperation () invocation
+  writerChoiceFor Tools.operationOutcome () invocation
+  writerChoiceFor Tools.cancelOperation () invocation
+
+  writerChoice : Creating.Call → Choice
+  writerChoice call = writerChoiceFor (Creating.Call.tool call) (Creating.Call.writer call) (Creating.Call.invocation call)
+
+
+  -- The creating prefix is assembled here with the fixed concrete body.
+  -- Neither an operation nor its business goal is a public request field.
+  module PublicWrites (environment : ReviewEnvironment) (preparation : Creating.Environment) where
+    choice : Creating.Context → Choice
+    choice context = writerChoice (Creating.Context.call context)
+    bodyKind : Creating.Context → Kind
+    bodyKind context = Choice.kind (choice context)
+    bodyInput : (context : Creating.Context) → Input (bodyKind context)
+    bodyInput context = Choice.input (choice context)
+    bodyCertificate : (context : Creating.Context) → Certificate (bodyKind context)
+    bodyCertificate context = certificate environment (bodyKind context)
+    bodyOperation : (context : Creating.Context) → Recovery.RecoverableFor Store.World
+      (Input (bodyKind context)) (Result (bodyKind context)) (Goal (bodyKind context))
+    bodyOperation context = executable (bodyKind context) (bodyCertificate context)
+    module Body (context : Creating.Context) = Recovery.RecoverableFor (bodyOperation context)
+
+    data Response : Set where
+      needsInput : Validation.Fault → Response
+      returned : Creating.Read.Result → Response
+      executed : (context : Creating.Context) → Result (bodyKind context) → Response
+
+    data Effect : Set where
+      prepare : Creating.Effect → Effect
+      publish : (context : Creating.Context) → Body.Effect context → Effect
+    Reply : Effect → Set
+    Reply (prepare effect) = Creating.Reply effect
+    Reply (publish context effect) = Body.Reply context effect
+    Atomic : Store.World → (effect : Effect) → Reply effect → Store.World → Set
+    Atomic before (prepare effect) reply after = Creating.Atomic before effect reply after
+    Atomic before (publish context effect) reply after = Body.Atomic context before effect reply after
+    module X = Recovery.Execution Store.World Effect Reply Atomic
+    module E = X.E
+
+    liftPrefix : ∀ {R} → Creating.E.Script R → E.Script R
+    liftPrefix (Creating.E.done reply) = E.done reply
+    liftPrefix (Creating.E.ask effect next) = E.ask (prepare effect) (λ reply → liftPrefix (next reply))
+    liftBody : ∀ context → Body.E.Script context (Result (bodyKind context)) → E.Script Response
+    liftBody context (Body.E.done reply) = E.done (executed context reply)
+    liftBody context (Body.E.ask effect next) = E.ask (publish context effect) (λ reply → liftBody context (next reply))
+    afterPreparation : Creating.Result → E.Script Response
+    afterPreparation (Creating.needsInput fault) = E.done (needsInput fault)
+    afterPreparation (Creating.returned outcome) = E.done (returned outcome)
+    afterPreparation (Creating.ready context) = liftBody context (Body.script context (bodyInput context))
+    script : Creating.Request → E.Script Response
+    script requested = E._>>=_ (liftPrefix (Creating.script requested)) afterPreparation
+
+    prefixEvent : Creating.E.Event → E.Event
+    prefixEvent (effect , reply) = prepare effect , reply
+    bodyEvent : ∀ context → Body.E.Event context → E.Event
+    bodyEvent context (effect , reply) = publish context effect , reply
+    prefixRuns : ∀ {R} {program : Creating.E.Script R} {events reply} →
+      Creating.E.Runs program events reply → E.Runs (liftPrefix program) (Data.List.map prefixEvent events) reply
+    prefixRuns (Creating.E.returned reply) = E.returned reply
+    prefixRuns (Creating.E.replied effect next reply later) =
+      E.replied (prepare effect) (λ observed → liftPrefix (next observed)) reply (prefixRuns later)
+    bodyRuns : ∀ context {program : Body.E.Script context (Result (bodyKind context))} {events reply} →
+      Body.E.Runs context program events reply →
+      E.Runs (liftBody context program) (Data.List.map (bodyEvent context) events) (executed context reply)
+    bodyRuns context (Body.E.returned reply) = E.returned (executed context reply)
+    bodyRuns context (Body.E.replied effect next reply later) =
+      E.replied (publish context effect) (λ observed → liftBody context (next observed)) reply (bodyRuns context later)
+    prefixChanges : ∀ {before events after} → Creating.X.Changes before events after →
+      X.Changes before (Data.List.map prefixEvent events) after
+    prefixChanges (Creating.X.unchanged before) = X.unchanged before
+    prefixChanges (Creating.X.changed before effect reply middle physical later) =
+      X.changed before (prepare effect) reply middle physical (prefixChanges later)
+    bodyChanges : ∀ context {before events after} → Body.X.Changes context before events after →
+      X.Changes before (Data.List.map (bodyEvent context) events) after
+    bodyChanges context (Body.X.unchanged before) = X.unchanged before
+    bodyChanges context (Body.X.changed before effect reply middle physical later) =
+      X.changed before (publish context effect) reply middle physical (bodyChanges context later)
+
+    afterPreparationProgress : ∀ prepared before → Σ Store.World (λ after → Σ Response
+      (λ reply → X.Completed (afterPreparation prepared) before after reply))
+    afterPreparationProgress (Creating.needsInput fault) before =
+      before , needsInput fault , X.completed [] (E.returned _) (X.unchanged before)
+    afterPreparationProgress (Creating.returned outcome) before =
+      before , returned outcome , X.completed [] (E.returned _) (X.unchanged before)
+    afterPreparationProgress (Creating.ready context) before with Body.progress context (bodyInput context) before
+    ... | after , reply , Body.X.completed events execution changes = after , executed context reply ,
+      X.completed (Data.List.map (bodyEvent context) events) (bodyRuns context execution) (bodyChanges context changes)
+    progress : ∀ requested before → Σ Store.World (λ after → Σ Response
+      (λ reply → X.Completed (script requested) before after reply))
+    progress requested before with Creating.progress preparation requested before
+    ... | middle , prepared , Creating.X.completed prefixEvents prefixExecution prefixPhysical
+      with afterPreparationProgress prepared middle
+    ... | after , reply , X.completed bodyEvents bodyExecution bodyPhysical = after , reply , X.completed _
+      (E.bindRuns (prefixRuns prefixExecution) bodyExecution) (X.changesAppend (prefixChanges prefixPhysical) bodyPhysical)
+
+    -- Prefix-only outcomes preserve the whole business World. A body result
+    -- owes its independently specified business outcome from the original
+    -- prepared baseline, including on a retry after any committed boundary.
+    data Meaning (requested : Creating.Request) (before after : Store.World) : Response → Set where
+      preparationDialogue : ∀ fault → Creating.Goal requested before after (Creating.needsInput fault) →
+        Meaning requested before after (needsInput fault)
+      preparationReadback : ∀ outcome → Creating.Goal requested before after (Creating.returned outcome) →
+        Meaning requested before after (returned outcome)
+      businessOutcome : ∀ baseline context reply →
+        Creating.Goal requested before baseline (Creating.ready context) →
+        Goal (bodyKind context) (bodyInput context) baseline after reply →
+        Meaning requested before after (executed context reply)
+
+    splitPrefixRun : ∀ (program : Creating.E.Script Creating.Result) before after reply {events} →
+      E.Runs (E._>>=_ (liftPrefix program) afterPreparation) events reply → X.Changes before events after →
+      Σ Store.World (λ middle → Σ Creating.Result (λ prepared →
+        Creating.X.Completed program before middle prepared × X.Completed (afterPreparation prepared) middle after reply))
+    splitPrefixRun (Creating.E.done prepared) before after reply execution changes = before , prepared ,
+      Creating.X.completed [] (Creating.E.returned prepared) (Creating.X.unchanged before) , X.completed _ execution changes
+    splitPrefixRun (Creating.E.ask effect next) before after reply
+      (E.replied .(prepare effect) _ observed execution)
+      (X.changed .before .(prepare effect) .observed middle physical changes)
+      with splitPrefixRun (next observed) middle after reply execution changes
+    ... | baseline , prepared , Creating.X.completed events prefixExecution prefixPhysical , completedBody =
+      baseline , prepared , Creating.X.completed ((effect , observed) Data.List.∷ events)
+        (Creating.E.replied effect next observed prefixExecution)
+        (Creating.X.changed before effect observed middle physical prefixPhysical) , completedBody
+
+    unliftBodyRun : ∀ context (program : Body.E.Script context (Result (bodyKind context))) before after reply {events} →
+      E.Runs (liftBody context program) events reply → X.Changes before events after →
+      Σ (Result (bodyKind context)) (λ actual → reply ≡ executed context actual × Body.X.Completed context program before after actual)
+    unliftBodyRun context (Body.E.done actual) before .before .(executed context actual)
+      (E.returned _) (X.unchanged _) = actual , refl , Body.X.completed [] (Body.E.returned actual) (Body.X.unchanged before)
+    unliftBodyRun context (Body.E.ask effect next) before after reply
+      (E.replied .(publish context effect) _ observed execution)
+      (X.changed .before .(publish context effect) .observed middle physical changes)
+      with unliftBodyRun context (next observed) middle after reply execution changes
+    ... | actual , same , Body.X.completed events bodyExecution bodyPhysical = actual , same ,
+      Body.X.completed ((effect , observed) Data.List.∷ events) (Body.E.replied effect next observed bodyExecution)
+        (Body.X.changed before effect observed middle physical bodyPhysical)
+
+    prependPrefixInterruption : ∀ before effect (continuation : Creating.Reply effect → Creating.E.Script Creating.Result) reply middle after →
+      Creating.Atomic before effect reply middle → Creating.X.Interrupted (continuation reply) middle after →
+      Creating.X.Interrupted (Creating.E.ask effect continuation) before after
+    prependPrefixInterruption before effect continuation reply middle after physical
+      (Creating.X.atPrefix events residual .after prefix changes) =
+      Creating.X.atPrefix ((effect , reply) ∷ events) residual after (Creating.E.replied effect continuation reply prefix)
+        (Creating.X.changed before effect reply middle physical changes)
+    prependPrefixInterruption before effect continuation reply middle after physical
+      (Creating.X.beforeReply events active next current observed .after prefix changes activePhysical) =
+      Creating.X.beforeReply ((effect , reply) ∷ events) active next current observed after
+        (Creating.E.replied effect continuation reply prefix) (Creating.X.changed before effect reply middle physical changes) activePhysical
+
+    prependBodyInterruption : ∀ context before effect (continuation : Body.Reply context effect → Body.E.Script context (Result (bodyKind context))) reply middle after →
+      Body.Atomic context before effect reply middle → Body.X.Interrupted context (continuation reply) middle after →
+      Body.X.Interrupted context (Body.E.ask effect continuation) before after
+    prependBodyInterruption context before effect continuation reply middle after physical
+      (Body.X.atPrefix events residual .after prefix changes) =
+      Body.X.atPrefix ((effect , reply) ∷ events) residual after (Body.E.replied effect continuation reply prefix)
+        (Body.X.changed before effect reply middle physical changes)
+    prependBodyInterruption context before effect continuation reply middle after physical
+      (Body.X.beforeReply events active next current observed .after prefix changes activePhysical) =
+      Body.X.beforeReply ((effect , reply) ∷ events) active next current observed after
+        (Body.E.replied effect continuation reply prefix) (Body.X.changed before effect reply middle physical changes) activePhysical
+
+    doneInterruptedSameWorld : ∀ (value : Response) before after → X.Interrupted (E.done value) before after → after ≡ before
+    doneInterruptedSameWorld value before .before
+      (X.atPrefix .[] .(E.done value) .before (E.stopped _) (X.unchanged .before)) = refl
+    doneInterruptedSameWorld value before after (X.beforeReply events effect continuation current reply .after () changes physical)
+
+    unliftBodyInterrupted : ∀ context (program : Body.E.Script context (Result (bodyKind context))) before after →
+      X.Interrupted (liftBody context program) before after → Body.X.Interrupted context program before after
+    unliftBodyInterrupted context (Body.E.done value) before after interrupted
+      rewrite doneInterruptedSameWorld (executed context value) before after interrupted =
+      Body.X.atPrefix [] (Body.E.done value) before (Body.E.stopped _) (Body.X.unchanged before)
+    unliftBodyInterrupted context (Body.E.ask effect continuation) before .before
+      (X.atPrefix .[] ._ .before (E.stopped _) (X.unchanged .before)) =
+      Body.X.atPrefix [] (Body.E.ask effect continuation) before (Body.E.stopped _) (Body.X.unchanged before)
+    unliftBodyInterrupted context (Body.E.ask effect continuation) before after
+      (X.atPrefix ._ residual .after (E.replied .(publish context effect) _ reply prefix)
+        (X.changed .before .(publish context effect) .reply middle physical changes)) =
+      prependBodyInterruption context before effect continuation reply middle after physical
+        (unliftBodyInterrupted context (continuation reply) middle after (X.atPrefix _ residual after prefix changes))
+    unliftBodyInterrupted context (Body.E.ask effect continuation) before after
+      (X.beforeReply .[] .(publish context effect) ._ .before reply .after (E.stopped _) (X.unchanged .before) physical) =
+      Body.X.beforeReply [] effect continuation before reply after (Body.E.stopped _) (Body.X.unchanged before) physical
+    unliftBodyInterrupted context (Body.E.ask effect continuation) before after
+      (X.beforeReply ._ active next current observed .after (E.replied .(publish context effect) _ reply prefix)
+        (X.changed .before .(publish context effect) .reply middle physical changes) activePhysical) =
+      prependBodyInterruption context before effect continuation reply middle after physical
+        (unliftBodyInterrupted context (continuation reply) middle after
+          (X.beforeReply _ active next current observed after prefix changes activePhysical))
+
+    data InterruptedPhase (program : Creating.E.Script Creating.Result) (before after : Store.World) : Set where
+      preparing : Creating.X.Interrupted program before after → InterruptedPhase program before after
+      publishing : ∀ baseline context → Creating.X.Completed program before baseline (Creating.ready context) →
+        Body.X.Interrupted context (Body.script context (bodyInput context)) baseline after → InterruptedPhase program before after
+
+    prependPhase : ∀ before effect continuation reply middle after → Creating.Atomic before effect reply middle →
+      InterruptedPhase (continuation reply) middle after → InterruptedPhase (Creating.E.ask effect continuation) before after
+    prependPhase before effect continuation reply middle after physical (preparing interrupted) =
+      preparing (prependPrefixInterruption before effect continuation reply middle after physical interrupted)
+    prependPhase before effect continuation reply middle after physical
+      (publishing baseline context (Creating.X.completed events execution changes) interrupted) =
+      publishing baseline context (Creating.X.completed ((effect , reply) ∷ events)
+        (Creating.E.replied effect continuation reply execution) (Creating.X.changed before effect reply middle physical changes)) interrupted
+
+    splitInterruptedPrefix : ∀ (program : Creating.E.Script Creating.Result) before after →
+      X.Interrupted (E._>>=_ (liftPrefix program) afterPreparation) before after → InterruptedPhase program before after
+    splitInterruptedPrefix (Creating.E.done (Creating.ready context)) before after interrupted =
+      publishing before context (Creating.X.completed [] (Creating.E.returned (Creating.ready context)) (Creating.X.unchanged before))
+        (unliftBodyInterrupted context (Body.script context (bodyInput context)) before after interrupted)
+    splitInterruptedPrefix (Creating.E.done (Creating.needsInput fault)) before after interrupted
+      rewrite doneInterruptedSameWorld (needsInput fault) before after interrupted =
+      preparing (Creating.X.atPrefix [] (Creating.E.done (Creating.needsInput fault)) before (Creating.E.stopped _) (Creating.X.unchanged before))
+    splitInterruptedPrefix (Creating.E.done (Creating.returned outcome)) before after interrupted
+      rewrite doneInterruptedSameWorld (returned outcome) before after interrupted =
+      preparing (Creating.X.atPrefix [] (Creating.E.done (Creating.returned outcome)) before (Creating.E.stopped _) (Creating.X.unchanged before))
+    splitInterruptedPrefix (Creating.E.ask effect continuation) before .before
+      (X.atPrefix .[] ._ .before (E.stopped _) (X.unchanged .before)) =
+      preparing (Creating.X.atPrefix [] (Creating.E.ask effect continuation) before (Creating.E.stopped _) (Creating.X.unchanged before))
+    splitInterruptedPrefix (Creating.E.ask effect continuation) before after
+      (X.atPrefix ._ residual .after (E.replied .(prepare effect) _ reply prefix)
+        (X.changed .before .(prepare effect) .reply middle physical changes)) =
+      prependPhase before effect continuation reply middle after physical
+        (splitInterruptedPrefix (continuation reply) middle after (X.atPrefix _ residual after prefix changes))
+    splitInterruptedPrefix (Creating.E.ask effect continuation) before after
+      (X.beforeReply .[] .(prepare effect) ._ .before reply .after (E.stopped _) (X.unchanged .before) physical) =
+      preparing (Creating.X.beforeReply [] effect continuation before reply after (Creating.E.stopped _) (Creating.X.unchanged before) physical)
+    splitInterruptedPrefix (Creating.E.ask effect continuation) before after
+      (X.beforeReply ._ active next current observed .after (E.replied .(prepare effect) _ reply prefix)
+        (X.changed .before .(prepare effect) .reply middle physical changes) activePhysical) =
+      prependPhase before effect continuation reply middle after physical
+        (splitInterruptedPrefix (continuation reply) middle after
+          (X.beforeReply _ active next current observed after prefix changes activePhysical))
+
+    prefixThenBodyMeaning : ∀ requested before baseline after prepared reply →
+      Creating.Goal requested before baseline prepared → X.Completed (afterPreparation prepared) baseline after reply →
+      Meaning requested before after reply
+    prefixThenBodyMeaning requested before baseline .baseline (Creating.needsInput fault) .(needsInput fault) certified
+      (X.completed [] (E.returned _) (X.unchanged _)) = preparationDialogue fault certified
+    prefixThenBodyMeaning requested before baseline .baseline (Creating.returned outcome) .(returned outcome) certified
+      (X.completed [] (E.returned _) (X.unchanged _)) = preparationReadback outcome certified
+    prefixThenBodyMeaning requested before baseline after (Creating.ready context) reply certified
+      (X.completed events execution changes)
+      with unliftBodyRun context (Body.script context (bodyInput context)) baseline after reply execution changes
+    ... | actual , refl , completedBody = businessOutcome baseline context actual certified
+      (Body.completedMeetsGoal context (bodyInput context) baseline after actual completedBody)
