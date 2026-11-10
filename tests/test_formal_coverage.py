@@ -50,6 +50,38 @@ class MigrationBodyTests(unittest.TestCase):
                             coverage.embedded_sql_body(source.replace('Keep old IDs.', 'Replace IDs.')))
 
 
+class IntendedOutcomeContractTests(unittest.TestCase):
+    def setUp(self):
+        self.contract = json.loads(coverage.read('docs/intended-outcome-contract.schema.json'))
+
+    def check_changed(self, change):
+        change(self.contract)
+        original_read = coverage.read
+        with patch.object(coverage, 'read', side_effect=lambda path:
+                          json.dumps(self.contract) if path == 'docs/intended-outcome-contract.schema.json'
+                          else original_read(path)):
+            coverage.check_intended_outcome_contract()
+
+    def test_every_current_entry_has_an_intent_obligation(self):
+        self.assertEqual(coverage.check_intended_outcome_contract(), 39)
+
+    def test_a_missing_operation_fails_coverage(self):
+        with self.assertRaises(AssertionError):
+            self.check_changed(lambda contract: contract['x-intent-adapters'][0]['operations'].remove('delete_project'))
+
+    def test_a_missing_saved_answer_table_fails_coverage(self):
+        with self.assertRaises(AssertionError):
+            self.check_changed(lambda contract: contract['$defs']['operations']['properties'].pop('savedReplies'))
+
+    def test_body_only_result_cannot_replace_complete_public_payload(self):
+        with self.assertRaises(AssertionError):
+            self.check_changed(lambda contract: contract['$defs']['output']['properties'].pop('public_payload'))
+
+    def test_observed_final_world_cannot_be_an_expected_input(self):
+        with self.assertRaises(AssertionError):
+            self.check_changed(lambda contract: contract['$defs']['input']['properties'].update({'observed_world': {}}))
+
+
 class OperationControlCatalogueTests(unittest.TestCase):
     def setUp(self):
         self.native = (REPO / 'crates/core/src/operation_catalogue.rs').read_text()

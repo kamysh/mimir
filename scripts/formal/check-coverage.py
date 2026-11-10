@@ -204,10 +204,71 @@ def formal_field_names(source, name):
     return set(re.findall(r'toList "([a-z_]+)"', body.group(1)))
 
 
+def record_field_names(source, name):
+    """Read the maintained flat record headers used by the snapshot envelope."""
+    body = re.search(r'^record ' + re.escape(name) + r' : Set where\n(.*?)(?=^\S|\Z)',
+                     source, re.M | re.S)
+    assert body, ('missing world record', name)
+    declarations = body.group(1).split('field', 1)[1]
+    fields = []
+    for declaration in re.split(r'[;\n]', declarations):
+        declaration = declaration.split('--', 1)[0]
+        if ':' in declaration:
+            names = declaration.split(':', 1)[0].split()
+            assert names and all(re.fullmatch(r'\w+', item) for item in names), declaration
+            fields.extend(names)
+    assert fields and len(fields) == len(set(fields)), (name, fields)
+    return set(fields)
+
+
+def check_intended_outcome_contract():
+    contract = json.loads(read('docs/intended-outcome-contract.schema.json'))
+    definitions = contract['$defs']
+    def references(value):
+        if isinstance(value, dict):
+            if '$ref' in value:
+                assert value['$ref'].startswith('#/$defs/'), value['$ref']
+                assert value['$ref'].removeprefix('#/$defs/') in definitions, value['$ref']
+            for nested in value.values():
+                references(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                references(nested)
+    references(contract)
+    assert set(definitions['input']['properties']) == {
+        'contract_version', 'entrypoint', 'request', 'initial_world',
+        'current_settings', 'observations'}, 'intended input contract changed'
+    assert set(definitions['output']['properties']) == {
+        'world', 'body_result', 'public_payload'}, 'complete intended observation is required'
+    assert set(definitions['nativeObservation']['properties']) == {
+        'world', 'body_result', 'public_payload', 'exchange'}, 'native exchange must remain separate from oracle input'
+    for binding in contract['x-model-records']:
+        expected = record_field_names(read('spec/Mimir/' + binding['module'] + '.agda'), binding['record'])
+        observed = definitions[binding['definition']]
+        assert set(observed['properties']) == set(observed['required']) == expected, binding
+        assert observed['additionalProperties'] is False, binding
+    names = [name for family in contract['x-intent-adapters'] for name in family['operations']]
+    advertised = set(re.findall(r'^wireName \w+ = "([a-z_]+)"$',
+                                read('spec/Mimir/ToolCatalog.agda'), re.M))
+    assert len(names) == len(set(names)), 'duplicate intended-outcome family'
+    assert set(names) == advertised | {'delete_evidence', 'reembed'}, {
+        'missing_intents': sorted(advertised - set(names)),
+        'unexpected_intents': sorted(set(names) - advertised - {'delete_evidence', 'reembed'})}
+    for family in contract['x-intent-adapters']:
+        assert family['whole_operation_adapter'] == 'required-by-152', family
+        assert family['pure_sources'], family
+        for symbol in family['pure_sources']:
+            module, *_, declaration = symbol.split('.')
+            assert re.search(r'\b' + re.escape(declaration) + r'\s*(?::|=)',
+                             read('spec/Mimir/' + module + '.agda')), symbol
+    return len(names)
+
+
 def check():
     coverage = json.loads(read('docs/FORMAL-BEHAVIOR-COVERAGE.json'))
     inventory = json.loads(read('docs/FORMAL-INVENTORY.json'))
     public_count = check_public_tools(coverage)
+    intended_count = check_intended_outcome_contract()
 
     controls = read('spec/Mimir/OperationControls.agda')
     native_catalogue = read('crates/core/src/operation_catalogue.rs')
@@ -276,6 +337,7 @@ def check():
 
     return {
         'result': 'passed', 'mcp_operations': public_count,
+        'intended_outcome_contract_entries': intended_count,
         'cli_leaves': len(cli_names), 'lifecycle_groups': len(coverage['lifecycles']),
         'source_artifacts': len(inventory['files']),
         'production_artifacts': sum(x['classification'] == 'production-behavior' for x in inventory['files']),
