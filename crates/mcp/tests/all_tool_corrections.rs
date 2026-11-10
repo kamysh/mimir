@@ -88,6 +88,71 @@ async fn check_field(
     Ok(())
 }
 
+fn nested_objects(schema: &Value, path: &mut Vec<Segment>, targets: &mut Vec<Vec<Segment>>) {
+    if schema["type"] == "object" {
+        if !path.is_empty() && schema["additionalProperties"] == false {
+            targets.push(path.clone());
+        }
+        if let Some(fields) = schema["properties"].as_object() {
+            for (name, child) in fields {
+                path.push(Segment::Key(name.clone()));
+                nested_objects(child, path, targets);
+                path.pop();
+            }
+        }
+    } else if schema["type"] == "array" && schema.get("items").is_some() {
+        path.push(Segment::Index(0));
+        nested_objects(&schema["items"], path, targets);
+        path.pop();
+    }
+}
+
+fn unexpected_at(path: &[Segment]) -> Value {
+    let mut value = json!({"unexpected_agent_field":true});
+    for segment in path.iter().rev() {
+        value = match segment {
+            Segment::Key(name) => {
+                let mut object = serde_json::Map::new();
+                object.insert(name.clone(), value);
+                Value::Object(object)
+            }
+            Segment::Index(_) => Value::Array(vec![value]),
+        };
+    }
+    value
+}
+
+async fn check_nested(
+    input: &mut tokio::process::ChildStdin,
+    output: &mut BufReader<tokio::process::ChildStdout>,
+    name: &str,
+    path: &[Segment],
+) -> Result<()> {
+    let response = send(input, output, json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":unexpected_at(path)}})).await?;
+    ensure!(
+        response["id"] == name && response.get("error").is_none(),
+        "{name}: nested correction became a protocol error: {response}"
+    );
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .context("missing nested correction text")?;
+    let correction: NeedsInput = mimir_json::from_str(text)?;
+    let mut target = path.to_vec();
+    target.push(Segment::Key("unexpected_agent_field".into()));
+    let issue = correction
+        .issues()
+        .iter()
+        .find(|item| item.fault().code == Code::UnknownField && item.fault().path == target)
+        .with_context(|| format!("{name}: nested field {target:?} was not explained"))?;
+    ensure!(
+        !issue.fault().message.is_empty()
+            && !issue.expected().is_empty()
+            && !issue.suggested_correction().is_empty(),
+        "{name}: incomplete nested correction"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()> {
     let fixture = isolation::fixture();
@@ -126,6 +191,7 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
     let mut invalid_uuid_cases = 0;
     let mut invalid_choice_cases = 0;
     let mut zero_selection_cases = 0;
+    let mut nested_cases = 0;
     for descriptor in tools {
         let name = descriptor["name"].as_str().context("tool without a name")?;
         let request = json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":{"unexpected_agent_field":true}}});
@@ -240,6 +306,12 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
                 }
             }
         }
+        let mut targets = Vec::new();
+        nested_objects(&descriptor["inputSchema"], &mut Vec::new(), &mut targets);
+        for path in targets {
+            check_nested(&mut input, &mut output, name, &path).await?;
+            nested_cases += 1;
+        }
     }
     ensure!(
         missing_cases != 0 && wrong_type_cases != 0,
@@ -249,7 +321,11 @@ async fn advertised_tools_explain_invalid_fields_without_changes() -> Result<()>
         zero_selection_cases != 0,
         "tool catalogue produced no zero-selection cases"
     );
-    println!("Checked {missing_cases} missing-field, {wrong_type_cases} wrong-type, {invalid_uuid_cases} invalid UUID, {invalid_choice_cases} invalid choice and {zero_selection_cases} zero-selection cases across {} advertised tools", tools.len());
+    ensure!(
+        nested_cases != 0,
+        "tool catalogue produced no nested-object cases"
+    );
+    println!("Checked {missing_cases} missing-field, {wrong_type_cases} wrong-type, {invalid_uuid_cases} invalid UUID, {invalid_choice_cases} invalid choice, {zero_selection_cases} zero-selection and {nested_cases} nested-field cases across {} advertised tools", tools.len());
     for name in [
         "list_beliefs",
         "list_patterns",
