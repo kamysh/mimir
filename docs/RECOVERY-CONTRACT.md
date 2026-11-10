@@ -477,6 +477,18 @@ the original cleared count, while replay preserves the current world without
 new receipts. The parser and existing business goals are unchanged; complete
 public host/wire assembly remains unfinished.
 
+`IntendedSweep.Evaluate.With.evaluate` computes `sweep_expired_defeated` from
+original metadata, the user's stored retention policy, observed current policy
+and actual selection/publication clocks. The selected set is computed from the
+original world, never accepted as an expected list or fixed by an aborted read.
+Changed/unset policy pauses with the existing diagnosis; missing recorded
+defeat dates remain a business refusal rather than invented dates. Required
+external receipts remain distinct from an observed unset policy. Fresh prepared
+work checks its actual report; empty selection needs no report. Both original
+answers are composed only on success, and replay needs no fresh policy, clock
+or report. Pure constants/parsers are shared without changing business goals.
+Complete public host/wire assembly remains unfinished.
+
 | Public operation family | Existing pure business source | Required external observations |
 | --- | --- | --- |
 | `delete_project` | `ProjectDeletion.Registered.intended`, `expectedReply` | Existing original binding/plan/result; no invented fresh count. |

@@ -66,6 +66,19 @@ erased identities before = Store.removeBeliefVectors identities (Store.removeNod
 affected : List ℕ → Store.World → List ℕ
 affected identities before = Ranking.unique (concatMap (λ identity → Delete.children identity before) identities)
 
+module PublicAnswer (format : Encoding.Formatting) where
+  module Encode = Encoding.Encode format
+  answer : List ℕ → Wire.Value
+  answer identities = Encoding.object
+    (("deleted" , Wire.unsigned (length identities)) ∷ ("selected" , Wire.array (map Encode.uuid identities)) ∷ [])
+
+module Faults where
+  invalidThreshold missingClock : Validation.Fault
+  invalidThreshold = Validation.fault (Validation.key "prob_threshold" ∷ []) Validation.invalidNumber
+    "Supply a finite probability between zero and one. No target or vector was deleted."
+  missingClock = Validation.fault [] Validation.missingEvidence
+    "A defeated target has no valid recorded first-defeat date or legacy-expired marker. Read its retirement metadata and open the user dialog; do not invent a date or delete it."
+
 module Business (format : Encoding.Formatting) (databaseSum : List Float → Float) (calculator : P.Calculator) where
   module D = Deletion.Business databaseSum calculator
   module N = Inference.NumericalOutcome databaseSum
@@ -74,14 +87,11 @@ module Business (format : Encoding.Formatting) (databaseSum : List Float → Flo
   Outcome = D.Outcome
 
   answer : List ℕ → Wire.Value
-  answer identities = Encoding.object
-    (("deleted" , Wire.unsigned (length identities)) ∷ ("selected" , Wire.array (map Encode.uuid identities)) ∷ [])
+  answer = PublicAnswer.answer format
 
   invalidThreshold missingClock : Validation.Fault
-  invalidThreshold = Validation.fault (Validation.key "prob_threshold" ∷ []) Validation.invalidNumber
-    "Supply a finite probability between zero and one. No target or vector was deleted."
-  missingClock = Validation.fault [] Validation.missingEvidence
-    "A defeated target has no valid recorded first-defeat date or legacy-expired marker. Read its retirement metadata and open the user dialog; do not invent a date or delete it."
+  invalidThreshold = Faults.invalidThreshold
+  missingClock = Faults.missingClock
 
   module Selected (publicationTime : ℤ) (identities : List ℕ) (preparedContext : N.Context) where
     open N.Context preparedContext
@@ -187,11 +197,7 @@ record Metadata : Set where
   constructor physicalMetadata
   field policy : Maybe Wire.Value; selectedAt publishedAt : ℤ
 
-module Registered (library : Library.Contract) (format : Encoding.Formatting)
-  (databaseSum : List Float → Float) (calculator : P.Calculator)
-  (observe : ℕ → Store.World → Metadata) where
-  module B = Business format databaseSum calculator
-  module D = Deletion.Business databaseSum calculator
+module Registration (library : Library.Contract) where
   module DecodePublic = Public.Decode library
   module Retention = Configuration.Retirement library
   descriptor = Admission.descriptor (toList "sweep_expired_defeated") (toList "store.delete_belief")
@@ -244,6 +250,36 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
 
   requested : Bound → Policy → Request
   requested binding chosen = request (Bound.scope binding) (Bound.threshold binding) (Policy.grace chosen)
+
+module Registered (library : Library.Contract) (format : Encoding.Formatting)
+  (databaseSum : List Float → Float) (calculator : P.Calculator)
+  (observe : ℕ → Store.World → Metadata) where
+  module B = Business format databaseSum calculator
+  module D = Deletion.Business databaseSum calculator
+  module Shared = Registration library
+  module DecodePublic = Public.Decode library
+  module Retention = Configuration.Retirement library
+  open Shared public using (Bound; boundRequest; Policy; policy)
+  descriptor : Admission.Descriptor
+  descriptor = Shared.descriptor
+  key : ℕ → Text
+  key = Shared.key
+  distinct : ∀ token → key token ≡ Step.resultKey → ⊥
+  distinct = Shared.distinct
+  original : ℕ → Step.Registration → Validation.Fault ⊎ Bound
+  original = Shared.original
+  table : Wire.Value → Validation.Fault ⊎ Policy
+  table = Shared.table
+  configured : Maybe Wire.Value → Validation.Fault ⊎ Policy
+  configured = Shared.configured
+  storedPolicy : Wire.Value → Validation.Fault ⊎ Policy
+  storedPolicy = Shared.storedPolicy
+  changedPolicy : Validation.Fault
+  changedPolicy = Shared.changedPolicy
+  samePolicy : Policy → Policy → Bool
+  samePolicy = Shared.samePolicy
+  requested : Bound → Policy → Request
+  requested = Shared.requested
 
   -- This is the business meaning, before saved-answer publication. Diagnostics
   -- retain the complete initial World; success removes the whole selected set
