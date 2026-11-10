@@ -4,7 +4,7 @@
 module Mimir.IndependentPublicationRecovery where
 
 open import Data.Bool using (Bool; true; false)
-open import Data.Empty using (⊥)
+open import Data.Empty using (⊥; ⊥-elim)
 open import Data.Float.Base using (Float)
 open import Data.Integer using (ℤ)
 open import Data.List using (List; []; _∷_; map)
@@ -617,6 +617,121 @@ module Registered (format : Encoding.Formatting) (conversion : Conversion.Contra
     ... | owners , scoped = (own ∷ owners) , scoped
     activeOwned : ∀ token effect continuation → Scoped token (E.ask effect continuation) → Owned token effect
     activeOwned token effect continuation (asked .effect .continuation own later) = own
+
+    -- These are computed journal facts, established by the physical prefix.
+    -- In particular a new final answer must come from the paired publication.
+    ReplayFacts : ℕ → Store.World → Set
+    ReplayFacts token current = admit token (Step.registration current) ≡ nothing ×
+      Store.lookupCancellation current token ≡ nothing ×
+      (∀ raw → Store.lookupSaved current token Step.resultKey ≡ just raw →
+        Σ Wire.Value (λ ownerAnswer →
+          Store.lookupSaved current token (Belief.ownerKey token) ≡ just ownerAnswer ×
+          Store.lookupSaved current token (Belief.publicationKey token) ≡ just raw))
+
+    noSavedAnswer : ∀ {raw : Wire.Value} → nothing ≡ just raw → ⊥
+    noSavedAnswer ()
+    sameSavedAnswer : ∀ {left right : Wire.Value} → just left ≡ just right → left ≡ right
+    sameSavedAnswer refl = refl
+
+    firstKeepsReplay : ∀ metadata token current → ReplayFacts token current →
+      ReplayFacts token (proj₁ (first metadata token current))
+    firstKeepsReplay metadata token current old with firstClassification metadata token current
+    ... | inj₁ unchanged = subst (ReplayFacts token) (sym unchanged) old
+    ... | inj₂ (changed , reply , admitted , active , ownerAbsent , finalAbsent , resultAbsent , accepted) =
+      subst (ReplayFacts token) (sym (cong proj₁ published))
+        (trans (cong (admit token) (O.Saved.keepsRegistration metadata token current changed reply accepted)) admitted ,
+         trans (O.Saved.keepsCancellation metadata token current changed reply accepted) active ,
+         λ raw known → ⊥-elim (noSavedAnswer (trans (sym noResult) known)))
+      where
+      published = freshPrefix metadata token current changed reply admitted active ownerAbsent finalAbsent resultAbsent accepted
+      noResult = O.Saved.Base.firstHasNoResult metadata token current changed reply accepted resultAbsent
+
+    SecondPublication : Packet → ℕ → Store.World → Set
+    SecondPublication observed token current = Σ Wire.Value (λ ownerAnswer →
+      Σ Store.World (λ changed → Σ Wire.Value (λ reply →
+        admit token (Step.registration current) ≡ nothing ×
+        Store.lookupCancellation current token ≡ nothing ×
+        Store.lookupSaved current token (Belief.ownerKey token) ≡ just ownerAnswer ×
+        Store.lookupSaved current token (Belief.publicationKey token) ≡ nothing ×
+        Store.lookupSaved current token Step.resultKey ≡ nothing ×
+        decide observed token current ≡ inj₂ (changed , reply))))
+
+    secondClassification : ∀ observed token current →
+      (proj₁ (second observed token current) ≡ current) ⊎ SecondPublication observed token current
+    secondClassification observed token current with Store.lookupSaved current token (Belief.ownerKey token) in ownerSaved
+    ... | nothing = inj₁ refl
+    ... | just ownerAnswer with admit token (Step.registration current) in admitted
+    ... | just _ = inj₁ refl
+    ... | nothing with Store.lookupCancellation current token in active
+    ... | just _ = inj₁ refl
+    ... | nothing with Store.lookupSaved current token (Belief.publicationKey token) in finalSaved
+      | Store.lookupSaved current token Step.resultKey in resultSaved
+    ... | just _ | just _ = inj₁ refl
+    ... | just _ | nothing = inj₁ refl
+    ... | nothing | just _ = inj₁ refl
+    ... | nothing | nothing with decide observed token current in accepted
+    ... | inj₁ _ = inj₁ refl
+    ... | inj₂ (changed , reply) = inj₂
+      (ownerAnswer , changed , reply , refl , refl , refl , refl , refl , refl)
+
+    secondKeepsReplay : ∀ observed token current → ReplayFacts token current →
+      ReplayFacts token (proj₁ (second observed token current))
+    secondKeepsReplay observed token current old with secondClassification observed token current
+    ... | inj₁ unchanged = subst (ReplayFacts token) (sym unchanged) old
+    ... | inj₂ (ownerAnswer , changed , reply , admitted , active , ownerSaved , finalAbsent , resultAbsent , accepted) =
+      subst (ReplayFacts token) (sym (cong proj₁ published))
+        (trans (cong (admit token) (Final.Kernel.publicationKeepsRegistration observed token current changed reply accepted)) admitted ,
+         trans (Final.Kernel.publicationKeepsCancellation observed token current changed reply accepted) active ,
+         λ raw known → ownerAnswer , trans (publishedFirst observed token current changed reply accepted) ownerSaved ,
+           trans finalReadable (cong just (sameSavedAnswer (trans (sym resultReadable) known))))
+      where
+      published = secondFresh observed token current ownerAnswer changed reply admitted active ownerSaved finalAbsent resultAbsent accepted
+      finalReadable = Final.Kernel.publishedStepReadable observed token current changed reply accepted finalAbsent
+      resultReadable = Final.Kernel.publishedResultReadable observed token current changed reply accepted resultAbsent
+
+    atomicKeepsReplay : ∀ token before after effect reply → Owned token effect →
+      Atomic before effect reply after → ReplayFacts token before → ReplayFacts token after
+    atomicKeepsReplay token before after .(reserve token) (metadata , reply) ownerOwned (known , physical) old =
+      DB.invariantPreserved (ReplayFacts token) physical old (firstKeepsReplay metadata token before old)
+    atomicKeepsReplay token before .before .(readSources token) (inj₁ reason) sourcesOwned refl old = old
+    atomicKeepsReplay token before .before .(readSources token) (inj₂ .before) sourcesOwned (refl , refl) old = old
+    atomicKeepsReplay token before .before .(embed token cfg content) reply (embedOwned cfg content) refl old = old
+    atomicKeepsReplay token before after .(publish token observed) reply (publishOwned observed) (known , physical) old =
+      DB.invariantPreserved (ReplayFacts token) physical old (secondKeepsReplay observed token before old)
+
+    changesKeepReplay : ∀ token before events after → All (λ event → Owned token (proj₁ event)) events →
+      X.Changes before events after → ReplayFacts token before → ReplayFacts token after
+    changesKeepReplay token before [] .before [] (X.unchanged _) old = old
+    changesKeepReplay token before ((effect , reply) ∷ events) after (own ∷ owners)
+      (X.changed _ _ _ middle physical rest) old = changesKeepReplay token middle events after owners rest
+        (atomicKeepsReplay token before middle effect reply own physical old)
+
+    interruptedKeepsReplay : ∀ token initial current → X.Interrupted (script token) initial current →
+      ReplayFacts token initial → ReplayFacts token current
+    interruptedKeepsReplay token initial current (X.atPrefix events residual .current prefix physical) old =
+      changesKeepReplay token initial events current
+        (proj₁ (prefixScoped token (script token) events residual (scriptScoped token) prefix)) physical old
+    interruptedKeepsReplay token initial after
+      (X.beforeReply events effect continuation current reply .after prefix physical active) old
+      with prefixScoped token (script token) events (E.ask effect continuation) (scriptScoped token) prefix
+    ... | owners , residual = atomicKeepsReplay token current after effect reply
+      (activeOwned token effect continuation residual) active
+      (changesKeepReplay token initial events current owners physical old)
+
+    cachedReplayAfterCut : ∀ token initial current raw →
+      admit token (Step.registration initial) ≡ nothing →
+      Store.lookupCancellation initial token ≡ nothing →
+      Store.lookupSaved initial token Step.resultKey ≡ nothing →
+      X.Interrupted (script token) initial current →
+      Store.lookupSaved current token Step.resultKey ≡ just raw →
+      Σ Result (λ reply → X.Completed (script token) current current reply ×
+        Result.value reply ≡ Step.done raw)
+    cachedReplayAfterCut token initial current raw admitted active absent cut known
+      with interruptedKeepsReplay token initial current cut
+        (admitted , active , λ value saved → ⊥-elim (noSavedAnswer (trans (sym absent) saved)))
+    ... | currentAdmitted , currentActive , paired with paired raw known
+    ... | ownerAnswer , ownerSaved , finalSaved = cachedReplay token current ownerAnswer raw
+      currentAdmitted currentActive ownerSaved finalSaved known
 
     atomicInvariant : ∀ token initial before after effect reply → Owned token effect →
       Atomic before effect reply after → Certified.Invariant token initial before → Certified.Invariant token initial after
