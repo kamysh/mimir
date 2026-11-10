@@ -235,16 +235,17 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
   ... | Review.PreparationStatus.waiting _ _ = afterSettings current binding requested
 
   inspect : Wire.Value → ℕ → Store.World → Decision
-  inspect current token before with Readback.answer token before
-  ... | Readback.completed _ reply = stop (Step.done reply)
-  ... | Readback.cancelled cancellation _ _ = stop (Step.cancelled cancellation)
-  ... | Readback.pending binding _ _ = beforePreparation current token binding before
-  ... | Readback.inconsistent _ _ = stop (Step.needsInput malformedJournal)
-  ... | Readback.needsRecovery _ = stop Step.needsRecovery
-  ... | Readback.unknownToken = stop (Step.needsInput malformedJournal)
-  ... | Readback.reserved = stop (Step.needsInput malformedJournal)
-  ... | Readback.awaitingPlan _ = stop (Step.needsInput malformedJournal)
-  ... | Readback.awaitingCompletion _ = stop Step.needsRecovery
+  inspect current token before with Readback.admission (toList "review_experience") token before
+  ... | Readback.admitted loaded = beforePreparation current token (Readback.ExecutionContext.bindingRow loaded) before
+  ... | Readback.returned (Readback.completed _ reply) = stop (Step.done reply)
+  ... | Readback.returned (Readback.cancelled cancellation _ _) = stop (Step.cancelled cancellation)
+  ... | Readback.returned (Readback.pending _ _ _) = stop Step.needsRecovery
+  ... | Readback.returned (Readback.inconsistent _ _) = stop (Step.needsInput malformedJournal)
+  ... | Readback.returned (Readback.needsRecovery _) = stop Step.needsRecovery
+  ... | Readback.returned Readback.unknownToken = stop (Step.needsInput malformedJournal)
+  ... | Readback.returned Readback.reserved = stop (Step.needsInput malformedJournal)
+  ... | Readback.returned (Readback.awaitingPlan _) = stop (Step.needsInput malformedJournal)
+  ... | Readback.returned (Readback.awaitingCompletion _) = stop Step.needsRecovery
 
   record Admitted (token : ℕ) (before : Store.World) (requested : Review.Request) : Set where
     constructor admitted
@@ -287,16 +288,17 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
   ... | refl = admitted time original journal addresses
 
   inspectAdmitted : ∀ current token before requested → inspect current token before ≡ run requested → Admitted token before requested
-  inspectAdmitted current token before requested accepted with Readback.answer token before
-  ... | Readback.pending binding _ _ = preparationAdmitted current token binding before requested accepted
-  inspectAdmitted current token before requested () | Readback.completed _ _
-  inspectAdmitted current token before requested () | Readback.cancelled _ _ _
-  inspectAdmitted current token before requested () | Readback.inconsistent _ _
-  inspectAdmitted current token before requested () | Readback.needsRecovery _
-  inspectAdmitted current token before requested () | Readback.unknownToken
-  inspectAdmitted current token before requested () | Readback.reserved
-  inspectAdmitted current token before requested () | Readback.awaitingPlan _
-  inspectAdmitted current token before requested () | Readback.awaitingCompletion _
+  inspectAdmitted current token before requested accepted with Readback.admission (toList "review_experience") token before
+  ... | Readback.admitted loaded = preparationAdmitted current token (Readback.ExecutionContext.bindingRow loaded) before requested accepted
+  inspectAdmitted current token before requested () | Readback.returned (Readback.completed _ _)
+  inspectAdmitted current token before requested () | Readback.returned (Readback.cancelled _ _ _)
+  inspectAdmitted current token before requested () | Readback.returned (Readback.inconsistent _ _)
+  inspectAdmitted current token before requested () | Readback.returned (Readback.needsRecovery _)
+  inspectAdmitted current token before requested () | Readback.returned (Readback.pending _ _ _)
+  inspectAdmitted current token before requested () | Readback.returned Readback.unknownToken
+  inspectAdmitted current token before requested () | Readback.returned Readback.reserved
+  inspectAdmitted current token before requested () | Readback.returned (Readback.awaitingPlan _)
+  inspectAdmitted current token before requested () | Readback.returned (Readback.awaitingCompletion _)
 
   record AllocationReceipt : Set where
     constructor allocatedRow
@@ -757,6 +759,27 @@ module Registered (library : Library.Contract) (format : Encoding.Formatting)
   completedFrame : ∀ token initial final reply → X.Completed (script token) initial final reply → Frame token initial final
   completedFrame token initial final reply completion = interruptedFrame token initial final
     (X.completedRunMayLoseFinalReply (script token) initial final reply completion)
+
+  afterCompletedReadback : ∀ token current before binding reply →
+    Readback.admission (toList "review_experience") token before ≡ Readback.returned (Readback.completed binding reply) →
+    afterInspection token (current , before) ≡ E.done (stopped (Step.done reply))
+  afterCompletedReadback token current before binding reply completedOutcome rewrite completedOutcome = refl
+
+  returnedObservation : ∀ (initial final : Store.World) (expected actual : Result) (events : List E.Event) → E.Runs (E.done expected) events actual →
+    X.Changes initial events final → final ≡ initial × actual ≡ expected
+  returnedObservation initial .initial expected .expected [] (E.returned _) (X.unchanged _) = refl , refl
+
+  completedReadback : ∀ token before binding reply →
+    Readback.admission (toList "review_experience") token before ≡ Readback.returned (Readback.completed binding reply) →
+    ∀ final result → X.Completed (script token) before final result →
+    final ≡ before × result ≡ stopped (Step.done reply)
+  completedReadback token before binding reply completedOutcome final result
+    (X.completed .((inspectOwners token , current , before) ∷ events)
+      (E.replied _ _ (current , .before) {events} later)
+      (X.changed .before _ _ .before (refl , refl) changes)) =
+    returnedObservation before final (stopped (Step.done reply)) result events
+      (subst (λ program → E.Runs program events result)
+        (afterCompletedReadback token current before binding reply completedOutcome) later) changes
 
   -- Suppliers are used only to exhibit an available execution. Atomic accepts
   -- the actual observed settings/PG replies, including different uncommitted
