@@ -32,6 +32,8 @@ import Mimir.ConfigurationValues as Config
 import Mimir.ProjectDeletion as Project
 import Mimir.Effects as Effects
 import Mimir.Recovery as Recovery
+import Mimir.OperationControls as Controls
+import Mimir.RegisteredStoreAdmission as Admission
 import Data.List.Properties as Lists
 open import Data.List using (_++_)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
@@ -938,3 +940,218 @@ module Registered (format : Encoding.Formatting) (conversion : Conversion.Contra
     toRecoverable certificate = record
       { Effect = Effect; Reply = Reply; script = script; Atomic = Atomic
       ; converges = Operation.recovers certificate; progress = Operation.progresses certificate }
+
+    -- Actual owner/provider/final cuts preserve the shared computed journal.
+    -- Source and embedding effects contribute no database publication.
+    module Journal (postgres : Controls.PostgreSQL) where
+      module Read = Controls.Readback conversion postgres using
+        (ExecutionContext; noJust; admission; admitted; returned; completed;
+         admissionCompletedLookup; preserveAfterNext; finalPairCompletes;
+         afterBindingLookup; afterMatch; afterReadback; answer; cancelled; ordered; savedRows)
+      module Plan = Controls.Plan using (Step; Saved)
+      module J = Controls.OpaqueJournal using (Cursor; here; passed; Complete; cursorNext)
+      module Pair = Admission.PairPlan Original.descriptor using (matches)
+      module Layout = Controls.Plan.PairProjection Original.descriptor using (firstStep; finalStep; decodedPair)
+      operationName = toList "insert_belief"
+      firstStep = Layout.firstStep
+      finalStep = Layout.finalStep
+
+      originalPlanObserved : ∀ token before (context : Read.ExecutionContext operationName token before) →
+        Admission.originalPlan operationName token (Step.registration before) ≡ inj₂
+          (Read.ExecutionContext.reservationRow context , Read.ExecutionContext.bindingRow context , Read.ExecutionContext.rawPlan context)
+      originalPlanObserved token before context rewrite Read.ExecutionContext.originalReservation context
+        | Read.ExecutionContext.originalBinding context | Read.ExecutionContext.requestedOperation context
+        | Read.ExecutionContext.originalPlan context = refl
+
+      matchedPlan : ∀ token before (context : Read.ExecutionContext operationName token before) →
+        admit token (Step.registration before) ≡ nothing → Pair.matches (Read.ExecutionContext.rawPlan context) ≡ true
+      matchedPlan token before context rewrite originalPlanObserved token before context
+        with Pair.matches (Read.ExecutionContext.rawPlan context)
+      ... | false = λ ()
+      ... | true = λ _ → refl
+
+      contextSteps : ∀ token before (context : Read.ExecutionContext operationName token before) →
+        admit token (Step.registration before) ≡ nothing →
+        Plan.Saved.steps (Read.ExecutionContext.plan context) ≡ (firstStep ∷ finalStep ∷ [])
+      contextSteps token before context permitted = Layout.decodedPair (Read.ExecutionContext.rawPlan context)
+        (Read.ExecutionContext.plan context) (matchedPlan token before context permitted) (Read.ExecutionContext.decoded context)
+
+      ResumableOrCompleted : ℕ → Store.World → Set
+      ResumableOrCompleted token before =
+        (Σ (Read.ExecutionContext operationName token before) (λ context →
+          Read.admission operationName token before ≡ Read.admitted context)) ⊎
+        (Σ Store.BindingRow (λ binding → Σ Wire.Value (λ value →
+          Read.admission operationName token before ≡ Read.returned (Read.completed binding value))))
+
+      firstCursor : ∀ token before (context : Read.ExecutionContext operationName token before) →
+        admit token (Step.registration before) ≡ nothing →
+        J.Cursor token before (Plan.Saved.steps (Read.ExecutionContext.plan context)) (firstStep ∷ finalStep ∷ [])
+      firstCursor token before context known = subst
+        (λ steps → J.Cursor token before steps (firstStep ∷ finalStep ∷ []))
+        (sym (contextSteps token before context known)) (J.here _)
+
+      finalCursor : ∀ token before (context : Read.ExecutionContext operationName token before) saved →
+        admit token (Step.registration before) ≡ nothing →
+        Store.lookupSaved before token (Belief.ownerKey token) ≡ just saved →
+        J.Cursor token before (Plan.Saved.steps (Read.ExecutionContext.plan context)) (finalStep ∷ [])
+      finalCursor token before context saved known firstSaved = subst
+        (λ steps → J.Cursor token before steps (finalStep ∷ []))
+        (sym (contextSteps token before context known))
+        (J.passed firstStep (finalStep ∷ []) (finalStep ∷ []) saved firstSaved (J.here _))
+
+      firstKeepsReadback : ∀ received token before → ResumableOrCompleted token before →
+        ResumableOrCompleted token (proj₁ (first received token before))
+      firstKeepsReadback received token before previous with firstClassification received token before
+      ... | inj₁ unchanged = subst (ResumableOrCompleted token) (sym unchanged) previous
+      ... | inj₂ (changed , reply , admitted , active , firstAbsent , nextAbsent , resultAbsent , accepted)
+        with previous
+      ... | inj₂ (binding , value , completedRead) = ⊥-elim (Read.noJust (trans (sym resultAbsent)
+        (Read.admissionCompletedLookup operationName token before binding value completedRead)))
+      ... | inj₁ (context , pending) = subst (ResumableOrCompleted token) (sym (cong proj₁ published))
+        (inj₁ (Read.preserveAfterNext operationName token before context firstStep finalStep [] reply changed
+          (J.cursorNext token before _ firstStep (finalStep ∷ [])
+            (J.Complete.prefix (Read.ExecutionContext.journal context)) cursor firstAbsent)
+          cursor active (O.keepsJournal received token before changed reply accepted)))
+        where
+        cursor = firstCursor token before context admitted
+        published = freshPrefix received token before changed reply admitted active firstAbsent nextAbsent resultAbsent accepted
+
+      secondKeepsReadback : ∀ received token before → ResumableOrCompleted token before →
+        ResumableOrCompleted token (proj₁ (second received token before))
+      secondKeepsReadback received token before previous with secondClassification received token before
+      ... | inj₁ unchanged = subst (ResumableOrCompleted token) (sym unchanged) previous
+      ... | inj₂ (saved , changed , reply , admitted , active , firstSaved , nextAbsent , resultAbsent , accepted)
+        with previous
+      ... | inj₂ (binding , value , completedRead) = ⊥-elim (Read.noJust (trans (sym resultAbsent)
+        (Read.admissionCompletedLookup operationName token before binding value completedRead)))
+      ... | inj₁ (context , pending) = subst (ResumableOrCompleted token) (sym (cong proj₁ published))
+        (inj₂ (Read.ExecutionContext.bindingRow context , reply ,
+          Read.finalPairCompletes operationName token before context finalStep reply changed
+            (J.cursorNext token before _ finalStep []
+              (J.Complete.prefix (Read.ExecutionContext.journal context)) cursor nextAbsent)
+            cursor resultAbsent active (journal received token before changed reply accepted)))
+        where
+        cursor = finalCursor token before context saved admitted firstSaved
+        published = secondFresh received token before saved changed reply admitted active firstSaved nextAbsent resultAbsent accepted
+
+      atomicKeepsReadback : ∀ token before after effect reply → Owned token effect →
+        Atomic before effect reply after → ResumableOrCompleted token before → ResumableOrCompleted token after
+      atomicKeepsReadback token before after .(reserve token) (metadata , reply) ownerOwned (known , physical) old =
+        DB.invariantPreserved (ResumableOrCompleted token) physical old (firstKeepsReadback metadata token before old)
+      atomicKeepsReadback token before .before .(readSources token) (inj₁ reason) sourcesOwned refl old = old
+      atomicKeepsReadback token before .before .(readSources token) (inj₂ .before) sourcesOwned (refl , refl) old = old
+      atomicKeepsReadback token before .before .(embed token cfg content) reply (embedOwned cfg content) refl old = old
+      atomicKeepsReadback token before after .(publish token observed) reply (publishOwned observed) (known , physical) old =
+        DB.invariantPreserved (ResumableOrCompleted token) physical old (secondKeepsReadback observed token before old)
+
+      changesKeepReadback : ∀ token before events after → All (λ event → Owned token (proj₁ event)) events →
+        X.Changes before events after → ResumableOrCompleted token before → ResumableOrCompleted token after
+      changesKeepReadback token before [] .before [] (X.unchanged _) old = old
+      changesKeepReadback token before ((effect , reply) ∷ events) after (owner ∷ owners)
+        (X.changed _ _ _ middle physical later) old = changesKeepReadback token middle events after owners later
+          (atomicKeepsReadback token before middle effect reply owner physical old)
+
+      interruptedReadback : ∀ token before current (context : Read.ExecutionContext operationName token before) →
+        Read.admission operationName token before ≡ Read.admitted context →
+        X.Interrupted (script token) before current → ResumableOrCompleted token current
+      interruptedReadback token before current context admitted
+        (X.atPrefix events residual .current observed physical) =
+        changesKeepReadback token before events current
+          (proj₁ (prefixScoped token (script token) events residual (scriptScoped token) observed))
+          physical (inj₁ (context , admitted))
+      interruptedReadback token before current context admitted
+        (X.beforeReply events effect continuation middle reply .current observed physical active)
+        with prefixScoped token (script token) events (E.ask effect continuation) (scriptScoped token) observed
+      ... | owners , scoped = atomicKeepsReadback token middle current effect reply
+        (activeOwned token effect continuation scoped) active
+        (changesKeepReadback token before events middle owners physical (inj₁ (context , admitted)))
+
+      MetadataFrame : ℕ → Store.World → Store.World → Set
+      MetadataFrame token before after = Step.registration after ≡ Step.registration before ×
+        Store.lookupCancellation after token ≡ Store.lookupCancellation before token
+
+      composeFrame : ∀ token before middle after → MetadataFrame token before middle →
+        MetadataFrame token middle after → MetadataFrame token before after
+      composeFrame token before middle after earlier later =
+        trans (proj₁ later) (proj₁ earlier) , trans (proj₂ later) (proj₂ earlier)
+
+      firstFrame : ∀ received token before → MetadataFrame token before (proj₁ (first received token before))
+      firstFrame received token before with firstClassification received token before
+      ... | inj₁ unchanged = subst (MetadataFrame token before) (sym unchanged) (refl , refl)
+      ... | inj₂ (changed , reply , admitted , active , firstAbsent , nextAbsent , resultAbsent , accepted) =
+        trans (cong Step.registration (cong proj₁ published)) (O.Saved.keepsRegistration received token before changed reply accepted) ,
+        trans (cong (λ world → Store.lookupCancellation world token) (cong proj₁ published))
+          (O.Saved.keepsCancellation received token before changed reply accepted)
+        where
+        published = freshPrefix received token before changed reply admitted active firstAbsent nextAbsent resultAbsent accepted
+
+      secondFrame : ∀ received token before → MetadataFrame token before (proj₁ (second received token before))
+      secondFrame received token before with secondClassification received token before
+      ... | inj₁ unchanged = subst (MetadataFrame token before) (sym unchanged) (refl , refl)
+      ... | inj₂ (saved , changed , reply , admitted , active , firstSaved , nextAbsent , resultAbsent , accepted) =
+        trans (cong Step.registration (cong proj₁ published)) (Final.Kernel.publicationKeepsRegistration received token before changed reply accepted) ,
+        trans (cong (λ world → Store.lookupCancellation world token) (cong proj₁ published))
+          (Final.Kernel.publicationKeepsCancellation received token before changed reply accepted)
+        where
+        published = secondFresh received token before saved changed reply admitted active firstSaved nextAbsent resultAbsent accepted
+
+      atomicFrame : ∀ token before after effect reply → Owned token effect →
+        Atomic before effect reply after → MetadataFrame token before after
+      atomicFrame token before after .(reserve token) (metadata , reply) ownerOwned (known , physical) =
+        DB.invariantPreserved (MetadataFrame token before) physical (refl , refl) (firstFrame metadata token before)
+      atomicFrame token before .before .(readSources token) (inj₁ reason) sourcesOwned refl = refl , refl
+      atomicFrame token before .before .(readSources token) (inj₂ .before) sourcesOwned (refl , refl) = refl , refl
+      atomicFrame token before .before .(embed token cfg content) reply (embedOwned cfg content) refl = refl , refl
+      atomicFrame token before after .(publish token observed) reply (publishOwned observed) (known , physical) =
+        DB.invariantPreserved (MetadataFrame token before) physical (refl , refl) (secondFrame observed token before)
+
+      changesFrame : ∀ token before events after → All (λ event → Owned token (proj₁ event)) events →
+        X.Changes before events after → MetadataFrame token before after
+      changesFrame token before [] .before [] (X.unchanged _) = refl , refl
+      changesFrame token before ((effect , reply) ∷ events) after (owner ∷ owners)
+        (X.changed _ _ _ middle physical later) = composeFrame token before middle after
+          (atomicFrame token before middle effect reply owner physical)
+          (changesFrame token middle events after owners later)
+
+      interruptedFrame : ∀ token before current → X.Interrupted (script token) before current → MetadataFrame token before current
+      interruptedFrame token before current (X.atPrefix events residual .current observed physical) =
+        changesFrame token before events current
+          (proj₁ (prefixScoped token (script token) events residual (scriptScoped token) observed)) physical
+      interruptedFrame token before current
+        (X.beforeReply events effect continuation middle reply .current observed physical active)
+        with prefixScoped token (script token) events (E.ask effect continuation) (scriptScoped token) observed
+      ... | owners , scoped = composeFrame token before middle current (changesFrame token before events middle owners physical)
+        (atomicFrame token middle current effect reply (activeOwned token effect continuation scoped) active)
+
+      cancelledReadback : ∀ token before (context : Read.ExecutionContext operationName token before) receipt →
+        Store.lookupCancellation before token ≡ just receipt →
+        Read.admission operationName token before ≡ Read.returned
+          (Read.cancelled receipt (just (Read.ExecutionContext.bindingRow context)) (Read.ordered (Read.savedRows token before)))
+      cancelledReadback token before context receipt known = trans
+        (Controls.alongObservation _ (Read.afterBindingLookup operationName token before)
+          (just (Read.ExecutionContext.bindingRow context)) (Read.ExecutionContext.originalBinding context))
+        (trans (Controls.alongObservation _ (Read.afterMatch operationName token before
+          (Read.ExecutionContext.bindingRow context) (Read.ExecutionContext.originalBinding context))
+          true (Read.ExecutionContext.requestedOperation context))
+          (cong (Read.afterReadback operationName token before (Read.ExecutionContext.bindingRow context)
+            (Read.ExecutionContext.originalBinding context) (Read.ExecutionContext.requestedOperation context)) cancelledAnswer))
+        where
+        cancelledAnswer : Read.answer token before ≡ Read.cancelled receipt
+          (just (Read.ExecutionContext.bindingRow context)) (Read.ordered (Read.savedRows token before))
+        cancelledAnswer rewrite Read.ExecutionContext.originalBinding context | known = refl
+
+      differentReadback : ∀ {token before} {context : Read.ExecutionContext operationName token before} {outcome} →
+        Read.admitted context ≡ Read.returned outcome → ⊥
+      differentReadback ()
+
+      admittedActive : ∀ token before (context : Read.ExecutionContext operationName token before) →
+        Read.admission operationName token before ≡ Read.admitted context → Store.lookupCancellation before token ≡ nothing
+      admittedActive token before context known with Store.lookupCancellation before token in observed
+      ... | nothing = refl
+      ... | just receipt = ⊥-elim (differentReadback (trans (sym known) (cancelledReadback token before context receipt observed)))
+
+      interruptedActive : ∀ token before current (context : Read.ExecutionContext operationName token before) →
+        Read.admission operationName token before ≡ Read.admitted context →
+        X.Interrupted (script token) before current → Store.lookupCancellation current token ≡ nothing
+      interruptedActive token before current context known cut = trans (proj₂ (interruptedFrame token before current cut))
+        (admittedActive token before context known)
