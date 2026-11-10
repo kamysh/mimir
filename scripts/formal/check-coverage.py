@@ -265,9 +265,11 @@ def check_intended_outcome_contract():
     advertised = set(re.findall(r'^wireName \w+ = "([a-z_]+)"$',
                                 read('spec/Mimir/ToolCatalog.agda'), re.M))
     assert len(names) == len(set(names)), 'duplicate intended-outcome family'
-    assert set(names) == advertised | {'delete_evidence', 'reembed'}, {
+    internal = {'delete_evidence', 'reembed', 'stats', 'get_pattern'}
+    assert set(names) == advertised | internal, {
         'missing_intents': sorted(advertised - set(names)),
-        'unexpected_intents': sorted(set(names) - advertised - {'delete_evidence', 'reembed'})}
+        'missing_internal_intents': sorted(internal - set(names)),
+        'unexpected_intents': sorted(set(names) - advertised - internal)}
     for family in contract['x-intent-adapters']:
         assert family['whole_operation_adapter'] == 'required-by-152', family
         assert family['pure_sources'], family

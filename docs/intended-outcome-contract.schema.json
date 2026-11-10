@@ -749,6 +749,8 @@
     },
     {
       "operations": [
+        "stats",
+        "get_pattern",
         "get_belief",
         "list_beliefs",
         "list_patterns",
