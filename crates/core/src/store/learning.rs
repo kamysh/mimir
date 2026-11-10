@@ -1609,7 +1609,7 @@ struct SourceOperationArguments {
     experience: Experience,
     expected_revision: i64,
 }
-fn original_source_operation(
+fn source_operation_arguments(
     request: &OperationBindingRequest,
 ) -> Result<SourceOperationArguments> {
     if request.operation() != "record_experience" {
@@ -1639,11 +1639,19 @@ fn original_source_operation(
         .map_err(|error| RequestCorrection::bound_graph_request("", Code::MalformedInput,
             format!("Invalid original source request: {error}. No experience was changed."),
             "Exactly experience and expected_revision, using the advertised experience schema and its original stable incident UUID."))?;
+    Ok(args)
+}
+
+fn original_source_operation(
+    request: &OperationBindingRequest,
+) -> Result<SourceOperationArguments> {
+    let args = source_operation_arguments(request)?;
     validate_record_source(&args.experience, args.expected_revision)
         .map_err(RequestCorrection::bound_source_repair)?;
     Ok(args)
 }
 
 pub(crate) fn admit_source_operation(request: &OperationBindingRequest) -> Result<()> {
-    original_source_operation(request).map(|_| ())
+    let args = source_operation_arguments(request)?;
+    validate_record_source(&args.experience, args.expected_revision)
 }

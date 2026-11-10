@@ -29,7 +29,9 @@ fn original(request: &OperationBindingRequest) -> Result<Arguments> {
 }
 
 pub(crate) fn admit_request(request: &OperationBindingRequest) -> Result<()> {
-    original(request).map(|_| ())
+    // This request is not bound yet. Keep typed pure-validation faults rather
+    // than converting them into a saved-request repair message.
+    decode_original(request).map(|_| ())
 }
 
 fn decode_original(request: &OperationBindingRequest) -> Result<Arguments> {
