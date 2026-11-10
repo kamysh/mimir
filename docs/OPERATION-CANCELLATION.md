@@ -44,18 +44,52 @@ embedding owners for cancelled tokens. They use the same reservation lock;
 checking a flag without holding that lock would leave a publication race.
 Cancellation records, original bindings, plans and answers remain immutable.
 
-## Remaining public integration
+## Confirming every copy stopped
 
-This is a storage foundation. It adds no MCP tool or CLI cancel command.
-Public operation admission and associating all owned work with tokens remain
-#85–#86. The public cancellation flow in #124 must stop and join every owned
-worker before reporting cleanup complete. `CancellationDecision::Recorded`
-means the durable decision and revocation committed; it does not claim that
-every worker has already joined.
+`CancellationDecision::Recorded` means publication was revoked. It does not
+mean every worker stopped. The MCP and CLI cancellation handlers separately
+wait for every registered execution's actual stop acknowledgement.
+
+Each token-associated body and provider call registers a PostgreSQL-issued
+execution ID before starting. Registration and cancellation lock the same
+reservation row, so registration either becomes part of the wait or is refused
+before work starts. The ID is read from INSERT RETURNING before COMMIT. If the
+commit reply or the request itself is lost, the original owner retains that
+ID; it reads back the same record rather than starting invisible replacement
+work.
+
+The owner destroys its body, confirms cleanup of its owned workers, and only
+then records `stopped_at`. An interrupted registration that never started a
+body can also be acknowledged after its transaction is settled. A stop write
+may follow cancellation, and repeating it returns its original timestamp.
+Execution records cannot be deleted or expired. Revoking preparation owners
+does not remove these records.
+
+Both the worker and canceller subscribe before checking their state. A worker
+stops on its action's cancellation event or when its monitor reports a disconnect. The
+canceller waits on actual acknowledgement events and rereads all outstanding
+records. It does not poll or choose a wait limit. A disconnected or crashed
+copy without a stop receipt keeps global confirmation pending. The original
+owner can retry its acknowledgement after reconnecting; this protocol provides
+no forced-clear command or inference from a process ID.
+
+If the business result already completed, explicit cancellation still wakes
+and waits for duplicate executions under that token. The original completed
+answer is returned exactly; no cancellation row or business mutation is added.
+New provider registration is already fenced by the saved final answer.
+
+See [the public protocol](OPERATION-PROTOCOL.md) for pending readback, physical
+cleanup errors and the required all-copies 2.3.0 upgrade boundary. No live
+migration or rollout follows merely from these source changes.
 
 The safe Agda model uses `ApplicationStore.World`, including the actual
 cancellation rows and embedding owners. It proves preservation of business
 records, original inputs and saved answers, stable cancellation time on retry,
 and removal of token-owned preparation. Registered pattern and project
 deletion admission refuses cancelled tokens. Mandatory application-wide
-dispatcher enforcement remains #74/#76.
+dispatcher enforcement remains #74/#76. Its execution-ownership extension
+separately describes registered copies, actual body/worker exit observations,
+and acknowledgements. A full stop confirmation requires every matching
+execution row to be acknowledged; a pending row rules that confirmation out.
+The host may wait indefinitely, so the model does not invent a termination
+promise for an unreachable copy.

@@ -39,7 +39,7 @@ record Ground : Set where
   constructor ground
   field chunk belief : ℕ; weight : Float
 
--- These are the five existing PostgreSQL operation tables, not an operation's
+-- These are the physical PostgreSQL operation records, not an operation's
 -- private execution world. UUIDs/times arrive from PostgreSQL; no allocator or
 -- uniqueness axiom is introduced here. JSONB admission remains at its boundary.
 record ReservationRow : Set where
@@ -66,6 +66,14 @@ record CancellationRow : Set where
   constructor cancellationRow
   field token : ℕ; cancelledAt : ℤ
 
+-- One actual token-associated execution, retained after publication-owner
+-- revocation. Only its physical owner can supply a stopped acknowledgement.
+record ExecutionRow : Set where
+  constructor executionRow
+  field identity token : ℕ; registeredAt : ℤ; stoppedAt : Maybe ℤ
+        ownerProgram : Text; ownerPid : ℕ
+        ownerHost ownerHostSource clientAddress : Maybe Text
+
 -- PostgreSQL-issued ownership for work prepared before business publication.
 -- Deletion/cancellation revoke it; there is deliberately no expiry timer.
 record EmbeddingOwnerRow : Set where
@@ -81,6 +89,7 @@ record OperationTables : Set where
     plans : List PlanRow
     savedReplies : List SavedReplyRow
     cancellations : List CancellationRow
+    executions : List ExecutionRow
 
 record World : Set where
   constructor world

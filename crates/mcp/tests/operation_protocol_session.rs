@@ -12,6 +12,26 @@ use std::{io::Write, process::Stdio};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
+fn preserves_completed_result(readback: &Value, original: &Value) -> Result<()> {
+    for field in ["operation_token", "status", "original_request", "result"] {
+        ensure!(
+            readback[field] == original[field],
+            "readback changed original {field}"
+        );
+    }
+    ensure!(readback["worker_cleanup"] == "not_confirmed_by_this_receipt");
+    let owners: Vec<mimir_core::store::ExecutionReceipt> =
+        mimir_json::decode_ref(&readback["pending_executions"])?;
+    let token: Uuid = original["operation_token"]
+        .as_str()
+        .context("completed token")?
+        .parse()?;
+    ensure!(owners
+        .iter()
+        .all(|owner| owner.operation_token == token && owner.stopped_at.is_none()));
+    Ok(())
+}
+
 struct Session {
     child: tokio::process::Child,
     input: Option<tokio::process::ChildStdin>,
@@ -217,12 +237,10 @@ async fn project_deletion_retries_after_real_process_exit_at_each_commit_side() 
             "lost reply must retain the original count: {completed}"
         );
         ensure!(retry.tool("delete_project", original).await? == completed);
-        ensure!(
-            retry
-                .tool("operation_outcome", json!({"operation_token":token}))
-                .await?
-                == completed
-        );
+        let readback = retry
+            .tool("operation_outcome", json!({"operation_token":token}))
+            .await?;
+        preserves_completed_result(&readback, &completed)?;
         retry.finish().await?;
         ensure!(service.list_beliefs(Some(&project)).await?.is_empty());
         ensure!(store.get_chunk_ids_by_project(&project).await?.is_empty());
@@ -294,7 +312,8 @@ async fn writes_require_a_recoverable_identity_and_correct_input_before_binding(
         let changed=session.tool("insert_pattern",changed).await?;
         let correction:NeedsInput=mimir_json::decode_ref(&changed)?;
         ensure!(correction.issues()[0].suggested_correction().contains("operation_outcome"));
-        ensure!(session.tool("operation_outcome",json!({"operation_token":token})).await?==completed);
+        let readback = session.tool("operation_outcome",json!({"operation_token":token})).await?;
+        preserves_completed_result(&readback, &completed)?;
         ensure!(session.tool("cancel_operation",json!({"operation_token":token})).await?==completed,
             "cancelling completed work must retain the original result");
         ensure!(service.list_patterns(Some(&project)).await?.len()==1);
@@ -302,7 +321,7 @@ async fn writes_require_a_recoverable_identity_and_correct_input_before_binding(
         let reserved=session.tool("reserve_operation",json!({"request_key":format!("cancel-{key}")})).await?;
         let cancelled=reserved["operation_token"].as_str().context("missing issued token")?.to_owned();
         let answer=session.tool("cancel_operation",json!({"operation_token":cancelled})).await?;
-        ensure!(answer["status"]=="cancelled" && answer["worker_cleanup"]=="confirmed_for_this_server");
+        ensure!(answer["status"]=="cancelled" && answer["worker_cleanup"]=="confirmed_for_all_registered_copies");
         ensure!(session.tool("operation_outcome",json!({"operation_token":cancelled})).await?["worker_cleanup"]=="not_confirmed_by_this_receipt");
         original["operation_token"]=json!(cancelled);
         ensure!(session.tool("insert_pattern",original).await?["status"]=="cancelled");

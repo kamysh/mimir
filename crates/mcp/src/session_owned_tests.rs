@@ -85,10 +85,9 @@ async fn disconnect_drops_and_reaps_active_embedding_before_returning_or_startin
         MemoryType::Fact,
     )
     .await?;
-    let request = blocked_request(&service, &database, &project)
-        .await?
-        .to_string()
-        + "\n";
+    let request = blocked_request(&service, &database, &project).await?;
+    let operation_token = operation_protocol::token(&request["params"]["arguments"])?;
+    let request = request.to_string() + "\n";
     // The in-memory connection holds this complete request; no production
     // quota, timer or fixed test sleep is involved.
     let (client, server) = tokio::io::duplex(request.len());
@@ -115,16 +114,30 @@ async fn disconnect_drops_and_reaps_active_embedding_before_returning_or_startin
     let queued=json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_belief","arguments":{"operation_token":delete_token,"id":protected.id}}}).to_string()+"\n";
     input.write_all(queued.as_bytes()).await?;
     input.shutdown().await?;
-    // Duplex EOF is immediately observable: one poll distinguishes the old
-    // blocked handler from a server which watches disconnect during execution.
-    let ended = std::future::poll_fn(|context| Poll::Ready(session.as_mut().poll(context))).await;
+    // EOF must destroy/reap the body in this poll, before waiting for an ACK
+    // connection. The asynchronous database acknowledgement may still be pending.
+    let first_poll =
+        std::future::poll_fn(|context| Poll::Ready(session.as_mut().poll(context))).await;
     let mut worker_socket = ready.into_inner().into_std()?;
     let mut byte = [0];
     let socket_closed = matches!(std::io::Read::read(&mut worker_socket, &mut byte), Ok(0));
     #[cfg(target_os = "linux")]
     let reaped = !std::path::PathBuf::from(format!("/proc/{pid}")).exists();
-    // Release even the failing negative control's owner before reporting it.
+    let physically_stopped = socket_closed;
+    #[cfg(target_os = "linux")]
+    let physically_stopped = physically_stopped && reaped;
+    if !physically_stopped {
+        drop(session);
+        anyhow::bail!("disconnect did not immediately stop and reap owned worker {pid}");
+    }
+    let ended = match first_poll {
+        Poll::Ready(result) => result,
+        Poll::Pending => session.as_mut().await,
+    };
     drop(session);
+    let pending: i64 = db.query_one(
+        "SELECT count(*) FROM mimir_operation_executions WHERE operation_token=$1 AND stopped_at IS NULL", &[&operation_token]
+    ).await?.get(0);
     let no_publication = service
         .list_beliefs(Some(&project))
         .await?
@@ -134,8 +147,8 @@ async fn disconnect_drops_and_reaps_active_embedding_before_returning_or_startin
     let cleanup = service.delete_project(&project).await;
     let protected_cleanup = service.delete_project(&protected_project).await;
     ensure!(
-        matches!(ended, Poll::Ready(Ok(()))),
-        "disconnect left the active request pending: {ended:?}"
+        ended.is_ok() && pending == 0,
+        "disconnect did not finish its execution acknowledgement: {ended:?}; pending={pending}"
     );
     ensure!(
         socket_closed,
@@ -245,7 +258,7 @@ async fn cancellation_on_the_same_connection_stops_and_reaps_the_blocked_worker(
                 "the original execution must read back its cancellation: {body}"
             );
             if request_id == 2 {
-                ensure!(body["worker_cleanup"] == "confirmed_for_this_server");
+                ensure!(body["worker_cleanup"] == "confirmed_for_all_registered_copies");
                 #[cfg(target_os = "linux")]
                 ensure!(
                     !std::path::PathBuf::from(format!("/proc/{pid}")).exists(),

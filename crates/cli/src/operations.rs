@@ -153,7 +153,7 @@ pub(super) async fn dispatch(cli: &Cli) -> Result<bool> {
                 }
                 Application::Operation(Command::Outcome) => {
                     let token = cli.operation_token.context("admitted operation token")?;
-                    print(operation_reporting::outcome(
+                    print(operation_reporting::readback(
                         token,
                         service.read_operation_outcome(token, None).await?,
                     )?)?;
@@ -183,6 +183,7 @@ pub(super) async fn dispatch(cli: &Cli) -> Result<bool> {
         }
     };
     let token = cli.operation_token.context("admitted write token")?;
+    service.finish_operation_host().await?;
     match result {
         Ok(outcome) => print(operation_reporting::outcome(token, outcome)?)?,
         Err(error) => {
