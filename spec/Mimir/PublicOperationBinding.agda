@@ -2017,3 +2017,41 @@ module Creating (library : Library.Contract) (postgres : Controls.PostgreSQL) wh
     PendingReadback token current
   admittedHasPending operation token current scope = admittedAfterLookup operation token current
     (binding token current) refl scope
+
+
+  committedWorld : ∀ {before proposed after : Store.World} → DB.Atomic before proposed DB.committed after → after ≡ proposed
+  committedWorld DB.committedAll = refl
+
+  bindKnownObservation : ∀ call current scope observedTime reply after →
+    Reserved call current → ReadyMeaning call current scope →
+    Atomic current (bindOriginal call (Store.BindingRow.settings (Context.original scope))) (observedTime , reply) after →
+    after ≡ current × reply ≡ bound (Context.original scope)
+  bindKnownObservation call current scope observedTime reply after reserved known (observed , physical) =
+    trans (committedWorld committed) (cong proj₁ expected) , sameReply
+    where
+    expected = bindKnown call current scope observedTime reserved known
+    sameReply = trans observed (cong proj₂ expected)
+    committed = subst (λ tag → DB.Atomic current
+      (proj₁ (bind call (Store.BindingRow.settings (Context.original scope)) observedTime current)) tag after)
+      (cong bindingReceipt sameReply) physical
+
+  prepareKnownObservation : ∀ call current scope encoding reply validated after → ReadyMeaning call current scope →
+    Atomic current (publishPlan call (Store.BindingRow.settings (Context.original scope))) (encoding , reply , validated) after →
+    after ≡ current × reply ≡ planned (Context.original scope) (Context.model scope) (Context.raw scope)
+  prepareKnownObservation call current scope encoding reply validated after known (observed , physical) =
+    trans (committedWorld committed) (cong proj₁ expected) , sameReply
+    where
+    expected = prepareKnown call current scope encoding known
+    sameReply = trans observed (cong proj₂ expected)
+    committed = subst (λ tag → DB.Atomic current
+      (proj₁ (prepare call (Store.BindingRow.settings (Context.original scope)) encoding current)) tag after)
+      (cong planReceipt sameReply) physical
+
+  createPlanKnownCompletion : ∀ call current scope after result → ReadyMeaning call current scope →
+    X.Completed (createPlan call (Store.BindingRow.settings (Context.original scope))) current after result →
+    after ≡ current × result ≡ ready (preparedWrite call (Context.original scope) (Context.model scope) (Context.raw scope))
+  createPlanKnownCompletion call current scope after result known
+    (X.completed _ (E.replied _ _ (encoding , reply , validated) execution) (X.changed _ _ _ middle physical later))
+    with prepareKnownObservation call current scope encoding reply validated middle known physical
+  ... | refl , refl with execution | later
+  ... | E.returned _ | X.unchanged _ = refl , refl
