@@ -1,0 +1,829 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mimir:intended-outcome-contract:1",
+  "title": "Mimir complete intended-outcome test contract, version 1",
+  "$comment": "This defines test transport only. Existing public/model decoders validate row payloads. Executable whole-operation adapters remain issue 152; no script evaluator or Goal-checker fallback is permitted.",
+  "$ref": "#/$defs/input",
+  "$defs": {
+    "publicValue": {
+      "description": "An unchanged standard JSON value; existing public and model decoders validate its domain."
+    },
+    "modelRecord": {
+      "type": "object",
+      "description": "The complete existing public/model record, not a reduced test record. Existing typed adapters validate every field."
+    },
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "vectorRow": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "vector": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "vector"
+      ],
+      "additionalProperties": false
+    },
+    "finiteMap": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "const": "absent"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "$ref": "#/$defs/publicValue"
+              },
+              "value": {
+                "$ref": "#/$defs/publicValue"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "default",
+        "rows"
+      ],
+      "additionalProperties": false
+    },
+    "ledger": {
+      "type": "object",
+      "properties": {
+        "cells": {
+          "$ref": "#/$defs/finiteMap"
+        },
+        "histories": {
+          "$ref": "#/$defs/finiteMap"
+        }
+      },
+      "required": [
+        "cells",
+        "histories"
+      ],
+      "additionalProperties": false
+    },
+    "publication": {
+      "type": "object",
+      "properties": {
+        "ledger": {
+          "$ref": "#/$defs/ledger"
+        },
+        "registry": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "owners": {
+          "$ref": "#/$defs/finiteMap"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "assessments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        }
+      },
+      "required": [
+        "ledger",
+        "registry",
+        "owners",
+        "nodes",
+        "assessments",
+        "edges"
+      ],
+      "additionalProperties": false
+    },
+    "learning": {
+      "type": "object",
+      "properties": {
+        "publication": {
+          "$ref": "#/$defs/publication"
+        },
+        "current": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "reviewTimes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "grounding": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "independentOrigins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "itemKeys": {
+          "$ref": "#/$defs/finiteMap"
+        }
+      },
+      "required": [
+        "publication",
+        "current",
+        "sources",
+        "reviewTimes",
+        "grounding",
+        "independentOrigins",
+        "itemKeys"
+      ],
+      "additionalProperties": false
+    },
+    "history": {
+      "type": "object",
+      "properties": {
+        "heads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "sourceRows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "reviewRows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        }
+      },
+      "required": [
+        "heads",
+        "sourceRows",
+        "reviewRows"
+      ],
+      "additionalProperties": false
+    },
+    "operations": {
+      "type": "object",
+      "properties": {
+        "reservations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "requestKeys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "bindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "plans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "savedReplies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "cancellations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        }
+      },
+      "required": [
+        "reservations",
+        "requestKeys",
+        "bindings",
+        "plans",
+        "savedReplies",
+        "cancellations"
+      ],
+      "additionalProperties": false
+    },
+    "world": {
+      "type": "object",
+      "properties": {
+        "learning": {
+          "$ref": "#/$defs/learning"
+        },
+        "chunks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "beliefVectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/vectorRow"
+          }
+        },
+        "chunkVectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/vectorRow"
+          }
+        },
+        "grounds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "beliefSources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "history": {
+          "$ref": "#/$defs/history"
+        },
+        "operations": {
+          "$ref": "#/$defs/operations"
+        },
+        "embeddingOwners": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        },
+        "retirementClocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelRecord"
+          }
+        }
+      },
+      "required": [
+        "learning",
+        "chunks",
+        "beliefVectors",
+        "chunkVectors",
+        "grounds",
+        "beliefSources",
+        "history",
+        "operations",
+        "embeddingOwners",
+        "retirementClocks"
+      ],
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "arguments": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "arguments"
+      ],
+      "additionalProperties": false
+    },
+    "observation": {
+      "type": "object",
+      "properties": {
+        "operation_token": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "boundary": {
+          "type": "string"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selected_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "enum": [
+            "postgres_allocation",
+            "postgres_writer_clock",
+            "database_snapshot",
+            "file_read",
+            "provider",
+            "indexed_support",
+            "numeric_calculation",
+            "database_vector_text",
+            "configuration_event"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/publicValue"
+        },
+        "artifact": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_token",
+        "boundary",
+        "attempt",
+        "selected_key",
+        "kind",
+        "value",
+        "artifact"
+      ],
+      "additionalProperties": false
+    },
+    "bodyResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "not_entered"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "returned"
+            },
+            "value": {
+              "$ref": "#/$defs/publicValue"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "input": {
+      "type": "object",
+      "properties": {
+        "contract_version": {
+          "const": 1
+        },
+        "entrypoint": {
+          "enum": [
+            "mcp",
+            "cli",
+            "library"
+          ]
+        },
+        "request": {
+          "$ref": "#/$defs/request"
+        },
+        "initial_world": {
+          "$ref": "#/$defs/world"
+        },
+        "current_settings": {
+          "type": "object"
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/observation"
+          }
+        }
+      },
+      "required": [
+        "contract_version",
+        "entrypoint",
+        "request",
+        "initial_world",
+        "current_settings",
+        "observations"
+      ],
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "world": {
+          "$ref": "#/$defs/world"
+        },
+        "body_result": {
+          "$ref": "#/$defs/bodyResult"
+        },
+        "public_payload": {
+          "$ref": "#/$defs/publicValue"
+        }
+      },
+      "required": [
+        "world",
+        "body_result",
+        "public_payload"
+      ],
+      "additionalProperties": false
+    },
+    "nativeObservation": {
+      "type": "object",
+      "properties": {
+        "world": {
+          "$ref": "#/$defs/world"
+        },
+        "body_result": {
+          "$ref": "#/$defs/bodyResult"
+        },
+        "public_payload": {
+          "$ref": "#/$defs/publicValue"
+        },
+        "exchange": {
+          "type": "object",
+          "description": "Complete original native exchange artifact; existing entrypoint wire checks validate its form without dropping content blocks."
+        }
+      },
+      "required": [
+        "world",
+        "body_result",
+        "public_payload",
+        "exchange"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "x-output-schema": "#/$defs/output",
+  "x-native-observation-schema": "#/$defs/nativeObservation",
+  "x-model-records": [
+    {
+      "definition": "world",
+      "module": "ApplicationStore",
+      "record": "World"
+    },
+    {
+      "definition": "learning",
+      "module": "LearningStore",
+      "record": "World"
+    },
+    {
+      "definition": "publication",
+      "module": "ReviewPreparationPublication",
+      "record": "World"
+    },
+    {
+      "definition": "ledger",
+      "module": "ReviewLedger",
+      "record": "World"
+    },
+    {
+      "definition": "history",
+      "module": "LearningHistoryWire",
+      "record": "Database"
+    },
+    {
+      "definition": "operations",
+      "module": "ApplicationStore",
+      "record": "OperationTables"
+    }
+  ],
+  "x-intent-adapters": [
+    {
+      "operations": [
+        "delete_project"
+      ],
+      "pure_sources": [
+        "ProjectDeletion.Registered.intended",
+        "ProjectDeletion.Registered.expectedReply"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "insert_pattern"
+      ],
+      "pure_sources": [
+        "GraphWrites.insertPattern",
+        "PatternPublicationRecovery.Registered.decide"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "delete_pattern"
+      ],
+      "pure_sources": [
+        "PublicPatternDeletionRecovery.Registered.decide"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "record_support",
+        "record_cause",
+        "record_contradiction"
+      ],
+      "pure_sources": [
+        "DirectGraphRecovery.Business.checked"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "delete_belief"
+      ],
+      "pure_sources": [
+        "BeliefDeletionRecovery.Business.checked"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "add_evidence",
+        "delete_evidence"
+      ],
+      "pure_sources": [
+        "GroundingRecovery.Business.checked"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "propagate_from"
+      ],
+      "pure_sources": [
+        "PropagationRecovery.Business.checked"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "decay_all"
+      ],
+      "pure_sources": [
+        "DecayRecovery.Business.intended",
+        "DecayRecovery.Business.checked"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "record_defeat"
+      ],
+      "pure_sources": [
+        "DefeatRecovery.Business.edge",
+        "DefeatRecovery.FinalBusiness.checked"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "sweep_expired_defeated"
+      ],
+      "pure_sources": [
+        "SweepRecovery.Business.checked"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "clear_document"
+      ],
+      "pure_sources": [
+        "DocumentRemovalRecovery.Business.checked"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "load_document"
+      ],
+      "pure_sources": [
+        "DocumentLoadingRecovery.capture",
+        "DocumentLoadingRecovery.Registered.prepare",
+        "DocumentReplacementRecovery.Business.checked"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "insert_belief"
+      ],
+      "pure_sources": [
+        "IndependentBeliefRecovery.Owner.intended",
+        "IndependentBeliefRecovery.Business.checked"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "record_experience"
+      ],
+      "pure_sources": [
+        "ExperienceSourceRecovery.Business.checked"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "review_experience"
+      ],
+      "pure_sources": [
+        "ReviewPublicationRecovery.Business.checked",
+        "ReviewPublicationIntent.Fresh.intended"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "reembed"
+      ],
+      "pure_sources": [
+        "BackfillRecovery.capture",
+        "BackfillRecovery.itemIntent",
+        "BackfillRecovery.finalItemIntent"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "get_belief",
+        "list_beliefs",
+        "list_patterns",
+        "get_contradictions",
+        "get_evidence"
+      ],
+      "pure_sources": [
+        "StorageReadBinding.BasicReads.answer"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "get_experience",
+        "get_learning_review",
+        "experience_history",
+        "pending_experiences"
+      ],
+      "pure_sources": [
+        "LearningQueryBinding.ExperienceReads.answer"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "get_lesson_assessment",
+        "lesson_assessment_history",
+        "explain_belief"
+      ],
+      "pure_sources": [
+        "LearningQueryBinding.AssessmentReads.answer"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "query_intervention"
+      ],
+      "pure_sources": [
+        "InferenceStorageBinding.InterventionRecovery.answer"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "query_relevant"
+      ],
+      "pure_sources": [
+        "PublicRetrievalRecovery.Run.answer"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "query_learning_context"
+      ],
+      "pure_sources": [
+        "PublicLearningContextRecovery.Run.answer"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "query_document"
+      ],
+      "pure_sources": [
+        "PublicDocumentQueryRecovery.Run.answer"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "learning_capabilities"
+      ],
+      "pure_sources": [
+        "LearningCapabilities.current"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "reserve_operation"
+      ],
+      "pure_sources": [
+        "OperationControls.Reservation.execute"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "operation_outcome"
+      ],
+      "pure_sources": [
+        "OperationControls.Readback.answer"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    },
+    {
+      "operations": [
+        "cancel_operation"
+      ],
+      "pure_sources": [
+        "Recovery.Cancellation.intended",
+        "Recovery.Cancellation.expectedReply"
+      ],
+      "whole_operation_adapter": "required-by-152"
+    }
+  ]
+}
