@@ -97,7 +97,7 @@ pub fn show(config_path: Option<&Path>, state_dir: Option<&Path>) -> anyhow::Res
             );
         }
     }
-    println!("Public summary ends here. Private diagnostics may contain source text; review and redact them before sharing.\nHelp: https://github.com/kamysh/mimir/blob/v2.2.2/docs/operations.md\nReport a persistent problem: https://github.com/kamysh/mimir/issues");
+    println!("Public summary ends here. Private diagnostics may contain source text; review and redact them before sharing.\nHelp: https://github.com/kamysh/mimir/blob/v2.2.3/docs/operations.md\nReport a persistent problem: https://github.com/kamysh/mimir/issues");
     Ok(())
 }
 
