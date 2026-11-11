@@ -166,6 +166,7 @@ module Run (environment : Environment) where
   next (retrievalState include per s@(Retrieval.embedding _ _ _ _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))
   next (retrievalState include per s@(Retrieval.vectorQuery _ _ _ _ _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))
   next (retrievalState include per s@(Retrieval.closure _ _ _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))
+  next (retrievalState include per s@(Retrieval.prefetch _ _ _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))
   next (retrievalState include per s@(Retrieval.neighbors _ _ _ _ _ _)) = perform (retrievalEffect s) (λ r → retrievalState include per (Retrieve.advance s r))
   next (contextState (Context.finished result)) = complete (contextResult result)
   next (contextState (Context.failed error)) = complete (failed error)

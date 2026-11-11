@@ -680,6 +680,16 @@ impl MimirService {
 
         // ── Graph expansion: SUPPORTS/CAUSES reachable beliefs (unchanged).
         let matched_ids: Vec<Uuid> = matched.iter().map(|b| b.id).collect();
+        // The seeds are independent first-hop reads. Prefetch them in one
+        // observation, then consume each seed in the original traversal order.
+        let mut prefetched = match project {
+            Some(p) => {
+                self.store
+                    .get_direct_downstream_batch_by_project(&matched_ids, p)
+                    .await?
+            }
+            None => std::collections::HashMap::new(),
+        };
         for id in matched_ids {
             match project {
                 Some(p) => {
@@ -697,8 +707,10 @@ impl MimirService {
                     while !frontier.is_empty() {
                         let mut next_frontier = Vec::new();
                         for fid in frontier {
-                            let neighbors =
-                                self.store.get_direct_downstream_by_project(fid, p).await?;
+                            let neighbors = match prefetched.remove(&fid) {
+                                Some(rows) => rows,
+                                None => self.store.get_direct_downstream_by_project(fid, p).await?,
+                            };
                             for b in neighbors {
                                 if b.memory_type == MemoryType::Working
                                     || superseded.contains(&b.id)

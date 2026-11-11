@@ -97,7 +97,8 @@ module Read (ops : VectorOperations) where
   RetrievalMeaning state snapshot reply = RetrievalReads.ReadMeaning state snapshot reply
 
 -- A distinct statement event is retained for each observed database effect.
--- No session-wide snapshot is inferred from a sequence of independent reads.
+-- Batch replies share one snapshot; consuming cached rows is not a new read.
+-- No session-wide snapshot is inferred from separate batches or reads.
 module Observed (reads : Committed.Contract Store.World) where
   open Committed.Contract reads
 

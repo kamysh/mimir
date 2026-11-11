@@ -2096,6 +2096,47 @@ $$) AS (v ag_catalog.agtype)"#
         Ok(beliefs)
     }
 
+    /// Read the scoped direct neighbors of a group of source identities in
+    /// one database observation. Empty sources remain present in the result.
+    pub async fn get_direct_downstream_batch_by_project(
+        &self,
+        sources: &[Uuid],
+        project: &str,
+    ) -> Result<HashMap<Uuid, Vec<Belief>>> {
+        let mut result: HashMap<Uuid, Vec<Belief>> =
+            sources.iter().map(|id| (*id, Vec::new())).collect();
+        if sources.is_empty() {
+            return Ok(result);
+        }
+        let ids = sources
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let g = &self.graph_name;
+        let params = format!(r#"{{"project": "{}"}}"#, json_esc(project));
+        let stmt = format!("age_direct_batch_{}", Uuid::new_v4().simple());
+        let fields = "n.id, n.content, n.probability, n.confidence, n.alpha, n.beta, n.alpha0, n.beta0, n.created_at, n.last_activated_at, n.memory_type, n.project, s.id";
+        let clauses = ["SUPPORTS", "CAUSES", "DEFEATS"].iter().map(|kind| format!(
+            "MATCH (s:Belief)-[:{kind}]->(n:Belief) WHERE s.id IN [{ids}] AND (n.project = $project OR n.project IS NULL) RETURN {fields}"
+        )).collect::<Vec<_>>().join(" UNION ");
+        let prepare = format!(
+            "PREPARE {stmt}(agtype) AS SELECT id::text, content::text, probability::text, confidence::text, alpha::text, beta::text, alpha0::text, beta0::text, created_at::text, last_activated_at::text, memory_type::text, project::text, source::text FROM ag_catalog.cypher('{g}', $$ {clauses} $$, $1) AS (id text, content text, probability text, confidence text, alpha text, beta text, alpha0 text, beta0 text, created_at text, last_activated_at text, memory_type text, project text, source text)"
+        );
+        let client = self.client.lock().await;
+        for row in age_query_rows(&client, &stmt, &prepare, &params).await? {
+            let source = Uuid::parse_str(
+                row.get("source")
+                    .ok_or_else(|| anyhow::anyhow!("missing source"))?,
+            )?;
+            result
+                .get_mut(&source)
+                .ok_or_else(|| anyhow::anyhow!("unexpected batch source"))?
+                .push(belief_from_simple_row(&row)?);
+        }
+        Ok(result)
+    }
+
     /// Complete distinct causal descendants, using the same unbounded
     /// frontier as propagation but admitting only CAUSES edges.
     pub async fn get_causal_downstream_beliefs(&self, start_id: Uuid) -> Result<Vec<Belief>> {
