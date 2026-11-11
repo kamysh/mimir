@@ -721,6 +721,72 @@ async fn test_get_direct_downstream_by_project_one_hop() {
     let _ = ctx.store.delete_project(&other_project).await;
 }
 
+#[tokio::test]
+async fn test_batch_scoped_neighbors_match_individual_reads() {
+    let ctx = TestCtx::new().await;
+    let other = format!("_test-other-{}", Uuid::new_v4().simple());
+    let seeds: Vec<_> = (0..3)
+        .map(|n| ctx.belief(format!("batch-seed-{n}"), 0.6, 0.6))
+        .collect();
+    let targets: Vec<_> = (0..6)
+        .map(|n| ctx.belief(format!("batch-target-{n}"), 0.6, 0.6))
+        .collect();
+    let foreign = Belief::new_in_project("batch-foreign".into(), 0.6, 0.6, other.clone()).unwrap();
+    for b in seeds
+        .iter()
+        .chain(targets.iter())
+        .chain(std::iter::once(&foreign))
+    {
+        ctx.store.insert_belief(b).await.unwrap();
+    }
+    for (i, target) in targets.iter().enumerate() {
+        let kind = match i % 3 {
+            0 => EdgeType::Supports,
+            1 => EdgeType::Causes,
+            _ => EdgeType::Defeats,
+        };
+        ctx.store
+            .insert_edge(&Edge::new(seeds[i / 3].id, target.id, kind, 0.8).unwrap())
+            .await
+            .unwrap();
+    }
+    ctx.store
+        .insert_edge(&Edge::new(seeds[0].id, targets[0].id, EdgeType::Causes, 0.8).unwrap())
+        .await
+        .unwrap();
+    ctx.store
+        .insert_edge(&Edge::new(seeds[0].id, foreign.id, EdgeType::Supports, 0.8).unwrap())
+        .await
+        .unwrap();
+    let ids: Vec<_> = seeds.iter().map(|b| b.id).collect();
+    assert!(ctx
+        .store
+        .get_direct_downstream_batch_by_project(&[], &ctx.project)
+        .await
+        .unwrap()
+        .is_empty());
+    let batch = ctx
+        .store
+        .get_direct_downstream_batch_by_project(&ids, &ctx.project)
+        .await
+        .unwrap();
+    for id in ids {
+        let expected: Vec<_> = ctx
+            .store
+            .get_direct_downstream_by_project(id, &ctx.project)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|b| b.id)
+            .collect();
+        let actual: Vec<_> = batch[&id].iter().map(|b| b.id).collect();
+        assert_eq!(actual, expected, "batch neighbor order differs for {id}");
+        assert!(!actual.contains(&foreign.id));
+    }
+    ctx.cleanup().await;
+    let _ = ctx.store.delete_project(&other).await;
+}
+
 // Working-memory beliefs must never surface from query_relevant's candidate
 // pool (the token/vector/prior legs), even when their content directly
 // matches the query term.
