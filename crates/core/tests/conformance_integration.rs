@@ -215,7 +215,7 @@ async fn propagation_waits_for_learning_lock_before_reading_seed() {
 }
 
 #[tokio::test]
-async fn stored_defeat_survives_a_later_propagation_failure() {
+async fn failed_defeat_recalculation_rolls_back_the_link() {
     let cfg = config();
     let service = MimirService::connect(&cfg).await.unwrap();
     let store = AgeStore::new(
@@ -239,7 +239,7 @@ async fn stored_defeat_survives_a_later_propagation_failure() {
         .await
         .is_err());
     let edges = store.get_edges_among(&[seed.id, target.id]).await.unwrap();
-    assert!(edges.iter().any(|(from, to, kind, _)| *from == seed.id
+    assert!(!edges.iter().any(|(from, to, kind, _)| *from == seed.id
         && *to == target.id
         && *kind == EdgeType::Defeats));
     store.delete_project(&project).await.unwrap();

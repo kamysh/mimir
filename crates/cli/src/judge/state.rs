@@ -7,25 +7,11 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
-const MAX_DIAGNOSTICS: u64 = 3 * 1024 * 1024;
-const MAX_TRACE: usize = 256 * 1024;
-const MAX_TRACE_EVENTS: usize = 48;
-const MAX_TRACE_ATTEMPTS: usize = 8;
-const MAX_EVENT_DETAIL: usize = 3072;
-const MAX_FAILURE_SOURCE: usize = 32 * 1024;
 const STATUS_FILE: &str = "judge-status.json";
 const FAILURE_FILE: &str = "judge-last-failure.json";
 const DIAGNOSTICS_FILE: &str = "judge-diagnostics.json";
 
-pub fn bounded(value: &str, limit: usize) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(limit)
-        .collect()
-}
-
-/// A private, bounded excerpt of input that could not be parsed. It is never
+/// Complete private input that could not be parsed. It is never
 /// copied into notification mail or transition logs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SourceFailure {
@@ -38,38 +24,22 @@ pub struct SourceFailure {
 
 impl SourceFailure {
     pub fn input(stage: &str, source: &[u8], detail: &str) -> Self {
-        let end = source.len().min(MAX_FAILURE_SOURCE);
         Self {
             stage: stage.into(),
             detail: detail.into(),
             total_bytes: source.len(),
             excerpt_start: 0,
-            excerpt: String::from_utf8_lossy(&source[..end]).into_owned(),
+            excerpt: String::from_utf8_lossy(source).into_owned(),
         }
     }
 
     pub fn json(stage: &str, source: &[u8], error: serde_json::Error) -> Self {
-        let mut offset = 0usize;
-        for _ in 1..error.line() {
-            match source[offset..].iter().position(|byte| *byte == b'\n') {
-                Some(end) => offset += end + 1,
-                None => {
-                    offset = source.len();
-                    break;
-                }
-            }
-        }
-        offset = offset
-            .saturating_add(error.column().saturating_sub(1))
-            .min(source.len());
-        let start = offset.saturating_sub(MAX_FAILURE_SOURCE / 2);
-        let end = start.saturating_add(MAX_FAILURE_SOURCE).min(source.len());
         Self {
             stage: stage.into(),
             detail: error.to_string(),
             total_bytes: source.len(),
-            excerpt_start: start,
-            excerpt: String::from_utf8_lossy(&source[start..end]).into_owned(),
+            excerpt_start: 0,
+            excerpt: String::from_utf8_lossy(source).into_owned(),
         }
     }
 }
@@ -104,8 +74,8 @@ impl FailureDiagnostic {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |time| time.as_secs()),
             experience_id,
-            tool: bounded(tool, 64),
-            detail: bounded(detail, 512),
+            tool: tool.into(),
+            detail: detail.into(),
         }
     }
 }
@@ -218,11 +188,11 @@ impl DiagnosticEvent {
         Self {
             at: now(),
             experience_id,
-            kind: bounded(kind, 48),
+            kind: kind.into(),
             model_requests: Some(model_requests),
             tool_attempts: Some(tool_attempts),
-            tool: tool.map(|value| bounded(value, 64)),
-            detail: detail.map(|value| bounded(value, MAX_EVENT_DETAIL)),
+            tool: tool.map(str::to_owned),
+            detail: detail.map(str::to_owned),
             detail_bytes: detail.map(str::len),
         }
     }
@@ -416,28 +386,13 @@ impl State {
             finished_at: None,
             status: "running".into(),
             block_reason: None,
-            selected_ids: report
-                .selected_ids
-                .iter()
-                .take(MAX_TRACE_EVENTS)
-                .copied()
-                .collect(),
+            selected_ids: report.selected_ids.iter().copied().collect(),
             model_requests: Some(initial_count),
             tool_attempts: Some(initial_count),
             events: Vec::new(),
             events_omitted: 0,
         });
-        if diagnostics.attempts.len() > MAX_TRACE_ATTEMPTS {
-            let pinned =
-                read_failure(&self.path)?.and_then(|incident| incident.first.diagnostics_id);
-            let oldest_unpinned = diagnostics
-                .attempts
-                .iter()
-                .position(|trace| Some(trace.id) != pinned && trace.id != id)
-                .unwrap_or(0);
-            diagnostics.attempts.remove(oldest_unpinned);
-        }
-        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, Some(MAX_DIAGNOSTICS))?;
+        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, None)?;
         Ok(id)
     }
 
@@ -450,16 +405,8 @@ impl State {
             .ok_or_else(|| anyhow!("active diagnostic trace is missing"))?;
         trace.model_requests = event.model_requests;
         trace.tool_attempts = event.tool_attempts;
-        if trace.events.len() < MAX_TRACE_EVENTS {
-            trace.events.push(event);
-            if serde_json::to_vec(trace)?.len() > MAX_TRACE {
-                trace.events.pop();
-                trace.events_omitted += 1;
-            }
-        } else {
-            trace.events_omitted += 1;
-        }
-        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, Some(MAX_DIAGNOSTICS))
+        trace.events.push(event);
+        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, None)
     }
 
     pub fn finish_trace(&self, id: Uuid, report: &Report) -> Result<()> {
@@ -469,23 +416,11 @@ impl State {
             .iter()
             .position(|trace| trace.id == id)
             .ok_or_else(|| anyhow!("diagnostic trace is missing"))?;
-        if report.status == "complete" {
-            diagnostics.attempts.remove(index);
-        } else {
-            let trace = &mut diagnostics.attempts[index];
-            trace.status = report.status.clone();
-            trace.block_reason = report.block_reason.clone();
-            trace.finished_at = Some(now());
-            while serde_json::to_vec(&*trace)?.len() > MAX_TRACE {
-                ensure!(
-                    !trace.events.is_empty(),
-                    "diagnostic trace metadata is too large"
-                );
-                trace.events.pop();
-                trace.events_omitted += 1;
-            }
-        }
-        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, Some(MAX_DIAGNOSTICS))
+        let trace = &mut diagnostics.attempts[index];
+        trace.status = report.status.clone();
+        trace.block_reason = report.block_reason.clone();
+        trace.finished_at = Some(now());
+        self.write_named_limited(DIAGNOSTICS_FILE, &diagnostics, None)
     }
 
     pub fn record_incident(&self, report: &Report) -> Result<()> {
@@ -630,7 +565,7 @@ pub fn read_failure(path: &Path) -> Result<Option<FailureIncident>> {
 }
 
 pub fn read_diagnostics(path: &Path) -> Result<Diagnostics> {
-    Ok(read_named_limited(path, DIAGNOSTICS_FILE, Some(MAX_DIAGNOSTICS))?.unwrap_or_default())
+    Ok(read_named_limited(path, DIAGNOSTICS_FILE, None)?.unwrap_or_default())
 }
 
 fn read_named<T: for<'de> Deserialize<'de>>(path: &Path, name: &str) -> Result<Option<T>> {
@@ -752,8 +687,7 @@ mod tests {
         state.write(&failed).unwrap();
         let diagnostic = read(&dir).unwrap().unwrap().diagnostic.unwrap();
         assert_eq!(diagnostic.tool, "review_experience");
-        assert!(!diagnostic.detail.contains('\n'));
-        assert_eq!(diagnostic.detail.chars().count(), 512);
+        assert_eq!(diagnostic.detail, format!("rejected\n{}", "x".repeat(1000)));
         failed.block_reason = Some("tool_error".into());
         failed.selected_ids = vec![Uuid::new_v4()];
         let malformed = b"{\"review\": }";
@@ -839,15 +773,15 @@ mod tests {
     }
 
     #[test]
-    fn malformed_source_is_bounded_near_the_error() {
+    fn malformed_source_is_complete_including_the_error() {
         let source = format!("{{\"items\":[{}]}}", "0,".repeat(100_000));
         let error = serde_json::from_str::<serde_json::Value>(&source)
             .err()
             .unwrap();
         let failure = SourceFailure::json("invalid response", source.as_bytes(), error);
         assert_eq!(failure.total_bytes, source.len());
-        assert!(failure.excerpt.len() <= MAX_FAILURE_SOURCE);
-        assert!(failure.excerpt_start > 0);
+        assert_eq!(failure.excerpt, source);
+        assert_eq!(failure.excerpt_start, 0);
         assert!(failure.excerpt.contains("]}"));
     }
 
@@ -866,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_trace_is_private_bounded_and_survives_success() {
+    fn diagnostic_trace_is_private_complete_and_survives_success() {
         let dir = std::env::temp_dir().join(format!("mimir-judge-trace-{}", Uuid::new_v4()));
         let state = State::lock(dir.clone()).unwrap().unwrap();
         let experience_id = Uuid::new_v4();
@@ -885,7 +819,7 @@ mod tests {
                         0,
                         1,
                         None,
-                        Some(&"x".repeat(100_000)),
+                        Some(&"x".repeat(4096)),
                     ),
                 )
                 .unwrap();
@@ -896,17 +830,13 @@ mod tests {
         let later_id = state.begin_trace(&completed, 5).unwrap();
         state.finish_trace(later_id, &completed).unwrap();
         let diagnostics = read_diagnostics(&dir).unwrap();
-        assert_eq!(diagnostics.attempts.len(), 1);
+        assert_eq!(diagnostics.attempts.len(), 2);
         let trace = &diagnostics.attempts[0];
         assert_eq!(trace.id, id);
-        assert_eq!(trace.events.len(), MAX_TRACE_EVENTS);
-        assert_eq!(trace.events_omitted, 80 - MAX_TRACE_EVENTS);
-        assert!(serde_json::to_vec(trace).unwrap().len() <= MAX_TRACE);
-        assert_eq!(trace.events[0].detail_bytes, Some(100_000));
-        assert_eq!(
-            trace.events[0].detail.as_ref().unwrap().len(),
-            MAX_EVENT_DETAIL
-        );
+        assert_eq!(trace.events.len(), 80);
+        assert_eq!(trace.events_omitted, 0);
+        assert_eq!(trace.events[0].detail_bytes, Some(4096));
+        assert_eq!(trace.events[0].detail.as_ref().unwrap().len(), 4096);
         assert_eq!(
             trace.block_reason.as_deref(),
             Some("model_budget_exhausted")
@@ -923,12 +853,12 @@ mod tests {
             state.record_incident(&newer).unwrap();
         }
         let retained = read_diagnostics(&dir).unwrap();
-        assert_eq!(retained.attempts.len(), MAX_TRACE_ATTEMPTS);
+        assert_eq!(retained.attempts.len(), 12);
         assert!(retained.attempts.iter().any(|trace| trace.id == id));
         let path = dir.join(DIAGNOSTICS_FILE);
         let metadata = fs::metadata(&path).unwrap();
         assert_eq!(metadata.permissions().mode() & 0o077, 0);
-        assert!(metadata.len() <= MAX_DIAGNOSTICS);
+        assert!(metadata.len() > 256 * 1024);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(read_diagnostics(&dir).is_err());
         drop(state);

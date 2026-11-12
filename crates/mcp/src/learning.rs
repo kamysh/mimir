@@ -49,7 +49,7 @@ pub fn tools() -> Vec<Value> {
                 "evidence":{"type":"array","items":{"type":"string"}},
                 "belief_ids":{"type":"array","items":uuid},"pattern_id":{"type":["string","null"]},"learning_items":{"type":"array","items":item},"source_records":{"type":"array","items":source}},
                 "required":["id","project","context","action","outcome","source","evidence"]}},"required":["experience","expected_revision"]}}),
-        json!({"name":"pending_experiences","description":"Get the oldest new or changed experiences awaiting LLM review. Incremental work: successful review removes that exact version; failed/stale submissions leave it pending. A judge may temporarily exclude deferred IDs; an empty filtered array does not prove the whole queue is empty. No claim or lease; concurrent reviewers use revision checks.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"limit":{"type":"integer","minimum":1,"default":10},"exclude_ids":{"type":"array","items":uuid}}}}),
+        json!({"name":"pending_experiences","description":"Get new or changed experiences awaiting review, oldest first. Omit limit for all matching experiences, or supply a positive count. Successful review removes that exact version; failed/stale submissions leave it pending. A judge may temporarily exclude deferred IDs; an empty filtered array does not prove the whole queue is empty. No claim or lease; concurrent reviewers use revision checks.","inputSchema":{"type":"object","properties":{"project":{"type":"string"},"limit":{"type":"integer","minimum":1},"exclude_ids":{"type":"array","items":uuid}}}}),
         json!({"name":"review_experience","description":"Apply one atomic, revision-checked review. Declare new belief/pattern candidates with stable keys; the response maps keys to server UUIDs. Candidate creation is not an observed successful use. Existing UUID-only reviews remain valid. Corrections retract owned evidence and links while retaining candidate identity and independent work.","inputSchema":{"type":"object","properties":{
             "expected_review_revision":{"type":"integer","minimum":0},
             "review":{"type":"object","additionalProperties":false,"properties":{
@@ -154,11 +154,11 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
         }
         "experience_history" => svc.experience_history(text(args, "id")?.parse()?).await?,
         "pending_experiences" => serde_json::to_value(
-            svc.pending_experiences_excluding(
+            svc.select_pending_experiences(
                 args.get("project")
                     .map(|_| text(args, "project"))
                     .transpose()?,
-                limit(args, 10)?,
+                args.get("limit").map(|value| value.as_u64().and_then(|count| usize::try_from(count).ok()).filter(|count| *count > 0).ok_or_else(|| anyhow!("limit must be a positive integer when supplied; omit it to select all pending work"))).transpose()?,
                 &args
                     .get("exclude_ids")
                     .map(|ids| serde_json::from_value::<Vec<uuid::Uuid>>(ids.clone()))

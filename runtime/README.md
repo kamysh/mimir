@@ -30,7 +30,7 @@ Choose a model actually available to the authenticated Claude account:
 
 ```toml
 [judge]
-batch_size = 5
+# batch_size = 5 # optional positive selection; omit for all pending experiences
 mcp_command = "/ABSOLUTE/HOME/.local/bin/mimir-mcp"
 mcp_args = []
 
@@ -151,18 +151,18 @@ when a required account or permission step remains unresolved.
 ## Runtime behavior
 
 `mimir judge check-config` validates settings locally. `mimir judge run` reviews
-one selected batch through `mimir-mcp`; `mimir judge watch` repeats batches
-every five minutes by default (`--interval-seconds`, positive values) until interrupted.
-After three consecutive incomplete or unavailable runs by default
-(`--max-consecutive-failures`), it backs off to hourly runs. An empty queue
-makes no model call. `mimir judge status` reads the last local report and gives
+one selected batch through `mimir-mcp`; `mimir judge watch` starts the next
+batch immediately after successful work. An empty queue waits for database
+notifications and makes no model call. Failed attempts release owned work and
+wait for a configuration edit or an explicit `kill -HUP WATCHER_PID` after the
+reported problem is repaired. There is no review polling interval or backoff.
+`mimir judge status` reads the last local report and gives
 the ID of a retained failure trace. `mimir judge diagnostics` reads the first
 failure trace of the current incident; `--list` shows retained attempt IDs and
 `--id UUID` selects a specific attempt. The private trace records ordered model
 requests, tool requests and outcomes, cumulative model-request and tool-attempt counts, and the final
-failure reason. It retains at
-most eight attempts, 48 events, the first 48 selected IDs, and 256 KiB per attempt, and truncates event
-details to 3,072 characters. Later successful runs do not erase an earlier
+failure reason. It retains complete attempts, events, selected IDs and diagnostic
+details without count or size cutoffs. Later successful runs do not erase an earlier
 failure trace. The database review receipt is authoritative; a local status
 snapshot or model claim does not establish completion. The runner restricts
 tool calls to the selected experience and project.
@@ -264,18 +264,24 @@ confirmed by a later completed batch from reviews whose completion is
 unverified. An idle queue closes the alert episode but does not prove that a
 specific review completed. Email excludes belief contents, model output, tool
 arguments and responses, and credentials. Each incident has independent
-failure suppression, recovery, retry, and exhaustion state. The crate owns
+failure suppression, recovery and pending delivery. The crate owns
 `notification.lock` and a private atomic `notification-outbox.json` in the Mimir
 state directory; other components can use the same crate and directory without
-depending on the judge. `Notifier::retry_due` lets a future caller retry due
-alerts independently of a new judge run. It does not schedule itself.
+depending on the judge. `judge run` saves complete pending messages and returns
+without waiting for SMTP. `judge watch` owns background delivery; start it with
+the same `--config` and `--state-dir` to deliver queued messages. A stalled mail
+server cannot stop reviews. Correct failed delivery settings and edit the
+configuration or send SIGHUP to retry. No delivery timeout or attempt quota is
+imposed. Daily reports require `[email].daily_report_at = "HH:MM"`; no time is
+chosen when unset. A skipped local time uses the first valid time afterward;
+a repeated local time delivers once, at its first occurrence.
 
 With `[email].enabled=true`, password, OAuth2, or unauthenticated SMTP uses the
 configured relay with required STARTTLS or implicit TLS and certificate
 verification. OAuth2 refresh uses Google's or Microsoft's fixed HTTPS token
 endpoint and `lettre`'s XOAUTH2-only SMTP authentication. The private
 `notification-oauth.json` file caches access and rotated refresh tokens under
-the same notification lock. A changed account, client, tenant, scope, client
+a separate OAuth lock. A changed account, client, tenant, scope, client
 secret, SMTP host, or bootstrap refresh token is refused rather than silently
 reusing the previous cache. Notification status is separate from the judge's
 database-confirmed learning status: `disabled`, `not_needed`, `sent`,
@@ -344,8 +350,7 @@ refresh is not an atomic transaction with the provider: if the provider rotates
 its token and the local state write fails, Mimir blocks SMTP, but recovery may
 require a new authorization if the provider invalidated the previous token.
 Token revocation, expired consent, malformed responses, and changed account
-identity surface as `auth_required` while attempts remain; the final failed attempt is
-reported as `exhausted`. Network/server failures remain retryable. A rejected
+identity surface as `auth_required`. Network/server failures remain retryable. A rejected
 cached access token is cleared without losing the refresh token, then refreshed
 and tried once more. No live Google or Microsoft account has been verified.
 
@@ -354,11 +359,11 @@ Provider references: [Google SMTP XOAUTH2](https://developers.google.com/workspa
 [Microsoft SMTP OAuth](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth/),
 and [Microsoft refresh-token rotation](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow).
 
-Each attempt is persisted before SMTP; a later invocation retries when due,
-up to `max_attempts`, reusing the same Message-ID. SMTP acceptance means the
+Each complete message is persisted before SMTP; a fresh delivery attempt
+reuses its Message-ID. SMTP acceptance means the
 relay accepted the message, not that it reached an inbox. A crash after relay
 acceptance and before the final outbox write may cause a duplicate; a crash
-before sending can consume an attempt and eventually exhaust the retry budget.
+before sending leaves the complete message pending for a fresh attempt.
 The Tokio SMTP transport reports success after the server accepts DATA; a subsequent QUIT
 failure does not turn that accepted message into a failed send. All SMTP tests
 use loopback fixtures and generated test certificates; no external mail was

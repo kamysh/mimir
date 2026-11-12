@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- Bind the ten embedded SQL bodies to their application DDL contracts.
+-- Bind embedded SQL bodies to their application DDL contracts.
 -- SQL whitespace is ignored only at the script boundary, as by the loader;
 -- statements, constraints and constants within a body remain exact.
 module Mimir.MigrationScriptBinding where
@@ -23,6 +23,8 @@ source Schema.assessment = toList "CREATE TABLE mimir_assessment_contributions (
 source Schema.owners = toList "CREATE TABLE mimir_learning_item_owners (\n    item_id uuid PRIMARY KEY,\n    experience_id uuid NOT NULL REFERENCES mimir_experiences(id) ON DELETE CASCADE,\n    source_ref text NOT NULL,\n    actor text NOT NULL\n);\n"
 
 source Schema.allocation = toList "-- Historical UUIDs are imported, never regenerated. Existing ownership rows\n-- remain authoritative if an older history contains conflicting provenance.\nINSERT INTO mimir_learning_item_owners(item_id,experience_id,source_ref,actor)\nSELECT (item->>'id')::uuid, experience_id, item->>'source_ref', item->>'actor'\nFROM (\n    SELECT experience_id, jsonb_array_elements(COALESCE(payload->'learning_items','[]'::jsonb)) AS item\n    FROM mimir_experience_versions\n    UNION ALL\n    SELECT experience_id, jsonb_array_elements(COALESCE(payload->'extracted_items','[]'::jsonb)) AS item\n    FROM mimir_review_versions\n) AS historical\nON CONFLICT(item_id) DO NOTHING;\n\nALTER TABLE mimir_learning_item_owners\n    ALTER COLUMN item_id SET DEFAULT gen_random_uuid(),\n    ADD COLUMN item_key text,\n    ADD CONSTRAINT mimir_learning_item_local_key UNIQUE(experience_id,item_key),\n    ADD CONSTRAINT mimir_learning_item_key_nonempty CHECK(item_key IS NULL OR length(btrim(item_key)) > 0);\n"
+
+source Schema.workEvents = toList "CREATE FUNCTION mimir_signal_review_work() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n    PERFORM pg_notify('mimir_review_work', '');\n    RETURN NULL;\nEND\n$$;\n\nCREATE TRIGGER mimir_review_work_changed\nAFTER INSERT OR UPDATE OR DELETE ON mimir_experiences\nFOR EACH STATEMENT EXECUTE FUNCTION mimir_signal_review_work();\n"
 
 data Statement : Set where
   application : Schema.DDL → Statement

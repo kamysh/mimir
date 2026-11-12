@@ -561,6 +561,10 @@ $$) AS (ok ag_catalog.agtype)"#
     /// Delete all beliefs (and their edges) tagged with the given project.
     /// Returns the number of beliefs deleted.
     pub async fn delete_project(&self, project: &str) -> Result<usize> {
+        Ok(self.delete_project_complete(project).await?.0)
+    }
+
+    pub(crate) async fn delete_project_complete(&self, project: &str) -> Result<(usize, usize)> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
 
@@ -611,14 +615,6 @@ $$) AS (ok ag_catalog.agtype)"#
         );
         age_execute(client, &stmt_del, &prepare_del, &agtype_json).await?;
 
-        tx.commit().await?;
-
-        // Preserve separate publication of the pattern deletion while making
-        // both independent graph writers participate in the learning lock.
-        let tx = learning_transaction(&mut connection).await?;
-        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
-            .await?;
-        let client = tx.client();
         // Also purge Pattern nodes tagged with the same project.
         let stmt_pat = format!("age_delproj_pat_{}", Uuid::new_v4().simple());
         let prepare_pat = format!(
@@ -628,11 +624,23 @@ $$) AS (ok ag_catalog.agtype)"#
              $$, $1) AS (ok agtype)"
         );
         age_execute(client, &stmt_pat, &prepare_pat, &agtype_json).await?;
-
+        client
+            .execute(
+                "DELETE FROM public.belief_embeddings WHERE belief_id = ANY($1)",
+                &[&ids],
+            )
+            .await?;
+        let chunks = self.get_chunk_ids_by_project_on(client, project).await?;
+        self.delete_document_chunks_in(&tx, &chunks).await?;
+        self.delete_chunk_embeddings_on(client, &chunks).await?;
+        client
+            .execute(
+                "DELETE FROM mimir_experiences WHERE project=$1",
+                &[&project],
+            )
+            .await?;
         tx.commit().await?;
-        drop(connection);
-        self.delete_belief_embeddings(&ids).await?;
-        Ok(count)
+        Ok((count, chunks.len()))
     }
 
     pub async fn get_belief(&self, id: Uuid) -> Result<Option<Belief>> {
@@ -1113,6 +1121,17 @@ $$) {PATTERN_RETURN_COLUMNS}"#
         Ok(())
     }
 
+    pub(crate) async fn insert_edge_and_propagate(&self, edge: &Edge) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_edge_on(tx.client(), edge).await?;
+        self.propagate_in(&tx, edge.from_id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn insert_edge_on(&self, client: &Client, edge: &Edge) -> Result<()> {
         let g = &self.graph_name;
         let from_id = edge.from_id.to_string();
@@ -1539,6 +1558,15 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Return chunk IDs tagged with a project (used by delete_project extension).
     pub async fn get_chunk_ids_by_project(&self, project: &str) -> Result<Vec<Uuid>> {
+        let client = self.client.lock().await;
+        self.get_chunk_ids_by_project_on(&client, project).await
+    }
+
+    async fn get_chunk_ids_by_project_on(
+        &self,
+        client: &Client,
+        project: &str,
+    ) -> Result<Vec<Uuid>> {
         let g = &self.graph_name;
         let agtype_json = format!(r#"{{"project": "{}"}}"#, json_esc(project));
         let stmt = format!("age_chunk_ids_by_proj_{}", Uuid::new_v4().simple());
@@ -1549,7 +1577,6 @@ $$) AS (ok ag_catalog.agtype)"#
              $$, $1) AS (id agtype)"
         );
         let exec = format!("EXECUTE {stmt}('{}')", sql_esc(&agtype_json));
-        let client = self.client.lock().await;
         client.simple_query(&prepare).await?;
         let msgs = client.simple_query(&exec).await;
         let _ = client.simple_query(&format!("DEALLOCATE {stmt}")).await;
@@ -2160,7 +2187,10 @@ impl AgeStore {
         limit: usize,
         offset: usize,
     ) -> Result<(Vec<Belief>, usize)> {
-        anyhow::ensure!((1..=10).contains(&limit), "limit must be in 1..=10");
+        anyhow::ensure!(
+            limit > 0,
+            "limit must be positive when supplied; omit it for all beliefs"
+        );
         anyhow::ensure!(offset <= i64::MAX as usize, "offset is too large");
         let mut filters = Vec::new();
         if project.is_some() {
@@ -2188,7 +2218,7 @@ impl AgeStore {
             .ok_or_else(|| anyhow::anyhow!("missing count"))?
             .parse()?;
         let stmt = format!("age_page_{}", Uuid::new_v4().simple());
-        let sql = format!("PREPARE {stmt}(agtype) AS SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project $$,$1) {BELIEF_RETURN_COLUMNS} ORDER BY trim(both '\"' from created_at::text)::timestamptz,id::text LIMIT {limit} OFFSET {offset}");
+        let sql = format!("PREPARE {stmt}(agtype) AS SELECT id::text,content::text,probability::text,confidence::text,alpha::text,beta::text,alpha0::text,beta0::text,created_at::text,last_activated_at::text,memory_type::text,project::text FROM ag_catalog.cypher('{g}', $$ MATCH (n:Belief) {filter} RETURN n.id,n.content,n.probability,n.confidence,n.alpha,n.beta,n.alpha0,n.beta0,n.created_at,n.last_activated_at,n.memory_type,n.project $$,$1) {BELIEF_RETURN_COLUMNS} ORDER BY trim(both '\"' from created_at::text)::timestamptz LIMIT {limit} OFFSET {offset}");
         let rows = age_query_rows(&client, &stmt, &sql, &params).await?;
         Ok((
             rows.iter()

@@ -15,8 +15,6 @@ config_version = 1
 
 [logging]
 directory = "/absolute/path/to/mimir/logs"
-max_file_bytes = 1048576
-retained_files = 4
 ```
 
 For an existing configuration:
@@ -50,17 +48,17 @@ mimir judge diagnose
 
 It explains the cause, affected experience IDs, confirmed/pending counts,
 configuration compatibility, log location, and the recorded watcher version
-and retry schedule. It remains usable when configuration validation fails.
+and current waiting state. It remains usable when configuration validation fails.
 A snapshot is historical evidence, not proof that a process is currently alive.
 With a custom configuration or state directory, pass `--config PATH` and/or
 `--state-dir PATH` to select the same installation as the watcher.
 
 The daily email includes a cause, batch impact, next action and this diagnostic
-command. A backlog is work still awaiting review; a scheduled retry does not
-mean the failure has been repaired. The watcher retries at its configured
-interval and backs off to at least one hour after the configured number of
-consecutive failed batches. It announces failure/recovery transitions instead
-of repeating the same error on every polling cycle.
+command. A backlog is work still awaiting review. Successful batches continue
+immediately. An empty queue waits for PostgreSQL notifications. After a failed
+attempt, correct the reported problem and edit the configuration or send
+`kill -HUP WATCHER_PID` to start a fresh attempt. There is no polling interval,
+retry timer or backoff. Configuration changes are observed through file events.
 
 Common cases:
 
@@ -86,27 +84,23 @@ model replies and arbitrary failure details. Report persistent failures at
 <https://github.com/kamysh/mimir/issues>, including the summary, version, time
 and diagnostic ID. Never include credentials.
 
-## Log bounds and locations
+## Complete logs and diagnostics
 
-CLI judge events and MCP tracing share `logging.directory/mimir.log`, with
-fixed numbered rotation files. Writers use one process-independent file lock.
-`retained_files` includes the current file: defaults retain at most **4 MiB**
-across four files. Values are limited to 1–16 files and 4 KiB–16 MiB per file.
-Oversized events are bounded; repeated errors cannot create new filenames or
-increase this budget. Reducing limits prunes/truncates owned log files on the
-next successful write. Unrelated files are never removed.
+CLI judge events and MCP tracing append complete entries to
+`logging.directory/mimir.log` under a process-independent file lock. Mimir
+does not truncate entries, rotate files or delete history automatically.
+An unavailable log is reported without stopping review work.
 
 Private judge diagnostics remain in the existing state directory, selected by
 `--state-dir` or the XDG state default. This preserves locks and restart history.
-The trace store is separately limited to **3 MiB**, eight attempts and 48 events
-per attempt; individual traces are capped at 256 KiB. Status, last-failure and
-runtime snapshots replace bounded files rather than append indefinitely.
+The trace store retains complete attempts, events and selected IDs without a
+size or count ceiling. Status, last-failure and
+runtime snapshots replace their previous snapshots rather than append indefinitely.
 These are diagnostic retention files, not backups.
 
-Application rotation does not control a supervisor's own journal or files to
-which a shell redirects stdout/stderr. Use the supervisor's bounded journal or
-an explicitly configured rotation policy; avoid indefinite append-only shell
-redirection. Configuration errors that prevent opening the log are also printed
+Mimir does not change a supervisor's own journal or files to which a shell
+redirects stdout/stderr. Any external retention policy remains an operator
+decision. Configuration errors that prevent opening the log are also printed
 to stderr for one-shot commands and recorded in judge state when available.
 
 ## Confirm recovery

@@ -50,11 +50,7 @@ state() {
 while IFS= read -r request; do
     if [[ -n "$request_log" ]]; then printf '%s\n' "$request" >> "$request_log"; fi
     jq -e 'has("id")' <<< "$request" >/dev/null || continue
-    # Preserve the exact u64 request ID; jq's numeric representation rounds
-    # values near u64::MAX, which would falsify the counter boundary fixture.
-    id_pattern='"id"[[:space:]]*:[[:space:]]*([0-9]+)'
-    [[ "$request" =~ $id_pattern ]] || exit 2
-    id=${BASH_REMATCH[1]}
+    id=$(jq -c '.id' <<< "$request")
     error=
     case "$(jq -r '.method' <<< "$request")" in
         initialize) result='{"protocolVersion":"2024-11-05"}' ;;

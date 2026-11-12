@@ -257,6 +257,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn project_deletion_rolls_back_before_a_fresh_retry() {
+        let cfg = isolation::fixture().database_config();
+        crate::db::migrate(&cfg).await.unwrap();
+        let store =
+            AgeStore::new(crate::db::connect(&cfg).await.unwrap(), cfg.dbname.clone()).unwrap();
+        let project = format!("deletion-rollback-{}", Uuid::new_v4());
+        let belief = Belief::new_in_project(
+            "deletion rollback fixture".into(),
+            0.5,
+            0.0,
+            project.clone(),
+        )
+        .unwrap();
+        store.insert_belief(&belief).await.unwrap();
+        // A statement trigger rejects a later deletion inside the transaction.
+        // Every earlier graph mutation must roll back with it.
+        {
+            let client = store.client.lock().await;
+            client.batch_execute("CREATE FUNCTION mimir_test_reject_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture deletion rejected'; END $$; CREATE TRIGGER mimir_test_reject_delete BEFORE DELETE ON belief_embeddings FOR EACH STATEMENT EXECUTE FUNCTION mimir_test_reject_delete()").await.unwrap();
+        }
+        let failed = store.delete_project(&project).await;
+        {
+            let client = store.client.lock().await;
+            client.batch_execute("DROP TRIGGER mimir_test_reject_delete ON belief_embeddings; DROP FUNCTION mimir_test_reject_delete()").await.unwrap();
+        }
+        assert!(failed.is_err());
+        assert!(store.get_belief(belief.id).await.unwrap().is_some());
+        store.delete_project(&project).await.unwrap();
+        assert!(store.get_belief(belief.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn candidate_allocation_rejects_live_and_retired_occupied_ids() {
         let cfg = isolation::fixture().database_config();
         let dbname = cfg.dbname.clone();

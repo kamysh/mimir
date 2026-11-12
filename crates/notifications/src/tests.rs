@@ -306,9 +306,7 @@ fn config() -> EmailConfig {
         auth: Some(Auth::None),
         password: None,
         oauth: None,
-        timeout_seconds: 3,
-        retry_seconds: 10,
-        max_attempts: 2,
+        daily_report_at: None,
     }
 }
 
@@ -344,6 +342,40 @@ fn progress(source: &str, incident: &str) -> Event {
         status: EventStatus::Progress,
         details: None,
     }
+}
+
+#[tokio::test]
+async fn stalled_delivery_does_not_lock_out_new_alerts() {
+    let settings = config();
+    let path = directory();
+    let sender_path = path.clone();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let delivery = tokio::spawn(async move {
+        let sender_settings = config();
+        let sender = Notifier::new(&sender_settings, &sender_path).unwrap();
+        sender
+            .submit_with(
+                &failure("judge", "stalled", "unavailable"),
+                100,
+                |_| async move {
+                    started_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap()
+    });
+    started_rx.await.unwrap();
+    let other = Notifier::new(&settings, &path).unwrap();
+    other
+        .enqueue(&failure("judge", "new-review", "needs_input"))
+        .unwrap();
+    assert_eq!(other.pending_ids().unwrap().len(), 2);
+    release_tx.send(()).unwrap();
+    assert_eq!(delivery.await.unwrap(), Outcome::Sent);
+    assert_eq!(other.pending_ids().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -656,7 +688,7 @@ async fn digest_uses_host_and_real_loopback_smtp() {
 }
 
 #[tokio::test]
-async fn digest_cursor_suppresses_repeats_and_throttles_failed_delivery() {
+async fn digest_cursor_suppresses_repeats_and_allows_a_fresh_retry_immediately() {
     use std::os::unix::fs::PermissionsExt;
     let config = config();
     let path = directory();
@@ -677,7 +709,6 @@ async fn digest_cursor_suppresses_repeats_and_throttles_failed_delivery() {
         Outcome::RetryPending
     );
     let state = notifier.digest_state().unwrap();
-    assert_eq!(state.next_due, 3700);
     assert_eq!(state.through_day, None);
     assert!(state.last_attempt_failed);
     assert_eq!(
@@ -690,17 +721,21 @@ async fn digest_cursor_suppresses_repeats_and_throttles_failed_delivery() {
     );
     assert_eq!(
         notifier
-            .send_digest_at(&digest, 3699, Some(|_| async { panic!("too early") }))
-            .await
-            .unwrap(),
-        Outcome::RetryPending
-    );
-    assert_eq!(
-        notifier
-            .send_digest_at(&digest, 3700, Some(|_| async { Ok(()) }))
+            .send_digest_at(&digest, 101, Some(|_| async { Ok(()) }))
             .await
             .unwrap(),
         Outcome::Sent
+    );
+    assert_eq!(
+        notifier
+            .send_digest_at(
+                &digest,
+                102,
+                Some(|_| async { panic!("already delivered") })
+            )
+            .await
+            .unwrap(),
+        Outcome::NotNeeded
     );
     assert_eq!(
         notifier.digest_state().unwrap().through_day.as_deref(),
@@ -863,15 +898,15 @@ async fn shared_outbox_lock_privacy_and_due_retry() {
     .await;
     config.port = Some(port);
     let notifier = Notifier::new(&config, &path).unwrap();
-    let retried = notifier.retry_due(1).await.unwrap();
+    let retried = notifier.retry_pending().await.unwrap();
     assert_eq!(
         retried,
-        vec![("mcp".into(), "transport".into(), Outcome::Exhausted)]
+        vec![("mcp".into(), "transport".into(), Outcome::RetryPending)]
     );
     assert!(!server.await.unwrap().accepted); // untrusted local certificate
     let saved: Outbox = StateDir::lock(&path).unwrap().read().unwrap().unwrap();
     let incident = &saved.incidents[&event.map_key()];
-    assert_eq!(incident.outbox.as_ref().unwrap().attempts, 2);
+    assert_eq!(incident.outbox.as_ref().unwrap().source, "mcp");
     std::fs::remove_dir_all(path).unwrap();
     std::fs::remove_dir_all(cert_dir).unwrap();
 }
@@ -1228,9 +1263,7 @@ async fn oauth_attention_status_persists_until_retry_is_due() {
     );
     assert_eq!(
         notifier
-            .submit_with(&event, 105, |_| async {
-                panic!("auth failure must stay visible before retry")
-            })
+            .submit_with(&event, 105, |_| async { Err(SendFailure::AuthRequired) })
             .await
             .unwrap(),
         Outcome::AuthRequired
@@ -1238,6 +1271,6 @@ async fn oauth_attention_status_persists_until_retry_is_due() {
     let saved: Outbox = StateDir::lock(&path).unwrap().read().unwrap().unwrap();
     let alert = saved.incidents[&event.map_key()].outbox.as_ref().unwrap();
     assert_eq!(alert.last_error, Some(AlertError::AuthRequired));
-    assert_eq!(alert.attempts, 1);
+    assert!(!alert.id.is_empty());
     std::fs::remove_dir_all(path).unwrap();
 }
