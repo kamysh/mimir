@@ -25,7 +25,7 @@ fn local_embeddings() -> EmbeddingsConfig {
         backend: EmbeddingBackend::Local,
         model: String::new(),
         api_key: None,
-        batch_size: 0,
+        batch_size: None,
         cache_dir: None,
     }
 }

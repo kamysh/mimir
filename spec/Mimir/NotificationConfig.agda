@@ -50,9 +50,12 @@ record Config : Set where
     username password : Maybe Text
     auth : Maybe Auth
     oauth : Maybe OAuth
+    -- Optional daily reporting has no Mimir-selected delivery time. The
+    -- external calendar boundary interprets this user's local clock setting.
+    dailyReportAt : Maybe Text
 
 defaults : Config
-defaults = config false nothing nothing nothing nothing [] nothing nothing nothing nothing
+defaults = config false nothing nothing nothing nothing [] nothing nothing nothing nothing nothing
 
 Required : ∀ {A : Set} → (A → Set) → Maybe A → Set
 Required p nothing = ⊥

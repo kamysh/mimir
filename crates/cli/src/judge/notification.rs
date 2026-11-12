@@ -27,7 +27,7 @@ fn reason(report: &Report) -> String {
         Some("backend_timeout") => "model response timed out".into(),
         Some("backend_error") => "model backend failed".into(),
         Some("review_deferred") => "review deferred after a rejected candidate".into(),
-        Some(other) => format!("review incomplete ({})", state::bounded(other, 64)),
+        Some(other) => format!("review incomplete ({other})"),
         None => "review incomplete".into(),
     }
 }
@@ -36,16 +36,10 @@ fn ids(ids: &[Uuid]) -> String {
     if ids.is_empty() {
         return "none".into();
     }
-    let mut rendered = ids
-        .iter()
-        .take(5)
+    ids.iter()
         .map(Uuid::to_string)
         .collect::<Vec<_>>()
-        .join(", ");
-    if ids.len() > 5 {
-        rendered.push_str(&format!(" (+{} more)", ids.len() - 5));
-    }
-    rendered
+        .join(", ")
 }
 
 fn project(settings: &RuntimeConfig) -> String {
@@ -53,7 +47,7 @@ fn project(settings: &RuntimeConfig) -> String {
         .judge
         .project
         .as_deref()
-        .map(|value| state::bounded(value, 80))
+        .map(str::to_owned)
         .unwrap_or_else(|| "all projects".into())
 }
 
@@ -106,7 +100,7 @@ fn recovery_details(project: &str, report: &Report, incident: &FailureIncident) 
     if let Some(id) = first.diagnostics_id {
         details.push_str(&format!("\nPrevious diagnostic ID: {id}"));
     }
-    for id in first.selected_ids.iter().take(5) {
+    for id in &first.selected_ids {
         if let Some(review) = incident
             .confirmed_reviews
             .iter()
@@ -119,12 +113,6 @@ fn recovery_details(project: &str, report: &Report, incident: &FailureIncident) 
         } else {
             details.push_str(&format!("\n{id}: completion unverified"));
         }
-    }
-    if first.selected_ids.len() > 5 {
-        details.push_str(&format!(
-            "\nAdditional affected reviews: {}",
-            first.selected_ids.len() - 5
-        ));
     }
     details
 }
@@ -140,8 +128,8 @@ fn learning_status(report: &Report) -> EventStatus {
     }
 }
 
-/// Translate only safe, bounded judge status into the shared notification API.
-pub async fn notify(settings: &RuntimeConfig, state: &State, report: &mut Report) -> Result<()> {
+/// Translate public judge status into the shared notification API.
+pub fn enqueue(settings: &RuntimeConfig, state: &State, report: &mut Report) -> Result<()> {
     let notifier = Notifier::new(&settings.email, state.path())?;
     // A completed batch does not show that the queue is drained. Keep any
     // existing failure incident open until a later run observes an idle queue.
@@ -161,8 +149,118 @@ pub async fn notify(settings: &RuntimeConfig, state: &State, report: &mut Report
             _ => None,
         },
     };
-    report.notification = notifier.submit(&event).await?.as_str().into();
+    report.notification = notifier.enqueue(&event)?.as_str().into();
+    AVAILABLE.notify_one();
     Ok(())
+}
+
+static AVAILABLE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+pub struct Worker(tokio::task::JoinHandle<()>);
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+pub fn start_worker(
+    config: Option<std::path::PathBuf>,
+    directory: Option<std::path::PathBuf>,
+) -> Worker {
+    Worker(tokio::spawn(async move {
+        let settings = match super::config::load(config.as_deref()) {
+            Ok(settings) => settings,
+            Err(error) => {
+                eprintln!(
+                    "Mail worker unavailable: {error:#}. Reviews do not depend on mail delivery."
+                );
+                return;
+            }
+        };
+        if !settings.email.enabled {
+            return;
+        }
+        let path = match state::resolve(directory.as_deref()) {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("Mail worker state: {error:#}");
+                return;
+            }
+        };
+        let notifier = match Notifier::new(&settings.email, &path) {
+            Ok(notifier) => notifier,
+            Err(error) => {
+                eprintln!("Mail worker unavailable: {error:#}");
+                return;
+            }
+        };
+        // Arm file events before inspecting queued messages. This also notices
+        // mail queued by a standalone judge process while the watcher is idle.
+        if let Err(error) = notifier.pending_ids() {
+            eprintln!("Mail outbox unavailable: {error:#}");
+            return;
+        }
+        let mut outbox_events =
+            match super::config_events::ConfigEvents::new(&path.join("notification-outbox.json")) {
+                Ok(events) => Some(events),
+                Err(error) => {
+                    eprintln!("Cannot watch the mail outbox: {error:#}");
+                    None
+                }
+            };
+        let mut attempted = std::collections::BTreeSet::new();
+        let clock = match settings.email.daily_report_at.as_deref() {
+            Some(value) => match chrono::NaiveTime::parse_from_str(value, "%H:%M") {
+                Ok(time) => Some(time),
+                Err(error) => {
+                    eprintln!("Daily statistics unavailable: email.daily_report_at must be a local clock time such as '09:00': {error}. Correct configuration; reviews and alerts continue.");
+                    None
+                }
+            },
+            None => {
+                eprintln!("Daily statistics unavailable: choose email.daily_report_at in local time, for example '09:00'. No delivery time is assumed. Reviews and alerts continue.");
+                None
+            }
+        };
+        loop {
+            let pending = match notifier.pending_ids() {
+                Ok(pending) => pending,
+                Err(error) => {
+                    eprintln!("Cannot inspect pending mail: {error:#}. Correct the outbox problem and send SIGHUP to retry.");
+                    std::collections::BTreeSet::new()
+                }
+            };
+            let fresh = pending.iter().any(|id| !attempted.contains(id));
+            attempted.retain(|id| pending.contains(id));
+            attempted.extend(pending);
+            if fresh {
+                match notifier.retry_pending().await {
+                Ok(outcomes) => for (source, incident, outcome) in outcomes {
+                    if !matches!(outcome, mimir_notifications::Outcome::Sent | mimir_notifications::Outcome::NotNeeded) {
+                        eprintln!("Mail for {source}/{incident}: {}. Correct the reported mail prerequisite and send SIGHUP to the watcher for a fresh attempt.", outcome.as_str());
+                    }
+                },
+                Err(error) => eprintln!("Mail delivery unavailable: {error:#}. Reviews continue. Correct the prerequisite and send SIGHUP to retry."),
+            }
+            }
+            if let Some(clock) = clock {
+                if let Err(error) =
+                    super::digest::tick(config.as_deref(), directory.as_deref(), clock).await
+                {
+                    eprintln!("Daily statistics unavailable: {error:#}. Reviews continue.");
+                }
+            }
+            tokio::select! {
+                _ = AVAILABLE.notified() => {},
+                changed = async { match &mut outbox_events { Some(events) => events.changed().await, None => std::future::pending().await } } => {
+                    if let Err(error) = changed { eprintln!("Mail outbox events unavailable: {error:#}"); outbox_events = None; }
+                },
+                result = super::digest::wait_for_delivery(clock) => {
+                    if let Err(error) = result { eprintln!("Daily delivery scheduling unavailable: {error:#}"); AVAILABLE.notified().await; }
+                }
+            }
+        }
+    }))
 }
 
 #[cfg(test)]

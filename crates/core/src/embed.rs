@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tokenizers::Tokenizer;
 use tract_onnx::prelude::*;
 
@@ -120,18 +120,12 @@ struct EmbedState {
 }
 
 pub struct LocalBackend {
-    state: Mutex<Option<Arc<EmbedState>>>,
     batch_size: Option<usize>,
     cache_dir: Option<PathBuf>,
 }
 
 impl LocalBackend {
-    fn new(batch_size: usize, cache_dir: Option<String>) -> Self {
-        let batch_size = if batch_size == 0 {
-            None
-        } else {
-            Some(batch_size)
-        };
+    fn new(batch_size: Option<usize>, cache_dir: Option<String>) -> Self {
         let cache_dir = cache_dir.and_then(|p| {
             let t = p.trim().to_string();
             if t.is_empty() {
@@ -141,23 +135,9 @@ impl LocalBackend {
             }
         });
         Self {
-            state: Mutex::new(None),
             batch_size,
             cache_dir,
         }
-    }
-
-    fn ensure_loaded(&self) -> Result<Arc<EmbedState>> {
-        let mut guard = self
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("embed state mutex poisoned"))?;
-        if let Some(ref s) = *guard {
-            return Ok(Arc::clone(s));
-        }
-        let state = Arc::new(load_embed_state(self.cache_dir.as_deref())?);
-        *guard = Some(Arc::clone(&state));
-        Ok(state)
     }
 }
 
@@ -223,8 +203,14 @@ fn download_blocking(url: &str, dest: &std::path::Path) -> Result<()> {
         .unwrap_or_else(|| url.to_string());
     tracing::info!(url, dest = %dest.display(), "downloading model file");
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(600))
-        .redirect(reqwest::redirect::Policy::limited(10))
+        .timeout(None)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().contains(attempt.url()) {
+                attempt.error("Model download redirect cycle")
+            } else {
+                attempt.follow()
+            }
+        }))
         .build()
         .context("building HTTP client")?;
     let mut resp = client
@@ -252,7 +238,9 @@ fn download_blocking(url: &str, dest: &std::path::Path) -> Result<()> {
     // model concurrently must not share one .part path, or their interleaved
     // writes race and the loser's fd ends up writing into an unlinked inode
     // after the winner's rename.
-    let tmp = dest.with_extension(format!("part-{}", std::process::id()));
+    let key = std::env::var("MIMIR_EMBEDDING_DOWNLOAD_KEY")
+        .unwrap_or_else(|_| std::process::id().to_string());
+    let tmp = dest.with_extension(format!("part-{key}"));
     let mut file =
         std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
     let mut buf = [0u8; 64 * 1024];
@@ -293,8 +281,11 @@ fn load_embed_state(cache_dir: Option<&std::path::Path>) -> Result<EmbedState> {
     )
     .context("downloading onnx/model.onnx")?;
 
-    let tokenizer = Tokenizer::from_file(&tokenizer_path)
+    let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
+    tokenizer
+        .with_truncation(None)
+        .map_err(|error| anyhow::anyhow!("disabling tokenizer truncation: {error}"))?;
 
     let model = tract_onnx::onnx()
         .model_for_path(&model_path)
@@ -310,6 +301,147 @@ fn load_embed_state(cache_dir: Option<&std::path::Path>) -> Result<EmbedState> {
     })
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LocalRequest {
+    texts: Vec<String>,
+    batch_size: Option<usize>,
+    cache_dir: Option<PathBuf>,
+    download_key: String,
+}
+
+/// The worker is private to the installed binaries. It does not load Mimir
+/// configuration, connect to PostgreSQL or publish business records.
+pub async fn local_worker_entrypoint() -> Result<bool> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    if std::env::args_os().nth(1).as_deref()
+        != Some(std::ffi::OsStr::new("--mimir-local-embedding-worker"))
+    {
+        return Ok(false);
+    }
+    let mut bytes = Vec::new();
+    tokio::io::stdin().read_to_end(&mut bytes).await?;
+    let request: LocalRequest = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(
+        request.batch_size != Some(0),
+        "batch_size must be positive when supplied; omit it to process all inputs"
+    );
+    anyhow::ensure!(
+        !request.download_key.is_empty()
+            && request
+                .download_key
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit()),
+        "download_key must be a nonempty hexadecimal identifier"
+    );
+    std::env::set_var("MIMIR_EMBEDDING_DOWNLOAD_KEY", &request.download_key);
+    let state = load_embed_state(request.cache_dir.as_deref())?;
+    let result = embed_with_state(&state, &request.texts, request.batch_size)?;
+    tokio::io::stdout()
+        .write_all(&serde_json::to_vec(&result)?)
+        .await?;
+    Ok(true)
+}
+
+struct LocalWorker {
+    child: std::process::Child,
+    temporary: Vec<PathBuf>,
+}
+
+impl Drop for LocalWorker {
+    fn drop(&mut self) {
+        // std::process::Child remembers a reaped exit status. Its kill/wait
+        // methods therefore cannot signal a reused PID after successful exit.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        for path in &self.temporary {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+async fn run_local_worker(
+    texts: &[String],
+    batch_size: Option<usize>,
+    cache_dir: Option<&std::path::Path>,
+) -> Result<Vec<Vec<f32>>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let download_key = uuid::Uuid::new_v4().simple().to_string();
+    let request = LocalRequest {
+        texts: texts.to_vec(),
+        batch_size,
+        cache_dir: cache_dir.map(std::path::Path::to_path_buf),
+        download_key: download_key.clone(),
+    };
+    let model_dir = local_model_root(cache_dir)?.join(HF_MODEL_ID.replace('/', "--"));
+    let child = std::process::Command::new(std::env::current_exe()?)
+        .arg("--mimir-local-embedding-worker")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("starting owned local embedding worker")?;
+    let mut worker = LocalWorker {
+        child,
+        temporary: vec![
+            model_dir
+                .join("tokenizer.json")
+                .with_extension(format!("part-{download_key}")),
+            model_dir
+                .join("onnx/model.onnx")
+                .with_extension(format!("part-{download_key}")),
+        ],
+    };
+    let mut input = tokio::fs::File::from_std(std::fs::File::from(std::os::fd::OwnedFd::from(
+        worker
+            .child
+            .stdin
+            .take()
+            .context("embedding worker stdin missing")?,
+    )));
+    let mut output = tokio::fs::File::from_std(std::fs::File::from(std::os::fd::OwnedFd::from(
+        worker
+            .child
+            .stdout
+            .take()
+            .context("embedding worker stdout missing")?,
+    )));
+    let mut errors = tokio::fs::File::from_std(std::fs::File::from(std::os::fd::OwnedFd::from(
+        worker
+            .child
+            .stderr
+            .take()
+            .context("embedding worker stderr missing")?,
+    )));
+    let encoded = serde_json::to_vec(&request)?;
+    let mut response = Vec::new();
+    let mut stderr = Vec::new();
+    tokio::try_join!(
+        async move {
+            input.write_all(&encoded).await?;
+            input.flush().await?;
+            drop(input);
+            Ok::<_, std::io::Error>(())
+        },
+        output.read_to_end(&mut response),
+        errors.read_to_end(&mut stderr)
+    )?;
+    let status = worker.child.wait()?;
+    anyhow::ensure!(
+        status.success(),
+        "Local embedding worker failed: {status}: {}",
+        String::from_utf8_lossy(&stderr)
+    );
+    let vectors: Vec<Vec<f32>> =
+        serde_json::from_slice(&response).context("invalid local embedding worker result")?;
+    anyhow::ensure!(
+        vectors.len() == texts.len()
+            && vectors.iter().all(|vector| vector.len() == LOCAL_DIM
+                && vector.iter().all(|component| component.is_finite())),
+        "Local embedding worker returned an invalid vector count, dimension or component"
+    );
+    Ok(vectors)
+}
+
 impl EmbeddingProvider for LocalBackend {
     fn embed<'a>(&'a self, texts: &'a [String]) -> EmbedFuture<'a> {
         let texts = texts.to_vec();
@@ -318,10 +450,7 @@ impl EmbeddingProvider for LocalBackend {
             if texts.is_empty() {
                 return Ok(vec![]);
             }
-            let state = self.ensure_loaded()?;
-            tokio::task::spawn_blocking(move || embed_with_state(&state, &texts, batch_size))
-                .await
-                .map_err(|e| anyhow::anyhow!("local embeddings task failed: {e}"))?
+            run_local_worker(&texts, batch_size, self.cache_dir.as_deref()).await
         })
     }
 }
@@ -340,13 +469,15 @@ fn embed_with_state(
             .encode_batch(chunk.to_vec(), true)
             .map_err(|e| anyhow::anyhow!("tokenizer encode_batch: {e}"))?;
 
-        // Pad all sequences in the chunk to the same length, capped at MAX_SEQ_LEN.
+        // This is the model's approved physical capacity, not a Mimir quota.
+        // Validate the complete input, never silently discard tokens.
         let seq_len = encodings
             .iter()
             .map(|e| e.get_ids().len())
             .max()
-            .unwrap_or(0)
-            .min(MAX_SEQ_LEN);
+            .unwrap_or(0);
+        anyhow::ensure!(seq_len <= MAX_SEQ_LEN,
+            "Local BGE input has {seq_len} tokens; this model supports {MAX_SEQ_LEN} positions. No input was truncated. Ask the user to select a capable backend or approve changing the content.");
         let batch = chunk.len();
 
         let mut input_ids = vec![0i64; batch * seq_len];
@@ -420,9 +551,10 @@ pub fn make_backend(cfg: &EmbeddingsConfig) -> Box<dyn EmbeddingProvider> {
             cfg.api_key.clone().unwrap_or_default(),
             cfg.model.clone(),
         )),
-        EmbeddingBackend::Local => {
-            Box::new(LocalBackend::new(cfg.batch_size, cfg.cache_dir.clone()))
-        }
+        EmbeddingBackend::Local => Box::new(LocalBackend::new(
+            cfg.batch_size.map(std::num::NonZeroUsize::get),
+            cfg.cache_dir.clone(),
+        )),
     }
 }
 
@@ -482,6 +614,36 @@ fn parse_embeddings(resp: &serde_json::Value, count: usize) -> Result<Vec<Vec<f3
 mod response_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn dropping_worker_stops_reaps_and_removes_partial_download() {
+        use std::io::{BufRead, BufReader};
+        let path = std::env::temp_dir().join(format!("mimir-worker-{}.part", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"unfinished download").unwrap();
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "printf 'ready\\n'; read line"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert_eq!(line, "ready\n");
+        let worker = LocalWorker {
+            child,
+            temporary: vec![path.clone()],
+        };
+        drop(worker);
+        assert!(!path.exists());
+        #[cfg(target_os = "linux")]
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "worker must be reaped before cancellation returns"
+        );
+    }
 
     #[test]
     fn provider_order_does_not_change_input_association() {

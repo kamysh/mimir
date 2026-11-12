@@ -3,6 +3,10 @@
 -- These are transient process states, not stored recovery checkpoints. The
 -- original complete message is the input of every fresh delivery attempt;
 -- no SMTP/OAuth step, delay or attempt counter is persisted by this contract.
+-- Daily-report calendar wakes require the user's configured local delivery
+-- time. Calendar interpretation is external: a skipped clock time uses the
+-- first valid time afterward; a repeated time uses its first occurrence.
+-- A successful report's day prevents another delivery for that same day.
 module Mimir.NotificationDelivery where
 
 open import Data.Product using (_×_; _,_; proj₁)

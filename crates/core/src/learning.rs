@@ -458,6 +458,17 @@ impl crate::MimirService {
             .list_experiences_excluding(project, true, limit, excluded)
             .await
     }
+
+    pub async fn select_pending_experiences(
+        &self,
+        project: Option<&str>,
+        count: Option<usize>,
+        excluded: &[Uuid],
+    ) -> Result<Vec<ExperienceState>> {
+        self.store
+            .select_experiences(project, true, count, excluded)
+            .await
+    }
     pub async fn add_pattern_in_project(
         &self,
         situation: &str,

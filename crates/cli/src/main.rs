@@ -324,6 +324,9 @@ fn parse_kv(s: &str) -> Result<(String, String), String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if mimir_core::embed::local_worker_entrypoint().await? {
+        return Ok(());
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -394,7 +397,9 @@ async fn main() -> Result<()> {
 
 async fn connect() -> Result<MimirService> {
     let (cfg, operations) = Config::load_with_operations(&Config::config_path())?;
-    operations.logging.prepare()?;
+    if let Err(error) = operations.logging.prepare() {
+        eprintln!("Operational logging unavailable; the command remains available: {error:#}");
+    }
     MimirService::connect(&cfg).await
 }
 

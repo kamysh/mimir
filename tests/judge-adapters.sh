@@ -182,12 +182,12 @@ current_project="$project"
 make_config command "$project" "$config" "$base/judge-process-fixture"
 seed "$config" "$project" "$id"
 MIMIR_JUDGE_FIXTURE_MODE=crash bash "$repo/tests/support/fixture.sh" cancel \
-    --ready "$base/state-watch/judge-status.json" --stderr-ready 'judge watch: incomplete run' \
+    --ready "$base/state-watch/judge-status.json" --stderr-ready 'Review attempt stopped' \
     --report "$base/watch-stdout" -- "$bin" judge watch --config "$config" \
-    --state-dir "$base/state-watch" --interval-seconds 60 --max-consecutive-failures 1
+    --state-dir "$base/state-watch"
 test ! -s "$base/watch-stdout"
-test "$(grep -c 'judge watch: incomplete run' "$base/watch-stdout.stderr")" -eq 1
-jq -e '.phase == "waiting" and .delay_seconds == 3600' "$base/state-watch/judge-runtime.json" >/dev/null
+test "$(grep -c 'Review attempt stopped' "$base/watch-stdout.stderr")" -eq 1
+jq -e '.phase == "awaiting_repair" and .needs_attention == true' "$base/state-watch/judge-runtime.json" >/dev/null
 "$bin" judge status --state-dir "$base/state-watch" \
     | jq -e '.report.status == "blocked" and .report.block_reason == "backend_error"
         and .report.diagnostics_id != null

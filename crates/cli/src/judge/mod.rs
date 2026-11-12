@@ -1,5 +1,6 @@
 mod api;
 pub mod config;
+mod config_events;
 mod diagnose;
 mod digest;
 mod evidence;
@@ -9,6 +10,7 @@ mod notification;
 mod process;
 mod runner;
 mod state;
+mod watcher;
 
 /// Shared policy for both provider APIs and external harnesses. The host still
 /// validates scope and revisions; these instructions govern evidence attribution.
@@ -44,26 +46,19 @@ pub enum JudgeCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
-    /// Run one bounded review batch.
+    /// Review pending work, or the explicit selection in configuration.
     Run {
         #[arg(long)]
         config: Option<PathBuf>,
         #[arg(long)]
         state_dir: Option<PathBuf>,
     },
-    /// Repeatedly review bounded batches; an empty queue makes no model call.
+    /// Review continuously; wait for work events when idle. SIGHUP retries a corrected prerequisite.
     Watch {
         #[arg(long)]
         config: Option<PathBuf>,
         #[arg(long)]
         state_dir: Option<PathBuf>,
-        /// Delay between runs. Must be at least one minute.
-        #[arg(long, default_value_t = 300)]
-        interval_seconds: u64,
-        /// After this many consecutive failed runs, retry hourly and log
-        /// only when the failure episode begins or ends.
-        #[arg(long, default_value_t = 3)]
-        max_consecutive_failures: usize,
     },
     /// Read the last local run report.
     Status {
@@ -139,55 +134,7 @@ async fn dispatch_inner(command: JudgeCommand) -> i32 {
             }
         },
         JudgeCommand::Run { config, state_dir } => run_once(config, state_dir, false).await.code,
-        JudgeCommand::Watch {
-            config,
-            state_dir,
-            interval_seconds,
-            max_consecutive_failures,
-        } => {
-            if interval_seconds == 0 || max_consecutive_failures == 0 {
-                println!(
-                    "{}",
-                    json!({"status":"invalid_config","reason":"invalid_watch_bounds"})
-                );
-                return INVALID_CONFIG;
-            }
-            let mut watch = WatchState::default();
-            let mut digest_problem = false;
-            loop {
-                let outcome = run_once(config.clone(), state_dir.clone(), true).await;
-                let problem = digest::tick(config.as_deref(), state_dir.as_deref(), &outcome)
-                    .await
-                    .unwrap_or(true);
-                if problem != digest_problem {
-                    eprintln!(
-                        "judge daily email: {}",
-                        if problem {
-                            "unavailable; will retry"
-                        } else {
-                            "available"
-                        }
-                    );
-                    digest_problem = problem;
-                }
-                let (delay, transition) =
-                    watch.advance(outcome, interval_seconds, max_consecutive_failures);
-                let next_attempt = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |t| t.as_secs())
-                    .saturating_add(delay);
-                if let Ok(path) = state::resolve(state_dir.as_deref()) {
-                    if let Ok(Some(state)) = state::State::lock(path) {
-                        let _ = state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"waiting","next_attempt_unix":next_attempt,"delay_seconds":delay,"consecutive_failures":watch.consecutive_failures}));
-                    }
-                }
-                if let Some(message) = transition {
-                    eprintln!("{message}");
-                    eprintln!("Next attempt in {delay} seconds. For cause and recovery steps, run: mimir judge diagnose");
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-            }
-        }
+        JudgeCommand::Watch { config, state_dir } => watcher::run(config, state_dir).await,
         JudgeCommand::Status { state_dir } => {
             let path = match state::resolve(state_dir.as_deref()) {
                 Ok(path) => path,
@@ -295,54 +242,6 @@ struct RunOutcome {
     idle: bool,
 }
 
-#[derive(Default)]
-struct WatchState {
-    consecutive_failures: usize,
-    episode_active: bool,
-}
-
-impl WatchState {
-    fn advance(
-        &mut self,
-        outcome: RunOutcome,
-        interval_seconds: u64,
-        backoff_after: usize,
-    ) -> (u64, Option<&'static str>) {
-        let transition = if outcome.degraded {
-            if self.episode_active {
-                None
-            } else {
-                Some(match outcome.code {
-                    INVALID_CONFIG => "judge watch: invalid configuration or state path; inspect mimir judge status",
-                    ALREADY_RUNNING => "judge watch: another judge holds the state lock",
-                    UNAVAILABLE => "judge watch: state unavailable; inspect local permissions",
-                    _ => "judge watch: incomplete run; inspect mimir judge status",
-                })
-            }
-        } else if outcome.idle && self.episode_active {
-            Some("judge watch: recovered")
-        } else {
-            None
-        };
-        if outcome.degraded {
-            self.episode_active = true;
-        } else if outcome.idle {
-            self.episode_active = false;
-        }
-        if outcome.code == 0 {
-            self.consecutive_failures = 0;
-        } else {
-            self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-        }
-        let delay = if self.consecutive_failures >= backoff_after {
-            interval_seconds.max(3600)
-        } else {
-            interval_seconds
-        };
-        (delay, transition)
-    }
-}
-
 fn record_invalid_configuration(state_dir: Option<&std::path::Path>, error: &anyhow::Error) {
     let Ok(path) = state::resolve(state_dir) else {
         return;
@@ -352,7 +251,7 @@ fn record_invalid_configuration(state_dir: Option<&std::path::Path>, error: &any
     };
     let mut report = state::Report::new("blocked", 0, 0, 0, 0, 0);
     report.block_reason = Some("invalid_config".into());
-    report.failure_detail = Some(state::bounded(&format!("{error:#}"), 512));
+    report.failure_detail = Some(format!("{error:#}"));
     let _ = state.record_incident(&report);
     let _ = state.write(&report);
 }
@@ -433,18 +332,7 @@ async fn run_once(
             ),
         )
     }) {
-        let mut report = state::Report::new("blocked", 0, 0, 0, 0, 0);
-        report.block_reason = Some("invalid_config".into());
-        report.failure_detail = Some(format!("logging.directory is unavailable: {error}"));
-        let _ = state.write(&report);
-        if !watch_mode {
-            eprintln!("Cannot write configured operational logs: {error}");
-        }
-        return RunOutcome {
-            code: INVALID_CONFIG,
-            degraded: true,
-            idle: false,
-        };
+        eprintln!("Operational logging is unavailable; reviews continue: {error:#}");
     }
     let _=state.write_runtime(&json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"phase":"reviewing","config_format":settings.operations.config_version}));
     let report = match settings.llm.backend {
@@ -531,101 +419,5 @@ mod watch_tests {
             Some("invalid_config")
         );
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn persistent_failures_log_once_and_back_off_without_stopping() {
-        let mut watch = WatchState::default();
-        let failure = || RunOutcome {
-            code: INCOMPLETE,
-            degraded: true,
-            idle: false,
-        };
-        assert!(watch.advance(failure(), 60, 3).1.is_some());
-        assert_eq!(watch.advance(failure(), 60, 3), (60, None));
-        assert_eq!(
-            watch.advance(
-                RunOutcome {
-                    code: INVALID_CONFIG,
-                    degraded: true,
-                    idle: false,
-                },
-                60,
-                3
-            ),
-            (3600, None)
-        );
-        for _ in 0..1000 {
-            assert_eq!(watch.advance(failure(), 60, 3), (3600, None));
-        }
-        assert!(watch
-            .advance(
-                RunOutcome {
-                    code: 0,
-                    degraded: false,
-                    idle: true,
-                },
-                60,
-                3
-            )
-            .1
-            .is_some());
-        assert_eq!(
-            watch.advance(
-                RunOutcome {
-                    code: 0,
-                    degraded: false,
-                    idle: true,
-                },
-                60,
-                3
-            ),
-            (60, None)
-        );
-    }
-
-    #[test]
-    fn deferred_review_does_not_repeat_errors_or_exhaust_failure_limit() {
-        let mut watch = WatchState::default();
-        let deferred = || RunOutcome {
-            code: 0,
-            degraded: true,
-            idle: false,
-        };
-        assert!(watch.advance(deferred(), 300, 3).1.is_some());
-        for _ in 0..1000 {
-            assert_eq!(watch.advance(deferred(), 300, 3), (300, None));
-        }
-        assert_eq!(watch.consecutive_failures, 0);
-    }
-
-    #[test]
-    fn completed_batches_do_not_close_a_failure_episode() {
-        let mut watch = WatchState::default();
-        let failure = || RunOutcome {
-            code: INCOMPLETE,
-            degraded: true,
-            idle: false,
-        };
-        let complete = || RunOutcome {
-            code: 0,
-            degraded: false,
-            idle: false,
-        };
-        let idle = || RunOutcome {
-            code: 0,
-            degraded: false,
-            idle: true,
-        };
-        assert!(watch.advance(failure(), 300, 3).1.is_some());
-        for _ in 0..1000 {
-            assert_eq!(watch.advance(complete(), 300, 3), (300, None));
-            assert_eq!(watch.advance(failure(), 300, 3), (300, None));
-        }
-        assert_eq!(
-            watch.advance(idle(), 300, 3).1,
-            Some("judge watch: recovered")
-        );
-        assert_eq!(watch.advance(idle(), 300, 3), (300, None));
     }
 }

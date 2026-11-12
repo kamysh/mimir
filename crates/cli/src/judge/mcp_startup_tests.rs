@@ -260,7 +260,6 @@ impl Drop for Fixture {
 async fn startup_and_calls_share_ids_and_owned_process_group() {
     let fixture = Fixture::new();
     let mut client = fixture.start("").await.unwrap();
-    assert_eq!(client.next_id, 4);
     assert_eq!(
         fs::read_to_string(fixture.0.join("pids.config")).unwrap(),
         fixture.0.join("unused config.toml").to_string_lossy()
@@ -273,24 +272,12 @@ async fn startup_and_calls_share_ids_and_owned_process_group() {
         .notify("notifications/initialized", json!({}))
         .await
         .unwrap();
-    assert_eq!(client.next_id, 4);
     client.tool("pending_experiences", json!({})).await.unwrap();
-    assert_eq!(client.next_id, 5);
-    client.next_id = u64::MAX;
-    assert!(client
-        .request("tools/list", json!({}))
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("ID overflow"));
-    assert_eq!(client.next_id, u64::MAX);
-    client.next_id = u64::MAX - 1;
     client.request("tools/list", json!({})).await.unwrap();
-    assert_eq!(client.next_id, u64::MAX);
     drop(client);
     fixture.stopped().await;
     let requests = fixture.requests();
-    assert_eq!(requests.len(), 7, "overflow calls must send nothing");
+    assert_eq!(requests.len(), 7);
     let methods: Vec<_> = requests
         .iter()
         .map(|r| r["method"].as_str().unwrap())
@@ -304,17 +291,25 @@ async fn startup_and_calls_share_ids_and_owned_process_group() {
             "tools/call"
         ]
     );
-    assert_eq!(requests[0]["id"], 1);
     assert!(requests[1].get("id").is_none());
-    assert_eq!(requests[2]["id"], 2);
-    assert_eq!(requests[3]["id"], 3);
     assert_eq!(
         requests[3]["params"],
         json!({"name":"learning_capabilities","arguments":{}})
     );
     assert!(requests[4].get("id").is_none());
-    assert_eq!(requests[5]["id"], 4);
-    assert_eq!(requests[6]["id"], json!(u64::MAX - 1));
+    let ids = requests
+        .iter()
+        .filter_map(|request| request.get("id"))
+        .map(|id| id.as_str().expect("correlation IDs are hexadecimal text"))
+        .collect::<Vec<_>>();
+    assert_eq!(ids.len(), 5);
+    assert!(ids
+        .iter()
+        .all(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())));
+    assert_eq!(
+        ids.iter().collect::<std::collections::HashSet<_>>().len(),
+        ids.len()
+    );
 }
 
 #[tokio::test]

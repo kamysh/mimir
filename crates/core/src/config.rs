@@ -20,9 +20,8 @@ pub struct EmbeddingsConfig {
     /// Required for Voyage and OpenAI. Not needed for local.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    /// Local backend: batch size for embedding calls (0 = no limit).
-    #[serde(default)]
-    pub batch_size: usize,
+    /// Local backend: an optional positive batch size. Omission uses the whole input.
+    pub batch_size: Option<std::num::NonZeroUsize>,
     /// Local backend: directory to cache downloaded model files.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_dir: Option<String>,
@@ -258,7 +257,7 @@ impl Config {
                         backend: EmbeddingBackend::Local,
                         model: String::new(),
                         api_key: None,
-                        batch_size: 0,
+                        batch_size: None,
                         cache_dir: None,
                     });
                     e.backend = backend;
@@ -269,7 +268,7 @@ impl Config {
                             backend: EmbeddingBackend::Local,
                             model: String::new(),
                             api_key: None,
-                            batch_size: 0,
+                            batch_size: None,
                             cache_dir: None,
                         })
                         .model = value.clone();
@@ -280,7 +279,7 @@ impl Config {
                             backend: EmbeddingBackend::Local,
                             model: String::new(),
                             api_key: None,
-                            batch_size: 0,
+                            batch_size: None,
                             cache_dir: None,
                         })
                         .api_key = Some(value.clone());
@@ -294,10 +293,10 @@ impl Config {
                             backend: EmbeddingBackend::Local,
                             model: String::new(),
                             api_key: None,
-                            batch_size: 0,
+                            batch_size: None,
                             cache_dir: None,
                         })
-                        .batch_size = batch_size;
+                        .batch_size = Some(batch_size);
                 }
                 "cache_dir" => {
                     embeddings
@@ -305,7 +304,7 @@ impl Config {
                             backend: EmbeddingBackend::Local,
                             model: String::new(),
                             api_key: None,
-                            batch_size: 0,
+                            batch_size: None,
                             cache_dir: None,
                         })
                         .cache_dir = Some(value.clone());

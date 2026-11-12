@@ -52,8 +52,7 @@ impl ReasoningEffort {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JudgeConfig {
-    #[serde(default = "default_batch_size")]
-    pub batch_size: usize,
+    pub batch_size: Option<usize>,
     pub project: Option<String>,
     #[serde(default = "default_mcp_command")]
     pub mcp_command: String,
@@ -85,9 +84,6 @@ pub struct RuntimeConfig {
     pub email: EmailConfig,
 }
 
-fn default_batch_size() -> usize {
-    5
-}
 fn default_mcp_command() -> String {
     "mimir-mcp".into()
 }
@@ -173,7 +169,7 @@ fn section<T: for<'de> Deserialize<'de>>(
     let table = table.ok_or_else(|| anyhow!("missing [{name}] settings"))?;
     toml::Value::Table(table.clone())
         .try_into()
-        .map_err(|_| anyhow!("invalid [{name}] structure"))
+        .map_err(|_| anyhow!("invalid [{name}] settings: check required field names and types against runtime/config.example.toml, then run `mimir judge check-config` again. Use `mimir config upgrade` to remove retired settings. Credential values are not included in this diagnostic"))
 }
 
 fn nonempty(value: &str, name: &'static str) -> Result<()> {
@@ -216,7 +212,10 @@ fn endpoint(raw: &str) -> Result<()> {
 
 impl JudgeConfig {
     fn validate(&self) -> Result<()> {
-        ensure!(self.batch_size > 0, "judge.batch_size must be positive");
+        ensure!(
+            self.batch_size.is_none_or(|count| count > 0),
+            "judge.batch_size must be positive when supplied; omit it to review all pending work"
+        );
         if let Some(project) = &self.project {
             nonempty(project, "judge.project")?;
         }

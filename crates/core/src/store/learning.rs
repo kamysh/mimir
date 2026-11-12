@@ -187,9 +187,24 @@ impl AgeStore {
         limit: usize,
         excluded: &[Uuid],
     ) -> Result<Vec<ExperienceState>> {
-        ensure!(limit > 0, "limit must be positive");
+        self.select_experiences(project, pending, Some(limit), excluded)
+            .await
+    }
+
+    pub async fn select_experiences(
+        &self,
+        project: Option<&str>,
+        pending: bool,
+        count: Option<usize>,
+        excluded: &[Uuid],
+    ) -> Result<Vec<ExperienceState>> {
+        ensure!(
+            count.is_none_or(|count| count > 0),
+            "An explicit selection count must be positive; omit it to select all pending work"
+        );
+        let count = count.map(i64::try_from).transpose()?;
         let client = self.client.lock().await;
-        client.query(&format!("{CURRENT} WHERE ($1::text IS NULL OR e.project=$1) AND (NOT $2 OR e.reviewed_revision<e.revision) AND NOT (e.id = ANY($4::uuid[])) ORDER BY e.updated_at,e.id LIMIT $3"), &[&project, &pending, &(i64::try_from(limit)?), &excluded]).await?.iter().map(state).collect()
+        client.query(&format!("{CURRENT} WHERE ($1::text IS NULL OR e.project=$1) AND (NOT $2 OR e.reviewed_revision<e.revision) AND NOT (e.id = ANY($4::uuid[])) ORDER BY e.updated_at,v.created_at LIMIT $3"), &[&project, &pending, &count, &excluded]).await?.iter().map(state).collect()
     }
     /// One snapshot: stale review data is never presented as current coverage.
     pub async fn learning_review(&self, id: Uuid) -> Result<serde_json::Value> {

@@ -7,6 +7,9 @@ use std::{
     time::{Duration, Instant},
 };
 use uuid::Uuid;
+#[allow(dead_code)]
+#[path = "../../../tests/support/isolation.rs"]
+mod isolation;
 struct Owned(Child);
 impl Drop for Owned {
     fn drop(&mut self) {
@@ -32,6 +35,15 @@ fn stop_signals_cancel_active_run_and_watch_and_owned_children() {
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/judge/retry_fixture.sh");
             let cfg = dir.join("config.toml");
             fs::write(&cfg, format!("config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='localhost'\nport=5432\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nmcp_command='bash'\nmcp_args=['{}','{}','{}','normal','{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='{}'\nargs=[]\n", dir.join("logs").display(), fixture.display(), Uuid::new_v4(), dir.join("reviews").display(), dir.join("requests").display(), dir.join("mcp-pids").display(), model.display())).unwrap();
+            if mode == "watch" {
+                // Watch owns a real LISTEN connection even when its MCP/model
+                // adapters are fixtures. Use only the guarded disposable DB.
+                let database = isolation::fixture().database_config();
+                let mut config: toml::Table =
+                    toml::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+                config.insert("database".into(), toml::Value::try_from(database).unwrap());
+                fs::write(&cfg, toml::to_string(&config).unwrap()).unwrap();
+            }
             fs::set_permissions(&cfg, fs::Permissions::from_mode(0o600)).unwrap();
             let mut child = Owned(
                 Command::new(env!("CARGO_BIN_EXE_mimir"))

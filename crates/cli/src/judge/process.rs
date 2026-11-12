@@ -5,8 +5,6 @@ use std::process::Stdio;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
-const MAX_DIAGNOSTIC: usize = 64 * 1024;
-
 pub struct Output {
     pub stdout: Vec<u8>,
 }
@@ -50,8 +48,7 @@ async fn read_diagnostic<R: AsyncRead + Unpin>(mut reader: R) -> Result<Vec<u8>>
         if n == 0 {
             break;
         }
-        let retained = n.min(MAX_DIAGNOSTIC.saturating_sub(bytes.len()));
-        bytes.extend_from_slice(&chunk[..retained]);
+        bytes.extend_from_slice(&chunk[..n]);
     }
     Ok(bytes)
 }
@@ -110,7 +107,7 @@ pub async fn run(program: &str, args: &[String], cwd: &Path, input: &[u8]) -> Re
         let exit = child.child.wait().await?;
         child.group = None;
         if !exit.success() {
-            let detail = super::state::bounded(&String::from_utf8_lossy(&stderr), 512);
+            let detail = String::from_utf8_lossy(&stderr);
             return Err(anyhow!("harness exited with {exit}: {detail}"));
         }
         Ok::<_, anyhow::Error>(Output { stdout })
@@ -132,7 +129,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn complete_output_and_drained_diagnostics_have_distinct_retention() {
+    async fn stdout_and_stderr_are_both_retained_completely() {
         let input = vec![b'x'; 8 * 1024 * 1024 + 1];
         assert_eq!(read_complete(input.as_slice()).await.unwrap(), input);
         let (mut writer, reader) = tokio::io::duplex(8192);
@@ -142,7 +139,7 @@ mod tests {
         });
         assert_eq!(
             read_diagnostic(reader).await.unwrap(),
-            vec![b'x'; MAX_DIAGNOSTIC]
+            vec![b'x'; 8 * 1024 * 1024 + 1]
         );
         writer.await.unwrap();
     }

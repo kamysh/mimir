@@ -99,7 +99,7 @@ fn successful_replacement_is_private_and_replaces_the_whole_file() {
 }
 
 #[test]
-fn encoding_and_size_rejection_preserve_all_named_files() {
+fn encoding_failure_preserves_files_and_complete_large_values_are_retained() {
     struct Fails;
     impl Serialize for Fails {
         fn serialize<S: serde::Serializer>(&self, _: S) -> std::result::Result<S::Ok, S::Error> {
@@ -108,15 +108,16 @@ fn encoding_and_size_rejection_preserve_all_named_files() {
     }
     let directory = Directory::new();
     let state = StateDir::lock(&directory.0).unwrap();
-    let oversized = "x".repeat(MAX_STATE as usize);
+    let complete = "x".repeat(2 * 1024 * 1024);
     for name in [STATE_FILE, OAUTH_FILE, DIGEST_FILE] {
         state.write_named(name, &"original").unwrap();
         let before = fs::read(directory.0.join(name)).unwrap();
         let count = fs::read_dir(&directory.0).unwrap().count();
         assert!(state.write_named(name, &Fails).is_err());
-        assert!(state.write_named(name, &oversized).is_err());
         assert_eq!(fs::read(directory.0.join(name)).unwrap(), before);
         assert_eq!(fs::read_dir(&directory.0).unwrap().count(), count);
+        state.write_named(name, &complete).unwrap();
+        assert_eq!(state.read_named::<String>(name).unwrap().unwrap(), complete);
     }
 }
 

@@ -7,7 +7,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{ensure, Result};
 use config::{Auth, EmailConfig};
 use serde::{Deserialize, Serialize};
 use state::StateDir;
@@ -51,10 +51,8 @@ pub enum Outcome {
 
 /// Persistent delivery cursor for the daily digest. Dates use ISO local calendar days.
 #[derive(Default, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct DigestState {
     pub through_day: Option<String>,
-    pub next_due: u64,
     #[serde(default)]
     pub last_attempt_failed: bool,
 }
@@ -108,13 +106,6 @@ enum AlertKind {
     Recovery,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Delivery {
-    Pending,
-    Exhausted,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum AlertError {
@@ -132,7 +123,6 @@ enum SendFailure {
 type NoSender = fn(lettre::Message) -> Ready<std::result::Result<(), SendFailure>>;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Alert {
     id: String,
     kind: AlertKind,
@@ -141,15 +131,12 @@ struct Alert {
     summary: String,
     #[serde(default)]
     details: Option<String>,
-    attempts: usize,
-    next_due: u64,
-    delivery: Delivery,
     #[serde(default)]
     last_error: Option<AlertError>,
 }
 
 impl Alert {
-    fn new(kind: AlertKind, event: &Event, code: &str, summary: &str, now: u64) -> Self {
+    fn new(kind: AlertKind, event: &Event, code: &str, summary: &str, _now: u64) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             kind,
@@ -157,9 +144,6 @@ impl Alert {
             code: code.into(),
             summary: summary.into(),
             details: event.details.clone(),
-            attempts: 0,
-            next_due: now,
-            delivery: Delivery::Pending,
             last_error: None,
         }
     }
@@ -193,7 +177,6 @@ impl Default for Outbox {
 
 fn token(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= 64
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
@@ -203,24 +186,19 @@ impl Event {
     pub fn validate(&self) -> Result<()> {
         ensure!(token(&self.source), "invalid notification source");
         ensure!(
-            !self.incident_key.is_empty()
-                && self.incident_key.len() <= 128
-                && !self.incident_key.chars().any(char::is_control),
+            !self.incident_key.is_empty() && !self.incident_key.chars().any(char::is_control),
             "invalid notification incident key"
         );
         if let EventStatus::Failure { code, summary } = &self.status {
             ensure!(token(code), "invalid notification code");
             ensure!(
-                !summary.trim().is_empty()
-                    && summary.len() <= 160
-                    && !summary.chars().any(char::is_control),
+                !summary.trim().is_empty() && !summary.chars().any(char::is_control),
                 "invalid notification summary"
             );
         }
         if let Some(details) = &self.details {
             ensure!(
                 !details.is_empty()
-                    && details.len() <= 2048
                     && details
                         .chars()
                         .all(|character| character == '\n' || !character.is_control()),
@@ -257,7 +235,6 @@ fn reconcile(incident: &mut Incident, event: &Event, now: u64) {
 
 fn outcome(incident: &Incident) -> Outcome {
     match incident.outbox.as_ref() {
-        Some(alert) if alert.delivery == Delivery::Exhausted => Outcome::Exhausted,
         Some(alert) => match alert.last_error {
             Some(AlertError::AuthRequired) => Outcome::AuthRequired,
             Some(AlertError::Unavailable) => Outcome::Unavailable,
@@ -297,6 +274,53 @@ impl<'a> Notifier<'a> {
         self.submit_internal(event, now(), None::<NoSender>).await
     }
 
+    /// Save the complete delivery request, without waiting for SMTP or OAuth.
+    /// Only the watcher delivers queued mail. No execution checkpoint is saved.
+    pub fn enqueue(&self, event: &Event) -> Result<Outcome> {
+        self.queue_at(event, now()).map(|(_, outcome)| outcome)
+    }
+
+    pub fn pending_ids(&self) -> Result<std::collections::BTreeSet<String>> {
+        let state = StateDir::lock(&self.state_dir)?;
+        let outbox: Outbox = state.read()?.unwrap_or_default();
+        Ok(outbox
+            .incidents
+            .values()
+            .filter_map(|incident| incident.outbox.as_ref().map(|alert| alert.id.clone()))
+            .collect())
+    }
+
+    fn queue_at(&self, event: &Event, current: u64) -> Result<(String, Outcome)> {
+        event.validate()?;
+        if !self.config.enabled {
+            return Ok((event.map_key(), Outcome::Disabled));
+        }
+        let state = StateDir::lock(&self.state_dir)?;
+        let mut outbox: Outbox = state.read()?.unwrap_or_default();
+        ensure!(
+            outbox.schema_version == 1,
+            "unsupported notification state version"
+        );
+        let key = event.map_key();
+        if !matches!(&event.status, EventStatus::Failure { .. })
+            && !outbox.incidents.contains_key(&key)
+        {
+            return Ok((key, Outcome::NotNeeded));
+        }
+        let incident = outbox
+            .incidents
+            .entry(key.clone())
+            .or_insert_with(|| Incident {
+                source: event.source.clone(),
+                incident_key: event.incident_key.clone(),
+                ..Incident::default()
+            });
+        reconcile(incident, event, current);
+        let result = outcome(incident);
+        state.write(&outbox)?;
+        Ok((key, result))
+    }
+
     pub fn digest_state(&self) -> Result<DigestState> {
         let state = StateDir::lock(&self.state_dir)?;
         Ok(state.read_digest()?.unwrap_or_default())
@@ -310,7 +334,7 @@ impl<'a> Notifier<'a> {
     async fn send_digest_at<F, Fut>(
         &self,
         digest: &Digest,
-        current: u64,
+        _current: u64,
         send_override: Option<F>,
     ) -> Result<Outcome>
     where
@@ -331,72 +355,61 @@ impl<'a> Notifier<'a> {
                 }),
             "invalid digest day"
         );
-        ensure!(digest.body.len() <= 256 * 1024, "digest body is too large");
         let state = StateDir::lock(&self.state_dir)?;
         let mut cursor: DigestState = state.read_digest()?.unwrap_or_default();
         if cursor.through_day.as_deref() >= Some(digest.through_day.as_str()) {
             return Ok(Outcome::NotNeeded);
         }
-        if current < cursor.next_due {
-            return Ok(Outcome::RetryPending);
-        }
         let message = smtp::digest_message(self.config, digest)?;
-        cursor.next_due = current.saturating_add(3600);
-        cursor.last_attempt_failed = true;
-        state.write_digest(&cursor)?;
+        drop(state);
         let sent = match send_override {
             Some(send) => send(message).await,
-            None => self.send_real(&state, message).await,
+            None => self.send_real(message).await,
         };
         if sent.is_ok() {
             cursor.through_day = Some(digest.through_day.clone());
-            cursor.next_due = 0;
             cursor.last_attempt_failed = false;
+            let state = StateDir::lock(&self.state_dir)?;
             state.write_digest(&cursor)?;
             Ok(Outcome::Sent)
         } else {
+            cursor.last_attempt_failed = true;
+            StateDir::lock(&self.state_dir)?.write_digest(&cursor)?;
             Ok(Outcome::RetryPending)
         }
     }
 
-    pub async fn retry_due(&self, limit: usize) -> Result<Vec<(String, String, Outcome)>> {
-        ensure!(
-            (1..=20).contains(&limit),
-            "notification retry limit must be 1..=20"
-        );
+    pub async fn retry_pending(&self) -> Result<Vec<(String, String, Outcome)>> {
         if !self.config.enabled {
             return Ok(Vec::new());
         }
-        let state = StateDir::lock(&self.state_dir)?;
-        let mut outbox: Outbox = state.read()?.unwrap_or_default();
-        ensure!(
-            outbox.schema_version == 1,
-            "unsupported notification state version"
-        );
-        let current = now();
-        let keys: Vec<_> = outbox
-            .incidents
-            .iter()
-            .filter(|(_, incident)| {
-                incident.outbox.as_ref().is_some_and(|alert| {
-                    alert.delivery == Delivery::Pending && alert.next_due <= current
-                })
-            })
-            .take(limit)
-            .map(|(key, _)| key.clone())
-            .collect();
-        let mut outcomes = Vec::new();
-        for key in keys {
-            let incident = outbox
+        let pending = {
+            let state = StateDir::lock(&self.state_dir)?;
+            let outbox: Outbox = state.read()?.unwrap_or_default();
+            ensure!(
+                outbox.schema_version == 1,
+                "unsupported notification state version"
+            );
+            outbox
                 .incidents
-                .get(&key)
-                .expect("selected incident exists");
-            let source = incident.source.clone();
-            let incident_key = incident.incident_key.clone();
-            let result = self
-                .attempt_with(&state, &mut outbox, &key, current, None::<NoSender>)
-                .await?;
-            outcomes.push((source, incident_key, result));
+                .iter()
+                .filter(|(_, incident)| incident.outbox.is_some())
+                .map(|(key, incident)| {
+                    (
+                        key.clone(),
+                        incident.source.clone(),
+                        incident.incident_key.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut outcomes = Vec::new();
+        for (key, source, incident) in pending {
+            outcomes.push((
+                source,
+                incident,
+                self.attempt_with(&key, now(), None::<NoSender>).await?,
+            ));
         }
         Ok(outcomes)
     }
@@ -420,110 +433,73 @@ impl<'a> Notifier<'a> {
         F: FnOnce(lettre::Message) -> Fut,
         Fut: Future<Output = std::result::Result<(), SendFailure>>,
     {
-        event.validate()?;
-        if !self.config.enabled {
-            return Ok(Outcome::Disabled);
+        let (key, queued) = self.queue_at(event, current)?;
+        if matches!(queued, Outcome::Disabled | Outcome::NotNeeded) {
+            return Ok(queued);
         }
-        let state = StateDir::lock(&self.state_dir)?;
-        let mut outbox: Outbox = state.read()?.unwrap_or_default();
-        ensure!(
-            outbox.schema_version == 1,
-            "unsupported notification state version"
-        );
-        let key = event.map_key();
-        if !matches!(&event.status, EventStatus::Failure { .. })
-            && !outbox.incidents.contains_key(&key)
-        {
-            return Ok(Outcome::NotNeeded);
-        }
-        let incident = outbox
-            .incidents
-            .entry(key.clone())
-            .or_insert_with(|| Incident {
-                source: event.source.clone(),
-                incident_key: event.incident_key.clone(),
-                ..Incident::default()
-            });
-        let old = incident.clone();
-        reconcile(incident, event, current);
-        if *incident != old {
-            state.write(&outbox)?;
-        }
-        self.attempt_with(&state, &mut outbox, &key, current, send_override)
-            .await
+        self.attempt_with(&key, current, send_override).await
     }
 
     async fn attempt_with<F, Fut>(
         &self,
-        state: &StateDir,
-        outbox: &mut Outbox,
         key: &str,
-        current: u64,
+        _current: u64,
         send_override: Option<F>,
     ) -> Result<Outcome>
     where
         F: FnOnce(lettre::Message) -> Fut,
         Fut: Future<Output = std::result::Result<(), SendFailure>>,
     {
-        let Some(incident) = outbox.incidents.get_mut(key) else {
-            return Err(anyhow!("missing notification incident"));
+        // Snapshot the original message, then release the outbox lock before
+        // any network work. Review completion can enqueue mail while SMTP stalls.
+        let original = {
+            let state = StateDir::lock(&self.state_dir)?;
+            let outbox: Outbox = state.read()?.unwrap_or_default();
+            outbox
+                .incidents
+                .get(key)
+                .and_then(|incident| incident.outbox.clone())
         };
-        let Some(alert) = incident.outbox.as_mut() else {
-            if incident.active_code.is_none() && incident.delivered_code.is_none() {
-                outbox.incidents.remove(key);
-                state.write(outbox)?;
-            }
+        let Some(original) = original else {
             return Ok(Outcome::NotNeeded);
         };
-        if alert.delivery == Delivery::Exhausted || alert.next_due > current {
-            return Ok(outcome(incident));
-        }
-        if alert.attempts >= self.config.max_attempts {
-            alert.delivery = Delivery::Exhausted;
-            state.write(outbox)?;
-            return Ok(Outcome::Exhausted);
-        }
-        let message = smtp::message(self.config, alert)?;
-        // Durable reservation precedes SMTP. A crash may consume an attempt or
-        // duplicate a message accepted before the final outbox write.
-        alert.attempts += 1;
-        alert.next_due = current.saturating_add(self.config.retry_seconds);
-        state.write(outbox)?;
+        let message = smtp::message(self.config, &original)?;
         let sent = match send_override {
             Some(send) => send(message).await,
-            None => self.send_real(state, message).await,
+            None => self.send_real(message).await,
         };
-        let incident = outbox.incidents.get_mut(key).expect("incident exists");
-        let alert = incident.outbox.as_mut().expect("alert exists");
+        let state = StateDir::lock(&self.state_dir)?;
+        let mut outbox: Outbox = state.read()?.unwrap_or_default();
+        let Some(incident) = outbox.incidents.get_mut(key) else {
+            return Ok(Outcome::NotNeeded);
+        };
+        if incident
+            .outbox
+            .as_ref()
+            .is_none_or(|alert| alert.id != original.id)
+        {
+            return Ok(outcome(incident));
+        }
         let result = match sent {
             Ok(()) => {
-                match alert.kind {
-                    AlertKind::Failure => incident.delivered_code = Some(alert.code.clone()),
-                    AlertKind::Recovery => incident.delivered_code = None,
-                }
+                incident.delivered_code = match original.kind {
+                    AlertKind::Failure => Some(original.code),
+                    AlertKind::Recovery => None,
+                };
                 incident.outbox = None;
                 Outcome::Sent
             }
-            Err(failure) if alert.attempts >= self.config.max_attempts => {
-                alert.delivery = Delivery::Exhausted;
+            Err(failure) => {
+                let alert = incident
+                    .outbox
+                    .as_mut()
+                    .expect("original message remains queued");
                 alert.last_error = match failure {
                     SendFailure::Retryable => None,
                     SendFailure::AuthRequired => Some(AlertError::AuthRequired),
                     SendFailure::Unavailable => Some(AlertError::Unavailable),
                 };
-                Outcome::Exhausted
-            }
-            Err(SendFailure::Retryable) => {
-                alert.last_error = None;
-                Outcome::RetryPending
-            }
-            Err(SendFailure::AuthRequired) => {
-                alert.last_error = Some(AlertError::AuthRequired);
-                Outcome::AuthRequired
-            }
-            Err(SendFailure::Unavailable) => {
-                alert.last_error = Some(AlertError::Unavailable);
-                Outcome::Unavailable
+                outcome(incident)
             }
         };
         if incident.active_code.is_none()
@@ -532,16 +508,13 @@ impl<'a> Notifier<'a> {
         {
             outbox.incidents.remove(key);
         }
-        state.write(outbox)?;
+        state.write(&outbox)?;
         Ok(result)
     }
 
-    async fn send_real(
-        &self,
-        state: &StateDir,
-        message: lettre::Message,
-    ) -> std::result::Result<(), SendFailure> {
-        self.send_real_with(state, message, None, None).await
+    async fn send_real(&self, message: lettre::Message) -> std::result::Result<(), SendFailure> {
+        let state = StateDir::lock_oauth(&self.state_dir).map_err(|_| SendFailure::Unavailable)?;
+        self.send_real_with(&state, message, None, None).await
     }
 
     async fn send_real_with(

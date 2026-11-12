@@ -246,42 +246,6 @@ impl MimirService {
         Ok(())
     }
 
-    /// Auto-ground newly loaded chunks against existing beliefs.
-    /// For each chunk, finds beliefs with cosine similarity ≥ GROUND_THRESHOLD
-    /// that are project-compatible, then creates GROUNDS edges.
-    /// No-op when embeddings are not configured.
-    /// Formalised as Evidence.autoGroundChunks in the Agda spec.
-    async fn auto_ground_chunks(
-        &self,
-        chunks: &[documents::DocumentChunk],
-        embeddings: &[Vec<f32>],
-    ) -> Result<()> {
-        for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
-            let candidates = self
-                .store
-                .query_beliefs_by_vector_scored(embedding, 20)
-                .await?;
-            for (belief_id, sim) in candidates {
-                if sim < GROUND_THRESHOLD {
-                    break;
-                }
-                // Fetch belief to check project compatibility.
-                if let Some(belief) = self.store.get_belief(belief_id).await? {
-                    let compatible = match (&chunk.project, &belief.project) {
-                        (None, _) | (_, None) => true,
-                        (Some(cp), Some(bp)) => cp == bp,
-                    };
-                    if compatible {
-                        self.store
-                            .insert_evidence(chunk.id, belief_id, Probability::new(sim)?)
-                            .await?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Belief IDs that already have a vector stored in `belief_embeddings`.
     /// Used by the `reembed` CLI to skip beliefs whose vectors are already
     /// populated (idempotent backfill).
@@ -297,13 +261,7 @@ impl MimirService {
     /// Delete all beliefs and DocumentChunks tagged with the given project.
     /// Returns the combined count of vertices removed.
     pub async fn delete_project(&self, project: &str) -> Result<usize> {
-        let belief_count = self.store.delete_project(project).await?;
-        // Also clear document chunks tagged with this project.
-        let chunk_ids = self.store.get_chunk_ids_by_project(project).await?;
-        let chunk_count = chunk_ids.len();
-        self.store.delete_document_chunks(&chunk_ids).await?;
-        self.store.delete_chunk_embeddings(&chunk_ids).await?;
-        self.store.delete_learning_project(project).await?;
+        let (belief_count, chunk_count) = self.store.delete_project_complete(project).await?;
         Ok(belief_count + chunk_count)
     }
 
@@ -344,9 +302,10 @@ impl MimirService {
             self.store.insert_contradicts(from_id, to_id, w).await?;
         } else {
             let edge = graph::Edge::new(from_id, to_id, edge_type, weight)?;
-            self.store.insert_edge(&edge).await?;
             if edge_type == EdgeType::Defeats {
-                self.propagate_from(from_id).await?;
+                self.store.insert_edge_and_propagate(&edge).await?;
+            } else {
+                self.store.insert_edge(&edge).await?;
             }
         }
         Ok(())
@@ -861,9 +820,6 @@ impl MimirService {
         self.store
             .replace_document(path, &chunks, &embeddings)
             .await?;
-
-        // Auto-ground: create GROUNDS edges to similar beliefs (Evidence.autoGroundChunks).
-        self.auto_ground_chunks(&chunks, &embeddings).await?;
 
         Ok(count)
     }

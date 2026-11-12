@@ -1126,7 +1126,7 @@ mod tests {
         let mut settings = super::super::config::load(Some(&path)).unwrap();
         settings.judge.project = Some(project.clone());
         settings.judge.mcp_command = mcp;
-        settings.judge.batch_size = 1;
+        settings.judge.batch_size = Some(1);
         let core = mimir_core::config::Config::load_from_path(&settings.path).unwrap();
         database_fixture.assert_database(&core.database);
         let service = mimir_core::MimirService::connect(&core).await.unwrap();

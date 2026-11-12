@@ -10,7 +10,6 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-const MAX_STATE: u64 = 1024 * 1024;
 const STATE_FILE: &str = "notification-outbox.json";
 const OAUTH_FILE: &str = "notification-oauth.json";
 const DIGEST_FILE: &str = "notification-digest.json";
@@ -64,6 +63,14 @@ fn ensure_dir(path: &Path) -> Result<()> {
 
 impl StateDir {
     pub(crate) fn lock(path: &Path) -> Result<Self> {
+        Self::lock_named(path, "notification.lock")
+    }
+
+    pub(crate) fn lock_oauth(path: &Path) -> Result<Self> {
+        Self::lock_named(path, "notification-oauth.lock")
+    }
+
+    fn lock_named(path: &Path, name: &str) -> Result<Self> {
         ensure_dir(path)?;
         let lock = OpenOptions::new()
             .read(true)
@@ -71,7 +78,7 @@ impl StateDir {
             .create(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path.join("notification.lock"))?;
+            .open(path.join(name))?;
         let meta = lock.metadata()?;
         ensure!(
             meta.is_file()
@@ -102,7 +109,7 @@ impl StateDir {
     }
 
     fn read_named<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
-        let file = match OpenOptions::new()
+        let mut file = match OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(self.path.join(name))
@@ -115,16 +122,11 @@ impl StateDir {
         ensure!(
             meta.is_file()
                 && meta.uid() == unsafe { libc::geteuid() }
-                && meta.permissions().mode() & 0o077 == 0
-                && meta.len() <= MAX_STATE,
-            "unsafe or oversized notification state"
+                && meta.permissions().mode() & 0o077 == 0,
+            "unsafe notification state"
         );
         let mut bytes = Vec::new();
-        file.take(MAX_STATE + 1).read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() <= MAX_STATE as usize,
-            "oversized notification state"
-        );
+        file.read_to_end(&mut bytes)?;
         Ok(Some(
             serde_json::from_slice(&bytes).map_err(|_| anyhow!("invalid notification state"))?,
         ))
@@ -144,10 +146,6 @@ impl StateDir {
 
     fn write_named<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
         let bytes = serde_json::to_vec(value)?;
-        ensure!(
-            bytes.len() <= MAX_STATE as usize,
-            "notification state is too large"
-        );
         let temp = self
             .path
             .join(format!(".notification-{}.tmp", uuid::Uuid::new_v4()));

@@ -1,6 +1,7 @@
 mod learning;
 #[cfg(test)]
 mod learning_cycle_test;
+mod operation;
 use anyhow::Result;
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
@@ -99,6 +100,58 @@ fn agent_json_text(value: &Value) -> serde_json::Result<String> {
     serde_json::to_string(&AgentJson(value))
 }
 
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    #[test]
+    fn registered_operations_match_the_advertised_tools() {
+        let advertised = tools_list();
+        let names = advertised
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let registered = operation::Operation::ALL
+            .iter()
+            .map(|operation| operation.wire())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(names, registered);
+        assert_eq!(names.len(), operation::Operation::ALL.len());
+        for operation in operation::Operation::ALL {
+            assert_eq!(
+                operation::Operation::parse(operation.wire()),
+                Some(*operation)
+            );
+        }
+    }
+
+    #[test]
+    fn incorrect_fields_are_actionable_and_corrected_requests_are_admitted() {
+        for arguments in [
+            json!({}),
+            json!({"id":12}),
+            json!({"id":"invalid"}),
+            json!({"id":"11111111-1111-4111-8111-111111111111","guess":true}),
+        ] {
+            let error = admit_tool_arguments("get_belief", &arguments).unwrap_err();
+            let refusal = error
+                .downcast_ref::<mimir_core::validation::Refusal>()
+                .unwrap();
+            assert!(!refusal.fault.path.is_empty());
+            assert!(!refusal.fault.message.is_empty());
+        }
+        assert!(admit_tool_arguments(
+            "get_belief",
+            &json!({"id":"11111111-1111-4111-8111-111111111111"})
+        )
+        .is_ok());
+        assert!(admit_tool_arguments("pending_experiences", &json!({"limit":0})).is_err());
+        assert!(admit_tool_arguments("pending_experiences", &json!({})).is_ok());
+        assert!(admit_tool_arguments("pending_experiences", &json!({"limit":1000})).is_ok());
+    }
+}
+
 fn tools_list() -> Value {
     let mut tools = json!([
         {
@@ -113,7 +166,7 @@ fn tools_list() -> Value {
                     "confidence":  { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                     "project":     { "type": "string", "description": "Optional project scope. Beliefs in a project can be bulk-deleted with delete_project when the project is done." },
                     "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Functional memory type. 'fact' (default): declarative knowledge that decays over time absent reinforcement. 'experiential': a hard-won working lesson (gotcha, corrected approach) — exempt from time-decay, since its truth doesn't erode with elapsed time. 'working': task-local scratch memory, excluded from cross-session query_relevant retrieval." },
-                    "provenance": { "type": "object", "additionalProperties": false, "properties": { "basis": {"type":"string","enum":["user_instruction","document"]}, "reference": {"type":"string","minLength":1,"maxLength":2048} }, "required": ["basis","reference"], "description": "Identify the independent source. Do not use this tool for a conclusion derived from an experience." }
+                    "provenance": { "type": "object", "additionalProperties": false, "properties": { "basis": {"type":"string","enum":["user_instruction","document"]}, "reference": {"type":"string","minLength":1} }, "required": ["basis","reference"], "description": "Identify the independent source. Do not use this tool for a conclusion derived from an experience." }
                 },
                 "required": ["content", "probability", "confidence", "provenance"]
             }
@@ -236,7 +289,7 @@ fn tools_list() -> Value {
                 "properties": {
                     "project": { "type": "string", "description": "Restrict to this project's beliefs plus untagged (global) beliefs. Omit to list everything." },
                     "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Restrict to this memory type. Useful for orphan cleanup of leftover Working beliefs from an interrupted prior session — NOT a substitute for tracking the IDs of Working beliefs your own session wrote, since this filter has no session-identity concept and cannot distinguish your in-flight Working beliefs from a concurrent session's on a shared DB." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 10, "description": "Return a page of at most this many beliefs, ordered by created_at then id. When present, the result is an object with beliefs, total, offset, and next_offset." },
+                    "limit": { "type": "integer", "minimum": 1, "description": "Optional positive page size. Omit it for all matching beliefs. When present, the result contains beliefs, total, offset, and next_offset." },
                     "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Zero-based position in the filtered, oldest-first result. Requires limit; use next_offset from the previous page." }
                 }
             }
@@ -392,20 +445,108 @@ fn tools_list() -> Value {
 // Tool dispatch
 // ---------------------------------------------------------------------------
 
+fn admit_tool_arguments(name: &str, args: &Value) -> Result<()> {
+    use mimir_core::validation::{Code, Refusal, Segment};
+    let reject = |field: &str, explanation: String| {
+        Refusal::invalid(
+            Code::MalformedInput,
+            vec![Segment::Key(field.into())],
+            explanation,
+        )
+    };
+    let advertised = tools_list();
+    let tool = advertised.as_array().expect("advertised tools form an array").iter().find(|tool| tool["name"] == name)
+        .ok_or_else(|| reject("name", format!("Tool '{name}' is not available. List the available tools and select the intended name.")))?;
+    let object = args.as_object().ok_or_else(|| {
+        reject(
+            "arguments",
+            "Arguments must be a JSON object containing the tool's named fields.".into(),
+        )
+    })?;
+    let schema = &tool["inputSchema"];
+    let properties = schema["properties"]
+        .as_object()
+        .expect("advertised tool properties are objects");
+    if let Some(required) = schema["required"].as_array() {
+        for field in required.iter().filter_map(Value::as_str) {
+            if !object.contains_key(field) {
+                return Err(reject(field, format!("Required field '{field}' is missing. Supply it with the type described by tools/list, then resubmit.")).into());
+            }
+        }
+    }
+    for (field, value) in object {
+        let property = properties.get(field).ok_or_else(|| reject(field, format!("Unknown field '{field}' for '{name}'. Remove it or use a field advertised by tools/list.")))?;
+        let matches = |kind: &str| match kind {
+            "string" => value.is_string(),
+            "number" => value.is_number(),
+            "integer" => value.is_i64() || value.is_u64(),
+            "boolean" => value.is_boolean(),
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "null" => value.is_null(),
+            _ => true,
+        };
+        let valid = match &property["type"] {
+            Value::String(kind) => matches(kind),
+            Value::Array(kinds) => kinds.iter().filter_map(Value::as_str).any(matches),
+            _ => true,
+        };
+        if !valid {
+            return Err(reject(field, format!("Field '{field}' has the wrong type; expected {}. Correct this field and resubmit.", property["type"])).into());
+        }
+        if matches!(
+            field.as_str(),
+            "id" | "from_id" | "to_id" | "id_a" | "id_b" | "belief_id" | "chunk_id" | "pattern_id"
+        ) {
+            if let Some(text) = value.as_str() {
+                if uuid::Uuid::parse_str(text).is_err() {
+                    return Err(reject(field, format!("Field '{field}' must contain the stored record's UUID. Read the record identity and resubmit; do not invent a numeric ID.")).into());
+                }
+            }
+        }
+        if let Some(number) = value.as_f64() {
+            if property["minimum"]
+                .as_f64()
+                .is_some_and(|minimum| number < minimum)
+                || property["maximum"]
+                    .as_f64()
+                    .is_some_and(|maximum| number > maximum)
+            {
+                return Err(reject(field, format!("Field '{field}' is outside its documented numeric domain. Choose a value admitted by the tool schema and resubmit.")).into());
+            }
+        }
+        if let Some(choices) = property["enum"].as_array() {
+            if !choices.contains(value) {
+                return Err(reject(field, format!("Field '{field}' must be one of {}. Select the intended value and resubmit.", property["enum"])).into());
+            }
+        }
+        if matches!(field.as_str(), "limit" | "evidence_per_belief")
+            && value.as_u64().is_none_or(|count| count == 0)
+        {
+            return Err(reject(field, format!("Field '{field}' must be a positive integer when supplied. Omit it to request all results; zero is invalid.")).into());
+        }
+    }
+    Ok(())
+}
+
 async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Result<Value> {
-    match name {
-        "explain_belief"
-        | "record_experience"
-        | "review_experience"
-        | "get_learning_review"
-        | "get_experience"
-        | "experience_history"
-        | "pending_experiences"
-        | "query_learning_context"
-        | "learning_capabilities"
-        | "get_lesson_assessment"
-        | "lesson_assessment_history" => learning::call(svc, name, args).await,
-        "insert_belief" => {
+    admit_tool_arguments(name, args)?;
+    use operation::Operation::*;
+    let operation = operation::Operation::parse(name)
+        .ok_or_else(|| anyhow::anyhow!("Tool '{name}' has no registered operation"))?;
+    match operation {
+        ExplainBelief
+        | RecordExperience
+        | ReviewExperience
+        | GetLearningReview
+        | GetExperience
+        | ExperienceHistory
+        | PendingExperiences
+        | QueryLearningContext
+        | LearningCapabilities
+        | GetLessonAssessment
+        | LessonAssessmentHistory => learning::call(svc, operation.wire(), args).await,
+        InsertBelief => {
             let provenance: IndependentProvenance = serde_json::from_value(
                 args.get("provenance")
                     .ok_or_else(|| anyhow::anyhow!("missing 'provenance'"))?
@@ -440,7 +581,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(serde_json::to_value(&belief)?)
         }
 
-        "delete_belief" => {
+        DeleteBelief => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -449,7 +590,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "deleted": deleted }))
         }
 
-        "delete_project" => {
+        DeleteProject => {
             let project = args["project"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'project'"))?;
@@ -457,7 +598,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "deleted": count }))
         }
 
-        "delete_pattern" => {
+        DeletePattern => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -466,7 +607,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "deleted": deleted }))
         }
 
-        "insert_pattern" => {
+        InsertPattern => {
             let situation = args["situation"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'situation'"))?;
@@ -492,7 +633,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(serde_json::to_value(&pattern)?)
         }
 
-        "record_support" => {
+        RecordSupport => {
             let from_str = args["from_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
@@ -510,7 +651,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "record_cause" => {
+        RecordCause => {
             let from_str = args["from_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
@@ -528,7 +669,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "record_defeat" => {
+        RecordDefeat => {
             let from_str = args["from_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'from_id'"))?;
@@ -547,7 +688,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "record_contradiction" => {
+        RecordContradiction => {
             let id_a_str = args["id_a"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id_a'"))?;
@@ -563,7 +704,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "get_belief" => {
+        GetBelief => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -572,7 +713,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(serde_json::to_value(&belief)?)
         }
 
-        "list_beliefs" => {
+        ListBeliefs => {
             let project = args["project"].as_str();
             let memory_type = match args["memory_type"].as_str() {
                 Some(s) => Some(
@@ -593,9 +734,9 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                 Some(raw_limit) => {
                     let limit = raw_limit
                         .as_u64()
-                        .filter(|n| (1..=10).contains(n))
-                        .ok_or_else(|| anyhow::anyhow!("'limit' must be an integer from 1 to 10"))?
-                        as usize;
+                        .and_then(|count| usize::try_from(count).ok())
+                        .filter(|count| *count > 0)
+                        .ok_or_else(|| anyhow::anyhow!("'limit' must be a positive integer when supplied; omit it to request all beliefs"))?;
                     let offset = match args.get("offset") {
                         None => 0,
                         Some(raw_offset) => raw_offset
@@ -611,13 +752,13 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             }
         }
 
-        "list_patterns" => {
+        ListPatterns => {
             let project = args["project"].as_str();
             let patterns = svc.list_patterns(project).await?;
             Ok(serde_json::to_value(&patterns)?)
         }
 
-        "get_contradictions" => {
+        GetContradictions => {
             let project = args["project"].as_str();
             let pairs = svc.get_contradictions(project).await?;
             let result: Vec<Value> = pairs
@@ -627,14 +768,14 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "decay_all" => {
+        DecayAll => {
             let decay_factor = args["decay_factor"].as_f64();
             let project = args["project"].as_str();
             let count = svc.decay_beliefs(decay_factor, project).await?;
             Ok(json!({ "decayed": count }))
         }
 
-        "sweep_expired_defeated" => {
+        SweepExpiredDefeated => {
             let prob_threshold = args["prob_threshold"].as_f64().unwrap_or(0.3);
             let grace_hours = args["grace_hours"].as_f64().unwrap_or(24.0);
             let project = args["project"].as_str();
@@ -644,7 +785,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "deleted": count }))
         }
 
-        "query_relevant" => {
+        QueryRelevant => {
             let query = args["context"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
@@ -691,7 +832,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "add_evidence" => {
+        AddEvidence => {
             let belief_str = args["belief_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'belief_id'"))?;
@@ -705,7 +846,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "ok": true }))
         }
 
-        "get_evidence" => {
+        GetEvidence => {
             let belief_str = args["belief_id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'belief_id'"))?;
@@ -729,7 +870,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "propagate_from" => {
+        PropagateFrom => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -744,7 +885,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "query_intervention" => {
+        QueryIntervention => {
             let id_str = args["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -762,7 +903,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!(result))
         }
 
-        "load_document" => {
+        LoadDocument => {
             let path = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
@@ -771,7 +912,7 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(json!({ "loaded": count }))
         }
 
-        "query_document" => {
+        QueryDocument => {
             let context = args["context"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
@@ -781,15 +922,13 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
             Ok(serde_json::to_value(&results)?)
         }
 
-        "clear_document" => {
+        ClearDocument => {
             let path = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'path'"))?;
             let count = svc.clear_document(path).await?;
             Ok(json!({ "cleared": count }))
         }
-
-        other => anyhow::bail!("unknown tool: {}", other),
     }
 }
 
@@ -799,6 +938,9 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if mimir_core::embed::local_worker_entrypoint().await? {
+        return Ok(());
+    }
     // Mimir.Startup: only an empty invocation may load configuration or connect.
     // Keep OS strings intact so invalid Unicode is a usage error, not a panic.
     const USAGE: &str = "Usage: mimir-mcp [--help | --version]";
@@ -830,7 +972,9 @@ async fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
-    operations.logging.prepare()?;
+    if let Err(error) = operations.logging.prepare() {
+        eprintln!("Operational logging unavailable; MCP remains available: {error:#}");
+    }
     let logging = operations.logging.clone();
     tracing_subscriber::fmt()
         .with_ansi(false)
@@ -848,27 +992,26 @@ async fn main() -> Result<()> {
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin);
-    let mut line = String::new();
+    let mut line = Vec::new();
 
     loop {
         line.clear();
-        let n = reader.read_line(&mut line).await?;
+        let n = reader.read_until(b'\n', &mut line).await?;
         if n == 0 {
             // EOF
             break;
         }
 
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
 
-        let request: Value = match serde_json::from_str(trimmed) {
+        let request: Value = match serde_json::from_slice(&line) {
             Ok(v) => v,
             Err(e) => {
                 error!("parse error: {}", e);
                 // No id available — use null
-                let resp = err_response(&Value::Null, -32700, &format!("parse error: {e}"));
+                let resp = err_response(&Value::Null, -32700, &format!("Invalid JSON request: {e}. Send one UTF-8 JSON object per line with jsonrpc=2.0, method, and the required params; correct this request and resubmit."));
                 let mut out = resp.to_string();
                 out.push('\n');
                 stdout.write_all(out.as_bytes()).await?;
@@ -879,6 +1022,12 @@ async fn main() -> Result<()> {
 
         let is_notification = request.get("id").is_none();
         let id = request.get("id").cloned().unwrap_or(Value::Null);
+        if !request.is_object() || request["jsonrpc"] != "2.0" || !request["method"].is_string() {
+            let response = err_response(&id, -32600, "Send a JSON object with jsonrpc=2.0 and a string method. Correct the request and resubmit; this connection remains available.");
+            stdout.write_all(format!("{response}\n").as_bytes()).await?;
+            stdout.flush().await?;
+            continue;
+        }
         let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
         let params = request
             .get("params")
@@ -908,11 +1057,19 @@ async fn main() -> Result<()> {
                         json!({ "content": [{ "type": "text", "text": agent_json_text(&result)? }] }),
                     ),
                     Err(e) => {
-                        let mut response = err_response(&id, -32000, &e.to_string());
-                        if let Some(refusal) = e.downcast_ref::<mimir_core::validation::Refusal>() {
-                            response["error"]["data"] = serde_json::to_value(refusal)?;
-                        }
-                        response
+                        let reply = if let Some(refusal) =
+                            e.downcast_ref::<mimir_core::validation::Refusal>()
+                        {
+                            json!({"status":"needs_correction", "fault":refusal.fault,
+                                "reason":e.to_string(), "next_action":"Correct the reported field and resubmit the original request. Ask the user if the intended value is unclear."})
+                        } else {
+                            json!({"status":"needs_input", "reason":format!("{e:#}"),
+                                "next_action":"Explain this problem to the user and resolve the reported prerequisite before restarting the original request. Do not report the request as completed.", "interaction":"ask_user"})
+                        };
+                        ok_response(
+                            &id,
+                            json!({"content":[{"type":"text", "text":agent_json_text(&reply)?}]}),
+                        )
                     }
                 }
             }
