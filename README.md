@@ -198,7 +198,7 @@ chmod 600 ~/.pgpass
 Run the setup script (creates the role, database, extensions, and grants):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.2.2/mimir-setup/create-db-user.sh \
+curl -fsSL https://raw.githubusercontent.com/kamysh/mimir/v2.3.0/mimir-setup/create-db-user.sh \
   | bash -s -- --container postgres-ai --host localhost --port 5432 --user mimir --db mimir
 ```
 
@@ -223,7 +223,7 @@ psql -h localhost -U mimir -d mimir -c '\conninfo' >/dev/null && echo OK
 
 This step installs the two mimir binaries to `~/.local/bin`. It is one of three pieces — see Step 5 for the MCP server registration.
 
-Install the **2.2.2** release. This block selects one archive for your platform:
+Install the **2.3.0** release. This block selects one archive for your platform:
 
 ```bash
 mkdir -p "$HOME/.local/bin"
@@ -233,11 +233,11 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)  TARBALL=mimir-darwin-arm64.tar.gz ;;
   *) echo "Use Building from source for this platform" >&2; exit 1 ;;
 esac
-curl -fL "https://github.com/kamysh/mimir/releases/download/v2.2.2/${TARBALL}" \
+curl -fL "https://github.com/kamysh/mimir/releases/download/v2.3.0/${TARBALL}" \
   | tar -xz -C "$HOME/.local/bin"
 chmod +x "$HOME/.local/bin/mimir" "$HOME/.local/bin/mimir-mcp"
 export PATH="$HOME/.local/bin:$PATH"
-mimir --version  # must report 2.2.2
+mimir --version  # must report 2.3.0
 ```
 
 The release workflow builds Linux x86_64, Linux ARM64 and Apple Silicon.
@@ -271,6 +271,9 @@ mimir config check
 Version 2.2.1 also removes the old `[llm]` review limits: `timeout_seconds`,
 `max_calls`, `max_output_tokens`, and `max_budget_usd`. Run `mimir config upgrade`
 to remove these retired keys; other settings and comments are preserved.
+
+Version 2.2.3 fixes judge reviews that extract new learning items. The judge
+now lets PostgreSQL assign their IDs before checking their source references.
 
 Version 2.2.2 moves learning-item UUID allocation into PostgreSQL. New items
 use experience-local `key` values and assessment `item_keys`; existing stored
@@ -559,7 +562,7 @@ learning infrastructure.
 Run the maintained release checks with Docker available:
 
 ```sh
-nix develop --command python3 scripts/test-isolated.py
+nix develop --command bash scripts/test-isolated.sh
 ```
 
 The runner creates a private home, configuration, credentials, logs, state and
