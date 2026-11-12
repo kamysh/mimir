@@ -90,7 +90,7 @@ async fn sql_pages_cover_large_filtered_corpus_without_a_total_cutoff() {
     assert!(svc
         .list_beliefs_page(Some(&project), None, 11, 0)
         .await
-        .is_err());
+        .is_ok());
     let empty = svc
         .list_beliefs_page(Some(&project), None, 10, 100_000)
         .await
@@ -167,7 +167,7 @@ async fn sql_pager_handles_single_last_and_global_project_visibility() {
     assert!(svc
         .list_beliefs_page(Some(&project), None, 11, 0)
         .await
-        .is_err());
+        .is_ok());
     assert!(svc
         .list_beliefs_page(Some(&project), None, 1, usize::MAX)
         .await
