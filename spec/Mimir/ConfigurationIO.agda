@@ -1,139 +1,94 @@
 {-# OPTIONS --safe #-}
--- Observable configuration file protocol. Replies represent actual external
--- outcomes, including partial writes; success is never inferred from an
--- attempted write. TOML syntax and typed configuration validation are separate.
+-- Configuration publication is an atomic external operation. A failure leaves
+-- the target unchanged and confirms cleanup of private files and handles.
+-- The specification does not implement temporary-file or OS write algorithms.
 module Mimir.ConfigurationIO where
 
-open import Data.Bool using (Bool; true; false)
-open import Data.List using (List; []; _∷_)
+open import Data.Bool using (Bool)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.String using (String)
-open import Data.Product using (_×_; _,_; proj₁; proj₂)
-open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.Unit using (⊤; tt)
+open import Data.Empty using (⊥; ⊥-elim)
+open import Relation.Nullary using (¬_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+import Mimir.Recovery as Recovery
 
 data Platform : Set where unix other : Platform
 data Failure : Set where
   alreadyExists directoryFailure permissionFailure createFailure : Failure
-  partialWrite missingFile unreadable invalidTOML : Failure
-
--- The host resolves these requests against the selected path. createExclusive
--- is the create_new/open-with-O_EXCL operation; there is no overwrite effect.
-data Effect : Set where
-  checkExists makeParents setParent0700 createExclusive0600 : Effect
-  createExclusive writeAll readUTF8 decodeTOML : Effect
-
-data Result : Set where success : Result; failed : Failure → Result
-data State : Set where
-  initial checking making securing creating writing : State
-  finished : Result → State
-
-data Input : Set where
-  begin exists absent ok error : Input
+  missingFile unreadable invalidTOML : Failure
 
 record Settings : Set where
   constructor settings
   field platform : Platform; hasParent : Bool
-open Settings
 
-record Step : Set where
-  constructor next
-  field state : State; effects : List Effect
-open Step
+data Effect : Set where
+  createExclusive0600 createExclusive readUTF8 decodeTOML : Effect
+
+data Input : Set where
+  begin exists absent ok error : Input
+
+data Result : Set where success : Result; failed : Failure → Result
+
+-- Exclusive publication installs the complete content without replacing an
+-- existing target. Rejection includes rollback/cleanup, not a partial file.
+data Publication {Content : Set} (content : Content) : Maybe Content → Result → Maybe Content → Set where
+  installed : Publication content nothing success (just content)
+  refused : ∀ before failure → Publication content before (failed failure) before
 
 createEffect : Platform → Effect
 createEffect unix = createExclusive0600
 createEffect other = createExclusive
 
-afterAbsence : Settings → Step
-afterAbsence (settings platform true) = next making (makeParents ∷ [])
-afterAbsence (settings platform false) = next creating (createEffect platform ∷ [])
+resultOf : Input → Result
+resultOf ok = success
+resultOf exists = failed alreadyExists
+resultOf _ = failed createFailure
 
-afterParents : Platform → Step
-afterParents unix = next securing (setParent0700 ∷ [])
-afterParents other = next creating (createExclusive ∷ [])
+module Certified (Content : Set) (content : Content) where
+  Successful : Result → Set
+  Successful success = ⊤
+  Successful (failed _) = ⊥
 
-step : Settings → State → Input → Step
-step cfg initial begin = next checking (checkExists ∷ [])
-step cfg checking exists = next (finished (failed alreadyExists)) []
-step cfg checking absent = afterAbsence cfg
-step cfg checking error = next (finished (failed unreadable)) []
-step cfg making ok = afterParents (platform cfg)
-step cfg making error = next (finished (failed directoryFailure)) []
-step cfg securing ok = next creating (createEffect (platform cfg) ∷ [])
-step cfg securing error = next (finished (failed permissionFailure)) []
--- A race after the existence check still cannot overwrite the file.
-step cfg creating exists = next (finished (failed alreadyExists)) []
-step cfg creating error = next (finished (failed createFailure)) []
-step cfg creating ok = next writing (writeAll ∷ [])
-step cfg writing ok = next (finished success) []
-step cfg writing error = next (finished (failed partialWrite)) []
-step cfg state input = next state []
+  Atomic : Maybe Content → ⊤ → Result → Maybe Content → Set
+  Atomic before tt result after = Publication content before result after
 
--- Final states absorb late, duplicate, and irrelevant input.
-finishedStable : ∀ cfg result input →
-  step cfg (finished result) input ≡ next (finished result) []
-finishedStable cfg result input = refl
+  module R = Recovery (Maybe Content) ⊤ Result (λ _ → ⊤) (λ _ → Result)
+    Atomic (λ before after → after ≡ before) (λ _ _ → Maybe Content)
+    (λ _ _ after → after) (λ _ after → after) Successful (λ _ → ⊤)
 
-existingFileUntouched : ∀ cfg →
-  step cfg checking exists ≡ next (finished (failed alreadyExists)) []
-existingFileUntouched cfg = refl
+  successPublishesComplete : ∀ before reply after → Atomic before tt reply after →
+    Successful reply → after ≡ just content
+  successPublishesComplete .nothing .success .(just content) installed confirmed = refl
+  successPublishesComplete before .(failed failure) .before (refused .before failure) ()
 
-raceCannotOverwrite : ∀ cfg →
-  step cfg creating exists ≡ next (finished (failed alreadyExists)) []
-raceCannotOverwrite cfg = refl
+  failureLeavesUnchanged : ∀ before reply after → Atomic before tt reply after →
+    ¬ Successful reply → after ≡ before
+  failureLeavesUnchanged .nothing .success .(just content) installed impossible = ⊥-elim (impossible tt)
+  failureLeavesUnchanged before .(failed failure) .before (refused .before failure) _ = refl
 
--- Successful completion requires a successful write response. This theorem
--- checks every state and every input, not just the successful happy path.
-successRequiresWrite : ∀ cfg before input →
-  state (step cfg before input) ≡ finished success →
-  (before ≡ writing × input ≡ ok) Data.Sum.⊎ (before ≡ finished success)
-successRequiresWrite cfg initial begin ()
-successRequiresWrite cfg initial exists ()
-successRequiresWrite cfg initial absent ()
-successRequiresWrite cfg initial ok ()
-successRequiresWrite cfg initial error ()
-successRequiresWrite cfg checking begin ()
-successRequiresWrite cfg checking exists ()
-successRequiresWrite (settings platform true) checking absent ()
-successRequiresWrite (settings platform false) checking absent ()
-successRequiresWrite cfg checking ok ()
-successRequiresWrite cfg checking error ()
-successRequiresWrite cfg making begin ()
-successRequiresWrite cfg making exists ()
-successRequiresWrite cfg making absent ()
-successRequiresWrite (settings unix parent) making ok ()
-successRequiresWrite (settings other parent) making ok ()
-successRequiresWrite cfg making error ()
-successRequiresWrite cfg securing begin ()
-successRequiresWrite cfg securing exists ()
-successRequiresWrite cfg securing absent ()
-successRequiresWrite cfg securing ok ()
-successRequiresWrite cfg securing error ()
-successRequiresWrite cfg creating begin ()
-successRequiresWrite cfg creating exists ()
-successRequiresWrite cfg creating absent ()
-successRequiresWrite cfg creating ok ()
-successRequiresWrite cfg creating error ()
-successRequiresWrite cfg writing begin ()
-successRequiresWrite cfg writing exists ()
-successRequiresWrite cfg writing absent ()
-successRequiresWrite cfg writing ok proof = inj₁ (refl , refl)
-successRequiresWrite cfg writing error ()
-successRequiresWrite cfg (finished success) input proof = inj₂ refl
-successRequiresWrite cfg (finished (failed failure)) input ()
+  call : R.FinalCall ⊤
+  call = record
+    { effect = λ _ → tt
+    ; answer = λ _ result → result
+    ; expected = λ _ _ _ → just content
+    ; success = λ _ before reply after receipt confirmed _ →
+        successPublishesComplete before reply after receipt confirmed
+    ; failureUnchanged = λ _ → failureLeavesUnchanged
+    ; crashUnchanged = λ _ _ unchanged → unchanged
+    }
+  module Proof = R.FinalPublication call
+  recovery : R.Recoverable ⊤
+  recovery = Proof.finalPublication
 
--- Error rendering has no source-text argument. Different secret-bearing
--- contents produce the same externally visible error at the same failure.
 renderFailure : Failure → String
-renderFailure alreadyExists = "config already exists"
-renderFailure directoryFailure = "cannot create config directory"
-renderFailure permissionFailure = "cannot set private config permissions"
-renderFailure createFailure = "cannot create config"
-renderFailure partialWrite = "unable to finish writing config"
-renderFailure missingFile = "no config file found; run mimir init"
-renderFailure unreadable = "unable to read Mimir config"
-renderFailure invalidTOML = "invalid Mimir config TOML"
+renderFailure alreadyExists = "Configuration already exists. Open the existing file; do not overwrite it."
+renderFailure directoryFailure = "Cannot prepare the configuration directory. Correct the directory problem and retry."
+renderFailure permissionFailure = "Cannot establish private configuration permissions. Correct access and retry."
+renderFailure createFailure = "Configuration publication failed; the target is unchanged and private files are cleaned up. Correct the filesystem problem and retry."
+renderFailure missingFile = "No configuration file found. Run mimir init."
+renderFailure unreadable = "Cannot read the configuration. Check its path and access permissions, then retry."
+renderFailure invalidTOML = "Invalid configuration syntax. Correct the TOML and run mimir config check."
 
 renderReadFailure : String → Failure → String
 renderReadFailure contents failure = renderFailure failure
@@ -141,3 +96,38 @@ renderReadFailure contents failure = renderFailure failure
 diagnosticIndependentOfSecrets : ∀ first second failure →
   renderReadFailure first failure ≡ renderReadFailure second failure
 diagnosticIndependentOfSecrets first second failure = refl
+
+-- Updating an existing configuration has the same transaction boundary as
+-- creation. The complete replacement is prepared first. Failure retains the
+-- original file and releases private resources; retry starts with a fresh read.
+module Replacement (Content : Set) (content : Content) where
+  data Receipt : Maybe Content → Result → Maybe Content → Set where
+    replaced : ∀ original → Receipt (just original) success (just content)
+    refused : ∀ before failure → Receipt before (failed failure) before
+
+  module R = Recovery (Maybe Content) ⊤ Result (λ _ → ⊤) (λ _ → Result)
+    (λ before _ result after → Receipt before result after)
+    (λ before after → after ≡ before) (λ _ _ → Maybe Content)
+    (λ _ _ after → after) (λ _ after → after) (Certified.Successful Content content) (λ _ → ⊤)
+
+  complete : ∀ before result after → Receipt before result after →
+    Certified.Successful Content content result → after ≡ just content
+  complete .(just original) .success .(just content) (replaced original) _ = refl
+  complete before .(failed failure) .before (refused .before failure) ()
+
+  unchanged : ∀ before result after → Receipt before result after →
+    ¬ Certified.Successful Content content result → after ≡ before
+  unchanged .(just original) .success .(just content) (replaced original) impossible = ⊥-elim (impossible tt)
+  unchanged before .(failed failure) .before (refused .before failure) _ = refl
+
+  call : R.FinalCall ⊤
+  call = record
+    { effect = λ _ → tt ; answer = λ _ result → result
+    ; expected = λ _ _ _ → just content
+    ; success = λ _ before reply after receipt confirmed _ → complete before reply after receipt confirmed
+    ; failureUnchanged = λ _ → unchanged
+    ; crashUnchanged = λ _ _ unchanged → unchanged
+    }
+  module Proof = R.FinalPublication call
+  recovery : R.Recoverable ⊤
+  recovery = Proof.finalPublication

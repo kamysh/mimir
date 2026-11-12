@@ -62,6 +62,8 @@ import Mimir.ApplicationStore as Store
 import Mimir.Effects as Effects
 import Mimir.DatabaseTransaction as DB
 import Mimir.Recovery as Recovery
+import Mimir.ReviewBeliefPreparation as ReviewMaterial
+import Mimir.Reembedding as Reembedding
 
 record Environment : Set₁ where
   field
@@ -95,8 +97,16 @@ module Run (environment : Environment) where
   module DocumentReplaceRecovery (path : Text) (chunks : List DocumentStore.Chunk) (vectors : List Store.Vector) =
     Document.ReplaceRecovery path chunks vectors
   module Learn (q : Learning.Request) = Learning.Protocol database q candidateClock now candidateIdentity calculation
+    using (Outcome; PreparationEffect; PreparationReply; PreparationResult;
+      invalidPreparation; invalidRequest; transacted; transactionPrepared; prepare; stage;
+      module Stage; module T)
   module Retrieve = Retrieval.Run f32 unicode
   module LearningContext = Context.Run f32 unicode databaseTextBefore
+  module Reembed (ids : List UUID) (material : Reembedding.PreparedVectors ids) = Reembedding.Operation ids material
+
+  data ReviewMaterialReply : Set where
+    materialNeedsInput : Text → Text → ReviewMaterialReply
+    materialReady : List ReviewMaterial.Material → ReviewMaterialReply
 
   data Result : Set where
     mutated : Mutation.Result → Result
@@ -108,13 +118,14 @@ module Run (environment : Environment) where
     grounded : Grounding.T.Outcome → Result
     invalidGrounding : Result
     evidenceResult : Text ⊎ List Evidence.Reference → Result
-    relevantResult : List Graph.BeliefValues → Result
-    groundedResult : Text ⊎ List Evidence.Grounded → Result
+    relevantResult : Retrieval.Report Graph.BeliefValues → Result
+    groundedResult : Text ⊎ Retrieval.Report Evidence.Grounded → Result
     documentResult : Document.Result → Result
     documentQueryResult : DocumentQuery.Result → Result
     learned : (q : Learning.Request) → Learn.Outcome q → Result
     learningQueryResult : Query.Result → Result
     contextResult : Context.Output → Result
+    reembeddingResult : Reembedding.Result → Result
     capabilitiesResult : Capabilities.Capabilities → Result
     failed : Text → Result
     needsDecision : Text → Text → Result
@@ -254,12 +265,18 @@ module Run (environment : Environment) where
     succeeded _ = ⊥
 
     module Commit (tx : L.T.Transaction) (proposed : LearningStore.World)
-      (value : Observation.Snapshot) where
+      (value : Observation.Snapshot) (materials : List ReviewMaterial.Material) where
+      proposedStore : Store.World → Store.World
+      proposedStore before = record before { learning = proposed }
+
       intended : Store.World → Store.World
-      intended before = record before { learning = proposed }
+      intended before = ReviewMaterial.publish materials (proposedStore before)
 
       Atomic : Store.World → ⊤ → L.T.CommitReply → Store.World → Set
-      Atomic before tt reply after = DB.Atomic before (intended before) (L.T.receipt reply) after
+      Atomic before tt L.T.committed after =
+        ReviewMaterial.Complete before (proposedStore before) materials ×
+        DB.Atomic before (intended before) DB.committed after
+      Atomic before tt (L.T.aborted detail) after = after ≡ before
 
       answer : L.T.CommitReply → L.Outcome
       answer reply = L.transacted (L.T.committedOutcome value reply)
@@ -270,13 +287,13 @@ module Run (environment : Environment) where
 
       success : (input : ⊤) → ∀ before reply after → Atomic before tt reply after →
         succeeded (answer reply) → (index : ⊤) → after ≡ intended before
-      success input before L.T.committed after DB.committedAll proof index = refl
+      success input before L.T.committed after (prepared , DB.committedAll) proof index = refl
       success input before (L.T.aborted detail) after atomic () index
 
       unchangedFailure : ∀ before reply after → Atomic before tt reply after →
         ¬ succeeded (answer reply) → after ≡ before
       unchangedFailure before L.T.committed after atomic notSuccessful = ⊥-elim (notSuccessful tt)
-      unchangedFailure before (L.T.aborted detail) after DB.abortedNone notSuccessful = refl
+      unchangedFailure before (L.T.aborted detail) after same notSuccessful = same
 
       call : R.FinalCall ⊤
       call = record
@@ -288,6 +305,33 @@ module Run (environment : Environment) where
       module Certified = R.FinalPublication call
       recovery : R.Recoverable ⊤
       recovery = Certified.finalPublication
+
+      everyNewBeliefPrepared : ∀ before after → Atomic before tt L.T.committed after →
+        ∀ belief → belief ∈ Store.beliefs (proposedStore before) →
+        Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs before) ≡ nothing →
+        Σ BeliefEmbedding.Prepared (λ material →
+          ReviewMaterial.vectorRow (Graph.BeliefValues.identity belief , material) ∈ Store.World.beliefVectors after ×
+          ReviewMaterial.sourceRow (Graph.BeliefValues.identity belief , material) ∈ Store.World.grounds after)
+      everyNewBeliefPrepared before .(intended before) (prepared , DB.committedAll) =
+        ReviewMaterial.allNewBeliefsPrepared before (proposedStore before) materials prepared
+
+  -- A failed material preparation still owns a private transaction. The
+  -- decision cannot be returned until rollback/release is confirmed.
+  module LearningDiscard (q : Learning.Request) (tx : Learn.T.Transaction q)
+    (reason guidance : Text) where
+    module R = Recovery Store.World ⊤ Result (λ _ → ⊤) (λ _ → Learn.T.Cleanup q)
+      (λ before _ _ after → after ≡ before) (λ before after → after ≡ before)
+      (λ _ _ → Store.World) (λ _ _ world → world) (λ _ world → world) (λ _ → ⊤) (λ _ → ⊤)
+    module Proof = R.ReadOnly (λ _ _ _ _ same → same) (λ _ _ same → same) (λ _ _ → refl)
+    program : R.E.Script Result
+    program = R.E.ask tt (λ cleanup → R.E.done (needsDecision reason guidance))
+    decisionRequiresCleanup : ∀ events result → R.E.Runs program events result →
+      Σ (Learn.T.Cleanup q) (λ cleanup → events ≡ ((tt , cleanup) ∷ []) ×
+        result ≡ needsDecision reason guidance)
+    decisionRequiresCleanup events result (R.E.replied _ _ cleanup (R.E.returned _)) =
+      cleanup , refl , refl
+    recovery : R.Recoverable ⊤
+    recovery = Proof.readOnly (λ _ → program)
 
   module PosteriorRecovery (writes : Posterior.State) (result : Inference.Result)
     (successful : Inference.Successful result) where
@@ -527,7 +571,8 @@ module Run (environment : Environment) where
 
   data SearchPhase : Set where
     retrieving : Bool → Maybe ℕ → Retrieval.State → SearchPhase
-    collectingEvidence : Evidence.E.Script (Text ⊎ List Evidence.Grounded) → SearchPhase
+    collectingEvidence : Text → Retrieval.SemanticStatus →
+      Evidence.E.Script (Text ⊎ List Evidence.Grounded) → SearchPhase
 
   data SearchEffect : Set where
     retrieval : Retrieval.State → SearchEffect
@@ -546,15 +591,21 @@ module Run (environment : Environment) where
     (λ before effect reply after → after ≡ before) (λ before after → after ≡ before)
     (λ _ _ → Store.World) (λ _ _ world → world) (λ _ world → world) searchSucceeded (λ _ → ⊤)
 
-  evidenceSearchNext : Evidence.E.Script (Text ⊎ List Evidence.Grounded) → SearchRecovery.Next SearchPhase
-  evidenceSearchNext (Evidence.E.done result) = SearchRecovery.Next.returned (groundedResult result)
-  evidenceSearchNext (Evidence.E.ask effect continuation) = SearchRecovery.Next.perform (evidence effect)
-    (λ reply → collectingEvidence (continuation reply))
+  evidenceSearchNext : Text → Retrieval.SemanticStatus →
+    Evidence.E.Script (Text ⊎ List Evidence.Grounded) → SearchRecovery.Next SearchPhase
+  evidenceSearchNext context semantic (Evidence.E.done (inj₁ error)) =
+    SearchRecovery.Next.returned (groundedResult (inj₁ error))
+  evidenceSearchNext context semantic (Evidence.E.done (inj₂ beliefs)) =
+    SearchRecovery.Next.returned (groundedResult (inj₂ (Retrieval.report context beliefs semantic)))
+  evidenceSearchNext context semantic (Evidence.E.ask effect continuation) = SearchRecovery.Next.perform (evidence effect)
+    (λ reply → collectingEvidence context semantic (continuation reply))
 
   searchNext : SearchPhase → SearchRecovery.Next SearchPhase
-  searchNext (collectingEvidence program) = evidenceSearchNext program
+  searchNext (collectingEvidence context semantic program) = evidenceSearchNext context semantic program
   searchNext (retrieving false per (Retrieval.finished result)) = SearchRecovery.Next.returned (relevantResult result)
-  searchNext (retrieving true per (Retrieval.finished result)) = evidenceSearchNext (Evidence.many per result)
+  searchNext (retrieving true per (Retrieval.finished result)) =
+    evidenceSearchNext (Retrieval.Report.context result) (Retrieval.Report.semanticSearch result)
+      (Evidence.many per (Retrieval.Report.beliefs result))
   searchNext (retrieving include per (Retrieval.failed error)) = SearchRecovery.Next.returned (failed error)
   searchNext (retrieving include per state@(Retrieval.overlay _)) = SearchRecovery.Next.perform (retrieval state)
     (λ reply → retrieving include per (Retrieve.advance state reply))
@@ -633,18 +684,30 @@ module Run (environment : Environment) where
   admissionResult documentBackend = documentResult Document.embeddingsDisabled
 
   data PreparationRequest : Set where
+    prepareReembedInput : PreparationRequest
+    stopBeliefWorkInput : UUID → PreparationRequest
+    stopProjectWorkInput stopDocumentWorkInput : Text → PreparationRequest
+    stopSweepWorkInput : List UUID → PreparationRequest
     prepareBeliefInput : (proposal : BeliefEmbedding.Draft) →
       BeliefEmbedding.admit embeddingsEnabled proposal ≡ nothing → PreparationRequest
     canonicalLoadInput readDocumentInput : Text → Maybe Text → PreparationRequest
     embedDocumentInput : Text → List DocumentStore.Chunk → PreparationRequest
     canonicalClearInput : Text → PreparationRequest
+    prepareReviewInput : (q : Learning.Request) → Learn.T.Transaction q →
+      LearningStore.World → Observation.Snapshot → PreparationRequest
 
   PreparationReply : PreparationRequest → Set
+  PreparationReply prepareReembedInput = Reembedding.Preparation
+  PreparationReply (stopBeliefWorkInput _) = ⊤
+  PreparationReply (stopProjectWorkInput _) = ⊤
+  PreparationReply (stopDocumentWorkInput _) = ⊤
+  PreparationReply (stopSweepWorkInput _) = ⊤
   PreparationReply (prepareBeliefInput proposal admitted) = BeliefEmbedding.Preparation
   PreparationReply (canonicalLoadInput path project) = Text ⊎ Text
   PreparationReply (readDocumentInput path project) = Text ⊎ Text
   PreparationReply (embedDocumentInput path chunks) = Text ⊎ List Store.Vector
   PreparationReply (canonicalClearInput path) = Text ⊎ Text
+  PreparationReply (prepareReviewInput q tx proposed value) = ReviewMaterialReply
 
   PreparationResult = Σ PreparationRequest PreparationReply
 
@@ -662,50 +725,150 @@ module Run (environment : Environment) where
   preparationOperation : PreparationRecovery.Recoverable PreparationRequest
   preparationOperation = PreparationProof.readOnly preparationProgram
 
+  -- Every executable phase is registered here with its concrete recovery
+  -- instance. The public state constructor accepts only its certified run
+  -- state; adding a phase requires completing all three exhaustive mappings.
+  data OperationRequest : Set where
+    reembeddingPhase : (ids : List UUID) → Reembedding.PreparedVectors ids → OperationRequest
+    learningDiscardPhase : (q : Learning.Request) → (tx : Learn.T.Transaction q) →
+      (reason guidance : Text) → OperationRequest
+    capabilityPhase : OperationRequest
+    defeatPhase : (from to : UUID) → (weight : Number) → OperationRequest
+    patternPhase : (input : PatternInput) → OperationRequest
+    preparationPhase : (request : PreparationRequest) → OperationRequest
+    beliefPhase : (input : BeliefInput) → OperationRequest
+    relationPhase : (command : Mutation.Statement) → OrdinaryRelation command → OperationRequest
+    readPhase : (request : Read.Request) → OperationRequest
+    deletePhase : (kind : Deletion.Kind) → (id : UUID) → OperationRequest
+    forgetPhase : (project : Text) → OperationRequest
+    inferencePreparationPhase : (request : Inference.Request) → OperationRequest
+    posteriorPhase : (writes : Posterior.State) → (result : Inference.Result) → (successful : Inference.Successful result) → OperationRequest
+    sweepPhase : (ids : List UUID) → OperationRequest
+    inferenceQueryPhase : (request : Inference.ReadRequest) → OperationRequest
+    groundPhase : (request : Ground.Request) → OperationRequest
+    evidencePhase : (request : EvidenceRequest) → OperationRequest
+    documentPublicationPhase : (path : Text) → (chunks : List DocumentStore.Chunk) → (vectors : List Store.Vector) → OperationRequest
+    documentClearPhase : (path : Text) → OperationRequest
+    documentQueryPhase : (request : DocumentSearch) → OperationRequest
+    learningPreparationPhase : (q : Learning.Request) → OperationRequest
+    learningPublicationPhase : (q : Learning.Request) → (tx : Learn.T.Transaction q) → (proposed : LearningStore.World) → (value : Observation.Snapshot) → (materials : List ReviewMaterial.Material) → OperationRequest
+    queryPhase : (request : Query.Request) → OperationRequest
+    searchPhase : (request : SearchRequest) → OperationRequest
+    contextPhase : (input : ContextInput) → OperationRequest
+
+  Certificate : OperationRequest → Set₁
+  Certificate (reembeddingPhase ids material) = Reembed.R.Recoverable ids material ⊤
+  Certificate (learningDiscardPhase q tx reason guidance) = LearningDiscard.R.Recoverable q tx reason guidance ⊤
+  Certificate capabilityPhase = Capability.Recoverable ⊤
+  Certificate (defeatPhase from to weight) = DefeatRecovery.Proof.Recoverable from to weight ⊤
+  Certificate (patternPhase input) = PatternRecovery.Recoverable PatternInput
+  Certificate (preparationPhase request) = PreparationRecovery.Recoverable PreparationRequest
+  Certificate (beliefPhase input) = BeliefRecovery.Recoverable BeliefInput
+  Certificate (relationPhase command admitted) = RelationRecovery.Proof.Recoverable command ⊤
+  Certificate (readPhase request) = ReadRecovery.Recoverable Read.Request
+  Certificate (deletePhase kind id) = DeleteRecovery.R.Recoverable kind id ⊤
+  Certificate (forgetPhase project) = Standalone.R.Recoverable project ⊤
+  Certificate (inferencePreparationPhase request) = InferencePreparationRecovery.Recoverable Inference.Request
+  Certificate (posteriorPhase writes result successful) = PosteriorRecovery.R.Recoverable writes result successful ⊤
+  Certificate (sweepPhase ids) = Sweep.Certified.R.Recoverable ids ⊤
+  Certificate (inferenceQueryPhase request) = InferenceQueryRecovery.Recoverable Inference.ReadRequest
+  Certificate (groundPhase request) = GroundRecovery.R.Recoverable request ⊤
+  Certificate (evidencePhase request) = EvidenceRecovery.Recoverable EvidenceRequest
+  Certificate (documentPublicationPhase path chunks vectors) = DocumentReplaceRecovery.R.Recoverable path chunks vectors ⊤
+  Certificate (documentClearPhase path) = DocumentClearRecovery.R.Recoverable path ⊤
+  Certificate (documentQueryPhase request) = DocumentSearchRecovery.Recoverable DocumentSearch
+  Certificate (learningPreparationPhase q) = LearningRecovery.P.Recoverable q ⊤
+  Certificate (learningPublicationPhase q tx proposed value materials) = LearningRecovery.Commit.R.Recoverable q tx proposed value materials ⊤
+  Certificate (queryPhase request) = QueryRecovery.Recoverable Query.Request
+  Certificate (searchPhase request) = SearchRecovery.Recoverable SearchRequest
+  Certificate (contextPhase input) = ContextRecovery.Recoverable ContextInput
+
+  operation : (request : OperationRequest) → Certificate request
+  operation (reembeddingPhase ids material) = Reembed.recovery ids material
+  operation (learningDiscardPhase q tx reason guidance) = LearningDiscard.recovery q tx reason guidance
+  operation capabilityPhase = capabilityOperation
+  operation (defeatPhase from to weight) = DefeatRecovery.recovery from to weight
+  operation (patternPhase input) = patternOperation
+  operation (preparationPhase request) = preparationOperation
+  operation (beliefPhase input) = beliefOperation
+  operation (relationPhase command admitted) = RelationRecovery.recovery command
+  operation (readPhase request) = readOperation
+  operation (deletePhase kind id) = DeleteRecovery.recovery kind id
+  operation (forgetPhase project) = Standalone.recovery project
+  operation (inferencePreparationPhase request) = inferencePreparationOperation
+  operation (posteriorPhase writes result successful) = PosteriorRecovery.recovery writes result successful
+  operation (sweepPhase ids) = Sweep.Certified.recovery ids
+  operation (inferenceQueryPhase request) = inferenceQueryOperation
+  operation (groundPhase request) = GroundRecovery.recovery request
+  operation (evidencePhase request) = evidenceOperation
+  operation (documentPublicationPhase path chunks vectors) = DocumentReplaceRecovery.recovery path chunks vectors
+  operation (documentClearPhase path) = DocumentClearRecovery.recovery path
+  operation (documentQueryPhase request) = documentSearchOperation
+  operation (learningPreparationPhase q) = LearningRecovery.preparation q
+  operation (learningPublicationPhase q tx proposed value materials) = LearningRecovery.Commit.recovery q tx proposed value materials
+  operation (queryPhase request) = queryOperation
+  operation (searchPhase request) = searchOperation
+  operation (contextPhase input) = contextOperation
+
+  RunState : OperationRequest → Set
+  RunState (reembeddingPhase ids material) = Reembed.R.RunState ids material (operation (reembeddingPhase ids material)) tt
+  RunState (learningDiscardPhase q tx reason guidance) =
+    LearningDiscard.R.RunState q tx reason guidance (operation (learningDiscardPhase q tx reason guidance)) tt
+  RunState capabilityPhase = Capability.RunState (operation capabilityPhase) tt
+  RunState (defeatPhase from to weight) = DefeatRecovery.Proof.RunState from to weight (operation (defeatPhase from to weight)) tt
+  RunState (patternPhase input) = PatternRecovery.RunState (operation (patternPhase input)) input
+  RunState (preparationPhase request) = PreparationRecovery.RunState (operation (preparationPhase request)) request
+  RunState (beliefPhase input) = BeliefRecovery.RunState (operation (beliefPhase input)) input
+  RunState (relationPhase command admitted) = RelationRecovery.Proof.RunState command (operation (relationPhase command admitted)) tt
+  RunState (readPhase request) = ReadRecovery.RunState (operation (readPhase request)) request
+  RunState (deletePhase kind id) = DeleteRecovery.R.RunState kind id (operation (deletePhase kind id)) tt
+  RunState (forgetPhase project) = Standalone.R.RunState project (operation (forgetPhase project)) tt
+  RunState (inferencePreparationPhase request) = InferencePreparationRecovery.RunState (operation (inferencePreparationPhase request)) request
+  RunState (posteriorPhase writes result successful) = PosteriorRecovery.R.RunState writes result successful (operation (posteriorPhase writes result successful)) tt
+  RunState (sweepPhase ids) = Sweep.Certified.R.RunState ids (operation (sweepPhase ids)) tt
+  RunState (inferenceQueryPhase request) = InferenceQueryRecovery.RunState (operation (inferenceQueryPhase request)) request
+  RunState (groundPhase request) = GroundRecovery.R.RunState request (operation (groundPhase request)) tt
+  RunState (evidencePhase request) = EvidenceRecovery.RunState (operation (evidencePhase request)) request
+  RunState (documentPublicationPhase path chunks vectors) = DocumentReplaceRecovery.R.RunState path chunks vectors (operation (documentPublicationPhase path chunks vectors)) tt
+  RunState (documentClearPhase path) = DocumentClearRecovery.R.RunState path (operation (documentClearPhase path)) tt
+  RunState (documentQueryPhase request) = DocumentSearchRecovery.RunState (operation (documentQueryPhase request)) request
+  RunState (learningPreparationPhase q) = LearningRecovery.P.RunState q (operation (learningPreparationPhase q)) tt
+  RunState (learningPublicationPhase q tx proposed value materials) = LearningRecovery.Commit.R.RunState q tx proposed value materials (operation (learningPublicationPhase q tx proposed value materials)) tt
+  RunState (queryPhase request) = QueryRecovery.RunState (operation (queryPhase request)) request
+  RunState (searchPhase request) = SearchRecovery.RunState (operation (searchPhase request)) request
+  RunState (contextPhase input) = ContextRecovery.RunState (operation (contextPhase input)) input
+
   data State : Set where
+    running : (request : OperationRequest) → RunState request → State
     correcting : AdmissionFault → State
-    capabilityState : Capability.RunState capabilityOperation tt → State
     requestState : Envelope.Identity → State → State
-    defeatState : (from to : UUID) → (weight : Number) →
-      DefeatRecovery.Proof.RunState from to weight (DefeatRecovery.recovery from to weight) tt → State
-    patternState : (input : PatternInput) → PatternRecovery.RunState patternOperation input → State
-    preparationState : (request : PreparationRequest) →
-      PreparationRecovery.RunState preparationOperation request → State
-    publishingBelief : (input : BeliefInput) → BeliefRecovery.RunState beliefOperation input → State
-    relationState : (command : Mutation.Statement) → OrdinaryRelation command →
-      RelationRecovery.Proof.RunState command (RelationRecovery.recovery command) tt → State
-    readState : (request : Read.Request) → ReadRecovery.RunState readOperation request → State
-    deleteState : (kind : Deletion.Kind) → (id : UUID) →
-      DeleteRecovery.R.RunState kind id (DeleteRecovery.recovery kind id) tt → State
-    standaloneForgetState : (project : Text) →
-      Standalone.R.RunState project (Standalone.recovery project) tt → State
-    preparingInference : (request : Inference.Request) →
-      InferencePreparationRecovery.RunState inferencePreparationOperation request → State
-    publishingPosteriors : (writes : Posterior.State) → (result : Inference.Result) →
-      (successful : Inference.Successful result) →
-      PosteriorRecovery.R.RunState writes result successful (PosteriorRecovery.recovery writes result successful) tt → State
-    sweeping : (ids : List UUID) →
-      Sweep.Certified.R.RunState ids (Sweep.Certified.recovery ids) tt → State
-    inferenceQueryState : (request : Inference.ReadRequest) →
-      InferenceQueryRecovery.RunState inferenceQueryOperation request → State
-    groundState : (request : Ground.Request) →
-      GroundRecovery.R.RunState request (GroundRecovery.recovery request) tt → State
-    evidenceState : (request : EvidenceRequest) → EvidenceRecovery.RunState evidenceOperation request → State
-    publishingDocument : (path : Text) → (chunks : List DocumentStore.Chunk) → (vectors : List Store.Vector) →
-      DocumentReplaceRecovery.R.RunState path chunks vectors
-        (DocumentReplaceRecovery.recovery path chunks vectors) tt → State
-    clearingDocument : (path : Text) →
-      DocumentClearRecovery.R.RunState path (DocumentClearRecovery.recovery path) tt → State
-    documentQueryState : (request : DocumentSearch) → DocumentSearchRecovery.RunState documentSearchOperation request → State
-    preparingLearning : (q : Learning.Request) →
-      LearningRecovery.P.RunState q (LearningRecovery.preparation q) tt → State
-    publishingLearning : (q : Learning.Request) → (tx : Learn.T.Transaction q) →
-      (proposed : LearningStore.World) → (value : Observation.Snapshot) →
-      LearningRecovery.Commit.R.RunState q tx proposed value
-        (LearningRecovery.Commit.recovery q tx proposed value) tt → State
-    queryState : (request : Query.Request) → QueryRecovery.RunState queryOperation request → State
-    searchState : (request : SearchRequest) → SearchRecovery.RunState searchOperation request → State
-    contextState : (input : ContextInput) → ContextRecovery.RunState contextOperation input → State
+
+  pattern discardingLearning q tx reason guidance state = running (learningDiscardPhase q tx reason guidance) state
+  pattern publishingReembed ids material state = running (reembeddingPhase ids material) state
+
+  pattern capabilityState state = running capabilityPhase state
+  pattern defeatState from to weight state = running (defeatPhase from to weight) state
+  pattern patternState input state = running (patternPhase input) state
+  pattern preparationState request state = running (preparationPhase request) state
+  pattern publishingBelief input state = running (beliefPhase input) state
+  pattern relationState command admitted state = running (relationPhase command admitted) state
+  pattern readState request state = running (readPhase request) state
+  pattern deleteState kind id state = running (deletePhase kind id) state
+  pattern standaloneForgetState project state = running (forgetPhase project) state
+  pattern preparingInference request state = running (inferencePreparationPhase request) state
+  pattern publishingPosteriors writes result successful state = running (posteriorPhase writes result successful) state
+  pattern sweeping ids state = running (sweepPhase ids) state
+  pattern inferenceQueryState request state = running (inferenceQueryPhase request) state
+  pattern groundState request state = running (groundPhase request) state
+  pattern evidenceState request state = running (evidencePhase request) state
+  pattern publishingDocument path chunks vectors state = running (documentPublicationPhase path chunks vectors) state
+  pattern clearingDocument path state = running (documentClearPhase path) state
+  pattern documentQueryState request state = running (documentQueryPhase request) state
+  pattern preparingLearning q state = running (learningPreparationPhase q) state
+  pattern publishingLearning q tx proposed value materials state = running (learningPublicationPhase q tx proposed value materials) state
+  pattern queryState request state = running (queryPhase request) state
+  pattern searchState request state = running (searchPhase request) state
+  pattern contextState input state = running (contextPhase input) state
 
   beginPreparation : PreparationRequest → State
   beginPreparation request = preparationState request (PreparationRecovery.start preparationOperation request)
@@ -721,6 +884,16 @@ module Run (environment : Environment) where
   canonicalizingDocumentClear path = beginPreparation (canonicalClearInput path)
 
   data Effect : Set where
+    reembedPreparationEffect : Effect
+    reembedCommitEffect : (ids : List UUID) → Reembedding.PreparedVectors ids → Effect
+    -- These effects complete only after ownership is revoked and all matching
+    -- active work, including native embedding in other copies, has stopped.
+    revokeBeliefWork : UUID → Effect
+    revokeProjectWork revokeDocumentWork : Text → Effect
+    revokeSelectionWork : List UUID → Effect
+    learningMaterialEffect : (q : Learning.Request) → Learn.T.Transaction q →
+      LearningStore.World → Observation.Snapshot → Effect
+    learningDiscardEffect : (q : Learning.Request) → Learn.T.Transaction q → Effect
     mutationEffect : Mutation.Effect → Effect
     readEffect : Read.Effect → Effect
     deleteEffect : Delete.T.Effect → Effect
@@ -737,12 +910,20 @@ module Run (environment : Environment) where
     documentQueryEffect : DocumentQuery.Effect → Effect
     learningPreparationEffect : (q : Learning.Request) → Learn.PreparationEffect q → Effect
     learningCommitEffect : (q : Learning.Request) → Learn.T.Transaction q →
-      LearningStore.World → Observation.Snapshot → Effect
+      LearningStore.World → Observation.Snapshot → List ReviewMaterial.Material → Effect
     queryEffect : Query.Effect → Effect
     searchEffect : SearchEffect → Effect
     contextEffect : Context.State → Effect
 
   Reply : Effect → Set
+  Reply reembedPreparationEffect = Reembedding.Preparation
+  Reply (reembedCommitEffect ids material) = Reembed.Reply ids material
+  Reply (revokeBeliefWork _) = ⊤
+  Reply (revokeProjectWork _) = ⊤
+  Reply (revokeDocumentWork _) = ⊤
+  Reply (revokeSelectionWork _) = ⊤
+  Reply (learningMaterialEffect q tx proposed value) = ReviewMaterialReply
+  Reply (learningDiscardEffect q tx) = Learn.T.Cleanup q
   Reply (mutationEffect e) = Mutation.Reply e
   Reply (readEffect e) = Read.Reply e
   Reply (deleteEffect e) = Delete.T.Reply e
@@ -758,7 +939,7 @@ module Run (environment : Environment) where
   Reply (documentPublicationEffect e) = Document.T.Reply e
   Reply (documentQueryEffect e) = DocumentQuery.Reply e
   Reply (learningPreparationEffect q e) = Learn.PreparationReply q e
-  Reply (learningCommitEffect q tx proposed value) = Learn.T.CommitReply q
+  Reply (learningCommitEffect q tx proposed value materials) = Learn.T.CommitReply q
   Reply (queryEffect e) = Query.Reply e
   Reply (searchEffect effect) = SearchReply effect
   Reply (contextEffect s) = Context.Reply s
@@ -767,34 +948,46 @@ module Run (environment : Environment) where
     complete : Result → Next
     perform : (effect : Effect) → (Reply effect → State) → Next
 
-  learningCommitNext : ∀ q tx proposed value →
-    LearningRecovery.Commit.R.RunState q tx proposed value
-      (LearningRecovery.Commit.recovery q tx proposed value) tt → Next
-  learningCommitNext q tx proposed value (LearningRecovery.Commit.R.running events
-    (LearningRecovery.Commit.R.E.done answer) prefix) = complete (learned q answer)
-  learningCommitNext q tx proposed value (LearningRecovery.Commit.R.running events
-    (LearningRecovery.Commit.R.E.ask tt continuation) prefix) =
-    perform (learningCommitEffect q tx proposed value) (λ reply → publishingLearning q tx proposed value
-      (LearningRecovery.Commit.R.advance q tx proposed value
-        (LearningRecovery.Commit.recovery q tx proposed value) tt events tt continuation prefix refl reply))
+  deletionNext : ∀ kind id → DeleteRecovery.R.RunState kind id (DeleteRecovery.recovery kind id) tt → Next
+  deletionNext kind id (DeleteRecovery.R.running events (DeleteRecovery.R.E.done result) prefix) = complete (deleted result)
+  deletionNext kind id (DeleteRecovery.R.running events (DeleteRecovery.R.E.ask effect continuation) prefix) =
+    perform (deleteEffect effect) (λ reply → deleteState kind id
+      (DeleteRecovery.R.advance kind id (DeleteRecovery.recovery kind id) tt events effect continuation prefix refl reply))
 
-  learningPreparationNext : ∀ q →
-    LearningRecovery.P.RunState q (LearningRecovery.preparation q) tt → Next
-  learningPreparationNext q (LearningRecovery.P.running events
-    (LearningRecovery.P.E.done (Learn.invalidPreparation failure)) prefix) =
-    complete (learned q (Learn.invalidRequest failure))
-  learningPreparationNext q (LearningRecovery.P.running events
-    (LearningRecovery.P.E.done (Learn.transactionPrepared (Learn.Stage.complete outcome proof))) prefix) =
-    complete (learned q (Learn.transacted outcome))
-  learningPreparationNext q (LearningRecovery.P.running events
-    (LearningRecovery.P.E.done (Learn.transactionPrepared (Learn.Stage.ready tx proposed value))) prefix) =
-    learningCommitNext q tx proposed value
-      (LearningRecovery.Commit.R.start q tx proposed value (LearningRecovery.Commit.recovery q tx proposed value) tt)
-  learningPreparationNext q (LearningRecovery.P.running events
-    (LearningRecovery.P.E.ask effect continuation) prefix) =
-    perform (learningPreparationEffect q effect) (λ reply → preparingLearning q
-      (LearningRecovery.P.advance q (LearningRecovery.preparation q) tt
-        events effect continuation prefix refl reply))
+  projectDeletionNext : ∀ project → Standalone.R.RunState project (Standalone.recovery project) tt → Next
+  projectDeletionNext project (Standalone.R.running events (Standalone.R.E.done result) prefix) = complete (forgotten result)
+  projectDeletionNext project (Standalone.R.running events (Standalone.R.E.ask effect continuation) prefix) =
+    perform (forgetEffect effect) (λ reply → standaloneForgetState project
+      (Standalone.R.advance project (Standalone.recovery project) tt events effect continuation prefix refl reply))
+
+  reembedNext : ∀ ids material →
+    Reembed.R.RunState ids material (Reembed.recovery ids material) tt → Next
+  reembedNext ids material (Reembed.R.running events (Reembed.R.E.done result) prefix) =
+    complete (reembeddingResult result)
+  reembedNext ids material (Reembed.R.running events (Reembed.R.E.ask tt continuation) prefix) =
+    perform (reembedCommitEffect ids material) (λ reply → publishingReembed ids material
+      (Reembed.R.advance ids material (Reembed.recovery ids material) tt events tt continuation prefix refl reply))
+
+  learningCommitNext : ∀ q tx proposed value materials →
+    LearningRecovery.Commit.R.RunState q tx proposed value materials
+      (LearningRecovery.Commit.recovery q tx proposed value materials) tt → Next
+  learningCommitNext q tx proposed value materials (LearningRecovery.Commit.R.running events
+    (LearningRecovery.Commit.R.E.done answer) prefix) = complete (learned q answer)
+  learningCommitNext q tx proposed value materials (LearningRecovery.Commit.R.running events
+    (LearningRecovery.Commit.R.E.ask tt continuation) prefix) =
+    perform (learningCommitEffect q tx proposed value materials) (λ reply → publishingLearning q tx proposed value materials
+      (LearningRecovery.Commit.R.advance q tx proposed value materials
+        (LearningRecovery.Commit.recovery q tx proposed value materials) tt events tt continuation prefix refl reply))
+
+  discardLearningNext : ∀ q tx reason guidance →
+    LearningDiscard.R.RunState q tx reason guidance (LearningDiscard.recovery q tx reason guidance) tt → Next
+  discardLearningNext q tx reason guidance (LearningDiscard.R.running events
+    (LearningDiscard.R.E.done result) prefix) = complete result
+  discardLearningNext q tx reason guidance (LearningDiscard.R.running events
+    (LearningDiscard.R.E.ask tt continuation) prefix) =
+    perform (learningDiscardEffect q tx) (λ cleanup → discardingLearning q tx reason guidance
+      (LearningDiscard.R.advance q tx reason guidance (LearningDiscard.recovery q tx reason guidance) tt
+        events tt continuation prefix refl cleanup))
 
   posteriorNext : ∀ writes result successful →
     PosteriorRecovery.R.RunState writes result successful (PosteriorRecovery.recovery writes result successful) tt → Next
@@ -848,6 +1041,11 @@ module Run (environment : Environment) where
         events effect continuation prefix refl reply))
 
   preparationExternal : (request : PreparationRequest) → (PreparationReply request → State) → Next
+  preparationExternal prepareReembedInput continuation = perform reembedPreparationEffect continuation
+  preparationExternal (stopBeliefWorkInput id) continuation = perform (revokeBeliefWork id) continuation
+  preparationExternal (stopProjectWorkInput project) continuation = perform (revokeProjectWork project) continuation
+  preparationExternal (stopDocumentWorkInput path) continuation = perform (revokeDocumentWork path) continuation
+  preparationExternal (stopSweepWorkInput ids) continuation = perform (revokeSelectionWork ids) continuation
   preparationExternal (prepareBeliefInput proposal admitted) continuation =
     perform (mutationEffect (Mutation.embedding (BeliefEmbedding.prepare proposal))) continuation
   preparationExternal (canonicalLoadInput path project) continuation =
@@ -858,6 +1056,8 @@ module Run (environment : Environment) where
     perform (documentEffect (Document.embed (map DocumentStore.Chunk.content chunks))) continuation
   preparationExternal (canonicalClearInput path) continuation =
     perform (documentEffect (Document.canonicalize path)) continuation
+  preparationExternal (prepareReviewInput q tx proposed value) continuation =
+    perform (learningMaterialEffect q tx proposed value) continuation
 
   preparationFirst : PreparationRequest → Next
   preparationFirst request = preparationExternal request (λ reply → preparationState request
@@ -870,6 +1070,17 @@ module Run (environment : Environment) where
   clearDocumentPath supplied (inj₂ canonical) = canonical
 
   preparationComplete : PreparationResult → Next
+  preparationComplete (prepareReembedInput , Reembedding.needsInput reason guidance) = complete (needsDecision reason guidance)
+  preparationComplete (prepareReembedInput , Reembedding.ready ids material) =
+    reembedNext ids material (Reembed.R.start ids material (Reembed.recovery ids material) tt)
+  preparationComplete (stopBeliefWorkInput id , tt) = deletionNext Deletion.belief id
+    (DeleteRecovery.R.start Deletion.belief id (DeleteRecovery.recovery Deletion.belief id) tt)
+  preparationComplete (stopProjectWorkInput project , tt) = projectDeletionNext project
+    (Standalone.R.start project (Standalone.recovery project) tt)
+  preparationComplete (stopDocumentWorkInput path , tt) = documentClearNext path
+    (DocumentClearRecovery.R.start path (DocumentClearRecovery.recovery path) tt)
+  preparationComplete (stopSweepWorkInput ids , tt) = sweepNext ids
+    (Sweep.Certified.R.start ids (Sweep.Certified.recovery ids) tt)
   preparationComplete (prepareBeliefInput proposal admitted , BeliefEmbedding.askUser reason guidance) =
     complete (admissionResult (beliefDecision (BeliefEmbedding.needsInput reason guidance)))
   preparationComplete (prepareBeliefInput proposal admitted , BeliefEmbedding.ready material) =
@@ -884,11 +1095,36 @@ module Run (environment : Environment) where
   ... | nothing = complete (admissionResult documentShape)
   ... | just aligned = documentPublicationNext path chunks vectors
     (DocumentReplaceRecovery.R.start path chunks vectors (DocumentReplaceRecovery.recovery path chunks vectors) tt)
-  preparationComplete (canonicalClearInput path , resolution) = documentClearNext selected
-    (DocumentClearRecovery.R.start selected (DocumentClearRecovery.recovery selected) tt)
+  preparationComplete (canonicalClearInput path , resolution) = preparationFirst (stopDocumentWorkInput selected)
     where selected = clearDocumentPath path resolution
+  preparationComplete (prepareReviewInput q tx proposed value , materialNeedsInput reason guidance) =
+    discardLearningNext q tx reason guidance
+      (LearningDiscard.R.start q tx reason guidance (LearningDiscard.recovery q tx reason guidance) tt)
+  preparationComplete (prepareReviewInput q tx proposed value , materialReady materials) =
+    learningCommitNext q tx proposed value materials
+      (LearningRecovery.Commit.R.start q tx proposed value materials
+        (LearningRecovery.Commit.recovery q tx proposed value materials) tt)
+
+  learningPreparationNext : ∀ q →
+    LearningRecovery.P.RunState q (LearningRecovery.preparation q) tt → Next
+  learningPreparationNext q (LearningRecovery.P.running events
+    (LearningRecovery.P.E.done (Learn.invalidPreparation failure)) prefix) =
+    complete (learned q (Learn.invalidRequest failure))
+  learningPreparationNext q (LearningRecovery.P.running events
+    (LearningRecovery.P.E.done (Learn.transactionPrepared (Learn.Stage.complete outcome proof))) prefix) =
+    complete (learned q (Learn.transacted outcome))
+  learningPreparationNext q (LearningRecovery.P.running events
+    (LearningRecovery.P.E.done (Learn.transactionPrepared (Learn.Stage.ready tx proposed value))) prefix) =
+    preparationFirst (prepareReviewInput q tx proposed value)
+  learningPreparationNext q (LearningRecovery.P.running events
+    (LearningRecovery.P.E.ask effect continuation) prefix) =
+    perform (learningPreparationEffect q effect) (λ reply → preparingLearning q
+      (LearningRecovery.P.advance q (LearningRecovery.preparation q) tt
+        events effect continuation prefix refl reply))
 
   next : State → Next
+  next (publishingReembed ids material state) = reembedNext ids material state
+  next (discardingLearning q tx reason guidance state) = discardLearningNext q tx reason guidance state
   next (correcting fault) = complete (admissionResult fault)
   next (capabilityState (Capability.running events (Capability.E.done result) prefix)) = complete result
   next (capabilityState (Capability.running events (Capability.E.ask () continuation) prefix))
@@ -921,15 +1157,8 @@ module Run (environment : Environment) where
   next (readState request (ReadRecovery.running events (ReadRecovery.E.ask effect continuation) prefix)) =
     perform (readEffect effect) (λ reply → readState request
       (ReadRecovery.advance readOperation request events effect continuation prefix refl reply))
-  next (deleteState kind id (DeleteRecovery.R.running events (DeleteRecovery.R.E.done result) prefix)) = complete (deleted result)
-  next (deleteState kind id (DeleteRecovery.R.running events (DeleteRecovery.R.E.ask effect continuation) prefix)) =
-    perform (deleteEffect effect) (λ reply → deleteState kind id
-      (DeleteRecovery.R.advance kind id (DeleteRecovery.recovery kind id) tt events effect continuation prefix refl reply))
-  next (standaloneForgetState project (Standalone.R.running events (Standalone.R.E.done result) prefix)) =
-    complete (forgotten result)
-  next (standaloneForgetState project (Standalone.R.running events (Standalone.R.E.ask effect continuation) prefix)) =
-    perform (forgetEffect effect) (λ reply → standaloneForgetState project
-      (Standalone.R.advance project (Standalone.recovery project) tt events effect continuation prefix refl reply))
+  next (deleteState kind id state) = deletionNext kind id state
+  next (standaloneForgetState project state) = projectDeletionNext project state
   next (preparingInference request (InferencePreparationRecovery.running events
     (InferencePreparationRecovery.E.done (Inference.noPublication result)) prefix)) = complete (inferred result)
   next (preparingInference request (InferencePreparationRecovery.running events
@@ -938,7 +1167,7 @@ module Run (environment : Environment) where
       (PosteriorRecovery.R.start writes result successful (PosteriorRecovery.recovery writes result successful) tt)
   next (preparingInference request (InferencePreparationRecovery.running events
     (InferencePreparationRecovery.E.done (Inference.publish (Inference.removeSelection ids))) prefix)) =
-    sweepNext ids (Sweep.Certified.R.start ids (Sweep.Certified.recovery ids) tt)
+    preparationFirst (stopSweepWorkInput ids)
   next (preparingInference request (InferencePreparationRecovery.running events
     (InferencePreparationRecovery.E.ask effect continuation) prefix)) =
     perform (inferencePreparationEffect effect) (λ reply → preparingInference request
@@ -964,7 +1193,7 @@ module Run (environment : Environment) where
     perform (documentQueryEffect effect) (λ reply → documentQueryState request
       (DocumentSearchRecovery.advance documentSearchOperation request events effect continuation prefix refl reply))
   next (preparingLearning q state) = learningPreparationNext q state
-  next (publishingLearning q tx proposed value state) = learningCommitNext q tx proposed value state
+  next (publishingLearning q tx proposed value materials state) = learningCommitNext q tx proposed value materials state
   next (queryState request (QueryRecovery.running events (QueryRecovery.E.done result) prefix)) = complete (learningQueryResult result)
   next (queryState request (QueryRecovery.running events (QueryRecovery.E.ask effect continuation) prefix)) =
     perform (queryEffect effect) (λ reply → queryState request
@@ -1020,10 +1249,11 @@ module Run (environment : Environment) where
       (PatternRecovery.start patternOperation (situation , approach , success , project))
   start (Public.mutation (Mutation.edge from to relation weight)) = relationStart from to relation weight
   start (Public.read request) = readState request (ReadRecovery.start readOperation request)
-  start (Public.delete kind id) = deleteState kind id
-    (DeleteRecovery.R.start kind id (DeleteRecovery.recovery kind id) tt)
+  start (Public.delete Deletion.belief id) = beginPreparation (stopBeliefWorkInput id)
+  start (Public.delete Deletion.patternNode id) = deleteState Deletion.patternNode id
+    (DeleteRecovery.R.start Deletion.patternNode id (DeleteRecovery.recovery Deletion.patternNode id) tt)
   start (Public.deleteProject project) =
-    standaloneForgetState project (Standalone.R.start project (Standalone.recovery project) tt)
+    beginPreparation (stopProjectWorkInput project)
   start (Public.inference request@(Inference.propagate id)) = preparingInference request
     (InferencePreparationRecovery.start inferencePreparationOperation request)
   start (Public.inference (Inference.intervention id value)) =
@@ -1061,6 +1291,7 @@ module Run (environment : Environment) where
   start (Public.learningContext query project limit) = contextState (query , project , limit)
     (ContextRecovery.start contextOperation (query , project , limit))
   start Public.capabilities = capabilityState (Capability.start capabilityOperation tt)
+  start Public.reembed = beginPreparation prepareReembedInput
 
   startRequest : Envelope.Identity → Text → JSON.Value → Public.Request → State
   startRequest (Envelope.identity true (JSON.string id)) name arguments request =
@@ -1086,124 +1317,143 @@ module Run (environment : Environment) where
   ForgetStaging (Forget.learning (Forget.T.commit tx)) = ⊥
   ForgetStaging effect = ⊤
 
-  data RequestStep : State → (effect : Effect) → Reply effect → Store.World → Store.World → Set where
-    underRequest : ∀ {identity state effect reply before after} → RequestStep state effect reply before after →
-      RequestStep (requestState identity state) effect reply before after
+  data RequestStep : (effect : Effect) → State → Reply effect → Store.World → Store.World → Set where
+    deletionBegins : ∀ {state reply before} →
+      RequestStep (deleteEffect (Delete.T.begin database)) state reply before before
+    documentClearBegins : ∀ {state reply before} →
+      RequestStep (documentClearEffect (Document.T.begin database)) state reply before before
+    sweepBegins : ∀ {state reply before} →
+      RequestStep (sweepEffect (Sweep.S.begin database)) state reply before before
+    reembeddingNeedsInput : ∀ {state reason guidance before} →
+      RequestStep reembedPreparationEffect state (Reembedding.needsInput reason guidance) before before
+    reembeddingPrepared : ∀ {state ids material before} → Reembedding.SameSelection ids before →
+      RequestStep reembedPreparationEffect state (Reembedding.ready ids material) before before
+    reembeddingCommit : ∀ {state ids material reply before after} →
+      Reembed.Atomic ids material before tt reply after →
+      RequestStep (reembedCommitEffect ids material) state reply before after
+    beliefWorkRevoked : ∀ {state id before} → RequestStep (revokeBeliefWork id) state tt before before
+    projectWorkRevoked : ∀ {state project before} → RequestStep (revokeProjectWork project) state tt before before
+    documentWorkRevoked : ∀ {state path before} → RequestStep (revokeDocumentWork path) state tt before before
+    selectionWorkRevoked : ∀ {state ids before} → RequestStep (revokeSelectionWork ids) state tt before before
+    materialPreparationNeedsInput : ∀ {state q tx proposed value reason guidance before} →
+      RequestStep (learningMaterialEffect q tx proposed value) state (materialNeedsInput reason guidance) before before
+    materialPreparationReady : ∀ {state q tx proposed value materials before} →
+      ReviewMaterial.Complete before (record before { learning = proposed }) materials →
+      RequestStep (learningMaterialEffect q tx proposed value) state (materialReady materials) before before
+    discardedPrivateLearning : ∀ {state q tx cleanup before} →
+      RequestStep (learningDiscardEffect q tx) state cleanup before before
+    underRequest : ∀ {identity state effect reply before after} → RequestStep effect state reply before after →
+      RequestStep effect (requestState identity state) reply before after
     preparedDocumentPublication : ∀ {request events path chunks vectors prefix reply before after} →
       DocumentReplaceRecovery.Atomic path chunks vectors before (Document.T.begin database) reply after →
-      RequestStep (preparationState request (PreparationRecovery.running events
-        (PreparationRecovery.E.done (embedDocumentInput path chunks , inj₂ vectors)) prefix))
-        (documentPublicationEffect (Document.T.begin database)) reply before after
+      RequestStep (documentPublicationEffect (Document.T.begin database)) (preparationState request (PreparationRecovery.running events
+        (PreparationRecovery.E.done (embedDocumentInput path chunks , inj₂ vectors)) prefix)) reply before after
     preparedDocumentClear : ∀ {request events path resolution prefix reply before after} →
       DocumentClearRecovery.Atomic (clearDocumentPath path resolution) before (Document.T.begin database) reply after →
-      RequestStep (preparationState request (PreparationRecovery.running events
-        (PreparationRecovery.E.done (canonicalClearInput path , resolution)) prefix))
-        (documentClearEffect (Document.T.begin database)) reply before after
+      RequestStep (documentClearEffect (Document.T.begin database)) (preparationState request (PreparationRecovery.running events
+        (PreparationRecovery.E.done (canonicalClearInput path , resolution)) prefix)) reply before after
     learningPreparationRead : ∀ {q state effect reply before after} →
       LearningRecovery.PreparationAtomic q before effect reply after →
-      RequestStep state (learningPreparationEffect q effect) reply before after
-    learningCommitStep : ∀ {state q tx proposed value reply before after} →
-      LearningRecovery.Commit.Atomic q tx proposed value before tt reply after →
-      RequestStep state (learningCommitEffect q tx proposed value) reply before after
+      RequestStep (learningPreparationEffect q effect) state reply before after
+    learningCommitStep : ∀ {state q tx proposed value materials reply before after} →
+      LearningRecovery.Commit.Atomic q tx proposed value materials before tt reply after →
+      RequestStep (learningCommitEffect q tx proposed value materials) state reply before after
     preparedPosteriorStep : ∀ {request writes result successful events prefix reply before after} →
       PosteriorRecovery.Atomic writes result successful before tt reply after →
-      RequestStep (preparingInference request (InferencePreparationRecovery.running events
-        (InferencePreparationRecovery.E.done (Inference.publish (Inference.update writes result successful))) prefix))
-        (inferenceEffect (Inference.persistBeta writes)) reply before after
+      RequestStep (inferenceEffect (Inference.persistBeta writes)) (preparingInference request (InferencePreparationRecovery.running events
+        (InferencePreparationRecovery.E.done (Inference.publish (Inference.update writes result successful))) prefix)) reply before after
     preparedSweepStep : ∀ {request ids events prefix reply before after} →
       Sweep.Certified.Atomic ids before (Sweep.S.begin database) reply after →
-      RequestStep (preparingInference request (InferencePreparationRecovery.running events
-        (InferencePreparationRecovery.E.done (Inference.publish (Inference.removeSelection ids))) prefix))
-        (sweepEffect (Sweep.S.begin database)) reply before after
+      RequestStep (sweepEffect (Sweep.S.begin database)) (preparingInference request (InferencePreparationRecovery.running events
+        (InferencePreparationRecovery.E.done (Inference.publish (Inference.removeSelection ids))) prefix)) reply before after
     posteriorStep : ∀ {writes result successful events continuation prefix reply before after} →
       PosteriorRecovery.Atomic writes result successful before tt reply after →
-      RequestStep (publishingPosteriors writes result successful
+      RequestStep (inferenceEffect (Inference.persistBeta writes)) (publishingPosteriors writes result successful
         (PosteriorRecovery.R.running {writes = writes} {result = result} {successful = successful} events
-          (PosteriorRecovery.R.E.ask {writes = writes} {result = result} {successful = successful} tt continuation) prefix))
-        (inferenceEffect (Inference.persistBeta writes)) reply before after
+          (PosteriorRecovery.R.E.ask {writes = writes} {result = result} {successful = successful} tt continuation) prefix)) reply before after
     sweepStep : ∀ {ids events effect continuation prefix reply before after} →
       Sweep.Certified.Atomic ids before effect reply after →
-      RequestStep (sweeping ids (Sweep.Certified.R.running {ids = ids} events
-        (Sweep.S.E.ask effect continuation) prefix)) (sweepEffect effect) reply before after
+      RequestStep (sweepEffect effect) (sweeping ids (Sweep.Certified.R.running {ids = ids} events
+        (Sweep.S.E.ask effect continuation) prefix)) reply before after
     deletionStep : ∀ {kind id events effect continuation prefix reply before after} →
       DeleteRecovery.Atomic kind id before effect reply after →
-      RequestStep (deleteState kind id (DeleteRecovery.R.running {kind = kind} {id = id} events
-        (Delete.T.E.ask effect continuation) prefix)) (deleteEffect effect) reply before after
+      RequestStep (deleteEffect effect) (deleteState kind id (DeleteRecovery.R.running {kind = kind} {id = id} events
+        (Delete.T.E.ask effect continuation) prefix)) reply before after
     groundingStep : ∀ {request events effect continuation prefix reply before after} →
       GroundRecovery.Atomic request before effect reply after →
-      RequestStep (groundState request (GroundRecovery.R.running {request = request} events
-        (Grounding.T.E.ask effect continuation) prefix)) (groundEffect effect) reply before after
+      RequestStep (groundEffect effect) (groundState request (GroundRecovery.R.running {request = request} events
+        (Grounding.T.E.ask effect continuation) prefix)) reply before after
     documentClearStep : ∀ {path events effect continuation prefix reply before after} →
       DocumentClearRecovery.Atomic path before effect reply after →
-      RequestStep (clearingDocument path (DocumentClearRecovery.R.running {path = path} events
-        (Document.T.E.ask effect continuation) prefix)) (documentClearEffect effect) reply before after
+      RequestStep (documentClearEffect effect) (clearingDocument path (DocumentClearRecovery.R.running {path = path} events
+        (Document.T.E.ask effect continuation) prefix)) reply before after
     documentPublicationStep : ∀ {path chunks vectors events effect continuation prefix reply before after} →
       DocumentReplaceRecovery.Atomic path chunks vectors before effect reply after →
-      RequestStep (publishingDocument path chunks vectors
+      RequestStep (documentPublicationEffect effect) (publishingDocument path chunks vectors
         (DocumentReplaceRecovery.R.running {path = path} {chunks = chunks} {vectors = vectors} events
-          (Document.T.E.ask effect continuation) prefix)) (documentPublicationEffect effect) reply before after
+          (Document.T.E.ask effect continuation) prefix)) reply before after
     canonicalDocumentRead : ∀ {state path reply before} →
-      RequestStep state (documentEffect (Document.canonicalize path)) reply before before
+      RequestStep (documentEffect (Document.canonicalize path)) state reply before before
     documentFileRead : ∀ {state path reply before} →
-      RequestStep state (documentEffect (Document.readUTF8 path)) reply before before
+      RequestStep (documentEffect (Document.readUTF8 path)) state reply before before
     documentEmbeddingRead : ∀ {state texts reply before} →
-      RequestStep state (documentEffect (Document.embed texts)) reply before before
+      RequestStep (documentEffect (Document.embed texts)) state reply before before
     other : ∀ {state effect reply before after} → Ordinary effect →
-      RequestStep state effect reply before after
+      RequestStep effect state reply before after
     graphRead : ∀ {state effect reply before} →
-      RequestStep state (readEffect effect) reply before before
+      RequestStep (readEffect effect) state reply before before
     learningRead : ∀ {state effect reply before} →
-      RequestStep state (queryEffect effect) reply before before
+      RequestStep (queryEffect effect) state reply before before
     evidenceRead : ∀ {state effect reply before} →
-      RequestStep state (evidenceEffect effect) reply before before
+      RequestStep (evidenceEffect effect) state reply before before
     documentSearchRead : ∀ {state effect reply before} →
-      RequestStep state (documentQueryEffect effect) reply before before
+      RequestStep (documentQueryEffect effect) state reply before before
     searchRead : ∀ {state effect reply before} →
-      RequestStep state (searchEffect effect) reply before before
+      RequestStep (searchEffect effect) state reply before before
     contextRead : ∀ {state effect reply before} →
-      RequestStep state (contextEffect effect) reply before before
+      RequestStep (contextEffect effect) state reply before before
     inferenceQueryRead : ∀ {state effect reply before} →
-      RequestStep state (inferenceQueryEffect effect) reply before before
+      RequestStep (inferenceQueryEffect effect) state reply before before
     inferencePreparationRead : ∀ {state effect reply before} →
-      RequestStep state (inferencePreparationEffect effect) reply before before
+      RequestStep (inferencePreparationEffect effect) state reply before before
     relationFailed : ∀ {state command detail before} →
       OrdinaryRelation command →
-      RequestStep state (mutationEffect (Mutation.statement command)) (inj₁ detail) before before
+      RequestStep (mutationEffect (Mutation.statement command)) state (inj₁ detail) before before
     relationPublished : ∀ {state command receipt before after} →
       OrdinaryRelation command → Mutation.StatementReceipt command before receipt after →
-      RequestStep state (mutationEffect (Mutation.statement command)) (inj₂ receipt) before after
+      RequestStep (mutationEffect (Mutation.statement command)) state (inj₂ receipt) before after
     defeatFailed : ∀ {state from to weight detail before} →
-      RequestStep state (mutationEffect (Mutation.recordDefeat from to weight)) (inj₁ detail) before before
+      RequestStep (mutationEffect (Mutation.recordDefeat from to weight)) state (inj₁ detail) before before
     defeatPublished : ∀ {state from to weight receipt before after} →
       Mutation.DefeatReceipt from to weight before receipt after →
-      RequestStep state (mutationEffect (Mutation.recordDefeat from to weight)) (inj₂ receipt) before after
+      RequestStep (mutationEffect (Mutation.recordDefeat from to weight)) state (inj₂ receipt) before after
     beliefPreparationNeedsInput : ∀ {state proposal reason guidance before} →
-      RequestStep state (mutationEffect (Mutation.embedding (BeliefEmbedding.prepare proposal)))
+      RequestStep (mutationEffect (Mutation.embedding (BeliefEmbedding.prepare proposal))) state
         (BeliefEmbedding.askUser reason guidance) before before
     beliefPreparationReady : ∀ {state proposal material before} →
       BeliefEmbedding.Prepared.supportingPassage material ∈ Store.World.chunks before →
-      RequestStep state (mutationEffect (Mutation.embedding (BeliefEmbedding.prepare proposal)))
+      RequestStep (mutationEffect (Mutation.embedding (BeliefEmbedding.prepare proposal))) state
         (BeliefEmbedding.ready material) before before
     beliefPublicationFailed : ∀ {state proposal material error before} →
-      RequestStep state (mutationEffect (Mutation.embedding (BeliefEmbedding.publish proposal material)))
+      RequestStep (mutationEffect (Mutation.embedding (BeliefEmbedding.publish proposal material))) state
         (inj₁ error) before before
     beliefPublicationSucceeded : ∀ {state proposal material belief before after} →
       BeliefPublished proposal material belief before after →
-      RequestStep state (mutationEffect (Mutation.embedding (BeliefEmbedding.publish proposal material)))
+      RequestStep (mutationEffect (Mutation.embedding (BeliefEmbedding.publish proposal material))) state
         (inj₂ belief) before after
     patternPublicationFailed : ∀ {state situation approach success project error before} →
-      RequestStep state (mutationEffect (Mutation.createPattern situation approach success project))
+      RequestStep (mutationEffect (Mutation.createPattern situation approach success project)) state
         (inj₁ error) before before
     patternPublicationSucceeded : ∀ {state situation approach success project patternValue before after} →
       PatternPublished situation approach success project patternValue before after →
-      RequestStep state (mutationEffect (Mutation.createPattern situation approach success project))
+      RequestStep (mutationEffect (Mutation.createPattern situation approach success project)) state
         (inj₂ patternValue) before after
     staging : ∀ {state effect reply before} → ForgetStaging effect →
-      RequestStep state (forgetEffect effect) reply before before
+      RequestStep (forgetEffect effect) state reply before before
     readFailed : ∀ {state tx failure before} →
-      RequestStep state (forgetEffect (Forget.learning (Forget.T.read tx))) (inj₁ failure) before before
+      RequestStep (forgetEffect (Forget.learning (Forget.T.read tx))) state (inj₁ failure) before before
     readWorld : ∀ {state tx before} →
-      RequestStep state (forgetEffect (Forget.learning (Forget.T.read tx))) (inj₂ before) before before
+      RequestStep (forgetEffect (Forget.learning (Forget.T.read tx))) state (inj₂ before) before before
     committedCertifiedDeletion : ∀ {project events tx continuation prefix reply before after} →
       events ≡
         (Forget.learning (Forget.T.begin database) , inj₂ tx) ∷
@@ -1212,9 +1462,8 @@ module Run (environment : Environment) where
         (Forget.learning (Forget.T.write tx (Project.published project before)) , inj₂ tt) ∷ [] →
       DB.Atomic before (Project.published project before) (Forget.T.receipt reply) after →
       RequestStep
-        (standaloneForgetState project (Standalone.R.running events
-          (Forget.E.ask (Forget.learning (Forget.T.commit tx)) continuation) prefix))
-        (forgetEffect (Forget.learning (Forget.T.commit tx))) reply before after
+        (forgetEffect (Forget.learning (Forget.T.commit tx))) (standaloneForgetState project (Standalone.R.running events
+          (Forget.E.ask (Forget.learning (Forget.T.commit tx)) continuation) prefix)) reply before after
     committedCertifiedRequestDeletion : ∀ {identityValue project events tx continuation prefix reply before after} →
       events ≡
         (Forget.learning (Forget.T.begin database) , inj₂ tx) ∷
@@ -1223,36 +1472,17 @@ module Run (environment : Environment) where
         (Forget.learning (Forget.T.write tx (Project.published project before)) , inj₂ tt) ∷ [] →
       DB.Atomic before (Project.published project before) (Forget.T.receipt reply) after →
       RequestStep
-        (requestState identityValue (standaloneForgetState project (Standalone.R.running events
-          (Forget.E.ask (Forget.learning (Forget.T.commit tx)) continuation) prefix)))
-        (forgetEffect (Forget.learning (Forget.T.commit tx))) reply before after
+        (forgetEffect (Forget.learning (Forget.T.commit tx))) (requestState identityValue (standaloneForgetState project (Standalone.R.running events
+          (Forget.E.ask (Forget.learning (Forget.T.commit tx)) continuation) prefix))) reply before after
 
-  beliefPreparationPreservesStore : ∀ {state proposal reply before after} →
-    RequestStep state (mutationEffect (Mutation.embedding (BeliefEmbedding.prepare proposal))) reply before after →
-    after ≡ before
-  beliefPreparationPreservesStore (other ())
-  beliefPreparationPreservesStore (underRequest step) = beliefPreparationPreservesStore step
-  beliefPreparationPreservesStore beliefPreparationNeedsInput = refl
-  beliefPreparationPreservesStore (beliefPreparationReady indexed) = refl
-
-  failedBeliefPublicationPreservesStore : ∀ {state proposal material error before after} →
-    RequestStep state (mutationEffect (Mutation.embedding (BeliefEmbedding.publish proposal material)))
-      (inj₁ error) before after → after ≡ before
-  failedBeliefPublicationPreservesStore (other ())
-  failedBeliefPublicationPreservesStore (underRequest step) = failedBeliefPublicationPreservesStore step
-  failedBeliefPublicationPreservesStore beliefPublicationFailed = refl
-
-  failedPatternPublicationPreservesStore : ∀ {state situation approach success project error before after} →
-    RequestStep state (mutationEffect (Mutation.createPattern situation approach success project))
-      (inj₁ error) before after → after ≡ before
-  failedPatternPublicationPreservesStore (other ())
-  failedPatternPublicationPreservesStore (underRequest step) = failedPatternPublicationPreservesStore step
-  failedPatternPublicationPreservesStore patternPublicationFailed = refl
+  -- Preparatory and failed-publication store preservation is required by the
+  -- registered operation certificates above; transport receipts do not replace
+  -- those obligations with a second, independent recovery policy.
 
   data GuardedRuns : State → Store.World → List Event → Store.World → Result → Set where
     returned : ∀ state store result → next state ≡ complete result → GuardedRuns state store [] store result
     replied : ∀ state effect continuation reply before middle events after result →
-      next state ≡ perform effect continuation → RequestStep state effect reply before middle →
+      next state ≡ perform effect continuation → RequestStep effect state reply before middle →
       GuardedRuns (continuation reply) middle events after result →
       GuardedRuns state before ((effect , reply) ∷ events) after result
 

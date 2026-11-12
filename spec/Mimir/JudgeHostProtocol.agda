@@ -40,6 +40,7 @@ import Mimir.JudgeMcpLifecycle as Client
 import Mimir.OperationalLifecycle as Operational
 import Mimir.OperationalLogProtocol as OperationalLog
 import Mimir.ConfigurationSchema as Core
+import Mimir.NotificationDelivery as Delivery
 
 module R = Records.Over UUIDValue.UUID
 
@@ -191,7 +192,7 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   logFailureContinues : ∀ watch loadedConfiguration observed detail files events result →
     Operational.LogAttempt.outcome observed ≡ Operational.LogAt.failed
-      {coreOf loadedConfiguration} {Operational.LogAttempt.archives observed} detail files →
+      {coreOf loadedConfiguration} detail files →
     P.Runs (afterLogging watch loadedConfiguration) events result →
     P.Runs (afterLog watch loadedConfiguration observed)
       ((reportDiagnostic detail , tt) ∷ events) result
@@ -249,8 +250,8 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
   nextWatch (controlling (done state)) = internal state
   nextWatch (controlling (ask effect continuation)) = external effect (λ reply → controlling (continuation reply))
 
-  watch : WatchState
-  watch = subscribing
+  watchCore : WatchState
+  watchCore = subscribing
 
   batchResultHasContinuation : ∀ subscription result → Σ WatchState (λ continuation →
     nextWatch (watching subscription (done result)) ≡ internal continuation)
@@ -283,6 +284,14 @@ module Run (conversion : Conversion.Contract) (format : Encoding.Formatting)
       WatchTransition before nothing after
     external : ∀ {before effect next reply} → nextWatch before ≡ WatchStep.external effect next →
       Receipt effect reply → WatchTransition before (just (effect , reply)) (next reply)
+
+  -- Delivery failure and cleanup never suspend the review controller. The
+  -- public watcher combines both transition systems rather than awaiting mail
+  -- inside a review step. A fresh delivery consumes the original message.
+  module Notifications = Delivery.Alongside WatchState (Maybe P.Event) WatchTransition
+
+  watch : Notifications.State
+  watch = watchCore , Delivery.idle
 
   data Runs {A : Set} : Script A → List P.Event → A → Set where
     returned : ∀ result → Runs (done result) [] result

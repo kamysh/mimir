@@ -91,6 +91,15 @@ module Compose (environment : Application.Environment) (format : Encoding.Format
     diagnosticHasRecoveryReply (H.invalidArguments fault) = _ , invalid fault
     diagnosticHasRecoveryReply (H.unknownTool name) = _ , unknown name
 
+    -- Public diagnostics are dialogue, never a fatal transport result. This
+    -- covers every materialized failure, not only a chosen example or cause.
+    diagnosticCannotBeFatal : ∀ cause reply → Materialized (inj₁ cause) reply →
+      Σ JSON.Value (λ value → reply ≡ inj₂ value)
+    diagnosticCannotBeFatal _ _ (recoveryNeeded cause) = _ , refl
+    diagnosticCannotBeFatal _ _ (decision reason guidance) = _ , refl
+    diagnosticCannotBeFatal _ _ (invalid fault) = _ , refl
+    diagnosticCannotBeFatal _ _ (unknown name) = _ , refl
+
     data Event : Set where
       external : (effect : Exchange.Effect) → External effect → Exchange.Reply effect → Event
       tool : Envelope.Identity → Envelope.Text → JSON.Value → List A.Event → Text ⊎ JSON.Value → Event

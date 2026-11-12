@@ -1,5 +1,5 @@
 {-# OPTIONS --safe #-}
--- Mimir chooses the error stage and bounded private source excerpt. The
+-- Mimir chooses the error stage and preserves the complete private source. The
 -- supplied library performs complete JSON parsing and text encoding.
 import Mimir.StandardLibrary
 module Mimir.JudgeJSON (conversion : Mimir.StandardLibrary.Contract) where
