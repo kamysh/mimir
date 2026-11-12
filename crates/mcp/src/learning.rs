@@ -13,7 +13,7 @@ pub fn tools() -> Vec<Value> {
         {"type":"object","additionalProperties":false,"properties":{"candidate_key":{"type":"string","minLength":1}},"required":["candidate_key"]}
     ]});
     let candidate = json!({"oneOf":[
-        {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"belief"},"key":{"type":"string","minLength":1},"content":{"type":"string","minLength":1},"memory_type":{"enum":["Fact","Experiential"]}},"required":["kind","key","content"]},
+        {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"belief"},"key":{"type":"string","minLength":1},"content":{"type":"string","minLength":1},"memory_type":{"enum":["Fact","Experiential"]},"supporting_passage_id":{"type":"string","format":"uuid","description":"Existing UUID of an indexed passage supporting this new belief. Find it with query_document and read the passage; similarity alone is not support. Required before creating a belief; no partial belief is saved on preparation failure."}},"required":["kind","key","content","supporting_passage_id"]},
         {"type":"object","additionalProperties":false,"properties":{"kind":{"const":"pattern"},"key":{"type":"string","minLength":1},"situation":{"type":"string","minLength":1},"approach":{"type":"string","minLength":1}},"required":["kind","key","situation","approach"]}
     ]});
     let axis = |minimum| json!({"type":"object","additionalProperties":false,"properties":{"value":{"type":["number","null"],"minimum":minimum,"maximum":1},"weight":{"type":"number","minimum":0,"maximum":1}},"required":["value","weight"]});
@@ -142,7 +142,7 @@ pub async fn call(svc: &MimirService, name: &str, args: &Value) -> Result<Value>
             .await?,
         )?,
         "review_experience" => serde_json::to_value(
-            svc.review_experience(
+            svc.review_supported_experience(
                 &serde_json::from_value(required(args, "review")?.clone())?,
                 integer(args, "expected_review_revision")?,
             )

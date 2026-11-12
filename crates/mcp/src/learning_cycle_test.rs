@@ -12,6 +12,12 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> {
+    struct Provider;
+    impl mimir_core::embed::EmbeddingProvider for Provider {
+        fn embed<'a>(&'a self, texts: &'a [String]) -> mimir_core::embed::EmbedFuture<'a> {
+            Box::pin(async move { Ok(vec![vec![1.0, 0.0]; texts.len()]) })
+        }
+    }
     let service = MimirService::connect(&Config {
         database: isolation::fixture().database_config(),
         embeddings: None,
@@ -19,7 +25,8 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         judge: None,
         email: None,
     })
-    .await?;
+    .await?
+    .with_embedding_provider(Box::new(Provider));
     let capabilities = handle_tool_call(&service, "learning_capabilities", &json!({})).await?;
     ensure!(
         capabilities["source_coverage"] == true,
@@ -99,6 +106,25 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         "insert_belief schema omits provenance"
     );
     let project = format!("mcp-learning-{}", Uuid::new_v4());
+    let passage = mimir_core::documents::DocumentChunk::new(
+        format!("/fixture/{project}.md"),
+        vec![],
+        "Restart stale keyboard layout process after checking configuration".into(),
+        None,
+        Some(project.clone()),
+    );
+    let fixture_db = isolation::fixture().database_config();
+    let store = mimir_core::store::AgeStore::new(
+        mimir_core::db::connect(&fixture_db).await?,
+        fixture_db.dbname.clone(),
+    )?;
+    store
+        .replace_document(
+            &passage.document_path,
+            std::slice::from_ref(&passage),
+            &[vec![1.0, 0.0]],
+        )
+        .await?;
     let id = Uuid::new_v4();
     let result: Result<()> = async {
         let experience = json!({
@@ -127,7 +153,7 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
             "experience_id":id,"experience_revision":1,"reviewer":"rust-fixture",
             "rationale":"one observed incident, one owned candidate",
             "candidates":[
-                {"kind":"belief","key":"layout-lesson","content":"Restart stale keyboard layout process after checking configuration","memory_type":"Experiential"},
+                {"kind":"belief","key":"layout-lesson","content":"Restart stale keyboard layout process after checking configuration","memory_type":"Experiential","supporting_passage_id":passage.id},
                 {"kind":"pattern","key":"layout-procedure","situation":"stale keyboard layout indicator","approach":"check config, restart, and verify"}
             ],
             "candidate_feedback":[{"target":{"candidate_key":"layout-lesson"},"verdict":"support","weight":0.75}]
@@ -236,17 +262,18 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         let mut independent = direct;
         independent["provenance"] = json!({"basis":"user_instruction",
             "reference":"fixture user requirement"});
-        let inserted = handle_tool_call(&service, "insert_belief", &independent).await?;
-        let direct_explanation = handle_tool_call(
-            &service,
-            "explain_belief",
-            &json!({"id":inserted["id"]}),
-        )
-        .await?;
+        let missing_support = handle_tool_call(&service, "insert_belief", &independent)
+            .await.expect_err("a belief without an indexed supporting passage was stored");
         ensure!(
-            direct_explanation["independent_provenance"] == independent["provenance"],
-            "direct belief lost independent provenance"
+            missing_support.downcast_ref::<mimir_core::validation::Refusal>()
+                .is_some_and(|refusal| refusal.fault.path == vec![mimir_core::validation::Segment::Key("supporting_passage_id".into())]),
+            "missing supporting passage did not explain the required correction"
         );
+        independent["content"] = json!(passage.content);
+        independent["supporting_passage_id"] = json!(passage.id);
+        let published = handle_tool_call(&service, "insert_belief", &independent).await?;
+        let stored = handle_tool_call(&service, "get_belief", &json!({"id":published["id"]})).await?;
+        ensure!(stored["content"] == passage.content, "prepared direct belief was not published");
         Ok(())
     }
     .await;

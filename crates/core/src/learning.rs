@@ -134,6 +134,8 @@ pub enum Candidate {
         content: String,
         #[serde(default = "experiential_memory")]
         memory_type: crate::graph::MemoryType,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        supporting_passage_id: Option<Uuid>,
     },
     Pattern {
         key: String,
@@ -432,6 +434,59 @@ impl crate::MimirService {
             .review_experience(review, expected_review_revision)
             .await
     }
+    /// Prepare new belief material before committing the complete review.
+    /// Preparation is disposable; a failure leaves the original review pending.
+    pub async fn review_supported_experience(
+        &self,
+        review: &Review,
+        expected_review_revision: i64,
+    ) -> Result<ExperienceState> {
+        review
+            .validate()
+            .map_err(crate::validation::Refusal::validation)?;
+        let current = self
+            .store
+            .get_experience(review.experience_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("Experience not found; check its id before resubmitting.")
+            })?;
+        let existing = self
+            .store
+            .existing_belief_candidates(review.experience_id)
+            .await?;
+        let mut materials = std::collections::HashMap::new();
+        for (index, candidate) in review.candidates.iter().enumerate() {
+            if let Candidate::Belief {
+                key,
+                content,
+                supporting_passage_id,
+                ..
+            } = candidate
+            {
+                if existing.contains(key) {
+                    continue;
+                }
+                let passage_id = supporting_passage_id.ok_or_else(|| crate::validation::Refusal::invalid(
+                    crate::validation::Code::MissingEvidence,
+                    vec![crate::validation::Segment::Key("review".into()), crate::validation::Segment::Key("candidates".into()), crate::validation::Segment::Index(index), crate::validation::Segment::Key("supporting_passage_id".into())],
+                    format!("New belief '{key}' needs supporting_passage_id: the existing UUID of an indexed supporting passage. Use query_document, read the passage, and resubmit with its id. If none supports the belief, ask the user; no review changes were saved.")))?;
+                let passage = self.store.get_chunk_by_id(passage_id).await?
+                    .ok_or_else(|| anyhow::anyhow!("The supporting passage for '{key}' is no longer indexed. Use query_document to select a current passage and resubmit; no review changes were saved."))?;
+                ensure!(passage.project.as_deref().is_none_or(|project| project == current.experience.project),
+                    "The supporting passage for '{key}' belongs to another project. Select a passage in this project; no review changes were saved.");
+                let embedder = self.embeddings.as_ref().ok_or_else(|| anyhow::anyhow!(
+                    "New belief '{key}' requires an embedding. Ask the user to configure an embedding provider before resubmitting; no review changes were saved."))?;
+                let mut vectors = embedder.embed(std::slice::from_ref(content)).await
+                    .map_err(|error| error.context("Review embedding preparation failed. No review changes were saved; explain the cause to the user, correct it and restart the request."))?;
+                ensure!(vectors.len() == 1, "The embedding provider returned the wrong number of vectors. No review changes were saved; correct the provider before resubmitting.");
+                materials.insert(key.clone(), (passage_id, vectors.remove(0)));
+            }
+        }
+        self.store
+            .review_supported_experience(review, expected_review_revision, &materials)
+            .await
+    }
     pub async fn get_experience(&self, id: Uuid) -> Result<Option<ExperienceState>> {
         self.store.get_experience(id).await
     }
@@ -610,6 +665,7 @@ mod review_validation_tests {
             key: "claim".into(),
             content: "supported claim".into(),
             memory_type: crate::graph::MemoryType::Experiential,
+            supporting_passage_id: None,
         };
         review.validate().unwrap();
 

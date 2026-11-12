@@ -11,7 +11,7 @@ use tracing::error;
 
 use mimir_core::{
     config::Config,
-    graph::{EdgeType, MemoryType},
+    graph::{Belief, EdgeType, MemoryType},
     learning::IndependentProvenance,
     MimirService,
 };
@@ -30,6 +30,67 @@ fn err_response(id: &Value, code: i64, message: &str) -> Value {
         "id": id,
         "error": { "code": code, "message": message }
     })
+}
+
+// Preserve the request's meaning: repeated fields are ambiguous and must be
+// corrected before dispatch, including inside a review or candidate object.
+struct RequestJson(Value);
+
+impl<'de> serde::Deserialize<'de> for RequestJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = RequestJson;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("JSON with each object field supplied once")
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(RequestJson(Value::Null))
+            }
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(RequestJson(Value::Bool(value)))
+            }
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(RequestJson(value.into()))
+            }
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(RequestJson(value.into()))
+            }
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                serde_json::Number::from_f64(value)
+                    .map(|number| RequestJson(Value::Number(number)))
+                    .ok_or_else(|| E::custom("JSON numbers must be finite"))
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(RequestJson(Value::String(value.into())))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(RequestJson(value)) = sequence.next_element()? {
+                    values.push(value);
+                }
+                Ok(RequestJson(Value::Array(values)))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut object: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some(key) = object.next_key::<String>()? {
+                    if values.contains_key(&key) {
+                        return Err(serde::de::Error::custom(format!("Field '{key}' was supplied more than once. Keep one intended value and resubmit")));
+                    }
+                    let RequestJson(value) = object.next_value()?;
+                    values.insert(key, value);
+                }
+                Ok(RequestJson(Value::Object(values)))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 /// Put the information an agent can use first in belief results. Keep this at
@@ -104,6 +165,25 @@ fn agent_json_text(value: &Value) -> serde_json::Result<String> {
 mod admission_tests {
     use super::*;
     #[test]
+    fn repeated_fields_are_rejected_before_their_values_can_be_dispatched() {
+        for (request, field) in [
+            (r#"{"id":"first","id":"second"}"#, "id"),
+            (
+                r#"{"arguments":{"probability":0.2,"probability":0.8}}"#,
+                "probability",
+            ),
+            (r#"{"candidates":[{"weight":1,"weight":2}]}"#, "weight"),
+        ] {
+            let error = serde_json::from_str::<RequestJson>(request).err().unwrap();
+            assert!(error.to_string().contains(field));
+            assert!(error.to_string().contains("resubmit"));
+        }
+        let RequestJson(corrected) =
+            serde_json::from_str(r#"{"arguments":{"probability":0.8}}"#).unwrap();
+        assert_eq!(corrected, json!({"arguments":{"probability":0.8}}));
+    }
+
+    #[test]
     fn registered_operations_match_the_advertised_tools() {
         let advertised = tools_list();
         let names = advertised
@@ -156,19 +236,20 @@ fn tools_list() -> Value {
     let mut tools = json!([
         {
             "name": "insert_belief",
-            "description": "Add a belief grounded in an explicit user instruction or document independent of a queued incident. Provenance is required and persisted. Incident-derived conclusions must use record_experience and review_experience candidates; a standalone prior plus review feedback would count one incident twice.",
+            "description": "Add a belief from an independent user instruction or document. Select a supporting indexed passage with query_document and supply its existing id as supporting_passage_id. Mimir prepares the embedding first, then saves the belief, vector and source together. A failure saves no belief and asks for correction or a user decision. The source reference does not change the supplied probability. Incident-derived conclusions must use record_experience and review_experience candidates.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
                     "content":     { "type": "string" },
+                    "supporting_passage_id": { "type": "string", "format": "uuid", "description": "Existing id of the supporting indexed document passage returned by query_document. Select actual support; similarity alone is not evidence. If none is available, ask the user instead of inventing an id." },
                     "probability": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                     "confidence":  { "type": "number", "minimum": 0.0, "maximum": 1.0 },
                     "project":     { "type": "string", "description": "Optional project scope. Beliefs in a project can be bulk-deleted with delete_project when the project is done." },
                     "memory_type": { "type": "string", "enum": ["fact", "experiential", "working"], "description": "Functional memory type. 'fact' (default): declarative knowledge that decays over time absent reinforcement. 'experiential': a hard-won working lesson (gotcha, corrected approach) — exempt from time-decay, since its truth doesn't erode with elapsed time. 'working': task-local scratch memory, excluded from cross-session query_relevant retrieval." },
                     "provenance": { "type": "object", "additionalProperties": false, "properties": { "basis": {"type":"string","enum":["user_instruction","document"]}, "reference": {"type":"string","minLength":1} }, "required": ["basis","reference"], "description": "Identify the independent source. Do not use this tool for a conclusion derived from an experience." }
                 },
-                "required": ["content", "probability", "confidence", "provenance"]
+                "required": ["content", "probability", "confidence", "provenance", "supporting_passage_id"]
             }
         },
         {
@@ -420,7 +501,7 @@ fn tools_list() -> Value {
                 "properties": {
                     "context": { "type": "string", "description": "Query text to embed and search." },
                     "project": { "type": "string", "description": "Restrict search to chunks tagged with this project." },
-                    "limit":   { "type": "integer", "minimum": 0, "default": 5, "description": "Maximum results (0 = no limit)." }
+                    "limit":   { "type": "integer", "minimum": 1, "description": "Optional positive result count. Omit for all matching passages; zero is invalid." }
                 },
                 "required": ["context"]
             }
@@ -496,7 +577,14 @@ fn admit_tool_arguments(name: &str, args: &Value) -> Result<()> {
         }
         if matches!(
             field.as_str(),
-            "id" | "from_id" | "to_id" | "id_a" | "id_b" | "belief_id" | "chunk_id" | "pattern_id"
+            "id" | "from_id"
+                | "to_id"
+                | "id_a"
+                | "id_b"
+                | "belief_id"
+                | "chunk_id"
+                | "pattern_id"
+                | "supporting_passage_id"
         ) {
             if let Some(text) = value.as_str() {
                 if uuid::Uuid::parse_str(text).is_err() {
@@ -568,15 +656,20 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                     .map_err(|e| anyhow::anyhow!("invalid 'memory_type': {e}"))?,
                 None => MemoryType::default(),
             };
+            let draft = match args["project"].as_str() {
+                Some(project) => {
+                    Belief::new_in_project(content.into(), probability, confidence, project.into())?
+                }
+                None => Belief::new(content.into(), probability, confidence)?,
+            }
+            .with_memory_type(memory_type);
+            let passage = uuid::Uuid::parse_str(
+                args["supporting_passage_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("missing 'supporting_passage_id'"))?,
+            )?;
             let belief = svc
-                .add_independent_belief(
-                    content,
-                    probability,
-                    confidence,
-                    args["project"].as_str(),
-                    memory_type,
-                    &provenance,
-                )
+                .publish_supported_belief(draft, Some(&provenance), passage)
                 .await?;
             Ok(serde_json::to_value(&belief)?)
         }
@@ -917,7 +1010,9 @@ async fn handle_tool_call(svc: &MimirService, name: &str, args: &Value) -> Resul
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing 'context'"))?;
             let project = args["project"].as_str();
-            let limit = args["limit"].as_u64().unwrap_or(5) as usize;
+            // The legacy store uses zero only internally to mean no SQL LIMIT;
+            // request admission rejects an explicit wire value of zero.
+            let limit = args["limit"].as_u64().unwrap_or(0) as usize;
             let results = svc.query_document(context, project, limit).await?;
             Ok(serde_json::to_value(&results)?)
         }
@@ -1006,8 +1101,8 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        let request: Value = match serde_json::from_slice(&line) {
-            Ok(v) => v,
+        let request: Value = match serde_json::from_slice::<RequestJson>(&line) {
+            Ok(RequestJson(value)) => value,
             Err(e) => {
                 error!("parse error: {}", e);
                 // No id available — use null
@@ -1029,6 +1124,15 @@ async fn main() -> Result<()> {
             continue;
         }
         let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("");
+        if is_notification && method.starts_with("notifications/") {
+            continue;
+        }
+        if is_notification || !(id.is_string() || id.is_i64() || id.is_u64()) {
+            let response = err_response(&Value::Null, -32600, "This request needs an 'id' containing a string or integer so its result can be returned. Supply an id and resubmit. No tool was executed.");
+            stdout.write_all(format!("{response}\n").as_bytes()).await?;
+            stdout.flush().await?;
+            continue;
+        }
         let params = request
             .get("params")
             .cloned()
