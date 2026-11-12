@@ -5,7 +5,7 @@
 // embedding/query side (belief ranks low) or the rrf×probability fusion/sort
 // (belief ranks high here but gets buried in the full query_relevant).
 //
-// Diagnostic probes require the owned fixture from scripts/test-isolated.py.
+// Diagnostic probes require the owned fixture from scripts/test-isolated.sh.
 // They never accept deployment database settings.
 
 #[allow(dead_code)] // Shared guard exposes helpers for several test targets.

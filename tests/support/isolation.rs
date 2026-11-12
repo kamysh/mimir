@@ -17,7 +17,7 @@ pub struct Fixture {
 pub fn fixture() -> Fixture {
     use std::os::unix::fs::PermissionsExt;
     let root =
-        PathBuf::from(std::env::var("MIMIR_TEST_ROOT").expect("run scripts/test-isolated.py"));
+        PathBuf::from(std::env::var("MIMIR_TEST_ROOT").expect("run scripts/test-isolated.sh"));
     assert!(root.is_absolute() && !root.is_symlink());
     assert_eq!(
         std::fs::metadata(&root).unwrap().permissions().mode() & 0o077,

@@ -122,6 +122,8 @@
             # Dev utilities
             pkgs.just
             pkgs.git
+            pkgs.jq
+            pkgs.ripgrep
           ];
 
           nativeBuildInputs = [ pkgs.pkg-config ];
