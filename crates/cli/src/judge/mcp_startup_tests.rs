@@ -43,6 +43,7 @@ fn catalogue_requires_host_capability_and_every_typed_review_property() {
             "get_experience",
             "review_experience",
             "experience_history",
+            "query_document",
             "query_relevant",
             "query_learning_context",
             "explain_belief",

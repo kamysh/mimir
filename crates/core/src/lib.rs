@@ -108,6 +108,12 @@ pub struct MimirService {
 }
 
 impl MimirService {
+    /// Supply the embedding implementation used by preparation and retrieval.
+    pub fn with_embedding_provider(mut self, provider: Box<dyn EmbeddingProvider>) -> Self {
+        self.embeddings = Some(provider);
+        self
+    }
+
     pub async fn connect(cfg: &Config) -> Result<Self> {
         db::migrate(&cfg.database).await?;
         let client = db::connect(&cfg.database).await?;
@@ -151,7 +157,7 @@ impl MimirService {
         self.insert_and_embed_belief(belief, None).await
     }
 
-    /// Agent-facing direct write for a separately established source. The
+    /// Direct library write for a separately established source. The
     /// provenance is stored with the graph node, not inferred from its text.
     pub async fn add_independent_belief(
         &self,
@@ -174,6 +180,40 @@ impl MimirService {
         }
         .with_memory_type(memory_type);
         self.insert_and_embed_belief(belief, Some(provenance)).await
+    }
+
+    /// Prepare an agent-selected indexed source and embedding before any
+    /// belief is stored. Publication allocates its identity in PostgreSQL.
+    pub async fn publish_supported_belief(
+        &self,
+        belief: Belief,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+        supporting_passage_id: Uuid,
+    ) -> Result<Belief> {
+        if let Some(provenance) = provenance {
+            provenance.validate()?;
+        }
+        let passage = self.store.get_chunk_by_id(supporting_passage_id).await?
+            .ok_or_else(|| crate::validation::Refusal::invalid(
+                crate::validation::Code::MissingReference,
+                vec![crate::validation::Segment::Key("supporting_passage_id".into())],
+                "The selected supporting passage is not indexed. Use query_document to find a supporting passage and resubmit its existing id. If no passage supports this belief, ask the user before proceeding. No belief was saved."))?;
+        if let (Some(project), Some(source_project)) = (&belief.project, &passage.project) {
+            if project != source_project {
+                return Err(crate::validation::Refusal::invalid(crate::validation::Code::UnsupportedCombination,
+                    vec![crate::validation::Segment::Key("supporting_passage_id".into())],
+                    "The supporting passage belongs to a different project. Select an indexed passage visible in this belief's project and resubmit.").into());
+            }
+        }
+        let embedder = self.embeddings.as_ref().ok_or_else(|| anyhow::anyhow!(
+            "An embedding is required before this belief can be saved. Explain this to the user and configure an embedding provider before retrying. No belief was saved."))?;
+        let vectors = embedder
+            .embed(std::slice::from_ref(&belief.content))
+            .await.map_err(|error| error.context("Embedding preparation failed; no belief was saved. Explain the problem to the user and correct the provider before resubmitting the original request."))?;
+        anyhow::ensure!(vectors.len() == 1, "The embedding provider returned the wrong number of vectors. No belief was saved; correct the provider before retrying.");
+        self.store
+            .publish_supported_belief(belief, provenance, &vectors[0], supporting_passage_id)
+            .await.map_err(|error| error.context("Belief publication did not complete; its transaction is rolled back. No partial belief is kept. Correct the reported problem before resubmitting the original request."))
     }
 
     async fn insert_and_embed_belief(

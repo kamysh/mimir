@@ -156,14 +156,16 @@ async fn scoped_tool(
             // the review transaction; the judge forwards the raw keyed input.
             args["review"] = serde_json::to_value(review)?;
         }
-        "query_relevant" | "query_learning_context" | "get_contradictions" => {
+        "query_relevant" | "query_learning_context" | "query_document" | "get_contradictions" => {
             input_ensure!(
                 args["project"] == project,
                 "query is outside selected project"
             );
-            if name != "get_contradictions" {
-                let limit = args["limit"].as_u64().unwrap_or(0);
-                input_ensure!(limit > 0, "query limit must be positive");
+            if name != "get_contradictions" && args.get("limit").is_some() {
+                input_ensure!(
+                    args["limit"].as_u64().is_some_and(|limit| limit > 0),
+                    "query limit must be positive when supplied; omit it to request all matches"
+                );
             }
         }
         "get_belief" | "explain_belief" | "query_intervention" => {
@@ -203,6 +205,12 @@ async fn scoped_tool(
         _ => return Err(InputRejected("tool is not allowed for judge".into()).into()),
     }
     let mut value = client.tool(name, args).await?;
+    if matches!(
+        value["status"].as_str(),
+        Some("needs_input" | "needs_correction")
+    ) {
+        return Ok(value);
+    }
     if name == "get_experience" {
         let state = parse_state(value.clone())?;
         ensure!(

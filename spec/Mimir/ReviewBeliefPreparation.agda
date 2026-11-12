@@ -7,17 +7,30 @@ module Mimir.ReviewBeliefPreparation where
 open import Data.List using (List; []; _∷_; _++_; map)
 open import Data.List.Membership.Propositional using (_∈_)
 open import Data.List.Relation.Unary.Any using (here; there)
-open import Data.Maybe using (nothing)
+open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Product using (Σ; _×_; _,_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
-open import Mimir.UUIDGroups using (UUID)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
+open import Relation.Nullary using (yes; no)
 import Mimir.ApplicationStore as Store
 import Mimir.CandidateGraph as Graph
 import Mimir.RetrievalRanking as Ranking
 import Mimir.BeliefEmbedding as Belief
 import Mimir.DocumentStore as Documents
+import Mimir.CandidateRegistry as Registry
+import Mimir.LearningCandidates as Candidates
+import Mimir.LearningStore as Learning
+import Mimir.ReviewPreparationPublication as Publication
 
 Material = UUID × Belief.Prepared
+
+selectedPassage : UUID → Registry.Registry → Maybe UUID
+selectedPassage id [] = nothing
+selectedPassage id (row ∷ rest) with id ≟UUID Registry.Entry.nodeID row
+... | no _ = selectedPassage id rest
+... | yes _ with Registry.Entry.declaration row
+...   | Candidates.belief key content memory source = source
+...   | Candidates.patternCandidate key situation approach = nothing
 
 record Complete (before proposed : Store.World) (materials : List Material) : Set where
   field
@@ -33,6 +46,10 @@ record Complete (before proposed : Store.World) (materials : List Material) : Se
         Graph.BeliefValues.identity belief ≡ id)
     supportIndexed : ∀ id material → (id , material) ∈ materials →
       Belief.Prepared.supportingPassage material ∈ Store.World.chunks before
+    selectedSupportMatches : ∀ id material → (id , material) ∈ materials →
+      selectedPassage id (Publication.World.registry
+        (Learning.World.publication (Store.World.learning proposed))) ≡
+      just (Documents.Chunk.identity (Belief.Prepared.supportingPassage material))
 
 vectorRow : Material → UUID × Store.Vector
 vectorRow (id , material) = id , Belief.vector material

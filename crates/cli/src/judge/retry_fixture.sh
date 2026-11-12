@@ -14,6 +14,7 @@ tools=$(jq -nc '
    review_experience:{review:"object",expected_review_revision:"integer"},
    experience_history:{id:"string"},
    query_relevant:{context:"string",project:"string",limit:"integer"},
+   query_document:{context:"string",project:"string",limit:"integer"},
    query_learning_context:{context:"string",project:"string",limit:"integer"},
    explain_belief:{id:"string",limit:"integer",offset:"integer"},
    get_belief:{id:"string"},query_intervention:{id:"string",value:"number"},

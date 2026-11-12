@@ -6,14 +6,14 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 image=sha256:79fb863620098b1e443338075bb65f6775130cbcb381f115d4272719256e334d
 label=mimir.isolated-test
 selected=all
-usage='usage: test-isolated.sh [--check all|format|lint|workspace|fixtures|runtime|installed|formal]'
+usage='usage: test-isolated.sh [--check all|format|lint|workspace|fixtures|runtime|publication|installed|formal]'
 if [[ $# == 1 && ( $1 == -h || $1 == --help ) ]]; then printf '%s\n' "$usage"; exit 0; fi
 if [[ $# == 1 && $1 == --check=* ]]; then selected=${1#--check=}
 elif (($#)); then
     [[ $# == 2 && $1 == --check ]] || { echo "$usage" >&2; exit 2; }
     selected=$2
 fi
-case $selected in all|format|lint|workspace|fixtures|runtime|installed|formal) ;; *) echo 'Unknown check' >&2; exit 2 ;; esac
+case $selected in all|format|lint|workspace|fixtures|runtime|publication|installed|formal) ;; *) echo 'Unknown check' >&2; exit 2 ;; esac
 installed_directory=${HOME:?}/.local/bin
 root=$(mktemp -d /tmp/mimir-tests-XXXXXXXX)
 root=$(cd "$root" && pwd -P)
@@ -147,7 +147,7 @@ if [[ $selected == all || $selected == lint ]]; then
     run lint cargo clippy --workspace --all-targets --locked --offline -- -D warnings
     run qa-lint cargo clippy --manifest-path "$repo/tools/qa/Cargo.toml" --locked --offline -- -D warnings
 fi
-if [[ $selected == all || $selected == workspace || $selected == fixtures || $selected == runtime || $selected == installed ]]; then
+if [[ $selected == all || $selected == workspace || $selected == fixtures || $selected == runtime || $selected == publication || $selected == installed ]]; then
     fixture
     if [[ $selected == installed ]]; then
         mkdir -p "$root/target/debug"
@@ -159,6 +159,10 @@ if [[ $selected == all || $selected == workspace || $selected == fixtures || $se
         run build-snapshot-binaries cargo build --workspace --locked --offline
     fi
     run initialize-test-schema "$root/target/debug/mimir" stats
+fi
+if [[ $selected == publication ]]; then
+    run belief-publication cargo test -p mimir-core --lib belief_preparation_and_publication_failures_leave_no_partial_belief --locked --offline -- --test-threads=1
+    run admission cargo test -p mimir-mcp --bin mimir-mcp admission_tests --locked --offline
 fi
 if [[ $selected == all || $selected == fixtures || $selected == runtime || $selected == installed ]]; then
     run runtime-recovery bash "$repo/tests/runtime-recovery.sh"

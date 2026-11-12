@@ -28,6 +28,12 @@ For each experience:
    wording alone cannot prove shared origin. Do not create a run summary.
    Candidate declaration is not an observed successful use. An ordinary outcome
    can receive an empty review.
+   Every new belief candidate needs `supporting_passage_id`, the existing UUID
+   of an indexed document passage. Use `query_document` in the selected project,
+   read the passage and confirm actual support. Similarity only ranks results.
+   If no passage supports the claim, request a user decision instead of creating
+   the belief. Failed embedding or publication saves no partial candidate;
+   correct the reported problem and restart the review.
 5. Submit `review_experience` with the exact pinned `experience_revision` and
    `expected_review_revision`. Its feedback, graph links, and
    `superseded_beliefs` replace the previous review's entire contribution. Do

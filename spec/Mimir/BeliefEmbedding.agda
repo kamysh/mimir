@@ -12,6 +12,7 @@ open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (toList)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID)
 import Mimir.CandidateGraph as G
 import Mimir.GraphNumerics as Numbers
 import Mimir.LearningCandidates as Candidates
@@ -27,6 +28,7 @@ record Draft : Set where
     project : Maybe Text
     memory : Candidates.Memory
     origin : Maybe Origin.Provenance
+    supportingPassageID : UUID
 
 -- The preparation boundary supplies an embedding and a passage from an
 -- indexed document. It does not create the belief or its database identity.

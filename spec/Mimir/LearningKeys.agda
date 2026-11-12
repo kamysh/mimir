@@ -99,8 +99,8 @@ memory experiential = natural 1
 memory working = natural 2
 
 candidateValue : Candidate → Key
-candidateValue (belief name content mode) = fields
-  (natural 0 ∷ text name ∷ text content ∷ memory mode ∷ [])
+candidateValue (belief name content mode source) = fields
+  (natural 0 ∷ text name ∷ text content ∷ memory mode ∷ optional uuid source ∷ [])
 candidateValue (patternCandidate name situation approach) = fields
   (natural 1 ∷ text name ∷ text situation ∷ text approach ∷ [])
 

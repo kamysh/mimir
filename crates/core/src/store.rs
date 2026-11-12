@@ -1,6 +1,6 @@
 mod conformance;
 mod learning;
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use chrono::DateTime;
 use pgvector::Vector;
 use std::collections::HashMap;
@@ -451,6 +451,22 @@ impl AgeStore {
         belief: &Belief,
         provenance: Option<&crate::learning::IndependentProvenance>,
     ) -> Result<()> {
+        let mut client = self.client.lock().await;
+        let tx = learning_transaction(&mut client).await?;
+        tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
+            .await?;
+        self.insert_belief_on(tx.client(), belief, provenance)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn insert_belief_on(
+        &self,
+        client: &Client,
+        belief: &Belief,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+    ) -> Result<()> {
         let g = &self.graph_name;
         let id = belief.id.to_string();
         let probability = belief.probability.value();
@@ -509,12 +525,90 @@ impl AgeStore {
             },
         );
 
+        age_execute(client, &stmt, &prepare, &agtype_json).await?;
+        Ok(())
+    }
+
+    /// Publish one prepared belief with its vector and source reference. The
+    /// source is checked again while the same lock protects document changes.
+    pub(crate) async fn publish_supported_belief(
+        &self,
+        mut belief: Belief,
+        provenance: Option<&crate::learning::IndependentProvenance>,
+        embedding: &[f32],
+        passage_id: Uuid,
+    ) -> Result<Belief> {
         let mut client = self.client.lock().await;
         let tx = learning_transaction(&mut client).await?;
         tx.query("SELECT pg_advisory_xact_lock(671942183)", &[])
             .await?;
-        age_execute(tx.client(), &stmt, &prepare, &agtype_json).await?;
+        belief.id = tx.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
+        self.insert_belief_on(tx.client(), &belief, provenance)
+            .await?;
+        self.publish_belief_material_on(
+            tx.client(),
+            belief.id,
+            belief.project.as_deref(),
+            embedding,
+            passage_id,
+        )
+        .await?;
         tx.commit().await?;
+        Ok(belief)
+    }
+
+    async fn publish_belief_material_on(
+        &self,
+        client: &Client,
+        belief_id: Uuid,
+        project: Option<&str>,
+        embedding: &[f32],
+        passage_id: Uuid,
+    ) -> Result<()> {
+        use crate::validation::{Code, Refusal, Segment};
+        let refused = |code, message: &str| {
+            Refusal::invalid(
+                code,
+                vec![Segment::Key("supporting_passage_id".into())],
+                message,
+            )
+        };
+        ensure!(!embedding.is_empty() && embedding.iter().all(|component| component.is_finite()),
+            "The embedding is empty or contains invalid numbers. No belief was saved; correct the embedding provider before retrying.");
+        let passage = self.get_chunk_by_id_on(client, passage_id).await?
+            .ok_or_else(|| refused(Code::MissingReference, "The selected supporting passage is no longer indexed. Use query_document to find a supporting passage and resubmit its existing id. No belief was saved."))?;
+        if passage.content.trim().is_empty() {
+            return Err(refused(Code::MissingEvidence, "The selected passage is empty. Select an indexed passage containing the supporting text and resubmit.").into());
+        }
+        if let (Some(project), Some(source_project)) = (project, passage.project.as_deref()) {
+            if project != source_project {
+                return Err(refused(Code::UnsupportedCombination, "The selected passage belongs to a different project. Select a passage visible in the belief's project and resubmit.").into());
+            }
+        }
+        let indexed: bool = client
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM public.chunk_embeddings WHERE chunk_id=$1)",
+                &[&passage_id],
+            )
+            .await?
+            .get(0);
+        if !indexed {
+            return Err(refused(Code::MissingEvidence, "The selected passage has no indexed embedding. Reload its document before resubmitting; no belief was saved.").into());
+        }
+        let vector = Vector::from(embedding.to_vec());
+        client
+            .execute(
+                "INSERT INTO public.belief_embeddings(belief_id,embedding) VALUES($1,$2)",
+                &[&belief_id, &vector],
+            )
+            .await?;
+        // A cited source is recorded without inventing numerical evidence.
+        // Zero mass leaves both the supplied probability and later recomputation unchanged.
+        let source = passage_id.to_string();
+        let target = belief_id.to_string();
+        let graph = &self.graph_name;
+        let rows = client.query(&format!("SELECT id::text FROM ag_catalog.cypher('{graph}', $$ MATCH (c:DocumentChunk {{id:'{source}'}}), (b:Belief {{id:'{target}'}}) CREATE (c)-[:GROUNDS {{weight:0.0}}]->(b) RETURN c.id $$) AS (id ag_catalog.agtype)"), &[]).await?;
+        ensure!(rows.len() == 1, "The supporting passage changed during publication. No belief was saved; find its current id and retry.");
         Ok(())
     }
 
@@ -1882,6 +1976,11 @@ $$) AS (ok ag_catalog.agtype)"#
 
     /// Fetch a single DocumentChunk by ID.
     pub async fn get_chunk_by_id(&self, id: Uuid) -> Result<Option<DocumentChunk>> {
+        let client = self.client.lock().await;
+        self.get_chunk_by_id_on(&client, id).await
+    }
+
+    async fn get_chunk_by_id_on(&self, client: &Client, id: Uuid) -> Result<Option<DocumentChunk>> {
         let g = &self.graph_name;
         let id_str = id.to_string();
         let sql = format!(
@@ -1897,7 +1996,6 @@ FROM ag_catalog.cypher('{g}', $$
   RETURN c.id, c.documentPath, c.sectionPath, c.content, c.parentId, c.project
 $$) {CHUNK_RETURN_COLUMNS}"#
         );
-        let client = self.client.lock().await;
         let rows = client.query(&sql, &[]).await?;
         if rows.is_empty() {
             return Ok(None);

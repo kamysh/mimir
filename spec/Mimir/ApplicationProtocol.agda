@@ -147,6 +147,8 @@ module Run (environment : Environment) where
     (before after : Store.World) : Set where
     field
       supportWasIndexed : BeliefEmbedding.Prepared.supportingPassage material ∈ Store.World.chunks before
+      selectedSupportMatches : DocumentStore.Chunk.identity (BeliefEmbedding.Prepared.supportingPassage material) ≡
+        BeliefEmbedding.Draft.supportingPassageID proposal
       supportRetained : BeliefEmbedding.Prepared.supportingPassage material ∈ Store.World.chunks after
       beliefWasAbsent : Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs before) ≡ nothing
       beliefStored : Ranking.lookup (Graph.BeliefValues.identity belief) (Store.beliefs after) ≡ just belief
@@ -1242,8 +1244,8 @@ module Run (environment : Environment) where
   ...   | Validation.accepted valid = admittedBeliefStart proposal
 
   start : Public.Request → State
-  start (Public.mutation (Mutation.belief content probability confidence project memory origin)) =
-    beliefStart (BeliefEmbedding.draft content probability confidence project memory origin)
+  start (Public.mutation (Mutation.belief content probability confidence project memory origin passage)) =
+    beliefStart (BeliefEmbedding.draft content probability confidence project memory origin passage)
   start (Public.mutation (Mutation.patternNode situation approach success project)) =
     patternState (situation , approach , success , project)
       (PatternRecovery.start patternOperation (situation , approach , success , project))

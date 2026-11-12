@@ -299,6 +299,14 @@ fn checked_tools(result: &Value) -> Result<Vec<Value>> {
         ),
         ("experience_history", &[("id", "string")][..]),
         (
+            "query_document",
+            &[
+                ("context", "string"),
+                ("project", "string"),
+                ("limit", "integer"),
+            ][..],
+        ),
+        (
             "query_relevant",
             &[
                 ("context", "string"),

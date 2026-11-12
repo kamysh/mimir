@@ -32,7 +32,7 @@ import Mimir.Recovery as Recovery
 open import Data.Empty using (⊥; ⊥-elim)
 
 data Request : Set where
-  belief : Text → Float → Float → Maybe Text → C.Memory → Maybe Origin.Provenance → Request
+  belief : Text → Float → Float → Maybe Text → C.Memory → Maybe Origin.Provenance → UUID → Request
   patternNode : Text → Text → Float → Maybe Text → Request
   edge : UUID → UUID → R.Relation → Number → Request
 
@@ -93,10 +93,10 @@ afterEmbedding : Embedding.Result → Script Result
 afterEmbedding (inj₁ error) = done (embeddingFailed error)
 afterEmbedding (inj₂ b) = done (insertedBelief b)
 
-makeBelief : Bool → Text → Float → Float → Maybe Text → C.Memory → Maybe Origin.Provenance → Script Result
-makeBelief enabled content probability confidence project memory origin =
+makeBelief : Bool → Text → Float → Float → Maybe Text → C.Memory → Maybe Origin.Provenance → UUID → Script Result
+makeBelief enabled content probability confidence project memory origin passage =
   liftEmbedding (Embedding.start enabled
-    (Embedding.draft content probability confidence project memory origin)) >>= afterEmbedding
+    (Embedding.draft content probability confidence project memory origin passage)) >>= afterEmbedding
 
 write : Statement → Script Result → Script Result
 write command next = ask (statement command) (λ
@@ -118,11 +118,11 @@ makeDefeat from to weight = ask (recordDefeat from to weight) λ where
   (inj₂ DB.committed) → done edgeInserted
 
 start : Bool → Request → Script Result
-start enabled (belief content probability confidence project memory nothing) =
-  makeBelief enabled content probability confidence project memory nothing
-start enabled (belief content probability confidence project memory (just origin)) with Origin.validate origin
+start enabled (belief content probability confidence project memory nothing passage) =
+  makeBelief enabled content probability confidence project memory nothing passage
+start enabled (belief content probability confidence project memory (just origin) passage) with Origin.validate origin
 ... | Validation.rejected fault invalid = done invalidOrigin
-... | Validation.accepted valid = makeBelief enabled content probability confidence project memory (just origin)
+... | Validation.accepted valid = makeBelief enabled content probability confidence project memory (just origin) passage
 start enabled (patternNode situation approach success project) = makePattern situation approach success project
 start enabled (edge from to relation weight) with Numeric.number weight
 ... | nothing = done invalidEdgeWeight

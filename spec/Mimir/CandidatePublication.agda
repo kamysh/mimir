@@ -23,9 +23,9 @@ import Mimir.CandidateGraph as Graph
 import Mimir.DatabaseTransaction as Database
 
 bodyMatches : Candidate → Graph.Node → Set
-bodyMatches (belief name content memory) (Graph.beliefNode fields) =
+bodyMatches (belief name content memory source) (Graph.beliefNode fields) =
   Graph.BeliefValues.content fields ≡ content × Graph.BeliefValues.memory fields ≡ memory
-bodyMatches (belief name content memory) (Graph.patternNode fields) = ⊥
+bodyMatches (belief name content memory source) (Graph.patternNode fields) = ⊥
 bodyMatches (patternCandidate name situation approach) (Graph.beliefNode fields) = ⊥
 bodyMatches (patternCandidate name situation approach) (Graph.patternNode fields) =
   Graph.PatternValues.situation fields ≡ situation × Graph.PatternValues.approach fields ≡ approach
@@ -48,7 +48,7 @@ module For (projectOf : UUID → Text) (clock : Candidate → ℤ) where
 
   born : ∀ experience identity declaration → Represents (Registry.entry experience declaration identity false)
     (Graph.value (Graph.creation experience identity declaration (projectOf experience) (clock declaration)))
-  born experience identity (belief name content memory) = refl , refl , refl , refl
+  born experience identity (belief name content memory source) = refl , refl , refl , refl
   born experience identity (patternCandidate name situation approach) = refl , refl , refl , refl
 
   realize : ∀ {before occupied experience declaration} →

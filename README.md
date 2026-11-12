@@ -426,7 +426,7 @@ docker ps --filter name=postgres-ai
 
 | Tool | What it does |
 |---|---|
-| `insert_belief` | Add an independently sourced belief with `content`, `probability` [0,1], `confidence` [0,1], and required `provenance` (`basis`, `reference`) |
+| `insert_belief` | Add an independently sourced belief with `content`, `probability` [0,1], `confidence` [0,1], `provenance` (`basis`, `reference`), and `supporting_passage_id` pointing to an existing indexed document passage |
 | `delete_belief` | Remove a belief and all its edges by `id` |
 | `insert_pattern` | Add a pattern with `situation`, `approach`, `success_rate` [0,1] |
 | `delete_pattern` | Remove a pattern by `id` |
@@ -506,10 +506,14 @@ Replacing the review can restore a mistakenly superseded belief.
 MCP `insert_belief` now requires explicit independent `provenance` with a
 `user_instruction` or `document` basis and a nonempty source reference. The
 source is stored with the graph node and shown by `explain_belief`; untagged MCP
-writes are rejected. This is a provenance declaration by the caller, not proof
+writes are rejected. Supply `supporting_passage_id` using the existing passage
+ID returned by `query_document`. Select a passage that actually supports the
+claim; a similarity score alone does not establish support. Mimir prepares the
+embedding before atomically saving the belief, vector and source link. Failed
+preparation or publication leaves no belief to clean up. The source reference
+does not change the submitted probability. This is a provenance declaration by the caller, not proof
 that the cited source is authentic. Incident-derived conclusions still belong
-to atomic review candidates. Existing CLI belief insertion remains available
-for explicit manual operations.
+to atomic review candidates.
 
 `insert_pattern` now accepts `project`. `query_learning_context` returns relevant
 beliefs plus situation-matched patterns, with successes, failures, unresolved

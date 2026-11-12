@@ -320,7 +320,7 @@ impl AgeStore {
                 ids.insert(candidate.key().to_owned(), row.get(1));
                 continue;
             }
-            let id = Uuid::new_v4();
+            let id = tx.query_one("SELECT gen_random_uuid()", &[]).await?.get(0);
             self.ensure_candidate_identity_free(tx, id).await?;
             self.create_candidate_node(tx, candidate, id, project)
                 .await?;
@@ -482,6 +482,34 @@ impl AgeStore {
         review: &Review,
         expected: i64,
     ) -> Result<ExperienceState> {
+        self.review_experience_inner(review, expected, None).await
+    }
+
+    pub(crate) async fn existing_belief_candidates(
+        &self,
+        experience_id: Uuid,
+    ) -> Result<HashSet<String>> {
+        let client = self.client.lock().await;
+        Ok(client.query("SELECT candidate_key FROM mimir_review_candidates WHERE experience_id=$1 AND kind='belief' AND NOT retired", &[&experience_id]).await?
+            .into_iter().map(|row| row.get(0)).collect())
+    }
+
+    pub(crate) async fn review_supported_experience(
+        &self,
+        review: &Review,
+        expected: i64,
+        materials: &HashMap<String, (Uuid, Vec<f32>)>,
+    ) -> Result<ExperienceState> {
+        self.review_experience_inner(review, expected, Some(materials))
+            .await
+    }
+
+    async fn review_experience_inner(
+        &self,
+        review: &Review,
+        expected: i64,
+        materials: Option<&HashMap<String, (Uuid, Vec<f32>)>>,
+    ) -> Result<ExperienceState> {
         review
             .validate()
             .map_err(crate::validation::Refusal::validation)?;
@@ -541,6 +569,15 @@ impl AgeStore {
         }
 
         let old_review = Self::active_review(&tx, review.experience_id).await?;
+        let existing: HashSet<String> = tx
+            .query(
+                "SELECT candidate_key FROM mimir_review_candidates WHERE experience_id=$1",
+                &[&review.experience_id],
+            )
+            .await?
+            .into_iter()
+            .map(|row| row.get(0))
+            .collect();
         let candidate_ids = self
             .reserve_candidates(
                 &tx,
@@ -549,6 +586,31 @@ impl AgeStore {
                 &review.candidates,
             )
             .await?;
+        if let Some(materials) = materials {
+            for candidate in &review.candidates {
+                if let Candidate::Belief {
+                    key,
+                    supporting_passage_id,
+                    ..
+                } = candidate
+                {
+                    if existing.contains(key) {
+                        continue;
+                    }
+                    let (passage, embedding) = materials.get(key).ok_or_else(|| anyhow::anyhow!(
+                        "New belief '{key}' has no prepared embedding and supporting passage. No review changes were saved; select an indexed supporting passage and resubmit."))?;
+                    ensure!(Some(*passage) == *supporting_passage_id, "The prepared source does not match the selected passage; no review changes were saved.");
+                    self.publish_belief_material_on(
+                        tx.client(),
+                        candidate_ids[key],
+                        Some(&current.experience.project),
+                        embedding,
+                        *passage,
+                    )
+                    .await?;
+                }
+            }
+        }
         let applied = materialize_review(review, &candidate_ids)?;
         applied.validate()?;
         let ids: HashSet<_> = applied
