@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
--- Configuration lifecycle, including failures between file creation and a
--- completed write. TOML parsing/printing and OS path interpretation remain
+-- Configuration lifecycle with exclusive atomic publication and cleanup.
+-- TOML parsing/printing and OS path interpretation remain
 -- standard dependency boundaries; schema and override semantics are concrete.
 module Mimir.ConfigurationProtocol where
 
@@ -42,6 +42,7 @@ data Effect : Set where
   parseTOML : Text → Effect
   prettyTOML : Values.Config → Effect
   filesystem : Path.Path → Content → IO.Effect → Effect
+  replaceConfiguration : Path.Path → Content → Effect
   announceCreated : Path.Path → Effect
   announceEditor announceRestart : Effect
   editor : Text → Path.Path → Effect
@@ -53,6 +54,7 @@ Reply (readUTF8 _) = IO.Failure ⊎ Text
 Reply (parseTOML _) = IO.Failure ⊎ V.Value
 Reply (prettyTOML _) = IO.Failure ⊎ Text
 Reply (filesystem _ _ _) = IO.Input
+Reply (replaceConfiguration _ _) = IO.Result
 Reply (announceCreated _) = ⊤
 Reply announceEditor = ⊤
 Reply announceRestart = ⊤
@@ -81,33 +83,57 @@ module Run (sizeMaximum : ℕ) where
     false → done (inj₁ (file IO.missingFile))
     true → loadFrom path
 
-  -- IO's finite transition system owns write ordering. A driver may execute
-  -- only the effect emitted by that system, with this path and this content.
-  record FileState : Set where
-    constructor writing
-    field state : IO.State; pending : List IO.Effect
-
-  initialWrite : IO.Settings → FileState
-  initialWrite writeSettings with IO.afterAbsence writeSettings
-  ... | IO.next state effects = writing state effects
-
-  advanceWrite : IO.Settings → FileState → IO.Input → FileState
-  advanceWrite writeSettings (writing state pending) reply with IO.step writeSettings state reply
-  ... | IO.next next effects = writing next effects
-
+  -- A writer must supply both its native event and the certified atomic
+  -- publication. There is no executable partial-write state to resume.
   data WriteRun (writeSettings : IO.Settings) (path : Path.Path) (content : Content) :
-    FileState → List P.Event → IO.Result → Set where
-    finished : ∀ result → WriteRun writeSettings path content (writing (IO.finished result) []) [] result
-    response : ∀ state effect reply events result →
-      WriteRun writeSettings path content (advanceWrite writeSettings (writing state (effect ∷ [])) reply) events result →
-      WriteRun writeSettings path content (writing state (effect ∷ []))
-        ((filesystem path content effect , reply) ∷ events) result
+    Maybe Content → List P.Event → Maybe Content → IO.Result → Set where
+    published : ∀ before reply after →
+      IO.Publication content before (IO.resultOf reply) after →
+      WriteRun writeSettings path content before
+        ((filesystem path content (IO.createEffect (IO.Settings.platform writeSettings)) , reply) ∷ [])
+        after (IO.resultOf reply)
+
+  writeReceipt : ∀ writeSettings path content before events after result →
+    WriteRun writeSettings path content before events after result →
+    IO.Publication content before result after
+  writeReceipt writeSettings path content before events after result (published _ reply _ receipt) = receipt
+
+  writeFailureRestoresTarget : ∀ writeSettings path content before events after failure →
+    WriteRun writeSettings path content before events after (IO.failed failure) → after ≡ before
+  writeFailureRestoresTarget writeSettings path content before events after failure observed =
+    IO.Certified.failureLeavesUnchanged Content content before (IO.failed failure) after
+      (writeReceipt writeSettings path content before events after (IO.failed failure) observed) (λ ())
+
+  writeSuccessPublishesComplete : ∀ writeSettings path content before events after →
+    WriteRun writeSettings path content before events after IO.success → after ≡ just content
+  writeSuccessPublishesComplete writeSettings path content before events after observed =
+    IO.Certified.successPublishesComplete Content content before IO.success after
+      (writeReceipt writeSettings path content before events after IO.success observed) tt
+
+  -- The upgrade prepares a complete validated replacement. TOML rewriting is
+  -- external; its write must satisfy this certified publication boundary.
+  module Upgrade (path : Path.Path) (content : Content) where
+    module Publication = IO.Replacement Content content
+    recovery = Publication.recovery
+
+    data Runs : Maybe Content → List P.Event → Maybe Content → IO.Result → Set where
+      published : ∀ before result after → Publication.Receipt before result after →
+        Runs before ((replaceConfiguration path content , result) ∷ []) after result
+
+    failureRestoresOriginal : ∀ before events after failure →
+      Runs before events after (IO.failed failure) → after ≡ before
+    failureRestoresOriginal before events after failure (published _ _ _ receipt) =
+      Publication.unchanged before (IO.failed failure) after receipt (λ ())
 
   module Creation (parser : Unsigned.Parser) where
     module Overrides = Input.Read parser sizeMaximum
 
+    data Preparation : Set where
+      create : Content → Preparation
+      useExisting : Preparation
+
     -- Creation checks existence before decoding overrides. The actual writer
-    -- is the WriteRun relation above, preserving O_EXCL and partial-write states.
+    -- is the certified WriteRun relation above; it cannot leave a partial file.
     afterCheck : Operations.Admitted → List (String × Text) → Script (Failure ⊎ Content)
     afterCheck operations [] = done (inj₂ (template operations))
     afterCheck operations pairs@(_ ∷ _) with Overrides.create pairs
@@ -116,27 +142,38 @@ module Run (sizeMaximum : ℕ) where
       (inj₁ error) → done (inj₁ (file error))
       (inj₂ _) → done (inj₂ (configured operations configurationValue))
 
-    prepare : Path.Path → List (String × Text) → Script (Failure ⊎ Content)
-    prepare path pairs = ask (exists path) λ where
-      true → done (inj₁ (file IO.alreadyExists))
-      false → ask defaultOperations λ where
-        (inj₁ error) → done (inj₁ (file error))
-        (inj₂ operations) → afterCheck operations pairs
+    prepareAbsent : List (String × Text) → Script (Failure ⊎ Preparation)
+    prepareAbsent pairs = ask defaultOperations λ where
+      (inj₁ error) → done (inj₁ (file error))
+      (inj₂ operations) → afterCheck operations pairs >>= λ where
+        (inj₁ error) → done (inj₁ error)
+        (inj₂ content) → done (inj₂ (create content))
+
+    afterExists : Path.Path → List (String × Text) → Bool → Script (Failure ⊎ Preparation)
+    afterExists path [] true = done (inj₂ useExisting)
+    afterExists path (_ ∷ _) true = done (inj₁ (file IO.alreadyExists))
+    afterExists path pairs false = prepareAbsent pairs
+
+    prepare : Path.Path → List (String × Text) → Script (Failure ⊎ Preparation)
+    prepare path pairs = ask (exists path) (afterExists path pairs)
 
     selectEditor : Maybe Text → Text
     selectEditor nothing = toList "vi"
     selectEditor (just value) = value
 
-    afterCreation : Path.Path → Content → Maybe Text → Script (Failure ⊎ ⊤)
-    afterCreation path (configured _ _) editorValue = ask (announceCreated path) λ _ →
-      ask announceRestart λ _ → done (inj₂ tt)
-    afterCreation path (template _) editorValue = ask (announceCreated path) λ _ →
-      ask announceEditor λ _ → ask (editor (selectEditor editorValue) path) λ where
+    editExisting : Path.Path → Maybe Text → Script (Failure ⊎ ⊤)
+    editExisting path editorValue = ask announceEditor λ _ →
+      ask (editor (selectEditor editorValue) path) λ where
         (inj₁ _) → done (inj₁ editorLaunch)
         (inj₂ _) → ask announceRestart λ _ → done (inj₂ tt)
 
+    afterCreation : Path.Path → Content → Maybe Text → Script (Failure ⊎ ⊤)
+    afterCreation path (configured _ _) editorValue = ask (announceCreated path) λ _ →
+      ask announceRestart λ _ → done (inj₂ tt)
+    afterCreation path (template _) editorValue = ask (announceCreated path) λ _ → editExisting path editorValue
 
-    -- Full create command, including early failure, partial file creation and
+
+    -- Full create command, including early rejection, atomic publication and
     -- editor exit handling. The joined trace retains every actual filesystem
     -- response; failed writes never reach the editor or success announcements.
     data Created (writeSettings : IO.Settings) (path : Path.Path)
@@ -144,12 +181,16 @@ module Run (sizeMaximum : ℕ) where
       List P.Event → Failure ⊎ ⊤ → Set where
       preparationFailed : ∀ events failure → P.Runs (prepare path pairs) events (inj₁ failure) →
         Created writeSettings path pairs editorValue events (inj₁ failure)
-      writeFailed : ∀ prepared content written failure →
-        P.Runs (prepare path pairs) prepared (inj₂ content) →
-        WriteRun writeSettings path content (initialWrite writeSettings) written (IO.failed failure) →
+      existingOpened : ∀ prepared editing result →
+        P.Runs (prepare path pairs) prepared (inj₂ useExisting) →
+        P.Runs (editExisting path editorValue) editing result →
+        Created writeSettings path pairs editorValue (prepared Data.List.++ editing) result
+      writeFailed : ∀ prepared content written failure before after →
+        P.Runs (prepare path pairs) prepared (inj₂ (create content)) →
+        WriteRun writeSettings path content before written after (IO.failed failure) →
         Created writeSettings path pairs editorValue (prepared Data.List.++ written) (inj₁ (file failure))
-      afterWrite : ∀ prepared content written announcements result →
-        P.Runs (prepare path pairs) prepared (inj₂ content) →
-        WriteRun writeSettings path content (initialWrite writeSettings) written IO.success →
+      afterWrite : ∀ prepared content written announcements result before after →
+        P.Runs (prepare path pairs) prepared (inj₂ (create content)) →
+        WriteRun writeSettings path content before written after IO.success →
         P.Runs (afterCreation path content editorValue) announcements result →
         Created writeSettings path pairs editorValue (prepared Data.List.++ written Data.List.++ announcements) result

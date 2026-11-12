@@ -22,6 +22,7 @@ import Mimir.ApplicationProtocol as Application
 import Mimir.ApplicationStore as Store
 import Mimir.GraphMutationProtocol as Mutation
 import Mimir.BeliefEmbedding as BeliefEmbedding
+import Mimir.Reembedding as Reembedding
 import Mimir.InferenceProtocol as Inference
 open import Mimir.UUIDGroups using (UUID)
 import Mimir.ApplicationOutput as Output
@@ -50,7 +51,9 @@ lookup name = find name all
 module Run (environment : Application.Environment) (format : Encoding.Formatting)
   (conversion : Conversion.Contract) where
   module A = Application.Run environment
-  module P = Output.Project environment format
+    using (Event; GuardedRuns; Result; invalidGrounding; invalidRequestIdentity;
+      mutated; needsDecision; reembeddingResult; startRequest)
+  module P = Output.Project environment format using (project; success; failure)
   module D = Request.Decode conversion
 
   data Diagnostic : Set where
@@ -63,6 +66,7 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
 
 
   finish : A.Result → Result
+  finish (A.reembeddingResult (Reembedding.needsDecision reason guidance)) = inj₁ (userDecisionRequired reason guidance)
   finish (A.needsDecision reason guidance) = inj₁ (userDecisionRequired reason guidance)
   finish A.invalidRequestIdentity = inj₁ (invalidArguments
     (Validation.fault (Validation.key "id" ∷ []) Validation.wrongIdentity

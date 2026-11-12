@@ -34,7 +34,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/auto-ground success and failure sequences."
     },
     {
@@ -61,7 +61,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
     },
     {
@@ -88,7 +88,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
     },
     {
@@ -115,7 +115,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Identity-based deletion, graph/embedding/ownership/reference cleanup, missing-ID results, project deletion counts and failures across stores."
     },
     {
@@ -145,7 +145,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Current public belief/pattern record, independent provenance, numeric admission, defaults and complete insert/embed/auto-ground success and failure sequences."
     },
     {
@@ -174,7 +174,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
     },
     {
@@ -203,7 +203,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
     },
     {
@@ -232,7 +232,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
     },
     {
@@ -261,7 +261,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Public edge validation and writes, contradiction pair creation, defeat timestamps and recomputation, with ordered failure effects."
     },
     {
@@ -287,7 +287,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models.",
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task.",
       "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes."
     },
     {
@@ -313,7 +313,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models.",
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task.",
       "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes."
     },
     {
@@ -339,7 +339,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models.",
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task.",
       "baseline_gap": "Modern record projection, exact project-plus-global visibility, memory filters, stable page order, offset/limit and missing-record outcomes."
     },
     {
@@ -368,7 +368,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Calculation is external. The specification covers input selection, result validation, atomic publication, rollback and cleanup; it does not prescribe a solver, iteration count or stopping threshold."
     },
     {
@@ -397,7 +397,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Calculation is external. The specification covers input selection, result validation, atomic publication, rollback and cleanup; it does not prescribe a solver, iteration count or stopping threshold."
     },
     {
@@ -426,7 +426,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Calculation is external. The specification covers input selection, result validation, atomic publication, rollback and cleanup; it does not prescribe a solver, iteration count or stopping threshold."
     },
     {
@@ -453,7 +453,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Executable candidate selection, weighted RRF (k=60), memory preference, deterministic ordering/limits, project scope and evidence joins; comments and percentage sorting are insufficient."
     },
     {
@@ -480,7 +480,7 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Concrete evidence lookup/add admission, result fields, grounding association and numerical recomputation/failure composition.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models."
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
     },
     {
       "name": "get_evidence",
@@ -506,7 +506,7 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Concrete evidence lookup/add admission, result fields, grounding association and numerical recomputation/failure composition.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models."
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
     },
     {
       "name": "propagate_from",
@@ -534,7 +534,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Calculation is external. The specification covers input selection, result validation, atomic publication, rollback and cleanup; it does not prescribe a solver, iteration count or stopping threshold."
     },
     {
@@ -563,7 +563,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Calculation is external. The specification covers input selection, result validation, atomic publication, rollback and cleanup; it does not prescribe a solver, iteration count or stopping threshold."
     },
     {
@@ -591,7 +591,7 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models."
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
     },
     {
       "name": "query_document",
@@ -618,7 +618,7 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models."
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
     },
     {
       "name": "clear_document",
@@ -645,7 +645,7 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Compose path read/chunk/embed/paired replacement/auto-ground protocol, ambiguous commit outcomes and semantic query scoring into full operations.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models."
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
     },
     {
       "name": "get_learning_review",
@@ -685,7 +685,7 @@
         "spec/Mimir/ItemAllocation.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     },
     {
       "name": "learning_capabilities",
@@ -750,7 +750,7 @@
         "spec/Mimir/ItemAllocation.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     },
     {
       "name": "lesson_assessment_history",
@@ -784,7 +784,7 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     },
     {
       "name": "explain_belief",
@@ -815,7 +815,7 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     },
     {
       "name": "record_experience",
@@ -852,7 +852,7 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     },
     {
       "name": "pending_experiences",
@@ -880,7 +880,7 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     },
     {
       "name": "review_experience",
@@ -917,10 +917,11 @@
         "spec/Mimir/ApplicationOutput.agda",
         "spec/Mimir/PublicEncoding.agda",
         "spec/Mimir/McpToolExecution.agda",
-        "spec/Mimir/McpApplicationComposition.agda"
+        "spec/Mimir/McpApplicationComposition.agda",
+        "spec/Mimir/ReviewBeliefPreparation.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     },
     {
       "name": "get_experience",
@@ -956,7 +957,7 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     },
     {
       "name": "experience_history",
@@ -992,7 +993,7 @@
         "spec/Mimir/McpApplicationComposition.agda"
       ],
       "baseline_gap": "Final wire/error integration and aggregate verification remain; Rust correspondence is outside this specification stage.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     },
     {
       "name": "query_learning_context",
@@ -1004,7 +1005,7 @@
         "spec/Mimir/Graph.agda",
         "spec/Mimir/AssessmentSelection.agda",
         "spec/Mimir/LearningContracts.agda",
-        "spec/Mimir/PatternOutcomes.agda"
+        "spec/Mimir/LearningContextProtocol.agda"
       ],
       "status": "partially-specified",
       "rust_correspondence": "open; separate from behavioral specification",
@@ -1021,7 +1022,7 @@
         "spec/Mimir/McpToolExecution.agda",
         "spec/Mimir/McpApplicationComposition.agda"
       ],
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models.",
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external.",
       "baseline_gap": "Pattern statistics and provenance defined; ranking and belief/assessment assembly compose in step 3."
     }
   ],
@@ -1200,11 +1201,13 @@
       "completion_modules": [
         "spec/Mimir/BeliefEmbedding.agda",
         "spec/Mimir/CLI.agda",
-        "spec/Mimir/ApplicationProtocol.agda"
+        "spec/Mimir/ApplicationProtocol.agda",
+        "spec/Mimir/Reembedding.agda",
+        "spec/Mimir/CLIServiceBinding.agda"
       ],
       "status": "partially-specified",
       "baseline_gap": "Missing-vector scan, batching, existing-vector skip, per-item outcomes and partial failure.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     },
     {
       "name": "intervene",
@@ -1257,7 +1260,7 @@
       ],
       "status": "partially-specified",
       "baseline_gap": "Reuse evidence operations; CLI argument/result projection.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models."
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
     },
     {
       "name": "delete belief",
@@ -1326,7 +1329,7 @@
       ],
       "status": "partially-specified",
       "baseline_gap": "Reuse document operations; CLI file/error/output composition.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models."
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
     },
     {
       "name": "doc clear",
@@ -1487,7 +1490,7 @@
       ],
       "status": "partially-specified",
       "baseline_gap": "Compose existing models with command defaults, watch retry/backoff/signal handling, status and diagnostics projections.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models."
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
     },
     {
       "name": "judge status",
@@ -1560,7 +1563,7 @@
         "spec/Mimir/CLI.agda"
       ],
       "status": "partially-specified",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     },
     {
       "name": "judge diagnose",
@@ -1642,7 +1645,7 @@
       ],
       "status": "partially-specified",
       "baseline_gap": "Migration framework exists; map each actual SQL schema/data transition and constraints, not only migration file/checksum bookkeeping.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     },
     {
       "name": "Judge host, provider and subprocess lifecycle",
@@ -1673,10 +1676,15 @@
         "spec/Mimir/NotificationIncident.agda",
         "spec/Mimir/NotificationSchema.agda"
       ],
-      "completion_modules": [],
+      "completion_modules": [
+        "spec/Mimir/NotificationDelivery.agda",
+        "spec/Mimir/NotificationConfig.agda",
+        "spec/Mimir/NotificationSchema.agda",
+        "spec/Mimir/NotificationConfigurationWire.agda"
+      ],
       "status": "partially-specified",
       "baseline_gap": "Specify notification recovery and OAuth behavior without modeling statistics.",
-      "remaining": "Recovery coverage requires re-establishment."
+      "remaining": "SMTP and OAuth implementations remain external dependencies. Owned cleanup, fresh retry and independence from reviews are specified; Rust integration and runtime verification are pending."
     },
     {
       "name": "Embedding backend and automatic grounding",
@@ -1693,7 +1701,7 @@
       ],
       "status": "partially-specified",
       "baseline_gap": "Compose backend readiness, output cardinality/dimension, belief/document association, scope threshold and side effects, including reembed.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation and statistics models."
+      "remaining": "Rust conformance and installed-application verification remain pending. See issue 469 for individual requirements and superseded approaches; library algorithms and statistics are external."
     },
     {
       "name": "Experience/review concurrency and recovery",
@@ -1717,7 +1725,7 @@
       ],
       "status": "partially-specified",
       "baseline_gap": "Approved DB axioms remain external; concretely represent the full Mimir write set and snapshot/lock usage rather than assuming application correctness.",
-      "remaining": "Recovery and command coverage require re-establishment after removing implementation models."
+      "remaining": "Recovery and public-entry coverage are checked by the registered controllers and structural coverage check. Rust conformance and installed-application verification remain pending; statistics, library algorithms and formatting are outside this recovery task."
     }
   ],
   "verification": {
@@ -1728,7 +1736,8 @@
     "structural_audit": "/tmp/mimir-spec-structural-audit.json",
     "final_receipt": "docs/FORMAL-BEHAVIOR-VERIFICATION.json",
     "aggregate_exit_status": 0,
-    "coverage_check_exit_status": 0
+    "coverage_check_exit_status": 0,
+    "current_recovery_scope": "Focused interactive checking of affected entry modules and their dependencies; structural inventory check passed. Historical aggregate receipt remains a separate baseline check."
   },
   "excluded": [
     "Rust correspondence proof completion",
@@ -1776,7 +1785,7 @@
       "name": "operational configuration and bounded logs",
       "modules": [
         "spec/Mimir/OperationalConfiguration.agda",
-        "spec/Mimir/OperationalLogRetention.agda",
+        "spec/Mimir/OperationalLogProtocol.agda",
         "spec/Mimir/OperationalLifecycle.agda"
       ]
     }
@@ -1784,5 +1793,16 @@
   "updated_at": "2026-10-31T03:50:09.149598+00:00",
   "completed_utc": "2026-10-31T03:59:41.624081+00:00",
   "operational_update_checked_at": "2026-10-31T20:24:20.743313+00:00",
-  "library_boundary": "Standard JSON/UTF-8/UUID/numeric parsing, formatting and hashing are supplied operations. Their implementations are outside the application specification. See FORMAL-VALUE-AUDIT.md."
+  "library_boundary": "Standard JSON/UTF-8/UUID/numeric parsing, formatting and hashing are supplied operations. Their implementations are outside the application specification. See FORMAL-VALUE-AUDIT.md.",
+  "recovery_dispatch": {
+    "module": "spec/Mimir/ApplicationProtocol.agda",
+    "operation_type": "OperationRequest",
+    "certificate_type": "Certificate",
+    "total_mapping": "operation",
+    "run_state": "RunState",
+    "executable_constructor": "State.running",
+    "public_entry": "start",
+    "boundary": "Public requests and all preparatory/publication phases enter registered recovery controllers. Runtime conformance is separate.",
+    "restart_policy": "Rollback and cleanup, then restart the original request. No durable execution checkpoints or partial-progress continuation."
+  }
 }

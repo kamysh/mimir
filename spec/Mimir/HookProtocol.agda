@@ -23,6 +23,7 @@ import Mimir.GraphReadProtocol as Read
 import Mimir.CandidateGraph as Graph
 import Mimir.LearningCandidates as Candidates
 import Mimir.Effects as Effects
+import Mimir.RetrievalProtocol as Retrieval
 
 member : Text → V.Value → Maybe V.Value
 member name (V.object fields) = V.Object.normalize fields name
@@ -60,12 +61,12 @@ sessionFile : Text → Text
 sessionFile id = toList "mimir-session-project-" ++ id
 
 data Message : Set where
-  promptContext pretoolContext : List Graph.BeliefValues → Message
+  promptContext pretoolContext : Retrieval.Report Graph.BeliefValues → Message
   unconsolidated : List Graph.BeliefValues → Message
   preexisting : Text → List Graph.BeliefValues → Message
 
 module Run (environment : Application.Environment) where
-  module A = Application.Run environment
+  module A = Application.Run environment using (Result; readResult; relevantResult)
 
   data Effect : Set where
     stdinUTF8 : Effect
@@ -113,16 +114,20 @@ module Run (environment : Application.Environment) where
     (just project) → done project
     nothing → ask currentDirectory done
 
-  message : CLI.HookCommand → List Graph.BeliefValues → Message
+  message : CLI.HookCommand → Retrieval.Report Graph.BeliefValues → Message
   message CLI.prompt = promptContext
   message _ = pretoolContext
+
+  deliver : CLI.HookCommand → Retrieval.Report Graph.BeliefValues → Script ℕ
+  deliver kind (Retrieval.report _ [] Retrieval.performed) = done 0
+  deliver kind (Retrieval.report _ [] Retrieval.noEligibleBeliefs) = done 0
+  deliver kind result = ask (stdout (message kind result)) (λ _ → done 0)
 
   inject : CLI.HookCommand → Text → Maybe Text → Script ℕ
   inject kind text scope = ask connect λ where
     (inj₁ _) → done 0
     (inj₂ tt) → ask (execute (Public.relevant text nothing scope nothing false nothing)) λ where
-      (A.relevantResult []) → done 0
-      (A.relevantResult beliefs@(_ ∷ _)) → ask (stdout (message kind beliefs)) (λ _ → done 0)
+      (A.relevantResult result) → deliver kind result
       _ → done 0
 
   stop : Maybe Text → V.Value → Script ℕ

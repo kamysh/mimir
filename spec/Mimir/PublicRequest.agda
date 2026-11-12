@@ -64,6 +64,7 @@ data Request : Set where
   learningQuery : Query.Request → Request
   learningContext : Text → Text → Maybe ℕ → Request
   capabilities : Request
+  reembed : Request -- existing CLI command; no additional MCP tool
 
 memory : V.Value → Fault ⊎ C.Memory
 memory = enum (("fact" , C.fact) ∷ ("experiential" , C.experiential) ∷ ("working" , C.working) ∷ [])

@@ -1,7 +1,7 @@
 {-# OPTIONS --safe #-}
--- Exhaustive result classification and JSON projection. Failed/uncertain
--- operations remain errors even if an earlier component committed. The error
--- retains its complete typed cause for the host's diagnostic formatter.
+-- Exhaustive result classification and JSON projection. Internal failure
+-- causes remain typed; MCP composition turns them into actionable dialogue
+-- after cleanup, rather than reporting an unsuccessful operation as complete.
 module Mimir.ApplicationOutput where
 
 open import Data.Bool using (Bool; true; false)
@@ -40,15 +40,45 @@ import Mimir.AssessmentSelection as Selection
 import Mimir.AssessmentEvaluation as Evaluation
 import Mimir.AssessmentScores as Scores
 import Mimir.LearningCapabilities as Capabilities
+import Mimir.RetrievalProtocol as Retrieval
+import Mimir.Reembedding as Reembedding
 
 module Project (environment : Application.Environment) (format : Encoding.Formatting) where
   module A = Application.Run environment
+    using (Result; capabilitiesResult; contextResult; deleted; documentQueryResult;
+      documentResult; evidenceResult; failed; forgotten; grounded; groundedResult;
+      inferred; invalidAssessment; invalidContext; invalidGrounding; invalidRequestIdentity;
+      learned; learningQueryResult; mutated; needsDecision; readResult; relevantResult; swept; reembeddingResult;
+      module Delete; module Document; module Forget; module Grounding; module Learn; module Sweep)
   open Encoding
   open Encode format
 
   data Projection : Set where
     success : V.Value → Projection
     failure : A.Result → Projection
+
+  unavailableCause : Retrieval.UnavailableCause → Text
+  unavailableCause Retrieval.notConfigured = toList "not_configured"
+  unavailableCause Retrieval.unsupportedContent = toList "unsupported_content"
+  unavailableCause Retrieval.providerFailure = toList "provider_failure"
+  unavailableCause Retrieval.invalidProviderReply = toList "invalid_provider_reply"
+
+  semanticSearch : Retrieval.SemanticStatus → V.Value
+  semanticSearch Retrieval.performed = object (("status" , V.string (toList "performed")) ∷ [])
+  semanticSearch Retrieval.noEligibleBeliefs = object
+    (("status" , V.string (toList "not_needed")) ∷
+     ("reason" , V.string (toList "There are no eligible stored beliefs to search.")) ∷ [])
+  semanticSearch (Retrieval.notAvailable why) = object
+    (("status" , V.string (toList "unavailable")) ∷
+     ("cause" , V.string (unavailableCause (Retrieval.Unavailable.cause why))) ∷
+     ("reason" , V.string (Retrieval.Unavailable.reason why)) ∷
+     ("next_action" , V.string (Retrieval.Unavailable.nextAction why)) ∷ [])
+
+  retrievalReport : ∀ {A : Set} → (A → V.Value) → Retrieval.Report A → V.Value
+  retrievalReport encode result = object
+    (("context" , V.string (Retrieval.Report.context result)) ∷
+     ("beliefs" , V.array (map encode (Retrieval.Report.beliefs result))) ∷
+     ("semantic_search" , semanticSearch (Retrieval.Report.semanticSearch result)) ∷ [])
 
   flag : String → Bool → V.Value
   flag fieldKey value = object ((fieldKey , V.boolean value) ∷ [])
@@ -181,8 +211,10 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project original@A.invalidGrounding = failure original
   project (A.evidenceResult (inj₂ refs)) = success (V.array (map reference refs))
   project original@(A.evidenceResult (inj₁ error)) = failure original
-  project (A.relevantResult beliefs) = success (V.array (map belief beliefs))
-  project (A.groundedResult (inj₂ beliefs)) = success (V.array (map grounded beliefs))
+  project (A.reembeddingResult (Reembedding.reembedded n)) = success (count "reembedded" n)
+  project original@(A.reembeddingResult (Reembedding.needsDecision _ _)) = failure original
+  project (A.relevantResult result) = success (retrievalReport belief result)
+  project (A.groundedResult (inj₂ result)) = success (retrievalReport grounded result)
   project original@(A.groundedResult (inj₁ error)) = failure original
   project (A.documentResult (A.Document.loaded n)) = success (count "loaded" n)
   project (A.documentResult (A.Document.cleared n)) = success (count "cleared" n)
@@ -196,6 +228,7 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project original@(A.contextResult result) with contextAssessments (Context.Assessments.values (ContextProtocol.Output.assessments result))
   ... | nothing = failure original
   ... | just assessments = success (object (("beliefs" , V.array (map belief (ContextProtocol.Output.beliefs result))) ∷
+    ("semantic_search" , semanticSearch (ContextProtocol.Output.semanticSearch result)) ∷
     ("patterns" , V.array (ContextProtocol.Output.patterns result)) ∷ ("assessments" , V.array assessments) ∷
     ("assessments_truncated" , V.boolean (Context.Assessments.truncated (ContextProtocol.Output.assessments result))) ∷ []))
   project (A.capabilitiesResult c) = success (Capabilities.encode c)

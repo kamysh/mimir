@@ -10,6 +10,7 @@ open import Data.Nat using (ℕ)
 open import Data.Unit using (tt)
 open import Data.Sum using (_⊎_)
 open import Data.Maybe using (Maybe; nothing; just)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 import Data.Maybe
 open import Mimir.Bits using (Byte)
 open import Mimir.UnixPath using (Path; join)
@@ -31,9 +32,10 @@ lockFilename : Path
 lockFilename = ASCII.literal (toList "judge.lock") tt
 
 limit : Name → Maybe ℕ
-limit status = nothing
-limit failure = nothing
-limit diagnostics = just 3145728
+limit name = nothing
+
+allStateReadsAreComplete : ∀ name → limit name ≡ nothing
+allStateReadsAreComplete name = refl
 
 temporaryName : Library.Contract → Name → Groups.UUID → Path
 temporaryName library name identifier = ASCII.literal (toList ".judge-") tt ++ filename name ++

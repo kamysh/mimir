@@ -840,9 +840,9 @@
       ],
       "status": "unmapped",
       "proof_boundary_category": "application_protocol",
-      "classification": "production-behavior",
+      "classification": "prompt-formatting-outside-recovery-specification",
       "behavioral_specification": [],
-      "specification_status": "behavior-defined-and-aggregate-checked"
+      "specification_status": "outside-recovery-scope"
     },
     {
       "path": "crates/cli/src/judge/harness.rs",
@@ -854,8 +854,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -867,8 +867,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -880,8 +880,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -893,8 +893,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -906,8 +906,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -919,8 +919,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -932,8 +932,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -945,8 +945,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -958,8 +958,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -971,8 +971,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -984,8 +984,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -997,8 +997,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1010,8 +1010,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1023,8 +1023,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1036,8 +1036,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1049,8 +1049,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1062,8 +1062,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1075,8 +1075,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1088,8 +1088,8 @@
           "specification": [],
           "status": "partially-specified",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda",
             "spec/Mimir/JudgeBackendComposition.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
@@ -1162,8 +1162,8 @@
       "proof_boundary_category": "application_protocol",
       "classification": "production-behavior",
       "behavioral_specification": [
-        "spec/Mimir/JudgeProcess.agda",
-        "spec/Mimir/JudgeProcess.agda",
+        "spec/Mimir/JudgeMcpLifecycle.agda",
+        "spec/Mimir/JudgeMcpLifecycle.agda",
         "spec/Mimir/JudgeBackendComposition.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
@@ -2063,8 +2063,8 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda"
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -2075,8 +2075,8 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda"
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -2087,8 +2087,8 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda"
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -2099,8 +2099,8 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda"
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -2111,8 +2111,8 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda"
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -2123,8 +2123,8 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda"
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -2135,8 +2135,8 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda"
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -2147,8 +2147,8 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda"
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -2159,8 +2159,8 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda"
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -2171,8 +2171,8 @@
           "specification": [],
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
-            "spec/Mimir/JudgeProcess.agda",
-            "spec/Mimir/JudgeProcess.agda"
+            "spec/Mimir/JudgeMcpLifecycle.agda",
+            "spec/Mimir/JudgeMcpLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem. Existing specific specification references are retained."
         },
@@ -2188,8 +2188,8 @@
       "proof_boundary_category": "application_protocol",
       "classification": "production-behavior",
       "behavioral_specification": [
-        "spec/Mimir/JudgeProcess.agda",
-        "spec/Mimir/JudgeProcess.agda"
+        "spec/Mimir/JudgeMcpLifecycle.agda",
+        "spec/Mimir/JudgeMcpLifecycle.agda"
       ],
       "specification_status": "behavior-defined-and-aggregate-checked"
     },
@@ -13100,8 +13100,11 @@
       "status": "partially-specified",
       "proof_boundary_category": "application_protocol",
       "classification": "production-behavior",
-      "behavioral_specification": [],
-      "specification_status": "behavior-defined-and-aggregate-checked"
+      "behavioral_specification": [
+        "spec/Mimir/NotificationDelivery.agda",
+        "spec/Mimir/NotificationConfig.agda"
+      ],
+      "specification_status": "recovery-contract-defined-provider-implementation-external"
     },
     {
       "path": "crates/notifications/src/smtp.rs",
@@ -13146,8 +13149,11 @@
       "status": "partially-specified",
       "proof_boundary_category": "application_protocol",
       "classification": "production-behavior",
-      "behavioral_specification": [],
-      "specification_status": "behavior-defined-and-aggregate-checked"
+      "behavioral_specification": [
+        "spec/Mimir/NotificationDelivery.agda",
+        "spec/Mimir/NotificationConfig.agda"
+      ],
+      "specification_status": "recovery-contract-defined-provider-implementation-external"
     },
     {
       "path": "crates/notifications/src/state.rs",
@@ -13317,8 +13323,11 @@
       "status": "partially-specified",
       "proof_boundary_category": "application_protocol",
       "classification": "production-behavior",
-      "behavioral_specification": [],
-      "specification_status": "behavior-defined-and-aggregate-checked",
+      "behavioral_specification": [
+        "spec/Mimir/NotificationDelivery.agda",
+        "spec/Mimir/NotificationConfig.agda"
+      ],
+      "specification_status": "recovery-contract-defined-provider-implementation-external",
       "implementation_receipt": "docs/RUST-CONFORMANCE.md"
     },
     {
@@ -13632,7 +13641,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13645,7 +13654,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13658,7 +13667,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13671,7 +13680,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13684,7 +13693,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13697,7 +13706,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13710,7 +13719,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13723,7 +13732,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13736,7 +13745,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13749,7 +13758,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13762,7 +13771,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13775,7 +13784,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13788,7 +13797,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13801,7 +13810,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13814,7 +13823,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13827,7 +13836,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13840,7 +13849,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13853,7 +13862,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13866,7 +13875,7 @@
           "status": "behavioral-area-mapped-rust-correspondence-open",
           "behavioral_area": [
             "spec/Mimir/OperationalConfiguration.agda",
-            "spec/Mimir/OperationalLogRetention.agda",
+            "spec/Mimir/OperationalLogProtocol.agda",
             "spec/Mimir/OperationalLifecycle.agda"
           ],
           "mapping_boundary": "Area navigation, not a per-function refinement theorem."
@@ -13921,7 +13930,7 @@
       "classification": "production-behavior",
       "behavioral_specification": [
         "spec/Mimir/OperationalConfiguration.agda",
-        "spec/Mimir/OperationalLogRetention.agda",
+        "spec/Mimir/OperationalLogProtocol.agda",
         "spec/Mimir/OperationalLifecycle.agda"
       ],
       "specification_status": "partially-specified",

@@ -4,6 +4,14 @@ A failed operation must roll back its partial business changes and release its
 owned resources. A retry starts the original request from the beginning. The
 application must not save a half-finished execution for later continuation.
 
+The transaction analogy applies to every operation, including preparation
+outside PostgreSQL: acquire resources, prepare privately, publish the complete
+result once, and release resources. On failure, discard the private work and
+finish cleanup before reporting a correction or asking for a user decision.
+Restart means running the original request again, never loading a saved
+execution position. State-machine states describe an active attempt; they do
+not require database records for unfinished work.
+
 Numerical calculation is an external operation. The specification does not
 implement its solver, iteration count, stopping threshold or convergence proof.
 It requires an unsuccessful calculation to leave business changes unpublished;
@@ -51,7 +59,7 @@ underlying controller. Implementation and application-level verification follow
 after the specification is finalized. Focused local compilation does not claim
 that the implementation or deployment satisfies these contracts.
 
-Final specification verification completed on 2026-11-12. The aggregate
+Earlier baseline verification completed on 2026-11-12. The aggregate
 `spec/Mimir.agda` checked successfully in the persistent interactive Agda
 process, with no errors, warnings, visible goals or hidden goals. A subsequent
 `Cmd_metas` inspection confirmed no remaining goals. The full stage output is
@@ -60,3 +68,26 @@ Compiler fixes narrowed module aliases to the exports actually used and replaced
 a natural-number comparison of history identities with UUID equality.
 `git diff --check` also passed. These are specification checks; application
 builds, installation and runtime verification were outside this stage.
+
+The subsequent recovery completion connects every executing phase to the
+mandatory `operation` registry. It adds private preparation and atomic
+publication for review-created beliefs and re-embedding, requires active work
+to stop before deletion, and carries informative semantic-search availability
+through MCP, CLI and optional hook consumers. Notification cleanup runs
+independently of reviews. Configuration creation and replacement have atomic
+publication contracts. Log failures no longer prevent reviews; log rotation,
+diagnostic read ceilings and the inter-batch delay are removed from the
+application contracts.
+
+For these changes, focused interactive checks of `CLIServiceBinding`,
+`JudgeHostProtocol` and `McpRuntimeComposition`, including their changed
+dependencies, completed with no errors, warnings or unresolved goals. Final
+`Cmd_metas` inspection also reported no goals for each entry module. The shared
+interactive transcript is retained locally at
+`/tmp/mimir-local-recovery-development-20261111.log`.
+
+The final structural coverage check passed for all 34 MCP operations, 30 CLI
+commands, seven lifecycle groups, and the closed recovery registry. Its output
+is retained at `/tmp/mimir-finish-spec-final-coverage-20261112.log`. This is a
+structural audit, not a Rust refinement proof. The earlier aggregate receipt
+has not been relabeled as verification of these later edits.

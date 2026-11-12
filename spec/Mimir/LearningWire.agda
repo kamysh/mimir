@@ -29,7 +29,7 @@ import Mimir.IndependentProvenance as Origin
 import Mimir.LearningInput as Input
 
 recordOf : ∀ {A : Set} → List String → (V.Object.View → Fault ⊎ A) → V.Value → Fault ⊎ A
-recordOf names = readRecord Objects.forbid Objects.keepLast (map toList names)
+recordOf names = readRecord Objects.forbid Objects.rejectKnownRepeated (map toList names)
 
 outcome : V.Value → Fault ⊎ X.Outcome
 outcome = enum (("success" , X.success) ∷ ("failure" , X.failure) ∷ ("unknown" , X.unknown) ∷ [])
@@ -133,7 +133,7 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     required "evidence" (readArray V.asString) fields >>= λ evidence →
     defaulted "belief_ids" [] (readArray uuid) fields >>= λ beliefs → optional "pattern_id" uuid fields >>= λ patternID →
     defaulted "learning_items" [] (readArray item) fields >>= λ items →
-    defaulted "source_records" [] (readArray (Source.decode Objects.keepLast)) fields >>= λ sources →
+    defaulted "source_records" [] (readArray (Source.decode Objects.rejectKnownRepeated)) fields >>= λ sources →
     inj₂ (X.experience id project context action outcome provenance evidence beliefs patternID items sources))
 
   experienceInput : V.Value → Fault ⊎ Input.Experience
@@ -145,7 +145,7 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     required "evidence" (readArray V.asString) fields >>= λ evidence →
     defaulted "belief_ids" [] (readArray uuid) fields >>= λ beliefs → optional "pattern_id" uuid fields >>= λ patternID →
     defaulted "learning_items" [] (readArray itemInput) fields >>= λ items →
-    defaulted "source_records" [] (readArray (Source.decode Objects.keepLast)) fields >>= λ sources →
+    defaulted "source_records" [] (readArray (Source.decode Objects.rejectKnownRepeated)) fields >>= λ sources →
     inj₂ (Input.experience id project context action outcome provenance evidence beliefs patternID items sources))
 
   feedback : V.Value → Fault ⊎ R.Feedback
@@ -179,7 +179,7 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     defaulted "feedback" [] (readArray feedback) fields >>= λ feedbacks →
     defaulted "links" [] (readArray link) fields >>= λ links →
     defaulted "superseded_beliefs" [] (readArray uuid) fields >>= λ superseded →
-    defaulted "candidates" [] (readArray (Candidate.decode Objects.keepLast)) fields >>= λ candidates →
+    defaulted "candidates" [] (readArray (Candidate.decode Objects.rejectKnownRepeated)) fields >>= λ candidates →
     defaulted "candidate_feedback" [] (readArray candidateFeedback) fields >>= λ candidateFeedbacks →
     defaulted "candidate_links" [] (readArray candidateLink) fields >>= λ candidateLinks →
     defaulted "assessments" [] (readArray assessment) fields >>= λ assessments →
@@ -197,7 +197,7 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
     defaulted "feedback" [] (readArray feedback) fields >>= λ feedbacks →
     defaulted "links" [] (readArray link) fields >>= λ links →
     defaulted "superseded_beliefs" [] (readArray uuid) fields >>= λ superseded →
-    defaulted "candidates" [] (readArray (Candidate.decode Objects.keepLast)) fields >>= λ candidates →
+    defaulted "candidates" [] (readArray (Candidate.decode Objects.rejectKnownRepeated)) fields >>= λ candidates →
     defaulted "candidate_feedback" [] (readArray candidateFeedback) fields >>= λ candidateFeedbacks →
     defaulted "candidate_links" [] (readArray candidateLink) fields >>= λ candidateLinks →
     defaulted "assessments" [] (readArray assessmentInput) fields >>= λ assessments →

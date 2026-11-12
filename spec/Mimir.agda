@@ -15,6 +15,7 @@ import Mimir.JudgeConfiguration
 import Mimir.JudgeJSON
 import Mimir.JudgeBackendComposition
 import Mimir.NotificationConfigurationWire
+import Mimir.NotificationDelivery
 
 import Mimir.ConfigurationProtocol
 import Mimir.MigrationSchema
@@ -366,8 +367,6 @@ import Mimir.CLIServiceBinding
 
 
 import Mimir.OperationalConfiguration
-import Mimir.OperationalLogRetention
-import Mimir.OperationalLogSteps
 import Mimir.OperationalLogProtocol
 import Mimir.OperationalLifecycle
 
