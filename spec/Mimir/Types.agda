@@ -1,6 +1,8 @@
 {-# OPTIONS --safe #-}
 module Mimir.Types where
 
+open import Mimir.UUIDGroups using (UUID)
+
 open import Data.Nat    using (ℕ)
 open import Data.String using (String)
 open import Data.Maybe  using (Maybe)
@@ -16,10 +18,10 @@ record Prob : Set where
   constructor mkProb
   field pct : ℕ  -- invariant: pct ≤ 100 (stated externally)
 
--- Node identifier modelled as a natural number.
+-- Node identifiers have no exposed structure.
 record NodeId : Set where
   constructor mkNodeId
-  field uid : ℕ
+  field uid : UUID
 
 -- Edge labels.
 data EdgeLabel : Set where

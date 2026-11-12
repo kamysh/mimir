@@ -10,7 +10,7 @@ open import Data.List using (List; []; _∷_)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 import Data.List.Relation.Unary.All as All
 open import Data.List.Relation.Unary.Any using (Any; here; there)
-open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Integer using (ℤ)
 open import Data.Maybe using (just)
 open import Data.Product using (_×_; _,_)
@@ -34,7 +34,7 @@ record World : Set where
   constructor world
   field registry : Registry.Registry; nodes : List Graph.Node
 
-module For (projectOf : ℕ → Text) (clock : Candidate → ℤ) where
+module For (projectOf : UUID → Text) (clock : Candidate → ℤ) where
   Represents : Registry.Entry → Graph.Node → Set
   Represents row node = Graph.nodeID node ≡ Registry.Entry.nodeID row ×
     Graph.nodeProject node ≡ just (projectOf (Registry.Entry.experienceID row)) ×

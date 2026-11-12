@@ -15,7 +15,7 @@ open import Data.List.Relation.Unary.All using (All)
 import Data.List.Relation.Unary.All as All
 import Data.List.Relation.Unary.All.Properties as AllProperties
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
@@ -55,14 +55,14 @@ inScope? (just project) (just found) with Targets.checkProject project (Targets.
 
 record State : Set where
   constructor state
-  field visited frontier : List ℕ
+  field visited frontier : List UUID
 
 module For (project : Maybe Text) (beliefs : List Targets.Belief) (edges : List Edges.Edge) where
 
-  Owned : ℕ → Set
+  Owned : UUID → Set
   Owned identity = InScope project (Targets.lookup identity beliefs)
 
-  Eligible : List ℕ → Edges.Edge → Set
+  Eligible : List UUID → Edges.Edge → Set
   Eligible frontier e = Edges.Edge.from e ∈ frontier ×
     (Carries (Edges.Edge.relation e) × Owned (Edges.Edge.to e))
 
@@ -70,14 +70,14 @@ module For (project : Maybe Text) (beliefs : List Targets.Belief) (edges : List 
   eligible? frontier e = Registry.IDs.present? (Edges.Edge.from e) frontier ×-dec
     (carries? (Edges.Edge.relation e) ×-dec inScope? project (Targets.lookup (Edges.Edge.to e) beliefs))
 
-  destinations : List ℕ → List ℕ
+  destinations : List UUID → List UUID
   destinations frontier = map Edges.Edge.to (filter (eligible? frontier) edges)
 
   fresh? : ∀ visited identity → Dec (identity ∈ visited → ⊥)
   fresh? visited identity = ¬? (Registry.IDs.present? identity visited)
 
-  next : State → List ℕ
-  next before = filter (fresh? (State.visited before)) (deduplicate _≟_ (destinations (State.frontier before)))
+  next : State → List UUID
+  next before = filter (fresh? (State.visited before)) (deduplicate _≟UUID_ (destinations (State.frontier before)))
 
   advance : State → State
   advance before = state (next before ++ State.visited before) (next before)
@@ -89,12 +89,12 @@ module For (project : Maybe Text) (beliefs : List Targets.Belief) (edges : List 
 
   nextOwned : ∀ before → All Owned (next before)
   nextOwned before = AllProperties.filter⁺ (fresh? (State.visited before))
-    (AllProperties.deduplicate⁺ _≟_
+    (AllProperties.deduplicate⁺ _≟UUID_
      (destinationsOwned (State.frontier before)))
 
   nextFresh : ∀ before → All (λ identity → identity ∈ State.visited before → ⊥) (next before)
   nextFresh before = AllProperties.all-filter (fresh? (State.visited before))
-    (deduplicate _≟_ (destinations (State.frontier before)))
+    (deduplicate _≟UUID_ (destinations (State.frontier before)))
 
   visitedRetained : ∀ before identity → identity ∈ State.visited before → identity ∈ State.visited (advance before)
   visitedRetained before identity member = Membership.∈-++⁺ʳ (next before) member
@@ -109,7 +109,7 @@ module For (project : Maybe Text) (beliefs : List Targets.Belief) (edges : List 
     Σ Edges.Edge (λ e → e ∈ edges × (identity ≡ Edges.Edge.to e × Eligible (State.frontier before) e))
   nextSound before identity member = Membership.∈-map∘filter⁻ Edges.Edge.to
     (eligible? (State.frontier before))
-    (Membership.∈-deduplicate⁻ _≟_
+    (Membership.∈-deduplicate⁻ _≟UUID_
      (destinations (State.frontier before))
      (proj₁
       (Membership.∈-filter⁻ (fresh? (State.visited before)) member)))
@@ -120,13 +120,13 @@ module For (project : Maybe Text) (beliefs : List Targets.Belief) (edges : List 
   ... | yes old = visitedRetained before (Edges.Edge.to e) old
   ... | no fresh = discoveredRetained before (Edges.Edge.to e)
     (Membership.∈-filter⁺ (fresh? (State.visited before))
-     (Membership.∈-deduplicate⁺ _≟_
+     (Membership.∈-deduplicate⁺ _≟UUID_
       (Membership.∈-map∘filter⁺ Edges.Edge.to
        (eligible? (State.frontier before))
        (e , member , refl , eligible)))
      fresh)
 
-  data Reached (seeds : List ℕ) : ℕ → Set where
+  data Reached (seeds : List UUID) : UUID → Set where
     root : ∀ {identity} → identity ∈ seeds → Reached seeds identity
     follow : ∀ e → e ∈ edges → Carries (Edges.Edge.relation e) → Owned (Edges.Edge.to e) →
       Reached seeds (Edges.Edge.from e) → Reached seeds (Edges.Edge.to e)
@@ -146,7 +146,7 @@ module For (project : Maybe Text) (beliefs : List Targets.Belief) (edges : List 
     Edges.Edge.from e ∈ State.visited before →
     Edges.Edge.to e ∈ State.visited before ⊎ Edges.Edge.from e ∈ State.frontier before
 
-  start : List ℕ → State
+  start : List UUID → State
   start seeds = state seeds seeds
 
   initiallyAccounted : ∀ seeds → Accounted (start seeds)
@@ -160,7 +160,7 @@ module For (project : Maybe Text) (beliefs : List Targets.Belief) (edges : List 
   ...   | inj₁ target = inj₁ (visitedRetained before (Edges.Edge.to e) target)
   ...   | inj₂ pending = inj₁ (edgeFollowed before e member (pending , carries , owned))
 
-  Closed : List ℕ → Set
+  Closed : List UUID → Set
   Closed visited = ∀ e → e ∈ edges → Carries (Edges.Edge.relation e) → Owned (Edges.Edge.to e) →
     Edges.Edge.from e ∈ visited → Edges.Edge.to e ∈ visited
 

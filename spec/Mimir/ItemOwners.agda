@@ -7,7 +7,7 @@ import Data.Empty
 
 open import Data.List using ([])
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (_×_; _,_)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; trans; sym)
@@ -17,18 +17,18 @@ open import Mimir.Collections using (pairEqual)
 open import Mimir.Validation using (Fault; fault; wrongIdentity)
 import Mimir.LearningContracts as Contracts
 
-Owner = ℕ × (Text × Text)
-Registry = ℕ → Maybe Owner
+Owner = UUID × (Text × Text)
+Registry = UUID → Maybe Owner
 
-ownerEqual = pairEqual _≟_ (pairEqual _≟Text_ _≟Text_)
+ownerEqual = pairEqual _≟UUID_ (pairEqual _≟Text_ _≟Text_)
 
-module Store = Contracts.Ownership (Maybe Owner)
+module Store = Contracts.OwnershipWith UUID (Maybe Owner) _≟UUID_
 
 data Outcome : Set where
   refused : Fault → Outcome
   reserved : Registry → Outcome
 
-reserve : Registry → ℕ → Owner → Outcome
+reserve : Registry → UUID → Owner → Outcome
 reserve registry identity owner with registry identity
 ... | nothing = reserved (Store.write identity (just owner) registry)
 ... | just old with ownerEqual owner old
@@ -70,10 +70,10 @@ sameOwnerIsIdempotent registry identity owner original rewrite original with own
 ... | no impossible = Data.Empty.⊥-elim (impossible refl)
 
 -- Explicit experience deletion cascades its ownership rows. Corrections do not.
-deleteExperience : ℕ → Registry → Registry
+deleteExperience : UUID → Registry → Registry
 deleteExperience experience registry identity with registry identity
 ... | nothing = nothing
-... | just (owner , provenance) with owner ≟ experience
+... | just (owner , provenance) with owner ≟UUID experience
 ...   | yes _ = nothing
 ...   | no _ = just (owner , provenance)
 
@@ -81,7 +81,7 @@ deletedExperienceHasNoOwner : ∀ registry identity experience provenance →
   registry identity ≡ just (experience , provenance) →
   deleteExperience experience registry identity ≡ nothing
 deletedExperienceHasNoOwner registry identity experience provenance original rewrite original
-  with experience ≟ experience
+  with experience ≟UUID experience
 ... | yes _ = refl
 ... | no impossible = Data.Empty.⊥-elim (impossible refl)
 
@@ -89,6 +89,6 @@ otherExperienceOwnerPreserved : ∀ registry identity experience other provenanc
   registry identity ≡ just (other , provenance) → other ≢ experience →
   deleteExperience experience registry identity ≡ just (other , provenance)
 otherExperienceOwnerPreserved registry identity experience other provenance original different rewrite original
-  with other ≟ experience
+  with other ≟UUID experience
 ... | yes same = Data.Empty.⊥-elim (different same)
 ... | no _ = refl

@@ -1,68 +1,62 @@
-# When the running watcher must make progress
+# Operation rollback and fresh restart
 
-The watcher has two different obligations: continue attempting work, and
-confirm work that can be completed. A retry proves only the first.
+A failed operation must roll back its partial business changes and release its
+owned resources. A retry starts the original request from the beginning. The
+application must not save a half-finished execution for later continuation.
 
-## Continued attempts
+Numerical calculation is an external operation. The specification does not
+implement its solver, iteration count, stopping threshold or convergence proof.
+It requires an unsuccessful calculation to leave business changes unpublished;
+successful calculation results remain private until the operation commits.
 
-One round includes the actual batch program, the daily notification check, and
-the configured wait. If those operations return and the timer gets time to run,
-the watcher returns to the next batch. A batch failure or an unavailable daily
-notification changes the recorded state and waiting period, but does not exit
-the loop. Repeated failures can increase the delay to an hour. A signal or an
-invalid starting configuration is outside this continued-operation condition.
+This is a general requirement. For example, `record_defeat` prepares the link
+and recalculation inside one transaction. It publishes both together. If either
+part fails, neither is published. Retrying creates no duplicate from the failed
+attempt because that attempt left no durable changes.
 
-The `Round` record and `roundTrace` proof in
-[JudgeDigestComposition](../spec/Mimir/JudgeDigestComposition.agda) connect these
-conditions to the actual repeated watcher program. The timer acknowledgement
-is an external scheduling condition, not a proof about the operating system.
+`Recovery.Recoverable` requires `rollbackInterrupted` and `rollbackFailed`, as
+well as the successful-outcome theorem. `restartsFresh` follows from those
+rollback proofs. Transaction cleanup receipts confirm that the owned handle has
+been released; a cleanup diagnostic does not permit an unfinished cleanup.
 
-## Completing stable work after recovery
+Experience and review preparation accepts a transaction-scope proof alongside
+the proposed steps. A rejected preparation can finish only in the closed scope;
+a preparation ready to publish still owns its transaction. Preparing and
+committing are separate typed boundaries. Preparation cannot commit, and a
+commit either publishes the complete proposal or leaves the store unchanged.
 
-The completion guarantee requires a finite, ordered queue of eligible source
-revisions and all of the following conditions:
+Invalid requests receive a clear explanation and correction path. An operation
+that needs a user decision must clean up before returning that request. A
+recoverable review error ends its attempt safely without permanently stopping
+the watcher. Stopping an attempt must also stop its active embedding work.
+The owned-child stop effect returns only after that work has stopped. There is
+no alternative cleanup-error return that allows the operation to finish while
+the child continues running.
 
-- The project, configuration and source revisions stay unchanged. No new work
-  is inserted into this queue during the guarantee.
-- Each continued attempt selects a nonempty first group from the remaining
-  queue, using the configured batch size and the actual pending-work call.
-- Each selected revision receives a valid completed review. Final database
-  reads confirm its identity and unchanged source revision, acknowledge that
-  source revision, and show a newer review revision.
-- Batch work and the daily notification check return, and the timer continues
-  receiving time to run. The watcher is not stopped.
+Belief and document preparation also uses a recovery controller. These steps
+cannot publish business changes. Publication is constructed through the
+separate transaction controller after preparation completes. Clearing indexed
+data retains the existing fallback to the supplied path when the source file
+can no longer be resolved; deleting the source file does not prevent clearing
+its indexed data.
 
-Under these conditions, every original revision is confirmed within at most as
-many attempts as there were revisions in the original queue. For example,
-seven stable revisions take at most seven such attempts; larger batches can
-finish them sooner. This is a bound on attempts, not a wall-clock deadline.
+The review specification does not define statistics. Its incident-confirmation rule
+requires evidence from the selected reviews' database readback rather than
+deriving confirmation from report counts. Incident persistence is an external
+operation; the specification defines the decision, not the storage implementation.
 
-`RecoveredRound` requires the selection and confirmation reads to occur inside
-the actual host batch. `allRecoveredHistoriesFinish` proves the bound for every
-history meeting these conditions, rather than exhibiting one successful path.
-The continuation condition says arbitrarily many recovered rounds receive time
-to finish. It does not assume that the whole queue eventually completes.
-`everyStableRevisionEventuallyConfirmed` applies the bound to that continuing
-operation and produces an actual watcher execution and database confirmation
-evidence for every original revision.
+Every executing application state requires a recovery controller. Correction
+states return without effects, and the request-ID wrapper only forwards the
+underlying controller. Implementation and application-level verification follow
+after the specification is finalized. Focused local compilation does not claim
+that the implementation or deployment satisfies these contracts.
 
-Recovery means more than a database accepting connections or a model returning
-HTTP success. A model that keeps returning invalid reviews, unavailable final
-reads, repeated lock conflicts, changing source revisions, or an indefinitely
-blocked notification operation does not meet these conditions. Temporary
-failures can precede the recovered execution; its bound starts after recovery.
-
-## Deferrals remain pending
-
-A deliberately deferred revision that remains unchanged and unreviewed stays
-excluded on the next selection. Merely waiting longer does not release it.
-Correcting the source or reviewing it elsewhere releases that exclusion when
-the next reconciliation observes the change. A deferred item need not be
-included in the recovered queue while other eligible work progresses.
-
-[JudgeSelection](../spec/Mimir/JudgeSelection.agda) proves both retention and
-release for the actual reconciliation operation.
-[ReviewObservation](../spec/Mimir/ReviewObservation.agda) proves that an
-unchanged deferred, unreviewed revision cannot also have a confirmed review.
-The specification therefore does not promise that a revision deliberately
-deferred on every attempt will eventually be processed.
+Final specification verification completed on 2026-11-12. The aggregate
+`spec/Mimir.agda` checked successfully in the persistent interactive Agda
+process, with no errors, warnings, visible goals or hidden goals. A subsequent
+`Cmd_metas` inspection confirmed no remaining goals. The full stage output is
+retained locally at `/tmp/mimir-final-agda-20261112-YbwcL1O9.log`.
+Compiler fixes narrowed module aliases to the exports actually used and replaced
+a natural-number comparison of history identities with UUID equality.
+`git diff --check` also passed. These are specification checks; application
+builds, installation and runtime verification were outside this stage.

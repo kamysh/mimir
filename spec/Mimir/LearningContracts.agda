@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
--- General contracts for the Rust learning port. IDs/projects/versions are
--- abstract natural identities, not an encoding of UUID parsing or SQL I/O.
+-- General contracts for the Rust learning port. Identity keys are explicit
+-- in the contracts; versions remain numbers.
 module Mimir.LearningContracts where
 
 open import Data.Nat using (ℕ; zero; suc; _≟_; _≤_; s≤s)
@@ -19,29 +19,29 @@ not-successor zero ()
 not-successor (suc n) eq = not-successor n (suc-injective eq)
 
 -- Pointwise equality avoids function extensionality or other added axioms.
-module Ownership (Value : Set) where
-  World = ℕ → Value
+module OwnershipWith (Key Value : Set) (_≟Key_ : DecidableEquality Key) where
+  World = Key → Value
 
-  write : ℕ → Value → World → World
-  write key value world queried with queried ≟ key
+  write : Key → Value → World → World
+  write key value world queried with queried ≟Key key
   ... | yes _ = value
   ... | no _ = world queried
 
   write-own : ∀ key value world → write key value world key ≡ value
-  write-own key value world with key ≟ key
+  write-own key value world with key ≟Key key
   ... | yes _ = refl
   ... | no neq = ⊥-elim (neq refl)
 
   write-other : ∀ key other value world → other ≢ key →
     write key value world other ≡ world other
-  write-other key other value world neq with other ≟ key
+  write-other key other value world neq with other ≟Key key
   ... | yes eq = ⊥-elim (neq eq)
   ... | no _ = refl
 
   -- Replacement discards every earlier contribution from this identity.
   replacement-forgets-old : ∀ key newer older world queried →
     write key newer (write key older world) queried ≡ write key newer world queried
-  replacement-forgets-old key newer older world queried with queried ≟ key
+  replacement-forgets-old key newer older world queried with queried ≟Key key
   ... | yes _ = refl
   ... | no neq = write-other key queried older world neq
 
@@ -52,16 +52,18 @@ module Ownership (Value : Set) where
   retraction-restores-base key value base world queried =
     replacement-forgets-old key (base key) value world queried
 
-  scoped : (ℕ → ℕ) → ℕ → World → World → World
-  scoped owner project before proposed id with owner id ≟ project
+  scoped : (Key → Key) → Key → World → World → World
+  scoped owner project before proposed id with owner id ≟Key project
   ... | yes _ = proposed id
   ... | no _ = before id
 
   foreign-write-refused : ∀ owner project before proposed id → owner id ≢ project →
     scoped owner project before proposed id ≡ before id
-  foreign-write-refused owner project before proposed id neq with owner id ≟ project
+  foreign-write-refused owner project before proposed id neq with owner id ≟Key project
   ... | yes eq = ⊥-elim (neq eq)
   ... | no _ = refl
+
+module Ownership (Value : Set) = OwnershipWith ℕ Value _≟_
 
 -- A candidate's stable key is (experience, local candidate key). The assigned
 -- node ID (belief or pattern) is retained when the contribution is retracted.

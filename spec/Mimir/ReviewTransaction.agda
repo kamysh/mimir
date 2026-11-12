@@ -6,6 +6,7 @@ module Mimir.ReviewTransaction where
 
 open import Data.List using (_∷_; [])
 open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Product using (Σ; _×_; _,_)
 open import Relation.Binary.Definitions using (DecidableEquality)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; sym; subst)
@@ -25,7 +26,7 @@ module Over (Payload Contribution Failure : Set) (equal : DecidableEquality Payl
   fromPlan identity before payload J.P.replayed = T.replay before
   fromPlan identity before payload J.P.fresh = T.replace (J.fresh identity before payload) (J.fresh identity before payload)
 
-  plan : ℕ → J.C.Request → J.World → T.Decision
+  plan : UUID → J.C.Request → J.World → T.Decision
   plan identity submitted before = fromPlan identity before (J.C.Request.payload submitted) (J.classify identity before submitted)
 
   writeSet : J.World → T.Decision → J.World
@@ -78,7 +79,7 @@ module Over (Payload Contribution Failure : Set) (equal : DecidableEquality Payl
   publicationPreserves identity submitted before reply published atomic consistent = Database.invariantPreserved J.Consistent atomic consistent
     (planPreserves identity submitted before consistent)
 
-  module Request (identity : ℕ) (submitted : J.C.Request) where
+  module Request (identity : UUID) (submitted : J.C.Request) where
     module Program = T.Plan (plan identity submitted)
     module Scope = T.Laws (plan identity submitted)
     module Confirmation = Receipts.WithPlan (plan identity submitted)

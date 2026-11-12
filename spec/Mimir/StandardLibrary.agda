@@ -5,18 +5,16 @@
 module Mimir.StandardLibrary where
 
 open import Data.Fin using (Fin)
-open import Data.Bool using (Bool)
-open import Data.List using (List; length)
-open import Data.Maybe using (Maybe; just)
-open import Data.Nat using (ℕ; _≤_; _*_)
+open import Data.List using (List)
+open import Data.Maybe using (Maybe)
+open import Data.Nat using (ℕ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_)
-open import Mimir.Text using (Text; byteLength)
+open import Mimir.Text using (Text)
 open import Mimir.Bits using (Byte)
 open import Mimir.Binary64 using (power)
 import Mimir.FloatValue as Float
 import Mimir.StructuredValue as Value
-import Mimir.ExactBytes as Bytes
 import Mimir.UUIDGroups as UUID
 import Mimir.Validation as Validation
 
@@ -50,14 +48,8 @@ record Contract : Set₁ where
     decodeUTF8 : List Byte → Text ⊎ Text
     encodeUTF8 : Text → List Byte
     lossyUTF8 : List Byte → Text
-    -- Standard replacement decoding expands at most threefold. Mimir uses
-    -- this external guarantee only to bound its own selected error window.
-    lossyByteBound : ∀ input → byteLength (lossyUTF8 input) ≤ 3 * length input
-    sha256 : List Byte → Bytes.Bytes 32
     parseUUID : Text → Maybe UUID.UUID
     formatUUID : UUID.UUID → Text
-    uuidRoundTrip : ∀ value → parseUUID (formatUUID value) ≡ just value
-    uuidFromRandom : Bool → UUID.UUID → UUID.UUID
 
 readRecord : ∀ {A : Set} (library : Contract) (decode : Value.Value → Validation.Fault ⊎ A) →
   List Byte → ReadResult decode

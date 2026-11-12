@@ -4,6 +4,7 @@ module Mimir.LearningAssessmentQueries where
 
 open import Data.List using (map)
 open import Data.Nat using (ℕ)
+open import Data.Maybe using (Maybe)
 import Mimir.LearningStore as Store
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.AssessmentRead as Read
@@ -19,5 +20,5 @@ scores : Selection.Query → Store.World → Read.ScoreResult
 scores q w = Read.getAssessment q
   (map Recompute.target (Recompute.beliefs (Publication.World.nodes (Store.World.publication w)))) (view w)
 
-history : Selection.Query → Store.World → ℕ → ℕ → Read.HistoryResult
+history : Selection.Query → Store.World → ℕ → Maybe ℕ → Read.HistoryResult
 history q w offset limit = Read.history q (view w) offset limit

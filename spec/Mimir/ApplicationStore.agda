@@ -8,10 +8,12 @@ module Mimir.ApplicationStore where
 open import Data.Bool using (Bool; true; false; not; _∧_; _∨_)
 open import Data.Float.Base using (Float; _+_)
 open import Data.List using (List; []; _∷_; map; filterᵇ; _++_)
+open import Data.List.Membership.Propositional using (_∈_)
+open import Data.List.Relation.Unary.Any using (here; there)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
-open import Data.Product using (_×_; _,_; proj₁)
-open import Relation.Nullary using (does; yes; no)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
+open import Data.Product using (_×_; _,_; proj₁; proj₂)
+open import Relation.Nullary using (does; yes; no; ¬_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
@@ -24,6 +26,7 @@ import Mimir.DocumentStore as Documents
 import Mimir.RetrievalRanking as Ranking
 import Mimir.LearningRecompute as Recompute
 import Mimir.IndependentProvenance as Independent
+import Mimir.Binary64 as Binary64
 
 -- At an external embedding boundary each binary32 component may be widened
 -- exactly to Float for transport/storage description. No binary64 dot product
@@ -32,18 +35,21 @@ Vector = List Float
 
 record Ground : Set where
   constructor ground
-  field chunk belief : ℕ; weight : Float
+  field chunk belief : UUID; weight : Float
 
 record World : Set where
   constructor world
   field
     learning : Learning.World
     chunks : List Documents.Chunk
-    beliefVectors chunkVectors : List (ℕ × Vector)
+    beliefVectors chunkVectors : List (UUID × Vector)
     grounds : List Ground
 
 nodes : World → List Graph.Node
 nodes w = Publication.World.nodes (Learning.World.publication (World.learning w))
+
+edges : World → List Edges.Edge
+edges w = Publication.World.edges (Learning.World.publication (World.learning w))
 
 beliefs : World → List Graph.BeliefValues
 beliefs w = Recompute.beliefs (nodes w)
@@ -60,15 +66,15 @@ setNodes ns w = record w { learning = record learn { publication = record pub { 
 insertNode : Graph.Node → World → World
 insertNode node w = setNodes (nodes w ++ (node ∷ [])) w
 
-retire : List ℕ → Registry.Registry → Registry.Registry
+retire : List UUID → Registry.Registry → Registry.Registry
 retire ids = map (λ r → record r { retired = Registry.Entry.retired r ∨ Ranking.member (Registry.Entry.nodeID r) ids })
 
-detach : List ℕ → List Edges.Edge → List Edges.Edge
+detach : List UUID → List Edges.Edge → List Edges.Edge
 detach ids = filterᵇ (λ e → not (Ranking.member (Edges.Edge.from e) ids ∨ Ranking.member (Edges.Edge.to e) ids))
 
 -- Historical experience/review rows and assessment contributions are retained
 -- on identity deletion. Candidate reservations become retired, never reusable.
-removeNodes : List ℕ → Bool → World → World
+removeNodes : List UUID → Bool → World → World
 removeNodes ids retireCandidates w = record w
   { learning = record learn
       { publication = record pub
@@ -86,26 +92,26 @@ removeNodes ids retireCandidates w = record w
     ifRetire true = retire ids (Publication.World.registry pub)
     ifRetire false = Publication.World.registry pub
 
-removeBeliefVectors : List ℕ → World → World
+removeBeliefVectors : List UUID → World → World
 removeBeliefVectors ids w = record w
   { beliefVectors = filterᵇ (λ row → not (Ranking.member (proj₁ row) ids)) (World.beliefVectors w) }
 
-removeChunks : List ℕ → World → World
+removeChunks : List UUID → World → World
 removeChunks ids w = record w
   { chunks = filterᵇ (λ c → not (Ranking.member (Documents.Chunk.identity c) ids)) (World.chunks w)
   ; grounds = filterᵇ (λ e → not (Ranking.member (Ground.chunk e) ids)) (World.grounds w) }
 
-removeChunkVectors : List ℕ → World → World
+removeChunkVectors : List UUID → World → World
 removeChunkVectors ids w = record w
   { chunkVectors = filterᵇ (λ row → not (Ranking.member (proj₁ row) ids)) (World.chunkVectors w) }
 
-putVector : ℕ → Vector → List (ℕ × Vector) → List (ℕ × Vector)
+putVector : UUID → Vector → List (UUID × Vector) → List (UUID × Vector)
 putVector id vector [] = (id , vector) ∷ []
-putVector id vector ((key , old) ∷ rest) with id ≟ key
+putVector id vector ((key , old) ∷ rest) with id ≟UUID key
 ... | yes _ = (key , vector) ∷ rest
 ... | no _ = (key , old) ∷ putVector id vector rest
 
-groundingMasses : World → List (ℕ × Float)
+groundingMasses : World → List (UUID × Float)
 groundingMasses w = map (λ e → Ground.belief e , Ground.weight e)
   (filterᵇ (λ e → Ranking.member (Ground.belief e) (map Graph.BeliefValues.identity (beliefs w)) ∧
     Ranking.member (Ground.chunk e) (map Documents.Chunk.identity (World.chunks w))) (World.grounds w))
@@ -132,13 +138,13 @@ learningReadUsesPhysicalGrounds : ∀ w →
   Learning.World.grounding (learningView w) ≡ groundingMasses w
 learningReadUsesPhysicalGrounds w = refl
 
-chunk : ℕ → List Documents.Chunk → Maybe Documents.Chunk
+chunk : UUID → List Documents.Chunk → Maybe Documents.Chunk
 chunk id [] = nothing
-chunk id (c ∷ cs) with id ≟ Documents.Chunk.identity c
+chunk id (c ∷ cs) with id ≟UUID Documents.Chunk.identity c
 ... | yes _ = just c
 ... | no _ = chunk id cs
 
-documentIDs : Text → World → List ℕ
+documentIDs : Text → World → List UUID
 documentIDs path w = map Documents.Chunk.identity
   (filterᵇ (λ c → does (path ≟Text Documents.Chunk.document c)) (World.chunks w))
 

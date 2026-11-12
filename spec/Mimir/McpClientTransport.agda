@@ -10,6 +10,7 @@ open import Data.List using (List; []; _∷_; _++_)
 open import Data.List.Relation.Unary.All using (All)
 open import Data.List.Relation.Unary.Any using (Any)
 open import Data.Nat using (ℕ)
+open import Data.Maybe using (just)
 open import Data.Product using (Σ; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
@@ -19,6 +20,7 @@ open import Mimir.Text using (Text)
 open import Mimir.Validation using (Fault)
 import Mimir.StructuredValue as V
 import Mimir.McpClientRequest as RequestDependency
+import Mimir.McpClientWire as WireDependency
 private module Request = RequestDependency library
 import Mimir.McpClientLine as Line
 import Mimir.McpSendBytes as Send
@@ -45,6 +47,20 @@ record Diagnostics : Set where
 
 module With (diagnostics : Diagnostics) where
   module Framing = Line.Framing
+  module Wire = WireDependency library
+
+  -- A serialization receipt ties the actual bytes to the string request ID.
+  -- The JSON library is the external parser; its correctness is not reproved.
+  record SerializedID (id : Text) (bytes : List Byte) : Set where
+    field
+      raw : V.Value
+      parsed : Mimir.StandardLibrary.Contract.jsonValue library bytes ≡ Mimir.StandardLibrary.parsed raw
+      exactID : Wire.lookup "id" raw ≡ just (V.string id)
+
+  data SerializationReceipt (id method : Text) (params : V.Value) : List E.Event → Set where
+    failed : ∀ fault → SerializationReceipt id method params ((serialize id method params , inj₁ fault) ∷ [])
+    serialized : ∀ bytes rest → SerializedID id bytes →
+      SerializationReceipt id method params ((serialize id method params , inj₂ bytes) ∷ rest)
 
   sendReply : ∀ {bytes} → Send.Outcome bytes → Fault ⊎ ⊤
   sendReply (Send.ioFailed reason) = inj₁ (Diagnostics.writeFailure diagnostics reason)
@@ -61,16 +77,17 @@ module With (diagnostics : Diagnostics) where
   afterSerialization (inj₁ failure) = E.done (inj₁ failure)
   afterSerialization (inj₂ bytes) = sendBody bytes
 
-  transmit : ℕ → Text → V.Value → E.Script (Fault ⊎ ⊤)
+  transmit : Text → Text → V.Value → E.Script (Fault ⊎ ⊤)
   transmit id method params = E.ask (serialize id method params) afterSerialization
 
   data Receipt : (operation : Request.Effect) → List E.Event → Request.Reply operation → Set where
     transmitted : ∀ id method params events reply → E.Runs (transmit id method params) events reply →
+      SerializationReceipt id method params events →
       Receipt (Request.send id method params) events reply
     received : ∀ events outcome → Framing.Runs Framing.start events outcome →
       Receipt Request.readLine (lineEvents events) (lineReply outcome)
 
-  module Pending (expected : ℕ) where
+  module Pending (expected : Text) where
     module R = Request.Pending expected
     start = R.start
     data Runs : R.State → List E.Event → Request.Outcome → Set where

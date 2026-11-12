@@ -50,7 +50,7 @@ data Effort : Set where minimal low medium high xhigh : Effort
 
 record Judge : Set where
   constructor judgeSettings
-  field batchSize : ℕ; project : Maybe Text; mcpCommand : Text; mcpArgs : List Text
+  field batchSize : Maybe ℕ; project : Maybe Text; mcpCommand : Text; mcpArgs : List Text
 
 record Llm : Set where
   constructor llmSettings
@@ -73,7 +73,7 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
 
   judge : V.Value → Validation.Fault ⊎ Judge
   judge = recordOf ("batch_size" ∷ "project" ∷ "mcp_command" ∷ "mcp_args" ∷ []) (λ fields →
-    defaulted "batch_size" 5 (unsigned sizeMaximum) fields >>= λ batch → optional "project" V.asString fields >>= λ project →
+    optional "batch_size" (unsigned sizeMaximum) fields >>= λ batch → optional "project" V.asString fields >>= λ project →
     defaulted "mcp_command" (toList "mimir-mcp") V.asString fields >>= λ cmd →
     defaulted "mcp_args" [] (readArray V.asString) fields >>= λ args → inj₂ (judgeSettings batch project cmd args))
 
@@ -93,7 +93,7 @@ module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where
   ... | inj₂ value = inj₂ value
 
   email : Maybe V.Value → Text ⊎ Email.Config
-  email nothing = inj₂ (record Email.defaults { timeoutSeconds = 0 ; retrySeconds = 0 ; maximumAttempts = 0 })
+  email nothing = inj₂ Email.defaults
   email (just raw) = section "email" E.decode (just raw)
 
   sections : Core.Config → Text ⊎ Runtime
@@ -148,7 +148,7 @@ module Validate (libraries : Libraries) where
       "llm.base_url must not contain credentials, query, or fragment"
 
   judge : Judge → Text ⊎ ⊤
-  judge j = ensure (does (1 ≤? Judge.batchSize j)) "judge.batch_size must be positive" >>= λ _ →
+  judge j = optionalCheck (λ count → ensure (does (1 ≤? count)) "judge.batch_size must be positive") (Judge.batchSize j) >>= λ _ →
     optionalCheck (λ p → ensure (clean p) "invalid judge.project") (Judge.project j) >>= λ _ →
     ensure (clean (Judge.mcpCommand j)) "invalid judge.mcp_command" >>= λ _ →
     ensure (plainCommand (Libraries.path libraries (Judge.mcpCommand j)) ∨ absoluteCommand (Judge.mcpCommand j))

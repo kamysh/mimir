@@ -4,7 +4,7 @@ module Mimir.CandidateProvenance where
 open import Data.Bool using (Bool; true; false; _∧_; not)
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Relation.Nullary using (does; yes; no)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
@@ -30,7 +30,7 @@ declares key (c ∷ cs) with key ≟Text declarationKey c
 
 record Provenance : Set where
   constructor provenance
-  field experienceID : ℕ; candidateKey : Text; kind : Kind; retired active : Bool
+  field experienceID : UUID; candidateKey : Text; kind : Kind; retired active : Bool
 
 active : Registry.Entry → Ledger.World → Bool
 active e ledger with Ledger.activeApplied (Ledger.World.cells ledger (Registry.Entry.experienceID e))
@@ -39,9 +39,9 @@ active e ledger with Ledger.activeApplied (Ledger.World.cells ledger (Registry.E
 ... | just applied = not (Registry.Entry.retired e) ∧
   declares (declarationKey (Registry.Entry.declaration e)) (Review.Review.candidates applied)
 
-lookup : ℕ → Registry.Registry → Store.World → Maybe Provenance
+lookup : UUID → Registry.Registry → Store.World → Maybe Provenance
 lookup id [] w = nothing
-lookup id (e ∷ es) w with id ≟ Registry.Entry.nodeID e
+lookup id (e ∷ es) w with id ≟UUID Registry.Entry.nodeID e
 ... | no different = lookup id es w
 ... | yes same with Read.get (Registry.Entry.experienceID e) (Store.World.current w)
 ...   | nothing = nothing
@@ -49,5 +49,5 @@ lookup id (e ∷ es) w with id ≟ Registry.Entry.nodeID e
   (declarationKey (Registry.Entry.declaration e)) (kindOf (Registry.Entry.declaration e))
   (Registry.Entry.retired e) (active e (Publication.World.ledger (Store.World.publication w))))
 
-get : ℕ → Store.World → Maybe Provenance
+get : UUID → Store.World → Maybe Provenance
 get id w = lookup id (Publication.World.registry (Store.World.publication w)) w

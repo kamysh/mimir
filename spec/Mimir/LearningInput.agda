@@ -6,7 +6,7 @@ module Mimir.LearningInput where
 
 open import Data.List using (List; _++_)
 open import Data.Maybe using (Maybe)
-open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Integer using (ℤ)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
@@ -20,13 +20,13 @@ import Mimir.LearningCandidates as Candidates
 record Item : Set where
   constructor item
   field
-    identity : Maybe ℕ
+    identity : Maybe UUID
     localKey : Maybe Text
     kind : L.Kind
     reference actor statement conditions : Text
     predictions : List L.Prediction
 
-canonicalItem : ℕ → Item → L.LearningItem
+canonicalItem : UUID → Item → L.LearningItem
 canonicalItem assigned input = L.learningItem assigned (Item.localKey input)
   (Item.kind input) (Item.reference input) (Item.actor input)
   (Item.statement input) (Item.conditions input) (Item.predictions input)
@@ -35,20 +35,20 @@ record Assessment : Set where
   constructor assessment
   field value : L.Assessment; itemKeys : List Text
 
-canonicalAssessment : Assessment → List ℕ → L.Assessment
+canonicalAssessment : Assessment → List UUID → L.Assessment
 canonicalAssessment input resolved = record (Assessment.value input)
   { itemIDs = L.Assessment.itemIDs (Assessment.value input) ++ resolved }
 
 record Experience : Set where
   constructor experience
   field
-    identity : ℕ
+    identity : UUID
     project context action : Text
     outcome : X.Outcome
     provenance : Source.Provenance
     evidence : List Text
-    beliefIDs : List ℕ
-    patternID : Maybe ℕ
+    beliefIDs : List UUID
+    patternID : Maybe UUID
     items : List Item
     sources : List Source.Source
 
@@ -61,12 +61,12 @@ canonicalExperience input assigned = X.experience (Experience.identity input)
 record Review : Set where
   constructor review
   field
-    experienceID : ℕ
+    experienceID : UUID
     experienceRevision : ℤ
     reviewer rationale : Text
     feedbacks : List R.Feedback
     links : List R.Link
-    superseded : List ℕ
+    superseded : List UUID
     candidates : List Candidates.Candidate
     candidateFeedbacks : List R.CandidateFeedback
     candidateLinks : List R.CandidateLink

@@ -8,6 +8,7 @@ open import Data.Bool using (Bool; true; false; not; _∧_; _∨_)
 open import Data.List using (List; []; _∷_; _++_; length; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≟_; _≤?_)
+open import Mimir.UUIDGroups using (_≟UUID_)
 import Data.Integer.Properties as Integer
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
@@ -67,7 +68,7 @@ within : ℕ → ℕ → ℕ → Bool
 within lower upper actual = does (lower ≤? actual) ∧ does (actual ≤? upper)
 
 data Failure : Set where
-  rejected invalidResponse transport application candidateConflict : Text → Failure
+  rejected needsUserDecision invalidResponse transport application candidateConflict : Text → Failure
   malformedReview malformedState : V.Value → Validation.Fault → Failure
   invalidReviewSchema : Validation.Fault → Failure
   sourceFailure : Source.Failure → Failure
@@ -117,7 +118,7 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
     (inj₂ value) → done (inj₂ (visible project value))
 
   reviewed : V.Value → LearningInput.Review → Script (Failure ⊎ V.Value)
-  reviewed args requestedReview with does (LearningInput.Review.experienceID requestedReview ≟ selectedID) ∧
+  reviewed args requestedReview with does (LearningInput.Review.experienceID requestedReview ≟UUID selectedID) ∧
     does (LearningInput.Review.experienceRevision requestedReview Integer.≟ Observation.Snapshot.revision selected)
   ... | false = done (inj₁ (rejected (toList "review is outside pinned revision")))
   ... | true = done (inj₂ (put "review"
@@ -237,7 +238,7 @@ module For (conversion : Conversion.Contract) (format : Encoding.Formatting) (se
   after : Tools.Kind → V.Value → Script (Failure ⊎ V.Value)
   after (Tools.query Tools.experience) value with snapshot value
   ... | inj₁ error = done (inj₁ error)
-  ... | inj₂ state with does (Experience.Experience.identity (Observation.Snapshot.experience state) ≟ selectedID) ∧
+  ... | inj₂ state with does (Experience.Experience.identity (Observation.Snapshot.experience state) ≟UUID selectedID) ∧
     textIs project (V.string (Experience.Experience.project (Observation.Snapshot.experience state)))
   ...   | true = done (inj₂ value)
   ...   | false = done (inj₁ (invalidResponse (toList "MCP returned out-of-scope experience")))

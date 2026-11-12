@@ -7,7 +7,7 @@ module Mimir.CandidateReview where
 open import Data.List using (List; length)
 open import Data.List.Relation.Unary.All using (All)
 open import Data.Maybe using (just)
-open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Product using (Σ; _×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -20,7 +20,7 @@ import Mimir.CandidateRegistry as Registry
 import Mimir.CandidateBatch as Batch
 import Mimir.ReviewResolution as Resolution
 
-record Prepared (occupied : List ℕ) (before : Registry.Registry) (requested : Review) : Set where
+record Prepared (occupied : List UUID) (before : Registry.Registry) (requested : Review) : Set where
   constructor prepared
   field
     after : Registry.Registry
@@ -29,7 +29,7 @@ record Prepared (occupied : List ℕ) (before : Registry.Registry) (requested : 
     resolution : Resolution.Apply.Prepared (Review.candidates requested) bindings requested
 
 prepareValid : ∀ occupied before requested → ReviewValid requested →
-  (Candidate → ℕ) → Fault ⊎ Prepared occupied before requested
+  (Candidate → UUID) → Fault ⊎ Prepared occupied before requested
 prepareValid occupied before requested valid fresh
   with Batch.prepare occupied (Review.experienceID requested) before (Review.candidates requested) fresh
 ... | inj₁ fault = inj₁ fault
@@ -42,7 +42,7 @@ prepareValid occupied before requested valid fresh
 ...     | accepted appliedValid = inj₂ (prepared after bindings reservations
   record { candidatesAgree = refl ; requestedValid = valid ; resolution = resolution ; appliedValid = appliedValid })
 
-prepare : ∀ occupied before requested → (Candidate → ℕ) → Fault ⊎ Prepared occupied before requested
+prepare : ∀ occupied before requested → (Candidate → UUID) → Fault ⊎ Prepared occupied before requested
 prepare occupied before requested fresh with validateReview requested
 ... | rejected failure invalid = inj₁ failure
 ... | accepted valid = prepareValid occupied before requested valid fresh

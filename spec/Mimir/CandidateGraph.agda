@@ -17,6 +17,7 @@ open import Data.Unit using (tt)
 open import Data.Float.Base using (Float)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; sym)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID)
 open import Mimir.LearningCandidates using (Candidate; Memory; belief; patternCandidate; candidateKey)
 import Mimir.CandidateRegistry as Registry
 import Mimir.CandidateBatch as Batch
@@ -24,7 +25,7 @@ import Mimir.CandidateBatch as Batch
 record BeliefValues : Set where
   constructor beliefValues
   field
-    identity : ℕ
+    identity : UUID
     content : Text
     project : Maybe Text
     memory : Memory
@@ -34,7 +35,7 @@ record BeliefValues : Set where
 record PatternValues : Set where
   constructor patternValues
   field
-    identity : ℕ
+    identity : UUID
     situation approach : Text
     project : Maybe Text
     created : ℤ
@@ -48,7 +49,7 @@ data Node : Set where
 record Creation : Set where
   constructor creation
   field
-    experience identity : ℕ
+    experience identity : UUID
     declaration : Candidate
     project : Text
     timestamp : ℤ
@@ -59,7 +60,7 @@ value (creation experience identity (belief name content memory) project timesta
 value (creation experience identity (patternCandidate name situation approach) project timestamp) =
   patternNode (patternValues identity situation approach (just project) timestamp 0 0.5)
 
-nodeID : Node → ℕ
+nodeID : Node → UUID
 nodeID (beliefNode fields) = BeliefValues.identity fields
 nodeID (patternNode fields) = PatternValues.identity fields
 

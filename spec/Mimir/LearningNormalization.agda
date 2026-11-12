@@ -13,6 +13,7 @@ open import Data.Empty using (⊥-elim)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID)
 open import Mimir.Validation using (Fault; fault; missingReference; accepted; rejected)
 import Mimir.SourceSchema as Source
 import Mimir.LearningInput as Input
@@ -52,11 +53,13 @@ abortedPlanKeepsOwners before proposed actual Database.abortedNone = refl
 module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
   module T = Transaction.Over Store.World Observation.Snapshot Failure database 671942183
 
+  continue : ∀ {A B : Set} → (A → T.Allocation (Failure ⊎ B)) → Failure ⊎ A → T.Allocation (Failure ⊎ B)
+  continue next (inj₁ failure) = T.resolved (inj₁ failure)
+  continue next (inj₂ value) = next value
+
   bind : ∀ {A B} → T.Allocation (Failure ⊎ A) →
     (A → T.Allocation (Failure ⊎ B)) → T.Allocation (Failure ⊎ B)
-  bind program next = T.bindAllocation program λ where
-    (inj₁ failure) → T.resolved (inj₁ failure)
-    (inj₂ value) → next value
+  bind program next = T.bindAllocation program (continue next)
 
   finishItem : Input.Item → Store.World → Allocation.Outcome →
     T.Allocation (Failure ⊎ (Store.World × L.LearningItem))
@@ -64,10 +67,10 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
   finishItem input before (Allocation.ready identity keys owners) =
     T.resolved (inj₂ (install keys owners before , Input.canonicalItem identity input))
 
-  owner : ℕ → Input.Item → Owners.Owner
+  owner : UUID → Input.Item → Owners.Owner
   owner experience input = experience , Input.Item.reference input , Input.Item.actor input
 
-  afterPostgres : ℕ → Text → Input.Item → Store.World → Failure ⊎ ℕ →
+  afterPostgres : UUID → Text → Input.Item → Store.World → Failure ⊎ UUID →
     T.Allocation (Failure ⊎ (Store.World × L.LearningItem))
   afterPostgres experience name input before (inj₁ failure) = T.resolved (inj₁ failure)
   afterPostgres experience name input before (inj₂ identity) = finishItem input before
@@ -91,7 +94,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
       (Publication.World.owners (Store.World.publication before)) experience name
       (Input.Item.reference input) (Input.Item.actor input) identity absent unused)
 
-  byKey : ℕ → Text → Input.Item → Store.World →
+  byKey : UUID → Text → Input.Item → Store.World →
     T.Allocation (Failure ⊎ (Store.World × L.LearningItem))
   byKey experience name input before with Store.World.itemKeys before experience name
   ... | just identity = finishItem input before
@@ -100,7 +103,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
   ... | nothing = T.reserve experience name (Input.Item.reference input) (Input.Item.actor input)
     (afterPostgres experience name input before)
 
-  identified : ℕ → Input.Item → Store.World →
+  identified : UUID → Input.Item → Store.World →
     T.Allocation (Failure ⊎ (Store.World × L.LearningItem))
   identified experience input before with Input.Item.identity input | Input.Item.localKey input
   ... | nothing | nothing = T.resolved (inj₁ (invalid
@@ -114,7 +117,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
       (Publication.World.owners (Store.World.publication before)) experience name identity
       (Input.Item.reference input) (Input.Item.actor input))
 
-  item : ℕ → Input.Item → Store.World →
+  item : UUID → Input.Item → Store.World →
     T.Allocation (Failure ⊎ (Store.World × L.LearningItem))
   item experience input before with Input.Item.localKey input
   ... | nothing = identified experience input before
@@ -154,7 +157,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
   unreservedUUIDRefused experience input before identity supplied unnamed absent
     rewrite unnamed | supplied | unnamed | absent = refl
 
-  items : ℕ → List Input.Item → Store.World →
+  items : UUID → List Input.Item → Store.World →
     T.Allocation (Failure ⊎ (Store.World × List L.LearningItem))
   items experience [] before = T.resolved (inj₂ (before , []))
   items experience (input ∷ rest) before = bind (item experience input before) λ where
@@ -164,7 +167,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
   -- The premise is discharged by itemAlreadyReserved for named retries and
   -- by the actual item reader for recorded UUID-only corrections. It retains
   -- every item, rather than checking a selected example or a chosen UUID.
-  data RecordedItems (experience : ℕ) (before : Store.World) :
+  data RecordedItems (experience : UUID) (before : Store.World) :
     List Input.Item → List L.LearningItem → Set where
     none : RecordedItems experience before [] []
     more : ∀ input rest assigned remaining →
@@ -181,7 +184,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
 
   -- Named retries are justified by saved rows, not by assuming a successful
   -- result from the normalizer. Every item retains its actual saved identity.
-  data NamedItems (experience : ℕ) (before : Store.World) :
+  data NamedItems (experience : UUID) (before : Store.World) :
     List Input.Item → List L.LearningItem → Set where
     noNamedItems : NamedItems experience before [] []
     namedItem : ∀ input rest name identity remaining →
@@ -200,7 +203,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
       (itemAlreadyReserved experience input before name identity omitted keyed valid saved owned)
       (namedItemsRecorded experience before rest remaining others)
 
-  data ResolvedAssessments (keys : Allocation.Keys) (experience : ℕ) :
+  data ResolvedAssessments (keys : Allocation.Keys) (experience : UUID) :
     List Input.Assessment → List L.Assessment → Set where
     noAssessments : ResolvedAssessments keys experience [] []
     moreAssessments : ∀ input rest identities remaining →

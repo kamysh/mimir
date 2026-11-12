@@ -8,7 +8,8 @@ open import Data.Bool using (Bool; true; false; _∧_; not)
 open import Data.Float.Base using (Float)
 open import Data.List using (List; []; _∷_; _++_; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (does)
 open import Mimir.Text using (Text)
@@ -16,13 +17,14 @@ import Mimir.ApplicationStore as Store
 import Mimir.LearningStore as Learning
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.LearningRecompute as Recompute
+import Mimir.PosteriorComputation as Posterior
 import Mimir.RetrievalRanking as Ranking
 import Mimir.GraphNumerics as Numeric
 import Mimir.LearningTransaction as Transaction
 
 data Request : Set where
-  add : ℕ → ℕ → Float → Request -- chunk, belief, weight
-  remove : ℕ → ℕ → Request
+  add : UUID → UUID → Float → Request -- chunk, belief, weight
+  remove : UUID → UUID → Request
 
 data Failure : Set where
   storageFailure : Text → Failure
@@ -32,11 +34,11 @@ admitted : Request → Bool
 admitted (add chunk belief weight) = Numeric.probability weight
 admitted (remove chunk belief) = true
 
-unlink : ℕ → ℕ → Store.World → Store.World
+unlink : UUID → UUID → Store.World → Store.World
 unlink chunk belief before = record before { grounds = filterᵇ
-  (λ e → not (does (chunk ≟ Store.Ground.chunk e) ∧ does (belief ≟ Store.Ground.belief e))) (Store.World.grounds before) }
+  (λ e → not (does (chunk ≟UUID Store.Ground.chunk e) ∧ does (belief ≟UUID Store.Ground.belief e))) (Store.World.grounds before) }
 
-module Operation (database : ℕ) where
+module Operation (database : ℕ) (calculation : Posterior.Calculation) where
   module T = Transaction.Over Store.World ⊤ Failure database 671942183
 
   finish : Store.World → Recompute.Result → T.Decision
@@ -45,8 +47,8 @@ module Operation (database : ℕ) where
   finish proposed Recompute.invalidNumericInput = T.reject invalidNumericInput
   finish proposed Recompute.invalidNumericWrite = T.reject invalidNumericWrite
 
-  recompute : ℕ → Store.World → T.Decision
-  recompute belief proposed = finish proposed (Recompute.runGlobal (belief ∷ [])
+  recompute : UUID → Store.World → T.Decision
+  recompute belief proposed = finish proposed (Recompute.runGlobal calculation (belief ∷ [])
     (Store.nodes proposed) (Publication.World.edges pub)
     (Recompute.activeReviewsScoped nothing (Learning.identities learn) (Publication.World.ledger pub))
     (Store.groundingMasses proposed))

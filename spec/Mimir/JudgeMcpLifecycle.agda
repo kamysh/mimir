@@ -1,20 +1,19 @@
 {-# OPTIONS --safe #-}
--- Owned MCP child lifecycle and the client-wide request counter.
--- Creating the client starts a separate process group; dropping it queries
--- the owned child's current ID before killing the group and direct child.
+-- Owned MCP child lifecycle and local request IDs.
+-- Stopping a client requires confirmation that its owned work has stopped.
 module Mimir.JudgeMcpLifecycle where
 
-open import Data.Bool using (Bool; true)
-open import Data.List using (List; []; _∷_; _++_; length; drop)
+open import Data.List using (List; []; _∷_; _++_)
+open import Data.List.Properties using (≡-dec)
+open import Data.Char using (_≟_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; suc; _+_; _∸_; _≤_; _≤?_)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
+open import Data.Empty using (⊥-elim)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
-open import Mimir.Bits using (Byte)
 import Mimir.UnixPath as Path
 import Mimir.StandardLibrary as Conversion
 import Mimir.McpClientTransport as Transport
@@ -22,48 +21,59 @@ import Mimir.McpClientRequest as Request
 import Mimir.StructuredValue as V
 import Mimir.Effects as Effects
 
+_≟Text_ = ≡-dec _≟_
+
 record Command : Set where
   constructor command
   field executable : Text; arguments : List Text; mimirConfig : Path.Path
-        pipedStdin pipedStdout pipedStderr killOnDrop ownProcessGroup : Bool
 
 prepare : Text → List Text → Path.Path → Command
-prepare program arguments config = command program arguments config true true true true true
+prepare program arguments config = command program arguments config
 
 data Stream : Set where stdin stdout stderr : Stream
-record Child : Set where constructor child; field handle : ℕ
+record Child : Set where constructor child; field handle : Text
 record Client : Set where
   constructor client
-  field owner : Child; input output errorPipe : ℕ; nextID : ℕ
+  field owner : Child; input output errorPipe : Text
 
 data Effect : Set where
   spawn : Command → Effect
+  -- Local random hexadecimal text for a temporary transport exchange.
+  randomHexID : Effect
   takePipe : Child → Stream → Effect
-  currentChildID startKill : Child → Effect
-  killGroup : ℕ → Effect
-  captureStderr : ℕ → Effect
+  stopOwned : Child → Effect
+  captureStderr : Text → Effect
 
 Reply : Effect → Set
 Reply (spawn _) = Text ⊎ Child
-Reply (takePipe _ _) = Text ⊎ ℕ
-Reply (currentChildID _) = Maybe ℕ
-Reply (startKill _) = Text ⊎ ⊤
-Reply (killGroup _) = Text ⊎ ⊤
+-- A request that is not a durable database identity uses a local random
+-- hexadecimal string for transport correlation.
+Reply randomHexID = Text ⊎ Text
+Reply (takePipe _ _) = Text ⊎ Text
+-- Success confirms that all work owned by the child, including embedding,
+-- has stopped. A request to stop is not itself a successful receipt.
+Reply (stopOwned _) = ⊤
 Reply (captureStderr _) = ⊤
 open Effects.Protocol Effect Reply public
 
-dropChild : Child → Script ⊤
-dropChild owned = ask (currentChildID owned) λ where
-  nothing → ask (startKill owned) (λ _ → done tt)
-  (just pid) → ask (killGroup pid) (λ _ → ask (startKill owned) (λ _ → done tt))
+dropChild : Child → Script (Text ⊎ ⊤)
+dropChild owned = ask (stopOwned owned) (λ _ → done (inj₂ tt))
 
-dropClient : Client → Script ⊤
+dropClient : Client → Script (Text ⊎ ⊤)
 dropClient owned = dropChild (Client.owner owned)
 
--- Before all pipes are installed, the Client destructor does not exist yet;
--- tokio Child::kill_on_drop still owns and terminates the direct child.
+dropChildConfirmsStop : ∀ owned events → Runs (dropChild owned) events (inj₂ tt) →
+  Data.Product.Σ (List Event) (λ prefix →
+    events ≡ prefix ++ ((stopOwned owned , tt) ∷ []))
+dropChildConfirmsStop owned .((stopOwned owned , tt) ∷ [])
+  (replied _ _ tt (returned (inj₂ tt))) = [] , refl
+
+-- On setup failure, stop all owned work before returning the error.
+-- A stop request without confirmation cannot complete this operation.
 pipeFailure : Child → Text → Script (Text ⊎ Client)
-pipeFailure owned error = ask (startKill owned) (λ _ → done (inj₁ error))
+pipeFailure owned error = dropChild owned >>= λ where
+  (inj₁ cleanupFailure) → done (inj₁ cleanupFailure)
+  (inj₂ tt) → done (inj₁ error)
 
 pipes : Child → Script (Text ⊎ Client)
 pipes owned = ask (takePipe owned stdin) λ where
@@ -72,7 +82,7 @@ pipes owned = ask (takePipe owned stdin) λ where
     (inj₁ error) → pipeFailure owned error
     (inj₂ output) → ask (takePipe owned stderr) λ where
       (inj₁ error) → pipeFailure owned error
-      (inj₂ errorPipe) → ask (captureStderr errorPipe) (λ _ → done (inj₂ (client owned input output errorPipe 1)))
+      (inj₂ errorPipe) → ask (captureStderr errorPipe) (λ _ → done (inj₂ (client owned input output errorPipe)))
 
 start : Text → List Text → Path.Path → Script (Text ⊎ Client)
 start program arguments config = ask (spawn (prepare program arguments config)) λ where
@@ -89,63 +99,81 @@ ownerAfter : Ownership → List Event → Ownership
 ownerAfter owner [] = owner
 ownerAfter owner ((spawn request , inj₂ ownedChild) ∷ rest) = ownerAfter (installing ownedChild) rest
 ownerAfter (installing ownedChild) ((captureStderr pipe , tt) ∷ rest) = ownerAfter (connected ownedChild) rest
-ownerAfter owner ((startKill ownedChild , reply) ∷ rest) = ownerAfter absent rest
+ownerAfter (installing owned) ((stopOwned stoppedChild , tt) ∷ rest)
+  with Child.handle owned ≟Text Child.handle stoppedChild
+... | yes _ = ownerAfter absent rest
+... | no _ = ownerAfter (installing owned) rest
+ownerAfter (connected owned) ((stopOwned stoppedChild , tt) ∷ rest)
+  with Child.handle owned ≟Text Child.handle stoppedChild
+... | yes _ = ownerAfter absent rest
+... | no _ = ownerAfter (connected owned) rest
 ownerAfter owner (_ ∷ rest) = ownerAfter owner rest
 
-cancelOwned : Ownership → Script ⊤
-cancelOwned absent = done tt
-cancelOwned (installing ownedChild) = ask (startKill ownedChild) (λ _ → done tt)
+cancelOwned : Ownership → Script (Text ⊎ ⊤)
+cancelOwned absent = done (inj₂ tt)
+cancelOwned (installing ownedChild) = dropChild ownedChild
 cancelOwned (connected ownedChild) = dropChild ownedChild
 
-cancelBeforeSpawnHasNoEffects : ∀ events → Runs (cancelOwned absent) events tt → events ≡ []
-cancelBeforeSpawnHasNoEffects .[] (returned tt) = refl
+cancelBeforeSpawnHasNoEffects : ∀ events → Runs (cancelOwned absent) events (inj₂ tt) → events ≡ []
+cancelBeforeSpawnHasNoEffects .[] (returned (inj₂ tt)) = refl
 
-cancelInstallingUsesChildGuard : ∀ ownedChild events → Runs (cancelOwned (installing ownedChild)) events tt →
-  Data.Product.Σ (Reply (startKill ownedChild)) (λ reply → events ≡ (startKill ownedChild , reply) ∷ [])
-cancelInstallingUsesChildGuard ownedChild events (replied _ _ reply (returned tt)) = reply , refl
+cancelInstallingConfirmsStop : ∀ ownedChild events → Runs (cancelOwned (installing ownedChild)) events (inj₂ tt) →
+  Data.Product.Σ (List Event) (λ prefix → events ≡ prefix ++ ((stopOwned ownedChild , tt) ∷ []))
+cancelInstallingConfirmsStop ownedChild events = dropChildConfirmsStop ownedChild events
 
-data StderrState : Set where reading closed : List Byte → StderrState
-data StderrInput : Set where bytes : List Byte → StderrInput; eof failure : StderrInput
+-- Successful cancellation clears ownership only after the stop receipt.
+cancelOwnedReleases : ∀ owner events → Runs (cancelOwned owner) events (inj₂ tt) →
+  ownerAfter owner events ≡ absent
+cancelOwnedReleases absent .[] (returned (inj₂ tt)) = refl
+cancelOwnedReleases (installing ownedChild) events
+  (replied _ _ tt (returned (inj₂ tt)))
+  with Child.handle ownedChild ≟Text Child.handle ownedChild
+... | yes _ = refl
+... | no unequal = ⊥-elim (unequal refl)
+cancelOwnedReleases (connected ownedChild) events
+  (replied _ _ tt (returned (inj₂ tt)))
+  with Child.handle ownedChild ≟Text Child.handle ownedChild
+... | yes _ = refl
+... | no unequal = ⊥-elim (unequal refl)
 
-retain : List Byte → List Byte → List Byte
-retain previous next = drop (length combined ∸ 4096) combined
-  where combined = previous ++ next
-
-data StderrStep : StderrState → StderrInput → StderrState → Set where
-  received : ∀ previous next → 1 ≤ length next → length next ≤ 1024 →
-    StderrStep (reading previous) (bytes next) (reading (retain previous next))
-  ended : ∀ previous → StderrStep (reading previous) eof (closed previous)
-  failed : ∀ previous → StderrStep (reading previous) failure (closed previous)
+-- This holds for every completed cancellation, including setup failures;
+-- there is no alternative return that leaves the owned child running.
+cancelCompletionConfirmsStop : ∀ owner events result → Runs (cancelOwned owner) events result →
+  result ≡ inj₂ tt × ownerAfter owner events ≡ absent
+cancelCompletionConfirmsStop absent .[] .(inj₂ tt) (returned _) = refl , refl
+cancelCompletionConfirmsStop (installing ownedChild) events .(inj₂ tt)
+  execution@(replied _ _ tt (returned _)) = refl , cancelOwnedReleases (installing ownedChild) events execution
+cancelCompletionConfirmsStop (connected ownedChild) events .(inj₂ tt)
+  execution@(replied _ _ tt (returned _)) = refl , cancelOwnedReleases (connected ownedChild) events execution
 
 module Calls (conversion : Conversion.Contract) (diagnostics : Transport.Diagnostics conversion) where
   module T = Transport conversion
   module R = Request conversion
-  data Outcome : Set where overflow : Outcome; response : R.Outcome → Outcome
+  data Outcome : Set where idUnavailable : Text → Outcome; response : R.Outcome → Outcome
 
   data Call (before : Client) (method : Text) (params : V.Value) :
     List T.E.Event → Client → Outcome → Set where
-    full : 18446744073709551615 ≤ Client.nextID before → Call before method params [] before overflow
-    exchanged : ∀ events result → Client.nextID before ≤ 18446744073709551614 →
-      T.With.Pending.Runs diagnostics (Client.nextID before)
-        (T.With.Pending.start diagnostics (Client.nextID before) method params) events result →
-      Call before method params events (record before { nextID = suc (Client.nextID before) }) (response result)
+    idFailed : ∀ allocationEvents failure → Runs (ask randomHexID done) allocationEvents (inj₁ failure) →
+      Call before method params [] before (idUnavailable failure)
+    exchanged : ∀ requestID allocationEvents events result →
+      Runs (ask randomHexID done) allocationEvents (inj₂ requestID) →
+      T.With.Pending.Runs diagnostics requestID
+        (T.With.Pending.start diagnostics requestID method params) events result →
+      Call before method params events before (response result)
 
 -- Projection used when composing scoped calls from independent protocols.
 -- A receipt retains the actual request ID of its transport.
 data Issued : Set where
-  issued overflowRejected : ℕ → Issued
+  issued : Text → Issued
+  allocationUnavailable : Issued
+  stoppedClient : (client : Client) → (events : List Event) →
+    Runs (dropClient client) events (inj₂ tt) → Issued
 
 data Chain : Maybe Client → List Issued → Maybe Client → Set where
   empty : ∀ client → Chain client [] client
-  next : ∀ client calls after → Client.nextID client ≤ 18446744073709551614 →
-    Chain (just (record client { nextID = suc (Client.nextID client) })) calls after →
-    Chain (just client) (issued (Client.nextID client) ∷ calls) after
-  full : ∀ client calls after → 18446744073709551615 ≤ Client.nextID client →
-    Chain (just client) calls after →
-    Chain (just client) (overflowRejected (Client.nextID client) ∷ calls) after
-
-ownerPreserved : ∀ {before calls after} → Chain before calls after →
-  Data.Maybe.map Client.owner before ≡ Data.Maybe.map Client.owner after
-ownerPreserved (empty owned) = refl
-ownerPreserved (next owned calls after bounded execution) = ownerPreserved execution
-ownerPreserved (full owned calls after bounded execution) = ownerPreserved execution
+  next : ∀ client requestID calls after → Chain (just client) calls after →
+    Chain (just client) (issued requestID ∷ calls) after
+  unavailable : ∀ client calls after → Chain (just client) calls after →
+    Chain (just client) (allocationUnavailable ∷ calls) after
+  stopped : ∀ client events proof calls after → Chain nothing calls after →
+    Chain (just client) (stoppedClient client events proof ∷ calls) after

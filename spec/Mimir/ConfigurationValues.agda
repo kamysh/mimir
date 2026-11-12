@@ -5,6 +5,7 @@
 module Mimir.ConfigurationValues where
 
 open import Data.List using (List; []; _∷_)
+open import Data.Float.Base using (Float)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤_; _≤?_)
 open import Data.Unit using (tt)
@@ -32,22 +33,25 @@ record Embeddings : Set where
     backend : Backend
     model : Text
     apiKey : Maybe Text
-    batchSize : ℕ
+    batchSize : Maybe ℕ
     cacheDirectory : Maybe Text
 
 record Config : Set where
   constructor config
-  field db : Database; embed : Maybe Embeddings
+  field
+    db : Database
+    embed : Maybe Embeddings
+    retirementGraceHours : Maybe Float
 
 defaultDatabase : Database
 defaultDatabase = database (toList "localhost") (toList "mimir") (toList "mimir")
   5432 nothing nothing prefer nothing nothing nothing
 
 defaultEmbeddings : Embeddings
-defaultEmbeddings = embeddings local [] nothing 0 nothing
+defaultEmbeddings = embeddings local [] nothing nothing nothing
 
 defaultConfig : Config
-defaultConfig = config defaultDatabase nothing
+defaultConfig = config defaultDatabase nothing nothing
 
 defaultPortBounded : Database.port (Config.db defaultConfig) ≤ 65535
 defaultPortBounded = toWitness {a? = 5432 ≤? 65535} tt
@@ -68,10 +72,10 @@ module Overrides (sizeMaximum : ℕ) where
     batchSize : UInt sizeMaximum → Setting
 
   changeDatabase : (Database → Database) → Config → Config
-  changeDatabase f c = config (f (Config.db c)) (Config.embed c)
+  changeDatabase f c = record c { db = f (Config.db c) }
 
   changeEmbedding : (Embeddings → Embeddings) → Config → Config
-  changeEmbedding f c = config (Config.db c) (just (f (getEmbeddings (Config.embed c))))
+  changeEmbedding f c = record c { embed = just (f (getEmbeddings (Config.embed c))) }
 
   apply : Setting → Config → Config
   apply (host value) = changeDatabase (λ d → record d { host = value })
@@ -87,7 +91,7 @@ module Overrides (sizeMaximum : ℕ) where
   apply (backend value) = changeEmbedding (λ e → record e { backend = value })
   apply (model value) = changeEmbedding (λ e → record e { model = value })
   apply (apiKey value) = changeEmbedding (λ e → record e { apiKey = just value })
-  apply (batchSize value) = changeEmbedding (λ e → record e { batchSize = UInt.number value })
+  apply (batchSize value) = changeEmbedding (λ e → record e { batchSize = just (UInt.number value) })
   apply (cacheDirectory value) = changeEmbedding (λ e → record e { cacheDirectory = just value })
 
   applyAll : List Setting → Config → Config
@@ -103,13 +107,13 @@ module Overrides (sizeMaximum : ℕ) where
   passwordPreservedLiterally : ∀ value c → Database.password (Config.db (apply (password value) c)) ≡ just value
   passwordPreservedLiterally value c = refl
 
-  modelCreatesEmbedding : ∀ value db → Config.embed (apply (Setting.model value) (config db nothing)) ≡
+  modelCreatesEmbedding : ∀ value db grace → Config.embed (apply (Setting.model value) (config db nothing grace)) ≡
     just (record defaultEmbeddings { model = value })
-  modelCreatesEmbedding value db = refl
+  modelCreatesEmbedding value db grace = refl
 
-  backendPreservesModel : ∀ value db e →
-    Config.embed (apply (Setting.backend value) (config db (just e))) ≡ just (record e { backend = value })
-  backendPreservesModel value db e = refl
+  backendPreservesModel : ∀ value db e grace →
+    Config.embed (apply (Setting.backend value) (config db (just e) grace)) ≡ just (record e { backend = value })
+  backendPreservesModel value db e grace = refl
 
   portBoundPreserved : ∀ setting c → Database.port (Config.db c) ≤ 65535 →
     Database.port (Config.db (apply setting c)) ≤ 65535

@@ -15,6 +15,7 @@ open import Data.Product using (_×_; _,_; proj₁; proj₂)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text; trim; Nonempty; cons)
+open import Mimir.UUIDGroups using (UUID)
 open import Mimir.DocumentStore using (Chunk; mkChunk)
 
 -- Rust str::lines recognizes LF and CRLF, omits the final empty segment, and
@@ -55,7 +56,7 @@ classify text with hashes 0 text
 
 record Frame : Set where
   constructor frame
-  field depth identity : ℕ; title : Text
+  field depth : ℕ; identity : UUID; title : Text
 
 -- Newest enclosing heading first; this is reverse order to the Rust Vec.
 parents : ℕ → List Frame → List Frame
@@ -71,7 +72,7 @@ parentIsShallower depth (g ∷ gs) f fs same with Frame.depth g <? depth
 ...   | refl = less
 parentIsShallower depth (g ∷ gs) f fs same | no _ = parentIsShallower depth gs f fs same
 
-parentID : List Frame → Maybe ℕ
+parentID : List Frame → Maybe UUID
 parentID [] = nothing
 parentID (f ∷ fs) = just (Frame.identity f)
 
@@ -80,13 +81,14 @@ record Parser : Set where
   field
     completed : List Chunk
     stack : List Frame
-    currentID nextAllocation : ℕ
+    currentID : UUID
+    nextAllocation : ℕ
     section : List Text
-    parent : Maybe ℕ
+    parent : Maybe UUID
     buffer : Text
 open Parser
 
-module Parse (document : Text) (project : Maybe Text) (supply : ℕ → ℕ) where
+module Parse (document : Text) (project : Maybe Text) (supply : ℕ → UUID) where
   initial : Parser
   initial = parser [] [] (supply 0) 1 [] nothing []
 

@@ -7,6 +7,7 @@ module Mimir.JudgeBatchServiceBinding where
 open import Data.List using (List; []; _∷_; _++_; map)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
+import Mimir.UUIDGroups as UUIDValue
 open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤)
@@ -22,7 +23,6 @@ import Mimir.JudgeScopedTools as Scope
 import Mimir.JudgeSelection as Selection
 import Mimir.JudgeBatchReadback as Readback
 import Mimir.JudgeStateOperations as State
-import Mimir.JudgePersistence as Names
 import Mimir.LearningStateWire as Wire
 import Mimir.ReviewObservation as Observation
 import Mimir.RecordDecoding as Decode
@@ -30,16 +30,13 @@ import Mimir.StructuredValue as V
 import Mimir.ToolCatalog as Catalog
 import Mimir.SourceFailure as Source
 import Mimir.Validation as Validation
-import Mimir.UUIDV4 as UUID
-import Mimir.UnixPath as Path
 import Mimir.JudgeMcpLifecycle as Client
 
 module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   (display : Revision.Display) (errors : Service.Display) (environment : Application.Environment)
-  (sizeMaximum : ℕ) (endian : UUID.Endian) (path : Path.Path) where
+  (sizeMaximum : ℕ) where
   private
     module S = Service.Bind conversion format display errors environment
-    module Storage = State.Bound conversion sizeMaximum endian path
     module W = Wire.Decode conversion sizeMaximum
 
   sourceError : String → V.Value → Validation.Fault → Revision.Error
@@ -49,6 +46,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
 
   error : Scope.Failure → Revision.Error
   error (Scope.rejected detail) = Revision.error detail nothing
+  error (Scope.needsUserDecision detail) = Revision.error detail nothing
   error (Scope.invalidResponse detail) = Revision.error detail nothing
   error (Scope.transport detail) = Revision.error detail nothing
   error (Scope.application detail) = Revision.error detail nothing
@@ -77,19 +75,22 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
   previous (inj₂ (just report)) = inj₂ (map (λ item → Observation.deferred
     (State.R.Deferred.identity item) (State.R.Deferred.revision item)) (State.R.Report.deferredReviews report))
 
-  byID : ℕ → V.Value
+  byID : UUIDValue.UUID → V.Value
   byID id = Encoding.object (("id" , V.string (Encoding.Formatting.uuidText format id)) ∷ [])
-  pendingArgs : Maybe Text → ℕ → List ℕ → V.Value
+  pendingArgs : Maybe Text → Maybe ℕ → List UUIDValue.UUID → V.Value
   pendingArgs project limit excluded = Encoding.object
-    (("limit" , V.unsigned limit) ∷ ("exclude_ids" , V.array (map
-      (λ id → V.string (Encoding.Formatting.uuidText format id)) excluded)) ∷ extra project)
+    (("exclude_ids" , V.array (map
+      (λ id → V.string (Encoding.Formatting.uuidText format id)) excluded)) ∷ (selection limit Data.List.++ extra project))
     where
+    selection : Maybe ℕ → List (String Data.Product.× V.Value)
+    selection nothing = []
+    selection (just count) = ("limit" , V.unsigned count) ∷ []
     extra : Maybe Text → List (String Data.Product.× V.Value)
     extra nothing = []
     extra (just value) = ("project" , V.string value) ∷ []
 
   data SelectionReceipt : (effect : Selection.Effect) → Selection.Reply effect → Set where
-    retained : ∀ reply → Storage.ReadReceipt Names.status reply → SelectionReceipt Selection.previousDeferred (previous reply)
+    retained : ∀ reply → SelectionReceipt Selection.previousDeferred (previous reply)
     observed : ∀ id requestID reply → S.Receipt requestID Catalog.getExperience (byID id) reply →
       SelectionReceipt (Selection.current id) (current reply)
     selected : ∀ project limit excluded requestID reply →
@@ -107,7 +108,7 @@ module Bound (conversion : Conversion.Contract) (format : Encoding.Formatting)
       ReadbackReceipt (Readback.getExperience pin) (readback (current reply))
 
   selectionCalls : ∀ {effect reply} → SelectionReceipt effect reply → List Client.Issued
-  selectionCalls (retained _ _) = []
+  selectionCalls (retained _) = []
   selectionCalls (observed _ _ _ receipt) = S.issued receipt ∷ []
   selectionCalls (selected _ _ _ _ _ receipt) = S.issued receipt ∷ []
 

@@ -3,6 +3,8 @@
 -- Current scores and historical pages deliberately use different selection.
 module Mimir.AssessmentRead where
 
+open import Mimir.Collections using (limitResults; validSelection)
+
 open import Data.Bool using (Bool; true; false; _∧_)
 open import Data.List using (List; []; _∷_; map; take; drop; length)
 open import Data.Maybe using (Maybe; just; nothing)
@@ -13,6 +15,7 @@ import Data.Integer.Properties as Integer
 open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text; nonblank)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.AssessmentWrites as Writes
 import Mimir.AssessmentSelection as Selection
@@ -28,7 +31,7 @@ record World : Set where
   field
     ledger : Ledger.World
     contributions : List Writes.Row
-    createdAt : ℕ → ℕ → Maybe ℤ
+    createdAt : UUID → ℕ → Maybe ℤ
 
 record Entry : Set where
   constructor entry
@@ -58,7 +61,7 @@ matches : Selection.Query → World → Writes.Row → Bool
 matches q w c =
   does (Selection.Query.project q ≟Text Ledger.R.Cell.project
     (Ledger.World.cells (World.ledger w) (Writes.Row.experience c))) ∧
-  does (Selection.Query.belief q ≟ Writes.Row.belief c) ∧
+  does (Selection.Query.belief q ≟UUID Writes.Row.belief c) ∧
   does (Selection.Query.scope q ≟Text Writes.scope c) ∧
   does (Selection.Query.rubric q ≟Text Writes.rubric c)
 
@@ -90,18 +93,13 @@ getAssessment q beliefs w with nonblank (Selection.Query.project q) ∧
 ...   | Validation.rejected failure invalid = invalidTarget failure
 ...   | Validation.accepted valid = assessed q (scores q w)
 
--- Ascending SQL order: creation time, experience UUID, review revision.
--- Natural identities here use the UUID numeric order at the wire boundary.
+-- Creation time first, then review revision.
 beforeAt : ℤ → ℤ → Entry → Entry → Bool
 beforeAt first second a b with first Integer.<? second
 ... | yes earlier = true
 ... | no notEarlier with first Integer.≟ second
 ...   | no different = false
-...   | yes same with Writes.Row.experience (Entry.contribution a) <? Writes.Row.experience (Entry.contribution b)
-...     | yes earlier = true
-...     | no notEarlier with Writes.Row.experience (Entry.contribution a) ≟ Writes.Row.experience (Entry.contribution b)
-...       | no different = false
-...       | yes same = does (Writes.Row.revision (Entry.contribution a) ≤? Writes.Row.revision (Entry.contribution b))
+...   | yes same = does (Writes.Row.revision (Entry.contribution a) ≤? Writes.Row.revision (Entry.contribution b))
 
 before : Entry → Entry → Bool
 before a b with Entry.timestamp a | Entry.timestamp b
@@ -128,17 +126,18 @@ record Page : Set where
   constructor mkPage
   field entries : List Entry; nextOffset : Maybe ℕ
 
-page : ℕ → ℕ → List Entry → Page
-page offset limit entries with limit <? length (drop offset entries)
-... | yes more = mkPage (take limit (drop offset entries)) (just (offset + limit))
-... | no finished = mkPage (take limit (drop offset entries)) nothing
+page : ℕ → Maybe ℕ → List Entry → Page
+page offset limit entries with length (limitResults limit (drop offset entries)) <? length (drop offset entries)
+... | yes more = mkPage (limitResults limit (drop offset entries))
+  (just (offset + length (limitResults limit (drop offset entries))))
+... | no finished = mkPage (limitResults limit (drop offset entries)) nothing
 
 data HistoryResult : Set where
   invalidPage missingProject invalidStoredHistory : HistoryResult
   found : Page → HistoryResult
 
-history : Selection.Query → World → ℕ → ℕ → HistoryResult
-history q w offset limit with does (1 ≤? limit) ∧ does (offset ≤? Bounds.i64Maximum)
+history : Selection.Query → World → ℕ → Maybe ℕ → HistoryResult
+history q w offset limit with validSelection limit ∧ does (offset ≤? Bounds.i64Maximum)
 ... | false = invalidPage
 ... | true with nonblank (Selection.Query.project q)
 ...   | false = missingProject

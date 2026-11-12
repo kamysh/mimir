@@ -7,14 +7,17 @@ open import Data.Empty using (⊥)
 open import Data.Integer using (ℤ; +_)
 import Data.Integer.Properties as Integer
 open import Data.List using (List; []; _∷_; map; length; _++_; concatMap)
-open import Data.List.Properties using (≡-dec)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
-open import Data.Nat using (ℕ; _+_; _≤_; _≤?_; _≟_; _⊓_; _⊔_)
-open import Data.Nat.Properties using (⊓-comm; ⊔-comm)
+open import Data.Nat using (ℕ; _+_; _≤_; _≤?_)
 open import Data.Product using (_×_; _,_; proj₁; proj₂)
+open import Data.Sum using (_⊎_; inj₁; inj₂)
+open import Data.Unit using (⊤; tt)
 open import Data.Rational using (0ℚ; 1ℚ)
+open import Relation.Nullary using (Dec; yes; no; ¬_)
+open import Relation.Nullary.Decidable using (_×-dec_; _⊎-dec_)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Mimir.Binary64 using (Number)
 open import Mimir.NumericValidation using (Between; checkBetween)
 open import Mimir.Validation hiding (Feedback; feedback)
@@ -30,11 +33,11 @@ data Relation : Set where supports defeats causes contradicts : Relation
 
 record Feedback : Set where
   constructor feedback
-  field beliefID : ℕ; verdict : Verdict; weight : Number
+  field beliefID : UUID; verdict : Verdict; weight : Number
 
 record Link : Set where
   constructor link
-  field from to : ℕ; relation : Relation; weight : Number
+  field from to : UUID; relation : Relation; weight : Number
 
 record CandidateFeedback : Set where
   constructor candidateFeedback
@@ -47,12 +50,12 @@ record CandidateLink : Set where
 record Review : Set where
   constructor review
   field
-    experienceID : ℕ
+    experienceID : UUID
     experienceRevision : ℤ
     reviewer rationale : Text
     feedbacks : List Feedback
     links : List Link
-    superseded : List ℕ
+    superseded : List UUID
     candidates : List Candidate
     candidateFeedbacks : List CandidateFeedback
     candidateLinks : List CandidateLink
@@ -60,9 +63,8 @@ record Review : Set where
     extracted : List LearningItem
     coverage : List Coverage
 
-module IDs = Equality ℕ _≟_
+module IDs = Equality UUID _≟UUID_
 module TextKeys = Equality Text _≟Text_
-module LinkKeys = Equality (List ℕ) (≡-dec _≟_)
 
 AssessmentKey = Target × (Text × Text)
 module AssessmentKeys = Equality AssessmentKey
@@ -77,15 +79,48 @@ relationCode defeats = 1
 relationCode causes = 2
 relationCode contradicts = 3
 
-linkKey : Link → List ℕ
-linkKey (link from to contradicts weight) = (from ⊓ to) ∷ (from ⊔ to) ∷ 3 ∷ []
-linkKey (link from to supports weight) = from ∷ to ∷ 0 ∷ []
-linkKey (link from to defeats weight) = from ∷ to ∷ 1 ∷ []
-linkKey (link from to causes weight) = from ∷ to ∷ 2 ∷ []
+-- Contradictions are undirected; other relations retain their direction.
+SameLink : Link → Link → Set
+SameLink (link a b supports _) (link c d supports _) = (a ≡ c) × (b ≡ d)
+SameLink (link a b defeats _) (link c d defeats _) = (a ≡ c) × (b ≡ d)
+SameLink (link a b causes _) (link c d causes _) = (a ≡ c) × (b ≡ d)
+SameLink (link a b contradicts _) (link c d contradicts _) =
+  ((a ≡ c) × (b ≡ d)) ⊎ ((a ≡ d) × (b ≡ c))
+SameLink _ _ = ⊥
+
+sameLink? : ∀ a b → Dec (SameLink a b)
+sameLink? (link a b supports _) (link c d supports _) = (a ≟UUID c) ×-dec (b ≟UUID d)
+sameLink? (link a b defeats _) (link c d defeats _) = (a ≟UUID c) ×-dec (b ≟UUID d)
+sameLink? (link a b causes _) (link c d causes _) = (a ≟UUID c) ×-dec (b ≟UUID d)
+sameLink? (link a b contradicts _) (link c d contradicts _) =
+  ((a ≟UUID c) ×-dec (b ≟UUID d)) ⊎-dec ((a ≟UUID d) ×-dec (b ≟UUID c))
+sameLink? (link _ _ supports _) (link _ _ defeats _) = no (λ ())
+sameLink? (link _ _ supports _) (link _ _ causes _) = no (λ ())
+sameLink? (link _ _ supports _) (link _ _ contradicts _) = no (λ ())
+sameLink? (link _ _ defeats _) (link _ _ supports _) = no (λ ())
+sameLink? (link _ _ defeats _) (link _ _ causes _) = no (λ ())
+sameLink? (link _ _ defeats _) (link _ _ contradicts _) = no (λ ())
+sameLink? (link _ _ causes _) (link _ _ supports _) = no (λ ())
+sameLink? (link _ _ causes _) (link _ _ defeats _) = no (λ ())
+sameLink? (link _ _ causes _) (link _ _ contradicts _) = no (λ ())
+sameLink? (link _ _ contradicts _) (link _ _ supports _) = no (λ ())
+sameLink? (link _ _ contradicts _) (link _ _ defeats _) = no (λ ())
+sameLink? (link _ _ contradicts _) (link _ _ causes _) = no (λ ())
+
+UniqueLinks : List Link → Set
+UniqueLinks [] = ⊤
+UniqueLinks (x ∷ xs) = All (λ y → ¬ SameLink x y) xs × UniqueLinks xs
+
+uniqueLinks? : ∀ links → Dec (UniqueLinks links)
+uniqueLinks? [] = yes tt
+uniqueLinks? (x ∷ xs) = all? (λ y → negate (sameLink? x y)) xs ×-dec uniqueLinks? xs
+
+checkUniqueLinks : ∀ links → Checked (UniqueLinks links)
+checkUniqueLinks links = check (fault [] duplicate "duplicate collection key") (uniqueLinks? links)
 
 contradictionReversalKey : ∀ from to weight₁ weight₂ →
-  linkKey (link from to contradicts weight₁) ≡ linkKey (link to from contradicts weight₂)
-contradictionReversalKey from to weight₁ weight₂ rewrite ⊓-comm from to | ⊔-comm from to = refl
+  SameLink (link from to contradicts weight₁) (link to from contradicts weight₂)
+contradictionReversalKey from to weight₁ weight₂ = inj₂ (refl , refl)
 
 Probability : Number → Set
 Probability = Between 0ℚ 1ℚ
@@ -99,7 +134,7 @@ LinkValid l = Probability (Link.weight l) × Link.from l ≢ Link.to l
 checkLink : ∀ l → Checked (LinkValid l)
 checkLink l = combine (at (key "weight") (checkProbability (Link.weight l)))
   (check (fault [] unsupportedCombination "self links are not permitted")
-    (negate (Link.from l ≟ Link.to l)))
+    (negate (Link.from l ≟UUID Link.to l)))
 
 CandidateFeedbackValid : List Candidate → CandidateFeedback → Set
 CandidateFeedbackValid cs f = Probability (CandidateFeedback.weight f) × TargetValid cs (CandidateFeedback.target f)
@@ -164,13 +199,13 @@ checkCandidates r = combine (at (key "candidates") (allChecked validate (Review.
 
 LegacyValid : Review → Set
 LegacyValid r = All LinkValid (Review.links r) ×
-  (LinkKeys.Unique (map linkKey (Review.links r)) ×
+  (UniqueLinks (Review.links r) ×
   (All (λ f → Probability (Feedback.weight f)) (Review.feedbacks r) ×
     IDs.Unique (map Feedback.beliefID (Review.feedbacks r))))
 
 checkLegacy : ∀ r → Checked (LegacyValid r)
 checkLegacy r = combine (at (key "links") (allChecked checkLink (Review.links r)))
-  (combine (at (key "links") (LinkKeys.checkUnique (map linkKey (Review.links r))))
+  (combine (at (key "links") (checkUniqueLinks (Review.links r)))
   (combine (at (key "feedback") (allChecked (λ f → checkProbability (Feedback.weight f)) (Review.feedbacks r)))
     (at (key "feedback") (IDs.checkUnique (map Feedback.beliefID (Review.feedbacks r))))))
 

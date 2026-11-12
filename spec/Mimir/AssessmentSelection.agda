@@ -14,23 +14,27 @@ open import Relation.Nullary using (Dec)
 open import Relation.Nullary.Decidable using (_×-dec_)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.Assessment as Assessment
 
 record Query : Set where
   constructor query
-  field project : Text; belief : ℕ; scope rubric : Text
+  field project : Text; belief : UUID; scope rubric : Text
 
 -- A candidate tuple from the three tables. Every join equality is checked;
 -- no matching ownership or current-review condition is assumed by this type.
 record Row : Set where
   constructor row
   field
-    experienceID : ℕ
+    experienceID : UUID
     project : Text
     sourceRevision activeReviewRevision : ℕ
-    reviewExperienceID reviewRevision reviewSourceRevision : ℕ
-    contributionExperienceID contributionReviewRevision belief : ℕ
+    reviewExperienceID : UUID
+    reviewRevision reviewSourceRevision : ℕ
+    contributionExperienceID : UUID
+    contributionReviewRevision : ℕ
+    belief : UUID
     scope rubric : Text
     mass : Assessment.Mass
 
@@ -47,13 +51,13 @@ Matches q r =
 
 matches? : ∀ q r → Dec (Matches q r)
 matches? q r =
-  (Row.experienceID r ≟ Row.contributionExperienceID r) ×-dec
-  (Row.reviewExperienceID r ≟ Row.experienceID r) ×-dec
+  (Row.experienceID r ≟UUID Row.contributionExperienceID r) ×-dec
+  (Row.reviewExperienceID r ≟UUID Row.experienceID r) ×-dec
   (Row.reviewRevision r ≟ Row.contributionReviewRevision r) ×-dec
   (Row.activeReviewRevision r ≟ Row.reviewRevision r) ×-dec
   (Row.sourceRevision r ≟ Row.reviewSourceRevision r) ×-dec
   (Row.project r ≟Text Query.project q) ×-dec
-  (Row.belief r ≟ Query.belief q) ×-dec
+  (Row.belief r ≟UUID Query.belief q) ×-dec
   (Row.scope r ≟Text Query.scope q) ×-dec
   (Row.rubric r ≟Text Query.rubric q)
 

@@ -15,7 +15,7 @@ import Data.List.Relation.Unary.All as All
 import Data.List.Relation.Unary.All.Properties as AllProperties
 open import Data.Maybe using (Maybe; just; nothing)
 import Data.Maybe.Properties as MaybeProperties
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Nullary using (Dec; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong)
@@ -25,34 +25,34 @@ open import Mimir.ReviewSchema using (Link; link; Relation; supports; defeats; c
 record Edge : Set where
   constructor edge
   field
-    owner : Maybe ℕ
-    from to : ℕ
+    owner : Maybe UUID
+    from to : UUID
     relation : Relation
     weight : Number
 
-Foreign : ℕ → Edge → Set
+Foreign : UUID → Edge → Set
 Foreign experience e = Edge.owner e ≢ just experience
 
 foreign? : ∀ experience e → Dec (Foreign experience e)
-foreign? experience e with MaybeProperties.≡-dec _≟_ (Edge.owner e) (just experience)
+foreign? experience e with MaybeProperties.≡-dec _≟UUID_ (Edge.owner e) (just experience)
 ... | yes same = no (λ different → different same)
 ... | no different = yes different
 
-retained : ℕ → List Edge → List Edge
+retained : UUID → List Edge → List Edge
 retained experience = filter (foreign? experience)
 
-expand : ℕ → Link → List Edge
+expand : UUID → Link → List Edge
 expand experience (link from to supports weight) = edge (just experience) from to supports weight ∷ []
 expand experience (link from to defeats weight) = edge (just experience) from to defeats weight ∷ []
 expand experience (link from to causes weight) = edge (just experience) from to causes weight ∷ []
 expand experience (link from to contradicts weight) = edge (just experience) from to contradicts weight ∷
   edge (just experience) to from contradicts weight ∷ []
 
-creations : ℕ → List Link → List Edge
+creations : UUID → List Link → List Edge
 creations experience [] = []
 creations experience (declaration ∷ rest) = expand experience declaration ++ creations experience rest
 
-replace : ℕ → List Link → List Edge → List Edge
+replace : UUID → List Link → List Edge → List Edge
 replace experience links before = creations experience links ++ retained experience before
 
 expandOwned : ∀ experience declaration → All (λ e → Edge.owner e ≡ just experience) (expand experience declaration)
@@ -90,15 +90,15 @@ replacementForgetsOld experience newer older before = cong (creations experience
     (creationsRemoved experience older)
     (retentionIdempotent experience before)))
 
-forward : ℕ → Link → Edge
+forward : UUID → Link → Edge
 forward experience declaration = edge (just experience) (Link.from declaration) (Link.to declaration)
   (Link.relation declaration) (Link.weight declaration)
 
-reverse : ℕ → Link → Edge
+reverse : UUID → Link → Edge
 reverse experience declaration = edge (just experience) (Link.to declaration) (Link.from declaration)
   contradicts (Link.weight declaration)
 
-data Generated (experience : ℕ) (declaration : Link) : Edge → Set where
+data Generated (experience : UUID) (declaration : Link) : Edge → Set where
   direct : Generated experience declaration (forward experience declaration)
   mirrored : Link.relation declaration ≡ contradicts → Generated experience declaration (reverse experience declaration)
 

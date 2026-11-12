@@ -17,15 +17,16 @@ open import Data.Vec using (Vec)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; trans; sym)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID)
 
 record Chunk : Set where
   constructor mkChunk
   field
-    identity : ℕ
+    identity : UUID
     document : Text
     section : List Text
     content : Text
-    parent : Maybe ℕ
+    parent : Maybe UUID
     project : Maybe Text
 open Chunk
 
@@ -41,7 +42,7 @@ module Storage (Scalar : Set) (dimension : ℕ) where
   graphView : Store → List Chunk
   graphView = map Stored.chunk
 
-  vectorView : Store → List (ℕ × Vector)
+  vectorView : Store → List (UUID × Vector)
   vectorView = map (λ entry → identity (Stored.chunk entry) , Stored.embedding entry)
 
   -- This includes empty stores and arbitrary prior replacements/deletions.
@@ -152,7 +153,7 @@ module Storage (Scalar : Set) (dimension : ℕ) where
       | foreignNewEntriesAbsent path other proposed different allSame =
     otherDocumentSurvivesClear path other before different
 
-  data Outcome : Set where prepareFailed transactionAborted commitReceipt commitLost : Outcome
+  data Outcome : Set where prepareFailed transactionAborted commitReceipt : Outcome
 
   record Publication : Set where
     constructor published
@@ -164,7 +165,6 @@ module Storage (Scalar : Set) (dimension : ℕ) where
   publish path proposed before prepareFailed = published before nothing
   publish path proposed before transactionAborted = published before nothing
   publish path proposed before commitReceipt = published (replace path proposed before) (just (length proposed))
-  publish path proposed before commitLost = published (replace path proposed before) nothing
 
   failedPreparationPreserves : ∀ path proposed before →
     Publication.durable (publish path proposed before prepareFailed) ≡ before

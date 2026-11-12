@@ -9,9 +9,10 @@ open import Data.List using (List; []; _∷_; map; length)
 open import Data.List.Relation.Unary.Any using (Any; here; there)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Integer using (ℤ; +_)
-open import Data.Product using (Σ; _×_; _,_)
-open import Data.Sum using (inj₁; inj₂)
+open import Data.Product using (Σ; _×_; _,_; proj₂)
+open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 import Data.Integer.Properties as Integer
 open import Relation.Nullary using (does; yes; no)
@@ -32,6 +33,7 @@ import Mimir.Validation as Validation
 import Mimir.LearningInput as Input
 import Mimir.LearningNormalization as Normalization
 import Mimir.Effects as Effects
+import Mimir.PosteriorComputation as Posterior
 open import Mimir.Bits using (Byte)
 
 data Request : Set where
@@ -64,7 +66,8 @@ admit (reviewExperience reviewValue expected) with expectedValid expected
 ... | true = nothing
 
 module Protocol (database : ℕ) (request : Request)
-  (clock : Candidate → ℤ) (now : ℤ) (identities : Candidate → ℕ) where
+  (clock : Candidate → ℤ) (now : ℤ) (identities : Candidate → UUID)
+  (calculation : Posterior.Calculation) where
 
   module T = Transaction.Over Store.World Observation.Snapshot Failure database 671942183
   module Receipts = Receipt.Over Store.World Observation.Snapshot Failure database 671942183
@@ -80,13 +83,17 @@ module Protocol (database : ℕ) (request : Request)
   reviewed (Reviewing.replay value) = T.replay value
   reviewed (Reviewing.fresh after value limit) = T.replace after value
 
+  reviewReady : ℤ → Failure ⊎ (Store.World × Review) → T.Allocation T.Decision
+  reviewReady expected (inj₁ failure) = T.resolved (T.reject failure)
+  reviewReady expected (inj₂ (staged , canonical)) =
+    T.resolved (reviewed (Reviewing.plan calculation staged canonical expected clock now identities))
+
   decide : Request → Store.World → T.Allocation T.Decision
   decide (recordExperience sourceValue expected) before = T.bindAllocation (Normalize.experience sourceValue before) λ where
     (inj₁ failure) → T.resolved (T.reject failure)
-    (inj₂ (staged , canonical)) → T.resolved (recorded (Recording.plan staged canonical expected now))
-  decide (reviewExperience reviewValue expected) before = T.bindAllocation (Normalize.review reviewValue before) λ where
-    (inj₁ failure) → T.resolved (T.reject failure)
-    (inj₂ (staged , canonical)) → T.resolved (reviewed (Reviewing.plan staged canonical expected clock now identities))
+    (inj₂ (staged , canonical)) → T.resolved (recorded (Recording.plan calculation staged canonical expected now))
+  decide (reviewExperience reviewValue expected) before =
+    T.bindAllocation (Normalize.review reviewValue before) (reviewReady expected)
 
   module Plan = T.PreparedPlan (decide request)
   module CommitEvidence = Receipts.WithPreparedPlan (decide request)
@@ -112,7 +119,7 @@ module Protocol (database : ℕ) (request : Request)
 
   recordedExperienceRetry : ∀ input expected before assigned value →
     Normalize.RecordedItems (Input.Experience.identity input) before (Input.Experience.items input) assigned →
-    Recording.plan before (Input.canonicalExperience input assigned) expected now ≡ Recording.replay value →
+    Recording.plan calculation before (Input.canonicalExperience input assigned) expected now ≡ Recording.replay value →
     decide (recordExperience input expected) before ≡ T.resolved (T.replay value)
   recordedExperienceRetry input expected before assigned value recorded replay
     rewrite Normalize.recordedExperienceNeedsNoAllocation input before assigned recorded | replay = refl
@@ -121,7 +128,7 @@ module Protocol (database : ℕ) (request : Request)
     Normalize.RecordedItems (Input.Review.experienceID input) before (Input.Review.extracted input) assigned →
     Normalize.assessments (Store.World.itemKeys before) (Input.Review.experienceID input) (Input.Review.assessments input)
       ≡ inj₂ (resolved , supported) →
-    Reviewing.plan before (Input.canonicalReview input assigned resolved) expected clock now identities ≡ Reviewing.replay value →
+    Reviewing.plan calculation before (Input.canonicalReview input assigned resolved) expected clock now identities ≡ Reviewing.replay value →
     decide (reviewExperience input expected) before ≡ T.resolved (T.replay value)
   recordedReviewRetry input expected before assigned resolved supported value recorded references replay
     rewrite Normalize.recordedReviewNeedsNoAllocation input before assigned resolved supported recorded references | replay = refl
@@ -131,7 +138,7 @@ module Protocol (database : ℕ) (request : Request)
   -- desired result and do not request a second PostgreSQL identity.
   namedExperienceRetry : ∀ input expected before assigned value →
     Normalize.NamedItems (Input.Experience.identity input) before (Input.Experience.items input) assigned →
-    Recording.plan before (Input.canonicalExperience input assigned) expected now ≡ Recording.replay value →
+    Recording.plan calculation before (Input.canonicalExperience input assigned) expected now ≡ Recording.replay value →
     decide (recordExperience input expected) before ≡ T.resolved (T.replay value)
   namedExperienceRetry input expected before assigned value saved replay =
     recordedExperienceRetry input expected before assigned value
@@ -141,7 +148,7 @@ module Protocol (database : ℕ) (request : Request)
     Normalize.NamedItems (Input.Review.experienceID input) before (Input.Review.extracted input) assigned →
     Normalize.assessments (Store.World.itemKeys before) (Input.Review.experienceID input) (Input.Review.assessments input)
       ≡ inj₂ (resolved , supported) →
-    Reviewing.plan before (Input.canonicalReview input assigned resolved) expected clock now identities ≡ Reviewing.replay value →
+    Reviewing.plan calculation before (Input.canonicalReview input assigned resolved) expected clock now identities ≡ Reviewing.replay value →
     decide (reviewExperience input expected) before ≡ T.resolved (T.replay value)
   namedReviewRetry input expected before assigned resolved supported value saved references replay =
     recordedReviewRetry input expected before assigned resolved supported value
@@ -183,6 +190,41 @@ module Protocol (database : ℕ) (request : Request)
 
   start : E.Script Outcome
   start = E.ask (serializePayload (payload request)) afterSerialization
+
+  -- Private preparation has an owned transaction. Its control carries the
+  -- scope proof, so a rejected request cannot return with that handle open.
+  -- Only a prepared transaction may proceed to the final commit.
+  module Stage = T.Staging (decide request)
+
+  data PreparationResult : Set where
+    invalidPreparation : Failure → PreparationResult
+    transactionPrepared : Stage.Result → PreparationResult
+
+  data PreparationEffect : Set where
+    encode : Payload → PreparationEffect
+    stage : Stage.PreparationEffect → PreparationEffect
+
+  PreparationReply : PreparationEffect → Set
+  PreparationReply (encode _) = Serialization
+  PreparationReply (stage effect) = Stage.PreparationReply effect
+
+  module PreparationProtocol = Effects.Protocol PreparationEffect PreparationReply
+
+  privatePreparation : ∀ {scope program} → Stage.StagedScope scope program →
+    PreparationProtocol.Script PreparationResult
+  privatePreparation {program = Stage.P.done result} proof = PreparationProtocol.done (transactionPrepared result)
+  privatePreparation {program = Stage.P.ask effect continuation} (Stage.step transitions) =
+    PreparationProtocol.ask (stage effect)
+      (λ reply → privatePreparation (proj₂ (proj₂ (transitions reply))))
+
+  encodedPreparation : Serialization → PreparationProtocol.Script PreparationResult
+  encodedPreparation (serializationFailed detail) = PreparationProtocol.done (invalidPreparation (externalFailure detail))
+  encodedPreparation (encoded bytes) with admit request
+  ... | just failure = PreparationProtocol.done (invalidPreparation failure)
+  ... | nothing = privatePreparation Stage.startScoped
+
+  prepare : PreparationProtocol.Script PreparationResult
+  prepare = PreparationProtocol.ask (encode (payload request)) encodedPreparation
 
   publicEvent : T.E.Event → E.Event
   publicEvent (operation , reply) = transaction operation , reply
@@ -245,5 +287,5 @@ module Protocol (database : ℕ) (request : Request)
 
   -- CommitEvidence.successRequiresCommit is instantiated with decide request,
   -- so it applies to these actual plans rather than an arbitrary application
-  -- callback. Replay and refusal have no write effect; uncertain commit is a
-  -- distinct outcome and cannot produce an applied receipt.
+  -- callback. Replay and refusal have no write effect; a failed commit cannot
+  -- produce an applied receipt.

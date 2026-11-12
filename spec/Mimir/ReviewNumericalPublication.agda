@@ -8,6 +8,7 @@ open import Data.Bool using (Bool)
 open import Data.List using (List; []; _∷_; _++_; map)
 open import Data.Maybe using (Maybe; nothing; just)
 open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Integer using (ℤ)
 open import Data.Product using (_×_; _,_; proj₁; proj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; subst; sym)
@@ -22,8 +23,9 @@ import Mimir.ReviewLedger as Ledger
 import Mimir.ReviewPlanning as Planning
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.LearningRecompute as Recompute
+import Mimir.PosteriorComputation as Posterior
 
-linkTargets : List Link → List ℕ
+linkTargets : List Link → List UUID
 linkTargets [] = []
 linkTargets (l ∷ ls) with Link.relation l
 ... | contradicts = linkTargets ls
@@ -31,20 +33,21 @@ linkTargets (l ∷ ls) with Link.relation l
 ... | causes = Link.to l ∷ linkTargets ls
 ... | defeats = Link.to l ∷ linkTargets ls
 
-targets : Review → List ℕ
+targets : Review → List UUID
 targets r = map Mimir.ReviewSchema.Feedback.beliefID (Review.feedbacks r) ++ linkTargets (Review.links r)
 
-oldTargets : Maybe Review → List ℕ
+oldTargets : Maybe Review → List UUID
 oldTargets nothing = []
 oldTargets (just r) = targets r
 
 data NumericFailure : Set where
   foreignTarget invalidInput invalidWrite : NumericFailure
 
-module For (before : Publication.World) (current : Experience) (requested : Review)
+module For (calculation : Posterior.Calculation)
+  (before : Publication.World) (current : Experience) (requested : Review)
   (clock : Candidate → ℤ)
   (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes before)))
-  (expected : ℕ) (experienceIDs : List ℕ) (ground : List (ℕ × Float)) where
+  (expected : ℕ) (experienceIDs : List UUID) (ground : List (UUID × Float)) where
 
   module P = Planning.For before current requested clock unique expected
   module F = P.F
@@ -60,7 +63,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
   -- The identity proof is about the actual calculated node list, not a
   -- caller-supplied assertion that numeric code preserves graph identity.
   complete : (selected : F.Fresh expected) → Decision
-  complete selected with Recompute.run project roots
+  complete selected with Recompute.run calculation project roots
     (Publication.World.nodes staged) (Publication.World.edges staged)
     (Recompute.activeReviews project experienceIDs (Publication.World.ledger staged)) ground
     in calculated
@@ -71,7 +74,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
   ... | Recompute.foreignTarget = numericFailure foreignTarget
   ... | Recompute.invalidNumericInput = numericFailure invalidInput
   ... | Recompute.invalidNumericWrite = numericFailure invalidWrite
-  ... | Recompute.recomputed nodes limit = fresh selected nodes (Recompute.runPreservesIdentities (Experience.project current)
+  ... | Recompute.recomputed nodes limit = fresh selected nodes (Recompute.runPreservesIdentities calculation (Experience.project current)
      (oldTargets F.prior ++
       targets (F.P.materialized (F.Fresh.preparation selected)))
      (Publication.World.nodes (F.publish selected))
@@ -80,7 +83,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
       (Publication.World.ledger (F.publish selected)))
      ground nodes limit calculated) limit
 
-  plan : (Candidate → ℕ) → Decision
+  plan : (Candidate → UUID) → Decision
   plan identities with P.plan identities
   ... | P.refused failure = refused failure
   ... | P.replay receipt = replay receipt

@@ -9,7 +9,7 @@ open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Product using (_×_; _,_)
 open import Data.Unit using (⊤)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (_≟UUID_)
 open import Relation.Nullary using (Dec; yes; no; does)
 open import Relation.Nullary.Decidable.Core using (_×-dec_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -75,7 +75,7 @@ updatedPreservesOriginal before value = refl , refl
 lookupValid : ∀ id values value → P.ValidState values →
   P.lookup id values ≡ just value → P.ValidCounts value
 lookupValid id [] value [] ()
-lookupValid id ((key , head) ∷ rest) value (valid ∷ tail) observed with id ≟ key
+lookupValid id ((key , head) ∷ rest) value (valid ∷ tail) observed with id ≟UUID key
 ... | yes same with observed
 ...   | refl = valid
 lookupValid id ((key , head) ∷ rest) value (valid ∷ tail) observed | no different =
