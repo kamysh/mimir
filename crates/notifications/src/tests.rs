@@ -420,7 +420,7 @@ async fn independent_components_retry_restart_suppress_and_recover() {
     let notifier = Notifier::new(&config, &path).unwrap();
     assert_eq!(
         notifier
-            .submit_with(&event, 105, |_| async { panic!("retry is not due") })
+            .submit_with(&event, 105, |_| async { Err(SendFailure::Retryable) })
             .await
             .unwrap(),
         Outcome::RetryPending
@@ -545,7 +545,7 @@ async fn progress_keeps_failure_incident_open_until_idle_recovery() {
 }
 
 #[tokio::test]
-async fn exhaustion_and_latest_status_replacement_are_per_incident() {
+async fn failed_delivery_remains_retryable_and_latest_status_replaces_it() {
     let config = config();
     let path = directory();
     let notifier = Notifier::new(&config, &path).unwrap();
@@ -558,12 +558,10 @@ async fn exhaustion_and_latest_status_replacement_are_per_incident() {
     }
     assert_eq!(
         notifier
-            .submit_with(&blocked, 200, |_| async {
-                panic!("exhausted alert must not retry")
-            })
+            .submit_with(&blocked, 200, |_| async { Err(SendFailure::Retryable) })
             .await
             .unwrap(),
-        Outcome::Exhausted
+        Outcome::RetryPending
     );
     let previous: Outbox = StateDir::lock(&path).unwrap().read().unwrap().unwrap();
     let old_id = previous.incidents[&blocked.map_key()]
