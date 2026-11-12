@@ -386,7 +386,7 @@ impl State {
             finished_at: None,
             status: "running".into(),
             block_reason: None,
-            selected_ids: report.selected_ids.iter().copied().collect(),
+            selected_ids: report.selected_ids.clone(),
             model_requests: Some(initial_count),
             tool_attempts: Some(initial_count),
             events: Vec::new(),
