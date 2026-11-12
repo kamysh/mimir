@@ -6,7 +6,7 @@ module Mimir.LearningTargets where
 open import Data.List using (List; []; _∷_)
 open import Data.List.Relation.Unary.All using (All)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (_×_; _,_)
 open import Data.Empty using (⊥)
 open import Relation.Nullary using (yes; no)
@@ -18,11 +18,11 @@ open import Mimir.Validation
 
 record Belief : Set where
   constructor belief
-  field identity : ℕ; project : Maybe Text; memory : Memory
+  field identity : UUID; project : Maybe Text; memory : Memory
 
-lookup : ℕ → List Belief → Maybe Belief
+lookup : UUID → List Belief → Maybe Belief
 lookup id [] = nothing
-lookup id (b ∷ rest) with id ≟ Belief.identity b
+lookup id (b ∷ rest) with id ≟UUID Belief.identity b
 ... | yes _ = just b
 ... | no _ = lookup id rest
 
@@ -44,7 +44,7 @@ checkAllowed : ∀ project found → Checked (Allowed project found)
 checkAllowed project nothing = rejected (fault [] missingReference "belief was not found") (λ p → p)
 checkAllowed project (just b) = combine (checkProject project (Belief.project b)) (checkPersistent (Belief.memory b))
 
-Valid : Text → List Belief → List ℕ → Set
+Valid : Text → List Belief → List UUID → Set
 Valid project beliefs = All (λ id → Allowed project (lookup id beliefs))
 
 validate : ∀ project beliefs ids → Checked (Valid project beliefs ids)

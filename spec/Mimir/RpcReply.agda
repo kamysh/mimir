@@ -9,8 +9,7 @@ open import Data.Empty using (⊥-elim)
 open import Data.List using (List; []; _∷_)
 open import Data.List.Properties using (≡-dec)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; zero; suc; _≤_; _<_; _<?_) renaming (_≟_ to _≟ℕ_)
-open import Data.Nat.Properties using (≤-refl)
+open import Data.Nat using (ℕ; suc)
 open import Data.String using (toList)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
@@ -18,7 +17,6 @@ open import Mimir.Text using (Text)
 
 data Identifier : Set where
   absent null invalid : Identifier
-  integer : ℕ → Identifier
   string : Text → Identifier
 
 data Failure : Set where
@@ -45,19 +43,18 @@ module Replies (Payload ApplicationError : Set) where
   responseBody nothing (just result) = succeeded result
   responseBody nothing nothing = failed missingResult
 
-  identify : ℕ → ℕ → Envelope → Outcome
+  identify : Text → ℕ → Envelope → Outcome
   identify expected notifications frame with id frame
   ... | absent with method frame
   ...   | nothing = failed invalidNotification
   ...   | just method = notification (suc notifications)
   identify expected notifications frame | null = failed wrongID
   identify expected notifications frame | invalid = failed wrongID
-  identify expected notifications frame | string text = failed wrongID
-  identify expected notifications frame | integer id with id ≟ℕ expected
+  identify expected notifications frame | string id with ≡-dec _≟_ id expected
   ... | no _ = failed wrongID
   ... | yes _ = responseBody (error frame) (result frame)
 
-  receive : ℕ → ℕ → Envelope → Outcome
+  receive : Text → ℕ → Envelope → Outcome
   receive expected notifications frame with version frame
   ... | nothing = failed wrongVersion
   ... | just version with ≡-dec _≟_ version (toList "2.0")
@@ -67,10 +64,10 @@ module Replies (Payload ApplicationError : Set) where
   errorPreserved : ∀ error result → responseBody (just error) result ≡ rejected error
   errorPreserved error result = refl
 
-  wrongIDRefused : ∀ expected notifications frame got → id frame ≡ integer got →
+  wrongIDRefused : ∀ expected notifications frame got → id frame ≡ string got →
     got ≢ expected → identify expected notifications frame ≡ failed wrongID
   wrongIDRefused expected notifications frame got same different rewrite same
-    with got ≟ℕ expected
+    with ≡-dec _≟_ got expected
   ... | no _ = refl
   ... | yes equal = ⊥-elim (different equal)
 
@@ -83,19 +80,18 @@ module Replies (Payload ApplicationError : Set) where
   notificationAdvances expected notifications frame .(suc notifications) refl | absent | just method = refl
   notificationAdvances expected notifications frame count () | null
   notificationAdvances expected notifications frame count () | invalid
-  notificationAdvances expected notifications frame count () | string text
-  notificationAdvances expected notifications frame count proof | integer id
-    with id ≟ℕ expected
+  notificationAdvances expected notifications frame count proof | string id
+    with ≡-dec _≟_ id expected
   ... | no _ with proof
   ...   | ()
-  notificationAdvances expected notifications frame count proof | integer id | yes _
+  notificationAdvances expected notifications frame count proof | string id | yes _
     with error frame | Envelope.result frame
   ... | just error | value with proof
   ...   | ()
-  notificationAdvances expected notifications frame count proof | integer id | yes _ | nothing | just value
+  notificationAdvances expected notifications frame count proof | string id | yes _ | nothing | just value
     with proof
   ... | ()
-  notificationAdvances expected notifications frame count proof | integer id | yes _ | nothing | nothing
+  notificationAdvances expected notifications frame count proof | string id | yes _ | nothing | nothing
     with proof
   ... | ()
 
@@ -110,23 +106,3 @@ module Replies (Payload ApplicationError : Set) where
   ... | no _ with proof
   ...   | ()
   receivedNotification expected notifications frame count proof | just version | yes _ = proof
-
--- Request identifiers never wrap. The upper bound is explicit so the same
--- proof applies to the u64 client counter and to smaller test transports.
-module IDs (maximum : ℕ) where
-  record Allocated : Set where
-    constructor allocated
-    field current next : ℕ
-
-  allocate : ℕ → Maybe Allocated
-  allocate counter with counter <? maximum
-  ... | yes _ = just (allocated counter (suc counter))
-  ... | no _ = nothing
-
-  advances : ∀ counter allocation → allocate counter ≡ just allocation →
-    Allocated.current allocation < Allocated.next allocation
-  advances counter allocation proof with counter <? maximum
-  ... | no _ with proof
-  ...   | ()
-  advances counter allocation proof | yes _ with proof
-  ... | refl = Data.Nat.Properties.≤-refl

@@ -16,22 +16,12 @@ open import Mimir.SourceReview using (_≟Text_)
 import Mimir.JudgeStateRecords as Records
 import Mimir.JudgeConfirmationLedger as Ledger
 
-module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) where
+module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) (Evidence : List Id → Set) where
   module R = Records.Over Id
   module L = Ledger.Over Id equal
 
   Failed : R.Report → Set
   Failed report = R.Report.status report ≡ toList "blocked" ⊎ R.Report.status report ≡ toList "partial"
-
-  CompleteCounts : R.Report → Set
-  CompleteCounts report = R.Report.selected report ≡ length (R.Report.selectedIds report) ×
-    (R.Report.confirmed report ≡ R.Report.selected report × (R.Report.corrected report ≡ 0 ×
-    (R.Report.pending report ≡ 0 × R.Report.unavailable report ≡ 0)))
-
-  counts? : ∀ report → Dec (CompleteCounts report)
-  counts? report = (R.Report.selected report ≟ length (R.Report.selectedIds report)) ×-dec
-    ((R.Report.confirmed report ≟ R.Report.selected report) ×-dec ((R.Report.corrected report ≟ 0) ×-dec
-    ((R.Report.pending report ≟ 0) ×-dec (R.Report.unavailable report ≟ 0))))
 
   fresh : R.Report → R.Incident
   fresh report = R.incident (R.clearNotification report) nothing [] nothing
@@ -55,7 +45,7 @@ module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) where
     idleRecovery : ∀ before → R.Report.status report ≡ toList "idle" → R.Incident.recoveredAt before ≡ nothing →
       Transition report (just before) (just (recovered report before))
     batchConfirmation : ∀ before after first additions → R.Report.status report ≡ toList "complete" →
-      CompleteCounts report → R.Incident.recoveredAt before ≡ nothing →
+      Evidence (R.Report.selectedIds report) → R.Incident.recoveredAt before ≡ nothing →
       L.Updates (R.Report.selectedIds (R.Incident.first before)) (R.Report.recordedAt report)
         (R.Report.selectedIds report) (R.Incident.confirmedReviews before) after (first ∷ additions) →
       Transition report (just before) (just (confirmations after before))
@@ -75,27 +65,28 @@ module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) where
   ... | nothing = just (recovered report before) , idleRecovery before status observed
   ... | just at = nothing , unchanged (just before)
 
-  complete : ∀ report before → R.Report.status report ≡ toList "complete" → Result report before
-  complete report nothing status = nothing , unchanged nothing
-  complete report (just before) status with R.Incident.recoveredAt before in observed
+  complete : ∀ report before → R.Report.status report ≡ toList "complete" →
+    Maybe (Evidence (R.Report.selectedIds report)) → Result report before
+  complete report nothing status evidence = nothing , unchanged nothing
+  complete report (just before) status evidence with R.Incident.recoveredAt before in observed
   ... | just at = nothing , unchanged (just before)
-  ... | nothing with counts? report
-  ...   | no invalid = nothing , unchanged (just before)
-  ...   | yes counts with L.collect (R.Report.selectedIds (R.Incident.first before)) (R.Report.recordedAt report)
+  ... | nothing with evidence
+  ...   | nothing = nothing , unchanged (just before)
+  ...   | just confirmed with L.collect (R.Report.selectedIds (R.Incident.first before)) (R.Report.recordedAt report)
       (R.Report.selectedIds report) (R.Incident.confirmedReviews before)
   ...     | L.result after [] updates = nothing , unchanged (just before)
   ...     | L.result after (first ∷ additions) updates = just (confirmations after before) ,
-    batchConfirmation before after first additions status counts observed updates
+    batchConfirmation before after first additions status confirmed observed updates
 
-  decide : ∀ report before → Result report before
-  decide report before with R.Report.status report ≟Text toList "blocked"
+  decide : ∀ report before → Maybe (Evidence (R.Report.selectedIds report)) → Result report before
+  decide report before evidence with R.Report.status report ≟Text toList "blocked"
   ... | yes blocked = failure report before (inj₁ blocked)
   ... | no notBlocked with R.Report.status report ≟Text toList "partial"
   ...   | yes partial = failure report before (inj₂ partial)
   ...   | no notPartial with R.Report.status report ≟Text toList "idle"
   ...     | yes idleStatus = idle report before idleStatus
   ...     | no notIdle with R.Report.status report ≟Text toList "complete"
-  ...       | yes completeStatus = complete report before completeStatus
+  ...       | yes completeStatus = complete report before completeStatus evidence
   ...       | no other = nothing , unchanged before
 
   idleDoesNotConfirm : ∀ report before →

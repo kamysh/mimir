@@ -13,6 +13,7 @@ open import Data.List.Properties using (≡-dec)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ) renaming (_≟_ to _≟ℕ_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (_×_; _,_; proj₁; proj₂; Σ-syntax)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
@@ -58,10 +59,10 @@ validateCoverage sources c = combine
   (at (key "reason") (checkNamed (Coverage.reason c)))
 
 -- These are the source-relevant projections of a learning item. The immutable
--- ID is an exact integer representation, never an ordinal in the item array.
+-- ID is a database-issued UUID, never an ordinal in the item array.
 record Item : Set where
   constructor item
-  field identity : ℕ; reference actor statement : Text
+  field identity : UUID; reference actor statement : Text
 
 QuoteValid : Maybe Source → Item → Set
 QuoteValid nothing i = ⊥
@@ -91,9 +92,9 @@ unresolvedFor ref (c ∷ cs) with ref ≟Text Coverage.reference c | Coverage.st
 ... | yes _ | unresolved = true
 ... | _ | _ = unresolvedFor ref cs
 
-idPresent : ℕ → List ℕ → Bool
+idPresent : UUID → List UUID → Bool
 idPresent id [] = false
-idPresent id (candidate ∷ rest) with id ≟ℕ candidate
+idPresent id (candidate ∷ rest) with id ≟UUID candidate
 ... | yes _ = true
 ... | no _ = idPresent id rest
 
@@ -101,7 +102,7 @@ boolTrue? : (value : Bool) → Dec (value ≡ true)
 boolTrue? true = yes refl
 boolTrue? false = no (λ ())
 
-Accounted : List Coverage → List ℕ → Item → Set
+Accounted : List Coverage → List UUID → Item → Set
 Accounted coverage assessed i = (unresolvedFor (Item.reference i) coverage ≡ true) ⊎
   (idPresent (Item.identity i) assessed ≡ true)
 
@@ -112,7 +113,7 @@ accounted? coverage assessed i with boolTrue? (unresolvedFor (Item.reference i) 
 ...   | yes proof = yes (inj₂ proof)
 ...   | no notAssessed = no (λ { (inj₁ proof) → notUnresolved proof ; (inj₂ proof) → notAssessed proof })
 
-ItemIntegrity : List Source → List Coverage → List ℕ → Item → Set
+ItemIntegrity : List Source → List Coverage → List UUID → Item → Set
 ItemIntegrity sources coverage assessed i =
   QuoteValid (findSource (Item.reference i) sources) i × Accounted coverage assessed i
 
@@ -123,7 +124,7 @@ validateItemIntegrity sources coverage assessed i = combine
   (check (fault [] missingEvidence "item needs an assessment or explicit unresolved source coverage")
     (accounted? coverage assessed i))
 
-data Fresh : List ℕ → List Item → Set where
+data Fresh : List UUID → List Item → Set where
   done : ∀ {existing} → Fresh existing []
   next : ∀ {existing i rest} → idPresent (Item.identity i) existing ≡ false →
     Fresh (Item.identity i ∷ existing) rest → Fresh existing (i ∷ rest)
@@ -144,7 +145,7 @@ record Review : Set where
   field
     coverage : List Coverage
     extracted : List Item
-    assessedIDs : List ℕ
+    assessedIDs : List UUID
     legacyContributions : Bool
 
 CoverageIntegrity : List Source → List Coverage → Set
@@ -159,7 +160,7 @@ validateCoverageIntegrity sources coverage = combine
     (check (fault [] duplicate "coverage references must be distinct")
       (distinct? (map Coverage.reference coverage))))
 
-ReviewIntegrity : List Source → List ℕ → Review → Set
+ReviewIntegrity : List Source → List UUID → Review → Set
 ReviewIntegrity [] existing r = Review.coverage r ≡ [] × Review.extracted r ≡ []
 ReviewIntegrity sources@(_ ∷ _) existing r = Review.legacyContributions r ≡ false ×
   (CoverageIntegrity sources (Review.coverage r) ×

@@ -6,7 +6,7 @@ module Mimir.GraphWrites where
 open import Data.Bool using (Bool; true; false; _∧_; not)
 open import Data.List using (List; []; _∷_; _++_; map; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.String using (toList)
 open import Relation.Nullary using (does)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -42,7 +42,7 @@ insertBelief b (just origin) w = record inserted { learning = record learn
 insertPattern : G.PatternValues → Store.World → Store.World
 insertPattern p = Store.insertNode (G.patternNode p)
 
-directEdges : ℕ → ℕ → R.Relation → Number → List Edges.Edge
+directEdges : UUID → UUID → R.Relation → Number → List Edges.Edge
 directEdges from to R.contradicts weight = Edges.edge nothing from to R.contradicts weight ∷
   Edges.edge nothing to from R.contradicts weight ∷ []
 directEdges from to R.supports weight = Edges.edge nothing from to R.supports weight ∷ []
@@ -58,7 +58,7 @@ addEdges edges w = record w { learning = record learn
   { publication = record pub { edges = Publication.World.edges pub ++ edges } } }
   where learn = Store.World.learning w; pub = Learning.World.publication learn
 
-insertEdge : ℕ → ℕ → R.Relation → Number → Store.World → Result
+insertEdge : UUID → UUID → R.Relation → Number → Store.World → Result
 insertEdge from to relation weight w with Numeric.number weight
 ... | nothing = invalidWeight
 ... | just value with N.probability value
@@ -72,11 +72,11 @@ tagged : Text → Maybe Text → Bool
 tagged project nothing = false
 tagged project (just actual) = does (project ≟Text actual)
 
-projectBeliefs : Text → Store.World → List ℕ
+projectBeliefs : Text → Store.World → List UUID
 projectBeliefs project w = map G.BeliefValues.identity
   (filterᵇ (λ b → tagged project (G.BeliefValues.project b)) (Store.beliefs w))
 
-projectPatterns : Text → Store.World → List ℕ
+projectPatterns : Text → Store.World → List UUID
 projectPatterns project w = map G.PatternValues.identity
   (filterᵇ (λ p → tagged project (G.PatternValues.project p)) (Store.patterns (Store.nodes w)))
 

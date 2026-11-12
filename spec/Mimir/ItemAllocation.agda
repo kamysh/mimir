@@ -8,7 +8,7 @@ module Mimir.ItemAllocation where
 open import Data.Empty using (⊥-elim)
 open import Data.List using (List; []; _∷_; length)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (_×_; _,_; Σ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Nullary using (yes; no)
@@ -19,10 +19,10 @@ open import Mimir.Validation using (Fault; fault; wrongIdentity; missingReferenc
 import Mimir.ItemOwners as Owners
 import Mimir.LearningContracts as Contracts
 
-Keys = ℕ → Text → Maybe ℕ
+Keys = UUID → Text → Maybe UUID
 
-writeKey : ℕ → Text → ℕ → Keys → Keys
-writeKey experience name identity before other key with other ≟ experience
+writeKey : UUID → Text → UUID → Keys → Keys
+writeKey experience name identity before other key with other ≟UUID experience
 ... | no _ = before other key
 ... | yes _ with key ≟Text name
 ...   | no _ = before other key
@@ -30,7 +30,7 @@ writeKey experience name identity before other key with other ≟ experience
 
 writeOwn : ∀ experience name identity before →
   writeKey experience name identity before experience name ≡ just identity
-writeOwn experience name identity before with experience ≟ experience
+writeOwn experience name identity before with experience ≟UUID experience
 ... | no impossible = ⊥-elim (impossible refl)
 ... | yes _ with name ≟Text name
 ...   | no impossible = ⊥-elim (impossible refl)
@@ -39,19 +39,19 @@ writeOwn experience name identity before with experience ≟ experience
 writeOtherExperience : ∀ experience name identity before other key →
   other ≢ experience → writeKey experience name identity before other key ≡ before other key
 writeOtherExperience experience name identity before other key different
-  with other ≟ experience
+  with other ≟UUID experience
 ... | yes same = ⊥-elim (different same)
 ... | no _ = refl
 
-module OwnerStore = Contracts.Ownership (Maybe Owners.Owner)
+module OwnerStore = Contracts.OwnershipWith UUID (Maybe Owners.Owner) _≟UUID_
 
 data Outcome : Set where
   refused : Fault → Outcome
-  ready : ℕ → Keys → Owners.Registry → Outcome
+  ready : UUID → Keys → Owners.Registry → Outcome
 
 -- A supplied UUID is never used to create a row. Existing UUID-only clients
 -- can still correct a recorded item when its reserved provenance agrees.
-reuse : Keys → Owners.Registry → ℕ → Owners.Owner → Outcome
+reuse : Keys → Owners.Registry → UUID → Owners.Owner → Outcome
 reuse keys owners identity owner with owners identity
 ... | nothing = refused (fault [] missingReference "new items require a local key; PostgreSQL allocates UUIDs")
 ... | just old with Owners.ownerEqual owner old
@@ -60,7 +60,7 @@ reuse keys owners identity owner with owners identity
 
 -- sqlIdentity is returned by INSERT ... DEFAULT ... RETURNING item_id. It is
 -- consulted only for an unreserved (experience, key); retries use the ledger.
-allocate : Keys → Owners.Registry → ℕ → Text → Text → Text → ℕ → Outcome
+allocate : Keys → Owners.Registry → UUID → Text → Text → Text → UUID → Outcome
 allocate keys owners experience name source actor sqlIdentity with keys experience name
 ... | just identity = reuse keys owners identity (experience , source , actor)
 ... | nothing with owners sqlIdentity
@@ -70,10 +70,10 @@ allocate keys owners experience name source actor sqlIdentity with keys experien
 
 -- Optional id+key readback must agree with the reservation. Supplying a new
 -- UUID together with a key cannot turn it into an allocation instruction.
-reuseKey : Keys → Owners.Registry → ℕ → Text → ℕ → Text → Text → Outcome
+reuseKey : Keys → Owners.Registry → UUID → Text → UUID → Text → Text → Outcome
 reuseKey keys owners experience name identity source actor with keys experience name
 ... | nothing = refused (fault [] missingReference "new items must omit id")
-... | just assigned with identity ≟ assigned
+... | just assigned with identity ≟UUID assigned
 ...   | no _ = refused (fault [] wrongIdentity "item key and UUID disagree")
 ...   | yes _ = reuse keys owners identity (experience , source , actor)
 
@@ -109,13 +109,13 @@ unreservedUUIDCannotAllocate keys owners identity owner unused rewrite unused = 
 
 -- Assessment-local references use precisely the enclosing experience's key
 -- ledger. A missing reference refuses the whole plan; no partial list escapes.
-data References (keys : Keys) (experience : ℕ) : List Text → List ℕ → Set where
+data References (keys : Keys) (experience : UUID) : List Text → List UUID → Set where
   none : References keys experience [] []
   more : ∀ {name names identity identities} → keys experience name ≡ just identity →
     References keys experience names identities →
     References keys experience (name ∷ names) (identity ∷ identities)
 
-resolveReferences : ∀ keys experience names → Fault ⊎ Σ (List ℕ) (References keys experience names)
+resolveReferences : ∀ keys experience names → Fault ⊎ Σ (List UUID) (References keys experience names)
 resolveReferences keys experience [] = inj₂ ([] , none)
 resolveReferences keys experience (name ∷ names) with keys experience name in found
 ... | nothing = inj₁ (fault [] missingReference "unknown learning item key")

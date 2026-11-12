@@ -7,7 +7,8 @@ open import Data.Integer using (ℤ)
 import Data.Integer.Properties as Integer
 open import Data.List using (List; []; _∷_; map; filterᵇ; length; drop; take)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_; _≤?_; _<?_; _+_)
+open import Data.Nat using (ℕ; _≤?_; _<?_; _+_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
@@ -19,7 +20,7 @@ import Mimir.RetrievalRanking as R
 import Mimir.RevisionBounds as Bounds
 import Mimir.EvidenceValidity as Evidence
 
-newBelief : ℕ → ℤ → Text → Float → Float → Maybe Text → C.Memory → Maybe G.BeliefValues
+newBelief : UUID → ℤ → Text → Float → Float → Maybe Text → C.Memory → Maybe G.BeliefValues
 newBelief id now content probability confidence project memory = Evidence.admit
   (G.beliefValues id content project memory now now probability confidence
     (P.Beta.alpha prior) (P.Beta.negative prior) (P.Beta.alpha prior) (P.Beta.negative prior))
@@ -30,7 +31,7 @@ newBeliefHasValidEvidence : ∀ id now content probability confidence project me
 newBeliefHasValidEvidence id now content probability confidence project memory value =
   Evidence.admitSound _ value
 
-newPattern : ℕ → ℤ → Text → Text → Float → Maybe G.PatternValues
+newPattern : UUID → ℤ → Text → Text → Float → Maybe G.PatternValues
 newPattern id now situation approach success with N.probability success
 ... | false = nothing
 ... | true = just (G.patternValues id situation approach nothing now 0 success)
@@ -48,11 +49,11 @@ listPatterns project = filterᵇ (λ p → R.visible project (G.PatternValues.pr
 
 pageBefore : G.BeliefValues → G.BeliefValues → Bool
 pageBefore a b with G.BeliefValues.created a Integer.≟ G.BeliefValues.created b
-... | yes _ = does (G.BeliefValues.identity a ≤? G.BeliefValues.identity b)
+... | yes _ = true
 ... | no _ = does (G.BeliefValues.created a Integer.≤? G.BeliefValues.created b)
 
 pageAdmitted : ℕ → ℕ → Bool
-pageAdmitted limit offset = does (1 ≤? limit) ∧ does (limit ≤? 10) ∧ does (offset ≤? Bounds.i64Maximum)
+pageAdmitted limit offset = does (1 ≤? limit) ∧ does (offset ≤? Bounds.i64Maximum)
 
 record Page : Set where
   constructor page
@@ -69,9 +70,9 @@ pageResult project memory limit offset total observed = page rows total offset n
   ... | yes _ = just (offset + length rows)
   ... | no _ = nothing
 
-getPattern : ℕ → List G.PatternValues → Maybe G.PatternValues
+getPattern : UUID → List G.PatternValues → Maybe G.PatternValues
 getPattern id [] = nothing
-getPattern id (p ∷ ps) with id ≟ G.PatternValues.identity p
+getPattern id (p ∷ ps) with id ≟UUID G.PatternValues.identity p
 ... | yes _ = just p
 ... | no _ = getPattern id ps
 

@@ -1,10 +1,11 @@
 {-# OPTIONS --safe #-}
--- Legacy ideal/percentage structural laws. Current floating operation order,
--- posterior iteration and service effects are in GraphNumerics,
--- PosteriorComputation, CoreLibrary and InferenceProtocol.
+-- Legacy ideal/percentage structural laws. Calculation is external;
+-- InferenceProtocol specifies service effects and recovery.
 module Mimir.Inference where
 
 open import Mimir.Types
+open import Mimir.UUIDGroups using (_≟UUID_)
+open import Relation.Nullary using (does)
 open import Data.Bool            using (Bool; true; false; _∧_; not)
 open import Data.Nat             using (ℕ; _+_; _∸_; _*_; _/_; _^_; _≤_; _≤ᵇ_; _≡ᵇ_; z≤n; s≤s; NonZero)
 open import Data.Nat.Properties  using (≤-refl; ≤-trans; ≤-reflexive; *-monoˡ-≤; *-mono-≤; *-assoc; *-comm; +-comm; m≤m+n; m∸n≤m; m^n≢0; ∸-monoʳ-≤; m∸[m∸n]≡n)
@@ -229,13 +230,13 @@ attenuate-≤ target defeater w =
 -- — then propagates forward along the surgical edge set. The structural
 -- content of mutilation is: NO surviving edge points into the intervened node
 -- (its value is independent of its former parents). That is the lemma proved
--- below. Current numeric iteration is defined separately in
--- PosteriorComputation; here we retain edge-set surgery and its general law.
+-- below. Numerical calculation is external; here we retain edge-set surgery
+-- and its general law.
 -- ---------------------------------------------------------------------------
 
--- Boolean equality on node identifiers (compares the underlying ℕ uid).
+-- Boolean equality on opaque node identifiers.
 nodeEqᵇ : NodeId → NodeId → Bool
-nodeEqᵇ a b = NodeId.uid a ≡ᵇ NodeId.uid b
+nodeEqᵇ a b = does (NodeId.uid a ≟UUID NodeId.uid b)
 
 -- Whether an edge label is CAUSES (the only label an intervention follows).
 isCausesᵇ : EdgeLabel → Bool

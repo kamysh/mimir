@@ -1,12 +1,13 @@
 {-# OPTIONS --safe #-}
 -- Request-loop composition: a complete exchange requires concrete application
--- executions, and no next read occurs before its response write/flush finishes.
+-- executions, and no next read occurs before its response is delivered.
 module Mimir.McpRuntimeComposition where
 
 open import Data.List using (List; []; _∷_; map; _++_)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationProtocol as Application
+import Mimir.ApplicationStore as Store
 import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
 import Mimir.McpRuntime as Runtime
@@ -27,21 +28,22 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
       readError : Text → Event
       exchange : List Bound.Event → Exchange.Outcome → Event
 
-    data Step : R.State → Event → R.State → Set where
-      received : ∀ input wholeLine after →
+    data Step : R.State → Store.World → Event → R.State → Store.World → Set where
+      received : ∀ input wholeLine after store →
         R.Step R.reading (R.read input wholeLine) after →
-        Step R.reading (read input wholeLine) after
-      failedRead : ∀ message → Step R.reading (readError message) (R.exited (R.readFailure message))
-      exchanged : ∀ program events result → Bound.Runs program events result →
-        Step (R.executing program) (exchange events result) (R.finish result)
+        Step R.reading store (read input wholeLine) after store
+      failedRead : ∀ message store → Step R.reading store (readError message) (R.exited (R.readFailure message)) store
+      exchanged : ∀ program before events after result → Bound.Runs program before events after result →
+        Step (R.executing program) before (exchange events result) (R.finish result) after
 
-    data Trace : R.State → List Event → R.State → Set where
-      empty : ∀ state → Trace state [] state
-      more : ∀ before event middle events after → Step before event middle → Trace middle events after →
-        Trace before (event ∷ events) after
+    data Trace : R.State → Store.World → List Event → R.State → Store.World → Set where
+      empty : ∀ state store → Trace state store [] state store
+      more : ∀ before store event middle nextStore events after finalStore →
+        Step before store event middle nextStore → Trace middle nextStore events after finalStore →
+        Trace before store (event ∷ events) after finalStore
 
     -- The underlying transport theorem applies to every admitted exchange;
     -- a fabricated successful tool response cannot satisfy Bound.Runs.
-    exchangeTransport : ∀ program events result → Bound.Runs program events result →
+    exchangeTransport : ∀ program before events after result → Bound.Runs program before events after result →
       Exchange.Runs program (map Bound.outer events) result
     exchangeTransport = Bound.transportPreserved

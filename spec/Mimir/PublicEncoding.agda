@@ -13,6 +13,7 @@ open import Data.Nat using (ℕ)
 open import Data.Product using (_×_; _,_)
 open import Data.String using (String; toList)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID)
 import Mimir.StructuredValue as V
 import Mimir.Binary64 as Binary
 import Mimir.CandidateGraph as G
@@ -27,7 +28,6 @@ import Mimir.ReviewObservation as Observation
 import Mimir.BeliefExplanation as Explain
 import Mimir.IndependentProvenance as Origin
 import Mimir.CandidateProvenance as Provenance
-import Mimir.PatternOutcomes as Pattern
 import Mimir.EvidenceRead as Evidence
 import Mimir.DocumentQuery as Document
 import Mimir.AssessmentScores as Scores
@@ -37,7 +37,7 @@ import Mimir.LearningHistory as History
 
 record Formatting : Set where
   field
-    uuidText : ℕ → Text -- lowercase canonical hyphenated UUID, on 128-bit IDs
+    uuidText : UUID → Text -- lowercase canonical hyphenated UUID
     utcText : ℤ → Text -- chrono UTC RFC3339 of represented nanoseconds
     floatBits : Float → Binary.Number -- the same binary64 value, no rounding policy
 
@@ -77,7 +77,7 @@ coverageText Coverage.complete = toList "complete"
 coverageText Coverage.unresolved = toList "unresolved"
 
 module Encode (format : Formatting) where
-  uuid : ℕ → V.Value
+  uuid : UUID → V.Value
   uuid id = V.string (Formatting.uuidText format id)
   timestamp : ℤ → V.Value
   timestamp time = V.string (Formatting.utcText format time)
@@ -181,7 +181,7 @@ module Encode (format : Formatting) where
     ("revision" , V.signed (Observation.Snapshot.revision s)) ∷ ("review_revision" , V.signed (Observation.Snapshot.reviewRevision s)) ∷
     ("reviewed_revision" , V.signed (Observation.Snapshot.reviewedRevision s)) ∷ candidates (Observation.Snapshot.candidateIDs s))
     where
-    candidates : List (Text × ℕ) → List (String × V.Value)
+    candidates : List (Text × UUID) → List (String × V.Value)
     candidates [] = []
     candidates pairs@(_ ∷ _) = ("candidate_ids" , V.object (map (λ { (key , id) → key , uuid id }) pairs)) ∷ []
 

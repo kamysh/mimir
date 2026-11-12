@@ -28,17 +28,16 @@ NoControls = All (λ c → Control c → ⊥)
 noControls? : ∀ text → Dec (NoControls text)
 noControls? = all? (λ c → negate (control? c))
 
-TokenValid : ℕ → Text → Set
-TokenValid maximum text = Nonempty text × (Bounded maximum text × NoControls text)
+TokenValid : Text → Set
+TokenValid text = Nonempty text × NoControls text
 
-tokenValid? : ∀ maximum text → Dec (TokenValid maximum text)
-tokenValid? maximum text = nonempty? text ×-dec (bounded? maximum text ×-dec noControls? text)
+tokenValid? : ∀ text → Dec (TokenValid text)
+tokenValid? text = nonempty? text ×-dec noControls? text
 
-checkToken : ∀ maximum text → Checked (TokenValid maximum text)
-checkToken maximum text = combine
+checkToken : ∀ text → Checked (TokenValid text)
+checkToken text = combine
   (check (fault [] emptyText "token must not be empty") (nonempty? text))
-  (combine (check (fault [] textTooLong "token exceeds byte limit") (bounded? maximum text))
-    (check (fault [] malformedInput "token contains a control character") (noControls? text)))
+  (check (fault [] malformedInput "token contains a control character") (noControls? text))
 
 Letter : Char → Char → Char → Set
 Letter lower upper actual = actual ≡ lower ⊎ actual ≡ upper

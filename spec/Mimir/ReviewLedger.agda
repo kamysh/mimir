@@ -10,7 +10,8 @@ open import Data.List using (List; []; _∷_; map)
 open import Data.List.Membership.Propositional using (_∈_)
 open import Data.List.Relation.Unary.Any using (there)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; suc; _≟_)
+open import Data.Nat using (ℕ; suc)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (_×_; _,_; proj₁)
 open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (yes; no)
@@ -49,13 +50,13 @@ Matches state (just key) (just row) = key ≡ Keys.review (Version.requested row
 record World : Set where
   constructor world
   field
-    cells : ℕ → R.Cell
-    histories : ℕ → List Version
+    cells : UUID → R.Cell
+    histories : UUID → List Version
 
-module Cells = Contracts.Ownership R.Cell
-module Histories = Contracts.Ownership (List Version)
+module Cells = Contracts.OwnershipWith UUID R.Cell _≟UUID_
+module Histories = Contracts.OwnershipWith UUID (List Version) _≟UUID_
 
-ConsistentAt : World → ℕ → Set
+ConsistentAt : World → UUID → Set
 ConsistentAt before identity =
   J.Ordered (R.Cell.review (World.cells before identity)) (map requestEntry (World.histories before identity)) ×
   Matches (World.cells before identity) (R.Cell.contribution (World.cells before identity))
@@ -64,17 +65,17 @@ ConsistentAt before identity =
 Consistent : World → Set
 Consistent before = ∀ identity → ConsistentAt before identity
 
-next : ℕ → World → Review → Review → Version
+next : UUID → World → Review → Review → Version
 next identity before requested applied = version
   (R.Cell.current (World.cells before identity)) (suc (R.Cell.review (World.cells before identity))) requested applied
 
-append : ℕ → World → Review → Review → World
+append : UUID → World → Review → Review → World
 append identity before requested applied = world
   (Cells.write identity (R.commit (World.cells before identity) (Keys.review requested)) (World.cells before))
   (Histories.write identity (next identity before requested applied ∷ World.histories before identity) (World.histories before))
 
 appendConsistent : ∀ identity before requested applied → Consistent before → Consistent (append identity before requested applied)
-appendConsistent identity before requested applied consistent queried with queried ≟ identity
+appendConsistent identity before requested applied consistent queried with queried ≟UUID identity
 ... | yes refl = J.newest refl (proj₁ (consistent identity)) , refl , refl , refl
 ... | no different = consistent queried
 
@@ -107,12 +108,12 @@ unrelatedUnchanged identity before requested applied other different = Cells.wri
 -- Correction retracts the live request pointer and preserves every immutable
 -- requested/applied row. Active effects must follow this pointer, not history
 -- presence alone.
-correct : ℕ → World → World
+correct : UUID → World → World
 correct identity before = world
   (Cells.write identity (R.correct (World.cells before identity)) (World.cells before)) (World.histories before)
 
 correctionConsistent : ∀ identity before → Consistent before → Consistent (correct identity before)
-correctionConsistent identity before consistent queried with queried ≟ identity
+correctionConsistent identity before consistent queried with queried ≟UUID identity
 ... | yes refl = proj₁ (consistent identity) , tt
 ... | no different = consistent queried
 

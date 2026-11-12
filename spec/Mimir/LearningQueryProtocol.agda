@@ -7,6 +7,7 @@ open import Data.Bool using (Bool; true; false; _∧_)
 open import Data.List using (List; []; _∷_; map; length)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤?_)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤)
 open import Mimir.Text using (Text; nonblank)
@@ -26,23 +27,24 @@ import Mimir.LearningRecompute as Recompute
 import Mimir.LearningTargets as Targets
 import Mimir.RevisionBounds as Bounds
 import Mimir.Validation as Validation
+open import Mimir.Collections using (validSelection)
 
 data Request : Set where
-  experience currentReview history : ℕ → Request
-  pending : Maybe Text → ℕ → List ℕ → Request
+  experience currentReview history : UUID → Request
+  pending : Maybe Text → Maybe ℕ → List UUID → Request
   score : Selection.Query → Request
-  assessmentHistory : Selection.Query → ℕ → ℕ → Request
+  assessmentHistory : Selection.Query → ℕ → Maybe ℕ → Request
 
 data Statement : Set where
-  currentOf reviewOf sourceVersions reviewVersions : ℕ → Statement
-  pendingRows : Maybe Text → ℕ → List ℕ → Statement
+  currentOf reviewOf sourceVersions reviewVersions : UUID → Statement
+  pendingRows : Maybe Text → Maybe ℕ → List UUID → Statement
   scoreTarget scoreRows : Selection.Query → Statement
-  historicalScores : Selection.Query → ℕ → ℕ → Statement
+  historicalScores : Selection.Query → ℕ → Maybe ℕ → Statement
 
 data Effect : Set where
   beginRead : Effect
-  readReviewHeader : ℕ → Effect
-  readHistoryRows : RawHistory.Kind → ℕ → Effect
+  readReviewHeader : UUID → Effect
+  readHistoryRows : RawHistory.Kind → UUID → Effect
   select : Maybe ℕ → Statement → Effect
   dropTransaction : ℕ → Effect
 
@@ -61,7 +63,7 @@ data Result : Set where
   invalidTarget : Validation.Fault → Result
   experienceResult : Maybe Observation.Snapshot → Result
   reviewResult : Maybe History.CurrentReview → Result
-  rawReviewResult : ℕ → Maybe RawHistory.Current → Result
+  rawReviewResult : UUID → Maybe RawHistory.Current → Result
   rawHistoryResult : List RawHistory.Entry → List RawHistory.Entry → Result
   historyResult : History.Result → Result
   pendingResult : Experiences.Result → Result
@@ -91,7 +93,7 @@ scoreAfterBegin : Selection.Query → Text ⊎ ℕ → Script Result
 scoreAfterBegin q (inj₁ failure) = done (failed failure)
 scoreAfterBegin q (inj₂ tx) = read (just tx) (scoreTarget q) (scoreAfterTarget tx q)
 
-historyAfterSources : ℕ → Store.World → Store.World → Script Result
+historyAfterSources : UUID → Store.World → Store.World → Script Result
 historyAfterSources id first second with History.reviewHistory id (Store.World.reviewTimes second)
   (Ledger.World.histories (Publication.World.ledger (Store.World.publication second)) id)
 ... | nothing = done (historyResult History.inconsistentHistory)
@@ -109,7 +111,7 @@ start (history id) = ask (readHistoryRows RawHistory.sources id) λ where
   (inj₂ sources) → ask (readHistoryRows RawHistory.reviews id) λ where
     (inj₁ error) → done (failed error)
     (inj₂ reviews) → done (rawHistoryResult sources reviews)
-start (pending project limit excluded) with does (1 ≤? limit)
+start (pending project limit excluded) with validSelection limit
 ... | false = done (pendingResult Experiences.invalidLimit)
 ... | true = read nothing (pendingRows project limit excluded) (λ observed →
   done (pendingResult (Experiences.pendingExperiences project limit excluded (Store.World.current observed))))
@@ -117,7 +119,7 @@ start (score q) with nonblank (Selection.Query.project q) ∧
   nonblank (Selection.Query.scope q) ∧ nonblank (Selection.Query.rubric q)
 ... | false = done (scoreResult Assessment.missingScope)
 ... | true = ask beginRead (scoreAfterBegin q)
-start (assessmentHistory q offset limit) with does (1 ≤? limit) ∧ does (offset ≤? Bounds.i64Maximum)
+start (assessmentHistory q offset limit) with validSelection limit ∧ does (offset ≤? Bounds.i64Maximum)
 ... | false = done (assessmentHistoryResult Assessment.invalidPage)
 ... | true with nonblank (Selection.Query.project q)
 ...   | false = done (assessmentHistoryResult Assessment.missingProject)

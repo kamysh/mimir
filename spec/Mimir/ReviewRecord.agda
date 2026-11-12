@@ -6,6 +6,7 @@ open import Data.Bool using (Bool; true; false; _∧_)
 open import Data.List using (List; []; _∷_; map)
 open import Data.Maybe using (just; nothing)
 open import Data.Nat using (ℕ; suc)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Integer using (ℤ; +_; ∣_∣)
 import Data.Integer.Properties as Integer
 open import Relation.Nullary using (does)
@@ -19,6 +20,7 @@ import Mimir.ExperienceRecord as Record
 import Mimir.ReviewObservation as Observation
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.ReviewNumericalPublication as Numerical
+import Mimir.PosteriorComputation as Posterior
 import Mimir.CandidateGraph as Graph
 import Mimir.CandidateRegistry as Registry
 import Mimir.CandidateReview as Candidates
@@ -34,11 +36,12 @@ data Decision : Set where
   replay : Observation.Snapshot → Decision
   fresh : Store.World → Observation.Snapshot → Bool → Decision
 
-module For (before : Store.World) (old : Observation.Snapshot) (requested : Review)
+module For (calculation : Posterior.Calculation)
+  (before : Store.World) (old : Observation.Snapshot) (requested : Review)
   (expected : ℕ) (clock : Candidate → ℤ) (now : ℤ)
   (unique : Registry.IDs.Unique (map Graph.nodeID (Publication.World.nodes (Store.World.publication before)))) where
 
-  module N = Numerical.For (Store.World.publication before) (Observation.Snapshot.experience old)
+  module N = Numerical.For calculation (Store.World.publication before) (Observation.Snapshot.experience old)
     requested clock unique expected (Store.identities before) (Store.World.grounding before)
 
   convert : N.Decision → Decision
@@ -57,24 +60,24 @@ module For (before : Store.World) (old : Observation.Snapshot) (requested : Revi
       ; candidateIDs = Candidates.Prepared.bindings
           (N.F.P.Prepared.reservation (N.F.Fresh.preparation selected)) }
 
-  plan : (Candidate → ℕ) → Decision
+  plan : (Candidate → UUID) → Decision
   plan identities = convert (N.plan identities)
 
-checkState : Store.World → Observation.Snapshot → Review → ℕ → (Candidate → ℤ) → ℤ → (Candidate → ℕ) → Decision
-checkState before old requested expected clock now identities with Observation.checkSnapshot old
+checkState : (calculation : Posterior.Calculation) → Store.World → Observation.Snapshot → Review → ℕ → (Candidate → ℤ) → ℤ → (Candidate → UUID) → Decision
+checkState calculation before old requested expected clock now identities with Observation.checkSnapshot old
 ... | Validation.rejected failure refutation = rejected (invalid failure)
 ... | Validation.accepted valid with Record.coherent before old
 ...   | false = rejected incoherentSnapshot
 ...   | true with Registry.IDs.checkUnique (map Graph.nodeID (Publication.World.nodes (Store.World.publication before)))
 ...     | Validation.rejected failure refutation = rejected (invalid failure)
-...     | Validation.accepted unique = For.plan before old requested expected clock now unique identities
+...     | Validation.accepted unique = For.plan calculation before old requested expected clock now unique identities
 
-plan : Store.World → Review → ℤ → (Candidate → ℤ) → ℤ → (Candidate → ℕ) → Decision
-plan before requested expected clock now identities with does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))
+plan : (calculation : Posterior.Calculation) → Store.World → Review → ℤ → (Candidate → ℤ) → ℤ → (Candidate → UUID) → Decision
+plan calculation before requested expected clock now identities with does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))
 ... | false = rejected invalidExpected
 ... | true with Read.get (Review.experienceID requested) (Store.World.current before)
 ...   | nothing = rejected missingExperience
-...   | just old = checkState before old requested ∣ expected ∣ clock now identities
+...   | just old = checkState calculation before old requested ∣ expected ∣ clock now identities
 
 proposed : Store.World → Decision → Store.World
 proposed before (rejected failure) = before

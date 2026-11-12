@@ -8,7 +8,7 @@ open import Data.Empty using (⊥-elim)
 open import Data.List using (List; []; _∷_)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (Σ; _,_)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; sym; trans)
@@ -17,7 +17,7 @@ import Mimir.DatabaseTransaction as Database
 
 record Row : Set where
   constructor historical
-  field identity : ℕ; owner : Owners.Owner
+  field identity : UUID; owner : Owners.Owner
 
 importOne : Row → Owners.Registry → Owners.Registry
 importOne row before with before (Row.identity row)
@@ -45,7 +45,7 @@ importPreservesExisting : ∀ row before identity old → before identity ≡ ju
 importPreservesExisting row before identity old original
   with before (Row.identity row) in reservation
 ... | just existing = original
-... | nothing with identity ≟ Row.identity row
+... | nothing with identity ≟UUID Row.identity row
 ...   | yes refl = ⊥-elim (justNotNothing old (trans (sym original) reservation))
 ...   | no different = original
 

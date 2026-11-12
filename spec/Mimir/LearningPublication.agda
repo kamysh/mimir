@@ -6,6 +6,7 @@ module Mimir.LearningPublication where
 
 open import Data.Bool using (Bool)
 open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Maybe using (Maybe; just; nothing) renaming (map to mapMaybe)
 open import Data.Product using (_×_; _,_)
 open import Relation.Nullary using (yes; no)
@@ -19,8 +20,8 @@ module Over (Payload Contribution : Set) (equal : DecidableEquality Payload)
   (materialize : Payload → Contribution) where
   module R = Contracts.Revision Payload equal
   module C = Commit.ReviewCommit Payload equal
-  module Cells = Contracts.Ownership R.Cell
-  module Contributions = Contracts.Ownership (Maybe Contribution)
+  module Cells = Contracts.OwnershipWith UUID R.Cell _≟UUID_
+  module Contributions = Contracts.OwnershipWith UUID (Maybe Contribution) _≟UUID_
 
   -- Retry equality belongs to the submitted payload. The application must
   -- separately supply and justify its contribution materialization, including
@@ -31,18 +32,18 @@ module Over (Payload Contribution : Set) (equal : DecidableEquality Payload)
   record World : Set where
     constructor world
     field
-      cells : ℕ → R.Cell
-      contributions : ℕ → Maybe Contribution
+      cells : UUID → R.Cell
+      contributions : UUID → Maybe Contribution
   open World
 
   Consistent : World → Set
   Consistent before = ∀ identity → contributions before identity ≡ activeContribution (cells before identity)
 
-  SameAt : World → World → ℕ → Set
+  SameAt : World → World → UUID → Set
   SameAt first second identity = cells first identity ≡ cells second identity ×
     contributions first identity ≡ contributions second identity
 
-  install : ℕ → R.Cell → World → World
+  install : UUID → R.Cell → World → World
   install identity after before = world
     (Cells.write identity after (cells before))
     (Contributions.write identity (activeContribution after) (contributions before))
@@ -62,13 +63,13 @@ module Over (Payload Contribution : Set) (equal : DecidableEquality Payload)
     (contributions before) distinct
 
   installConsistent : ∀ identity after before → Consistent before → Consistent (install identity after before)
-  installConsistent identity after before consistent queried with queried ≟ identity
+  installConsistent identity after before consistent queried with queried ≟UUID identity
   ... | yes refl = refl
   ... | no different = consistent queried
 
   reinstallUnchanged : ∀ identity before → Consistent before →
     ∀ queried → SameAt (install identity (cells before identity) before) before queried
-  reinstallUnchanged identity before consistent queried with queried ≟ identity
+  reinstallUnchanged identity before consistent queried with queried ≟UUID identity
   ... | yes refl = refl , sym (consistent identity)
   ... | no different = refl , refl
 
@@ -76,23 +77,21 @@ module Over (Payload Contribution : Set) (equal : DecidableEquality Payload)
     constructor outcome
     field durable : World; observation : C.Observation
 
-  publish : ℕ → World → Maybe R.Cell → C.Delivery → Outcome
+  publish : UUID → World → Maybe R.Cell → C.Delivery → Outcome
   publish identity before nothing delivery = outcome before C.refused
-  publish identity before (just after) C.abortBeforeCommit = outcome before C.uncertain
-  publish identity before (just after) C.commitLoseReceipt = outcome (install identity after before) C.uncertain
+  publish identity before (just after) C.abortBeforeCommit = outcome before C.notCommitted
   publish identity before (just after) C.commitDeliverReceipt = outcome (install identity after before) (C.acknowledged after)
 
-  attempt : ℕ → World → C.Request → C.Delivery → Outcome
+  attempt : UUID → World → C.Request → C.Delivery → Outcome
   attempt identity before submitted delivery = publish identity before (C.planned (cells before identity) submitted) delivery
 
   publicationConsistent : ∀ identity before proposal delivery → Consistent before →
     Consistent (Outcome.durable (publish identity before proposal delivery))
   publicationConsistent identity before nothing delivery consistent = consistent
   publicationConsistent identity before (just after) C.abortBeforeCommit consistent = consistent
-  publicationConsistent identity before (just after) C.commitLoseReceipt consistent = installConsistent identity after before consistent
   publicationConsistent identity before (just after) C.commitDeliverReceipt consistent = installConsistent identity after before consistent
 
-  correction : ℕ → World → World
+  correction : UUID → World → World
   correction identity before = install identity (R.correct (cells before identity)) before
 
   correctionRetracts : ∀ identity before → contributions (correction identity before) identity ≡ nothing
@@ -113,7 +112,7 @@ module Over (Payload Contribution : Set) (equal : DecidableEquality Payload)
      (C.Request.validTargets submitted) stale)
 
   -- This holds for any existing consistent world whose selected cell is the
-  -- committed result of the original request, including a lost commit receipt.
+  -- committed result of the original request.
   exactRetryPlan : ∀ identity before original payload valid →
     cells before identity ≡ R.commit original payload →
     C.planned (cells before identity) (C.originalRequest original payload valid) ≡ just (cells before identity)
@@ -132,8 +131,6 @@ module Over (Payload Contribution : Set) (equal : DecidableEquality Payload)
       before queried
   exactRetryPreserves identity before original payload valid C.abortBeforeCommit consistent committed queried
     rewrite exactRetryPlan identity before original payload valid committed = refl , refl
-  exactRetryPreserves identity before original payload valid C.commitLoseReceipt consistent committed queried
-    rewrite exactRetryPlan identity before original payload valid committed = reinstallUnchanged identity before consistent queried
   exactRetryPreserves identity before original payload valid C.commitDeliverReceipt consistent committed queried
     rewrite exactRetryPlan identity before original payload valid committed = reinstallUnchanged identity before consistent queried
 

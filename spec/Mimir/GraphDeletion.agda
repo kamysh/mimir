@@ -7,7 +7,8 @@ module Mimir.GraphDeletion where
 open import Data.Bool using (Bool; true; false)
 open import Data.List using (List; []; _∷_; map; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Data.Nat using (ℕ; suc)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Relation.Nullary using (does)
 open import Mimir.Text using (Text)
 import Mimir.ApplicationStore as Store
@@ -16,13 +17,14 @@ import Mimir.GraphRecords as Records
 import Mimir.RetrievalRanking as Ranking
 import Mimir.ReviewEdges as Edges
 import Mimir.LearningRecompute as Recompute
+import Mimir.PosteriorComputation as Posterior
 import Mimir.LearningStore as Learning
 import Mimir.ReviewPreparationPublication as Publication
 import Mimir.LearningTransaction as Transaction
 
 data Kind : Set where belief patternNode : Kind
 
-exists : Kind → ℕ → Store.World → Bool
+exists : Kind → UUID → Store.World → Bool
 exists belief id state with Ranking.lookup id (Store.beliefs state)
 ... | nothing = false
 ... | just _ = true
@@ -30,16 +32,16 @@ exists patternNode id state with Records.getPattern id (Store.patterns (Store.no
 ... | nothing = false
 ... | just _ = true
 
-children : ℕ → Store.World → List ℕ
+children : UUID → Store.World → List UUID
 children id state = Ranking.unique (map Edges.Edge.to
-  (filterᵇ (λ e → does (id ≟ Edges.Edge.from e))
+  (filterᵇ (λ e → does (id ≟UUID Edges.Edge.from e))
     (Publication.World.edges (Learning.World.publication (Store.World.learning state)))))
 
 data Failure : Set where
   storageFailure : Text → Failure
   foreignTarget invalidNumericInput invalidNumericWrite : Failure
 
-module Operation (database : ℕ) where
+module Operation (database : ℕ) (calculation : Posterior.Calculation) where
   module T = Transaction.Over Store.World Bool Failure database 671942183
 
   finish : Store.World → Recompute.Result → T.Decision
@@ -48,12 +50,12 @@ module Operation (database : ℕ) where
   finish state Recompute.invalidNumericInput = T.reject invalidNumericInput
   finish state Recompute.invalidNumericWrite = T.reject invalidNumericWrite
 
-  delete : Kind → ℕ → Store.World → T.Decision
+  delete : Kind → UUID → Store.World → T.Decision
   delete kind id state with exists kind id state
   ... | false = T.replay false
   ... | true with kind
   ...   | patternNode = T.replace (Store.removeNodes (id ∷ []) true state) true
-  ...   | belief = finish proposed (Recompute.runGlobal (children id state)
+  ...   | belief = finish proposed (Recompute.runGlobal calculation (children id state)
     (Store.nodes proposed) (Publication.World.edges pub)
     (Recompute.activeReviewsScoped nothing (Learning.identities learn) (Publication.World.ledger pub))
     (Store.groundingMasses proposed))
@@ -62,10 +64,31 @@ module Operation (database : ℕ) where
     learn = Store.World.learning proposed
     pub = Learning.World.publication learn
 
-  module Run (kind : Kind) (id : ℕ) where
+  module Run (kind : Kind) (id : UUID) where
     module P = T.Plan (delete kind id)
     module Laws = T.Laws (delete kind id)
     start = P.start
 
     lockBeforeMutation : T.Scoped T.outside start
     lockBeforeMutation = Laws.startScoped
+
+  -- A sweep prepares every deletion privately, then publishes once. A
+  -- rejection anywhere discards the whole proposed batch.
+  module Batch where
+    module S = Transaction.Over Store.World ℕ Failure database 671942183
+
+    counted : S.Decision → S.Decision
+    counted (S.reject failure) = S.reject failure
+    counted (S.replay count) = S.replay (suc count)
+    counted (S.replace proposed count) = S.replace proposed (suc count)
+
+    plan : List UUID → Store.World → S.Decision
+    plan [] before = S.replace before 0
+    plan (id ∷ ids) before with delete belief id before
+    ... | T.reject failure = S.reject failure
+    ... | T.replay false = plan ids before
+    ... | T.replay true = counted (plan ids before)
+    ... | T.replace proposed false = plan ids proposed
+    ... | T.replace proposed true = counted (plan ids proposed)
+
+    module Certified (ids : List UUID) = S.RecoveryPlan (plan ids)

@@ -7,7 +7,8 @@ module Mimir.ReviewAdmission where
 open import Data.List using (List; []; _∷_; map; _++_; concatMap)
 open import Data.List.Relation.Unary.All using (All)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Integer using (+_)
 import Data.Integer.Properties as Integer
 open import Data.Product using (_×_; _,_)
@@ -24,12 +25,12 @@ import Mimir.ReviewResolution as Resolution
 import Mimir.LearningTargets as Targets
 open import Mimir.RecordDecoding using (_>>=_)
 
-assessmentIDs : Assessment → List ℕ
+assessmentIDs : Assessment → List UUID
 assessmentIDs a with Assessment.target a
 ... | existing identity = identity ∷ []
 ... | candidate name = []
 
-targetIDs : Review → List ℕ
+targetIDs : Review → List UUID
 targetIDs r = map Feedback.beliefID (Review.feedbacks r) ++ Review.superseded r ++
   concatMap (λ l → Link.from l ∷ Link.to l ∷ []) (Review.links r) ++
   concatMap assessmentIDs (Review.assessments r)
@@ -76,7 +77,7 @@ Pinned env requested = Review.experienceID requested ≡ Experience.identity (En
 checkPin : ∀ env requested → Checked (Pinned env requested)
 checkPin env requested = combine
   (check (fault [] wrongIdentity "review belongs to another experience")
-    (Review.experienceID requested ≟ Experience.identity (Environment.experience env)))
+    (Review.experienceID requested ≟UUID Experience.identity (Environment.experience env)))
   (check (fault [] staleRevision "experience has changed")
     (Review.experienceRevision requested Integer.≟ (+ Environment.sourceRevision env)))
 

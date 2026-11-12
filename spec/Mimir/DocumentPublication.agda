@@ -48,6 +48,14 @@ module Publication (dimension : ℕ) where
     ; chunkVectors = map (λ { (id , v) → id , toList v }) (D.vectorView entries) ++ Store.World.chunkVectors cleared }
     where cleared = clear path before
 
+  indexingPreservesBeliefs : ∀ path entries before →
+    Store.nodes (publish path entries before) ≡ Store.nodes before
+  indexingPreservesBeliefs path entries before = refl
+
+  clearingPreservesBeliefs : ∀ path before →
+    Store.nodes (clear path before) ≡ Store.nodes before
+  clearingPreservesBeliefs path before = refl
+
   data Plan : Set where
     invalidEmbeddingShape : Plan
     invalidIdentity : Validation.Fault → Plan
@@ -66,8 +74,7 @@ module Publication (dimension : ℕ) where
   newPairIDsAgree : ∀ entries → map Documents.Chunk.identity (D.graphView entries) ≡ map proj₁ (D.vectorView entries)
   newPairIDsAgree = D.projectionsAgree
 
-  -- Atomic publication is the approved database contract, not an assertion that
-  -- a lost commit acknowledgement proves rollback or that SQL is already correct.
+  -- Atomic publication is the database contract; a completed commit is reported.
   Published : Store.World → Store.World → Database.Receipt → Store.World → Set
   Published = Database.Atomic
 

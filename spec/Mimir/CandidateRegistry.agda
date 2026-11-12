@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
--- Stable candidate reservations. Random identity generation is an input;
--- neither uniqueness nor successful allocation is postulated.
+-- Stable candidate reservations. PostgreSQL supplies record UUIDs; successful
+-- allocation is observed rather than assumed.
 module Mimir.CandidateRegistry where
 
 open import Data.Bool using (Bool; true; false)
@@ -8,7 +8,7 @@ open import Data.Empty using (⊥-elim)
 open import Data.List using (List; []; _∷_; _++_; map)
 open import Data.List.Relation.Unary.Any using (Any; there)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Nullary using (yes; no)
@@ -22,18 +22,18 @@ open import Mimir.LearningCandidates using (Candidate; candidateKey; candidateEq
 record Entry : Set where
   constructor entry
   field
-    experienceID : ℕ
+    experienceID : UUID
     declaration : Candidate
-    nodeID : ℕ
+    nodeID : UUID
     retired : Bool
 
-Key = ℕ × Text
+Key = UUID × Text
 Registry = List Entry
 
 entryKey : Entry → Key
 entryKey e = Entry.experienceID e , candidateKey (Entry.declaration e)
 
-keyEqual = pairEqual _≟_ _≟Text_
+keyEqual = pairEqual _≟UUID_ _≟Text_
 
 lookup : Key → Registry → Maybe Entry
 lookup name [] = nothing
@@ -41,7 +41,7 @@ lookup name (e ∷ rest) with keyEqual name (entryKey e)
 ... | yes _ = just e
 ... | no _ = lookup name rest
 
-module IDs = Equality ℕ _≟_
+module IDs = Equality UUID _≟UUID_
 
 ExistingValid : Candidate → Entry → Set
 ExistingValid c e = c ≡ Entry.declaration e × Entry.retired e ≡ false
@@ -52,10 +52,10 @@ checkExisting c e = combine
     (candidateEqual c (Entry.declaration e)))
   (check (fault [] wrongIdentity "candidate identity was deleted") (false? (Entry.retired e)))
 
-data Plan (registry : Registry) (occupied : List ℕ) (experience : ℕ) (c : Candidate) : Set where
+data Plan (registry : Registry) (occupied : List UUID) (experience : UUID) (c : Candidate) : Set where
   reuse : (e : Entry) → lookup (experience , candidateKey c) registry ≡ just e → ExistingValid c e →
     Plan registry occupied experience c
-  create : (fresh : ℕ) → lookup (experience , candidateKey c) registry ≡ nothing →
+  create : (fresh : UUID) → lookup (experience , candidateKey c) registry ≡ nothing →
     IDs.Absent fresh (occupied ++ map Entry.nodeID registry) → Plan registry occupied experience c
 
 reserve : ∀ registry occupied experience c fresh → Fault ⊎ Plan registry occupied experience c
@@ -67,7 +67,7 @@ reserve registry occupied experience c fresh | nothing with IDs.absent? fresh (o
 ... | no collision = inj₁ (fault [] wrongIdentity "generated candidate identity is already occupied")
 ... | yes absent = inj₂ (create fresh found absent)
 
-assigned : ∀ {registry occupied experience c} → Plan registry occupied experience c → ℕ
+assigned : ∀ {registry occupied experience c} → Plan registry occupied experience c → UUID
 assigned (reuse e found valid) = Entry.nodeID e
 assigned (create fresh found absent) = fresh
 

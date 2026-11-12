@@ -3,7 +3,7 @@ module Mimir.ConfigurationInput where
 
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ)
+open import Data.Nat using (ℕ; zero; suc)
 open import Data.Product using (_×_; _,_)
 open import Data.String using (String; fromList; _≟_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
@@ -39,7 +39,7 @@ backends : List (String × Backend)
 backends = ("voyage" , voyage) ∷ ("openai" , openai) ∷ ("local" , local) ∷ []
 
 data Error : Set where
-  unknownKey invalidMode invalidBackend : Error
+  unknownKey invalidMode invalidBackend zeroBatchSize : Error
   invalidPort invalidBatchSize : U.Error → Error
 
 module Read (parser : U.Parser) (sizeMaximum : ℕ) where
@@ -67,7 +67,9 @@ module Read (parser : U.Parser) (sizeMaximum : ℕ) where
   decode apiKeyKey value = inj₂ (apiKey value)
   decode batchKey value with U.parse parser sizeMaximum value
   ... | inj₁ error = inj₁ (invalidBatchSize error)
-  ... | inj₂ parsed = inj₂ (batchSize parsed)
+  ... | inj₂ parsed with U.UInt.number parsed
+  ...   | zero = inj₁ zeroBatchSize
+  ...   | suc count = inj₂ (batchSize parsed)
   decode cacheKey value = inj₂ (cacheDirectory value)
 
   pair : String × Text → Error ⊎ Setting

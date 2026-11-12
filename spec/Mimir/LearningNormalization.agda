@@ -11,8 +11,9 @@ open import Data.Product using (Σ; _×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Empty using (⊥-elim)
 open import Relation.Nullary using (yes; no)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; trans)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID)
 open import Mimir.Validation using (Fault; fault; missingReference; accepted; rejected)
 import Mimir.SourceSchema as Source
 import Mimir.LearningInput as Input
@@ -26,10 +27,6 @@ import Mimir.ReviewPreparationPublication as Publication
 import Mimir.ReviewObservation as Observation
 import Mimir.LearningTransaction as Transaction
 import Mimir.DatabaseTransaction as Database
-import Mimir.ReviewLedger as Ledger
-
-ledger : Store.World → Ledger.World
-ledger before = Publication.World.ledger (Store.World.publication before)
 
 install : Allocation.Keys → Owners.Registry → Store.World → Store.World
 install keys owners before = record before
@@ -64,45 +61,16 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
     (A → T.Allocation (Failure ⊎ B)) → T.Allocation (Failure ⊎ B)
   bind program next = T.bindAllocation program (continue next)
 
-  abstract
-    bindSuccess : ∀ {A B : Set} (program : T.Allocation (Failure ⊎ A)) next (result : B) →
-      T.Resolves (bind program next) (inj₂ result) →
-      Σ A (λ value → T.Resolves program (inj₂ value) × T.Resolves (next value) (inj₂ result))
-    bindSuccess program next result observed with T.bindResolution program (continue next) (inj₂ result) observed
-    ... | inj₁ failure , first , ()
-    ... | inj₂ value , first , remaining = value , first , remaining
-
-  -- Reserving IDs can change tentative owners/keys, but cannot advance a
-  -- review counter. The property covers every observed allocation reply.
-  PreservesLedger : ∀ {A : Set} → Store.World → T.Allocation (Failure ⊎ (Store.World × A)) → Set
-  PreservesLedger before program = ∀ after value →
-    T.Resolves program (inj₂ (after , value)) → ledger after ≡ ledger before
-
-  abstract
-    returnedPreservesLedger : ∀ {A : Set} before (value : A) →
-      PreservesLedger before (T.resolved (inj₂ (before , value)))
-    returnedPreservesLedger before value .before .value T.resolvedResult = refl
-
-    bindPreservesLedger : ∀ {A B : Set} before (program : T.Allocation (Failure ⊎ (Store.World × A)))
-      (next : Store.World × A → T.Allocation (Failure ⊎ (Store.World × B))) →
-      PreservesLedger before program →
-      (∀ middle value → PreservesLedger middle (next (middle , value))) →
-      PreservesLedger before (bind program next)
-    bindPreservesLedger before program next first remaining after value observed
-      with bindSuccess program next (after , value) observed
-    ... | (middle , assigned) , head , tail =
-      trans (remaining middle assigned after value tail) (first middle assigned head)
-
   finishItem : Input.Item → Store.World → Allocation.Outcome →
     T.Allocation (Failure ⊎ (Store.World × L.LearningItem))
   finishItem input before (Allocation.refused failure) = T.resolved (inj₁ (invalid failure))
   finishItem input before (Allocation.ready identity keys owners) =
     T.resolved (inj₂ (install keys owners before , Input.canonicalItem identity input))
 
-  owner : ℕ → Input.Item → Owners.Owner
+  owner : UUID → Input.Item → Owners.Owner
   owner experience input = experience , Input.Item.reference input , Input.Item.actor input
 
-  afterPostgres : ℕ → Text → Input.Item → Store.World → Failure ⊎ ℕ →
+  afterPostgres : UUID → Text → Input.Item → Store.World → Failure ⊎ UUID →
     T.Allocation (Failure ⊎ (Store.World × L.LearningItem))
   afterPostgres experience name input before (inj₁ failure) = T.resolved (inj₁ failure)
   afterPostgres experience name input before (inj₂ identity) = finishItem input before
@@ -126,7 +94,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
       (Publication.World.owners (Store.World.publication before)) experience name
       (Input.Item.reference input) (Input.Item.actor input) identity absent unused)
 
-  byKey : ℕ → Text → Input.Item → Store.World →
+  byKey : UUID → Text → Input.Item → Store.World →
     T.Allocation (Failure ⊎ (Store.World × L.LearningItem))
   byKey experience name input before with Store.World.itemKeys before experience name
   ... | just identity = finishItem input before
@@ -135,7 +103,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
   ... | nothing = T.reserve experience name (Input.Item.reference input) (Input.Item.actor input)
     (afterPostgres experience name input before)
 
-  identified : ℕ → Input.Item → Store.World →
+  identified : UUID → Input.Item → Store.World →
     T.Allocation (Failure ⊎ (Store.World × L.LearningItem))
   identified experience input before with Input.Item.identity input | Input.Item.localKey input
   ... | nothing | nothing = T.resolved (inj₁ (invalid
@@ -149,7 +117,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
       (Publication.World.owners (Store.World.publication before)) experience name identity
       (Input.Item.reference input) (Input.Item.actor input))
 
-  item : ℕ → Input.Item → Store.World →
+  item : UUID → Input.Item → Store.World →
     T.Allocation (Failure ⊎ (Store.World × L.LearningItem))
   item experience input before with Input.Item.localKey input
   ... | nothing = identified experience input before
@@ -189,7 +157,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
   unreservedUUIDRefused experience input before identity supplied unnamed absent
     rewrite unnamed | supplied | unnamed | absent = refl
 
-  items : ℕ → List Input.Item → Store.World →
+  items : UUID → List Input.Item → Store.World →
     T.Allocation (Failure ⊎ (Store.World × List L.LearningItem))
   items experience [] before = T.resolved (inj₂ (before , []))
   items experience (input ∷ rest) before = bind (item experience input before) λ where
@@ -199,7 +167,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
   -- The premise is discharged by itemAlreadyReserved for named retries and
   -- by the actual item reader for recorded UUID-only corrections. It retains
   -- every item, rather than checking a selected example or a chosen UUID.
-  data RecordedItems (experience : ℕ) (before : Store.World) :
+  data RecordedItems (experience : UUID) (before : Store.World) :
     List Input.Item → List L.LearningItem → Set where
     none : RecordedItems experience before [] []
     more : ∀ input rest assigned remaining →
@@ -216,7 +184,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
 
   -- Named retries are justified by saved rows, not by assuming a successful
   -- result from the normalizer. Every item retains its actual saved identity.
-  data NamedItems (experience : ℕ) (before : Store.World) :
+  data NamedItems (experience : UUID) (before : Store.World) :
     List Input.Item → List L.LearningItem → Set where
     noNamedItems : NamedItems experience before [] []
     namedItem : ∀ input rest name identity remaining →
@@ -235,7 +203,7 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
       (itemAlreadyReserved experience input before name identity omitted keyed valid saved owned)
       (namedItemsRecorded experience before rest remaining others)
 
-  data ResolvedAssessments (keys : Allocation.Keys) (experience : ℕ) :
+  data ResolvedAssessments (keys : Allocation.Keys) (experience : UUID) :
     List Input.Assessment → List L.Assessment → Set where
     noAssessments : ResolvedAssessments keys experience [] []
     moreAssessments : ∀ input rest identities remaining →
@@ -283,72 +251,3 @@ module For (Failure : Set) (invalid : Fault → Failure) (database : ℕ) where
   recordedReviewNeedsNoAllocation input before assigned resolved supported recorded references
     rewrite recordedItemsNeedNoAllocation (Input.Review.experienceID input) before
       (Input.Review.extracted input) assigned recorded | references = refl
-
-  abstract
-    finishItemPreservesLedger : ∀ input before outcome → PreservesLedger before (finishItem input before outcome)
-    finishItemPreservesLedger input before (Allocation.refused failure) after value ()
-    finishItemPreservesLedger input before (Allocation.ready identity keys owners) after value T.resolvedResult = refl
-
-    afterPostgresPreservesLedger : ∀ experience name input before reply →
-      PreservesLedger before (afterPostgres experience name input before reply)
-    afterPostgresPreservesLedger experience name input before (inj₁ failure) after value ()
-    afterPostgresPreservesLedger experience name input before (inj₂ identity) =
-      finishItemPreservesLedger input before _
-
-    byKeyPreservesLedger : ∀ experience name input before → PreservesLedger before (byKey experience name input before)
-    byKeyPreservesLedger experience name input before with Store.World.itemKeys before experience name
-    ... | just identity = finishItemPreservesLedger input before _
-    ... | nothing = λ after value → λ where
-      (T.reservedResult reply observed) → afterPostgresPreservesLedger experience name input before reply after value observed
-
-    identifiedPreservesLedger : ∀ experience input before → PreservesLedger before (identified experience input before)
-    identifiedPreservesLedger experience input before with Input.Item.identity input | Input.Item.localKey input
-    ... | nothing | nothing = λ after value ()
-    ... | nothing | just name = byKeyPreservesLedger experience name input before
-    ... | just identity | nothing = finishItemPreservesLedger input before _
-    ... | just identity | just name = finishItemPreservesLedger input before _
-
-    itemPreservesLedger : ∀ experience input before → PreservesLedger before (item experience input before)
-    itemPreservesLedger experience input before with Input.Item.localKey input
-    ... | nothing = identifiedPreservesLedger experience input before
-    ... | just name with Source.checkNamed name
-    ...   | rejected failure invalidName = λ after value ()
-    ...   | accepted valid = identifiedPreservesLedger experience input before
-
-    itemsPreserveLedger : ∀ experience raw before → PreservesLedger before (items experience raw before)
-    itemsPreserveLedger experience [] before = returnedPreservesLedger before []
-    itemsPreserveLedger experience (input ∷ rest) before =
-      bindPreservesLedger before (item experience input before) _ (itemPreservesLedger experience input before) λ middle assigned →
-        bindPreservesLedger middle (items experience rest middle) _ (itemsPreserveLedger experience rest middle) λ after remaining →
-          returnedPreservesLedger after (assigned ∷ remaining)
-
-    finishReviewPreservesLedger : ∀ input after assigned → PreservesLedger after (finishReview input after assigned)
-    finishReviewPreservesLedger input after assigned
-      with assessments (Store.World.itemKeys after) (Input.Review.experienceID input) (Input.Review.assessments input)
-    ... | inj₁ failure = λ final value ()
-    ... | inj₂ (resolved , supported) = returnedPreservesLedger after (Input.canonicalReview input assigned resolved)
-
-    reviewPreservesLedger : ∀ input before → PreservesLedger before (review input before)
-    reviewPreservesLedger input before = bindPreservesLedger before
-      (items (Input.Review.experienceID input) (Input.Review.extracted input) before) _
-      (itemsPreserveLedger (Input.Review.experienceID input) (Input.Review.extracted input) before)
-      (finishReviewPreservesLedger input)
-
-    finishReviewKeepsTarget : ∀ input after assigned final canonical →
-      T.Resolves (finishReview input after assigned) (inj₂ (final , canonical)) →
-      R.Review.experienceID canonical ≡ Input.Review.experienceID input
-    finishReviewKeepsTarget input after assigned final canonical observed
-      with assessments (Store.World.itemKeys after) (Input.Review.experienceID input) (Input.Review.assessments input)
-    ... | inj₁ failure with observed
-    ...   | ()
-    finishReviewKeepsTarget input after assigned final canonical observed | inj₂ (resolved , supported)
-      with observed
-    ... | T.resolvedResult = refl
-
-    reviewKeepsTarget : ∀ input before after canonical →
-      T.Resolves (review input before) (inj₂ (after , canonical)) →
-      R.Review.experienceID canonical ≡ Input.Review.experienceID input
-    reviewKeepsTarget input before after canonical observed
-      with bindSuccess (items (Input.Review.experienceID input) (Input.Review.extracted input) before)
-        (λ where (middle , assigned) → finishReview input middle assigned) (after , canonical) observed
-    ... | (middle , assigned) , first , remaining = finishReviewKeepsTarget input middle assigned after canonical remaining

@@ -7,6 +7,7 @@ open import Data.List using (List; []; _∷_; length)
 open import Data.List.Membership.Propositional using (_∈_)
 open import Data.List.Relation.Unary.Any using (there)
 open import Data.Nat using (ℕ; suc; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (_×_; _,_)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.Definitions using (DecidableEquality)
@@ -27,7 +28,7 @@ module Over (Payload Contribution : Set) (equal : DecidableEquality Payload)
     constructor version
     field source revision : ℕ; submitted : Payload; effects : Contribution
 
-  module Histories = Contracts.Ownership (List Entry)
+  module Histories = Contracts.OwnershipWith UUID (List Entry) _≟UUID_
 
   -- Every retained version occurs at its actual revision, without gaps or
   -- duplicates. This is stronger than equating the history length to a counter.
@@ -42,25 +43,25 @@ module Over (Payload Contribution : Set) (equal : DecidableEquality Payload)
 
   record World : Set where
     constructor world
-    field active : L.World; histories : ℕ → List Entry
+    field active : L.World; histories : UUID → List Entry
   open World
 
   Consistent : World → Set
   Consistent before = L.Consistent (active before) ×
     (∀ identity → Ordered (R.Cell.review (L.World.cells (active before) identity)) (histories before identity))
 
-  SameAt : World → World → ℕ → Set
+  SameAt : World → World → UUID → Set
   SameAt first second identity = L.SameAt (active first) (active second) identity ×
     histories first identity ≡ histories second identity
 
-  current : World → ℕ → R.Cell
+  current : World → UUID → R.Cell
   current before identity = L.World.cells (active before) identity
 
-  next : ℕ → World → Payload → Entry
+  next : UUID → World → Payload → Entry
   next identity before payload = version (R.Cell.current (current before identity))
     (suc (R.Cell.review (current before identity))) payload (materialize payload)
 
-  fresh : ℕ → World → Payload → World
+  fresh : UUID → World → Payload → World
   fresh identity before payload = world
     (L.install identity (R.commit (current before identity) payload) (active before))
     (Histories.write identity (next identity before payload ∷ histories before identity) (histories before))
@@ -76,7 +77,7 @@ module Over (Payload Contribution : Set) (equal : DecidableEquality Payload)
     (C.Request.owner submitted) (C.Request.source submitted) (C.Request.expected submitted)
     (C.Request.payload submitted) (C.Request.validTargets submitted)
 
-  proposed : ℕ → World → C.Request → World
+  proposed : UUID → World → C.Request → World
   proposed identity before submitted = apply identity before (C.Request.payload submitted) (classify identity before submitted)
 
   historyInstalled : ∀ identity before payload → histories (fresh identity before payload) identity ≡
@@ -98,7 +99,7 @@ module Over (Payload Contribution : Set) (equal : DecidableEquality Payload)
     where
     counts : ∀ queried → Ordered (R.Cell.review (current (fresh identity before payload) queried))
       (histories (fresh identity before payload) queried)
-    counts queried with queried ≟ identity
+    counts queried with queried ≟UUID identity
     ... | yes refl = newest refl (historyConsistent queried)
     ... | no distinct = historyConsistent queried
 
@@ -134,7 +135,7 @@ module Over (Payload Contribution : Set) (equal : DecidableEquality Payload)
      (L.exactRetryPlan identity (active before) original payload valid
       committed))
 
-  correction : ℕ → World → World
+  correction : UUID → World → World
   correction identity before = world (L.correction identity (active before)) (histories before)
 
   correctionPreservesHistory : ∀ identity before queried →
@@ -147,13 +148,13 @@ module Over (Payload Contribution : Set) (equal : DecidableEquality Payload)
     where
     counts : ∀ queried → Ordered (R.Cell.review (current (correction identity before) queried))
       (histories before queried)
-    counts queried with queried ≟ identity
+    counts queried with queried ≟UUID identity
     ... | yes refl = historyConsistent queried
     ... | no distinct = historyConsistent queried
 
   -- Apply a completed native transaction only through its whole-write-set
   -- obligation. No partial publication of history versus active evidence is
-  -- admitted by this boundary, including when the acknowledgement is lost.
+  -- admitted by this boundary.
   module Native (database : Database.Contract World) where
     module D = Database.Contract database
 
