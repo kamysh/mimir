@@ -173,7 +173,7 @@ Existing required laws remain authoritative where current Rust differs. The docu
 
 ## Verification
 
-`python scripts/formal/check-coverage.py` verifies the exact tool/CLI inventory, referenced modules, complete root import closure, safety markers and all ten SQL body bindings. This structural audit does not replace Agda. The following timing and verification receipt describe the original nine-migration audit.
+`bash scripts/formal/check-coverage.sh` verifies the exact tool/CLI inventory, referenced modules, complete root import closure, safety markers and all ten SQL body bindings. This structural audit does not replace Agda. The following timing and verification receipt describe the original nine-migration audit.
 
 The persistent interactive root check passed with no errors or goals. The final batch Agda check passed with exit 0 in 53.657 seconds. Naming/deprecation warnings remain; there were no errors. Complete log: /tmp/mimir-formal-final-aggregate-4aAlpuul.log (exit status in .exit). This check reused completed interfaces; it is not a cold-rebuild claim.
 

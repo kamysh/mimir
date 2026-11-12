@@ -1,4 +1,4 @@
-//! Exercised by tests/database-connections.py against a disposable server.
+//! Exercised by tests/database-connections.sh against a disposable server.
 use anyhow::Result;
 use mimir_core::{config::Config, db};
 

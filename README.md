@@ -562,7 +562,7 @@ learning infrastructure.
 Run the maintained release checks with Docker available:
 
 ```sh
-nix develop --command python3 scripts/test-isolated.py
+nix develop --command bash scripts/test-isolated.sh
 ```
 
 The runner creates a private home, configuration, credentials, logs, state and
