@@ -1,117 +1,100 @@
 {-# OPTIONS --safe #-}
--- Insertion, optional embedding and grounding are ordered operations, not one
--- transaction. A later error cannot retract a previously acknowledged write.
--- Reembedding skips the initial snapshot of existing vectors and never grounds.
+-- A belief is published only after an embedding and a supporting indexed
+-- document passage have been prepared. PostgreSQL creates the stored identity
+-- as part of the publication and returns the resulting belief.
 module Mimir.BeliefEmbedding where
 
 open import Data.Bool using (Bool; true; false)
+open import Data.Float.Base using (Float)
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; suc)
+open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
-open import Data.Unit using (⊤; tt)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl)
+open import Data.String using (toList)
 open import Mimir.Text using (Text)
 import Mimir.CandidateGraph as G
-import Mimir.ApplicationStore as Store
+import Mimir.GraphNumerics as Numbers
+import Mimir.LearningCandidates as Candidates
 import Mimir.IndependentProvenance as Origin
-import Mimir.GroundingProtocol as Grounding
-import Mimir.RetrievalRanking as Ranking
-import Mimir.RetrievalProtocol as Retrieval
+import Mimir.DocumentStore as Documents
 import Mimir.Effects as Effects
 
+record Draft : Set where
+  constructor draft
+  field
+    content : Text
+    probability confidence : Float
+    project : Maybe Text
+    memory : Candidates.Memory
+    origin : Maybe Origin.Provenance
+
+-- The preparation boundary supplies an embedding and a passage from an
+-- indexed document. It does not create the belief or its database identity.
+record Prepared : Set where
+  constructor prepared
+  field
+    firstComponent : Float
+    remainingComponents : List Float
+    supportingPassage : Documents.Chunk
+
+vector : Prepared → List Float
+vector material = Prepared.firstComponent material ∷ Prepared.remainingComponents material
+
+data Preparation : Set where
+  ready : Prepared → Preparation
+  askUser : Text → Text → Preparation -- explanation and suggested action
+
+data Failure : Set where
+  needsInput : Text → Text → Failure
+  publicationFailed : Text → Failure
+
 data Effect : Set where
-  insert : G.BeliefValues → Maybe Origin.Provenance → Effect
-  embed : Text → Effect
-  upsert : ℕ → Store.Vector → Effect
-  grounding : Grounding.Effect → Effect
-  listBeliefs embeddedIDs : Effect
-  progress : G.BeliefValues → Effect
+  prepare : Draft → Effect
+  publish : Draft → Prepared → Effect
 
 Reply : Effect → Set
-Reply (insert b origin) = Text ⊎ ⊤
-Reply (embed content) = Text ⊎ List Store.Vector
-Reply (upsert id vector) = Text ⊎ ⊤
-Reply (grounding effect) = Grounding.Reply effect
-Reply listBeliefs = Text ⊎ List G.BeliefValues
-Reply embeddedIDs = Text ⊎ List ℕ
-Reply (progress b) = Text ⊎ ⊤
+Reply (prepare _) = Preparation
+Reply (publish _ _) = Text ⊎ G.BeliefValues
 
 module E = Effects.Protocol Effect Reply
 open E
 
-data Failure : Set where
-  nativeFailure : Text → Failure
-  groundingFailure : Grounding.Result → Failure
+Result = Failure ⊎ G.BeliefValues
 
-Result = Failure ⊎ ⊤
+admit : Bool → Draft → Maybe Failure
+admit false input = just (needsInput
+  (toList "An embedding is required before the belief can be saved.")
+  (toList "Configure an embedding provider, then retry."))
+admit true input with Numbers.probability (Draft.probability input) | Numbers.probability (Draft.confidence input)
+... | false | _ = just (needsInput
+  (toList "The belief probability must be between 0 and 1.")
+  (toList "Choose a probability between 0 and 1, then retry."))
+... | true | false = just (needsInput
+  (toList "The belief confidence must be between 0 and 1.")
+  (toList "Choose a confidence between 0 and 1, then retry."))
+... | true | true = nothing
 
-liftGrounding : Grounding.E.Script Grounding.Result → Script Grounding.Result
-liftGrounding (Grounding.E.done result) = done result
-liftGrounding (Grounding.E.ask effect next) = ask (grounding effect) (λ reply → liftGrounding (next reply))
+start : Bool → Draft → Script Result
+start enabled input with admit enabled input
+... | just failure = done (inj₁ failure)
+... | nothing = ask (prepare input) λ where
+  (askUser reason guidance) → done (inj₁ (needsInput reason guidance))
+  (ready material) → ask (publish input material) λ where
+    (inj₁ error) → done (inj₁ (publicationFailed error))
+    (inj₂ belief) → done (inj₂ belief)
 
-finishGrounding : Grounding.Result → Script Result
-finishGrounding Grounding.success = done (inj₂ tt)
-finishGrounding result = done (inj₁ (groundingFailure result))
+-- A request for a user decision has not issued the publication operation.
+data NoPublication : List Event → Set where
+  noEffects : NoPublication []
+  onlyPreparation : ∀ input reason guidance →
+    NoPublication ((prepare input , askUser reason guidance) ∷ [])
 
-afterUpsert : Bool → G.BeliefValues → Store.Vector → Text ⊎ ⊤ → Script Result
-afterUpsert ground b vector (inj₁ error) = done (inj₁ (nativeFailure error))
-afterUpsert false b vector (inj₂ tt) = done (inj₂ tt)
-afterUpsert true b vector (inj₂ tt) = liftGrounding (Grounding.groundBelief b vector) >>= finishGrounding
-
-afterEmbed : Bool → G.BeliefValues → Text ⊎ List Store.Vector → Script Result
-afterEmbed ground b (inj₁ error) = done (inj₁ (nativeFailure error))
-afterEmbed ground b (inj₂ vectors) with Retrieval.last vectors
-... | nothing = done (inj₂ tt)
-... | just vector = ask (upsert (G.BeliefValues.identity b) vector) (afterUpsert ground b vector)
-
-embedBelief : Bool → Bool → G.BeliefValues → Script Result
-embedBelief false ground b = done (inj₂ tt)
-embedBelief true ground b = ask (embed (G.BeliefValues.content b)) (afterEmbed ground b)
-
-start : Bool → G.BeliefValues → Maybe Origin.Provenance → Script Result
-start enabled b origin = ask (insert b origin) (λ
-  { (inj₁ error) → done (inj₁ (nativeFailure error))
-  ; (inj₂ tt) → embedBelief enabled true b })
-
-record Counts : Set where
-  constructor counts
-  field embedded skipped : ℕ
-
-data Backfill : Set where
-  disabled : Backfill
-  complete : Counts → Backfill
-  interrupted : Counts → Failure → Backfill
-
-mutual
-  backfill : List ℕ → List G.BeliefValues → Counts → Script Backfill
-  backfill ids [] count = done (complete count)
-  backfill ids (b ∷ rest) count with Ranking.member (G.BeliefValues.identity b) ids
-  ... | true = backfill ids rest (record count { skipped = suc (Counts.skipped count) })
-  ... | false = embedBelief true false b >>= afterBackfill ids b rest count
-
-  afterBackfill : List ℕ → G.BeliefValues → List G.BeliefValues → Counts → Result → Script Backfill
-  afterBackfill ids b rest count (inj₁ error) = done (interrupted count error)
-  afterBackfill ids b rest count (inj₂ tt) = ask (progress b) (λ
-    { (inj₁ error) → done (interrupted next (nativeFailure error))
-    ; (inj₂ tt) → backfill ids rest next })
-    where next = record count { embedded = suc (Counts.embedded count) }
-
-afterList : Text ⊎ List G.BeliefValues → Script Backfill
-afterList (inj₁ error) = done (interrupted (counts 0 0) (nativeFailure error))
-afterList (inj₂ []) = done (complete (counts 0 0))
-afterList (inj₂ beliefs@(_ ∷ _)) = ask embeddedIDs (λ
-  { (inj₁ error) → done (interrupted (counts 0 0) (nativeFailure error))
-  ; (inj₂ ids) → backfill ids beliefs (counts 0 0) })
-
-reembed : Bool → Script Backfill
-reembed false = done disabled
-reembed true = ask listBeliefs afterList
-
-disabledEmbeddingHasNoEffects : ∀ ground b → embedBelief false ground b ≡ done (inj₂ tt)
-disabledEmbeddingHasNoEffects ground b = refl
-
--- The count is acknowledged embed calls, not proof of vector creation. An
--- empty backend result is a successful no-op in the present service contract.
-emptyEmbeddingHasNoWrite : ∀ ground b → afterEmbed ground b (inj₂ []) ≡ done (inj₂ tt)
-emptyEmbeddingHasNoWrite ground b = refl
+needsInputDoesNotPublish : ∀ enabled input reason guidance events →
+  Runs (start enabled input) events (inj₁ (needsInput reason guidance)) → NoPublication events
+needsInputDoesNotPublish enabled input reason guidance events execution with admit enabled input
+... | just failure with execution
+...   | returned _ = noEffects
+needsInputDoesNotPublish enabled input reason guidance events execution | nothing with execution
+... | replied _ _ (askUser why next) (returned _) = onlyPreparation input why next
+... | replied _ _ (ready material) (replied _ _ (inj₁ error) ())
+... | replied _ _ (ready material) (replied _ _ (inj₂ belief) ())

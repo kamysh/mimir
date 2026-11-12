@@ -12,20 +12,21 @@ open import Data.Product using (_×_; _,_; proj₁; proj₂)
 open import Data.Empty using (⊥)
 open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Mimir.Validation
 open import Mimir.Collections using (module Equality)
 open import Mimir.ExperienceSchema using (Experience)
 import Mimir.ReviewObservation as Observation
 
-module IDs = Equality ℕ _≟_
+module IDs = Equality UUID _≟UUID_
 
-identity : Observation.Snapshot → ℕ
+identity : Observation.Snapshot → UUID
 identity s = Experience.identity (Observation.Snapshot.experience s)
 
 Pending : Observation.Snapshot → Set
 Pending s = Observation.Snapshot.reviewedRevision s < Observation.Snapshot.revision s
 
-Eligible : List ℕ → Observation.Snapshot → Set
+Eligible : List UUID → Observation.Snapshot → Set
 Eligible excluded s = Pending s × IDs.Absent (identity s) excluded
 
 checkEligible : ∀ excluded s → Checked (Eligible excluded s)
@@ -35,7 +36,7 @@ checkEligible excluded s = combine
   (check (fault Data.List.[] wrongIdentity "pending selection returned an excluded experience")
     (IDs.absent? (identity s) excluded))
 
-Valid : ℕ → Maybe Text → List ℕ → List Observation.Snapshot → Set
+Valid : Maybe ℕ → Maybe Text → List UUID → List Observation.Snapshot → Set
 Valid limit scope excluded batch = Observation.BatchValid limit scope batch × All (Eligible excluded) batch
 
 validate : ∀ limit scope excluded batch → Checked (Valid limit scope excluded batch)

@@ -1,7 +1,7 @@
 {-# OPTIONS --safe #-}
 -- One owned MCP client's ordered initialization/catalogue/capability exchange.
--- All requests advance its counter; the initialized
--- notification has no ID and consumes no counter value.
+-- Initialization and discovery use local random hexadecimal transport IDs;
+-- the initialized notification has no ID.
 module Mimir.JudgeHandshakeBinding where
 
 open import Data.List using (List; []; _∷_)
@@ -43,7 +43,7 @@ module Bound (conversion : Conversion.Contract) (diagnostics : Transport.Diagnos
   module Contract = H.Contract contract model
 
   decode : C.Outcome → Validation.Fault ⊎ V.Value
-  decode C.overflow = inj₁ (Validation.fault [] Validation.invalidNumber "MCP request ID overflow")
+  decode (C.idUnavailable detail) = inj₁ (Validation.problem [] Validation.missingReference detail)
   decode (C.response (R.transportFailure fault)) = inj₁ fault
   decode (C.response (R.syntaxFailure fault)) = inj₁ fault
   decode (C.response (R.protocolFailure _)) = inj₁ (Validation.fault [] Validation.malformedInput "invalid MCP response")

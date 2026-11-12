@@ -8,8 +8,7 @@ open import Data.Fin using (toℕ)
 open import Data.List using (List; []; _∷_; map)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
-open import Mimir.SemanticKey using (Key; natural; integer; text; real; fields)
+open import Mimir.SemanticKey using (Key; natural; uuid; integer; text; real; fields)
 open import Mimir.Binary64 using (Number; finite; nonfinite; FiniteNumber; value;
   Word; Sign; positive; negative)
 open import Mimir.NumericValidation using (Axis)
@@ -68,18 +67,18 @@ prediction p = fields (text (Prediction.quantity p) ∷ number (Prediction.point
   text (Prediction.horizon p) ∷ text (Prediction.recordedAt p) ∷ boolean (Prediction.inferred p) ∷ [])
 
 item : LearningItem → Key
-item i = fields (natural (LearningItem.identity i) ∷ optional text (LearningItem.localKey i) ∷ kind (LearningItem.kind i) ∷
+item i = fields (uuid (LearningItem.identity i) ∷ optional text (LearningItem.localKey i) ∷ kind (LearningItem.kind i) ∷
   text (LearningItem.reference i) ∷ text (LearningItem.actor i) ∷ text (LearningItem.statement i) ∷
   text (LearningItem.conditions i) ∷ many prediction (LearningItem.predictions i) ∷ [])
 
 target : Target → Key
-target (existing id) = natural id
+target (existing id) = uuid id
 target (candidate name) = text name
 
 assessment : Assessment → Key
 assessment a = fields (target (Assessment.target a) ∷ text (Assessment.scope a) ∷
   text (Assessment.rubric a) ∷ axis (Assessment.correctness a) ∷ axis (Assessment.usefulness a) ∷
-  many natural (Assessment.evidenceIndices a) ∷ many natural (Assessment.itemIDs a) ∷
+  many natural (Assessment.evidenceIndices a) ∷ many uuid (Assessment.itemIDs a) ∷
   text (Assessment.rationale a) ∷ [])
 
 outcome : Outcome → Key
@@ -88,10 +87,10 @@ outcome failure = natural 1
 outcome unknown = natural 2
 
 experience : Experience → Key
-experience e = fields (natural (Experience.identity e) ∷ text (Experience.project e) ∷
+experience e = fields (uuid (Experience.identity e) ∷ text (Experience.project e) ∷
   text (Experience.context e) ∷ text (Experience.action e) ∷ outcome (Experience.outcome e) ∷
   provenance (Experience.provenance e) ∷ many text (Experience.evidence e) ∷
-  many natural (Experience.beliefIDs e) ∷ optional natural (Experience.patternID e) ∷
+  many uuid (Experience.beliefIDs e) ∷ optional uuid (Experience.patternID e) ∷
   many item (Experience.items e) ∷ many source (Experience.sources e) ∷ [])
 
 memory : Memory → Key
@@ -110,10 +109,10 @@ verdict support = natural 0
 verdict defeat = natural 1
 
 feedback : Feedback → Key
-feedback f = fields (natural (Feedback.beliefID f) ∷ verdict (Feedback.verdict f) ∷ number (Feedback.weight f) ∷ [])
+feedback f = fields (uuid (Feedback.beliefID f) ∷ verdict (Feedback.verdict f) ∷ number (Feedback.weight f) ∷ [])
 
 link : Link → Key
-link l = fields (natural (Link.from l) ∷ natural (Link.to l) ∷
+link l = fields (uuid (Link.from l) ∷ uuid (Link.to l) ∷
   natural (relationCode (Link.relation l)) ∷ number (Link.weight l) ∷ [])
 
 candidateFeedback : CandidateFeedback → Key
@@ -132,15 +131,9 @@ coverage : Coverage → Key
 coverage c = fields (text (Coverage.reference c) ∷ status (Coverage.status c) ∷ text (Coverage.reason c) ∷ [])
 
 review : Review → Key
-review r = fields (natural (Review.experienceID r) ∷ integer (Review.experienceRevision r) ∷
+review r = fields (uuid (Review.experienceID r) ∷ integer (Review.experienceRevision r) ∷
   text (Review.reviewer r) ∷ text (Review.rationale r) ∷ many feedback (Review.feedbacks r) ∷
-  many link (Review.links r) ∷ many natural (Review.superseded r) ∷
+  many link (Review.links r) ∷ many uuid (Review.superseded r) ∷
   many candidateValue (Review.candidates r) ∷ many candidateFeedback (Review.candidateFeedbacks r) ∷
   many candidateLink (Review.candidateLinks r) ∷ many assessment (Review.assessments r) ∷
   many item (Review.extracted r) ∷ many coverage (Review.coverage r) ∷ [])
-
-numericComparisonIsSemantic : ∀ left right → value left ≡ value right → number (finite left) ≡ number (finite right)
-numericComparisonIsSemantic left right = cong real
-
-numericComparisonReflectsValue : ∀ left right → number (finite left) ≡ number (finite right) → value left ≡ value right
-numericComparisonReflectsValue left right = Mimir.SemanticKey.realFaithful (value left) (value right)

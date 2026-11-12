@@ -13,10 +13,12 @@ import Data.Rational.Properties as Rational
 open import Relation.Nullary using (Dec; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Mimir.SourceReview using (_≟Text_)
 
 data Key : Set where
   natural : ℕ → Key
+  uuid : UUID → Key
   integer : ℤ → Key
   text : Text → Key
   real : ℚ → Key
@@ -25,6 +27,9 @@ data Key : Set where
 mutual
   equal : (x y : Key) → Dec (x ≡ y)
   equal (natural x) (natural y) with x Nat.≟ y
+  ... | yes refl = yes refl
+  ... | no different = no (λ { refl → different refl })
+  equal (uuid x) (uuid y) with x ≟UUID y
   ... | yes refl = yes refl
   ... | no different = no (λ { refl → different refl })
   equal (integer x) (integer y) with x Int.≟ y
@@ -40,25 +45,35 @@ mutual
   ... | yes refl = yes refl
   ... | no different = no (λ { refl → different refl })
   equal (natural _) (integer _) = no (λ ())
+  equal (natural _) (uuid _) = no (λ ())
   equal (natural _) (text _) = no (λ ())
   equal (natural _) (real _) = no (λ ())
   equal (natural _) (fields _) = no (λ ())
   equal (integer _) (natural _) = no (λ ())
+  equal (integer _) (uuid _) = no (λ ())
   equal (integer _) (text _) = no (λ ())
   equal (integer _) (real _) = no (λ ())
   equal (integer _) (fields _) = no (λ ())
   equal (text _) (natural _) = no (λ ())
+  equal (text _) (uuid _) = no (λ ())
   equal (text _) (integer _) = no (λ ())
   equal (text _) (real _) = no (λ ())
   equal (text _) (fields _) = no (λ ())
   equal (real _) (natural _) = no (λ ())
+  equal (real _) (uuid _) = no (λ ())
   equal (real _) (integer _) = no (λ ())
   equal (real _) (text _) = no (λ ())
   equal (real _) (fields _) = no (λ ())
   equal (fields _) (natural _) = no (λ ())
+  equal (fields _) (uuid _) = no (λ ())
   equal (fields _) (integer _) = no (λ ())
   equal (fields _) (text _) = no (λ ())
   equal (fields _) (real _) = no (λ ())
+  equal (uuid _) (natural _) = no (λ ())
+  equal (uuid _) (integer _) = no (λ ())
+  equal (uuid _) (text _) = no (λ ())
+  equal (uuid _) (real _) = no (λ ())
+  equal (uuid _) (fields _) = no (λ ())
 
   listEqual : (xs ys : List Key) → Dec (xs ≡ ys)
   listEqual [] [] = yes refl
@@ -68,9 +83,3 @@ mutual
   ... | yes refl | yes refl = yes refl
   ... | no different | _ = no (λ { refl → different refl })
   ... | _ | no different = no (λ { refl → different refl })
-
-textFaithful : ∀ x y → text x ≡ text y → x ≡ y
-textFaithful x .x refl = refl
-
-realFaithful : ∀ x y → real x ≡ real y → x ≡ y
-realFaithful x .x refl = refl

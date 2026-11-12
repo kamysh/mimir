@@ -4,7 +4,7 @@
 -- behavior. Terminal alignment/float formatting is a standard formatter boundary.
 module Mimir.CLI where
 
-open import Data.Bool using (Bool; true; false; not; _∧_)
+open import Data.Bool using (Bool; true; false; not; _∧_; _∨_)
 open import Data.Float.Base using (Float; _<ᵇ_)
 open import Data.List using (List; []; _∷_; _++_; map; take; length)
 open import Data.Maybe using (Maybe; just; nothing)
@@ -16,6 +16,7 @@ open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text; trim)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 import Mimir.ConfigurationPath as Path
 import Mimir.PublicRequest as Public
 import Mimir.PublicEncoding as Encoding
@@ -38,24 +39,24 @@ data JudgeCommand : Set where
   diagnose : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   checkConfig : Maybe Path.Path → JudgeCommand
   run : Maybe Path.Path → Maybe Path.Path → JudgeCommand
-  watch : Maybe Path.Path → Maybe Path.Path → ℕ → ℕ → JudgeCommand
+  watch : Maybe Path.Path → Maybe Path.Path → JudgeCommand
   status : Maybe Path.Path → JudgeCommand
-  diagnostics : Maybe Path.Path → Bool → Maybe ℕ → JudgeCommand
+  diagnostics : Maybe Path.Path → Bool → Maybe UUID → JudgeCommand
 
 data HookCommand : Set where prompt pretooluse : HookCommand; stop : Maybe Text → HookCommand; setProject : Text → HookCommand
 
 data ServiceCommand : Set where
   stats : ServiceCommand
-  list patterns : Maybe Text → ℕ → ServiceCommand
-  query : Text → ℕ → Bool → Maybe Text → Maybe Candidates.Memory → ServiceCommand
+  list patterns : Maybe Text → Maybe ℕ → ServiceCommand
+  query : Text → Maybe ℕ → Bool → Maybe Text → Maybe Candidates.Memory → ServiceCommand
   evidenceAdd : Text → Text → Float → ServiceCommand -- chunk, belief, weight
   evidenceList deleteBelief deletePattern : Text → ServiceCommand
   forget : Text → ServiceCommand
   decay : Float → Maybe Text → ServiceCommand
   contradictions : Maybe Text → ServiceCommand
-  sweep : Float → Float → Maybe Text → ServiceCommand
+  sweep : Float → Maybe Text → ServiceCommand
   docLoad : Text → Maybe Text → ServiceCommand
-  docQuery : Text → Maybe Text → ℕ → ServiceCommand
+  docQuery : Text → Maybe Text → Maybe ℕ → ServiceCommand
   docClear : Text → ServiceCommand
   intervene : Text → Float → ServiceCommand
 
@@ -71,15 +72,6 @@ data Command : Set where
   hook : HookCommand → Command
   judge : JudgeCommand → Command
 
-record Defaults : Set where
-  field listLimit queryLimit documentLimit watchInterval watchFailures : ℕ
-        queryEvidence : Bool
-        decayFactor threshold graceHours evidenceWeight : Float
-
-defaults : Defaults
-defaults = record { listLimit = 0; queryLimit = 10; documentLimit = 5; watchInterval = 300; watchFailures = 3
-  ; queryEvidence = false; decayFactor = 0.99; threshold = 0.3; graceHours = 24.0; evidenceWeight = 1.0 }
-
 -- UUID arguments of these commands are parsed before configuration/database
 -- access. Evidence UUIDs are parsed after connection, as in the native command.
 validateBeforeConnect : ServiceCommand → Bool
@@ -92,7 +84,7 @@ request : Library.Contract → ServiceCommand → Validation.Fault ⊎ Public.Re
 request conversion stats = inj₂ (Public.read Read.stats)
 request conversion (list project limit) = inj₂ (Public.read (Read.listBeliefs project nothing))
 request conversion (patterns project limit) = inj₂ (Public.read (Read.listPatterns project))
-request conversion (query text limit evidence project prefer) = inj₂ (Public.relevant text limit project prefer evidence 3)
+request conversion (query text limit evidence project prefer) = inj₂ (Public.relevant text limit project prefer evidence nothing)
 request conversion (evidenceAdd chunk belief weight) = Input.readUUID conversion (V.string chunk) >>= λ chunkID →
   Input.readUUID conversion (V.string belief) >>= λ beliefID → inj₂ (Public.addEvidence beliefID chunkID weight)
 request conversion (evidenceList belief) = mapResult Public.evidence (Input.readUUID conversion (V.string belief))
@@ -101,51 +93,36 @@ request conversion (deletePattern id) = mapResult (Public.delete Delete.patternN
 request conversion (forget project) = inj₂ (Public.deleteProject project)
 request conversion (decay factor project) = inj₂ (Public.inference (Inference.decay project factor))
 request conversion (contradictions project) = inj₂ (Public.inference (Inference.contradictions project))
-request conversion (sweep threshold grace project) = inj₂ (Public.sweepHours project threshold grace)
+request conversion (sweep threshold project) = inj₂ (Public.sweepConfigured project threshold)
 request conversion (docLoad path project) = inj₂ (Public.loadDocument path project)
 request conversion (docQuery text project limit) = inj₂ (Public.queryDocument text project limit)
 request conversion (docClear path) = inj₂ (Public.clearDocument path)
 request conversion (intervene id value) = mapResult (λ target → Public.inference (Inference.intervention target value)) (Input.readUUID conversion (V.string id))
 
--- Rust's trunc counts Unicode scalars, trims first, and replaces the last
--- permitted scalar with an ellipsis. Every native call has a positive bound.
-trunc : ℕ → Text → Text
-trunc maximum text with does (length clean ≤? maximum)
-  where clean = trim text
-... | true = trim text
-... | false with maximum
-...   | zero = []
-...   | suc n = take n (trim text) ++ toList "…"
-
-listRows : ℕ → List Graph.BeliefValues → List Graph.BeliefValues
+listRows : Maybe ℕ → List Graph.BeliefValues → List Graph.BeliefValues
 listRows limit rows = Ranking.cap limit (Ranking.sort
   (λ a b → not (Graph.BeliefValues.probability a <ᵇ Graph.BeliefValues.probability b)) rows)
 
-patternRows : ℕ → List Graph.PatternValues → List Graph.PatternValues
+patternRows : Maybe ℕ → List Graph.PatternValues → List Graph.PatternValues
 patternRows limit rows = Ranking.cap limit (Ranking.sort
   (λ a b → not (Graph.PatternValues.successRate a <ᵇ Graph.PatternValues.successRate b)) rows)
 
-pair : ℕ × ℕ → ℕ × ℕ
-pair (a , b) with a ≤? b
-... | yes _ = a , b
-... | no _ = b , a
-
-pairMember : ℕ × ℕ → List (ℕ × ℕ) → Bool
+pairMember : UUID × UUID → List (UUID × UUID) → Bool
 pairMember value [] = false
-pairMember (a , b) ((c , d) ∷ rest) with does (a ≟ c) ∧ does (b ≟ d)
+pairMember (a , b) ((c , d) ∷ rest) with
+  (does (a ≟UUID c) ∧ does (b ≟UUID d)) ∨ (does (a ≟UUID d) ∧ does (b ≟UUID c))
 ... | true = true
 ... | false = pairMember (a , b) rest
 
--- UUID canonical strings have the same ordering as the represented 128-bit
--- integer. Preserve first occurrence when removing symmetric duplicates.
-deduplicate : List (ℕ × ℕ) → List (ℕ × ℕ)
+-- Preserve first occurrence when removing symmetric duplicates.
+deduplicate : List (UUID × UUID) → List (UUID × UUID)
 deduplicate = go []
   where
-  go : List (ℕ × ℕ) → List (ℕ × ℕ) → List (ℕ × ℕ)
+  go : List (UUID × UUID) → List (UUID × UUID) → List (UUID × UUID)
   go seen [] = []
-  go seen (value ∷ rest) with pairMember (pair value) seen
+  go seen (value ∷ rest) with pairMember value seen
   ... | true = go seen rest
-  ... | false = pair value ∷ go (pair value ∷ seen) rest
+  ... | false = value ∷ go (value ∷ seen) rest
 
 data Parsed : Set where
   help version : Parsed
@@ -159,8 +136,8 @@ parseExit (invalid _) = just 2
 parseExit (parsedCommand _) = nothing
 
 module Run (conversion : Library.Contract) (environment : Application.Environment) (format : Encoding.Formatting) where
-  module A = Application.Run environment
-  module O = Output.Project environment format
+  module A = Application.Run environment using (Result; inferred; readResult)
+  module O = Output.Project environment format using (project; failure; success)
 
   data Failure : Set where
     connection : Text → Failure
@@ -168,13 +145,13 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
     operation : A.Result → Failure
     output : Text → Failure
 
-  -- Payloads are fully selected application data. A renderer applies only
-  -- the command's fixed layout/truncation policy, never another database read.
+  -- Payloads contain complete selected application data. Rendering must not
+  -- truncate them or perform another database read.
   data Line : Set where
     commandOutput : ServiceCommand → A.Result → Line
     emptyIntervention emptyContradictions : Line
-    intervention : ℕ → Float → Maybe Graph.BeliefValues → Line
-    contradiction : ℕ → ℕ → Maybe Graph.BeliefValues → Maybe Graph.BeliefValues → Line
+    intervention : UUID → Float → Maybe Graph.BeliefValues → Line
+    contradiction : UUID → UUID → Maybe Graph.BeliefValues → Maybe Graph.BeliefValues → Line
 
   data Effect : Set where
     connect : Effect
@@ -193,12 +170,12 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
     (inj₁ error) → done (inj₁ (output error))
     (inj₂ tt) → done (inj₂ tt)
 
-  fetch : ℕ → Script (Failure ⊎ Maybe Graph.BeliefValues)
+  fetch : UUID → Script (Failure ⊎ Maybe Graph.BeliefValues)
   fetch id = ask (execute (Public.read (Read.getBelief id))) λ where
     (A.readResult (Read.beliefResult value)) → done (inj₂ value)
     result → done (inj₁ (operation result))
 
-  interventions : List (ℕ × Float) → Script (Failure ⊎ ⊤)
+  interventions : List (UUID × Float) → Script (Failure ⊎ ⊤)
   interventions [] = done (inj₂ tt)
   interventions ((id , probability) ∷ rest) = fetch id then λ where
     (inj₁ error) → done (inj₁ error)
@@ -206,7 +183,7 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
       (inj₁ error) → done (inj₁ error)
       (inj₂ tt) → interventions rest
 
-  contradictionsOutput : List (ℕ × ℕ) → Script (Failure ⊎ ⊤)
+  contradictionsOutput : List (UUID × UUID) → Script (Failure ⊎ ⊤)
   contradictionsOutput [] = done (inj₂ tt)
   contradictionsOutput ((a , b) ∷ rest) = fetch a then λ where
     (inj₁ error) → done (inj₁ error)
@@ -253,18 +230,3 @@ module Run (conversion : Library.Contract) (environment : Application.Environmen
   exit : Failure ⊎ ⊤ → ℕ
   exit (inj₁ _) = 1
   exit (inj₂ tt) = 0
-
-  -- Every service-effect receipt must have a complete concrete application
-  -- execution. This supplies the execution boundary, not an opaque handler.
-  data Executed : Public.Request → A.Result → Set where
-    application : ∀ request events result → A.Runs (A.start request) events result → Executed request result
-
-  data Receipt : (effect : Effect) → Reply effect → Set where
-    connected : ∀ response → Receipt connect response
-    printed : ∀ line response → Receipt (print line) response
-    executed : ∀ request response → Executed request response → Receipt (execute request) response
-
-  data Runs : Script (Failure ⊎ ⊤) → List P.Event → Failure ⊎ ⊤ → Set where
-    returned : ∀ result → Runs (done result) [] result
-    responded : ∀ effect continuation reply events result → Receipt effect reply →
-      Runs (continuation reply) events result → Runs (ask effect continuation) ((effect , reply) ∷ events) result

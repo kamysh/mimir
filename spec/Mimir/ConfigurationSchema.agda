@@ -5,8 +5,10 @@
 module Mimir.ConfigurationSchema where
 
 open import Data.List using (List; []; _∷_; map; reverse)
+open import Data.Bool using (true; false; _∨_; not)
+open import Data.Float.Base using (Float; fromℕ; fromℤ; isNaN; isInfinite; _≤ᵇ_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ)
+open import Data.Nat using (ℕ; zero; suc)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (String; toList; fromList)
@@ -18,8 +20,10 @@ open import Mimir.PublicInput using (bad; enum; unsigned; required; optional; de
 import Mimir.StructuredValue as V
 import Mimir.OperationalConfiguration as Operations
 import Mimir.ConfigurationValues as C
+import Mimir.Validation as Validation
 import Mimir.ConfigurationInput as Input
 import Mimir.SourceReview as TextEquality
+import Mimir.ApplicationFloat as Numeric
 
 record Config : Set where
   constructor config
@@ -36,6 +40,28 @@ table : V.Value → Fault ⊎ V.Value
 table raw@(V.object fields) = inj₂ raw
 table _ = bad "expected a TOML table"
 
+-- The user chooses retention in configuration. Zero explicitly requests
+-- immediate eligibility; absence never invents a deletion policy.
+graceHours : V.Value → Fault ⊎ Float
+graceHours raw = numeric raw >>= check
+  where
+  numeric : V.Value → Fault ⊎ Float
+  numeric (V.unsigned n) = inj₂ (fromℕ n)
+  numeric (V.signed n) = inj₂ (fromℤ n)
+  numeric (V.floating n) with Numeric.number n
+  ... | nothing = bad "grace_hours must be a finite nonnegative number"
+  ... | just value = inj₂ value
+  numeric _ = bad "grace_hours must be a finite nonnegative number"
+
+  check : Float → Fault ⊎ Float
+  check value with isNaN value ∨ isInfinite value ∨ not (0.0 ≤ᵇ value)
+  ... | true = bad "grace_hours must be a finite nonnegative number"
+  ... | false = inj₂ value
+
+retirement : V.Value → Fault ⊎ Float
+retirement raw = V.asObject raw >>= λ entries →
+  required "grace_hours" graceHours (V.Object.normalize entries)
+
 database : V.Value → Fault ⊎ C.Database
 database raw = V.asObject raw >>= λ entries → fields (V.Object.normalize entries)
   where
@@ -48,12 +74,17 @@ database raw = V.asObject raw >>= λ entries → fields (V.Object.normalize entr
     inj₂ (C.database host dbname user port password passfile mode root cert key)
 
 module Decode (sizeMaximum : ℕ) where
+  batchSelection : V.Value → Fault ⊎ ℕ
+  batchSelection raw = unsigned sizeMaximum raw >>= λ where
+    zero → inj₁ (Validation.fault [] Validation.invalidNumber "batch_size must be positive; omit it to leave batching unspecified")
+    (suc count) → inj₂ (suc count)
+
   embeddings : V.Value → Fault ⊎ C.Embeddings
   embeddings raw = V.asObject raw >>= λ entries → fields (V.Object.normalize entries)
     where
     fields : V.Object.View → Fault ⊎ C.Embeddings
     fields values = required "backend" backend values >>= λ backend → defaulted "model" [] V.asString values >>= λ model →
-      optional "api_key" V.asString values >>= λ key → defaulted "batch_size" 0 (unsigned sizeMaximum) values >>= λ batch →
+      optional "api_key" V.asString values >>= λ key → optional "batch_size" batchSelection values >>= λ batch →
       optional "cache_dir" V.asString values >>= λ cache → inj₂ (C.embeddings backend model key batch cache)
 
   decode : V.Value → Fault ⊎ Config
@@ -62,8 +93,9 @@ module Decode (sizeMaximum : ℕ) where
     where
     fields : Operations.Admitted → V.Object.View → Fault ⊎ Config
     fields operations values = required "database" database values >>= λ db → optional "embeddings" embeddings values >>= λ embed →
+      optional "retirement" retirement values >>= λ grace →
       optional "llm" table values >>= λ llm → optional "judge" table values >>= λ judge → optional "email" table values >>= λ email →
-      inj₂ (config operations (C.config db embed) llm judge email)
+      inj₂ (config operations (C.config db embed grace) llm judge email)
 
 -- CLI parsing splits only at the first '='; values can contain more equals
 -- signs, whitespace or an empty string. Keys are not trimmed or case-folded.

@@ -5,7 +5,7 @@ open import Data.Bool using (Bool; true; false)
 open import Data.Empty using (⊥)
 open import Data.List using (List; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (_≟UUID_)
 open import Data.Product using (_×_; _,_)
 open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (Dec; yes; no)
@@ -108,7 +108,7 @@ validateTarget candidates (candidate name) = check
   (Keys.present? name (beliefKeys candidates))
 
 targetEqual : (x y : Target) → Dec (x ≡ y)
-targetEqual (existing x) (existing y) with x ≟ y
+targetEqual (existing x) (existing y) with x ≟UUID y
 ... | yes refl = yes refl
 ... | no different = no (λ { refl → different refl })
 targetEqual (candidate x) (candidate y) with x ≟Text y

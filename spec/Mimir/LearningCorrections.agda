@@ -3,7 +3,7 @@ module Mimir.LearningCorrections where
 
 open import Data.List using (List; []; map)
 open import Data.Maybe using (Maybe)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (_×_; _,_)
 open import Relation.Nullary using (Dec; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -48,14 +48,14 @@ kindEqual suggestion estimate = no (λ ())
 kindEqual suggestion decision = no (λ ())
 kindEqual suggestion suggestion = yes refl
 
-ItemKey = ℕ × (Text × (Text × (Text × Kind)))
+ItemKey = UUID × (Text × (Text × (Text × Kind)))
 
 itemKey : LearningItem → ItemKey
 itemKey i = LearningItem.identity i , LearningItem.reference i , LearningItem.actor i ,
   LearningItem.statement i , LearningItem.kind i
 
 itemKeyEqual : (x y : ItemKey) → Dec (x ≡ y)
-itemKeyEqual = pairEqual _≟_ (pairEqual _≟Text_ (pairEqual _≟Text_ (pairEqual _≟Text_ kindEqual)))
+itemKeyEqual = pairEqual _≟UUID_ (pairEqual _≟Text_ (pairEqual _≟Text_ (pairEqual _≟Text_ kindEqual)))
 
 module SourceRetention = Retention.Elements SourceKey sourceKeyEqual
 module ItemRetention = Retention.Elements ItemKey itemKeyEqual

@@ -2,6 +2,7 @@
 module Mimir.Graph where
 
 open import Mimir.Types
+open import Mimir.UUIDGroups using (_≟UUID_)
 open import Data.Bool            using (Bool; true; false; _∧_; _∨_; not)
 open import Data.Nat             using (ℕ; _≤_; z≤n; s≤s; _≤ᵇ_)
 open import Data.Nat.Properties  using (≤-refl; ≤-trans; ≤-total; ≤ᵇ-reflects-≤)
@@ -263,10 +264,9 @@ autoPropagate-only-defeats CONTRADICTS ()
 -- partial — it only succeeds when both endpoints already exist.
 -- ---------------------------------------------------------------------------
 
--- Boolean equality for NodeIds (compares the underlying ℕ uid).
--- Uses the already-imported _≤ᵇ_ : m ≡ n ↔ m ≤ᵇ n ∧ n ≤ᵇ m.
+-- Boolean equality for opaque node identifiers.
 _nodeEq_ : NodeId → NodeId → Bool
-_nodeEq_ (mkNodeId m) (mkNodeId n) = (m ≤ᵇ n) ∧ (n ≤ᵇ m)
+_nodeEq_ (mkNodeId m) (mkNodeId n) = does (m ≟UUID n)
 
 -- Is a NodeId present in a flat list of Beliefs?
 beliefListContains : NodeId → List Belief → Bool
@@ -285,22 +285,10 @@ addEdgePrecondition-empty-false :
 addEdgePrecondition-empty-false _ _ = refl
 
 -- ---------------------------------------------------------------------------
--- insert_belief is TOTAL (unconditional)
--- Unlike add_edge (MATCH → bail! if endpoint missing), insert_belief uses
--- Cypher CREATE which always succeeds when labelsCreated = true.
--- No uniqueness constraint: two beliefs with identical content can coexist
--- with different UUIDs.  Every call adds exactly one vertex.
--- Modelled as list prepend; the list length increases by exactly 1.
---
--- AUTO-GROUNDING (when an embedding backend is configured):
---   After inserting the belief vertex and storing its embedding in
---   belief_embeddings, insert_belief performs auto-grounding:
---   find existing chunks in chunk_embeddings with cosine similarity
---   ≥ GROUND_THRESHOLD (0.80) to the belief embedding AND project-compatible
---   (same project, or chunk/belief project is absent), then create a GROUNDS
---   edge for each match.  Formalised in Evidence.autoGroundBelief.
---   Non-interference is preserved: GROUNDS edges are EvidenceEdges and never
---   enter the belief-inference substrate (Evidence.propagate-evidence-invariant).
+-- Structural insertion of an already prepared belief. Public insertion must
+-- prepare its embedding and validate an indexed supporting passage before
+-- atomic publication. Similarity alone does not authorize a source attachment
+-- or a probability change.
 -- ---------------------------------------------------------------------------
 
 insertBelief : Belief → List Belief → List Belief

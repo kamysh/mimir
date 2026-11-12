@@ -5,7 +5,7 @@ open import Data.Bool using (Bool; true; false; _∨_)
 open import Data.List using (List; []; _∷_; length; map)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; zero; suc; _≤_; _≤?_)
+open import Data.Nat using (ℕ; zero; suc; _≤_; _≤?_; _≟_)
 open import Data.Product using (_×_; _,_; proj₁; proj₂)
 open import Data.Rational using (ℚ; 0ℚ; 1ℚ; -_)
 open import Data.Rational.Properties using (_<?_)
@@ -14,6 +14,7 @@ open import Data.Empty using (⊥)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text
+open import Mimir.UUIDGroups using (UUID)
 open import Mimir.Binary64
 open import Mimir.NumericValidation
 open import Mimir.Validation
@@ -61,7 +62,7 @@ validatePrediction p = combine
 record LearningItem : Set where
   constructor learningItem
   field
-    identity : ℕ
+    identity : UUID
     localKey : Maybe Text
     kind : Kind
     reference actor statement conditions : Text
@@ -95,7 +96,7 @@ validateItems items = combine
     (fresh? [] (map sourceProjection items))) (allChecked validateItem items)
 
 -- Exact identity sets: repeated evidence/item references cannot multiply weight.
-UniqueIDs : List ℕ → Set
+UniqueIDs : List UUID → Set
 UniqueIDs [] = ⊤
 UniqueIDs (id ∷ rest) = idPresent id rest ≡ false × UniqueIDs rest
 
@@ -105,7 +106,23 @@ checkIDs (id ∷ rest) = combine
   (check (fault [] duplicate "references must be distinct") (false? (idPresent id rest)))
   (checkIDs rest)
 
-data Target : Set where existing : ℕ → Target; candidate : Text → Target
+indexPresent : ℕ → List ℕ → Bool
+indexPresent n [] = false
+indexPresent n (other ∷ rest) with n ≟ other
+... | yes _ = true
+... | no _ = indexPresent n rest
+
+UniqueIndices : List ℕ → Set
+UniqueIndices [] = ⊤
+UniqueIndices (n ∷ rest) = indexPresent n rest ≡ false × UniqueIndices rest
+
+checkIndices : ∀ indices → Checked (UniqueIndices indices)
+checkIndices [] = accepted tt
+checkIndices (n ∷ rest) = combine
+  (check (fault [] duplicate "references must be distinct") (false? (indexPresent n rest)))
+  (checkIndices rest)
+
+data Target : Set where existing : UUID → Target; candidate : Text → Target
 
 record Assessment : Set where
   constructor assessment
@@ -113,7 +130,8 @@ record Assessment : Set where
     target : Target
     scope rubric rationale : Text
     correctness usefulness : Axis
-    evidenceIndices itemIDs : List ℕ
+    evidenceIndices : List ℕ
+    itemIDs : List UUID
 
 positiveWeight : Number → Bool
 positiveWeight (nonfinite _ _) = false
@@ -147,7 +165,7 @@ AssessmentValid a = NamedText (Assessment.scope a) ×
   (NamedText (Assessment.rationale a) ×
   (AxisValid 0ℚ (Assessment.correctness a) ×
   (AxisValid (- 1ℚ) (Assessment.usefulness a) ×
-  (UniqueIDs (Assessment.evidenceIndices a) ×
+  (UniqueIndices (Assessment.evidenceIndices a) ×
   (UniqueIDs (Assessment.itemIDs a) × EvidenceRequired a))))))
 
 validateAssessment : ∀ a → Checked (AssessmentValid a)
@@ -157,7 +175,7 @@ validateAssessment a = combine
   (combine (at (key "rationale") (checkNamed (Assessment.rationale a)))
   (combine (at (key "correctness") (checkAxis 0ℚ (Assessment.correctness a)))
   (combine (at (key "usefulness") (checkAxis (- 1ℚ) (Assessment.usefulness a)))
-  (combine (at (key "evidence_indices") (checkIDs (Assessment.evidenceIndices a)))
+  (combine (at (key "evidence_indices") (checkIndices (Assessment.evidenceIndices a)))
   (combine (at (key "item_ids") (checkIDs (Assessment.itemIDs a))) (checkRequired a)))))))
 
 lookup : ∀ {A : Set} → ℕ → List A → Maybe A
@@ -208,7 +226,7 @@ checkObserved false a = combine
   (at (key "correctness") (checkZero (Axis.weight (Assessment.correctness a))))
   (at (key "usefulness") (checkZero (Axis.weight (Assessment.usefulness a))))
 
-SourceValid : Provenance → List Source → List Text → List ℕ → Assessment → Set
+SourceValid : Provenance → List Source → List Text → List UUID → Assessment → Set
 SourceValid legacy sources evidence itemIDs a = AssessmentValid a ×
   (All (EvidenceExists evidence) (Assessment.evidenceIndices a) ×
   (All (λ id → idPresent id itemIDs ≡ true) (Assessment.itemIDs a) ×

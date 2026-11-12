@@ -6,8 +6,6 @@
 -- asserted here. All Mimir selection, weights and accumulation are defined.
 module Mimir.RetrievalRanking where
 
-import Mimir.UnsignedMachine
-
 open import Data.Bool using (Bool; true; false; _∧_; _∨_; not)
 open import Data.Char using (Char)
 open import Data.Float.Base using (Float; _<ᵇ_)
@@ -18,9 +16,11 @@ open import Data.Product using (_×_; _,_)
 open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text; isWhitespace)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Mimir.SourceReview using (_≟Text_)
 import Mimir.CandidateGraph as Graph
 import Mimir.LearningCandidates as Candidates
+open import Mimir.Collections using (limitResults; validSelection) public
 
 record F32 : Set₁ where
   field
@@ -35,14 +35,14 @@ record Unicode : Set where
     lowercase : Text → Text
     alphanumeric : Char → Bool
 
-member : ℕ → List ℕ → Bool
+member : UUID → List UUID → Bool
 member id [] = false
-member id (x ∷ xs) = does (id ≟ x) ∨ member id xs
+member id (x ∷ xs) = does (id ≟UUID x) ∨ member id xs
 
-unique : List ℕ → List ℕ
+unique : List UUID → List UUID
 unique = go []
   where
-  go : List ℕ → List ℕ → List ℕ
+  go : List UUID → List UUID → List UUID
   go seen [] = []
   go seen (x ∷ xs) with member x seen
   ... | true = go seen xs
@@ -56,18 +56,18 @@ visible nothing actual = true
 visible (just wanted) nothing = true
 visible (just wanted) (just actual) = does (wanted ≟Text actual)
 
-eligible : Maybe Text → List ℕ → Graph.BeliefValues → Bool
+eligible : Maybe Text → List UUID → Graph.BeliefValues → Bool
 eligible scope superseded b = visible scope (Graph.BeliefValues.project b) ∧
   not (sameMemory (Graph.BeliefValues.memory b) Candidates.working) ∧
   not (member (Graph.BeliefValues.identity b) superseded)
 
-lookup : ℕ → List Graph.BeliefValues → Maybe Graph.BeliefValues
+lookup : UUID → List Graph.BeliefValues → Maybe Graph.BeliefValues
 lookup id [] = nothing
-lookup id (b ∷ bs) with id ≟ Graph.BeliefValues.identity b
+lookup id (b ∷ bs) with id ≟UUID Graph.BeliefValues.identity b
 ... | yes _ = just b
 ... | no _ = lookup id bs
 
-materialize : List ℕ → List Graph.BeliefValues → List Graph.BeliefValues
+materialize : List UUID → List Graph.BeliefValues → List Graph.BeliefValues
 materialize [] all = []
 materialize (id ∷ ids) all with lookup id all
 ... | nothing = materialize ids all
@@ -114,67 +114,60 @@ tokenBefore (n , b) (m , c) with n ≟ m
 ... | yes _ = not (Graph.BeliefValues.probability b <ᵇ Graph.BeliefValues.probability c)
 ... | no _ = does (m ≤? n)
 
-tokenRanking : Unicode → Text → List Graph.BeliefValues → List ℕ
+tokenRanking : Unicode → Text → List Graph.BeliefValues → List UUID
 tokenRanking unicode query all = map (λ { (_ , b) → Graph.BeliefValues.identity b })
   (sort tokenBefore (filterᵇ (λ { (n , _) → not (does (n ≟ 0)) })
     (map (λ b → hits terms (Unicode.lowercase unicode (Graph.BeliefValues.content b)) , b) all)))
   where terms = split isWhitespace (Unicode.lowercase unicode query)
 
-priorRanking : List Graph.BeliefValues → List ℕ
+priorRanking : List Graph.BeliefValues → List UUID
 priorRanking all = map Graph.BeliefValues.identity (sort
   (λ b c → not (Graph.BeliefValues.probability b <ᵇ Graph.BeliefValues.probability c)) all)
 
-typeRanking : Maybe Candidates.Memory → List Graph.BeliefValues → List ℕ
+typeRanking : Maybe Candidates.Memory → List Graph.BeliefValues → List UUID
 typeRanking nothing all = []
 typeRanking (just wanted) all = map Graph.BeliefValues.identity
   (filterᵇ matching all ++ filterᵇ (λ b → not (matching b)) all)
   where matching = λ b → sameMemory wanted (Graph.BeliefValues.memory b)
 
-cap : ∀ {A : Set} → ℕ → List A → List A
-cap zero xs = xs
-cap (suc n) xs = take (suc n) xs
-
-poolSize : ℕ → ℕ
-poolSize zero = 50
-poolSize (suc n) = Counter.Natural.number (Counter.wrap ((suc n) * 4)) ⊔ 20
-  where
-  module Counter = Mimir.UnsignedMachine.Width 64
+cap : ∀ {A : Set} → Maybe ℕ → List A → List A
+cap = limitResults
 
 module Fusion (ops : F32) where
   open F32 ops
-  Scores = List (ℕ × Value)
+  Scores = List (UUID × Value)
 
-  get : ℕ → Scores → Value
+  get : UUID → Scores → Value
   get id [] = fromNat 0
-  get id ((key , value) ∷ rest) with id ≟ key
+  get id ((key , value) ∷ rest) with id ≟UUID key
   ... | yes _ = value
   ... | no _ = get id rest
 
-  credit : ℕ → Value → Scores → Scores
+  credit : UUID → Value → Scores → Scores
   credit id delta [] = (id , add (fromNat 0) delta) ∷ []
-  credit id delta ((key , value) ∷ rest) with id ≟ key
+  credit id delta ((key , value) ∷ rest) with id ≟UUID key
   ... | yes _ = (key , add value delta) ∷ rest
   ... | no _ = (key , value) ∷ credit id delta rest
 
-  leg : Value → ℕ → List ℕ → Scores → Scores
+  leg : Value → ℕ → List UUID → Scores → Scores
   leg weight rank [] scores = scores
   leg weight rank (id ∷ ids) scores = leg weight (suc rank) ids
     (credit id (divide weight (add (fromNat 60) (fromNat rank))) scores)
 
-  scores : List ℕ → List ℕ → List ℕ → List ℕ → Scores
+  scores : List UUID → List UUID → List UUID → List UUID → Scores
   scores vector token prior preferred =
     leg (decimal 5 10) 0 preferred
       (leg (decimal 1 10) 0 prior
         (leg (decimal 3 10) 0 token (leg (fromNat 1) 0 vector [])))
 
-  rank : List ℕ → List ℕ → Maybe Candidates.Memory → ℕ →
+  rank : List UUID → List UUID → Maybe Candidates.Memory → Maybe ℕ →
     List Graph.BeliefValues → List Graph.BeliefValues
   rank vector token preferred limit matched = cap limit
     (sort (λ b c → not (less (get (Graph.BeliefValues.identity b) fused)
       (get (Graph.BeliefValues.identity c) fused))) matched)
     where fused = scores vector token (priorRanking matched) (typeRanking preferred matched)
 
-unlimited : ∀ {A : Set} (xs : List A) → cap 0 xs ≡ xs
+unlimited : ∀ {A : Set} (xs : List A) → cap nothing xs ≡ xs
 unlimited xs = refl
 
 globalVisible : ∀ scope → visible scope nothing ≡ true

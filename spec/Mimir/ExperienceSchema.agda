@@ -9,7 +9,7 @@ open import Data.List.Properties using (≡-dec)
 open import Data.List.Relation.Unary.All using (All)
 open import Data.List.Relation.Unary.Any using (Any)
 open import Data.Maybe using (Maybe)
-open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Product using (_×_; _,_)
 open import Data.Unit using (⊤; tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -28,13 +28,13 @@ data Outcome : Set where success failure unknown : Outcome
 record Experience : Set where
   constructor experience
   field
-    identity : ℕ
+    identity : UUID
     project context action : Text
     outcome : Outcome
     provenance : Provenance
     evidence : List Text
-    beliefIDs : List ℕ
-    patternID : Maybe ℕ
+    beliefIDs : List UUID
+    patternID : Maybe UUID
     items : List Items.LearningItem
     sources : List Source
 
@@ -94,10 +94,10 @@ sourceReview r = Sources.review (Reviews.Review.coverage r)
   (map Items.sourceProjection (Reviews.Review.extracted r))
   (concatMap Items.Assessment.itemIDs (Reviews.Review.assessments r)) (hasLegacy r)
 
-itemIDs : Experience → List ℕ
+itemIDs : Experience → List UUID
 itemIDs e = map Items.LearningItem.identity (Experience.items e)
 
-allItemIDs : Experience → Reviews.Review → List ℕ
+allItemIDs : Experience → Reviews.Review → List UUID
 allItemIDs e r = itemIDs e ++ map Items.LearningItem.identity (Reviews.Review.extracted r)
 
 ReviewSourcesValid : Experience → Reviews.Review → Set

@@ -11,6 +11,7 @@ import Data.Empty
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≤?_)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Nullary using (does; yes; no)
 open import Data.Empty using (⊥-elim)
@@ -27,8 +28,8 @@ import Mimir.PendingSelection as Pending
 
 data Effect : Set where
   previousDeferred : Effect
-  current : ℕ → Effect
-  pending : Maybe Text → ℕ → List ℕ → Effect
+  current : UUID → Effect
+  pending : Maybe Text → Maybe ℕ → List UUID → Effect
 
 Reply : Effect → Set
 Reply previousDeferred = Revision.Error ⊎ List Observation.Deferred
@@ -42,7 +43,7 @@ inScope : Maybe Text → Observation.Snapshot → Bool
 inScope nothing observed = true
 inScope (just project) observed = does (project ≟Text Experience.Experience.project (Observation.Snapshot.experience observed))
 
-module Select (contract model batchLimit : ℕ) (project : Maybe Text)
+module Select (contract model : ℕ) (batchLimit : Maybe ℕ) (project : Maybe Text)
   (handshake : Handshake.Contract.Ready contract model) where
 
   record Prepared : Set where

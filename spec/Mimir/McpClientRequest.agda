@@ -1,19 +1,16 @@
 {-# OPTIONS --safe #-}
--- One client request. IDs advance before sending, notifications consume a
--- no allowance, and no failure retries a write. The readLine effect is
+-- One client request with a string ID. No failure retries a write blindly.
+-- The readLine effect is
 -- refined separately into an unbounded byte-framing state machine.
 import Mimir.StandardLibrary
 module Mimir.McpClientRequest (library : Mimir.StandardLibrary.Contract) where
 
 open import Data.List using (List; []; _∷_)
-open import Data.Maybe using (just; nothing)
-open import Data.Nat using (ℕ; zero; suc; _+_; _≤_; _<_)
-open import Data.Nat.Properties using (≤-refl; +-suc; 1+n≰n)
-open import Data.Product using (_,_; _×_)
+open import Data.Nat using (ℕ)
+open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
-open import Data.Empty using (⊥; ⊥-elim)
-open import Relation.Binary.PropositionalEquality using (_≡_; refl; trans; subst; sym)
+open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
 open import Mimir.Validation using (Fault)
 import Mimir.StructuredValue as V
@@ -27,7 +24,7 @@ import Mimir.Effects as Effects
 module R = Wire.Replies
 
 data Effect : Set where
-  send : ℕ → Text → V.Value → Effect
+  send : Text → Text → V.Value → Effect
   readLine : Effect
 
 Reply : Effect → Set
@@ -42,7 +39,7 @@ data Outcome : Set where
   protocolFailure : RPC.Failure → Outcome
   applicationFailure success : V.Value → Outcome
 
-module Pending (expected : ℕ) where
+module Pending (expected : Text) where
   data State : Set where
     sending : Text → V.Value → State
     waiting : ℕ → State
@@ -90,23 +87,3 @@ module Pending (expected : ℕ) where
 
   failedSendStops : ∀ failure → afterSend (inj₁ failure) ≡ finished (transportFailure failure)
   failedSendStops failure = refl
-
-module Counter (maximum : ℕ) where
-  module IDs = RPC.IDs maximum
-
-  data Launch : Set where
-    overflow : Launch
-    started : (current next : ℕ) → Pending.State current → Launch
-
-  launch : ℕ → Text → V.Value → Launch
-  launch counter method params with IDs.allocate counter
-  ... | nothing = overflow
-  ... | just allocation = started (IDs.Allocated.current allocation) (IDs.Allocated.next allocation)
-    (Pending.start (IDs.Allocated.current allocation) method params)
-
-  launchAdvances : ∀ counter method params current next program →
-    launch counter method params ≡ started current next program → current < next
-  launchAdvances counter method params current next program observed with IDs.allocate counter in allocation
-  ... | nothing with observed
-  ...   | ()
-  launchAdvances counter method params ._ ._ ._ refl | just reserved = IDs.advances counter reserved allocation

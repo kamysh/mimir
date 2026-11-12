@@ -4,16 +4,25 @@ module Mimir.Collections where
 
 import Data.Empty
 
-open import Data.List using (List; []; _∷_; length)
+open import Data.List using (List; []; _∷_; length; take)
+open import Data.Bool using (Bool; true)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.List.Relation.Unary.Any using (Any; here; there)
 open import Data.Nat using (ℕ; _≤_; _≤?_)
 open import Data.Product using (_×_; _,_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Unit using (⊤; tt)
-open import Relation.Nullary using (Dec; yes; no; ¬_)
+open import Relation.Nullary using (Dec; yes; no; ¬_; does)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
 open import Mimir.Validation
+
+limitResults : ∀ {A : Set} → Maybe ℕ → List A → List A
+limitResults nothing values = values
+limitResults (just count) values = take count values
+
+validSelection : Maybe ℕ → Bool
+validSelection nothing = true
+validSelection (just count) = does (1 ≤? count)
 
 atMost : ∀ {A : Set} → ℕ → List A → Set
 atMost maximum values = length values ≤ maximum
@@ -21,6 +30,14 @@ atMost maximum values = length values ≤ maximum
 checkCount : ∀ {A : Set} maximum (values : List A) → Checked (atMost maximum values)
 checkCount maximum values = check (fault [] tooMany "collection exceeds its size limit")
   (length values ≤? maximum)
+
+withinSelection : ∀ {A : Set} → Maybe ℕ → List A → Set
+withinSelection nothing values = ⊤
+withinSelection (just maximum) values = atMost maximum values
+
+checkSelection : ∀ {A : Set} selection (values : List A) → Checked (withinSelection selection values)
+checkSelection nothing values = check (fault [] tooMany "collection exceeds the requested count") (yes tt)
+checkSelection (just maximum) values = checkCount maximum values
 
 all? : ∀ {A : Set} {P : A → Set} → ((x : A) → Dec (P x)) → (xs : List A) → Dec (All P xs)
 all? p [] = yes []

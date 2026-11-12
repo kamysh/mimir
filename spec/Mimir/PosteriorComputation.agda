@@ -1,7 +1,7 @@
 {-# OPTIONS --safe #-}
--- Ordered, bounded application inference. Standard Float supplies arithmetic;
--- this module specifies Mimir's iteration order, fixed priors, clamped seed,
--- external parents, convergence test and durable-update selection.
+-- Numerical data and validation at an external calculation boundary.
+-- The calculation algorithm, iteration count and stopping threshold are
+-- implementation details; they are not defined or proved here.
 module Mimir.PosteriorComputation where
 
 open import Data.Float.Base using (Float; _+_; _-_; _*_; _÷_; _<ᵇ_; _≤ᵇ_; isNaN)
@@ -10,7 +10,8 @@ open import Data.Empty using (⊥; ⊥-elim)
 open import Data.List using (List; []; _∷_; map)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; zero; suc; _≟_; _≤?_)
+open import Data.Nat using (ℕ; zero; suc)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (_×_; _,_)
 open import Relation.Nullary using (Dec; yes; no; does)
 open import Relation.Nullary.Decidable.Core using (_×-dec_)
@@ -127,15 +128,15 @@ maximum a b with isNaN a | isNaN b
 
 record Node : Set where
   constructor node
-  field identity : ℕ; fixed original : Beta
+  field identity : UUID; fixed original : Beta
 
 record Edge : Set where
   constructor edge
-  field source target : ℕ; relation : Review.Relation; weight : Float
+  field source target : UUID; relation : Review.Relation; weight : Float
 
-State = List (ℕ × Beta)
-External = List (ℕ × Float)
-Seed = Maybe (ℕ × Float)
+State = List (UUID × Beta)
+External = List (UUID × Float)
+Seed = Maybe (UUID × Float)
 
 validState : State → Bool
 validState [] = true
@@ -167,9 +168,9 @@ validEdges : List Edge → Bool
 validEdges [] = true
 validEdges (value ∷ rest) = unitInterval (Edge.weight value) ∧ validEdges rest
 
-referenced : ℕ → List Edge → Bool
+referenced : UUID → List Edge → Bool
 referenced id [] = false
-referenced id (edgeRow ∷ rest) with id ≟ Edge.source edgeRow
+referenced id (edgeRow ∷ rest) with id ≟UUID Edge.source edgeRow
 ... | yes same = true
 ... | no different = referenced id rest
 
@@ -185,125 +186,19 @@ validSeed : Seed → Bool
 validSeed nothing = true
 validSeed (just (_ , value)) = unitInterval value
 
-lookup : ∀ {A : Set} → ℕ → List (ℕ × A) → Maybe A
+lookup : ∀ {A : Set} → UUID → List (UUID × A) → Maybe A
 lookup id [] = nothing
-lookup id ((key , value) ∷ rest) with id ≟ key
+lookup id ((key , value) ∷ rest) with id ≟UUID key
 ... | yes same = just value
 ... | no different = lookup id rest
 
-write : ℕ → Beta → State → State
-write id value [] = []
-write id value ((key , old) ∷ rest) with id ≟ key
-... | yes same = (key , value) ∷ rest
-... | no different = (key , old) ∷ write id value rest
-
-unclamped : ℕ → State → External → Maybe Float
-unclamped id state external with lookup id state
-... | just b = just (mean b)
-... | nothing = lookup id external
-
-parent : Seed → ℕ → State → External → Maybe Float
-parent nothing id state external = unclamped id state external
-parent (just (seed , value)) id state external with id ≟ seed
-... | yes same = just value
-... | no different = unclamped id state external
-
-contribute : Review.Relation → Float → Beta → Beta
-contribute Review.supports delta b = beta (Beta.alpha b + delta) (Beta.negative b)
-contribute Review.causes delta b = beta (Beta.alpha b + delta) (Beta.negative b)
-contribute Review.defeats delta b = beta (Beta.alpha b) (Beta.negative b + delta)
-contribute Review.contradicts delta b = b
-
-incoming : Seed → ℕ → State → External → List Edge → Beta → Beta
-incoming seed target state external [] b = b
-incoming seed target state external (e ∷ es) b with target ≟ Edge.target e
-... | no different = incoming seed target state external es b
-... | yes same with parent seed (Edge.source e) state external
-...   | nothing = incoming seed target state external es b
-...   | just probability = incoming seed target state external es
-  (contribute (Edge.relation e) ((Edge.weight e * probability) * 4.0) b)
-
-isSeed : Seed → ℕ → Bool
-isSeed nothing id = false
-isSeed (just (seed , value)) id with id ≟ seed
-... | yes same = true
-... | no different = false
-
-insert : Node → List Node → List Node
-insert n [] = n ∷ []
-insert n (m ∷ ms) with Node.identity n ≤? Node.identity m
-... | yes before = n ∷ m ∷ ms
-... | no after = m ∷ insert n ms
-
-order : Seed → List Node → List Node
-order seed [] = []
-order seed (n ∷ ns) with isSeed seed (Node.identity n)
-... | true = order seed ns
-... | false = insert n (order seed ns)
-
-record Sweep : Set where
-  constructor sweepResult
-  field state : State; delta : Float; numericFailure : Bool
-
-sweep : Seed → External → List Edge → List Node → State → Float → Sweep
-sweep seed external edges [] state delta = sweepResult state delta false
-sweep seed external edges (n ∷ ns) state delta with lookup (Node.identity n) state
-... | nothing = sweep seed external edges ns state delta
-... | just old with validCounts updated
-  where updated = incoming seed (Node.identity n) state external edges (Node.fixed n)
-...   | false = sweepResult state delta true
-...   | true = sweep seed external edges ns (write (Node.identity n) updated state)
-  (maximum delta (Scores.absolute (mean updated - mean old)))
-  where updated = incoming seed (Node.identity n) state external edges (Node.fixed n)
-
-record Outcome : Set where
-  constructor outcome
-  field state : State; converged numericFailure : Bool
-
-iterate : ℕ → Seed → External → List Edge → List Node → State → Outcome
-iterate zero seed external edges nodes state = outcome state false false
-iterate (suc fuel) seed external edges nodes state
-  with sweep seed external edges nodes state 0.0
-... | sweepResult after delta true = outcome after false true
-... | sweepResult after delta false with delta <ᵇ 0.000000001
-...   | true = outcome after true false
-...   | false = iterate fuel seed external edges nodes after
-
-changed : Beta → Beta → Bool
-changed old new =
-  ((0.000000001 * scale) <ᵇ Scores.absolute (Beta.alpha new - Beta.alpha old)) ∨
-  ((0.000000001 * scale) <ᵇ Scores.absolute (Beta.negative new - Beta.negative old))
-  where scale = maximum (Beta.alpha old + Beta.negative old) 1.0
-
-updates : List Node → State → State
-updates [] state = []
-updates (n ∷ ns) state with lookup (Node.identity n) state
-... | nothing = updates ns state
-... | just b with changed (Node.original n) b
-...   | false = updates ns state
-...   | true = (Node.identity n , b) ∷ updates ns state
-
 record Result : Set where
   constructor result
-  field writes : State; iterationLimitReached numericFailure : Bool
+  field writes : State; numericFailure : Bool
 
-finish : List Node → Outcome → Result
-finish nodes (outcome final converged true) = result [] false true
-finish nodes (outcome final converged false) with validState final
-... | false = result [] false true
-... | true = result (updates nodes final) (not converged) false
-
-run : Seed → External → List Edge → List Node → Result
-run seed external edges nodes with validSeed seed ∧ validExternal edges external ∧ validEdges edges ∧ validNodes nodes
-... | false = result [] false true
-... | true = finish (order seed nodes) (iterate 50 seed external edges ordered initial)
-  where
-  ordered = order seed nodes
-  initial = map (λ n → Node.identity n , Node.fixed n) nodes
-
-contradictionInert : ∀ delta b → contribute Review.contradicts delta b ≡ b
-contradictionInert delta b = refl
-
-exhaustionReturnsCurrent : ∀ seed external edges nodes state →
-  iterate zero seed external edges nodes state ≡ outcome state false false
-exhaustionReturnsCurrent seed external edges nodes state = refl
+-- Supplied by the external calculation component. Recovery obligations hold
+-- for every supplied outcome; no solver or numerical convergence proof is
+-- required to instantiate this interface.
+record Calculation : Set where
+  field
+    calculate : Bool → Seed → External → List Edge → List Node → Result

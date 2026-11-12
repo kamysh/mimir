@@ -1,7 +1,6 @@
 {-# OPTIONS --safe #-}
 -- A reported fresh success must have an observed commit acknowledgement.
--- Merely asking to commit, writing successfully, or receiving an ambiguous
--- error cannot supply this receipt.
+-- Asking to commit or writing successfully cannot supply this receipt.
 module Mimir.LearningTransactionReceipt where
 
 open import Data.List using (List; _∷_)
@@ -28,7 +27,6 @@ module Over (State Value Failure : Set) (database key : ℕ) where
   writeReceipt tx value (inj₁ detail) events actual (E.replied _ _ cleanup ())
   writeReceipt tx value (inj₂ tt) events actual (E.replied _ _ committed (E.returned _)) = tx , here refl
   writeReceipt tx value (inj₂ tt) events actual (E.replied _ _ (aborted detail) ())
-  writeReceipt tx value (inj₂ tt) events actual (E.replied _ _ (unknown detail) ())
 
   decisionReceipt : ∀ tx decision events actual →
     E.Runs (decide tx decision) events (applied actual) → Receipt events

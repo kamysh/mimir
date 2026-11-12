@@ -12,48 +12,36 @@ open import Mimir.Text using (Text)
 import Mimir.StandardLibrary as Conversion
 import Mimir.PublicEncoding as Encoding
 import Mimir.ApplicationProtocol as Application
-import Mimir.JudgeConfiguration as Config
-import Mimir.JudgeHarnessAdapter as Harness
+import Mimir.JudgeRevision as Revision
 import Mimir.JudgeServiceBinding as Service
 import Mimir.JudgeBackendComposition as Backend
 import Mimir.JudgeWorkflow as Workflow
 import Mimir.JudgeHandshake as Handshake
 import Mimir.JudgeFinalizationComposition as Finalization
-import Mimir.JudgeStateOperations as State
-import Mimir.NotificationConfig as Email
 import Mimir.UnixPath as Path
-import Mimir.UUIDV4 as UUID
 import Mimir.JudgeBatchServiceBinding as BatchService
 import Mimir.JudgeClientStartup as ClientStartup
 import Mimir.McpClientTransport as Transport
 import Mimir.JudgeMcpLifecycle as Client
-import Mimir.NotificationCodec as Codec
-import Mimir.NotificationDelivery as Delivery
-import Mimir.SMTPProtocol as SMTP
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Data.Product using (_×_)
 
 module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
-  (libraries : Harness.Libraries) (environment : Application.Environment) (errors : Service.Display)
-  (config : Config.Llm) (program : Text)
-  (contract model batchLimit : ℕ) (project : Maybe Text)
+  (display : Revision.Display) (environment : Application.Environment) (errors : Service.Display)
+  (contract model : ℕ) (batchLimit : Maybe ℕ) (project : Maybe Text)
   (mcpProgram : Text) (mcpArguments : List Text) (configurationPath : Path.Path)
-  (email : Email.Config) (localTime : ℕ → Text) (sizeMaximum clockMaximum : ℕ)
-  (endian : UUID.Endian) (path : Path.Path)
-  (json : Codec.JSONLibrary) (buildMessage : SMTP.Message → Delivery.BuildReceipt) where
+  (sizeMaximum : ℕ) where
   private
-    module F = Finalization.Bound conversion format localTime sizeMaximum clockMaximum endian path email project json buildMessage
-    module S = State.Bound conversion sizeMaximum endian path
-    module Batch = BatchService.Bound conversion format (Harness.Libraries.display libraries) errors environment sizeMaximum endian path
-  module W = Workflow.Run conversion format (Harness.Libraries.display libraries)
+    module F = Finalization.Bound
+    module Batch = BatchService.Bound conversion format display errors environment sizeMaximum
+  module W = Workflow.Run conversion format display
     contract model batchLimit project
   private
-    module B (clientReady : Handshake.Contract.Ready contract model) selected = Backend.Bound conversion format libraries environment errors config program W.initial selected
-      (Handshake.CheckedCatalogue.exposed (Handshake.Contract.Ready.catalogue clientReady))
-      sizeMaximum endian path
+    module B (clientReady : Handshake.Contract.Ready contract model) selected = Backend.Bound conversion format display environment errors selected
 
   data External : W.Effect → Set where
     clock : External W.clock
+    reportTraceProblem : ∀ failure → External (W.reportTraceProblem failure)
 
 
   data Receipt : Backend.BackendState → (effect : W.Effect) → W.Reply effect → Backend.BackendState → Set where
@@ -61,23 +49,23 @@ module Compose (conversion : Conversion.Contract) (format : Encoding.Formatting)
     started : ∀ backend diagnostics reply client →
       ClientStartup.Run.Started conversion diagnostics contract model mcpProgram mcpArguments configurationPath reply client →
       Receipt backend W.startClient reply backend
-    began : ∀ backend report reply → S.Began report 0 reply → Receipt backend (W.beginTrace report) reply backend
+    began : ∀ backend report reply → Receipt backend (W.beginTrace report) reply backend
     finalized : ∀ backend effect reply → F.Receipt effect reply → Receipt backend (W.finalize effect) reply backend
     selected : ∀ backend effect reply → Batch.SelectionReceipt effect reply → Receipt backend (W.selection effect) reply backend
     observed : ∀ backend effect reply → Batch.ReadbackReceipt effect reply → Receipt backend (W.readback effect) reply backend
-    revision : ∀ before after clientReady selected account report events result →
-      (execution : B.Trace clientReady selected before (W.One.start selected account report) events after (W.One.finished result)) →
-      Receipt before (W.revision clientReady selected account report)
+    revision : ∀ before after clientReady selected report events result →
+      (execution : B.Trace clientReady selected before (W.One.start selected report) events after (W.One.finished result)) →
+      Receipt before (W.revision clientReady selected report)
         (W.reviewed result events (B.runnerTrace clientReady selected execution)) after
 
   Connection : ∀ {before effect reply after} → Maybe Client.Client → Receipt before effect reply after → Maybe Client.Client → Set
   Connection before (started backend diagnostics reply client receipt) after = before ≡ nothing × after ≡ client
   Connection before (external _ _ _ _) after = before ≡ after
-  Connection before (began _ _ _ _) after = before ≡ after
+  Connection before (began _ _ _) after = before ≡ after
   Connection before (finalized _ _ _ _) after = before ≡ after
   Connection before (selected _ _ _ receipt) after = Client.Chain before (Batch.selectionCalls receipt) after
   Connection before (observed _ _ _ receipt) after = Client.Chain before (Batch.readbackCalls receipt) after
-  Connection before (revision _ _ clientReady observedSnapshot _ _ _ _ execution) after =
+  Connection before (revision _ _ clientReady observedSnapshot _ _ _ execution) after =
     Client.Chain before (B.traceIssued clientReady observedSnapshot execution) after
 
   data Runs : Backend.BackendState → Maybe Client.Client → W.P.Script Workflow.R.Report → List W.P.Event →

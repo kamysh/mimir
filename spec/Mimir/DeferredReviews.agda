@@ -17,6 +17,7 @@ open import Data.Empty using (⊥)
 open import Relation.Nullary using (yes; no; ¬_)
 open import Relation.Binary.PropositionalEquality using (_≡_; _≢_)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Mimir.Validation
 open import Mimir.RecordDecoding using (_>>=_)
 open import Mimir.Collections using (module Equality; atMost; checkCount)
@@ -25,7 +26,7 @@ open import Mimir.ExperienceSchema using (Experience)
 import Mimir.ReviewObservation as Observation
 open Observation using (Deferred; Snapshot; SnapshotValid; checkSnapshot; InScope; checkScope)
 
-module IDs = Equality ℕ _≟_
+module IDs = Equality UUID _≟UUID_
 
 Valid : Deferred → Set
 Valid d = ((+ 0) Data.Integer.< Deferred.revision d) ×
@@ -48,7 +49,7 @@ Identity d s = Deferred.identity d ≡ Experience.identity (Snapshot.experience 
 
 checkIdentity : ∀ d s → Checked (Identity d s)
 checkIdentity d s = check (fault [] wrongIdentity "deferred lookup returned another experience")
-  (Deferred.identity d ≟ Experience.identity (Snapshot.experience s))
+  (Deferred.identity d ≟UUID Experience.identity (Snapshot.experience s))
 
 record Keep (scope : Maybe Text) (d : Deferred) (s : Snapshot) : Set where
   constructor keepProof
