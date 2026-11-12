@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
 -- LF framing as an open state machine. Any number of bytes can precede LF;
--- EOF without LF is an error, and diagnostic capture remains bounded elsewhere.
+-- EOF without LF is an error; complete diagnostic capture is retained.
 module Mimir.McpClientLine where
 
 open import Data.List using (List; []; _∷_; _++_)

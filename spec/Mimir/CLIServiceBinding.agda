@@ -5,10 +5,12 @@ module Mimir.CLIServiceBinding where
 
 open import Data.Bool using (Bool)
 open import Data.List using (List; []; _∷_)
+open import Data.Maybe using (just)
 open import Data.Nat using (ℕ)
 open import Data.Product using (_,_)
 open import Data.Sum using (inj₁; inj₂)
 open import Data.Unit using (tt)
+open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text using (Text)
 import Mimir.CLI as CLI
 import Mimir.HookProtocol as Hook
@@ -54,6 +56,14 @@ module Bound (conversion : Library.Contract) (environment : Application.Environm
     replied : ∀ effect next reply before middle events after value → Receipt migrations effect reply before middle →
       Runs migrations (next reply) middle events after value →
       Runs migrations (C.P.ask effect next) before ((effect , reply) ∷ events) after value
+
+  -- Top-level service commands, including re-embedding, cannot bypass the
+  -- shared application's guarded execution by using a separate CLI handler.
+  data CommandRuns (migrations : M.Inputs) (command : CLI.Command) :
+    Store.World → List C.P.Event → Store.World → C.Failure Data.Sum.⊎ Data.Unit.⊤ → Set where
+    service : ∀ selected before events after value → CLI.serviceCommand command ≡ just selected →
+      Runs migrations (C.start selected) before events after value →
+      CommandRuns migrations command before events after value
 
   -- HookProtocol already models all error suppression and Stop's explicit
   -- exit 2. Its connect effect has the same startup obligation.

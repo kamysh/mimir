@@ -46,6 +46,7 @@ data JudgeCommand : Set where
 data HookCommand : Set where prompt pretooluse : HookCommand; stop : Maybe Text → HookCommand; setProject : Text → HookCommand
 
 data ServiceCommand : Set where
+  reembedMissing : ServiceCommand
   stats : ServiceCommand
   list patterns : Maybe Text → Maybe ℕ → ServiceCommand
   query : Text → Maybe ℕ → Bool → Maybe Text → Maybe Candidates.Memory → ServiceCommand
@@ -72,6 +73,13 @@ data Command : Set where
   hook : HookCommand → Command
   judge : JudgeCommand → Command
 
+-- The existing reembed command is a business operation, not an unverified
+-- bypass around the same application dispatcher used by MCP.
+serviceCommand : Command → Maybe ServiceCommand
+serviceCommand (service command) = just command
+serviceCommand reembed = just reembedMissing
+serviceCommand _ = nothing
+
 -- UUID arguments of these commands are parsed before configuration/database
 -- access. Evidence UUIDs are parsed after connection, as in the native command.
 validateBeforeConnect : ServiceCommand → Bool
@@ -81,6 +89,7 @@ validateBeforeConnect (intervene _ _) = true
 validateBeforeConnect _ = false
 
 request : Library.Contract → ServiceCommand → Validation.Fault ⊎ Public.Request
+request conversion reembedMissing = inj₂ Public.reembed
 request conversion stats = inj₂ (Public.read Read.stats)
 request conversion (list project limit) = inj₂ (Public.read (Read.listBeliefs project nothing))
 request conversion (patterns project limit) = inj₂ (Public.read (Read.listPatterns project))

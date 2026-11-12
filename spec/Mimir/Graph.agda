@@ -489,12 +489,13 @@ seed-clamped seedMean _ = refl
 --      enters as a weighted prior signal — NOT as a multiplier on the rank score
 --      (the old `rrf_score × probability`, which let an irrelevant-but-confident
 --      belief bury a strong semantic match).
---   4. Limit: if limit > 0, truncate to `limit` results (unchanged).
+--   4. Result selection is optional. An explicit count must be positive;
+--      omission selects every match. Zero is an invalid supplied count.
 --
 -- This legacy section proves structural list properties. Current floating
 -- RRF (including type preference), project/global selection and complete
 -- retrieval transitions are defined in RetrievalRanking, RetrievalProtocol
--- and StorageReadBinding. Cosine is a standard pgvector dependency operation;
+-- and ApplicationProtocol. Cosine is a standard pgvector dependency operation;
 -- its application filtering, ordering and LIMIT contract is explicit there.
 --
 -- MCP INTERFACE NOTE: the MCP tool input parameter is named "context" (not
@@ -506,7 +507,7 @@ seed-clamped seedMean _ = refl
 --   a. Current results use RetrievalRanking's weighted-RRF ordering. The
 --      `IsSortedByProb` / `sort-by-prob-sorted` infrastructure below remains a
 --      separate general utility, not the current retrieval implementation.
---   b. If limit > 0, |results| ≤ limit  (proved via take-length).
+--   b. Explicit positive selection bounds the returned list (take-length).
 -- ---------------------------------------------------------------------------
 
 -- Limit bound: take n never produces more than n elements.
@@ -515,10 +516,8 @@ take-length Data.Nat.zero    xs       = z≤n
 take-length (Data.Nat.suc n) []       = z≤n
 take-length (Data.Nat.suc n) (x ∷ xs) = s≤s (take-length n xs)
 
--- query_relevant result length respects limit when limit > 0:
--- |results| ≤ limit   (the `truncate(limit)` in Rust maps to `take limit`).
--- Consequence: if limit = 1, only the single highest-ranked belief is
--- returned; if limit = 0, all matching beliefs (no truncation).
+-- Caller-selected positive counts are applied after ranking. Omitted
+-- selection is represented by nothing, never by the numeric value zero.
 
 -- Deduplication: query_relevant never returns the same belief ID twice.
 -- Text matches are collected first; each downstream belief is added only if
