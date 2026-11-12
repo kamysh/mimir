@@ -18,9 +18,9 @@ import Mimir.JudgeStateRecords as Records
 import Mimir.JudgeIncident as Incident
 import Mimir.JudgeConfirmationLedger as Ledger
 
-module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) where
+module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) (Evidence : List Id → Set) where
   module R = Records.Over Id
-  module I = Incident.Over Id equal
+  module I = Incident.Over Id equal Evidence
   module L = Ledger.Over Id equal
 
   previous : Maybe R.Incident → List R.Confirmed
@@ -30,14 +30,14 @@ module Over (Id : Set) (equal : (x y : Id) → Dec (x ≡ y)) where
   newlyAdded : ∀ {report before after} → I.Transition report before (just after) →
     ∀ entry → Any (entry ≡_) (R.Incident.confirmedReviews after) → ¬ Any (entry ≡_) (previous before) →
     Σ R.Incident (λ original → before ≡ just original ×
-      (R.Report.status report ≡ toList "complete" × (I.CompleteCounts report ×
+      (R.Report.status report ≡ toList "complete" × (Evidence (R.Report.selectedIds report) ×
       L.Eligible (R.Report.selectedIds (R.Incident.first original)) (R.Report.selectedIds report) (R.Report.recordedAt report) entry)))
   newlyAdded (I.firstFailure failed) entry () absent
   newlyAdded (I.nextFailure before at failed recovered) entry () absent
   newlyAdded (I.latestFailure before failed openIncident) entry present absent = ⊥-elim (absent present)
   newlyAdded (I.idleRecovery before idle openIncident) entry present absent = ⊥-elim (absent present)
-  newlyAdded (I.batchConfirmation before after first additions complete counts openIncident updates) entry present absent
+  newlyAdded (I.batchConfirmation before after first additions complete confirmation openIncident updates) entry present absent
     with Any.++⁻ (R.Incident.confirmedReviews before)
       (subst (Any (entry ≡_)) (L.appendedExactly updates) present)
   ... | inj₁ old = ⊥-elim (absent old)
-  ... | inj₂ added = before , refl , complete , counts , All.lookup (L.onlyEligibleAdded updates) added
+  ... | inj₂ added = before , refl , complete , confirmation , All.lookup (L.onlyEligibleAdded updates) added

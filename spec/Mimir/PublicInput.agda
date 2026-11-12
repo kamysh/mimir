@@ -1,19 +1,17 @@
 {-# OPTIONS --safe #-}
 -- Shared wire admission. JSON integer and floating variants stay distinct.
--- UUIDs are represented internally by their 128-bit big-endian integer, not
--- by an invented ordinal. Standard integer-to-f64 casting is a dependency.
+-- UUIDs remain opaque. Standard integer-to-f64 casting is a dependency.
 module Mimir.PublicInput where
 
 open import Data.Bool using (Bool; true; false)
-open import Data.Fin using (fromℕ<; toℕ)
+open import Data.Fin using (fromℕ<)
 open import Data.Integer using (ℤ; +_; -[1+_])
-open import Data.List using (List; []; _∷_; map; foldl)
+open import Data.List using (List; []; _∷_; map)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; suc; _+_; _*_; _<?_; _≤?_)
 open import Data.Product using (_×_; _,_; proj₁)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (String; toList)
-import Data.Vec as Vec
 open import Relation.Nullary using (yes; no)
 open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
@@ -29,13 +27,10 @@ import Mimir.FloatValue as Float
 bad : ∀ {A : Set} → String → Fault ⊎ A
 bad message = inj₁ (fault [] malformedInput message)
 
-uuidNumber : UUIDValue.UUID → ℕ
-uuidNumber id = foldl (λ n byte → 256 * n + toℕ byte) 0 (Vec.toList id)
-
-readUUID : Conversion.Contract → V.Value → Fault ⊎ ℕ
+readUUID : Conversion.Contract → V.Value → Fault ⊎ UUIDValue.UUID
 readUUID conversion raw with UUID.decode conversion raw
 ... | inj₁ error = bad "invalid UUID"
-... | inj₂ id = inj₂ (uuidNumber id)
+... | inj₂ id = inj₂ id
 
 unsigned : ℕ → V.Value → Fault ⊎ ℕ
 unsigned maximum raw = mapResult proj₁ (result (V.uint maximum raw))
@@ -91,7 +86,7 @@ looseOptional : ∀ {A : Set} → String → (V.Value → Fault ⊎ A) → V.Obj
 looseOptional name decode = loose name nothing (λ raw → mapResult just (decode raw))
 
 module Numbers (conversion : Conversion.Contract) where
-  uuid : V.Value → Fault ⊎ ℕ
+  uuid : V.Value → Fault ⊎ UUIDValue.UUID
   uuid = readUUID conversion
 
   castNatural : ℕ → Fault ⊎ B.Number

@@ -11,6 +11,7 @@ open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤)
 open import Relation.Nullary using (does)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID)
 import Mimir.ApplicationStore as Store
 import Mimir.LearningStore as Learning
 import Mimir.ReviewPreparationPublication as Publication
@@ -24,39 +25,37 @@ import Mimir.IndependentProvenance as Origin
 import Mimir.ReviewEdges as Edges
 import Mimir.ReviewSchema as R
 import Mimir.Effects as Effects
+import Mimir.StructuredValue as V
+open import Mimir.Collections using (validSelection)
 
 data Request : Set where
-  getBelief getPattern : ℕ → Request
+  getBelief getPattern : UUID → Request
   listBeliefs : Maybe Text → Maybe C.Memory → Request
   listPatterns : Maybe Text → Request
   beliefPage : Maybe Text → Maybe C.Memory → ℕ → ℕ → Request -- limit, offset
-  explain : ℕ → ℕ → ℕ → Request -- id, offset, limit
+  explain : UUID → ℕ → Maybe ℕ → Request -- id, offset, optional selection
   stats : Request
 
 data Statement : Set where
-  belief patternNode incoming reviews candidate independent : ℕ → Statement
+  belief patternNode incoming reviews candidate independent : UUID → Statement
   beliefs countBeliefs : Maybe Text → Maybe C.Memory → Statement
   pageRows : Maybe Text → Maybe C.Memory → ℕ → ℕ → Statement
   patterns : Maybe Text → Statement
-  countPatterns : Statement
-  countEdges : R.Relation → Statement
 
 data Effect : Set where
   beginRead : Effect
+  statistics : Effect
   select : Maybe ℕ → Statement → Effect
   dropTransaction : ℕ → Effect
 
 Reply : Effect → Set
 Reply beginRead = Text ⊎ ℕ
+Reply statistics = Text ⊎ V.Value
 Reply (select handle statement) = Text ⊎ Store.World
 Reply (dropTransaction tx) = ⊤
 
 module E = Effects.Protocol Effect Reply
 open E
-
-record Statistics : Set where
-  constructor statistics
-  field beliefCount patternCount supportCount defeatCount causeCount contradictionCount : ℕ
 
 data Result : Set where
   failed : Text → Result
@@ -67,7 +66,7 @@ data Result : Set where
   patternList : List G.PatternValues → Result
   paged : Records.Page → Result
   explained : Explanation.Explanation → Result
-  counted : Statistics → Result
+  counted : V.Value → Result
 
 close : Maybe ℕ → Result → Script Result
 close nothing result = done result
@@ -78,17 +77,13 @@ read handle statement next = ask (select handle statement) (λ
   { (inj₁ error) → close handle (failed error)
   ; (inj₂ observed) → next observed })
 
-countRelation : R.Relation → Store.World → ℕ
-countRelation relation w = length (filterᵇ (λ e → does (R.relationCode relation ≟ R.relationCode (Edges.Edge.relation e)))
-  (Publication.World.edges (Learning.World.publication (Store.World.learning w))))
-
-finishExplanation : ℕ → G.BeliefValues → List Explanation.Incoming → Explanation.Page →
+finishExplanation : UUID → G.BeliefValues → List Explanation.Incoming → Explanation.Page →
   Maybe Candidate.Provenance → Store.World → Script Result
 finishExplanation id b parents selectedPage provenance w with Explanation.origin id (Store.World.learning w)
 ... | Origin.malformed = done invalidProvenance
 ... | source = done (explained (Explanation.explanation b parents selectedPage provenance source))
 
-afterReviews : ℕ → G.BeliefValues → List Explanation.Incoming → ℕ → ℕ → ℕ → Store.World → Script Result
+afterReviews : UUID → G.BeliefValues → List Explanation.Incoming → ℕ → Maybe ℕ → ℕ → Store.World → Script Result
 afterReviews id b parents offset limit tx w = ask (dropTransaction tx) (λ _ →
   read nothing (candidate id) (λ c → read nothing (independent id)
     (finishExplanation id b parents page (Candidate.get id (Store.World.learning c)))))
@@ -97,8 +92,8 @@ afterReviews id b parents offset limit tx w = ask (dropTransaction tx) (λ _ →
   page = Explanation.paginate offset limit (Explanation.reviews id (Learning.identities learn)
     (Publication.World.ledger (Learning.World.publication learn)))
 
-afterParents : ℕ → G.BeliefValues → ℕ → ℕ → Store.World → Script Result
-afterParents id b offset limit w with does (1 ≤? limit)
+afterParents : UUID → G.BeliefValues → ℕ → Maybe ℕ → Store.World → Script Result
+afterParents id b offset limit w with validSelection limit
 ... | false = done invalidPage
 ... | true = ask beginRead (λ
   { (inj₁ error) → done (failed error)
@@ -106,7 +101,7 @@ afterParents id b offset limit w with does (1 ≤? limit)
   where parents = Explanation.parents id (Store.nodes w)
           (Publication.World.edges (Learning.World.publication (Store.World.learning w)))
 
-afterBelief : ℕ → ℕ → ℕ → Store.World → Script Result
+afterBelief : UUID → ℕ → Maybe ℕ → Store.World → Script Result
 afterBelief id offset limit w with Ranking.lookup id (Store.beliefs w)
 ... | nothing = done missingBelief
 ... | just b = read nothing (incoming id) (afterParents id b offset limit)
@@ -126,9 +121,6 @@ start (beliefPage project memory limit offset) with Records.pageAdmitted limit o
     (Records.pageResult project memory limit offset
       (length (Records.listBeliefs project memory (Store.beliefs first))) (Store.beliefs second)))))
 start (explain id offset limit) = read nothing (belief id) (afterBelief id offset limit)
-start stats = read nothing (countBeliefs nothing nothing) (λ b → read nothing countPatterns (λ p →
-  read nothing (countEdges R.supports) (λ s → read nothing (countEdges R.defeats) (λ d →
-  read nothing (countEdges R.causes) (λ c → read nothing (countEdges R.contradicts) (λ k → done
-    (counted (statistics (length (Store.beliefs b)) (length (Store.patterns (Store.nodes p)))
-      (countRelation R.supports s) (countRelation R.defeats d) (countRelation R.causes c)
-      (countRelation R.contradicts k)))))))))
+start stats = ask statistics λ where
+  (inj₁ error) → done (failed error)
+  (inj₂ value) → done (counted value)

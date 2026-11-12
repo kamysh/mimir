@@ -15,6 +15,7 @@ open import Data.Unit using (tt)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; cong₂; sym)
 open import Mimir.Binary64 using (Number)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID)
 open import Mimir.NumericValidation using (Axis)
 open import Mimir.LearningSchema using (Assessment; Target; existing; candidate)
 import Mimir.ReviewSchema as Reviews
@@ -43,7 +44,7 @@ calculate a = values
 
 module Applied = Resolution.Apply [] []
 
-targetID : (target : Target) → Applied.Existing target → ℕ
+targetID : (target : Target) → Applied.Existing target → UUID
 targetID (existing identity) proof = identity
 targetID (candidate name) ()
 
@@ -54,7 +55,9 @@ targetExact (candidate name) ()
 record Row : Set where
   constructor row
   field
-    experience revision belief : ℕ
+    experience : UUID
+    revision : ℕ
+    belief : UUID
     payload : Assessment
     calculated : Values
 
@@ -71,20 +74,20 @@ rubric entry = Assessment.rubric (Row.payload entry)
 key : Row → Reviews.AssessmentKey
 key entry = existing (Row.belief entry) , scope entry , rubric entry
 
-Owned : ℕ → ℕ → Row → Set
+Owned : UUID → ℕ → Row → Set
 Owned experience revision entry = Row.experience entry ≡ experience ×
   (Row.revision entry ≡ revision ×
   (Assessment.target (Row.payload entry) ≡ existing (Row.belief entry) ×
     Row.calculated entry ≡ calculate (Row.payload entry)))
 
-write : ℕ → ℕ → (a : Assessment) → Applied.Existing (Assessment.target a) → Row
+write : UUID → ℕ → (a : Assessment) → Applied.Existing (Assessment.target a) → Row
 write experience revision a resolved = row experience revision
   (targetID (Assessment.target a) resolved) a (calculate a)
 
 writeOwned : ∀ experience revision a resolved → Owned experience revision (write experience revision a resolved)
 writeOwned experience revision a resolved = refl , refl , targetExact (Assessment.target a) resolved , refl
 
-writes : ℕ → ℕ → (assessments : List Assessment) → All (λ a → Applied.Existing (Assessment.target a)) assessments → List Row
+writes : UUID → ℕ → (assessments : List Assessment) → All (λ a → Applied.Existing (Assessment.target a)) assessments → List Row
 writes experience revision = Resolution.mapEvidence (write experience revision)
 
 allOwned : ∀ experience revision assessments resolved → All (Owned experience revision) (writes experience revision assessments resolved)

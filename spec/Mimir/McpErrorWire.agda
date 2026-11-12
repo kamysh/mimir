@@ -18,7 +18,6 @@ import Mimir.McpErrors as Errors
 import Mimir.McpClientWire as WireDependency
 private
   module Wire = WireDependency library
-import Mimir.ProviderResponse as Fields
 import Mimir.SignedMachine as Machine
 
 module BoundedCodes (minimum maximum : ℤ) where
@@ -42,8 +41,8 @@ module BoundedCodes (minimum maximum : ℤ) where
   readMessage _ = toList "unspecified MCP failure"
 
   decode : V.Value → Errors.Error
-  decode raw = Errors.error (readCode (Fields.get "code" raw))
-    (readMessage (Fields.get "message" raw)) (Wire.lookup "data" raw)
+  decode raw = Errors.error (readCode (Wire.get "code" raw))
+    (readMessage (Wire.get "message" raw)) (Wire.lookup "data" raw)
 
   encode : Errors.Error → V.Value
   encode (Errors.error code message nothing) = V.object

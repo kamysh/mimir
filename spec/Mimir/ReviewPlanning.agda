@@ -9,6 +9,7 @@ open import Data.List using ([]; map)
 open import Data.List.Relation.Unary.All using (All)
 open import Data.Integer using (ℤ; +_)
 open import Data.Nat using (ℕ; _<?_; _≟_)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Product using (_,_; proj₁; proj₂)
 open import Data.Sum using (inj₁; inj₂)
 open import Relation.Nullary using (yes; no)
@@ -52,7 +53,7 @@ module For (before : Publication.World) (current : Experience) (requested : Revi
     replay : Replayed → Decision
     fresh : F.Fresh expected → Decision
 
-  plan : (Candidate → ℕ) → Decision
+  plan : (Candidate → UUID) → Decision
   plan identities with validateReview requested
   ... | rejected failure invalid = refused failure
   ... | accepted structure with expected <? i64Maximum

@@ -15,6 +15,7 @@ open import Data.Unit using (⊤; tt)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; cong; trans; sym)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID)
 open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.Validation hiding (Feedback; feedback)
 open import Mimir.OptionalTraversal using (nothingNotJust)
@@ -23,21 +24,21 @@ open import Mimir.LearningCandidates using (Candidate; TargetValid; validateTarg
 open import Mimir.ReviewSchema using (Review; Feedback; feedback; Link; link;
   CandidateFeedback; CandidateLink; ReviewValid; validateReview)
 
-Registry = List (Text × ℕ)
+Registry = List (Text × UUID)
 
-lookup : Text → Registry → Maybe ℕ
+lookup : Text → Registry → Maybe UUID
 lookup name [] = nothing
 lookup name ((other , identity) ∷ rest) with name ≟Text other
 ... | yes _ = just identity
 ... | no _ = lookup name rest
 
-Resolution : List Candidate → Registry → Target → ℕ → Set
+Resolution : List Candidate → Registry → Target → UUID → Set
 Resolution cs registry (existing original) identity = original ≡ identity
 Resolution cs registry (candidate name) identity =
   TargetValid cs (candidate name) × lookup name registry ≡ just identity
 
 Resolved : List Candidate → Registry → Target → Set
-Resolved cs registry target = Σ[ identity ∈ ℕ ] Resolution cs registry target identity
+Resolved cs registry target = Σ[ identity ∈ UUID ] Resolution cs registry target identity
 
 resolve : ∀ cs registry target → Checked (Resolved cs registry target)
 resolve cs registry (existing identity) = accepted (identity , refl)

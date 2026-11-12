@@ -8,6 +8,7 @@ open import Data.Maybe using (nothing)
 open import Data.Nat using (ℕ)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (tt)
+open import Relation.Binary.PropositionalEquality using (_≡_)
 open import Mimir.Text using (Text)
 import Mimir.StandardLibrary as Conversion
 import Mimir.McpClientTransport as Transport
@@ -26,11 +27,16 @@ module Run (conversion : Conversion.Contract) (diagnostics : Transport.Diagnosti
 
   data Started : Revision.Error ⊎ H.Ready → Data.Maybe.Maybe Client.Client → Set where
     spawnFailed : ∀ events detail → Client.Runs (Client.start program arguments config) events (inj₁ detail) →
+      Client.ownerAfter Client.absent events ≡ Client.absent →
+      Started (inj₁ (Revision.error detail nothing)) nothing
+    startupCleanupRecovered : ∀ events detail cleanup →
+      Client.Runs (Client.start program arguments config) events (inj₁ detail) →
+      Client.Runs (Client.cancelOwned (Client.ownerAfter Client.absent events)) cleanup (inj₂ tt) →
       Started (inj₁ (Revision.error detail nothing)) nothing
     handshakeFailed : ∀ events owned calls after failure cleanup →
       Client.Runs (Client.start program arguments config) events (inj₂ owned) →
       B.Runs owned H.start calls after (inj₁ failure) →
-      Client.Runs (Client.dropClient after) cleanup tt →
+      Client.Runs (Client.dropClient after) cleanup (inj₂ tt) →
       Started (inj₁ (Revision.error (Validation.Fault.explanation failure) nothing)) nothing
     ready : ∀ events owned calls after result →
       Client.Runs (Client.start program arguments config) events (inj₂ owned) →

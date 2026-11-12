@@ -7,7 +7,8 @@ module Mimir.ExperienceRecord where
 open import Data.Bool using (Bool; true; false; _∧_; _∨_)
 open import Data.List using (List; []; _∷_; map)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; suc; _≟_; z≤n)
+open import Data.Nat using (ℕ; suc; z≤n)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Integer using (ℤ; +_; ∣_∣) renaming (_-_ to _-ℤ_)
 import Data.Integer.Properties as Integer
 open import Data.Product using (_,_)
@@ -31,6 +32,7 @@ import Mimir.LearningCorrections as Corrections
 import Mimir.LearningKeys as Keys
 import Mimir.SemanticKey as Key
 import Mimir.LearningRecompute as Recompute
+import Mimir.PosteriorComputation as Posterior
 import Mimir.ReviewNumericalPublication as Numerical
 import Mimir.RevisionBounds as Bounds
 import Mimir.Validation as Validation
@@ -45,10 +47,10 @@ data Decision : Set where
   replay : Observation.Snapshot → Decision
   fresh : Store.World → Observation.Snapshot → Bool → Decision
 
-patternAllowed : Text → ℕ → List Graph.Node → Maybe Bool
+patternAllowed : Text → UUID → List Graph.Node → Maybe Bool
 patternAllowed project id [] = nothing
 patternAllowed project id (Graph.beliefNode b ∷ ns) = patternAllowed project id ns
-patternAllowed project id (Graph.patternNode p ∷ ns) with id ≟ Graph.PatternValues.identity p
+patternAllowed project id (Graph.patternNode p ∷ ns) with id ≟UUID Graph.PatternValues.identity p
 ... | no different = patternAllowed project id ns
 ... | yes same with Graph.PatternValues.project p
 ...   | nothing = just true
@@ -67,11 +69,11 @@ newSnapshot e revision (just old) = Observation.snapshot e (+ revision)
   (Observation.Snapshot.reviewRevision old) (Observation.Snapshot.reviewedRevision old)
   []
 
-prepare : Store.World → Experience → ℕ → ℤ → Maybe Observation.Snapshot → Decision
-prepare before e expected now old with Owners.prepare (Experience.identity e)
+prepare : (calculation : Posterior.Calculation) → Store.World → Experience → ℕ → ℤ → Maybe Observation.Snapshot → Decision
+prepare calculation before e expected now old with Owners.prepare (Experience.identity e)
   (Publication.World.owners (Store.World.publication before)) (Experience.items e)
 ... | inj₁ failure = rejected (invalid failure)
-... | inj₂ (owners , ownership) with Recompute.run (Experience.project e)
+... | inj₂ (owners , ownership) with Recompute.run calculation (Experience.project e)
   (Numerical.oldTargets (Ledger.activeApplied
     (Ledger.World.cells priorLedger (Experience.identity e))
     (Ledger.World.histories priorLedger (Experience.identity e))))
@@ -95,19 +97,19 @@ prepare before e expected now old with Owners.prepare (Experience.identity e)
     ; sources = Store.sourceVersion e (suc expected) now ∷ Store.World.sources before }) result limit
   where result = newSnapshot e (suc expected) old
 
-checkPattern : Store.World → Experience → ℕ → ℤ → Maybe Observation.Snapshot → Decision
-checkPattern before e expected now old with Experience.patternID e
-... | nothing = prepare before e expected now old
+checkPattern : (calculation : Posterior.Calculation) → Store.World → Experience → ℕ → ℤ → Maybe Observation.Snapshot → Decision
+checkPattern calculation before e expected now old with Experience.patternID e
+... | nothing = prepare calculation before e expected now old
 ... | just id with patternAllowed (Experience.project e) id (Publication.World.nodes (Store.World.publication before))
 ...   | nothing = rejected missingPattern
 ...   | just false = rejected foreignPattern
-...   | just true = prepare before e expected now old
+...   | just true = prepare calculation before e expected now old
 
-checkTargets : Store.World → Experience → ℕ → ℤ → Maybe Observation.Snapshot → Decision
-checkTargets before e expected now old with Targets.validate (Experience.project e)
+checkTargets : (calculation : Posterior.Calculation) → Store.World → Experience → ℕ → ℤ → Maybe Observation.Snapshot → Decision
+checkTargets calculation before e expected now old with Targets.validate (Experience.project e)
   (map Recompute.target (Recompute.beliefs (Publication.World.nodes (Store.World.publication before)))) (Experience.beliefIDs e)
 ... | Validation.rejected failure refutation = rejected (invalid failure)
-... | Validation.accepted valid = checkPattern before e expected now old
+... | Validation.accepted valid = checkPattern calculation before e expected now old
 
 coherent : Store.World → Observation.Snapshot → Bool
 coherent before old =
@@ -118,8 +120,8 @@ coherent before old =
   where cell = Ledger.World.cells (Publication.World.ledger (Store.World.publication before))
           (Experience.identity (Observation.Snapshot.experience old))
 
-existing : Store.World → Experience → ℤ → ℤ → Observation.Snapshot → Decision
-existing before e expected now old with Observation.checkSnapshot old
+existing : (calculation : Posterior.Calculation) → Store.World → Experience → ℤ → ℤ → Observation.Snapshot → Decision
+existing calculation before e expected now old with Observation.checkSnapshot old
 ... | Validation.rejected failure refutation = rejected (invalid failure)
 ... | Validation.accepted valid with coherent before old
 ...   | false = rejected incoherentSnapshot
@@ -132,18 +134,18 @@ existing before e expected now old with Observation.checkSnapshot old
 ...       | true = replay old
 ...       | false with expected Integer.≟ Observation.Snapshot.revision old
 ...         | no stale = rejected staleRevision
-...         | yes same = checkTargets before e ∣ expected ∣ now (just old)
+...         | yes same = checkTargets calculation before e ∣ expected ∣ now (just old)
 
-plan : Store.World → Experience → ℤ → ℤ → Decision
-plan before e expected now with Schema.validate e
+plan : (calculation : Posterior.Calculation) → Store.World → Experience → ℤ → ℤ → Decision
+plan calculation before e expected now with Schema.validate e
 ... | Validation.rejected failure refutation = rejected (invalid failure)
 ... | Validation.accepted valid with does ((+ 0) Integer.≤? expected) ∧ does (expected Integer.<? (+ Bounds.i64Maximum))
 ...   | false = rejected invalidExpected
 ...   | true with Read.get (Experience.identity e) (Store.World.current before)
-...     | just old = existing before e expected now old
+...     | just old = existing calculation before e expected now old
 ...     | nothing with expected Integer.≟ (+ 0)
 ...       | no stale = rejected staleRevision
-...       | yes initial = checkTargets before e 0 now nothing
+...       | yes initial = checkTargets calculation before e 0 now nothing
 
 proposed : Store.World → Decision → Store.World
 proposed before (rejected failure) = before

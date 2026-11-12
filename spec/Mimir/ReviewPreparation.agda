@@ -12,6 +12,7 @@ import Data.List.Relation.Unary.All as All
 open import Data.Maybe using (Maybe)
 open import Data.Product using (_,_)
 open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Integer using (ℤ)
 open import Data.Sum using (_⊎_; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; subst)
@@ -85,7 +86,7 @@ module For (before : Input) (requested : Review) (clock : Candidate → ℤ) whe
       ownershipPlan : Ownership.Batch (Review.experienceID requested) (Input.owners before)
         (Review.extracted requested) afterOwners
 
-  prepare : (Candidate → ℕ) → Fault ⊎ Prepared
+  prepare : (Candidate → UUID) → Fault ⊎ Prepared
   prepare fresh = result (validateReview requested) >>= λ structure →
     result (Admission.checkPin originalEnvironment requested) >>= λ pinned →
     result (validateReviewSources current requested) >>= λ sources →

@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
 -- Server control-state composition. Input failures terminate the loop; normal
--- JSON errors write a parse-error response and may continue after its flush.
+-- JSON errors receive a parse-error response and the loop may continue.
 -- Each exchange finishes before the next read. Traces need not be infinite.
 import Mimir.StandardLibrary
 module Mimir.McpRuntime (library : Mimir.StandardLibrary.Contract) where
@@ -24,7 +24,6 @@ data Exit : Set where
   readFailure : Text → Exit
   invalidUTF8 : Text → Exit
   arithmeticPanic : Exit
-  exchangeFailure : Exchange.Failure → Exit
 
 data State : Set where
   reading : State
@@ -44,7 +43,6 @@ readOutcome (Input.line framed textValue parsedBody) = bodyOutcome parsedBody
 
 finish : Exchange.Outcome → State
 finish Exchange.nextLine = reading
-finish (Exchange.stopped failure) = exited (exchangeFailure failure)
 
 data Event : Set where
   read : ∀ input → Lines.Scanned.remainder (Lines.scan input) ≡ [] → Event

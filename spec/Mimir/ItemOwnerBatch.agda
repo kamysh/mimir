@@ -7,7 +7,7 @@ module Mimir.ItemOwnerBatch where
 open import Data.List using (List; []; _∷_)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (just)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (Σ; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Nullary using (yes; no)
@@ -16,16 +16,16 @@ open import Mimir.LearningSchema using (LearningItem)
 open import Mimir.Validation using (Fault)
 import Mimir.ItemOwners as Owners
 
-owner : ℕ → LearningItem → Owners.Owner
+owner : UUID → LearningItem → Owners.Owner
 owner experience item = experience , LearningItem.reference item , LearningItem.actor item
 
-data Batch (experience : ℕ) : Owners.Registry → List LearningItem → Owners.Registry → Set where
+data Batch (experience : UUID) : Owners.Registry → List LearningItem → Owners.Registry → Set where
   done : ∀ before → Batch experience before [] before
   next : ∀ {before item rest middle after} →
     Owners.reserve before (LearningItem.identity item) (owner experience item) ≡ Owners.reserved middle →
     Batch experience middle rest after → Batch experience before (item ∷ rest) after
 
-Prepared : ℕ → Owners.Registry → List LearningItem → Set
+Prepared : UUID → Owners.Registry → List LearningItem → Set
 Prepared experience before items = Σ Owners.Registry (Batch experience before items)
 
 prepare : ∀ experience before items → Fault ⊎ Prepared experience before items
@@ -40,7 +40,7 @@ prepare experience before (item ∷ rest)
 acceptedPreserves : ∀ before identity proposedOwner after →
   Owners.reserve before identity proposedOwner ≡ Owners.reserved after → ∀ key old →
   before key ≡ just old → after key ≡ just old
-acceptedPreserves before identity proposedOwner after accepted key old original with key ≟ identity
+acceptedPreserves before identity proposedOwner after accepted key old original with key ≟UUID identity
 ... | yes refl = trans (sym (cong (λ outcome → Owners.after before outcome identity) accepted)) (Owners.existingOwnershipImmutable before identity old proposedOwner original)
 ... | no different = trans (sym (cong (λ outcome → Owners.after before outcome key) accepted)) (trans (Owners.noOtherItemChanges before identity key proposedOwner different) original)
 
@@ -51,7 +51,7 @@ batchPreserves {experience} {before} (next {item = item} accepted remaining) key
   (acceptedPreserves before (LearningItem.identity item)
    (owner experience item) _ accepted key old original)
 
-Owns : ℕ → Owners.Registry → LearningItem → Set
+Owns : UUID → Owners.Registry → LearningItem → Set
 Owns experience registry item = registry (LearningItem.identity item) ≡ just (owner experience item)
 
 allOwned : ∀ {experience before items after} → Batch experience before items after →

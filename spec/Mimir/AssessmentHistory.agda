@@ -11,7 +11,8 @@ open import Data.List.Relation.Unary.Any using (here; there)
 open import Data.List.Relation.Unary.All using (All)
 import Data.List.Relation.Unary.All as All
 import Data.List.Relation.Unary.All.Properties as AllProperties
-open import Data.Nat using (ℕ; suc; _≤_; _≟_)
+open import Data.Nat using (ℕ; suc; _≤_)
+open import Mimir.UUIDGroups using (_≟UUID_)
 import Data.Nat.Properties as Nat
 open import Data.Integer using (ℤ)
 open import Data.Product using (Σ; _×_; _,_; proj₁; proj₂)
@@ -68,7 +69,7 @@ freshRevisionDifferent ledger contribution identity consistent reference owner s
 allHistoryRetained : ∀ identity ledger requested applied other entry →
   entry ∈ Ledger.World.histories ledger other →
   entry ∈ Ledger.World.histories (Ledger.append identity ledger requested applied) other
-allHistoryRetained identity ledger requested applied other entry member with other ≟ identity
+allHistoryRetained identity ledger requested applied other entry member with other ≟UUID identity
 ... | yes refl = there member
 ... | no different = member
 

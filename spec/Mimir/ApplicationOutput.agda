@@ -8,6 +8,7 @@ open import Data.Bool using (Bool; true; false)
 open import Data.List using (List; []; _∷_; map; _++_)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (tt)
@@ -32,7 +33,6 @@ import Mimir.BeliefExplanation as Explain
 import Mimir.ReviewEdges as Edges
 import Mimir.IndependentProvenance as Origin
 import Mimir.CandidateProvenance as Provenance
-import Mimir.PatternOutcomes as Pattern
 import Mimir.LearningContext as Context
 import Mimir.LearningContextProtocol as ContextProtocol
 import Mimir.AssessmentRead as Assessment
@@ -90,17 +90,6 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     ("independent_provenance" , independent (Explain.Explanation.independentProvenance e)) ∷ [])
     where page = Explain.Explanation.learning e
 
-  patternResult : Pattern.Result → V.Value
-  patternResult p = object (("pattern" , patternValue (Pattern.Result.patternValue p)) ∷
-    ("successes" , V.unsigned (Pattern.Counts.successes counts)) ∷ ("failures" , V.unsigned (Pattern.Counts.failures counts)) ∷
-    ("unknown" , V.unsigned (Pattern.Counts.unknowns counts)) ∷
-    ("observed_success_probability" , real (Pattern.Result.observedSuccessProbability p)) ∷ originField (Pattern.Result.candidateProvenance p))
-    where
-    counts = Pattern.Result.observations p
-    originField : Maybe Provenance.Provenance → List (String × V.Value)
-    originField nothing = []
-    originField (just origin) = ("candidate_provenance" , provenance origin) ∷ []
-
   currentReview : History.CurrentReview → V.Value
   currentReview r = object (("experience_id" , uuid (Experience.Experience.identity (Observation.Snapshot.experience s))) ∷
     ("revision" , V.signed (Observation.Snapshot.revision s)) ∷ ("review_revision" , V.signed (Observation.Snapshot.reviewRevision s)) ∷
@@ -129,16 +118,13 @@ module Project (environment : Application.Environment) (format : Encoding.Format
     ("total" , V.unsigned (Records.Page.total p)) ∷ ("offset" , V.unsigned (Records.Page.offset p)) ∷
     ("next_offset" , optional V.unsigned (Records.Page.nextOffset p)) ∷ []))
   projectRead original (Read.explained e) = success (explanation e)
-  projectRead original (Read.counted s) = success (object (("beliefs" , V.unsigned (Read.Statistics.beliefCount s)) ∷
-    ("patterns" , V.unsigned (Read.Statistics.patternCount s)) ∷ ("supports" , V.unsigned (Read.Statistics.supportCount s)) ∷
-    ("defeats" , V.unsigned (Read.Statistics.defeatCount s)) ∷ ("causes" , V.unsigned (Read.Statistics.causeCount s)) ∷
-    ("contradicts" , V.unsigned (Read.Statistics.contradictionCount s)) ∷ []))
+  projectRead original (Read.counted value) = success value
   projectRead original (Read.failed error) = failure original
   projectRead original Read.invalidPage = failure original
   projectRead original Read.missingBelief = failure original
   projectRead original Read.invalidProvenance = failure original
 
-  rawCurrent : ℕ → RawHistory.Current → V.Value
+  rawCurrent : UUID → RawHistory.Current → V.Value
   rawCurrent id currentRecord = object (("experience_id" , uuid id) ∷
     ("revision" , V.signed (RawHistory.Current.revision currentRecord)) ∷
     ("review_revision" , V.signed (RawHistory.Current.reviewRevision currentRecord)) ∷
@@ -179,14 +165,17 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project original@(A.deleted _) = failure original
   project (A.forgotten (A.Forget.deleted n)) = success (count "deleted" n)
   project original@(A.forgotten _) = failure original
-  project (A.inferred (Inference.propagated writes warning)) = success (V.array (map (λ { (id , p) →
+  project (A.inferred (Inference.propagated writes false)) = success (V.array (map (λ { (id , p) →
     object (("id" , uuid id) ∷ ("new_probability" , real p) ∷ []) }) writes))
-  project (A.inferred (Inference.projected writes warning)) = success (V.array (map (λ { (id , p) →
+  project (A.inferred (Inference.projected writes false)) = success (V.array (map (λ { (id , p) →
     object (("id" , uuid id) ∷ ("projected_probability" , real p) ∷ []) }) writes))
   project (A.inferred (Inference.changed n)) = success (count "decayed" n)
   project (A.inferred (Inference.deleted n)) = success (count "deleted" n)
   project (A.inferred (Inference.pairs pairs)) = success (V.array (map (λ { (a , b) → V.array (uuid a ∷ uuid b ∷ []) }) pairs))
   project original@(A.inferred _) = failure original
+  project (A.swept (A.Sweep.S.applied n)) = success (count "deleted" n)
+  project (A.swept (A.Sweep.S.replayed n cleanup)) = success (count "deleted" n)
+  project original@(A.swept _) = failure original
   project (A.grounded (A.Grounding.T.applied tt)) = success (flag "ok" true)
   project original@(A.grounded _) = failure original
   project original@A.invalidGrounding = failure original
@@ -207,9 +196,11 @@ module Project (environment : Application.Environment) (format : Encoding.Format
   project original@(A.contextResult result) with contextAssessments (Context.Assessments.values (ContextProtocol.Output.assessments result))
   ... | nothing = failure original
   ... | just assessments = success (object (("beliefs" , V.array (map belief (ContextProtocol.Output.beliefs result))) ∷
-    ("patterns" , V.array (map patternResult (ContextProtocol.Output.patterns result))) ∷ ("assessments" , V.array assessments) ∷
+    ("patterns" , V.array (ContextProtocol.Output.patterns result)) ∷ ("assessments" , V.array assessments) ∷
     ("assessments_truncated" , V.boolean (Context.Assessments.truncated (ContextProtocol.Output.assessments result))) ∷ []))
   project (A.capabilitiesResult c) = success (Capabilities.encode c)
   project original@(A.failed _) = failure original
+  project original@(A.needsDecision _ _) = failure original
+  project original@A.invalidRequestIdentity = failure original
   project original@A.invalidContext = failure original
   project original@A.invalidAssessment = failure original

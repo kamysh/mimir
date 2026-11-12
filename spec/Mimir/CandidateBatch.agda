@@ -11,12 +11,13 @@ open import Data.Empty using (⊥-elim)
 open import Data.List using (List; []; _∷_; length; map)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
 open import Data.Maybe using (just; nothing)
-open import Data.Nat using (ℕ; suc)
+open import Data.Nat using (suc)
 open import Data.Product using (Σ; _×_; _,_; proj₁)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Nullary using (yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; trans; subst; sym; cong)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID)
 open import Mimir.LearningCandidates using (Candidate; candidateKey)
 open import Mimir.Validation using (Fault)
 open import Mimir.OptionalTraversal using (nothingNotJust)
@@ -24,7 +25,7 @@ open import Mimir.SourceReview using (_≟Text_)
 import Mimir.CandidateRegistry as Registry
 import Mimir.ReviewResolution as Resolution
 
-data Batch (occupied : List ℕ) (experience : ℕ) :
+data Batch (occupied : List UUID) (experience : UUID) :
   Registry.Registry → List Candidate → Registry.Registry → Resolution.Registry → Set where
   done : ∀ before → Batch occupied experience before [] before []
   next : ∀ {before candidate rest after bindings} →
@@ -33,11 +34,11 @@ data Batch (occupied : List ℕ) (experience : ℕ) :
     Batch occupied experience before (candidate ∷ rest) after
       ((candidateKey candidate , Registry.assigned planned) ∷ bindings)
 
-Prepared : List ℕ → ℕ → Registry.Registry → List Candidate → Set
+Prepared : List UUID → UUID → Registry.Registry → List Candidate → Set
 Prepared occupied experience before candidates = Σ Registry.Registry (λ after →
   Σ Resolution.Registry (λ bindings → Batch occupied experience before candidates after bindings))
 
-prepare : ∀ occupied experience before candidates → (Candidate → ℕ) →
+prepare : ∀ occupied experience before candidates → (Candidate → UUID) →
   Fault ⊎ Prepared occupied experience before candidates
 prepare occupied experience before [] fresh = inj₂ (before , [] , done before)
 prepare occupied experience before (candidate ∷ rest) fresh
@@ -72,7 +73,7 @@ batchPreserves (next planned remainder) name original present = batchPreserves r
 
 -- Every returned binding refers to a live reservation in the final
 -- registry for this experience, after all later reservations have run.
-Supported : ℕ → Registry.Registry → Text × ℕ → Set
+Supported : UUID → Registry.Registry → Text × UUID → Set
 Supported experience after (name , identity) = Σ Registry.Entry (λ entry →
   Registry.lookup (experience , name) after ≡ just entry ×
   Registry.Entry.nodeID entry ≡ identity × Registry.Entry.retired entry ≡ false)
@@ -119,7 +120,7 @@ resolvedReservation : ∀ {occupied experience before candidates after bindings}
 resolvedReservation {experience = experience} {after = after} {bindings = bindings} batch name identity =
   lookupSupported experience after bindings name identity (bindingsSupported batch)
 
-Declared : ℕ → Registry.Registry → Candidate → Set
+Declared : UUID → Registry.Registry → Candidate → Set
 Declared experience after declaration = Σ Registry.Entry (λ row →
   Registry.lookup (experience , candidateKey declaration) after ≡ just row × Registry.ExistingValid declaration row)
 

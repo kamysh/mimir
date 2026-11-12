@@ -1,21 +1,22 @@
 {-# OPTIONS --safe #-}
 -- The judge's scoped tools use the same public MCP operation as other clients.
--- A successful local service receipt requires both the client request trace
--- and the actual application's execution with that exact argument/result.
+-- A successful local service receipt requires the client request trace and
+-- the guarded application execution.
 module Mimir.JudgeServiceBinding where
 
 open import Data.Bool using (Bool; true; false; _∧_)
 open import Data.Integer using (-[1+_])
 import Data.Integer.Properties as Integer
-open import Data.List using (List; []; _∷_)
+open import Data.List using (List; []; _∷_; _++_)
 open import Data.Nat using (ℕ; _≤_)
-open import Data.Maybe using (just; nothing)
+open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.String using (toList)
-open import Relation.Nullary using (does)
+open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
 open import Mimir.Text using (Text)
+open import Mimir.SourceReview using (_≟Text_)
 import Mimir.StandardLibrary as Conversion
 import Mimir.PublicEncoding as Encoding
 import Mimir.ToolCatalog as Catalog
@@ -28,8 +29,10 @@ import Mimir.McpClientWire as Wire
 import Mimir.McpToolExecution as Handler
 import Mimir.McpEnvelope as Envelope
 import Mimir.ApplicationProtocol as Application
+import Mimir.ApplicationStore as Store
 import Mimir.StructuredValue as V
 import Mimir.Validation as Validation
+import Mimir.McpErrors as Errors
 import Mimir.SourceFailure as Source
 import Mimir.RpcReply
 import Mimir.JudgeMcpLifecycle as Client
@@ -46,37 +49,48 @@ module Bind (conversion : Conversion.Contract) (format : Encoding.Formatting)
   module T = Transport conversion
   module W = Wire conversion
   module J = JSON conversion
-  module H = Handler.Run environment format conversion
-  module A = Application.Run environment
+  module H = Handler.Run environment format conversion using (Handled; Success; successHasSource)
+  module A = Application.Run environment using (Event)
 
   applicationCode : V.Value → Bool
   applicationCode (V.signed n) = does (n Integer.≟ -[1+ 31999 ])
   applicationCode _ = false
 
-  conflict : V.Value → Bool
-  conflict value with Scope.get "message" value
-  ... | V.string message = applicationCode (Scope.get "code" value) ∧
-      Display.contains errors message (toList "candidate key has a different declaration")
-  ... | _ = false
+  refusal : Errors.Refusal → Scope.Failure
+  refusal (Errors.refusal Errors.invalidInput detail) = Scope.rejected (Revision.Display.fault display detail)
+  refusal (Errors.refusal Errors.candidateConflict detail) = Scope.candidateConflict (Revision.Display.fault display detail)
+  refusal (Errors.refusal Errors.undeclaredCandidate detail) = Scope.rejected (Revision.Display.fault display detail)
 
   application : Catalog.Tool → V.Value → Scope.Failure
-  application Catalog.reviewExperience value with conflict value
-  ... | true = Scope.candidateConflict (toList "review candidate key conflicts with an earlier declaration")
-  ... | false with Scope.textIs (toList "candidate belief reference must be declared in this review") (Scope.get "message" value) ∧
-      applicationCode (Scope.get "code" value)
-  ...   | true = Scope.transport (toList "candidate belief reference is not declared in this review")
-  ...   | false = Scope.application (Display.applicationFailure errors value)
-  application _ value = Scope.application (Display.applicationFailure errors value)
+  application tool value with applicationCode (Scope.get "code" value) | Errors.decodeRefusal (Scope.get "data" value)
+  ... | true | inj₂ detail = refusal detail
+  ... | _ | _ = Scope.application (Display.applicationFailure errors value)
+
+  fieldPath : V.Value → Text
+  fieldPath value with Scope.get "path" value
+  ... | V.array path = toList " Field path: " ++ Revision.Display.json display (V.array path) ++ toList "."
+  ... | _ = []
+
+  correction : V.Value → Maybe Scope.Failure
+  correction value with Scope.get "status" value | Scope.get "reason" value | Scope.get "next_action" value
+  ... | V.string status | V.string reason | V.string action with status ≟Text toList "needs_correction"
+  ...   | yes _ = just (Scope.rejected (reason ++ fieldPath value ++ toList " " ++ action))
+  ...   | no _ with status ≟Text toList "needs_input"
+  ...     | yes _ = just (Scope.needsUserDecision (reason ++ toList " " ++ action))
+  ...     | no _ = nothing
+  correction value | _ | _ | _ = nothing
 
   toolResult : W.ToolResult → Scope.Failure ⊎ V.Value
-  toolResult (W.applicationFailure value) = inj₁ (Scope.application (toList "MCP tool returned isError"))
+  toolResult (W.applicationFailure value) = inj₁ (Scope.application (Display.applicationFailure errors value))
   toolResult (W.invalidEnvelope failure) = inj₁ (Scope.invalidResponse (Validation.Fault.explanation failure))
   toolResult (W.invalidJSON source failure) with J.text (toList "invalid MCP tool JSON") source
   ... | inj₁ captured with Revision.Error.source captured
   ...   | just source = inj₁ (Scope.sourceFailure source)
   ...   | nothing = inj₁ (Scope.invalidResponse (Revision.Error.detail captured))
   toolResult (W.invalidJSON source failure) | inj₂ value = inj₁ (Scope.invalidResponse (Validation.Fault.explanation failure))
-  toolResult (W.toolValue source value) = inj₂ value
+  toolResult (W.toolValue source value) with correction value
+  ... | just failure = inj₁ failure
+  ... | nothing = inj₂ value
 
   decode : Catalog.Tool → C.Outcome → Scope.Failure ⊎ V.Value
   decode tool (C.transportFailure failure) = inj₁ (Scope.transport (Validation.Fault.explanation failure))
@@ -88,30 +102,37 @@ module Bind (conversion : Conversion.Contract) (format : Encoding.Formatting)
   params : Catalog.Tool → V.Value → V.Value
   params tool args = Encoding.object (("name" , V.string (toList (Catalog.wireName tool))) ∷ ("arguments" , args) ∷ [])
 
-  data ClientCall (id : ℕ) (tool : Catalog.Tool) (args : V.Value) : Scope.Failure ⊎ V.Value → Set where
-    clientCall : ∀ diagnostics outcome events reply →
-      T.With.Pending.Runs diagnostics id (T.With.Pending.start diagnostics id (toList "tools/call") (params tool args)) events outcome →
-      decode tool outcome ≡ reply → ClientCall id tool args reply
-    counterFull : 18446744073709551615 ≤ id →
-      ClientCall id tool args (inj₁ (Scope.transport (toList "MCP request ID overflow")))
+  data ClientCall (tool : Catalog.Tool) (args : V.Value) : Maybe Text → Scope.Failure ⊎ V.Value → Set where
+    clientCall : ∀ id diagnostics outcome allocationEvents events reply →
+      Client.Runs (Client.ask Client.randomHexID Client.done) allocationEvents (inj₂ id) →
+      T.With.Pending.Runs diagnostics id
+        (T.With.Pending.start diagnostics id (toList "tools/call") (params tool args)) events outcome →
+      decode tool outcome ≡ reply → ClientCall tool args (just id) reply
+    allocationFailed : ∀ events failure →
+      Client.Runs (Client.ask Client.randomHexID Client.done) events (inj₁ failure) →
+      ClientCall tool args nothing (inj₁ (Scope.transport failure))
 
   -- Successful replies cannot originate solely from a transport transcript.
-  -- They additionally identify the application operation that produced them.
-  data Publication (tool : Catalog.Tool) (args : V.Value) : Scope.Failure ⊎ V.Value → Set where
-    failed : ∀ failure → Publication tool args (inj₁ failure)
-    succeeded : ∀ events value → H.Handled (Envelope.literal (Catalog.wireName tool)) args events (inj₂ value) →
-      Publication tool args (inj₂ value)
+  -- They additionally identify the execution that produced them.
+  data Publication (tool : Catalog.Tool) (args : V.Value) : Maybe Text → Scope.Failure ⊎ V.Value → Set where
+    failed : ∀ id failure → Publication tool args id (inj₁ failure)
+    succeeded : ∀ id before after events value → H.Handled (Envelope.identity true (V.string id))
+      (Envelope.literal (Catalog.wireName tool)) args before events (inj₂ value) after →
+      Publication tool args (just id) (inj₂ value)
 
-  record Receipt (id : ℕ) (tool : Catalog.Tool) (args : V.Value) (reply : Scope.Failure ⊎ V.Value) : Set where
-    field client : ClientCall id tool args reply
-          publication : Publication tool args reply
+  record Receipt (id : Maybe Text) (tool : Catalog.Tool) (args : V.Value) (reply : Scope.Failure ⊎ V.Value) : Set where
+    field client : ClientCall tool args id reply
+          publication : Publication tool args id reply
 
   issued : ∀ {id tool args reply} → Receipt id tool args reply → Client.Issued
   issued {id} receipt with Receipt.client receipt
-  ... | clientCall diagnostics outcome events reply execution decoded = Client.issued id
-  ... | counterFull bounded = Client.overflowRejected id
+  ... | clientCall allocatedID diagnostics outcome allocationEvents events reply allocated execution decoded = Client.issued allocatedID
+  ... | allocationFailed events failure execution = Client.allocationUnavailable
 
-  successRequiresExecution : ∀ tool args value → Publication tool args (inj₂ value) →
-    Data.Product.Σ (List A.Event) (λ events → H.Operation (Envelope.literal (Catalog.wireName tool)) args events value)
-  successRequiresExecution tool args value (succeeded events .value handled) =
-    events , H.successRequiresOperation (Envelope.literal (Catalog.wireName tool)) args events value handled
+  successHasSource : ∀ id tool args value → Publication tool args (just id) (inj₂ value) →
+    Data.Product.Σ Store.World (λ before → Data.Product.Σ Store.World (λ after →
+      Data.Product.Σ (List A.Event) (λ events → H.Success (Envelope.identity true (V.string id))
+        (Envelope.literal (Catalog.wireName tool)) args before events value after)))
+  successHasSource id tool args value (succeeded .id before after events .value handled) =
+    before , after , events , H.successHasSource (Envelope.identity true (V.string id))
+      (Envelope.literal (Catalog.wireName tool)) args before events value after handled

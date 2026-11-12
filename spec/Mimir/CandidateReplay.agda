@@ -7,7 +7,7 @@ open import Data.List using (List; []; length)
 open import Data.List.Relation.Unary.All using (All)
 open import Data.Maybe using (just; nothing)
 open import Data.Maybe.Properties using (just-injective)
-open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Product using (_×_; _,_; proj₂)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl; trans; sym; subst; cong)
@@ -36,8 +36,8 @@ checkOne experience registry declaration
 check : ∀ experience registry declarations → Checked (All (Batch.Declared experience registry) declarations)
 check experience registry = allChecked (checkOne experience registry)
 
-module Read (experience : ℕ) (registry : Registry.Registry) where
-  binding : (declaration : Candidate) → Batch.Declared experience registry declaration → Text × ℕ
+module Read (experience : UUID) (registry : Registry.Registry) where
+  binding : (declaration : Candidate) → Batch.Declared experience registry declaration → Text × UUID
   binding declaration (row , present , valid) = candidateKey declaration , Registry.Entry.nodeID row
 
   bindings : (declarations : List Candidate) → All (Batch.Declared experience registry) declarations → Resolution.Registry
@@ -52,7 +52,7 @@ module Read (experience : ℕ) (registry : Registry.Registry) where
   countExact : ∀ declarations proofs → length (bindings declarations proofs) ≡ length declarations
   countExact = Resolution.mapEvidenceLength binding
 
-readIDs : ℕ → Registry.Registry → List Candidate → Fault ⊎ Resolution.Registry
+readIDs : UUID → Registry.Registry → List Candidate → Fault ⊎ Resolution.Registry
 readIDs experience registry declarations with check experience registry declarations
 ... | rejected failure invalid = inj₁ failure
 ... | accepted proofs = inj₂ (Read.bindings experience registry declarations proofs)

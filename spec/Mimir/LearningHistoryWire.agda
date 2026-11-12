@@ -7,7 +7,7 @@ module Mimir.LearningHistoryWire where
 open import Data.Bool using (true; false; _∧_)
 open import Data.List using (List; []; _∷_; map; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Integer using (ℤ)
 import Data.Integer.Properties as Integer
 open import Relation.Nullary using (does; yes; no)
@@ -17,13 +17,12 @@ data Kind : Set where sources reviews : Kind
 
 record Head : Set where
   constructor head
-  field identity : ℕ; revision reviewRevision reviewedRevision : ℤ
+  field identity : UUID; revision reviewRevision reviewedRevision : ℤ
 
 record Row : Set where
   constructor row
-  -- createdAt is UTC nanoseconds, shared with public timestamp formatting
-  -- and digest count boundaries; revisions remain ordinary integers.
-  field experience : ℕ; revision sourceRevision createdAt : ℤ; payload : V.Value
+  -- createdAt is UTC nanoseconds; revisions remain ordinary integers.
+  field experience : UUID; revision sourceRevision createdAt : ℤ; payload : V.Value
 
 record Entry : Set where
   constructor entry
@@ -36,21 +35,21 @@ record Current : Set where
 record Database : Set where
   field heads : List Head; sourceRows reviewRows : List Row
 
-find : ℕ → List Head → Maybe Head
+find : UUID → List Head → Maybe Head
 find id [] = nothing
-find id (header ∷ rest) with id ≟ Head.identity header
+find id (header ∷ rest) with id ≟UUID Head.identity header
 ... | yes _ = just header
 ... | no _ = find id rest
 
 joined : Head → List Row → Maybe V.Value
 joined header [] = nothing
-joined header (item ∷ rest) with does (Head.identity header ≟ Row.experience item) ∧
+joined header (item ∷ rest) with does (Head.identity header ≟UUID Row.experience item) ∧
   does (Head.reviewRevision header Integer.≟ Row.revision item) ∧
   does (Head.revision header Integer.≟ Row.sourceRevision item)
 ... | true = just (Row.payload item)
 ... | false = joined header rest
 
-readCurrent : ℕ → Database → Maybe Current
+readCurrent : UUID → Database → Maybe Current
 readCurrent id db with find id (Database.heads db)
 ... | nothing = nothing
 ... | just header = just (current (Head.revision header) (Head.reviewRevision header)
@@ -70,6 +69,6 @@ selected : Kind → Database → List Row
 selected sources = Database.sourceRows
 selected reviews = Database.reviewRows
 
-readHistory : Kind → ℕ → Database → List Entry
+readHistory : Kind → UUID → Database → List Entry
 readHistory kind id db = sort (map (λ item → entry (Row.revision item) (Row.payload item) (Row.createdAt item))
-  (filterᵇ (λ item → does (id ≟ Row.experience item)) (selected kind db)))
+  (filterᵇ (λ item → does (id ≟UUID Row.experience item)) (selected kind db)))

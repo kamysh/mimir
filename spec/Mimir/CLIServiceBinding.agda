@@ -13,6 +13,7 @@ open import Mimir.Text using (Text)
 import Mimir.CLI as CLI
 import Mimir.HookProtocol as Hook
 import Mimir.ApplicationProtocol as Application
+import Mimir.ApplicationStore as Store
 import Mimir.PublicEncoding as Encoding
 import Mimir.ConfigurationSchema as Config
 import Mimir.ConfigurationPath as Path
@@ -29,7 +30,9 @@ module Bound (conversion : Library.Contract) (environment : Application.Environm
     module S = Service.Bound sizeMaximum path connectionEnvironment decimalPort certificateBlocks unix
     module M = Migration.Runtime Text Text
     module H = Hook.Run environment
-    module A = Application.Run environment
+      using (Effect; module P; Reply; connect; currentDirectory; execute; gitTopLevel; parseJSON;
+             readSessionFile; sessionEnvironment; stderr; stdinUTF8; stdout; writeSessionFile)
+    module A = Application.Run environment using (GuardedRuns; start)
 
   -- Error display is an ordinary anyhow/terminal boundary. It does not turn
   -- a configuration or startup failure into a successful connection receipt.
@@ -39,34 +42,37 @@ module Bound (conversion : Library.Contract) (environment : Application.Environm
     ready : ∀ config service → S.Receipt migrations (S.connected config service) →
       Service.Compatible (Config.Config.core config) environment → Connected migrations (inj₂ tt)
 
-  data Receipt (migrations : M.Inputs) : (effect : C.Effect) → C.Reply effect → Set where
-    connected : ∀ reply → Connected migrations reply → Receipt migrations C.connect reply
-    executed : ∀ request events reply → A.Runs (A.start request) events reply → Receipt migrations (C.execute request) reply
-    printed : ∀ line reply → Receipt migrations (C.print line) reply
+  data Receipt (migrations : M.Inputs) : (effect : C.Effect) → C.Reply effect → Store.World → Store.World → Set where
+    connected : ∀ reply world → Connected migrations reply → Receipt migrations C.connect reply world world
+    executed : ∀ request before after events reply → A.GuardedRuns (A.start request) before events after reply →
+      Receipt migrations (C.execute request) reply before after
+    printed : ∀ line reply world → Receipt migrations (C.print line) reply world world
 
   data Runs (migrations : M.Inputs) : C.P.Script (C.Failure Data.Sum.⊎ Data.Unit.⊤) →
-    List C.P.Event → C.Failure Data.Sum.⊎ Data.Unit.⊤ → Set where
-    returned : ∀ value → Runs migrations (C.P.done value) [] value
-    replied : ∀ effect next reply events value → Receipt migrations effect reply →
-      Runs migrations (next reply) events value → Runs migrations (C.P.ask effect next) ((effect , reply) ∷ events) value
+    Store.World → List C.P.Event → Store.World → C.Failure Data.Sum.⊎ Data.Unit.⊤ → Set where
+    returned : ∀ value world → Runs migrations (C.P.done value) world [] world value
+    replied : ∀ effect next reply before middle events after value → Receipt migrations effect reply before middle →
+      Runs migrations (next reply) middle events after value →
+      Runs migrations (C.P.ask effect next) before ((effect , reply) ∷ events) after value
 
   -- HookProtocol already models all error suppression and Stop's explicit
   -- exit 2. Its connect effect has the same startup obligation.
-  data HookReceipt (migrations : M.Inputs) : (effect : H.Effect) → H.Reply effect → Set where
-    connected : ∀ reply → Connected migrations reply → HookReceipt migrations H.connect reply
-    executed : ∀ request events reply → A.Runs (A.start request) events reply → HookReceipt migrations (H.execute request) reply
-    stdin : ∀ reply → HookReceipt migrations H.stdinUTF8 reply
-    json : ∀ input reply → HookReceipt migrations (H.parseJSON input) reply
-    sessionEnvironment : ∀ reply → HookReceipt migrations H.sessionEnvironment reply
-    read : ∀ path reply → HookReceipt migrations (H.readSessionFile path) reply
-    write : ∀ path value reply → HookReceipt migrations (H.writeSessionFile path value) reply
-    git : ∀ reply → HookReceipt migrations H.gitTopLevel reply
-    cwd : ∀ reply → HookReceipt migrations H.currentDirectory reply
-    stdout : ∀ message reply → HookReceipt migrations (H.stdout message) reply
-    stderr : ∀ message reply → HookReceipt migrations (H.stderr message) reply
+  data HookReceipt (migrations : M.Inputs) : (effect : H.Effect) → H.Reply effect → Store.World → Store.World → Set where
+    connected : ∀ reply world → Connected migrations reply → HookReceipt migrations H.connect reply world world
+    executed : ∀ request before after events reply → A.GuardedRuns (A.start request) before events after reply →
+      HookReceipt migrations (H.execute request) reply before after
+    stdin : ∀ reply world → HookReceipt migrations H.stdinUTF8 reply world world
+    json : ∀ input reply world → HookReceipt migrations (H.parseJSON input) reply world world
+    sessionEnvironment : ∀ reply world → HookReceipt migrations H.sessionEnvironment reply world world
+    read : ∀ path reply world → HookReceipt migrations (H.readSessionFile path) reply world world
+    write : ∀ path value reply world → HookReceipt migrations (H.writeSessionFile path value) reply world world
+    git : ∀ reply world → HookReceipt migrations H.gitTopLevel reply world world
+    cwd : ∀ reply world → HookReceipt migrations H.currentDirectory reply world world
+    stdout : ∀ message reply world → HookReceipt migrations (H.stdout message) reply world world
+    stderr : ∀ message reply world → HookReceipt migrations (H.stderr message) reply world world
 
-  data HookRuns (migrations : M.Inputs) : H.P.Script ℕ → List H.P.Event → ℕ → Set where
-    returned : ∀ value → HookRuns migrations (H.P.done value) [] value
-    replied : ∀ effect next reply events value → HookReceipt migrations effect reply →
-      HookRuns migrations (next reply) events value →
-      HookRuns migrations (H.P.ask effect next) ((effect , reply) ∷ events) value
+  data HookRuns (migrations : M.Inputs) : H.P.Script ℕ → Store.World → List H.P.Event → Store.World → ℕ → Set where
+    returned : ∀ value world → HookRuns migrations (H.P.done value) world [] world value
+    replied : ∀ effect next reply before middle events after value → HookReceipt migrations effect reply before middle →
+      HookRuns migrations (next reply) middle events after value →
+      HookRuns migrations (H.P.ask effect next) before ((effect , reply) ∷ events) after value

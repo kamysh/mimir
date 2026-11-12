@@ -8,6 +8,7 @@ open import Data.Float.Base using (Float)
 open import Data.List using (List; []; _∷_; map)
 open import Data.Maybe using (Maybe; just; nothing)
 open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Integer using (ℤ)
 open import Data.Product using (_×_; _,_)
 open import Relation.Nullary using (yes; no)
@@ -25,7 +26,7 @@ record SourceVersion : Set where
 
 record ReviewTime : Set where
   constructor reviewTime
-  field experience revision : ℕ; createdAt : ℤ
+  field experience : UUID; revision : ℕ; createdAt : ℤ
 
 record World : Set where
   constructor world
@@ -34,16 +35,16 @@ record World : Set where
     current : List Read.Row
     sources : List SourceVersion
     reviewTimes : List ReviewTime
-    grounding : List (ℕ × Float)
-    independentOrigins : List (ℕ × Independent.Stored)
+    grounding : List (UUID × Float)
+    independentOrigins : List (UUID × Independent.Stored)
     itemKeys : Allocation.Keys
 
-identities : World → List ℕ
+identities : World → List UUID
 identities w = map Read.identity (World.current w)
 
 put : Observation.Snapshot → ℤ → List Read.Row → List Read.Row
 put value timestamp [] = Read.row value timestamp ∷ []
-put value timestamp (r ∷ rs) with Experience.identity (Observation.Snapshot.experience value) ≟ Read.identity r
+put value timestamp (r ∷ rs) with Experience.identity (Observation.Snapshot.experience value) ≟UUID Read.identity r
 ... | yes same = Read.row value timestamp ∷ rs
 ... | no different = r ∷ put value timestamp rs
 
@@ -51,13 +52,13 @@ put value timestamp (r ∷ rs) with Experience.identity (Observation.Snapshot.ex
 -- source update time used for pending queue ordering.
 reviewed : Observation.Snapshot → List Read.Row → List Read.Row
 reviewed value [] = []
-reviewed value (r ∷ rs) with Experience.identity (Observation.Snapshot.experience value) ≟ Read.identity r
+reviewed value (r ∷ rs) with Experience.identity (Observation.Snapshot.experience value) ≟UUID Read.identity r
 ... | yes same = Read.row value (Read.Row.updatedAt r) ∷ rs
 ... | no different = r ∷ reviewed value rs
 
-timestamp : ℕ → ℕ → List ReviewTime → Maybe ℤ
+timestamp : UUID → ℕ → List ReviewTime → Maybe ℤ
 timestamp experience revision [] = nothing
-timestamp experience revision (r ∷ rs) with experience ≟ ReviewTime.experience r | revision ≟ ReviewTime.revision r
+timestamp experience revision (r ∷ rs) with experience ≟UUID ReviewTime.experience r | revision ≟ ReviewTime.revision r
 ... | yes sameExperience | yes sameRevision = just (ReviewTime.createdAt r)
 ... | _ | _ = timestamp experience revision rs
 

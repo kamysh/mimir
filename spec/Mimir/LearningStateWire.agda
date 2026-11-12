@@ -10,6 +10,7 @@ open import Data.Nat using (ℕ)
 open import Data.Product using (_×_; _,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Mimir.Text using (Text)
+open import Mimir.UUIDGroups using (UUID)
 open import Mimir.Validation using (Fault)
 open import Mimir.RecordDecoding using (_>>=_; mapResult)
 open import Mimir.PublicInput
@@ -18,13 +19,13 @@ import Mimir.LearningWire as Wire
 import Mimir.ReviewObservation as Observation
 import Mimir.StandardLibrary as Conversion
 
-ids : Conversion.Contract → List (Text × V.Value) → Fault ⊎ List (Text × ℕ)
+ids : Conversion.Contract → List (Text × V.Value) → Fault ⊎ List (Text × UUID)
 ids conversion [] = inj₂ []
 ids conversion ((key , value) ∷ rest) with V.Object.normalize rest key
 ... | just _ = ids conversion rest
 ... | nothing = readUUID conversion value >>= λ id → mapResult ((key , id) ∷_) (ids conversion rest)
 
-candidateIDs : Conversion.Contract → V.Value → Fault ⊎ List (Text × ℕ)
+candidateIDs : Conversion.Contract → V.Value → Fault ⊎ List (Text × UUID)
 candidateIDs conversion value = V.asObject value >>= ids conversion
 
 module Decode (conversion : Conversion.Contract) (sizeMaximum : ℕ) where

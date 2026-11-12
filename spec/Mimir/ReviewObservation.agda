@@ -10,7 +10,8 @@ import Data.Integer.Properties as Integer
 open import Data.List using (List; []; _∷_; map)
 open import Data.List.Relation.Unary.All using (All)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (_×_; _,_; proj₁; proj₂)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
 open import Data.Unit using (⊤; tt)
@@ -20,7 +21,7 @@ open import Mimir.Text using (Text)
 open import Mimir.SourceReview using (_≟Text_)
 open import Mimir.ExperienceSchema using (Experience)
 open import Mimir.Validation
-open import Mimir.Collections using (module Equality; pairEqual; atMost; checkCount)
+open import Mimir.Collections using (module Equality; pairEqual; withinSelection; checkSelection)
 open import Mimir.RevisionBounds using (i64Maximum)
 
 record Snapshot : Set where
@@ -28,7 +29,7 @@ record Snapshot : Set where
   field
     experience : Experience
     revision reviewRevision reviewedRevision : ℤ
-    candidateIDs : List (Text × ℕ)
+    candidateIDs : List (Text × UUID)
 
 -- Persistent revision counters are signed i64 values, not arbitrary integers.
 -- Acknowledgement may lag, but cannot refer to a future source revision.
@@ -60,7 +61,7 @@ acknowledgementNotFuture s (_ , _ , _ , _ , _ , ordered) = ordered
 
 record Pin : Set where
   constructor pin
-  field identity : ℕ; project : Text; sourceRevision reviewRevision : ℤ
+  field identity : UUID; project : Text; sourceRevision reviewRevision : ℤ
 
 pinSnapshot : Snapshot → Pin
 pinSnapshot s = pin (Experience.identity (Snapshot.experience s))
@@ -73,7 +74,7 @@ IdentityMatches p s = Pin.identity p ≡ Experience.identity (Snapshot.experienc
 checkIdentity : ∀ p s → Checked (IdentityMatches p s)
 checkIdentity p s = combine
   (check (fault [] wrongIdentity "completion read returned another experience")
-    (Pin.identity p ≟ Experience.identity (Snapshot.experience s)))
+    (Pin.identity p ≟UUID Experience.identity (Snapshot.experience s)))
   (check (fault [] wrongIdentity "completion read returned another project")
     (Pin.project p ≟Text Experience.project (Snapshot.experience s)))
 
@@ -126,7 +127,7 @@ confirmationPinsIdentity p s (ack (identity , _)) = identity
 
 record Deferred : Set where
   constructor deferred
-  field identity : ℕ; revision : ℤ
+  field identity : UUID; revision : ℤ
 
 StillDeferred : Deferred → Snapshot → Set
 StillDeferred d s = Snapshot.revision s ≡ Deferred.revision d ×
@@ -158,14 +159,14 @@ BatchEntry project s = SnapshotValid s × InScope project s
 checkBatchEntry : ∀ project s → Checked (BatchEntry project s)
 checkBatchEntry project s = combine (checkSnapshot s) (checkScope project s)
 
-module Identities = Equality ℕ _≟_
+module Identities = Equality UUID _≟UUID_
 
-BatchValid : ℕ → Maybe Text → List Snapshot → Set
-BatchValid limit project batch = atMost limit batch ×
+BatchValid : Maybe ℕ → Maybe Text → List Snapshot → Set
+BatchValid limit project batch = withinSelection limit batch ×
   (Identities.Unique (map (λ s → Experience.identity (Snapshot.experience s)) batch) ×
     All (BatchEntry project) batch)
 
 validateBatch : ∀ limit project batch → Checked (BatchValid limit project batch)
-validateBatch limit project batch = combine (checkCount limit batch)
+validateBatch limit project batch = combine (checkSelection limit batch)
   (combine (Identities.checkUnique (map (λ s → Experience.identity (Snapshot.experience s)) batch))
     (allChecked (checkBatchEntry project) batch))

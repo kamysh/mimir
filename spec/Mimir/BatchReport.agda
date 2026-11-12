@@ -1,16 +1,14 @@
 {-# OPTIONS --safe #-}
--- Every selected revision gets exactly one final database observation. Counts
--- and status are derived together, rather than supplied independently.
+-- Every selected revision gets a final database observation. Completion is
+-- determined by those observations, independently of reported statistics.
 module Mimir.BatchReport where
 
 open import Data.Bool using (Bool; true; false)
-open import Data.List using (List; []; _∷_; length)
+open import Data.List using (List; []; _∷_)
 open import Data.List.Relation.Unary.All using (All; []; _∷_)
-open import Data.Nat using (ℕ; zero; suc; _+_)
-open import Data.Nat.Properties using (+-suc)
 open import Data.Empty using (⊥-elim)
 open import Data.Product using (Σ-syntax; _,_)
-open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl; cong; trans)
+open import Relation.Binary.PropositionalEquality using (_≡_; _≢_; refl)
 import Mimir.Judge as Judge
 import Mimir.ReviewObservation as Observation
 open import Mimir.JudgeAcknowledgement using (Evidence; evidence)
@@ -32,56 +30,16 @@ labels : ∀ {pins} → Batch pins → List Summary.Receipt
 labels empty = []
 labels (entry receipt rest) = label receipt ∷ labels rest
 
-oneObservationPerSelection : ∀ {pins} (batch : Batch pins) → length (labels batch) ≡ length pins
-oneObservationPerSelection empty = refl
-oneObservationPerSelection (entry receipt rest) = cong suc (oneObservationPerSelection rest)
-
-record Counts : Set where
-  constructor counts
-  field confirmed corrected pending unavailable : ℕ
-
-increment : Summary.Receipt → Counts → Counts
-increment Summary.confirmed (counts c r p u) = counts (suc c) r p u
-increment Summary.corrected (counts c r p u) = counts c (suc r) p u
-increment Summary.pending (counts c r p u) = counts c r (suc p) u
-increment Summary.unavailable (counts c r p u) = counts c r p (suc u)
-
-total : Counts → ℕ
-total (counts c r p u) = c + (r + (p + u))
-
-incrementAddsOne : ∀ receipt before → total (increment receipt before) ≡ suc (total before)
-incrementAddsOne Summary.confirmed (counts c r p u) = refl
-incrementAddsOne Summary.corrected (counts c r p u) = +-suc c (r + (p + u))
-incrementAddsOne Summary.pending (counts c r p u)
-  rewrite +-suc r (p + u) | +-suc c (r + (p + u)) = refl
-incrementAddsOne Summary.unavailable (counts c r p u)
-  rewrite +-suc p u | +-suc r (p + u) | +-suc c (r + (p + u)) = refl
-
-tally : List Summary.Receipt → Counts
-tally [] = counts 0 0 0 0
-tally (receipt ∷ rest) = increment receipt (tally rest)
-
-countedExactlyOnce : ∀ receipts → total (tally receipts) ≡ length receipts
-countedExactlyOnce [] = refl
-countedExactlyOnce (receipt ∷ rest) = trans (incrementAddsOne receipt (tally rest))
-  (cong suc (countedExactlyOnce rest))
-
 hasDeferred : List Observation.Deferred → Bool
 hasDeferred [] = false
 hasDeferred (_ ∷ _) = true
 
 record Report : Set where
   constructor report
-  field selected : ℕ; outcomes : Counts; status : Summary.Status
+  field status : Summary.Status
 
 finish : ∀ {pins} → Batch pins → List Observation.Deferred → Report
-finish {pins} batch deferred = report (length pins) (tally (labels batch))
-  (Summary.finish (labels batch) (hasDeferred deferred))
-
-reportCountsMatchSelection : ∀ {pins} (batch : Batch pins) deferred →
-  total (Report.outcomes (finish batch deferred)) ≡ Report.selected (finish batch deferred)
-reportCountsMatchSelection batch deferred = trans (countedExactlyOnce (labels batch))
-  (oneObservationPerSelection batch)
+finish batch deferred = report (Summary.finish (labels batch) (hasDeferred deferred))
 
 confirmedEvidence : ∀ {pin} (receipt : Observation.Receipt pin) →
   Summary.Confirmed (label receipt) → Evidence pin

@@ -10,7 +10,7 @@ import Data.Integer as Int
 open import Data.Integer.DivMod using (_/ℕ_)
 open import Data.List using (List; []; _∷_; map; filterᵇ)
 open import Data.Maybe using (Maybe; just; nothing)
-open import Data.Nat using (ℕ; _≟_)
+open import Mimir.UUIDGroups using (UUID; _≟UUID_)
 open import Data.Product using (_×_; _,_)
 open import Relation.Nullary using (does; yes; no)
 open import Relation.Binary.PropositionalEquality using (_≡_; refl)
@@ -25,7 +25,7 @@ import Mimir.EvidenceValidity as Evidence
 probability : Float → Bool
 probability x = (0.0 ≤ᵇ x) ∧ (x ≤ᵇ 1.0)
 
-activeContradictions : List Graph.BeliefValues → List (ℕ × ℕ) → List (ℕ × ℕ)
+activeContradictions : List Graph.BeliefValues → List (UUID × UUID) → List (UUID × UUID)
 activeContradictions beliefs [] = []
 activeContradictions beliefs ((a , b) ∷ pairs) with Ranking.lookup a beliefs | Ranking.lookup b beliefs
 ... | just first | just second with 1.0 <ᵇ
@@ -54,12 +54,12 @@ decayChanged b value =
   threshold = 0.0000000000000002220446049250313 *
     P.maximum (Graph.BeliefValues.alpha b + Graph.BeliefValues.beta b) 1.0
 
-massOf : ℕ → List (ℕ × Float) → Float
+massOf : UUID → List (UUID × Float) → Float
 massOf id masses with P.lookup id masses
 ... | nothing = 0.0
 ... | just mass = mass
 
-decayRows : ℤ → Float → List (ℕ × Float) → List Graph.BeliefValues → Maybe P.State
+decayRows : ℤ → Float → List (UUID × Float) → List Graph.BeliefValues → Maybe P.State
 decayRows now factor masses [] = just []
 decayRows now factor masses (b ∷ bs) with Graph.BeliefValues.memory b
 ... | Candidates.experiential = decayRows now factor masses bs
@@ -75,7 +75,7 @@ decayRows now factor masses (b ∷ bs) with Graph.BeliefValues.memory b
 ...       | nothing = nothing
 ...       | just rest = just ((Graph.BeliefValues.identity b , decayed now factor (massOf (Graph.BeliefValues.identity b) masses) b) ∷ rest)
 
-decay : ℤ → Float → List (ℕ × Float) → List Graph.BeliefValues → Maybe P.State
+decay : ℤ → Float → List (UUID × Float) → List Graph.BeliefValues → Maybe P.State
 decay now factor masses beliefs with probability factor
 ... | false = nothing
 ... | true = decayRows now factor masses beliefs
@@ -85,38 +85,34 @@ decay now factor masses beliefs with probability factor
 -- enumeration order, and duplicate target identities are removed before use.
 record Defeat : Set where
   constructor defeat
-  field source target : ℕ; sourceCreated : ℤ
+  field source target : UUID; sourceCreated : ℤ
 
-latest : ℕ → List Defeat → Maybe ℤ
+latest : UUID → List Defeat → Maybe ℤ
 latest id [] = nothing
-latest id (e ∷ es) with id ≟ Defeat.target e
+latest id (e ∷ es) with id ≟UUID Defeat.target e
 ... | no _ = latest id es
 ... | yes _ with latest id es
 ...   | nothing = just (Defeat.sourceCreated e)
 ...   | just time = just (Defeat.sourceCreated e Int.⊔ time)
 
-expired : ℤ → ℤ → Float → List Graph.BeliefValues → List Defeat → ℕ → Bool
+expired : ℤ → ℤ → Float → List Graph.BeliefValues → List Defeat → UUID → Bool
 expired now grace threshold beliefs edges id with Ranking.lookup id beliefs | latest id edges
 ... | just belief | just time = not (threshold ≤ᵇ Graph.BeliefValues.probability belief) ∧
   does (grace Int.≤? (now Int.- time))
 ... | _ | _ = false
 
-expiredTargets : ℤ → ℤ → Float → List Graph.BeliefValues → List Defeat → List ℕ → List ℕ
+expiredTargets : ℤ → ℤ → Float → List Graph.BeliefValues → List Defeat → List UUID → List UUID
 expiredTargets now grace threshold beliefs edges enumeration =
   filterᵇ (expired now grace threshold beliefs edges) (Ranking.unique enumeration)
 
-surgical : ℕ → P.Edge → Bool
-surgical target incoming = not (does (target ≟ P.Edge.target incoming)) ∧ causes (P.Edge.relation incoming)
+surgical : UUID → P.Edge → Bool
+surgical target incoming = not (does (target ≟UUID P.Edge.target incoming)) ∧ causes (P.Edge.relation incoming)
   where
   causes : Review.Relation → Bool
   causes Review.causes = true
   causes _ = false
 
-intervene : ℕ → Float → List P.Node → List P.Edge → P.External → P.Result
-intervene target value nodes edges external = P.run (just (target , value)) external
-  (filterᵇ (surgical target) edges) nodes
-
-project : P.State → List (ℕ × Float)
+project : P.State → List (UUID × Float)
 project = map (λ { (id , b) → id , P.mean b })
 
 workingExempt : ∀ now factor masses b bs → Graph.BeliefValues.memory b ≡ Candidates.working →

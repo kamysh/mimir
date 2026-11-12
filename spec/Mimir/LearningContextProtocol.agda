@@ -1,6 +1,6 @@
 {-# OPTIONS --safe #-}
--- Concrete composition with the retrieval machine. Pattern statistics and
--- candidate provenance are separate SELECT snapshots, just as in the service.
+-- Learning context combines retrieved beliefs, externally supplied pattern
+-- results, and assessment results. Pattern statistics are outside this model.
 module Mimir.LearningContextProtocol where
 
 open import Data.Bool using (Bool; true; false)
@@ -15,40 +15,30 @@ import Mimir.RetrievalRanking as R
 import Mimir.RetrievalProtocol as Retrieval
 import Mimir.LearningContext as Context
 import Mimir.CandidateGraph as G
-import Mimir.GraphRecords as Records
 import Mimir.LearningStore as Store
-import Mimir.ApplicationStore as App
-import Mimir.ReviewPreparationPublication as Publication
-import Mimir.PatternOutcomes as Patterns
-import Mimir.CandidateProvenance as Provenance
+import Mimir.StructuredValue as V
 import Mimir.AssessmentEvaluation as Evaluation
 import Mimir.AssessmentScores as Scores
 
 record Request : Set where
   constructor contextRequest
-  field context project : Text; limit : ℕ; embeddingsEnabled : Bool
+  field context project : Text; limit : Maybe ℕ; embeddingsEnabled : Bool
 
 record Output : Set where
   constructor output
-  field beliefs : List G.BeliefValues; patterns : List Patterns.Result; assessments : Context.Assessments
+  field beliefs : List G.BeliefValues; patterns : List V.Value; assessments : Context.Assessments
 
 data State : Set where
   retrieving : Request → Retrieval.State → State
-  listPatterns : Request → List G.BeliefValues → State
-  countPattern : Request → List G.BeliefValues → List G.PatternValues →
-    List (ℕ × Patterns.Result) → ℕ → G.PatternValues → State
-  patternOrigin : Request → List G.BeliefValues → List G.PatternValues →
-    List (ℕ × Patterns.Result) → ℕ → Patterns.Result → State
-  assessmentGroups : Request → List G.BeliefValues → List Patterns.Result → State
+  patternResults : Request → List G.BeliefValues → State
+  assessmentGroups : Request → List G.BeliefValues → List V.Value → State
   invalidInput invalidAssessment : State
   failed : Text → State
   finished : Output → State
 
 Reply : State → Set
 Reply (retrieving request phase) = Retrieval.Reply phase
-Reply (listPatterns request beliefs) = Text ⊎ Store.World
-Reply (countPattern request beliefs remaining ranked hits p) = Text ⊎ Store.World
-Reply (patternOrigin request beliefs remaining ranked hits p) = Text ⊎ Store.World
+Reply (patternResults request beliefs) = Text ⊎ List V.Value
 Reply (assessmentGroups request beliefs patterns) = Text ⊎ Store.World
 Reply invalidInput = ⊤
 Reply invalidAssessment = ⊤
@@ -72,34 +62,19 @@ module Run (ops : R.F32) (unicode : R.Unicode) (textBefore : Text → Text → B
     (Request.embeddingsEnabled request)))
 
   afterRetrieval : Request → Retrieval.State → State
-  afterRetrieval request (Retrieval.finished beliefs) = listPatterns request beliefs
+  afterRetrieval request (Retrieval.finished beliefs) = patternResults request beliefs
   afterRetrieval request (Retrieval.failed error) = failed error
   afterRetrieval request phase = retrieving request phase
 
-  nextPattern : Request → List G.BeliefValues → List G.PatternValues → List (ℕ × Patterns.Result) → State
-  nextPattern request beliefs [] ranked = assessmentGroups request beliefs (Context.rank (Request.limit request) ranked)
-  nextPattern request beliefs (p ∷ remaining) ranked with Context.tokenOverlap unicode (Request.context request) p
-  ... | zero = nextPattern request beliefs remaining ranked
-  ... | suc hits = countPattern request beliefs remaining ranked (suc hits) p
-
-  finishAssessments : Request → List G.BeliefValues → List Patterns.Result → Context.Assessments → State
+  finishAssessments : Request → List G.BeliefValues → List V.Value → Context.Assessments → State
   finishAssessments request beliefs patterns assessmentValues with validAssessments (Context.Assessments.values assessmentValues)
   ... | false = invalidAssessment
   ... | true = finished (output beliefs patterns assessmentValues)
 
   advance : (state : State) → Reply state → State
   advance (retrieving request phase) reply = afterRetrieval request (Retrieve.advance phase reply)
-  advance (listPatterns request beliefs) (inj₁ error) = failed error
-  advance (listPatterns request beliefs) (inj₂ observed) = nextPattern request beliefs
-    (Records.listPatterns (just (Request.project request))
-      (App.patterns (Publication.World.nodes (Store.World.publication observed)))) []
-  advance (countPattern request beliefs remaining ranked hits p) (inj₁ error) = failed error
-  advance (countPattern request beliefs remaining ranked hits p) (inj₂ observed) = patternOrigin request beliefs remaining ranked hits
-    (Patterns.query (Request.project request) p observed)
-  advance (patternOrigin request beliefs remaining ranked hits p) (inj₁ error) = failed error
-  advance (patternOrigin request beliefs remaining ranked hits p) (inj₂ observed) = nextPattern request beliefs remaining
-    (ranked ++ ((hits , record p { candidateProvenance = Provenance.get
-      (G.PatternValues.identity (Patterns.Result.patternValue p)) observed }) ∷ []))
+  advance (patternResults request beliefs) (inj₁ error) = failed error
+  advance (patternResults request beliefs) (inj₂ patterns) = assessmentGroups request beliefs patterns
   advance (assessmentGroups request beliefs patterns) (inj₁ error) = failed error
   advance (assessmentGroups request beliefs patterns) (inj₂ observed) = finishAssessments request beliefs patterns
     (Context.assessmentPage textBefore (Request.project request) (map G.BeliefValues.identity beliefs) observed)

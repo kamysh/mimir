@@ -29,7 +29,8 @@ enabled configurationValue with Values.Config.embed configurationValue
 
 Compatible : Values.Config → Application.Environment → Set
 Compatible configurationValue environment = Application.Environment.embeddingsEnabled environment ≡ enabled configurationValue ×
-  Application.Environment.dimension environment ≡ 768
+  (Application.Environment.dimension environment ≡ 768 ×
+  Application.Environment.retirementGraceHours environment ≡ Values.Config.retirementGraceHours configurationValue)
 
 module Bound (sizeMaximum : ℕ) (path : Path.Path) (environment : Connection.Environment)
   (decimalPort : ℕ → Text) (certificateBlocks : Text → List Text) (unix : Bool) where

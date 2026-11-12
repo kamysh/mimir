@@ -10,7 +10,7 @@ import Data.List.Relation.Unary.All as All
 import Data.List.Relation.Unary.All.Properties as AllProperties
 open import Data.List.Relation.Unary.Any using (here; there)
 import Data.List.Membership.Propositional.Properties as Membership
-open import Data.Nat using (ℕ)
+open import Mimir.UUIDGroups using (UUID)
 open import Data.Integer using (ℤ)
 open import Data.Product using (_,_)
 open import Data.Sum using (_⊎_; inj₁; inj₂)
@@ -22,7 +22,7 @@ import Mimir.CandidateBatch as Batch
 import Mimir.CandidateGraph as Graph
 import Mimir.CandidatePublication as Publication
 
-Known : List ℕ → Registry.Registry → Graph.Node → Set
+Known : List UUID → Registry.Registry → Graph.Node → Set
 Known occupied registry node = Registry.IDs.Present (Graph.nodeID node) occupied ⊎
   Registry.IDs.Present (Graph.nodeID node) (map Registry.Entry.nodeID registry)
 
@@ -33,7 +33,7 @@ avoidsKnown : ∀ occupied registry fresh nodes → Registry.IDs.Absent fresh (o
   All (Known occupied registry) nodes → All (λ node → fresh ≢ Graph.nodeID node) nodes
 avoidsKnown occupied registry fresh nodes unused known = All.map (λ { (inj₁ member) → All.lookup (AllProperties.++⁻ˡ occupied unused) member ; (inj₂ member) → All.lookup (AllProperties.++⁻ʳ occupied unused) member }) known
 
-module For (projectOf : ℕ → Text) (clock : Candidate → ℤ) where
+module For (projectOf : UUID → Text) (clock : Candidate → ℤ) where
   module P = Publication.For projectOf clock
 
   oneKnown : ∀ {before occupied experience declaration}

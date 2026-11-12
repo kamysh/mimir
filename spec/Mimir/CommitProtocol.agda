@@ -1,7 +1,6 @@
 {-# OPTIONS --safe #-}
--- Database publication versus what the caller can observe. A lost receipt is
--- explicitly ambiguous; it is never reported as a rejection that changed
--- nothing. This connects retry behavior to the existing revision contract.
+-- A committed publication is delivered to the client; an unsuccessful
+-- transaction leaves the earlier state intact.
 module Mimir.CommitProtocol where
 
 open import Data.Bool using (Bool; true; false)
@@ -23,11 +22,11 @@ module ReviewCommit (Payload : Set) (same : DecidableEquality Payload) where
   open Request
 
   data Delivery : Set where
-    abortBeforeCommit commitLoseReceipt commitDeliverReceipt : Delivery
+    abortBeforeCommit commitDeliverReceipt : Delivery
 
   data Observation : Set where
     refused : Observation
-    uncertain : Observation
+    notCommitted : Observation
     acknowledged : Cell → Observation
 
   record Outcome : Set where
@@ -40,21 +39,18 @@ module ReviewCommit (Payload : Set) (same : DecidableEquality Payload) where
 
   publish : Cell → Maybe Cell → Delivery → Outcome
   publish before nothing delivery = outcome before refused
-  publish before (just after) abortBeforeCommit = outcome before uncertain
-  publish before (just after) commitLoseReceipt = outcome after uncertain
+  publish before (just after) abortBeforeCommit = outcome before notCommitted
   publish before (just after) commitDeliverReceipt = outcome after (acknowledged after)
 
   attempt : Cell → Request → Delivery → Outcome
   attempt before r delivery = publish before (planned before r) delivery
 
-  -- A definite refusal proves the durable cell is unchanged. No such claim
-  -- follows from uncertainty, where both pre- and post-commit worlds are valid.
+  -- A definite refusal proves the durable cell is unchanged.
   refusedPreserves : ∀ before proposal delivery →
     observation (publish before proposal delivery) ≡ refused →
     durable (publish before proposal delivery) ≡ before
   refusedPreserves before nothing delivery proof = refl
   refusedPreserves before (just after) abortBeforeCommit ()
-  refusedPreserves before (just after) commitLoseReceipt ()
   refusedPreserves before (just after) commitDeliverReceipt ()
 
   receiptIsDurable : ∀ before proposal delivery receipt →
@@ -62,16 +58,9 @@ module ReviewCommit (Payload : Set) (same : DecidableEquality Payload) where
     durable (publish before proposal delivery) ≡ receipt
   receiptIsDurable before nothing delivery receipt ()
   receiptIsDurable before (just after) abortBeforeCommit receipt ()
-  receiptIsDurable before (just after) commitLoseReceipt receipt ()
   receiptIsDurable before (just after) commitDeliverReceipt .after refl = refl
 
-  lostReceiptAmbiguous : ∀ before after →
-    observation (publish before (just after) abortBeforeCommit) ≡
-    observation (publish before (just after) commitLoseReceipt)
-  lostReceiptAmbiguous before after = refl
-
-  -- A retry after an unobserved commit carries the same source revision,
-  -- expected review revision, and payload. It cannot apply evidence twice.
+  -- Repeating the same review cannot apply its evidence twice.
   originalRequest : Cell → Payload → Bool → Request
   originalRequest before p valid = request (R.Cell.project before)
     (R.Cell.current before) (R.Cell.review before) p valid
@@ -86,7 +75,6 @@ module ReviewCommit (Payload : Set) (same : DecidableEquality Payload) where
   exactRetryDurable before p valid delivery rewrite exactRetryPlan before p valid
     with delivery
   ... | abortBeforeCommit = refl
-  ... | commitLoseReceipt = refl
   ... | commitDeliverReceipt = refl
 
   exactRetryReceipt : ∀ before p valid →
