@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-python3 "$repo/tests/support/fixture.py" check
+bash "$repo/tests/support/fixture.sh" check
 base="$(mktemp -d "$MIMIR_TEST_ROOT/comparator.XXXXXXXX")"
 mkdir -m 700 -p "$base/bin"
 # The outer runner retains this private directory and its complete evidence.
@@ -45,7 +45,7 @@ chmod 700 "$base/bin/codex"
 mimir="$MIMIR_TEST_MIMIR"
 mcp="$MIMIR_TEST_MCP"
 for arm in a b; do
-    python3 "$repo/tests/support/fixture.py" config "$base/$arm.toml" \
+    bash "$repo/tests/support/fixture.sh" config "$base/$arm.toml" \
         --backend codex --model "fixture-$arm"
 done
 

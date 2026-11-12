@@ -162,8 +162,9 @@ async fn scoped_tool(
                     super::evidence::guidance(&selected.experience)
                 ))
             })?;
-            mimir_core::learning_sources::validate_review(&review, &selected.experience)
-                .map_err(mimir_core::validation::Refusal::validation)?;
+            // Source validation needs PostgreSQL-assigned item IDs and resolved
+            // assessment keys. The service performs it after allocation, inside
+            // the review transaction; the judge forwards the raw keyed input.
             args["review"] = serde_json::to_value(review)?;
         }
         "query_relevant" | "query_learning_context" | "get_contradictions" => {
@@ -1046,6 +1047,120 @@ mod tests {
                 })
             })
         }
+    }
+
+    #[tokio::test]
+    async fn keyed_extractions_reach_mcp_before_postgres_allocation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/judge/retry_fixture.sh");
+        let dir = std::env::temp_dir().join(format!("mimir-judge-keyed-review-{}", Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let request_log = dir.join("requests.jsonl");
+        let id = Uuid::new_v4();
+        let selected: ExperienceState = serde_json::from_value(json!({
+            "experience": {
+                "id": id, "project": "judge-retry-fixture", "context": "fixture observation",
+                "action": "review the suggestion", "outcome": "unknown", "source": "user_feedback",
+                "evidence": ["fixture-source"],
+                "source_records": [{
+                    "source_ref": "fixture-source", "actor": "user", "provenance": "user_feedback",
+                    "text": "Try a smaller batch."
+                }]
+            },
+            "revision": 1, "review_revision": 0, "reviewed_revision": 0
+        }))
+        .unwrap();
+        let arguments = json!({
+            "expected_review_revision": 0,
+            "review": {
+                "experience_id": id, "experience_revision": 1, "reviewer": "model-selected",
+                "rationale": "review the recorded suggestion",
+                "candidates": [{"kind": "belief", "key": "lesson", "content": "A smaller batch may help."}],
+                "extracted_items": [{
+                    "key": "smaller-batch", "kind": "suggestion", "source_ref": "fixture-source",
+                    "actor": "user", "statement": "Try a smaller batch.", "conditions": "fixture observation"
+                }],
+                "assessments": [{
+                    "target": {"candidate_key": "lesson"}, "scope": "fixture", "rubric": "fixture",
+                    "correctness": {"value": null, "weight": 0},
+                    "usefulness": {"value": null, "weight": 0},
+                    "evidence_indices": [0], "item_keys": ["smaller-batch"], "rationale": "not tried yet"
+                }],
+                "source_coverage": [{"source_ref": "fixture-source", "status": "complete", "reason": "suggestion extracted"}]
+            }
+        });
+        let mut client = Client::start(
+            "bash",
+            &[
+                fixture.display().to_string(),
+                id.to_string(),
+                String::new(),
+                String::new(),
+                request_log.display().to_string(),
+            ],
+            &dir.join("unused-config.toml"),
+        )
+        .await
+        .unwrap();
+
+        for path in [
+            "expected_review_revision",
+            "experience_revision",
+            "experience_id",
+            "key",
+        ] {
+            let mut invalid = arguments.clone();
+            match path {
+                "expected_review_revision" => invalid[path] = json!(1),
+                "experience_revision" => invalid["review"][path] = json!(2),
+                "experience_id" => invalid["review"][path] = json!(Uuid::new_v4()),
+                _ => {
+                    invalid["review"]["extracted_items"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("key")
+                        .unwrap();
+                }
+            }
+            assert!(
+                scoped_tool(&mut client, &selected, "review_experience", invalid)
+                    .await
+                    .is_err(),
+                "{path}"
+            );
+        }
+
+        scoped_tool(
+            &mut client,
+            &selected,
+            "review_experience",
+            arguments.clone(),
+        )
+        .await
+        .expect("key-only extracted items must reach PostgreSQL allocation");
+        let requests: Vec<Value> = std::fs::read_to_string(&request_log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|request| request["params"]["name"] == "review_experience")
+            .collect();
+        assert_eq!(
+            requests.len(),
+            1,
+            "invalid requests must remain local refusals"
+        );
+        let forwarded = &requests[0]["params"]["arguments"]["review"];
+        assert_eq!(forwarded["reviewer"], "mimir-judge");
+        assert!(forwarded["extracted_items"][0].get("id").is_none());
+        assert_eq!(forwarded["extracted_items"][0]["key"], "smaller-batch");
+        assert_eq!(
+            forwarded["assessments"][0]["item_keys"],
+            json!(["smaller-batch"])
+        );
+        drop(client);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[tokio::test]

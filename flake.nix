@@ -54,7 +54,7 @@
         # Shared attrs for both packages
         commonAttrs = {
           pname = "mimir";
-          version = "2.2.2";
+          version = "2.3.0";
           src = ./.;
           cargoLock = {
             lockFile = ./Cargo.lock;
@@ -122,6 +122,8 @@
             # Dev utilities
             pkgs.just
             pkgs.git
+            pkgs.jq
+            pkgs.ripgrep
           ];
 
           nativeBuildInputs = [ pkgs.pkg-config ];

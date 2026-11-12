@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
-python3 "$repo/tests/support/fixture.py" check
+bash "$repo/tests/support/fixture.sh" check
 base="$(mktemp -d "$MIMIR_TEST_ROOT/adapters.XXXXXXXX")"
 bin="$MIMIR_TEST_MIMIR"
 mcp="$MIMIR_TEST_MCP"
@@ -69,7 +69,7 @@ ln -sf fake-harness "$base/bin/custom"
 
 make_config() {
     local kind="$1" project="$2" config="$3" command="${4:-}"
-    local -a args=(python3 "$repo/tests/support/fixture.py" config "$config"
+    local -a args=(bash "$repo/tests/support/fixture.sh" config "$config"
         --backend "$kind" --project "$project")
     if [[ "$kind" == command ]]; then args+=(--command "$command"); fi
     "${args[@]}"
@@ -135,7 +135,7 @@ for mode in crash malformed oversized slow fork 'done'; do
         # The test driver cancels deliberately stalled fixtures. Mimir itself
         # does not impose model/tool-call budgets or review timeouts.
         export MIMIR_JUDGE_FIXTURE_READY_FILE="$base/${mode}.ready"
-        python3 "$repo/tests/support/fixture.py" cancel --ready "$MIMIR_JUDGE_FIXTURE_READY_FILE" \
+        bash "$repo/tests/support/fixture.sh" cancel --ready "$MIMIR_JUDGE_FIXTURE_READY_FILE" \
             --report "$base/${mode}-report.json" -- "$bin" judge run --config "$config" \
             --state-dir "$base/state-${mode}"
         unset MIMIR_JUDGE_FIXTURE_READY_FILE
@@ -181,7 +181,7 @@ current_config="$config"
 current_project="$project"
 make_config command "$project" "$config" "$base/judge-process-fixture"
 seed "$config" "$project" "$id"
-MIMIR_JUDGE_FIXTURE_MODE=crash python3 "$repo/tests/support/fixture.py" cancel \
+MIMIR_JUDGE_FIXTURE_MODE=crash bash "$repo/tests/support/fixture.sh" cancel \
     --ready "$base/state-watch/judge-status.json" --stderr-ready 'judge watch: incomplete run' \
     --report "$base/watch-stdout" -- "$bin" judge watch --config "$config" \
     --state-dir "$base/state-watch" --interval-seconds 60 --max-consecutive-failures 1

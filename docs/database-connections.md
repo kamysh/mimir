@@ -74,12 +74,12 @@ The setup script reads environment/password-file credentials, not application TO
 
 ```sh
 cargo build -p mimir-core --example connection_probe
-python3 tests/database-connections.py target/debug/examples/connection_probe
+bash tests/database-connections.sh target/debug/examples/connection_probe
 ```
 
 This requires Docker and OpenSSL. It uses uniquely named disposable postgres-ai
 containers, generated test certificates and isolated config files. Complete logs
-remain in the printed `/var/tmp` artifact directory; containers are removed.
+remain in the printed `/tmp` artifact directory; containers are removed.
 
 ## Proof and test boundary
 
