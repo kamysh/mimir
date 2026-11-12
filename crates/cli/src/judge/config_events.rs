@@ -13,30 +13,6 @@ pub struct ConfigEvents {
     _directory: std::fs::File,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn creation_replacement_and_removal_wake_without_polling() {
-        let root = std::env::temp_dir().join(format!("mimir-file-events-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&root).unwrap();
-        let path = root.join("config.toml");
-        let mut events = ConfigEvents::new(&path).unwrap();
-        std::fs::write(&path, b"first").unwrap();
-        events.changed().await.unwrap();
-        assert_eq!(events.source.as_deref(), Some(b"first".as_slice()));
-        let replacement = root.join("replacement");
-        std::fs::write(&replacement, b"corrected").unwrap();
-        std::fs::rename(replacement, &path).unwrap();
-        events.changed().await.unwrap();
-        assert_eq!(events.source.as_deref(), Some(b"corrected".as_slice()));
-        std::fs::remove_file(path).unwrap();
-        events.changed().await.unwrap();
-        assert_eq!(events.source, None);
-        std::fs::remove_dir(root).unwrap();
-    }
-}
-
 impl ConfigEvents {
     pub fn new(path: &Path) -> Result<Self> {
         let mut parent = path
@@ -158,5 +134,29 @@ impl ConfigEvents {
                 return Ok(());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn creation_replacement_and_removal_wake_without_polling() {
+        let root = std::env::temp_dir().join(format!("mimir-file-events-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("config.toml");
+        let mut events = ConfigEvents::new(&path).unwrap();
+        std::fs::write(&path, b"first").unwrap();
+        events.changed().await.unwrap();
+        assert_eq!(events.source.as_deref(), Some(b"first".as_slice()));
+        let replacement = root.join("replacement");
+        std::fs::write(&replacement, b"corrected").unwrap();
+        std::fs::rename(replacement, &path).unwrap();
+        events.changed().await.unwrap();
+        assert_eq!(events.source.as_deref(), Some(b"corrected".as_slice()));
+        std::fs::remove_file(path).unwrap();
+        events.changed().await.unwrap();
+        assert_eq!(events.source, None);
+        std::fs::remove_dir(root).unwrap();
     }
 }
