@@ -126,6 +126,34 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
         )
         .await?;
     let id = Uuid::new_v4();
+    let foreign_project = format!("{project}-foreign");
+    let foreign_passage = mimir_core::documents::DocumentChunk::new(
+        format!("/fixture/{foreign_project}.md"),
+        vec![],
+        passage.content.clone(),
+        None,
+        Some(foreign_project.clone()),
+    );
+    store
+        .replace_document(
+            &foreign_passage.document_path,
+            std::slice::from_ref(&foreign_passage),
+            &[vec![1.0, 0.0]],
+        )
+        .await?;
+    let foreign = service
+        .publish_supported_belief(
+            mimir_core::graph::Belief::new_in_project(
+                passage.content.clone(),
+                0.5,
+                0.1,
+                foreign_project.clone(),
+            )?
+            .with_memory_type(mimir_core::graph::MemoryType::Fact),
+            None,
+            foreign_passage.id,
+        )
+        .await?;
     let result: Result<()> = async {
         let experience = json!({
             "id":id,"project":project,"context":"stale keyboard indicator",
@@ -158,6 +186,20 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
             ],
             "candidate_feedback":[{"target":{"candidate_key":"layout-lesson"},"verdict":"support","weight":0.75}]
         });
+        let mut wrong_project = review.clone();
+        wrong_project["assessments"] = json!([{
+            "target":{"belief_id":foreign.id}, "scope":"keyboard-v1", "rubric":"benefit-v1",
+            "correctness":{"value":1.0,"weight":1.0}, "usefulness":{"value":1.0,"weight":1.0},
+            "evidence_indices":[0], "rationale":"scope refusal fixture"
+        }]);
+        let refused = handle_tool_call(&service, "review_experience", &json!({"review":wrong_project,"expected_review_revision":0}))
+            .await.expect_err("a review changed another project's belief");
+        let refusal = refused.downcast_ref::<mimir_core::validation::Refusal>().expect("wrong-project reference did not remain correctable input");
+        ensure!(matches!(refusal.fault.code, mimir_core::validation::Code::WrongIdentity), "wrong-project reference lost its identity diagnostic");
+        ensure!(refusal.fault.message.contains(&foreign.id.to_string()) && refusal.fault.message.contains(&project), "correction omitted the offending belief or expected project");
+        ensure!(handle_tool_call(&service,"get_experience",&json!({"id":id})).await?["review_revision"] == 0, "rejected review was committed");
+        ensure!(handle_tool_call(&service,"list_beliefs",&json!({"project":project})).await?.as_array().is_some_and(Vec::is_empty), "refused review left a belief candidate behind");
+        ensure!(handle_tool_call(&service,"list_patterns",&json!({"project":project})).await?.as_array().is_some_and(Vec::is_empty), "refused review left a pattern candidate behind");
         let applied = handle_tool_call(
             &service,
             "review_experience",
@@ -278,5 +320,6 @@ async fn candidate_review_retry_and_retrieval_through_mcp_tools() -> Result<()> 
     }
     .await;
     service.delete_project(&project).await?;
+    service.delete_project(&foreign_project).await?;
     result
 }

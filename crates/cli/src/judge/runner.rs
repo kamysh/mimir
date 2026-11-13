@@ -959,6 +959,7 @@ mod tests {
         MalformedJson,
         LocalValidation,
         MimirError,
+        WrongProject,
         Exhausted,
     }
 
@@ -1001,7 +1002,15 @@ mod tests {
             Box::pin(async move {
                 if self.calls > 0 {
                     let feedback = last.ok_or_else(|| anyhow!("missing tool feedback"))?;
-                    ensure!(feedback["error"] == "invalid_tool_arguments");
+                    if matches!(self.case, RejectionCase::WrongProject) {
+                        ensure!(feedback["status"] == "needs_correction");
+                        ensure!(feedback["fault"]["code"] == "wrong_identity");
+                        ensure!(feedback["next_action"]
+                            .as_str()
+                            .is_some_and(|text| text.contains("resubmit")));
+                    } else {
+                        ensure!(feedback["error"] == "invalid_tool_arguments");
+                    }
                     ensure!(!feedback
                         .to_string()
                         .contains("private fixture database detail"));
@@ -1040,6 +1049,13 @@ mod tests {
                             name: "query_relevant".into(),
                             arguments: json!({"project":selected.experience.project,
                                 "context":"fixture observation","limit":1}),
+                        },
+                        RejectionCase::WrongProject => Action::Tool {
+                            name: "review_experience".into(),
+                            arguments: json!({"expected_review_revision":selected.review_revision,
+                                "review":{"experience_id":selected.experience.id,"experience_revision":selected.revision,
+                                    "reviewer":"fixture","rationale":"invalid project reference",
+                                    "feedback":[{"belief_id":Uuid::new_v4(),"verdict":"support","weight":0.5}]}}),
                         },
                     });
                 }
@@ -1182,6 +1198,7 @@ mod tests {
             RejectionCase::MalformedJson,
             RejectionCase::LocalValidation,
             RejectionCase::MimirError,
+            RejectionCase::WrongProject,
             RejectionCase::Exhausted,
         ] {
             let id = Uuid::new_v4();
@@ -1193,8 +1210,10 @@ mod tests {
             std::fs::write(
                 &config_path,
                 format!(
-                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
-                    dir.join("logs").display(), fixture.display(), id
+                    "config_version=1\n[logging]\ndirectory='{}'\n[database]\nhost='127.0.0.1'\nport=1\ndbname='unused'\nuser='unused'\n[judge]\nproject='judge-retry-fixture'\nbatch_size=1\nmcp_command='bash'\nmcp_args=['{}','{}','{}','{}']\n[llm]\nbackend='command'\nmodel='fixture'\ncommand='/bin/true'\n",
+                    dir.join("logs").display(), fixture.display(), id,
+                    dir.join("reviews.jsonl").display(),
+                    if matches!(case, RejectionCase::WrongProject) { "project-correction" } else { "standard" }
                 ),
             )
             .unwrap();

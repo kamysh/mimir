@@ -1,5 +1,6 @@
 use super::*;
 use crate::learning::*;
+use crate::validation::{Code, Refusal, Segment};
 use anyhow::ensure;
 use std::collections::HashSet;
 use tokio_postgres::Transaction;
@@ -126,7 +127,12 @@ impl AgeStore {
         let beliefs = self
             .learning_beliefs_for_ids(&tx, &HashSet::from([belief_id]))
             .await?;
-        validate_targets(&beliefs, project, [belief_id].into_iter())?;
+        validate_targets(
+            &beliefs,
+            project,
+            [belief_id].into_iter(),
+            &[Segment::Key("belief_id".into())],
+        )?;
         let row = tx.query_one("SELECT COALESCE(sum(a.positive),0), COALESCE(sum(a.negative),0), COALESCE(sum(a.benefit),0), COALESCE(sum(a.benefit_weight),0), count(*), count(*) FILTER (WHERE a.positive+a.negative=0), count(*) FILTER (WHERE a.benefit_weight=0) FROM mimir_assessment_contributions a JOIN mimir_experiences e ON e.id=a.experience_id JOIN mimir_review_versions r ON r.experience_id=e.id AND r.revision=a.review_revision WHERE e.project=$1 AND a.belief_id=$2 AND a.scope=$3 AND a.rubric=$4 AND e.review_revision=r.revision AND e.revision=r.experience_revision", &[&project,&belief_id,&scope,&rubric]).await?;
         let scores = crate::assessment::Scores::from_totals(
             row.get(0),
@@ -449,6 +455,10 @@ impl AgeStore {
             &beliefs,
             &experience.project,
             experience.belief_ids.iter().copied(),
+            &[
+                Segment::Key("experience".into()),
+                Segment::Key("belief_ids".into()),
+            ],
         )?;
         if let Some(id) = experience.pattern_id {
             let g = &self.graph_name;
@@ -625,7 +635,12 @@ impl AgeStore {
             }))
             .collect();
         let beliefs = self.learning_beliefs_for_ids(&tx, &ids).await?;
-        validate_targets(&beliefs, &current.experience.project, ids.iter().copied())?;
+        validate_targets(
+            &beliefs,
+            &current.experience.project,
+            ids.iter().copied(),
+            &[Segment::Key("review".into())],
+        )?;
         let mut assessed = current.experience.clone();
         assessed
             .learning_items
@@ -801,21 +816,23 @@ fn validate_targets(
     beliefs: &[Belief],
     project: &str,
     ids: impl Iterator<Item = Uuid>,
+    path: &[Segment],
 ) -> Result<()> {
     for id in ids {
         let b = beliefs
             .iter()
             .find(|b| b.id == id)
-            .ok_or_else(|| anyhow::anyhow!("belief {id} not found"))?;
+            .ok_or_else(|| Refusal::invalid(Code::MissingReference, path.to_vec(),
+                format!("Belief {id} was not found. Look up existing beliefs in project '{project}', replace or remove this reference, and resubmit the request. No requested changes were committed.")))?;
         // A project observation cannot change globally shared knowledge implicitly.
-        ensure!(
-            b.project.as_deref() == Some(project),
-            "belief {id} must belong to the experience project"
-        );
-        ensure!(
-            b.memory_type != MemoryType::Working,
-            "working memory is not a learning target"
-        );
+        if b.project.as_deref() != Some(project) {
+            return Err(Refusal::invalid(Code::WrongIdentity, path.to_vec(),
+                format!("Belief {id} is not owned by project '{project}'. Global beliefs and beliefs from other projects may be read as context but cannot be changed by this project's observations. Select an existing durable belief from '{project}', or remove this reference, then resubmit the request. No requested changes were committed.")).into());
+        }
+        if b.memory_type == MemoryType::Working {
+            return Err(Refusal::invalid(Code::UnsupportedCombination, path.to_vec(),
+                format!("Belief {id} is temporary Working memory and cannot be a learning target. Select a durable Fact or Experiential belief in project '{project}', or remove this reference, then resubmit the request. No requested changes were committed.")).into());
+        }
     }
     Ok(())
 }

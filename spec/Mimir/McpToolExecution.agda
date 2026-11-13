@@ -28,6 +28,10 @@ open import Mimir.UUIDGroups using (UUID)
 import Mimir.ApplicationOutput as Output
 import Mimir.PublicEncoding as Encoding
 import Mimir.StandardLibrary as Conversion
+import Mimir.LearningOperations as Learning
+import Mimir.ReviewRecord as Review
+import Mimir.ExperienceRecord as Experience
+import Mimir.LearningQueryProtocol as Query
 
 all : List T.Tool
 all = T.insertBelief ∷ T.deleteBelief ∷ T.deleteProject ∷ T.deletePattern ∷ T.insertPattern ∷
@@ -51,8 +55,6 @@ lookup name = find name all
 module Run (environment : Application.Environment) (format : Encoding.Formatting)
   (conversion : Conversion.Contract) where
   module A = Application.Run environment
-    using (Event; GuardedRuns; Result; invalidGrounding; invalidRequestIdentity;
-      mutated; needsDecision; reembeddingResult; startRequest)
   module P = Output.Project environment format using (project; success; failure)
   module D = Request.Decode conversion
 
@@ -64,6 +66,13 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
 
   Result = Diagnostic ⊎ V.Value
 
+  -- Only proved input refusals are correctable. Storage/provider failures
+  -- retain their recovery path and cannot acquire this classification.
+  learningValidation : Learning.Failure → Maybe Fault
+  learningValidation (Learning.recordFailure (Experience.invalid fault)) = just fault
+  learningValidation (Learning.reviewFailure (Review.invalid fault)) = just fault
+  learningValidation (Learning.allocationFailure fault) = just fault
+  learningValidation _ = nothing
 
   finish : A.Result → Result
   finish (A.reembeddingResult (Reembedding.needsDecision reason guidance)) = inj₁ (userDecisionRequired reason guidance)
@@ -85,9 +94,24 @@ module Run (environment : Application.Environment) (format : Encoding.Formatting
   finish (A.mutated Mutation.invalidOrigin) = inj₁ (invalidArguments
     (Validation.fault (Validation.key "provenance" ∷ []) Validation.unsupportedCombination
       "Cite an independent user instruction or document. Use record_experience for claims derived from an incident."))
+  finish (A.learningQueryResult (Query.invalidTarget fault)) = inj₁ (invalidArguments fault)
+  finish original@(A.learned q (A.Learn.invalidRequest failure)) with learningValidation failure
+  ... | just fault = inj₁ (invalidArguments fault)
+  ... | nothing = inj₁ (operationFailed original)
+  finish original@(A.learned q (A.Learn.transacted (A.Learn.T.refused failure cleanup))) with learningValidation failure
+  ... | just fault = inj₁ (invalidArguments fault)
+  ... | nothing = inj₁ (operationFailed original)
   finish result with P.project result
   ... | P.success value = inj₂ value
   ... | P.failure cause = inj₁ (operationFailed cause)
+
+  invalidLearningInputRequestsCorrection : ∀ q failure fault → learningValidation failure ≡ just fault →
+    finish (A.learned q (A.Learn.invalidRequest failure)) ≡ inj₁ (invalidArguments fault)
+  invalidLearningInputRequestsCorrection q failure fault classified rewrite classified = refl
+
+  rolledBackLearningInputRequestsCorrection : ∀ q failure (cleanup : A.Learn.T.Cleanup q) fault → learningValidation failure ≡ just fault →
+    finish (A.learned q (A.Learn.transacted (A.Learn.T.refused {q = q} failure cleanup))) ≡ inj₁ (invalidArguments fault)
+  rolledBackLearningInputRequestsCorrection q failure cleanup fault classified rewrite classified = refl
 
   data Handled (identityValue : Envelope.Identity) (name : Envelope.Text) (raw : V.Value)
     (before : Store.World) : List A.Event → Result → Store.World → Set where
