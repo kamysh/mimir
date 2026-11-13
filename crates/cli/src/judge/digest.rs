@@ -223,7 +223,7 @@ pub async fn tick(
     )
     .await?;
     body.push_str(&super::diagnose::summary(report.as_ref()));
-    body.push_str("A failed attempt is cleaned up. Correct the reported prerequisite and edit configuration or send SIGHUP to restart the original work. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/v2.3.0/docs/operations.md\n");
+    body.push_str("A failed attempt is cleaned up. Correct the reported prerequisite and edit configuration or send SIGHUP to restart the original work. A retry is not confirmation that the problem is resolved.\nHelp: https://github.com/kamysh/mimir/blob/v3.0.0/docs/operations.md\n");
     let digest = Digest {
         through_day: through.to_string(),
         body,
